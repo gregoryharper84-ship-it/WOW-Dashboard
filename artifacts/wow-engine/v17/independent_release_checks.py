@@ -40,6 +40,19 @@ GITHUB_ACTIONS_APP_ID = 15368  # only source trusted for workflow evidence check
 SECURITY_REVIEW_APP_ID = 5245832  # independent QA App, not GitHub Actions
 SECURITY_REVIEW_CHECK = "WOW Independent Security Review"
 SECURITY_REJECT_TITLE = "REJECT — independent semantic source review"
+
+
+def _raw_security_check_rejected(row: dict) -> bool:
+    """Derive a bounded signed veto from the QA App's actual check-run payload."""
+    return (
+        row.get("name") == SECURITY_REVIEW_CHECK
+        and row.get("status") == "completed"
+        and row.get("conclusion") == "failure"
+        and isinstance(row.get("app"), dict)
+        and str(row["app"].get("id")) == str(SECURITY_REVIEW_APP_ID)
+        and isinstance(row.get("output"), dict)
+        and row["output"].get("title") == SECURITY_REJECT_TITLE
+    )
 CHANGE_IMPACT_CHECK = "WOW V17 change impact gate"
 TRUSTED_GOVERNANCE_CHECK = "Trusted exact-head engineering governance"
 QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
@@ -281,11 +294,7 @@ def gather(
     ev["check_runs"] = [{"id": r.get("id"), "name": r.get("name"), "head_sha": r.get("head_sha"),
                          "status": r.get("status"), "conclusion": r.get("conclusion"),
                          "app_id": (r.get("app") or {}).get("id"),
-                         "semantic_reject": (r.get("name") == SECURITY_REVIEW_CHECK
-                             and r.get("status") == "completed"
-                             and str((r.get("app") or {}).get("id")) == str(SECURITY_REVIEW_APP_ID)
-                             and isinstance(r.get("output"), dict)
-                             and r["output"].get("title") == SECURITY_REJECT_TITLE),
+                         "semantic_reject": _raw_security_check_rejected(r),
                          "completed_at": r.get("completed_at"),
                          "created_at": r.get("created_at"), "started_at": r.get("started_at")}
                         for r in runs]
@@ -534,6 +543,8 @@ def _has_signed_semantic_reject(ev: dict) -> bool:
         and check.get("head_sha") == head
         and str(check.get("app_id")) == str(SECURITY_REVIEW_APP_ID)
         and check.get("status") == "completed"
+        and check.get("conclusion") == "failure"
+        and type(check.get("id")) is int and check["id"] > 0
         and check.get("semantic_reject") is True
         for check in runs
     )
