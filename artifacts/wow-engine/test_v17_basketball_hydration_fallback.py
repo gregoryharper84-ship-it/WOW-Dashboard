@@ -636,13 +636,12 @@ def test_unlicensed_recent_espn_is_not_fetched_or_persisted_during_shadow_refres
     assert result["can_execute"] is False
 
 
-def test_nba_2027_asset_uses_bdl_2026_start_year_and_licensed_empty_fallback(monkeypatch):
+def test_nba_2027_asset_keeps_canonical_sdv_identity_namespace(monkeypatch):
     """BDL 200/empty cannot hide 2026-27 settled games in SDV 2027 asset."""
     attempted = []
 
-    def empty_bdl(sport, season):
-        attempted.append(("BALLDONTLIE", sport, season))
-        return []  # HTTP 200, no rows
+    def deny_bdl(sport, season):
+        raise AssertionError("NBA cannot mix BallDontLie IDs with SDV history")
 
     def live_sdv(sport, season):
         attempted.append(("SPORTSDATAVERSE_ESPN", sport, season))
@@ -652,7 +651,7 @@ def test_nba_2027_asset_uses_bdl_2026_start_year_and_licensed_empty_fallback(mon
 
     stored = []
     dates = iter([date(2026, 6, 13), date(2026, 10, 26)])
-    monkeypatch.setattr(hydration, "fetch_games", empty_bdl)
+    monkeypatch.setattr(hydration, "fetch_games", deny_bdl)
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", live_sdv)
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: next(dates))
     monkeypatch.setattr(
@@ -663,12 +662,9 @@ def test_nba_2027_asset_uses_bdl_2026_start_year_and_licensed_empty_fallback(mon
         "NBA", [2027], client=object(),
         now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
     )
-    assert attempted == [
-        ("BALLDONTLIE", "NBA", 2026),
-        ("SPORTSDATAVERSE_ESPN", "NBA", 2027),
-    ]
+    assert attempted == [("SPORTSDATAVERSE_ESPN", "NBA", 2027)]
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
-    assert result["fallback_reasons"][2027] == "BALLDONTLIE_EMPTY_SEASON"
+    assert 2027 not in result["fallback_reasons"]
     assert result["fresh_acquisition_new_settled_games"] == 1
     assert len(stored) == 1
     assert stored[0]["game_date"] == "2026-10-26"
