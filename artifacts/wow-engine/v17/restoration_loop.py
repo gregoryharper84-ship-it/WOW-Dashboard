@@ -375,9 +375,13 @@ def _release_decision(
             "PROVE", HOLD, ["DEPLOYED_COMMIT_UNAVAILABLE"], hold=True, **identity,
         ), ["DEPLOYED_COMMIT_UNAVAILABLE"]
     if deployed != merged:
+        # This may be a newer protected-main deployment that already contains
+        # the repair. A non-equal SHA is NOT evidence of ancestry. Never advise
+        # rolling production back to the older merge without authenticated
+        # lineage and a real user-function probe.
         return _decision(
             "PROVE", HOLD, ["DEPLOYED_COMMIT_MISMATCH"], hold=True,
-            next_action="REDEPLOY_MERGED_COMMIT", **identity,
+            next_action="VERIFY_LIVE_ANCESTRY_AND_USER_FUNCTION", **identity,
         ), ["DEPLOYED_COMMIT_MISMATCH"]
 
     probe = release.get("probe")
