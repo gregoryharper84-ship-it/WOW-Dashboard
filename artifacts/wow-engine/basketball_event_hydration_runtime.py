@@ -506,19 +506,34 @@ def hydrate(
             primary_error: BasketballHydrationError | None = None
             sportsdataverse_error: BasketballHydrationError | None = None
             try:
-                # This loop uses the ENDING season year for the licensed
-                # SportsDataverse NBA schedule (nba_schedule_2027.csv covers
-                # the 2026-27 season). BallDontLie instead uses the STARTING
-                # year (seasons[]=2026). WNBA uses the same year at both.
-                bdl_season_year = year - 1 if sport == "NBA" else year
-                raw = fetch_games(sport, bdl_season_year)
-                if not raw:
-                    # HTTP 200 with an empty 2027 BDL result is not evidence
-                    # that the current NBA season has no settled games.
-                    raise BasketballHydrationError("BALLDONTLIE_EMPTY_SEASON")
-                normalizer = normalize_game
-                provider = "BALLDONTLIE"
+                if sport == "NBA":
+                    # The persisted fitted NBA corpus and canonical game
+                    # resolver both use SportsDataverse ESPN identities.
+                    # BallDontLie's bare numeric IDs are NOT the same teams.
+                    # Pin NBA training to this already-authorized namespace
+                    # until an independently verified crosswalk exists.
+                    raw = fetch_sportsdataverse_games(sport, year)
+                    normalizer = (
+                        lambda row, league, at, release_year=year:
+                        normalize_sportsdataverse_game(
+                            row, league, at, source_release_year=release_year
+                        )
+                    )
+                    provider = "SPORTSDATAVERSE_ESPN"
+                else:
+                    # WNBA retains its existing BDL primary + SDV fallback.
+                    raw = fetch_games(sport, year)
+                    if not raw:
+                        raise BasketballHydrationError("BALLDONTLIE_EMPTY_SEASON")
+                    normalizer = normalize_game
+                    provider = "BALLDONTLIE"
             except BasketballHydrationError as exc:
+                if sport == "NBA":
+                    # An available unverified BDL ID is not a replacement
+                    # for unavailable canonical NBA source evidence.
+                    raise BasketballHydrationError(
+                        "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:" + str(exc)
+                    ) from exc
                 primary_error = exc
                 try:
                     raw = fetch_sportsdataverse_games(sport, year)
