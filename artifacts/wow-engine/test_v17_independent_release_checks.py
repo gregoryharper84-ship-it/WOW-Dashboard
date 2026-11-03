@@ -803,6 +803,24 @@ def _source_review_resolver(**kwargs):
     )
 
 
+def test_gather_normalizes_only_genuine_qa_app_exact_review_reject():
+    raw = {"id": 9721, "name": m.SECURITY_REVIEW_CHECK,
+           "head_sha": HEAD, "status": "completed", "conclusion": "failure",
+           "app": {"id": m.SECURITY_REVIEW_APP_ID},
+           "output": {"title": m.SECURITY_REJECT_TITLE}}
+    for changed, trusted in (
+        ({}, True),
+        ({"app": {"id": m.SECURITY_REVIEW_APP_ID + 1}}, False),
+        ({"conclusion": "success"}, False),
+        ({"output": {"title": "HOLD — independent semantic source review"}}, False),
+    ):
+        rows = [{**raw, **changed}]
+        ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(runs=rows)),
+                      source_review_resolver=_source_review_resolver)
+        assert ev["check_runs"][0]["semantic_reject"] is trusted
+        assert m._has_signed_semantic_reject(ev) is trusted
+
+
 def test_gather_collects_exact_head_evidence():
     ev = m.gather(
         REPO,
