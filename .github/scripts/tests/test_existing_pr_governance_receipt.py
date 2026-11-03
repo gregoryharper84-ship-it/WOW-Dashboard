@@ -2411,7 +2411,7 @@ def test_v4_class_a_historical_certifier_is_not_release_dependency():
     assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
     assert "--deterministic-class-a" in workflow
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
-    assert 'CLASS_A_DETERMINISTIC' in gate
+    assert "verify_existing_pr_governance_receipt.py" in gate
     assert '[ "$receipt_schema" = "4" ]' in gate
     for source in (release, morning):
         assert "CLASS_A_DETERMINISTIC" not in source
