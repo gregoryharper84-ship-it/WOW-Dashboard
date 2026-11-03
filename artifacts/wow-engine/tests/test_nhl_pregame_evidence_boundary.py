@@ -232,3 +232,18 @@ def test_resolved_nhl_receipt_must_match_source_event_teams_time_and_provenance(
         assert result["status"] == "HELD", field
         assert "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH" in result["blockers"], field
         assert result["probability_publishable"] is False
+
+
+def test_resolver_receipt_allows_only_small_capture_clock_skew():
+    receipt = trusted_identity()
+    receipt["identity_verified_at"] = (NOW + timedelta(minutes=2)).isoformat()
+    accepted = validate_nhl_pregame_evidence(
+        valid(), as_of_utc=NOW, resolved_identity=receipt
+    )
+    assert accepted["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION"
+    receipt["identity_verified_at"] = (NOW + timedelta(minutes=10)).isoformat()
+    held = validate_nhl_pregame_evidence(
+        valid(), as_of_utc=NOW, resolved_identity=receipt
+    )
+    assert held["status"] == "HELD"
+    assert "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH" in held["blockers"]
