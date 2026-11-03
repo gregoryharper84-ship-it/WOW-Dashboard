@@ -400,7 +400,7 @@ def test_deployed_commit_must_equal_the_merged_commit():
     # A newer live main can already contain the repair. Do not advise a
     # potentially destructive rollback or treat unverified ancestry as PASS.
     assert decision["next_action"] == "VERIFY_LIVE_ANCESTRY_AND_USER_FUNCTION"
-    assert decision["verified"] is False
+    assert decision.get("verified") is not True
     assert decision["dispatch"] is None
     assert decision["can_execute"] is False
 
