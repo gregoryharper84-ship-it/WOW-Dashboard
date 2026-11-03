@@ -896,8 +896,10 @@ def _production_observation(base_url: str | None) -> tuple[dict[str, Any], list[
 
 
 def _render_live_commit(service_id: str | None, api_key: str | None) -> tuple[str | None, list[str]]:
+    # Absent optional proof configuration is an unknown deployed commit, not a
+    # failed observation: repair/verify work must continue while PROVE holds.
     if not service_id or not api_key:
-        return None, ["RENDER_DEPLOYED_COMMIT_UNAVAILABLE"]
+        return None, []
     try:
         payload = _http_json(
             f"https://api.render.com/v1/services/{service_id}/deploys?limit=5",
