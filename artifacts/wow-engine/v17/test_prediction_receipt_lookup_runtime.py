@@ -233,3 +233,155 @@ def test_lookup_route_is_read_only_and_installs_once():
     body = response.json()
     assert body["rows_matched"] == 1
     assert body["can_execute"] is False
+
+
+# NFL outright event forecasts have a different immutable ledger from scalar props.
+# A held model record is useful for verification, not a publication approval.
+NFL_EVENT_UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+def _nfl_event(**overrides):
+    now = datetime(2026, 11, 2, 20, 0, tzinfo=timezone.utc)
+    base = {
+        "event_prediction_id": NFL_EVENT_UUID,
+        "official_event_id": "2026_09_TB_CHI",
+        "event_key": "NFL:2026_09_TB_CHI",
+        "created_at": (now - timedelta(minutes=2)).isoformat(),
+        "event_start_time_utc": (now + timedelta(hours=3)).isoformat(),
+        "model_timestamp": (now - timedelta(minutes=3)).isoformat(),
+        "home_team": "Chicago Bears",
+        "away_team": "Tampa Bay Buccaneers",
+        "selected_participant": "Chicago Bears",
+        "opponent": "Tampa Bay Buccaneers",
+        "model_family": "NFL_OUTRIGHT_WIN_LOGREG_V1",
+        "model_version": "NFL_TEST_ARTIFACT_V1",
+        "calibrated_selection_probability": 0.61,
+        "calibrated_selection_lower_bound": 0.54,
+        "calibrated_selection_upper_bound": 0.68,
+        "model_package_valid": True,
+        "provenance_complete": True,
+        "model_probability_publishable": True,
+        "blend_publishable": False,
+        "can_execute": False,
+    }
+    base.update(overrides)
+    return base
+
+
+class _DualLedgerDb:
+    def __init__(self, *, props=(), nfl=()):
+        self.props = list(props)
+        self.nfl = list(nfl)
+        self.called = []
+
+    def table(self, name):
+        self.called.append(name)
+        if name == "wow_predictions":
+            return _Query(self.props)
+        if name == "wow_nfl_event_predictions":
+            return _Query(self.nfl)
+        raise AssertionError(f"unexpected ledger: {name}")
+
+
+def test_nfl_event_uuid_lookup_returns_immutable_model_evidence_without_release():
+    db = _DualLedgerDb(nfl=[_nfl_event()])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [{
+        "row_key": "nfl-win", "prediction_id": NFL_EVENT_UUID,
+        "sport": "NFL", "market_family": "OUTRIGHT_WINNER",
+        "event_id": "2026_09_TB_CHI", "team": "Chicago Bears",
+        "opponent": "Tampa Bay Buccaneers",
+    }]})
+    out = lookup_prediction_receipts(db, batch)
+    assert out["rows_matched"] == 1 and out["reconciliation_pass"] is True
+    assert db.called == ["wow_nfl_event_predictions"]
+    match = out["rows"][0]["matches"][0]
+    assert match["governed_prediction_id"] == NFL_EVENT_UUID
+    assert match["governed_prediction_table"] == "wow_nfl_event_predictions"
+    assert match["is_immutable_pregame"] is True
+    assert match["calibrated_probability"] == 0.61
+    assert match["calibrated_lower_bound"] == 0.54
+    assert match["model_probability_publishable"] is True
+    assert match["blend_publishable"] is False
+    assert match["probability_publishable"] is False
+    assert match["terminal_label"] is None
+    assert out["can_execute"] is False
+
+
+def test_nfl_receipt_conflict_does_not_guess_event_or_side():
+    db = _DualLedgerDb(nfl=[_nfl_event()])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [{
+        "prediction_id": NFL_EVENT_UUID, "sport": "NFL",
+        "market_family": "OUTRIGHT_WINNER",
+        "event_id": "2026_09_GB_NE", "team": "Tampa Bay Buccaneers",
+        "direction": "MORE",
+    }]})
+    out = lookup_prediction_receipts(db, batch)
+    row = out["rows"][0]
+    assert row["status"] == "BLOCKED"
+    assert row["code"] == "PREDICTION_RECEIPT_IDENTITY_CONFLICT"
+    assert row["detail"]["conflicting_fields"] == ["event_id", "team", "direction"]
+    assert row["matches"] == []
+
+
+def test_nfl_receipt_requires_explicit_sport_and_exact_uuid():
+    db = _DualLedgerDb(nfl=[_nfl_event()])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [
+        {"sport": "NFL", "market_family": "OUTRIGHT_WINNER",
+         "event_id": "2026_09_TB_CHI"},
+        {"prediction_id": NFL_EVENT_UUID, "sport": "NBA",
+         "market_family": "OUTRIGHT_WINNER"},
+    ]})
+    out = lookup_prediction_receipts(db, batch)
+    assert out["rows_blocked"] == 2
+    assert out["rows"][0]["code"] == "PREDICTION_RECEIPT_LOOKUP_IDENTITY_INSUFFICIENT"
+    assert out["rows"][1]["code"] == "MODEL_ROUTE_UNSUPPORTED"
+    assert db.called == []
+
+
+def test_nfl_event_malformed_or_post_start_receipt_cannot_prove_pregame():
+    game = _nfl_event(model_timestamp="2026-11-03T00:00:00+00:00")
+    db = _DualLedgerDb(nfl=[game])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [{
+        "prediction_id": NFL_EVENT_UUID, "sport": "NFL",
+        "market_family": "OUTRIGHT_WINNER",
+    }]})
+    out = lookup_prediction_receipts(db, batch)
+    assert out["rows"][0]["status"] == "MATCHED"
+    assert out["rows"][0]["code"] == "PREDICTION_MATCHED_NOT_PROVEN_IMMUTABLE_PREGAME"
+    assert out["rows"][0]["matches"][0]["is_immutable_pregame"] is False
+    assert out["can_execute"] is False
+
+
+def test_nfl_event_uuid_missing_is_not_a_fake_prop_or_model_absence():
+    db = _DualLedgerDb(nfl=[])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [{
+        "prediction_id": NFL_EVENT_UUID, "sport": "NFL",
+        "market_family": "OUTRIGHT_WINNER",
+    }]})
+    out = lookup_prediction_receipts(db, batch)
+    assert out["rows_not_found"] == 1
+    assert out["rows"][0]["code"] == "IMMUTABLE_PREGAME_PREDICTION_NOT_FOUND"
+    assert db.called == ["wow_nfl_event_predictions"]
+
+
+def test_nfl_event_uuid_collision_is_not_silently_deduplicated():
+    db = _DualLedgerDb(nfl=[_nfl_event(), _nfl_event()])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [{
+        "prediction_id": NFL_EVENT_UUID, "sport": "NFL",
+        "market_family": "OUTRIGHT_WINNER",
+    }]})
+    out = lookup_prediction_receipts(db, batch)
+    assert out["rows_ambiguous"] == 1
+    assert out["rows"][0]["matches"][0]["governed_prediction_table"] == "wow_nfl_event_predictions"
+
+
+def test_existing_nfl_player_prop_receipt_stays_in_prop_ledger():
+    prop = _prediction(sport="NFL")
+    db = _DualLedgerDb(props=[prop], nfl=[_nfl_event()])
+    batch = PredictionReceiptLookupBatch.model_validate({"rows": [{
+        "prediction_id": "11111111-1111-1111-1111-111111111111", "sport": "NFL",
+    }]})
+    out = lookup_prediction_receipts(db, batch)
+    assert out["rows_matched"] == 1
+    assert db.called == ["wow_predictions"]
+    assert out["rows"][0]["matches"][0]["governed_prediction_table"] == "wow_predictions"
