@@ -77,8 +77,17 @@ def _guard(ruleset: dict[str, Any]) -> None:
         if types.count(protective) != 1:
             raise MigrationBlocked("PROTECTIVE_RULE_MISSING:" + protective)
     pr = next(rule for rule in ruleset["rules"] if rule["type"] == "pull_request")
-    if not isinstance(pr.get("parameters"), dict):
+    params = pr.get("parameters")
+    if not isinstance(params, dict):
         raise MigrationBlocked("PULL_REQUEST_RULE_INVALID")
+    # The reviewed source state currently contains these settings. The
+    # migration is restricted to two named status checks, not PR protection.
+    if (
+        params.get("dismiss_stale_reviews_on_push") is not True
+        or params.get("required_approving_review_count") != 0
+        or params.get("allowed_merge_methods") != ["merge", "squash", "rebase"]
+    ):
+        raise MigrationBlocked("PULL_REQUEST_PROTECTION_DRIFT")
 
 
 def plan_migration(ruleset: dict[str, Any]) -> dict[str, Any]:
@@ -106,10 +115,21 @@ def plan_migration(ruleset: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def verify_target(ruleset: dict[str, Any]) -> None:
+def verify_target(
+    ruleset: dict[str, Any], *, approved_payload: dict[str, Any] | None = None,
+) -> None:
     _guard(ruleset)
     if _contexts(ruleset) != TO_KEEP:
         raise MigrationBlocked("FIVE_CHECK_TARGET_NOT_ACTIVE")
+    if approved_payload is not None:
+        # Compare every applied protection, not just the names of five checks.
+        # GitHub adds read-only metadata, so compare only PUT payload fields.
+        keys = ("name", "target", "enforcement", "conditions", "rules", "bypass_actors")
+        if (
+            not isinstance(approved_payload, dict)
+            or any(ruleset.get(k) != approved_payload.get(k) for k in keys)
+        ):
+            raise MigrationBlocked("APPROVED_RULESET_PAYLOAD_DRIFT")
 
 
 def main() -> int:
@@ -117,6 +137,7 @@ def main() -> int:
     parser.add_argument("--source", help="Previously read live ruleset JSON; otherwise use gh api GET")
     parser.add_argument("--output", help="Destination for proposed GitHub PUT payload")
     parser.add_argument("--verify-target", action="store_true", help="Read-only verification after authorized update")
+    parser.add_argument("--approved-payload", help="Previously reviewed exact migration PUT JSON")
     args = parser.parse_args()
     if args.source:
         ruleset = json.loads(Path(args.source).read_text(encoding="utf-8"))
@@ -127,8 +148,11 @@ def main() -> int:
         )
         ruleset = json.loads(result.stdout)
     if args.verify_target:
-        verify_target(ruleset)
-        print("FIVE_CHECK_TARGET_VERIFIED")
+        if not args.approved_payload:
+            raise MigrationBlocked("APPROVED_RULESET_PAYLOAD_REQUIRED")
+        approved = json.loads(Path(args.approved_payload).read_text(encoding="utf-8"))
+        verify_target(ruleset, approved_payload=approved)
+        print("FIVE_CHECK_TARGET_VERIFIED_WITH_EXACT_PROTECTION_COMPARISON")
         return 0
     payload = plan_migration(ruleset)
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
