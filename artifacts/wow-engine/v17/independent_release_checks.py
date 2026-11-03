@@ -37,6 +37,9 @@ assert _source_review_spec and _source_review_spec.loader
 _source_review_spec.loader.exec_module(_source_review_module)
 
 GITHUB_ACTIONS_APP_ID = 15368  # only source trusted for workflow evidence checks
+SECURITY_REVIEW_APP_ID = 5245832  # independent QA App, not GitHub Actions
+SECURITY_REVIEW_CHECK = "WOW Independent Security Review"
+SECURITY_REJECT_TITLE = "REJECT — independent semantic source review"
 CHANGE_IMPACT_CHECK = "WOW V17 change impact gate"
 TRUSTED_GOVERNANCE_CHECK = "Trusted exact-head engineering governance"
 QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
@@ -278,6 +281,11 @@ def gather(
     ev["check_runs"] = [{"id": r.get("id"), "name": r.get("name"), "head_sha": r.get("head_sha"),
                          "status": r.get("status"), "conclusion": r.get("conclusion"),
                          "app_id": (r.get("app") or {}).get("id"),
+                         "semantic_reject": (r.get("name") == SECURITY_REVIEW_CHECK
+                             and r.get("status") == "completed"
+                             and str((r.get("app") or {}).get("id")) == str(SECURITY_REVIEW_APP_ID)
+                             and isinstance(r.get("output"), dict)
+                             and r["output"].get("title") == SECURITY_REJECT_TITLE),
                          "completed_at": r.get("completed_at"),
                          "created_at": r.get("created_at"), "started_at": r.get("started_at")}
                         for r in runs]
@@ -505,6 +513,32 @@ def _latest(runs: list[dict], name: str, head: str, app_id: int | str) -> dict |
     return max(matches, key=lambda r: (str(r.get("completed_at") or ""), int(r.get("id") or 0)), default=None)
 
 
+def _has_signed_semantic_reject(ev: dict) -> bool:
+    """Sticky veto for authenticated exact-head QA-App REJECT, including zero-credit.
+
+    All input check rows originate in the bounded GitHub REST inventory. A
+    check title alone cannot authorize any release, and a foreign App or stale
+    head cannot assert a source-review veto.
+    """
+    head = ev.get("expected_head_sha")
+    pr = ev.get("pr") or {}
+    if (not isinstance(head, str) or not SHA_RE.fullmatch(head)
+            or pr.get("head_sha") != head):
+        return False
+    runs = ev.get("check_runs")
+    if not isinstance(runs, list):
+        return False
+    return any(
+        isinstance(check, dict)
+        and check.get("name") == SECURITY_REVIEW_CHECK
+        and check.get("head_sha") == head
+        and str(check.get("app_id")) == str(SECURITY_REVIEW_APP_ID)
+        and check.get("status") == "completed"
+        and check.get("semantic_reject") is True
+        for check in runs
+    )
+
+
 def pending_required_regressions(ev: dict) -> list[str]:
     """Return required checks proven active by official exact-head check or workflow evidence."""
     pr = ev.get("pr") or {}
@@ -617,6 +651,8 @@ def _owner_approved_at_head(ev: dict, head: str) -> bool:
 
 def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> list[str]:
     findings = [f"QA_EVIDENCE_INCOMPLETE:{e}" for e in ev.get("evidence_errors") or []]
+    if _has_signed_semantic_reject(ev):
+        findings.append("QA_PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
     if governance_files is None:
         governance_files = frozenset(governance_trust_roots(REPO_ROOT))
     pr = ev.get("pr") or {}
@@ -859,7 +895,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "classify-release-readiness":
         ev = json.loads(Path(args.evidence).read_text())
-        pending = pending_required_regressions(ev)
+        # A signed exact-head semantic REJECT must be published by decide-qa,
+        # not deferred behind an empty-job regression startup window.
+        pending = [] if _has_signed_semantic_reject(ev) else pending_required_regressions(ev)
         print(json.dumps({
             "disposition": "pending" if pending else "ready",
             "pending_checks": pending,
