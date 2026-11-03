@@ -127,6 +127,7 @@ class GitHubTransport:
             return "PROVIDER_STATUS_UNVERIFIED"
         run = runs[0]
         if (run.get("head_branch") != "main" or run.get("status") != "completed"
+                or run.get("conclusion") != "success"
                 or run.get("path") != f".github/workflows/{PROVIDER_WORKFLOW}"
                 or type(run.get("id")) is not int or run["id"] <= 0
                 or not re.fullmatch(r"[0-9a-f]{40}", str(run.get("head_sha", "")))):
@@ -250,6 +251,17 @@ class GitHubTransport:
                             and fin["head_sha"] == pre_main_sha
                             and post_main_sha == pre_main_sha
                         )
+        if route_provider == "gemini":
+            if route_revoked:
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            # The successful automatic provider dispatcher already submitted
+            # its Gemini child. It is NOT authorization for a second
+            # force_provider=auto POST: that would re-run the 24h cooldown and
+            # potentially dispatch another provider or charge an attempt.
+            # Record the existing submission without a new resident launch.
+            if decision == "PROVIDER_ADMITTED":
+                return "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+            return decision
         if latest_success and not route_revoked:
             return "PROVIDER_ADMITTED"
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:
@@ -352,7 +364,7 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
     """Fail closed on each exact GitHub engineering-workflow active inventory.
 
     Repository-wide counts can race unrelated CI execution; query only the
-    three already-registered writers. Positive evidence is always BUSY,
+    registered workers and dispatcher. Positive evidence is always BUSY,
     including transient total_count/row skew. Malformed or overfull inventory
     still blocks instead of granting another source writer.
     """
@@ -533,9 +545,12 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
     if not isinstance(provider_state, str) or provider_state not in {
         "PROVIDER_ADMITTED", "PROVIDER_QUOTA_BLOCKED", "PROVIDER_THROTTLED",
         "PROVIDER_RECOVERY_UNVERIFIED",
+        "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED",
     }:
         return "PROVIDER_STATUS_UNVERIFIED"
     if provider_state != "PROVIDER_ADMITTED":
+        # Automatic Gemini routes already launched their own protected child;
+        # never submit a second auto dispatcher or increment an attempt here.
         return provider_state
     # An incident already at PR/review or retry cap must not starve every
     # other approved incident. Keep one shared writer and do not duplicate PRs.
