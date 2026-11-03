@@ -92,8 +92,13 @@ def _scoreboard_date_key(value: str | None) -> str:
 
 def _date_keys(params: dict[str, Any] | None) -> list[str]:
     params = params or {}
-    start = _scoreboard_date_key(str(params.get("commenceTimeFrom") or ""))
-    end = _scoreboard_date_key(str(params.get("commenceTimeTo") or ""))
+    start_value = str(params.get("commenceTimeFrom") or "")
+    end_value = str(params.get("commenceTimeTo") or "")
+    # Keep every original UTC date partition; add the Eastern previous-day
+    # partition when the query crosses midnight UTC before midnight Eastern.
+    # This prevents regressions in multi-day acquisition and date-only lookups.
+    start = min(_date_key(start_value), _scoreboard_date_key(start_value))
+    end = max(_date_key(end_value), _scoreboard_date_key(end_value))
     start_date = datetime.strptime(start, "%Y%m%d").date()
     end_date = datetime.strptime(end, "%Y%m%d").date()
     if end_date < start_date:
