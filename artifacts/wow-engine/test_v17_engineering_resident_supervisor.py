@@ -527,6 +527,21 @@ def test_concurrently_active_engineering_workflows_block_dispatch():
     assert client.sent == []
 
 
+def test_active_gemini_worker_holds_resident_dispatch_to_preserve_single_writer():
+    class GeminiBusy(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?status=in_progress&per_page=100":
+                return {"total_count": 1, "workflow_runs": [
+                    {"name": "wow-v17-gemini-engineering-worker"},
+                ]}
+            return super().get(suffix)
+
+    client = GeminiBusy()
+    assert active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert client.sent == []
+
+
 def test_empty_queue_never_dispatches():
     client = FakeClient(issue_open=False)
     assert dispatch_once(client, FakeRedis(), MANIFEST) == "NO_APPROVED_OPEN_ENGINEERING_TASK"
