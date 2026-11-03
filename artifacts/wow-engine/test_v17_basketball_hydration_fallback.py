@@ -744,7 +744,7 @@ def test_entitled_espn_nba_fallback_uses_calendar_year_but_blocks_write(monkeypa
         )
         raise AssertionError("NBA scoreboard history must fail without approved crosswalk")
     except hydration.BasketballHydrationError as exc:
-        assert str(exc) == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+        assert str(exc) == "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:SPORTSDATAVERSE_ESPN_HTTP_404"
     # A public scoreboard entitlement is not a canonical fitted-team crosswalk.
     assert requested == []
     assert stored == []
