@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 import pytest
 from kalshi_weather_v2.free_forecast_acquisition import acquire_hourly_forecasts
 from kalshi_weather_v2.http_client import HttpAcquisitionError
@@ -10,7 +11,7 @@ def getter(calls, fail_secondary=False):
         calls.append(url)
         if '/points/' in url:
             return {'properties': {'forecastHourly': 'https://api.weather.gov/gridpoints/OKX/33,37/forecast/hourly'}}
-        if 'api.weather.gov' in url:
+        if urlsplit(url).hostname == 'api.weather.gov':
             return {'properties': {'generatedAt': '2026-09-10T15:55:00Z', 'periods': [{'startTime': '2026-09-10T17:00:00Z', 'temperature': 82, 'temperatureUnit': 'F'}]}}
         if fail_secondary:
             raise HttpAcquisitionError('HTTP_RETRY_EXHAUSTED', url, 'http_status=429')
