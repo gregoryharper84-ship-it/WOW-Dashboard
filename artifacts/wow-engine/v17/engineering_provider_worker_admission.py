@@ -10,6 +10,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 from typing import Any, Callable
 
@@ -26,10 +27,55 @@ WORKFLOWS = {
                   "WOW V17 Claude fallback engineering team"),
 }
 AGENT_STEP = "Engineering Lead agent"
+# Native Actions outcomes must agree with dispatcher admission.
+DELIVERY_ONLY_STEPS = (
+    ("Verify Anthropic authentication", "success"),
+    ("Engineering Lead agent", "success"),
+    ("Research / Root-Cause Triage agent", "success"),
+    ("Normalize Triage packet", "success"),
+    ("Specialist diagnostic subagent", "success"),
+    ("Normalize specialist packet", "success"),
+    ("Implementation agent", "skipped"),
+    ("Enforce mutation safety gate", "skipped"),
+    ("Enforce actionable repair delivery", "failure"),
+)
+
+
+def _verified_different_incident_delivery(job: dict[str, Any], log: str,
+                                          target_incident: str) -> bool:
+    if not isinstance(target_incident, str) or not re.fullmatch(r"[1-9][0-9]*", target_incident):
+        return False
+    if job.get("conclusion") != "failure":
+        return False
+    steps = job.get("steps")
+    if not isinstance(steps, list) or any(not isinstance(s, dict) for s in steps):
+        return False
+    if [s.get("name") for s in steps if s.get("conclusion") == "failure"] != [
+        "Enforce actionable repair delivery"
+    ]:
+        return False
+    if any(
+        len([s for s in steps if s.get("name") == name and s.get("status") == "completed"
+             and s.get("conclusion") == conclusion]) != 1
+        for name, conclusion in DELIVERY_ONLY_STEPS
+    ):
+        return False
+    finding = classify_provider_failure("anthropic", log)
+    if (finding.code != "ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE"
+            or finding.provider_signal is not None
+            or finding.disposition != "UNRESOLVED_TYPED_FAILURE"):
+        return False
+    # GitHub-emitted error only; echoed workflow source is not proof.
+    originals = re.findall(
+        r"##\[error\]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE:\s*incident=([1-9][0-9]*);",
+        log,
+    )
+    return len(originals) == 1 and originals[0] != target_incident
 
 
 def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
-              *, run_attempt: int = 1, now: dt.datetime | None = None) -> dict[str, Any]:
+              *, run_attempt: int = 1, now: dt.datetime | None = None,
+              target_incident: str = "") -> dict[str, Any]:
     def held(code: str) -> dict[str, Any]:
         return {"status": "HELD", "code": code, "can_execute": False,
                 "terminal_authority": "V17_TERMINAL_REDUCER"}
@@ -38,6 +84,8 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
             or type(run_attempt) is not int or not 1 <= run_attempt <= 10):
         return held("PROVIDER_WORKER_IDENTITY_INVALID")
     workflow, job_name = WORKFLOWS[provider]
+    if target_incident and not re.fullmatch(r"[1-9][0-9]*", target_incident):
+        return held("PROVIDER_WORKER_TARGET_INVALID")
     clock = now or dt.datetime.now(dt.timezone.utc)
     if clock.tzinfo is None:
         return held("PROVIDER_WORKER_CLOCK_INVALID")
@@ -74,7 +122,11 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
             if is_self:
                 current_seen = True
                 if (run.get("status") not in ("queued", "pending", "in_progress")
-                        or run.get("run_attempt") != run_attempt):
+                        or run.get("run_attempt") != run_attempt
+                        or (provider == "anthropic" and target_incident and not re.search(
+                            rf"\bincident={re.escape(target_incident)}(?:\s|$)",
+                            str(run.get("display_title", ""))
+                        ))):
                     return held("PROVIDER_WORKER_SELF_INVALID")
             elif run.get("status") != "completed":
                 return held("PROVIDER_WORKER_OTHER_INFLIGHT")
@@ -144,8 +196,19 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                         return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
                     return {"status": "ADMITTED", "code": "PROVIDER_COOLDOWN_EXPIRED_PROBE",
                             "can_execute": False}
-                # Unclassified, policy and code faults need a typed repair,
-                # not an automatic provider retry.
+                # A task-only refusal for a *different* incident is not
+                # evidence that the provider failed or exhausted its credits.
+                if (provider == "anthropic" and current_seen
+                        and run.get("conclusion") == "failure"
+                        and run.get("head_branch") == "main"
+                        and run.get("event") == "workflow_dispatch"
+                        and run.get("path") == f".github/workflows/{workflow}"
+                        and _verified_different_incident_delivery(
+                            job, logs, target_incident)):
+                    return {"status": "ADMITTED",
+                            "code": "PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT",
+                            "can_execute": False}
+                # All other policy, code and unclassified failures remain held.
                 return held("PROVIDER_WORKER_FAILED_REVIEW_REQUIRED:"+finding.code)
         count += len(entries)
         if count == total:
@@ -159,6 +222,7 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", choices=sorted(WORKFLOWS), required=True)
+    parser.add_argument("--target-incident", default="")
     args = parser.parse_args()
     if os.getenv("GITHUB_REPOSITORY") != REPO or os.getenv("GITHUB_REF") != "refs/heads/main":
         print(json.dumps({"status": "HELD", "code": "PROVIDER_WORKER_REF_INVALID",
@@ -179,7 +243,8 @@ def main() -> int:
             raise ValueError("PROVIDER_WORKER_API_UNVERIFIED")
         return completed.stdout
 
-    result = admission(args.provider, int(rid), read, run_attempt=int(attempt))
+    result = admission(args.provider, int(rid), read,
+                       run_attempt=int(attempt), target_incident=args.target_incident)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] == "ADMITTED" else 1
 
