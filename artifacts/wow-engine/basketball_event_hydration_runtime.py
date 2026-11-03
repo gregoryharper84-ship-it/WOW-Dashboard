@@ -583,6 +583,22 @@ def hydrate(
                         + ",".join(entitlement.blockers)
                     )
                 else:
+                    # A recent ESPN supplement covers at most 14 complete
+                    # Eastern calendar days. A June corpus cannot safely jump
+                    # straight to yesterday's games in October: doing so would
+                    # move the monotonic date fence past an unacquired gap.
+                    last_completed_et = (
+                        clock.astimezone(ZoneInfo("America/New_York")).date()
+                        - timedelta(days=1)
+                    )
+                    first_covered_et = last_completed_et - timedelta(days=13)
+                    if latest_before < first_covered_et - timedelta(days=1):
+                        recent_supplement[year] = (
+                            "SOURCE_BLOCKED:ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+                        )
+                        # Leave the licensed settled corpus unchanged; a
+                        # trusted full-season backfill must bridge this gap.
+                        continue
                     try:
                         recent = fetch_recent_espn_settlements(sport, now=clock)
                         supplemental_rows = [
