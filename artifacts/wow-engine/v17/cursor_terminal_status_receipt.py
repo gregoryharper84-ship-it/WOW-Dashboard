@@ -32,6 +32,19 @@ PROTECTED_BRANCHES = frozenset({"main", "master"})
 # finite: no reservation created on or after this instant can use it, and the
 # legacy branch in _verified_reservation is the only code that reads it.
 BRANCH_REQUIREMENT_EFFECTIVE_UTC = "2026-11-01T01:44:02Z"
+
+# Single immutable post-cutoff reservation emitted by the old producer without
+# a branch (issue #1138, comment 6553867635). Never widen the time window:
+# reauthenticate its exact body, bot author, dispatcher run and PR identity.
+# This ONLY admits the normal read-only terminal/nonexistence probe; it does not
+# authorize release or bypass the shared writer mutex.
+EXACT_BRANCHLESS_RECONCILIATION = {
+    "comment_id": 6553867635,
+    "body_sha256": "e5ee1bfd536f4ee7d25747ee10b14d0eb819d4dc11e569752425843cb015af62",
+    "created_at": "2026-11-01T05:21:32Z",
+    "dispatcher_run_id": 41276607293,
+    "dispatcher_created_at": "2026-11-01T05:21:01Z",
+}
 MAX_NEGATIVE_INVENTORY_PAGES = 20
 INVENTORY_PAGE_SIZE = 100
 NEXT_CURSOR_RE = re.compile(r"^[A-Za-z0-9_.:=-]{1,256}$")
@@ -171,6 +184,16 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     status = entry.get("status")
     branch = entry.get("branch")
     legacy_branchless = False
+    # A late post-cutoff omission can only be assessed if it is the ONE
+    # independently identified immutable GitHub Actions reservation.
+    exception = EXACT_BRANCHLESS_RECONCILIATION
+    exact_late_record = (
+        comment_id == exception["comment_id"]
+        and comment.get("created_at") == exception["created_at"]
+        and comment.get("updated_at") == exception["created_at"]
+        and hashlib.sha256(body.encode("utf-8")).hexdigest()
+        == exception["body_sha256"]
+    )
     if status == "CURSOR_LAUNCH_RESERVED":
         if run_id is not None:
             raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
@@ -187,7 +210,8 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             updated = _utc(comment.get("updated_at"))
             if created is None or updated is None:
                 raise ReceiptBlocked("CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED")
-            if updated != created or created >= BRANCH_REQUIREMENT_EFFECTIVE:
+            if updated != created or (created >= BRANCH_REQUIREMENT_EFFECTIVE
+                                      and not exact_late_record):
                 raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
             legacy_branchless = True
         elif (not isinstance(branch, str) or not branch.strip()
@@ -245,7 +269,11 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         run_created = _utc(origin.get("created_at"))
         if run_created is None:
             raise ReceiptBlocked("CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED")
-        if run_created >= BRANCH_REQUIREMENT_EFFECTIVE:
+        if run_created >= BRANCH_REQUIREMENT_EFFECTIVE and not (
+            exact_late_record
+            and origin.get("id") == exception["dispatcher_run_id"]
+            and origin.get("created_at") == exception["dispatcher_created_at"]
+        ):
             raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     return {
         "reservation_comment_id": comment_id,
