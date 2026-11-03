@@ -73,6 +73,9 @@ end;
 $$;
 
 revoke all on function public.wow_canonical_json_text(jsonb) from public, anon, authenticated;
+-- The digest trigger executes as the inserting/updating role. Authorize the
+-- trusted internal writer to compute canonical hashes, not public clients.
+grant execute on function public.wow_canonical_json_text(jsonb) to service_role;
 
 -- Fail closed on any client-supplied digest that does not describe the payload.
 create or replace function public.wow_basketball_calibrator_artifact_digest()
