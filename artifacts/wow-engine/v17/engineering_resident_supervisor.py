@@ -127,7 +127,7 @@ class GitHubTransport:
             return "PROVIDER_STATUS_UNVERIFIED"
         run = runs[0]
         if (run.get("head_branch") != "main" or run.get("status") != "completed"
-                or run.get("conclusion") != "success"
+                or run.get("conclusion") not in {"success", "failure"}
                 or run.get("path") != f".github/workflows/{PROVIDER_WORKFLOW}"
                 or type(run.get("id")) is not int or run["id"] <= 0
                 or not re.fullmatch(r"[0-9a-f]{40}", str(run.get("head_sha", "")))):
@@ -142,6 +142,17 @@ class GitHubTransport:
         if len(selected) != 1 or type(selected[0].get("id")) is not int:
             return "PROVIDER_STATUS_UNVERIFIED"
         route = self.provider_receipt(selected[0]["id"])
+        if run["conclusion"] == "failure":
+            # Failed dispatcher receipts cannot authorize a provider attempt.
+            # Only a verifiable, fully released Cursor writer can recover.
+            if (not isinstance(route, dict)
+                    or route.get("can_execute") is not False
+                    or route.get("terminal_authority") != "V17_TERMINAL_REDUCER"
+                    or route.get("action") not in {"SURVIVAL", "DISPATCH"}
+                    or (route.get("provider") != "cursor"
+                        and route.get("reason") != "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            return self._verified_failed_dispatcher_writer_release(run)
         now = datetime.now(timezone.utc)
         decision = resident_provider_admission(route, updated_at=run.get("updated_at"), now=now)
         if decision == "PROVIDER_STATUS_UNVERIFIED":
@@ -303,6 +314,51 @@ class GitHubTransport:
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:
             return "PROVIDER_RECOVERY_UNVERIFIED"
         return decision
+
+
+    def _verified_failed_dispatcher_writer_release(self, run: dict[str, Any]) -> str:
+        """Recover a failed Cursor launch only after a trusted writer release.
+
+        A failed dispatcher route is never proof of Gemini submission, a fresh
+        provider, or a new paid attempt.
+        """
+        now = datetime.now(timezone.utc)
+        try:
+            pre_main = self.get("commits/main")
+            main_sha = pre_main.get("sha") if isinstance(pre_main, dict) else None
+            if main_sha != run["head_sha"]:
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            try:
+                cleared = self.remote_writer_clear()
+            except Exception:
+                cleared = False
+            if not cleared:
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            result = self.get(
+                f"actions/workflows/{FINALIZE_WORKFLOW}/runs?branch=main&status=completed&per_page=1"
+            )
+            finalizers = result.get("workflow_runs") if isinstance(result, dict) else None
+            if not isinstance(finalizers, list) or not finalizers:
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            fin = finalizers[0]
+            if (fin.get("path") != f".github/workflows/{FINALIZE_WORKFLOW}"
+                    or fin.get("head_branch") != "main"
+                    or fin.get("status") != "completed"
+                    or fin.get("conclusion") != "success"
+                    or type(fin.get("id")) is not int or fin["id"] <= 0
+                    or fin.get("head_sha") != main_sha):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            final_at = datetime.fromisoformat(fin["updated_at"].replace("Z", "+00:00"))
+            dispatcher_at = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
+            if (final_at.tzinfo is None or dispatcher_at.tzinfo is None
+                    or not dispatcher_at <= final_at <= now):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            post_main = self.get("commits/main")
+            if not isinstance(post_main, dict) or post_main.get("sha") != main_sha:
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            return "PROVIDER_ADMITTED"
+        except (ValueError, TypeError, AttributeError, KeyError, OSError):
+            return "PROVIDER_STATUS_UNVERIFIED"
 
     def provider_receipt(self, artifact_id: int) -> dict[str, Any]:
         class NoRedirect(urllib.request.HTTPRedirectHandler):
