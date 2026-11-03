@@ -1,11 +1,10 @@
 name: wow-v17-lean-production-readback
 
-# Zero semantic-review credits. GET-only postdeploy observation; SIRT acceptance is separate.
+# Zero semantic-review credits. This GET-only scheduled observation is
+# deliberately not a check on the commit used by Render checksPass deploys.
 on:
-  workflow_run:
-    workflows: [wow-verify]
-    types: [completed]
-    branches: [main]
+  schedule:
+    - cron: "11 * * * *"
   workflow_dispatch:
     inputs:
       expected_sha:
@@ -18,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wow-v17-lean-readback-${{ github.event.workflow_run.head_sha || inputs.expected_sha || github.run_id }}
+  group: wow-v17-lean-readback-${{ inputs.expected_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -26,18 +25,18 @@ jobs:
     name: Read-only web/worker Render CI-gated SHA observation (SIRT pending)
     if: >-
       github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
+       github.event_name == 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 8
     environment: wow-release
     env:
       GH_TOKEN: ${{ github.token }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      EXPECTED_SHA: ${{ inputs.expected_sha || github.event.workflow_run.head_sha }}
+      EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
       SOURCE_EVENT: ${{ github.event_name }}
-      SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+      SOURCE_RUN_ID: ""
       READBACK_RECEIPT: "wow-v17-lean-production-readback.json"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
@@ -56,8 +55,8 @@ jobs:
 
       - name: Observe main CI, current SHA, web/worker Render LIVE and health
         id: readback
-        # Render checksPass must not wait on a postdeploy observer that itself
-        # waits for Render; a typed HOLD receipt is not a failing source CI.
+        # Observe after checksPass build opportunities, never poll in a
+        # required check or hold up an active Render deployment.
         continue-on-error: true
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
