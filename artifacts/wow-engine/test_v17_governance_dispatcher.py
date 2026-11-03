@@ -1691,6 +1691,40 @@ def test_v3_owner_authorship_routes_review_without_fabricating_approval():
     assert result['role'] == 'source_review'
 
 
+def test_v3_zero_credit_owner_signed_semantic_reject_is_permanent_veto():
+    pull = make_pull(author_id=OWNER_ID, author=OWNER)
+    pull["user"]["type"] = "User"
+    reject = make_check("WOW Independent Security Review",
+                        app_id=policy.QA_APP_ID, conclusion="failure", id=40)
+    reject["output"] = {"title": "REJECT — independent semantic source review"}
+    result = classify(pull=pull,
+                      file_records=[make_file(".github/workflows/new.yml")],
+                      check_runs=all_ci_checks() + [reject],
+                      source_review="PENDING", zero_credit_mode=True)
+    assert result["action"] == "HOLD"
+    assert result["findings"] == ["SOURCE_REVIEW_REJECT"]
+
+
+@pytest.mark.parametrize("variant", ("foreign_app", "stale_head", "hold_not_reject"))
+def test_v3_zero_credit_cannot_be_vetoed_by_unsigned_or_other_head_review(variant):
+    pull = make_pull(author_id=OWNER_ID, author=OWNER)
+    pull["user"]["type"] = "User"
+    reject = make_check("WOW Independent Security Review",
+                        app_id=policy.QA_APP_ID, conclusion="failure", id=40)
+    reject["output"] = {"title": "REJECT — independent semantic source review"}
+    if variant == "foreign_app":
+        reject["app"]["id"] = policy.QA_APP_ID + 1
+    elif variant == "stale_head":
+        reject["head_sha"] = OTHER_HEAD
+    else:
+        reject["output"]["title"] = "HOLD — independent semantic source review"
+    result = classify(pull=pull,
+                      file_records=[make_file(".github/workflows/new.yml")],
+                      check_runs=all_ci_checks() + [reject],
+                      source_review="PENDING", zero_credit_mode=True)
+    assert "SOURCE_REVIEW_REJECT" not in result.get("findings", [])
+
+
 def test_v3_owner_authorship_does_not_bypass_source_review_reject():
     pull=make_pull(author_id=OWNER_ID,author=OWNER)
     pull['user']['type']='User'
