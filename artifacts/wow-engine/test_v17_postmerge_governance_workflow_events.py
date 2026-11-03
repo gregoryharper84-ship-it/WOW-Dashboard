@@ -96,7 +96,11 @@ def test_v4_release_has_five_pinned_checks_and_no_retired_consumer():
 
 def test_main_readback_is_nonblocking_and_not_a_replacement_sirt_certificate():
     source = READBACK.read_text(encoding="utf-8")
-    assert "workflows: [wow-verify]" in source
+    # Observe after Render's checksPass build, not when the CI that starts
+    # that build finishes. The observer cannot hold up a required CI gate.
+    assert 'cron: "11 * * * *"' in source
+    assert "workflow_run:" not in source
+    assert "workflow_dispatch:" in source
     assert "continue-on-error: true" in source
     assert "Read-only web/worker Render CI-gated SHA observation" in source
     assert "PENDING_SIRT_INDEPENDENT_ACCEPTANCE" in (
