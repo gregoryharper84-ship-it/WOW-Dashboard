@@ -4,7 +4,7 @@ These are predictive feeds, never settlement authority. Missing secondary
 guidance remains missing: the fusion layer keeps evidence incomplete.
 """
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 from urllib.parse import urlsplit
 
 from .http_client import HttpAcquisitionError
@@ -19,6 +19,13 @@ class HourlyForecastSources:
     warnings: tuple[str, ...]
 
 
+class ForecastAcquisitionError(ValueError):
+    def __init__(self, code: str, blockers: tuple[str, ...]):
+        self.code = code
+        self.blockers = blockers
+        super().__init__(f"{code}: {', '.join(blockers)}")
+
+
 def acquire_hourly_forecasts(
     get_json: JsonGetter, *, latitude: float, longitude: float,
     target_date: str, models: Sequence[str], retrieved_at: str,
@@ -28,13 +35,13 @@ def acquire_hourly_forecasts(
     adapter = NwsAdapter(get_json)
     point = adapter.point_metadata(latitude, longitude, retrieved_at=retrieved_at)
     props = point.payload.get('properties')
-    url = str(props.get('forecastHourly') or '') if isinstance(props, dict) else ''
+    url = str(props.get('forecastHourly') or '') if isinstance(props, Mapping) else ''
     parsed = urlsplit(url)
     if (parsed.scheme != 'https' or parsed.netloc != 'api.weather.gov'
             or not parsed.path.startswith('/gridpoints/')
             or not parsed.path.endswith('/forecast/hourly')
             or parsed.query or parsed.fragment):
-        raise ValueError('NWS_FORECAST_URL_INVALID')
+        raise ForecastAcquisitionError('NWS_POINT_METADATA_INVALID', ('NWS_FORECAST_URL_INVALID',))
     nws = adapter.hourly_forecast(url, retrieved_at=retrieved_at)
     if not secondary_enabled:
         return HourlyForecastSources(point, nws, None, ('SECONDARY_FORECAST_DISABLED',))

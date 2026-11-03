@@ -55,12 +55,27 @@ def test_untrusted_forecast_url_is_rejected_before_fetch():
     def get(url, headers=None):
         calls.append(url)
         return {'properties':{'forecastHourly':'https://api.weather.gov.evil.test/forecast'}}
-    with pytest.raises(ValueError, match='NWS_FORECAST_URL_INVALID'):
+    with pytest.raises(ValueError, match='NWS_FORECAST_URL_INVALID') as caught:
         acquire(get)
     assert len(calls)==1
+    assert caught.value.code == 'NWS_POINT_METADATA_INVALID'
+    assert caught.value.blockers == ('NWS_FORECAST_URL_INVALID',)
+
+def test_official_forecast_cannot_redirect_to_another_host():
+    import httpx
+    from kalshi_weather_v2.http_client import ReadOnlyJsonClient
+    seen=[]
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={'Location':'https://untrusted.invalid/private'})
+    client=ReadOnlyJsonClient(client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True))
+    with pytest.raises(HttpAcquisitionError):
+        client.get_json('https://api.weather.gov/points/40.7,-74')
+    assert seen==['https://api.weather.gov/points/40.7,-74']
 
 @pytest.mark.parametrize('secondary_enabled', [False, True])
-def test_runtime_persists_primary_only_capture_without_publication(monkeypatch, secondary_enabled):
+@pytest.mark.parametrize('secondary_shape', ['429', 'empty', 'wrong_hour', 'wrong_units'])
+def test_runtime_persists_primary_only_capture_without_publication(monkeypatch, secondary_enabled, secondary_shape):
     import kalshi_weather_v2.runtime as runtime
     saved = {'sources': [], 'predictions': []}
     class Persistence:
@@ -78,11 +93,19 @@ def test_runtime_persists_primary_only_capture_without_publication(monkeypatch, 
     rules=SimpleNamespace(market_rules=SimpleNamespace(ticker='KXTEMPNYCHS-TEST', rule_snapshot_id='rule-1'), settlement_source=SimpleNamespace(url='https://example.invalid/settlement'))
     parsed=SimpleNamespace(ticker='KXTEMPNYCHS-TEST', index_city='nyc', rule_snapshot_id='rule-1', observation_time_utc='2026-09-10T17:00:00Z', to_contract_snapshot=lambda _: contract())
     calls=[]
-    result=runtime.capture_hourly_shadow(client=object(), ticker='KXTEMPNYCHS-TEST', index_city='nyc', expected_location='New York City', forecast_latitude=40.7, forecast_longitude=-74, decision_time='2026-09-10T16:10:00Z', preacquired_rules=rules, preparsed_rule=parsed, http=SimpleNamespace(get_json=getter(calls, True)))
+    base_get=getter(calls, secondary_shape=='429')
+    def get(url, headers=None):
+        payload=base_get(url, headers)
+        if urlsplit(url).hostname=='api.open-meteo.com':
+            if secondary_shape=='empty': payload['hourly']['time']=[]
+            if secondary_shape=='wrong_hour': payload['hourly']['time']=['2026-09-10T18:00']
+            if secondary_shape=='wrong_units': payload['hourly_units']['temperature_2m_gfs_seamless']='°C'
+        return payload
+    result=runtime.capture_hourly_shadow(client=object(), ticker='KXTEMPNYCHS-TEST', index_city='nyc', expected_location='New York City', forecast_latitude=40.7, forecast_longitude=-74, decision_time='2026-09-10T16:10:00Z', preacquired_rules=rules, preparsed_rule=parsed, http=SimpleNamespace(get_json=get))
     assert result['status']=='SHADOW_CAPTURED'
     assert result['p_yes'] is None and result['p_no'] is None
     assert not result['probability_publishable'] and not result['can_execute']
-    assert saved['sources']==['NWS', 'NWS']
+    assert saved['sources'][:2]==['NWS', 'NWS']
     assert len(saved['predictions'])==1
     assert saved['predictions'][0]['calibration_profile_id'] is None
     assert not saved['predictions'][0]['evidence'].evidence_complete

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from .contract_rule_acquisition import FrozenContractRulePackage, KalshiContractRuleAcquirer
-from .hourly_forecast_fusion import build_hourly_weather_evidence, source_snapshot_id
+from .hourly_forecast_fusion import HourlyForecastFusionError, build_hourly_weather_evidence, source_snapshot_id
 from .hourly_index import KalshiWeatherIndexAdapter, WeatherIndexError
 from .hourly_rule_semantics import ParsedHourlyTemperatureRule, parse_hourly_temperature_rule
 from .http_client import ReadOnlyJsonClient
@@ -116,6 +116,27 @@ def capture_hourly_shadow(
         )
         point_snapshot, nws_hourly, open_meteo = sources.point, sources.nws, sources.secondary
 
+        acquisition_warnings = list(sources.warnings)
+        try:
+            evidence = build_hourly_weather_evidence(
+                contract=contract,
+                analysis_time=now,
+                nws_snapshot=nws_hourly,
+                open_meteo_snapshot=open_meteo,
+                settlement_source_verified=True,
+                settlement_location_verified=True,
+            )
+        except HourlyForecastFusionError as exc:
+            if open_meteo is None or not any("OPEN_METEO" in reason for reason in exc.blockers):
+                raise
+            acquisition_warnings.extend(f"SECONDARY_FORECAST_UNAVAILABLE:{reason}" for reason in exc.blockers)
+            open_meteo = None
+            evidence = build_hourly_weather_evidence(
+                contract=contract, analysis_time=now, nws_snapshot=nws_hourly,
+                open_meteo_snapshot=None, settlement_source_verified=True,
+                settlement_location_verified=True,
+            )
+
         point_id = source_snapshot_id(point_snapshot)
         nws_id = source_snapshot_id(nws_hourly)
         om_id = source_snapshot_id(open_meteo) if open_meteo is not None else None
@@ -135,15 +156,6 @@ def capture_hourly_shadow(
                 source_snapshot_id=om_id,
                 snapshot=open_meteo,
             )
-
-        evidence = build_hourly_weather_evidence(
-            contract=contract,
-            analysis_time=now,
-            nws_snapshot=nws_hourly,
-            open_meteo_snapshot=open_meteo,
-            settlement_source_verified=True,
-            settlement_location_verified=True,
-        )
 
         settlement_twin_id = content_id(
             "kalshi-weather-settlement-twin",
@@ -171,7 +183,7 @@ def capture_hourly_shadow(
             fitted_before=now,
         ) if evidence.evidence_complete else None
         blockers: list[str] = []
-        warnings: list[str] = list(sources.warnings)
+        warnings: list[str] = list(acquisition_warnings)
         calibration_profile_id: str | None = None
         if calibration_row is None:
             probability = _missing_probability("CALIBRATION_PROFILE_UNAVAILABLE")
@@ -250,7 +262,7 @@ def capture_hourly_shadow(
             "capability": dict(capability),
             "terminal": asdict(terminal),
             "forecast_acquisition_policy": "NWS_REQUIRED_SECONDARY_OPTIONAL_R1",
-            "source_acquisition_warnings": list(sources.warnings),
+            "source_acquisition_warnings": list(acquisition_warnings),
             "market_price_used_as_model_input": False,
             "can_execute": False,
         }
