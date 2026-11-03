@@ -117,6 +117,23 @@ jobs:
           with urllib.request.urlopen(request, timeout=90) as response:
               payload = json.load(response)
 
+          # This is checked at the caller, not just the backend: an older
+          # deployed endpoint that omits settlement evidence must fail closed.
+          overdue_count = payload.get("overdue_unsettled_count")
+          overdue_ids = payload.get("overdue_unsettled_event_ids")
+          assert type(overdue_count) is int and overdue_count >= 0, (
+              "NFL_FORWARD_SHADOW_SETTLEMENT_CONTRACT_INVALID:count"
+          )
+          assert (isinstance(overdue_ids, list)
+                  and len(overdue_ids) == overdue_count
+                  and all(isinstance(item, str) and bool(item) for item in overdue_ids)
+                  and len(set(overdue_ids)) == len(overdue_ids)), (
+              "NFL_FORWARD_SHADOW_SETTLEMENT_CONTRACT_INVALID:ids"
+          )
+          assert payload.get("status") == "COMPLETED" and overdue_count == 0, (
+              "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT:" + repr(overdue_ids)
+          )
+
           assert payload.get("can_execute") is False
           assert payload.get("automatic_certification") is False
           assert payload.get("automatic_promotion") is False
