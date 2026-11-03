@@ -82,7 +82,7 @@ def _scoreboard_date_key(value: str | None) -> str:
     be shifted. Only timestamp endpoints need conversion from UTC to Eastern.
     The caller's exact UTC start/end are enforced separately after acquisition.
     """
-    if not value or re.fullmatch(r"\\d{8}|\\d{4}-\\d{2}-\\d{2}", value):
+    if not value or re.fullmatch(r"\d{8}|\d{4}-\d{2}-\d{2}", value):
         return _date_key(value)
     instant = _parse_utc(value)
     if instant is None:
