@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
@@ -225,7 +226,7 @@ def safe_label(url, has_body):
     return "UNKNOWN_API:" + verb + ":UNCLASSIFIED"
 
 
-def request_json(url, *, token=None, data=None, headers=None):
+def request_json(url, *, token=None, data=None, headers=None, _github_get_retry=True):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
             or url == "https://api.anthropic.com/v1/models?limit=1000"
@@ -255,9 +256,23 @@ def request_json(url, *, token=None, data=None, headers=None):
               file=sys.stderr)
         if (exc.code in (403, 429)
                 and endpoint.startswith("GITHUB_API:")):
+            github_reason = github_http_rejection_label(exc)
             print("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_" + str(exc.code)
-                  + ":" + endpoint + ":" + github_http_rejection_label(exc),
+                  + ":" + endpoint + ":" + github_reason,
                   file=sys.stderr)
+            # Only idempotent authenticated reads can be retried. A 403 is
+            # never automatically transient: require explicit rate-limit
+            # evidence, never a permission denial or unknown error. The same
+            # request is attempted at most twice, with an exact-source
+            # identity check performed by the caller before acceptance.
+            if (data is None and token and _github_get_retry
+                    and (exc.code == 429 or github_reason in (
+                        "PRIMARY_RATE_LIMIT", "SECONDARY_RATE_LIMIT"))):
+                print("REVIEW_GITHUB_READ_RETRY_ONCE:" + github_reason,
+                      file=sys.stderr)
+                time.sleep(60)
+                return request_json(url, token=token, data=data,
+                                    headers=headers, _github_get_retry=False)
         is_provider = data is not None and not url.startswith("https://api.github.com/")
         # Provider metadata GETs (model catalog/model metadata) are reviewer
         # routes too, but they carry no request body, so they are not
