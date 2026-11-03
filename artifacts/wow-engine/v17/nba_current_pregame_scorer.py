@@ -848,6 +848,18 @@ def score_nba_team_event_request(
             ),
         )
 
+    if canonical_hydration_required:
+        # The public route requires server-owned, pregame-attested NBA evidence.
+        # This bridge has no certified canonical hydration path yet. Do not
+        # accept caller-supplied VERIFIED timestamps as a substitute.
+        raise bridges._model_failure_detail(
+            req,
+            code="MODEL_INPUTS_INSUFFICIENT",
+            blocker="NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
+            status_code=422,
+            extra={"model_invoked": False, "canonical_hydration_required": True},
+        )
+
     scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
     evidence = getattr(req, "sport_specific_evidence", None)
     evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
