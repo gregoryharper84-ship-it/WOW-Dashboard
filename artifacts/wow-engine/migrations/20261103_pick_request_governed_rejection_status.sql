@@ -29,6 +29,18 @@ begin
         raise exception 'STALE_AFTER_SECONDS_TOO_SMALL';
     end if;
 
+    -- A maintenance pass must not race a worker reclaim or a run heartbeat.
+    -- NOWAIT skips the pass if either ledger is being written; reads continue.
+    -- The following statement obtains a fresh READ COMMITTED snapshot after
+    -- these short-lived locks. No external I/O occurs while locks are held.
+    begin
+        lock table public.wow_pick_request_jobs, public.wow_pick_request_runs
+            in share row exclusive mode nowait;
+    exception when lock_not_available then
+        return;
+    end;
+
+    v_now := clock_timestamp();
     v_cutoff := v_now - make_interval(secs => p_stale_after_seconds);
 
     return query
@@ -156,6 +168,8 @@ begin
             can_execute = false
         from decisions d
         where r.run_id = d.run_id
+          and r.run_status = 'RUNNING'
+          and r.updated_at < v_cutoff
         returning
             r.run_id,
             d.prior_status,
@@ -190,7 +204,9 @@ begin
             can_execute = false
         from updated_runs u
         where j.run_id = u.run_id
-          and j.status not in ('COMPLETED', 'STOPPED')
+          and j.status not in ('COMPLETED', 'STOPPED', 'QUEUED', 'RETRY_WAIT')
+          and not (j.status = 'RUNNING' and
+                   (j.lease_expires_at is null or j.lease_expires_at > v_now))
         returning j.run_id
     )
     select

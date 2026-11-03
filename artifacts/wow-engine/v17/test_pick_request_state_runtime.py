@@ -361,18 +361,59 @@ def test_rejected_receipt_is_complete_processing_without_rank_approval():
     assert manifest['can_execute'] is False
 
 
-def test_rejected_missing_receipt_cannot_be_complete_processing():
+def test_rejected_missing_receipt_cannot_be_complete_processing(monkeypatch):
+    _install_reliability_for_test(monkeypatch)
     db = _DB()
     store = subject.PickRequestStateStore(db)
     ctx = store.begin(_batch('rejected-no-receipt', [_row(1)]))
     outcome = _held('board-row-1', 'NO_LOW_PROBABILITY')
     outcome.update(terminal_status='REJECTED', model_evaluated=True)
     manifest = store.finalize(ctx, [outcome])
-    # Reliability patch blocks synthetic receipt-stage advancement in production.
-    # Exercise that durable truth directly without relying on installer order.
-    ctx.rows['board-row-1']['stage_seq'] = subject.STAGE_SEQ['MODEL_COMPUTED']
-    store._persist_row(ctx, 'board-row-1', operation='TEST_MISSING_RECEIPT')
-    manifest = store.finalize(ctx, [])
     assert manifest['unresolved_rows'] == 1
     assert manifest['run_status'] == 'BLOCKED'
     assert manifest['can_execute'] is False
+
+
+def _install_reliability_for_test(monkeypatch):
+    from v17 import pick_request_state_reliability_patch as patch
+    monkeypatch.setattr(patch, '_INSTALLED', False)
+    for name in ('begin', 'advance'):
+        monkeypatch.setattr(subject.PickRequestStateStore, name,
+                            getattr(subject.PickRequestStateStore, name))
+    for name in ('_merged_response', '_durable_status'):
+        monkeypatch.setattr(subject, name, getattr(subject, name))
+    patch.install_pick_request_state_reliability_patch()
+
+
+@pytest.mark.parametrize('completion_blocker', [None, 'EXACT_BOARD_IDENTITY_MISMATCH'])
+def test_response_uses_full_manifest_across_chunks(monkeypatch, completion_blocker):
+    from fastapi import FastAPI
+    app = FastAPI()
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    first = store.begin(_batch('multi-chunk-status', [_row(1)]))
+    prior = _held('board-row-1')
+    if completion_blocker:
+        prior.update(terminal_status='REJECTED')
+    store.finalize(first, [prior])
+
+    @app.post('/score-pick-request')
+    def inner(batch, x_wow_model_identity=None):
+        outcome = _completed('board-row-2', 'pred-chunk-2')
+        outcome.update(terminal_status='REJECTED', code='NO_LOW_PROBABILITY', rank_eligible=False)
+        return {'rows': [outcome], 'can_execute': False}
+
+    if completion_blocker:
+        def enforce(response, rows):
+            return {**response, 'completion_blocker': completion_blocker,
+                    'run_controller_status': 'BLOCKED'}
+        monkeypatch.setattr(subject, 'enforce_top10_completion', enforce)
+    subject.install_pick_request_state_wrapper(app, db_client_fn=lambda: db)
+    endpoint = next(r.endpoint for r in app.routes if getattr(r, 'path', '') == '/score-pick-request')
+    response = endpoint(_batch('multi-chunk-status', [_row(2)]), None)
+    assert response['durable_run_manifest']['total_rows'] == 2
+    assert response['durable_run_manifest']['run_status'] == ('COMPLETE' if completion_blocker else 'BLOCKED')
+    assert response['run_controller_status'] == 'BLOCKED'
+    if completion_blocker:
+        assert response['completion_blocker'] == completion_blocker
+    assert response['can_execute'] is False

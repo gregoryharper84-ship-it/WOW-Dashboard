@@ -826,6 +826,8 @@ def install_pick_request_state_wrapper(
 
             response, full_outcomes = _merged_response(ctx, inner)
             manifest = store.finalize(ctx, full_outcomes)
+            if not response.get("completion_blocker"):
+                response["run_controller_status"] = manifest["run_status"]
             response["durable_run_manifest"] = manifest
             response["can_execute"] = False
             LOGGER.warning(
