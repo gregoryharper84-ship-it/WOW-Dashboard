@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import urllib.error
@@ -421,6 +422,49 @@ def _ci_status(ci: Any) -> tuple[str, list[str], list[str]]:
     return status, required, failed
 
 
+def required_ci(checks: list[dict[str, Any]], rules: list[dict[str, Any]],
+                head_sha: str) -> dict[str, Any]:
+    """Observe active branch requirements, bound to publisher and exact head.
+
+    This is diagnostic only. Classic protection/status contexts not exposed by
+    this inventory remain UNKNOWN/PENDING; the existing release lane retains
+    authority to resolve all native requirements.
+    """
+    required: set[tuple[str, int | None]] = set()
+    try:
+        for rule in rules:
+            if rule.get("type") == "required_status_checks":
+                for item in rule["parameters"]["required_status_checks"]:
+                    name, app_id = item["context"], item.get("integration_id")
+                    if not isinstance(name, str) or not name.strip():
+                        raise ValueError("REQUIRED_CONTEXT_INVALID")
+                    if app_id is not None and not _positive_int(app_id):
+                        raise ValueError("REQUIRED_APP_INVALID")
+                    required.add((name, app_id))
+        if not required or not _is_sha(head_sha):
+            raise ValueError("REQUIRED_INVENTORY_MISSING")
+        failed, pending = [], []
+        for name, app_id in sorted(required, key=lambda item: (item[0], item[1] or 0)):
+            bound = [row for row in checks
+                     if row.get("name") == name and row.get("head_sha") == head_sha
+                     and (app_id is None or (row.get("app") or {}).get("id") == app_id)]
+            if not bound:
+                pending.append(name)
+                continue
+            if any(not _positive_int(row.get("id")) for row in bound):
+                raise ValueError("CHECK_ID_INVALID")
+            latest = max(bound, key=lambda row: row["id"])
+            if latest.get("status") != "completed":
+                pending.append(name)
+            elif latest.get("conclusion") != "success":
+                failed.append(name)
+        return {"status": "FAILED" if failed else "PENDING" if pending else "PASSED",
+                "required": sorted({name for name, _ in required}),
+                "failed": failed, "pending": pending}
+    except (TypeError, KeyError, AttributeError, ValueError):
+        return {"status": "UNKNOWN", "required": [], "failed": []}
+
+
 def _repair_decision(
     repair: dict[str, Any], *, now_utc: str, metrics: dict[str, Any]
 ) -> dict[str, Any]:
@@ -706,9 +750,11 @@ def plan_cycle(observation: dict[str, Any]) -> dict[str, Any]:
     else:
         decision = _select_decision(observation["queue"], metrics=metrics)
 
+    decision["verified_incident_ids"] = sorted(set(
+        (observation.get("evidence") or {}).get("verified_incident_ids") or []))
     if decision.get("verified") is True:
         verified_id = str(decision.get("verified_incident_id") or "")
-        if verified_id:
+        if verified_id and verified_id not in ((observation.get("evidence") or {}).get("verified_incident_ids") or []):
             metrics = {
                 **metrics,
                 "verified_repairs": metrics["verified_repairs"] + 1,
@@ -828,6 +874,8 @@ def parse_evidence_comment(comments: list[dict[str, Any]] | None) -> dict[str, A
     found: dict[str, Any] | None = None
     for comment in comments:
         if not isinstance(comment, dict):
+            continue
+        if (comment.get("user") or {}).get("login") != "github-actions[bot]":
             continue
         body = comment.get("body")
         if not isinstance(body, str) or EVIDENCE_MARKER not in body:
@@ -993,8 +1041,9 @@ def collect_observation(
         try:
             comments = gh_pages(f"/repos/{repo}/issues/{pr_number}/comments?per_page=100")
             checks = gh_pages(f"/repos/{repo}/commits/{pull['head']['sha']}/check-runs?per_page=100")
+            rules = gh_pages(f"/repos/{repo}/rules/branches/main")
         except CollectionError as exc:
-            comments, checks = [], []
+            comments, checks, rules = [], [], []
             errors.append(str(exc))
         check_runs = [
             run
@@ -1002,13 +1051,6 @@ def collect_observation(
             for run in (page.get("check_runs") or [] if isinstance(page, dict) else [])
             if isinstance(run, dict)
         ]
-        failed = [
-            str(run.get("name"))
-            for run in check_runs
-            if str(run.get("status")) == "completed" and str(run.get("conclusion")) != "success"
-        ]
-        pending = [run for run in check_runs if str(run.get("status")) != "completed"]
-        ci_status = "FAILED" if failed else ("PENDING" if pending else "PASSED")
         active_repair = {
             "issue_number": int(incident) if incident else 0,
             "pr_number": pr_number,
@@ -1016,11 +1058,7 @@ def collect_observation(
             "branch": pull["head"]["ref"],
             "acceptance_test": _acceptance_test(str(pull.get("body") or "")),
             "reservation_comments": comments,
-            "ci": {
-                "status": ci_status,
-                "required": [str(run.get("name")) for run in check_runs],
-                "failed": failed,
-            },
+            "ci": required_ci(check_runs, rules, pull["head"]["sha"]),
         }
         if not incident:
             errors.append("ACTIVE_REPAIR_INCIDENT_UNRESOLVED")
@@ -1030,21 +1068,20 @@ def collect_observation(
                 item[1] for item in ranked_pulls[1:]
             )
 
-    target_incident = (
-        str(active_repair["issue_number"])
-        if active_repair and active_repair.get("issue_number")
-        else (str(queue["records"][0]["incident_id"]) if queue["records"] else None)
-    )
-    merged = [pull for pull in bot_pulls if pull.get("merged_at")]
-    if merged and target_incident:
-        pull = merged[-1]
+    # Track each still-open governed incident independently. An unrelated newer
+    # PR must not hide an earlier merged-but-unproved repair.
+    merged = sorted([pull for pull in bot_pulls if pull.get("merged_at")],
+                    key=lambda pull: (str(pull["merged_at"]), int(pull["number"])),
+                    reverse=True)
+    open_incidents = {str(row["incident_id"]) for row in queue["records"]}
+    seen_incidents: set[str] = set()
+    for pull in merged:
         try:
             incident = exact_incident_id(str(pull.get("body") or ""))
         except ValueError:
             incident = None
-        if incident != target_incident:
-            incident = None
-        if incident:
+        if incident in open_incidents and incident not in seen_incidents:
+            seen_incidents.add(incident)
             merged_commit = pull.get("merge_commit_sha")
             if _is_sha(merged_commit):
                 releases.append(
@@ -1138,7 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
             now_utc=_iso(datetime.now(timezone.utc)),
             production_url=args.production_url or None,
             render_service_id=args.render_service_id or None,
-            render_api_key=args.render_api_key or None,
+            render_api_key=args.render_api_key or os.environ.get("RENDER_API_KEY") or None,
             ledger_issue=args.ledger_issue or None,
         )
         Path(args.output).write_text(json.dumps(observation, indent=2, sort_keys=True) + "\n")

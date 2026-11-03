@@ -1,36 +1,24 @@
 name: wow-v17-restoration-loop
 
-# One restoration loop: one queue, one active repair, one verified release.
-# Every 15 minutes this observes production health, the active repair, CI and
-# deployment state, then records exactly one next action on the incident issue.
-#
-# It is a router, not an authority:
-# - it never merges, approves, deploys or publishes a probability;
-# - repair requests go to the existing wow-v17-engineering-auto-repair path;
-# - release requests go to the existing protected governance dispatcher;
-# - a model/probability change still requires the existing protected gates.
-#
-# Holds are normal evidence, not workflow failures. The run is red only when a
-# safety invariant or the read-only observation itself is broken.
-
+# Manual observer only. wow-engineering-24x7 remains the single controller.
+# Planner decisions are diagnostics, never dispatch/merge/close authority.
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
-  actions: write
+  actions: read
   checks: read
   contents: read
-  issues: write
+  issues: read
   pull-requests: read
 
 concurrency:
-  group: wow-v17-restoration-loop
+  group: wow-v17-restoration-observation
   cancel-in-progress: false
 
 jobs:
   cycle:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -41,22 +29,18 @@ jobs:
       PRODUCTION_URL: ${{ vars.WOW_PRODUCTION_URL || 'https://wow-governed-probability-engine.onrender.com' }}
       RENDER_SERVICE_ID: ${{ vars.WOW_RENDER_SERVICE_ID }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      # Single metric ledger so verified repairs accumulate across incidents.
-      # Falls back to the active/selected incident when unset.
       LEDGER_ISSUE: ${{ vars.WOW_RESTORATION_LEDGER_ISSUE }}
     steps:
-      - name: Checkout protected main (read-only)
-        uses: actions/checkout@v6
+      - name: Checkout exact protected source
+        uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Inspect production, active repair, CI and deployment (read-only)
+      - name: Collect read-only restoration evidence
+        shell: bash
         run: |
           set -euo pipefail
           python -m v17.restoration_loop collect \
@@ -65,86 +49,24 @@ jobs:
             --output "$RUNNER_TEMP/observation.json" \
             --production-url "$PRODUCTION_URL" \
             --render-service-id "${RENDER_SERVICE_ID:-}" \
-            --render-api-key "${RENDER_API_KEY:-}" \
             --ledger-issue "${LEDGER_ISSUE:-0}"
-
-      - name: Select, verify, release or prove exactly one next action
+      - name: Publish diagnostic decision without dispatch
+        shell: bash
         run: |
           set -euo pipefail
           python -m v17.restoration_loop plan \
-            --observation "$RUNNER_TEMP/observation.json" \
-            > "$RUNNER_TEMP/decision.json"
+            --observation "$RUNNER_TEMP/observation.json" > "$RUNNER_TEMP/decision.json"
           jq -e '.can_execute == false and .terminal_authority == "V17_TERMINAL_REDUCER"' \
             "$RUNNER_TEMP/decision.json" > /dev/null
           python -m v17.restoration_loop plan \
-            --observation "$RUNNER_TEMP/observation.json" --format comment \
-            > "$RUNNER_TEMP/evidence.md"
-          cat "$RUNNER_TEMP/evidence.md" >> "$GITHUB_STEP_SUMMARY"
-          jq -c '{step, action, incident_id, pr_number, hold, progress_made, reason_codes, next_action}' \
-            "$RUNNER_TEMP/decision.json"
-
-      - name: Update this incident's single cycle-evidence comment
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          issue="${LEDGER_ISSUE:-$(jq -r '.evidence.incident_id // empty' "$RUNNER_TEMP/decision.json")}"
-          if [ -z "$issue" ]; then
-            echo "No bound incident; evidence stays in this workflow run." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          jq -n --rawfile body "$RUNNER_TEMP/evidence.md" '{body: $body}' \
-            > "$RUNNER_TEMP/comment.json"
-          comment_id=$(gh api --paginate \
-            "/repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- WOW_RESTORATION_LOOP_EVIDENCE -->"))) | .id' \
-            | tail -1)
-          if [ -n "$comment_id" ]; then
-            gh api --method PATCH \
-              "/repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
-              --input "$RUNNER_TEMP/comment.json" > /dev/null
-          else
-            gh api --method POST \
-              "/repos/${GITHUB_REPOSITORY}/issues/${issue}/comments" \
-              --input "$RUNNER_TEMP/comment.json" > /dev/null
-          fi
-
-      - name: Route the single next action through existing paths
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          action=$(jq -r '.action' "$RUNNER_TEMP/decision.json")
-          hold=$(jq -r '.hold' "$RUNNER_TEMP/decision.json")
-          if [ "$hold" = "true" ]; then
-            echo "HOLD: $action — no dispatch; unrelated preparation may continue." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          case "$action" in
-            RESERVE_AND_DISPATCH_REPAIR|RETRY_SAME_REPAIR_ONCE|USE_AUTHORIZED_ALTERNATIVE|FEEDBACK_TO_SAME_REPAIR|REPAIR_DETERMINISTIC_FAILURE)
-              gh workflow run wow-v17-engineering-auto-repair.yml \
-                --repo "$GITHUB_REPOSITORY" --ref main
-              ;;
-            HAND_OFF_PROTECTED_RELEASE)
-              pr=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/decision.json")
-              if [ -n "$pr" ]; then
-                gh workflow run wow-v17-governance-dispatcher.yml \
-                  --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$pr"
-              fi
-              ;;
-            CLOSE_VERIFIED_ISSUE)
-              jq -e '.verified == true' "$RUNNER_TEMP/decision.json" > /dev/null
-              issue=$(jq -r '.evidence.incident_id' "$RUNNER_TEMP/decision.json")
-              gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/${issue}" \
-                -f state=closed > /dev/null
-              ;;
-            *)
-              echo "No dispatch for $action (wait, hold for evidence, or idle)." >> "$GITHUB_STEP_SUMMARY"
-              ;;
-          esac
-
-      - name: Publish cycle artifact
-        if: ${{ !cancelled() }}
+            --observation "$RUNNER_TEMP/observation.json" --format comment >> "$GITHUB_STEP_SUMMARY"
+          echo 'Diagnostic only: existing 24x7 controller owns execution. No dispatch, release or issue close occurred.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish observation artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: restoration-loop-decision
-          path: ${{ runner.temp }}/decision.json
-          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/observation.json
+            ${{ runner.temp }}/decision.json
+          if-no-files-found: warn

@@ -478,7 +478,7 @@ def test_evidence_comment_round_trips_metrics():
     assert "- deployment_result: DEPLOYED_PENDING_VERIFY" in body
     assert "- progress_made: true" in body
     assert "- can_execute: false" in body
-    parsed = rl.parse_evidence_comment([{"id": 1, "body": body}])
+    parsed = rl.parse_evidence_comment([{"id": 1, "body": body, "user": {"login": "github-actions[bot]"}}])
     assert parsed == {
         "verified_incident_ids": ["111", "502"],
         "last_verified_repair_at": "2026-11-06T12:00:00Z",
@@ -503,3 +503,89 @@ def test_cli_plan_prints_json(capsys, tmp_path):
     payload = json.loads(capsys.readouterr().out)
     assert payload["action"] == "RESERVE_AND_DISPATCH_REPAIR"
     assert payload["can_execute"] is False
+
+
+def test_required_check_missing_is_pending_even_when_other_checks_pass():
+    rules = [{"type": "required_status_checks", "parameters": {
+        "required_status_checks": [{"context": "QA", "integration_id": 42}]}}]
+    assert rl.required_ci([], rules, HEAD)["status"] == "PENDING"
+
+
+def test_required_check_rejects_wrong_app_or_head():
+    rules = [{"type": "required_status_checks", "parameters": {
+        "required_status_checks": [{"context": "QA", "integration_id": 42}]}}]
+    check = {"id": 1, "name": "QA", "head_sha": HEAD,
+             "app": {"id": 99}, "status": "completed", "conclusion": "success"}
+    assert rl.required_ci([check], rules, HEAD)["status"] == "PENDING"
+    check.update(app={"id": 42}, head_sha=OTHER)
+    assert rl.required_ci([check], rules, HEAD)["status"] == "PENDING"
+
+
+def test_required_check_uses_latest_bound_run_and_skipped_is_failed():
+    rules = [{"type": "required_status_checks", "parameters": {
+        "required_status_checks": [{"context": "QA", "integration_id": 42}]}}]
+    check = {"id": 1, "name": "QA", "head_sha": HEAD,
+             "app": {"id": 42}, "status": "completed", "conclusion": "success"}
+    assert rl.required_ci([check], rules, HEAD)["status"] == "PASSED"
+    assert rl.required_ci([check, {**check, "id": 2, "conclusion": "skipped"}], rules, HEAD)["status"] == "FAILED"
+
+
+def test_no_protection_inventory_never_means_ci_passed():
+    assert rl.required_ci([], [], HEAD)["status"] == "UNKNOWN"
+
+
+def test_forged_ledger_comment_cannot_invent_verified_repairs():
+    body = rl.render_evidence_comment(rl.plan_cycle(_obs(releases_in_flight=[_release()])))
+    assert rl.parse_evidence_comment([{"id": 1, "body": body, "user": {"login": "someone"}}]) is None
+
+
+def test_repeated_proof_does_not_count_a_repair_twice():
+    decision = rl.plan_cycle(_obs(releases_in_flight=[_release()], evidence={
+        "verified_incident_ids": ["502"], "last_verified_repair_at": "2026-11-03T11:00:00Z"}))
+    assert decision["metrics"]["verified_repairs"] == 1
+    assert decision["metrics"]["last_verified_repair_at"] == "2026-11-03T11:00:00Z"
+
+
+def test_observer_does_not_add_a_second_controller_or_mutation_authority():
+    from pathlib import Path
+    import yaml
+    workflow = Path(__file__).resolve().parents[3] / ".github/workflows/wow-v17-restoration-loop.yml"
+    text = workflow.read_text()
+    config = yaml.safe_load(text)
+    triggers = config.get("on", config.get(True))
+    assert "schedule" not in triggers
+    assert set(triggers) == {"workflow_dispatch"}
+    assert all(value == "read" for value in config["permissions"].values())
+    assert "gh workflow run" not in text
+    assert "--method PATCH" not in text
+    assert "--method POST" not in text
+
+
+def test_collector_keeps_open_incident_release_even_if_latest_pr_is_unrelated(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"can_execute": False, "terminal_authority": rl.TERMINAL_AUTHORITY,
+        "restoration": [{"issue_number": 502, "severity": "P1", "priority_rank": 1,
+                          "conflict_keys": ["RUNTIME"]}], "acceleration": []}))
+    repo = "gregoryharper84-ship-it/WOW-Dashboard"
+    def pull(number, incident):
+        return {"number": number, "user": {"login": BOT}, "state": "closed",
+                "body": f"Incident: {incident}", "base": {"ref": "main"},
+                "head": {"repo": {"full_name": repo}},
+                "merged_at": NOW, "merge_commit_sha": HEAD}
+    def pages(path):
+        if "/issues?" in path:
+            return [{"number": 502, "state": "open"}]
+        if "/pulls?" in path:
+            return [pull(1, 502), pull(2, 999)]
+        return []
+    monkeypatch.setattr(rl, "_production_observation", lambda _: ({"reachable": True}, []))
+    monkeypatch.setattr(rl, "_render_live_commit", lambda *_: (HEAD, []))
+    result = rl.collect_observation(repo=repo, manifest_path=str(manifest), now_utc=NOW, gh_pages=pages)
+    assert [row["issue_number"] for row in result["releases_in_flight"]] == [502]
+    assert rl.plan_cycle(result)["reason_codes"] == ["USER_FUNCTION_PROBE_MISSING"]
+
+
+def test_normal_cycle_preserves_existing_verified_incident_ids():
+    decision = rl.plan_cycle(_obs(evidence={"verified_incident_ids": ["111"],
+        "last_verified_repair_at": "2026-11-03T11:00:00Z"}))
+    assert "- verified_incident_ids: 111" in rl.render_evidence_comment(decision)
