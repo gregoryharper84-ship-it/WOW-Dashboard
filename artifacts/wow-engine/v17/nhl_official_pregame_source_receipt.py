@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import re
+import time
 from typing import Any, Callable, Mapping
 
 import requests
@@ -22,6 +23,7 @@ PROBABILITY_PUBLISHABLE = False
 SOURCE_PROVIDER = "NHL_PUBLIC_WEB_API"
 GAMECENTER_URL = "https://api-web.nhle.com/v1/gamecenter/{game_id}/landing"
 MAX_RESPONSE_BYTES = 2_000_000
+MAX_TOTAL_SECONDS = 20.0
 UNHYDRATED_INPUTS = (
     "goalie_status",
     "injury_report",
@@ -85,20 +87,49 @@ def capture_nhl_official_pregame(
         raise NHLPregameSourceError("NHL_SOURCE_NOT_PREGAME")
 
     url = GAMECENTER_URL.format(game_id=game_id)
+    response = None
+    started = time.monotonic()
     try:
         response = session.get(
-            url, timeout=12, headers={"User-Agent": "WOW-V17-NHL-Research/1.0"}
+            url,
+            timeout=(5, 10),
+            stream=True,
+            allow_redirects=False,
+            headers={"User-Agent": "WOW-V17-NHL-Research/1.0"},
         )
-    except Exception as exc:  # noqa: BLE001 - transport failures fail closed
+        if getattr(response, "url", url) != url:
+            raise NHLPregameSourceError("NHL_SOURCE_REDIRECT_FORBIDDEN")
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int) and 300 <= status < 400:
+            raise NHLPregameSourceError("NHL_SOURCE_REDIRECT_FORBIDDEN")
+        if status != 200:
+            raise NHLPregameSourceError(
+                "NHL_SOURCE_RATE_LIMITED" if status == 429 else "NHL_SOURCE_HTTP_FAILED"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=65536):
+            if time.monotonic() - started > MAX_TOTAL_SECONDS:
+                raise NHLPregameSourceError("NHL_SOURCE_TOTAL_DEADLINE_EXCEEDED")
+            if not isinstance(chunk, bytes):
+                raise NHLPregameSourceError("NHL_SOURCE_RAW_BYTES_MISSING_OR_OVERSIZE")
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise NHLPregameSourceError("NHL_SOURCE_RAW_BYTES_MISSING_OR_OVERSIZE")
+            if chunk:
+                chunks.append(chunk)
+        if time.monotonic() - started > MAX_TOTAL_SECONDS:
+            raise NHLPregameSourceError("NHL_SOURCE_TOTAL_DEADLINE_EXCEEDED")
+        raw = b"".join(chunks)
+        if not raw:
+            raise NHLPregameSourceError("NHL_SOURCE_RAW_BYTES_MISSING_OR_OVERSIZE")
+    except NHLPregameSourceError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - transport/stream failure fails closed
         raise NHLPregameSourceError("NHL_SOURCE_FETCH_FAILED") from exc
-    status = getattr(response, "status_code", None)
-    if status != 200:
-        raise NHLPregameSourceError(
-            "NHL_SOURCE_RATE_LIMITED" if status == 429 else "NHL_SOURCE_HTTP_FAILED"
-        )
-    raw = getattr(response, "content", None)
-    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_RESPONSE_BYTES:
-        raise NHLPregameSourceError("NHL_SOURCE_RAW_BYTES_MISSING_OR_OVERSIZE")
+    finally:
+        if response is not None:
+            response.close()
     try:
         payload = json.loads(raw)
     except (UnicodeError, ValueError) as exc:
