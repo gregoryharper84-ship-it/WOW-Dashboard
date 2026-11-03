@@ -487,11 +487,12 @@ def _mock_stale_sportsdataverse(monkeypatch):
     return persisted
 
 
-def test_stale_but_successful_csv_can_trigger_bounded_current_settled_fallback(monkeypatch):
-    # Hypothetical independent authorization in a unit test only; production
-    # ESPN_SCOREBOARD remains unclassified and must never reach this branch.
+def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch):
+    # Even a future ESPN training entitlement cannot establish an ESPN-to-BDL
+    # or ESPN-to-SportsDataverse *provider* contract. Fail before persistence.
     monkeypatch.setattr(
-        hydration, "source_readiness",
+        hydration,
+        "source_readiness",
         lambda source_id: SimpleNamespace(
             ready_for_candidate_training=True, blockers=(),
         ),
@@ -499,23 +500,22 @@ def test_stale_but_successful_csv_can_trigger_bounded_current_settled_fallback(m
     persisted = _mock_stale_sportsdataverse(monkeypatch)
     called = []
     monkeypatch.setattr(
-        hydration, "fetch_recent_espn_settlements",
+        hydration,
+        "fetch_recent_espn_settlements",
         lambda sport, *, now: called.append((sport, now.isoformat())) or [
             _espn_event(event_id="401908002", game_date="2026-10-22"),
         ],
     )
-    result = hydration.hydrate(
-        "NBA", [2026], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
-    )
+    try:
+        hydration.hydrate(
+            "NBA", [2026], client=object(),
+            now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        )
+        raise AssertionError("raw ESPN data must never be inserted into the fitted NBA ledger")
+    except hydration.BasketballHydrationError as exc:
+        assert str(exc) == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
     assert called and called[0][0] == "NBA"
-    assert result["source_by_season"][2026] == "ESPN_SCOREBOARD"
-    assert result["recent_supplement_status"][2026] == "SETTLED_SOURCE_UPDATED"
-    assert result["fresh_acquisition_new_settled_games"] == 1
-    assert result["settled_rows"] == 1
-    assert result["latest_game_date_after"] == "2026-10-22"
-    assert [row["game_id"] for row in persisted] == ["espn-401908002"]
-    assert persisted[0]["source_provider"] == "ESPN_SCOREBOARD"
-    assert result["can_execute"] is False
+    assert persisted == []
 
 
 def test_recent_source_failure_never_advertises_updated_games(monkeypatch):
@@ -706,26 +706,30 @@ def test_wnba_year_is_not_shifted_by_nba_provider_mapping(monkeypatch):
     assert result["can_execute"] is False
 
 
-def test_entitled_espn_nba_fallback_queries_current_calendar_not_asset_year(monkeypatch):
+def test_entitled_espn_nba_fallback_uses_calendar_year_but_blocks_write(monkeypatch):
     requested = []
     monkeypatch.setattr(
-        hydration, "source_readiness",
+        hydration,
+        "source_readiness",
         lambda *_: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
     )
     monkeypatch.setattr(
-        hydration, "fetch_games",
+        hydration,
+        "fetch_games",
         lambda sport, season: (_ for _ in ()).throw(
             hydration.BasketballHydrationError("BALLDONTLIE_AUTH_FAILED")
         ),
     )
     monkeypatch.setattr(
-        hydration, "fetch_sportsdataverse_games",
+        hydration,
+        "fetch_sportsdataverse_games",
         lambda sport, season: (_ for _ in ()).throw(
             hydration.BasketballHydrationError("SPORTSDATAVERSE_ESPN_HTTP_404")
         ),
     )
     monkeypatch.setattr(
-        hydration, "fetch_espn_games",
+        hydration,
+        "fetch_espn_games",
         lambda sport, year: requested.append(year) or [
             _espn_event(event_id="401909002", game_date="2026-10-27")
         ],
@@ -733,17 +737,22 @@ def test_entitled_espn_nba_fallback_queries_current_calendar_not_asset_year(monk
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
     stored = []
     monkeypatch.setattr(
-        hydration, "_persist_rows",
+        hydration,
+        "_persist_rows",
         lambda db, sport, rows: (stored.extend(rows), len(rows))[1],
     )
-    result = hydration.hydrate(
-        "NBA", [2027], client=object(),
-        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
-    )
+    try:
+        hydration.hydrate(
+            "NBA", [2027], client=object(),
+            now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+        )
+        raise AssertionError("NBA scoreboard history must fail without approved crosswalk")
+    except hydration.BasketballHydrationError as exc:
+        assert str(exc) == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+    # The season calendar mapping remains correct; a provider privilege does
+    # not silently grant a fitted NBA corpus identity crosswalk.
     assert requested == [2026]
-    assert len(stored) == 1
-    assert result["source_by_season"][2027] == "ESPN_SCOREBOARD"
-    assert result["can_execute"] is False
+    assert stored == []
 
 
 def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monkeypatch):
