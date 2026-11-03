@@ -561,7 +561,11 @@ def test_observer_does_not_add_a_second_controller_or_mutation_authority():
     assert "--method POST" not in text
 
 
-def test_collector_keeps_open_incident_release_even_if_latest_pr_is_unrelated(tmp_path, monkeypatch):
+@pytest.mark.parametrize("deployed,reason", [
+    (HEAD, "USER_FUNCTION_PROBE_MISSING"),
+    (OTHER, "DEPLOYED_COMMIT_MISMATCH"),
+])
+def test_collector_keeps_open_incident_release_even_if_latest_pr_is_unrelated(tmp_path, monkeypatch, deployed, reason):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"can_execute": False, "terminal_authority": rl.TERMINAL_AUTHORITY,
         "restoration": [{"issue_number": 502, "severity": "P1", "priority_rank": 1,
@@ -579,13 +583,29 @@ def test_collector_keeps_open_incident_release_even_if_latest_pr_is_unrelated(tm
             return [pull(1, 502), pull(2, 999)]
         return []
     monkeypatch.setattr(rl, "_production_observation", lambda _: ({"reachable": True}, []))
-    monkeypatch.setattr(rl, "_render_live_commit", lambda *_: (HEAD, []))
+    monkeypatch.setattr(rl, "_render_live_commit", lambda *_: (deployed, []))
     result = rl.collect_observation(repo=repo, manifest_path=str(manifest), now_utc=NOW, gh_pages=pages)
     assert [row["issue_number"] for row in result["releases_in_flight"]] == [502]
-    assert rl.plan_cycle(result)["reason_codes"] == ["USER_FUNCTION_PROBE_MISSING"]
+    assert rl.plan_cycle(result)["reason_codes"] == [reason]
 
 
 def test_normal_cycle_preserves_existing_verified_incident_ids():
     decision = rl.plan_cycle(_obs(evidence={"verified_incident_ids": ["111"],
         "last_verified_repair_at": "2026-11-03T11:00:00Z"}))
     assert "- verified_incident_ids: 111" in rl.render_evidence_comment(decision)
+
+
+def test_observation_failure_summary_keeps_diagnosis_and_existing_metrics():
+    decision = rl.plan_cycle(_obs(collection_errors=["GH_API_FAILED:TimeoutExpired"],
+        evidence={"verified_incident_ids": ["111"], "last_verified_repair_at": NOW}))
+    body = rl.render_evidence_comment(decision)
+    assert "INSPECT/HOLD" in body
+    assert "OBSERVATION_INCOMPLETE" in body
+    assert "GH_API_FAILED:TimeoutExpired" in body
+    assert "RESTORE_READ_ONLY_OBSERVATION" in body
+    assert "- verified_repairs: 1" in body
+    assert decision["heartbeat_only"] is True
+
+
+def test_observer_reports_invalid_input_without_blank_summary():
+    assert "OBSERVATION_INVALID" in rl.render_evidence_comment(rl.plan_cycle(None))

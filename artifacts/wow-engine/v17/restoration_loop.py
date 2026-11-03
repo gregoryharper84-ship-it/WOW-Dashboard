@@ -668,7 +668,7 @@ def _select_decision(
     )
 
 
-def plan_cycle(observation: dict[str, Any]) -> dict[str, Any]:
+def _plan_cycle(observation: dict[str, Any]) -> dict[str, Any]:
     """Return the single next action for one 15-minute restoration cycle.
 
     Unfinished work is resumed before new work is selected. The result always
@@ -787,6 +787,25 @@ def plan_cycle(observation: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # evidence
 # --------------------------------------------------------------------------- #
+def plan_cycle(observation: dict[str, Any]) -> dict[str, Any]:
+    """Finalize diagnostic holds as well as normal decisions for the summary."""
+    decision = _plan_cycle(observation)
+    if "evidence" not in decision:
+        observed = observation if isinstance(observation, dict) else {}
+        now = _parse_utc(observed.get("now_utc"))
+        decision.update(cycle_at_utc=_iso(now) if now else None,
+                        progress_made=False, heartbeat_only=True)
+        try:
+            decision["metrics"] = compute_metrics(observed.get("evidence"),
+                                                  now_utc=observed.get("now_utc"))
+            decision["verified_incident_ids"] = sorted(set(
+                (observed.get("evidence") or {}).get("verified_incident_ids") or []))
+        except ValueError:
+            decision["metrics"] = {"status": "UNKNOWN", "verified_repairs": 0}
+        decision["evidence"] = build_evidence_record(decision, observed)
+    return decision
+
+
 def build_evidence_record(
     decision: dict[str, Any], observation: dict[str, Any]
 ) -> dict[str, Any]:
@@ -855,6 +874,7 @@ def render_evidence_comment(decision: dict[str, Any]) -> str:
         f" (deployed_commit={deployment.get('deployed_commit') or ''})",
         f"- next_action: {record.get('next_action') or ''}",
         f"- reason_codes: {_csv(record.get('reason_codes'))}",
+        f"- collection_errors: {_csv(decision.get('collection_errors'))}",
         f"- progress_made: {str(record.get('progress_made')).lower()}",
         f"- hold: {str(decision.get('hold')).lower()}",
         f"- verified_incident_ids: {_csv(decision.get('verified_incident_ids'))}",
@@ -1100,7 +1120,9 @@ def collect_observation(
     production["deployed_commit"] = deployed
 
     for release in releases:
-        if deployed and release["merged_commit"] == deployed:
+        # Exact-commit verification is intentional. A different known live SHA
+        # is a diagnostic mismatch, not an indefinitely pending deployment.
+        if deployed:
             release["state"] = "DEPLOYED_PENDING_VERIFY"
             release["deployed_commit"] = deployed
 

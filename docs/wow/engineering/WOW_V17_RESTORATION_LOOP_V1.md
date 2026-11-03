@@ -47,7 +47,11 @@ ledger comments are diagnostic inputs only; comments from other users are
 ignored. They cannot authorize a release or prove a user-function probe.
 
 Metrics count distinct recorded incident IDs and preserve those IDs across
-ordinary cycles. Replaying the same proof cannot increment the count or reset
+ordinary cycles supplied with the same evidence. Set `WOW_RESTORATION_LEDGER_ISSUE`
+to read one stable ledger across incidents. Otherwise the collector reads the
+active, release, or selected issue; changing that issue can drop earlier IDs
+from the diagnostic count. This observer does not write or maintain the ledger.
+Replaying the same proof cannot increment the count or reset
 the last-repair timestamp. No metric means a production cycle has been proven
 by this observer. Repeated unchanged decisions can be classified as heartbeats
 when the caller supplies `last_cycle`; automatic cross-run progress persistence
