@@ -93,3 +93,19 @@ def test_source_provenance_rejected(mutate):
 def test_wrong_service_configuration_or_deploy_is_hold(kwargs, reason):
     with pytest.raises(m.ReadbackHold, match=reason):
         score(**kwargs)
+
+
+def test_observer_is_nonblocking_and_never_a_render_writer():
+    import yaml
+    root = Path(__file__).resolve().parents[2]
+    source = (root / ".github/workflows/wow-v17-lean-production-readback.yml").read_text()
+    workflow = yaml.load(source, Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["production-readback"]
+    observer = next(s for s in job["steps"] if s.get("id") == "readback")
+    assert observer["continue-on-error"] == "true"
+    assert "lean_production_readback.py" in observer["run"]
+    assert "workflows: [wow-verify]" in source
+    assert "pull_request_target" not in source
+    assert "gh pr merge" not in source
+    assert "render.com/v1/services" not in source
+    assert workflow["permissions"]["contents"] == "read"
