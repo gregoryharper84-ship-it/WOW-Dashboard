@@ -317,7 +317,8 @@ def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
     run = {
         "id": 900, "run_attempt": 1, "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
         "head_branch": "main", "head_sha": sha, "status": "completed",
-        "conclusion": "success", "event": "schedule", "updated_at": stamp,
+        "conclusion": "success", "event": "schedule", "created_at": stamp,
+        "updated_at": stamp,
     }
     route = {
         "action": action, "provider": "deterministic" if action == "SURVIVAL" else "openai",
@@ -494,6 +495,70 @@ def test_gemini_route_does_not_become_second_launch_even_with_fresh_child_succes
         monkeypatch, action="DISPATCH", gemini="success", fresh=("gemini",),
     )
     route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+
+
+def test_manual_gemini_success_never_clears_an_openai_quota_survival_hold(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="SURVIVAL", gemini="success", fresh=("gemini",),
+    )
+    assert route["provider"] == "deterministic"
+    assert client.provider_admission() == "PROVIDER_QUOTA_BLOCKED"
+
+
+def test_matching_gemini_worker_history_missing_cannot_borrow_other_provider_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="success", fresh=("chatgpt",),
+    )
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    original_get = client.get
+    def missing_gemini_history(suffix):
+        if suffix.startswith("actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?"):
+            return {"workflow_runs": []}
+        return original_get(suffix)
+    monkeypatch.setattr(client, "get", missing_gemini_history)
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_gemini_child_failed_between_dispatcher_creation_and_completion_is_not_admitted(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="failure",
+    )
+    now = datetime.now(timezone.utc)
+    run["created_at"] = (now - timedelta(minutes=12)).isoformat()
+    run["updated_at"] = (now - timedelta(minutes=3)).isoformat()
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    original_get = client.get
+    def failed_during_dispatch(suffix):
+        result = original_get(suffix)
+        if suffix.startswith("actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?"):
+            result["workflow_runs"][0]["updated_at"] = (
+                now - timedelta(minutes=6)
+            ).isoformat()
+        return result
+    monkeypatch.setattr(client, "get", failed_during_dispatch)
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_gemini_route_requires_authenticated_created_at(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    del run["created_at"]
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+    run["created_at"] = "not-a-timestamp"
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_unrelated_worker_unparseable_timestamp_is_scoped(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    original_get = client.get
+    def corrupt_anthropic_timestamp(suffix):
+        result = original_get(suffix)
+        if suffix.startswith("actions/workflows/wow-v17-claude-engineering-worker.yml/runs?"):
+            result["workflow_runs"][0]["updated_at"] = "unavailable"
+        return result
+    monkeypatch.setattr(client, "get", corrupt_anthropic_timestamp)
     assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
 
 
