@@ -234,6 +234,37 @@ def test_resolved_nhl_receipt_must_match_source_event_teams_time_and_provenance(
         assert result["probability_publishable"] is False
 
 
+def test_official_start_already_passed_cannot_be_hidden_by_later_caller_time():
+    # The identity tolerance is 30m. A caller's timestamp can still be in
+    # the future even when the official game has already started.
+    evidence = valid()
+    evidence["event_start_time_utc"] = (NOW + timedelta(minutes=20)).isoformat()
+    receipt = trusted_identity()
+    receipt["event_start_time"] = (NOW - timedelta(minutes=1)).isoformat()
+
+    held = validate_nhl_pregame_evidence(
+        evidence, as_of_utc=NOW, resolved_identity=receipt
+    )
+    assert held["status"] == "HELD"
+    assert "NHL_EVENT_NOT_PREGAME" in held["blockers"]
+    assert "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH" not in held["blockers"]
+    assert held["probability_publishable"] is False
+    assert held["can_execute"] is False
+
+
+def test_official_and_caller_starts_future_remain_input_only_not_certified():
+    evidence = valid()
+    evidence["event_start_time_utc"] = (NOW + timedelta(minutes=25)).isoformat()
+    receipt = trusted_identity()
+    receipt["event_start_time"] = (NOW + timedelta(minutes=5)).isoformat()
+    result = validate_nhl_pregame_evidence(
+        evidence, as_of_utc=NOW, resolved_identity=receipt
+    )
+    assert result["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
 def test_resolver_receipt_allows_only_small_capture_clock_skew():
     receipt = trusted_identity()
     receipt["identity_verified_at"] = (NOW + timedelta(minutes=2)).isoformat()
