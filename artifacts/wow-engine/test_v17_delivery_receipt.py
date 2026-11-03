@@ -178,3 +178,47 @@ def test_saved_render_settings_cannot_certify_running_process_binding():
     assert out["render"]["runtime_supabase_binding_verified"] is False
     assert out["interpretation"]["saved_config_is_not_running_process_proof"] is True
     assert out["can_execute"] is False
+
+
+@pytest.mark.parametrize("failure", [
+    ConnectionResetError("connection reset while streaming response"),
+    __import__("http.client", fromlist=["IncompleteRead"]).IncompleteRead(b"", 50),
+])
+def test_transport_body_failures_are_typed_and_redacted(monkeypatch, failure):
+    class BrokenResponse:
+        headers = {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+        def read(self, _max_bytes):
+            raise failure
+    monkeypatch.setattr(d, "urlopen", lambda *_args, **_kwargs: BrokenResponse())
+    with pytest.raises(d.DeliveryError, match="^DELIVERY_SOURCE_READ_FAILED$"):
+        d._request_json("https://example.com", {})
+
+
+def test_invalid_render_service_id_holds_before_any_api_call():
+    def must_not_query(*_args):
+        raise AssertionError("attempted network before validating service identifier")
+    with pytest.raises(d.DeliveryError, match="^DELIVERY_RENDER_SERVICE_ID_INVALID$"):
+        d.build_receipt({**CFG, "RENDER_SERVICE_ID": "srv-../another"},
+                        db=StubDB(), at=NOW,
+                        render_env=must_not_query, render_deploy=must_not_query)
+
+
+def test_invalid_render_service_id_holds_in_direct_env_reader(monkeypatch):
+    monkeypatch.setattr(d, "_request_json", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("unexpected request")
+    ))
+    with pytest.raises(d.DeliveryError, match="^DELIVERY_RENDER_SERVICE_ID_INVALID$"):
+        d._render_supabase_ref("srv-id/../../env-vars", "test-key")
+
+
+@pytest.mark.parametrize("redacted", ["****", "", "REDACTED", "https://redacted.example"])
+def test_redacted_render_env_returns_env_unverified_not_bad_target(monkeypatch, redacted):
+    monkeypatch.setattr(d, "_request_json", lambda *_args: (
+        [{"envVar": {"key": "SUPABASE_URL", "value": redacted}}], {}
+    ))
+    with pytest.raises(d.DeliveryError, match="^DELIVERY_RENDER_ENV_UNVERIFIED$"):
+        d._render_supabase_ref(CFG["RENDER_SERVICE_ID"], "test-key")
