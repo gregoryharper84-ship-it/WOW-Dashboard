@@ -27,6 +27,37 @@ def _outcome(sport, attempted, *, persisted=0, next_offset=None, blockers=None):
     }
 
 
+def test_optional_http_injection_reaches_nfl_cache_and_mlb_producer(monkeypatch):
+    """Keep the old Daily injectable GET contract without making real requests."""
+    calls = []
+    reply = object()
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return reply
+
+    def nfl(**kwargs):
+        wrapped_get = kwargs["http_get"]
+        assert wrapped_get("https://example.invalid/scoreboard") is reply
+        assert wrapped_get("https://example.invalid/scoreboard") is reply
+        return _outcome("NFL", 2)
+
+    def mlb(**kwargs):
+        assert kwargs["http_get"] is fake_get
+        return _outcome("MLB", 2)
+
+    monkeypatch.setattr(dispatch, "acquire_nfl", nfl)
+    monkeypatch.setattr(dispatch, "acquire_mlb", mlb)
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=4,
+        http_get=fake_get,
+    )
+    assert result["attempted"] == 4
+    assert result["can_execute"] is False
+    assert len(calls) == 1
+
+
 def test_shared_attempt_ceiling_with_mlb_unused_rollover(monkeypatch):
     calls = []
     def nfl(**kwargs):
