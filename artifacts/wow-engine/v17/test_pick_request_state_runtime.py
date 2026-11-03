@@ -369,6 +369,13 @@ def test_rejected_missing_receipt_cannot_be_complete_processing(monkeypatch):
     outcome = _held('board-row-1', 'NO_LOW_PROBABILITY')
     outcome.update(terminal_status='REJECTED', model_evaluated=True)
     manifest = store.finalize(ctx, [outcome])
+    # Check the real first finalize: no artificial stage_seq adjustment or
+    # second empty finalize can make this test pass without the receipt guard.
+    persisted = db.tables[subject.ROW_TABLE][0]
+    assert persisted['terminal_status'] == 'REJECTED'
+    assert persisted['prediction_id'] is None
+    assert persisted['stage_seq'] < subject.STAGE_SEQ['RECEIPT_PERSISTED']
+    assert ctx.rows['board-row-1']['stage_seq'] < subject.STAGE_SEQ['RECEIPT_PERSISTED']
     assert manifest['unresolved_rows'] == 1
     assert manifest['run_status'] == 'BLOCKED'
     assert manifest['can_execute'] is False
