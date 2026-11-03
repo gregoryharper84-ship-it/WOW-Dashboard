@@ -46,7 +46,7 @@ def test_only_two_named_checks_removed_and_every_other_rule_preserved():
     assert source == original  # Pure planner, never mutates input
     assert set(target) == {"name", "target", "enforcement", "conditions", "rules", "bypass_actors"}
     new = {**original, **target}
-    m.verify_target(new)
+    m.verify_target(new, approved_payload=target)
     assert m._contexts(new) == m.TO_KEEP
     assert new["rules"][:3] == original["rules"][:3]
     assert new["bypass_actors"] == []
@@ -89,6 +89,36 @@ def test_target_rejects_missing_required_qa_or_release_or_regression():
         ]
         with pytest.raises(m.MigrationBlocked, match="FIVE_CHECK_TARGET_NOT_ACTIVE"):
             m.verify_target(wrong)
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda r: r["rules"][2]["parameters"].update(dismiss_stale_reviews_on_push=False),
+    lambda r: r["rules"][2]["parameters"].update(required_approving_review_count=1),
+    lambda r: r["rules"][2]["parameters"].update(allowed_merge_methods=["squash"]),
+    lambda r: r["rules"][2]["parameters"].update(required_review_thread_resolution=False),
+    lambda r: r["rules"].append({"type": "required_linear_history"}),
+    lambda r: r["rules"][3]["parameters"].update(do_not_enforce_on_create=True),
+])
+def test_verified_readback_never_accepts_other_protection_changes(mutation):
+    source = current_ruleset()
+    proposed = m.plan_migration(source)
+    observed = {**copy.deepcopy(source), **copy.deepcopy(proposed)}
+    mutation(observed)
+    with pytest.raises(m.MigrationBlocked, match=(
+        "PULL_REQUEST_PROTECTION_DRIFT|APPROVED_RULESET_PAYLOAD_DRIFT"
+    )):
+        m.verify_target(observed, approved_payload=proposed)
+
+
+def test_verification_requires_exact_approved_protection_payload():
+    source = current_ruleset()
+    proposal = m.plan_migration(source)
+    verified = {**copy.deepcopy(source), **copy.deepcopy(proposal)}
+    m.verify_target(verified, approved_payload=proposal)
+    bogus = copy.deepcopy(proposal)
+    bogus["rules"][2]["parameters"]["dismiss_stale_reviews_on_push"] = False
+    with pytest.raises(m.MigrationBlocked, match="APPROVED_RULESET_PAYLOAD_DRIFT"):
+        m.verify_target(verified, approved_payload=bogus)
 
 
 def test_original_seven_check_ruleset_is_not_misreported_as_migrated():
