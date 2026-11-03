@@ -130,24 +130,44 @@ def _render_deploy_sha(service_id: str, key: str) -> str:
 def _render_supabase_ref(service_id: str, key: str) -> str:
     if not re.fullmatch(r"srv-[a-z0-9]+", service_id):
         raise DeliveryError("DELIVERY_RENDER_SERVICE_ID_INVALID")
-    data, _ = _request_json(
-        "https://api.render.com/v1/services/" + service_id + "/env-vars",
-        {"Authorization": "Bearer " + key, "Accept": "application/json"},
-    )
-    if not isinstance(data, list):
-        raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
-    for item in data:
-        var = item.get("envVar") if isinstance(item, dict) else None
-        if isinstance(var, dict) and var.get("key") == "SUPABASE_URL":
-            value = var.get("value")
-            if not isinstance(value, str):
-                raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
-            # Render's saved secret may be redacted. Never classify masked
-            # environment data as a verified project target.
-            try:
-                return supabase_ref(value)
-            except DeliveryError as exc:
-                raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED") from exc
+    # Render returns a cursor on the last item in a full page. Searching only
+    # the default page can hide a later saved SUPABASE_URL. Never treat a
+    # truncated or malformed listing as proof of absence or identity.
+    cursor = None
+    seen_cursors: set[str] = set()
+    for _page in range(20):
+        url = "https://api.render.com/v1/services/" + service_id + "/env-vars?limit=100"
+        if cursor:
+            url += "&" + urlencode({"cursor": cursor})
+        data, _ = _request_json(
+            url,
+            {"Authorization": "Bearer " + key, "Accept": "application/json"},
+        )
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
+        for item in data:
+            var = item.get("envVar")
+            if isinstance(var, dict) and var.get("key") == "SUPABASE_URL":
+                value = var.get("value")
+                if not isinstance(value, str):
+                    raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
+                # Saved env settings can still be stale or redacted, so they
+                # are never proof of the running process's DB binding.
+                try:
+                    return supabase_ref(value)
+                except DeliveryError as exc:
+                    raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED") from exc
+        if len(data) < 100:
+            raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
+        tail_cursor = data[-1].get("cursor")
+        if (
+            not isinstance(tail_cursor, str) or not tail_cursor.strip()
+            or tail_cursor in seen_cursors
+        ):
+            raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
+        seen_cursors.add(tail_cursor)
+        cursor = tail_cursor
+    # A full 20-page scan may omit later pages; never silently accept it.
     raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
 
 
@@ -224,7 +244,11 @@ def build_receipt(
     calibration_including_future = client.count("wow_calibrators", fitted_at="gte." + fitted_after)
     calibration_future = client.count("wow_calibrators", fitted_at="gt." + future_cutoff)
     calibration_recent = calibration_including_future - calibration_future
-    if min(non_self_actions, chatgpt_actions, calibration_recent) < 0:
+    if (
+        calibration_future > calibration_total
+        or calibration_including_future > calibration_total
+        or min(non_self_actions, chatgpt_actions, calibration_recent) < 0
+    ):
         raise DeliveryError("DELIVERY_COUNT_NOT_PROVEN")
     latest_fit, _ = client.rows(
         "wow_calibrators", "fitted_at,active,promoted",
