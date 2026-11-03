@@ -29,6 +29,8 @@ class StubDB:
             return 21
         if table == "wow_calibrators":
             return 10
+        if table == "wow_action_invocation_receipts" and "caller_class" in filters:
+            return 23 if filters["caller_class"] == "neq.SELF_ACCEPTANCE" else 5
         if filters and any(key in filters for key in ("created_at", "occurred_at")):
             if any(str(v).startswith("gt.") for v in filters.values()):
                 return 0
@@ -154,3 +156,13 @@ def test_cli_missing_config_exit_two_without_counts_or_secret(tmp_path, monkeypa
     assert doc["code"] == "DELIVERY_CONFIGURATION_MISSING"
     assert "supabase" not in doc
     assert "fake-test-only" not in file.read_text()
+
+
+def test_external_action_evidence_is_not_self_acceptance():
+    out, db = collect()
+    composition = out["supabase"]["action_receipt_composition"]
+    assert composition == {"non_self_acceptance": 23, "chatgpt_action": 5}
+    assert ("wow_action_invocation_receipts", {
+        "occurred_at": "gte.2026-10-30T23:59:00Z",
+        "caller_class": "neq.SELF_ACCEPTANCE",
+    }) in db.calls
