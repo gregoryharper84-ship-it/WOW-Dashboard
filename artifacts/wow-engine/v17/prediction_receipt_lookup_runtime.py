@@ -30,6 +30,16 @@ import pick_request_runtime_core as pick_runtime
 
 
 PREDICTION_TABLE = "wow_predictions"
+NFL_EVENT_PREDICTION_TABLE = "wow_nfl_event_predictions"
+_NFL_EVENT_SELECT_FIELDS = ",".join([
+    "event_prediction_id", "official_event_id", "event_key", "created_at",
+    "event_start_time_utc", "model_timestamp", "home_team", "away_team",
+    "selected_participant", "opponent", "model_family", "model_version",
+    "calibrated_selection_probability", "calibrated_selection_lower_bound",
+    "calibrated_selection_upper_bound", "model_package_valid",
+    "provenance_complete", "model_probability_publishable",
+    "blend_publishable", "can_execute",
+])
 ROW_STATE_TABLE = "wow_pick_request_row_states"
 _REQUIRED_FALLBACK_IDENTITY = ("event_id", "player", "stat_type", "line", "direction")
 _SELECT_FIELDS = ",".join(
@@ -96,6 +106,7 @@ class PredictionReceiptLookupRow(BaseModel):
 
     row_key: Optional[str] = None
     prediction_id: Optional[str] = None
+    market_family: Optional[str] = None
     event_id: Optional[str] = None
     sport: Optional[str] = None
     player: Optional[str] = None
@@ -204,6 +215,54 @@ def _query_for(db: Any, request: PredictionReceiptLookupRow) -> Any:
     return _apply_optional_filters(query, request).order("created_at", desc=True).limit(5)
 
 
+def _nfl_event_query_for(db: Any, request: PredictionReceiptLookupRow) -> Any:
+    """Read one exact NFL event UUID, never an adjacent event or prop receipt."""
+    if _text(request.sport).upper() != "NFL":
+        raise ValueError("MODEL_ROUTE_UNSUPPORTED")
+    if not _text(request.prediction_id):
+        raise ValueError("PREDICTION_RECEIPT_LOOKUP_IDENTITY_INSUFFICIENT:prediction_id")
+    try:
+        event_id = str(uuid.UUID(_text(request.prediction_id)))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("PREDICTION_RECEIPT_LOOKUP_IDENTITY_INSUFFICIENT:prediction_id") from exc
+    return (
+        db.table(NFL_EVENT_PREDICTION_TABLE).select(_NFL_EVENT_SELECT_FIELDS)
+        .eq("event_prediction_id", event_id).limit(2)
+    )
+
+
+def _nfl_event_identity_conflicts(
+    row: dict[str, Any], request: PredictionReceiptLookupRow
+) -> list[str]:
+    """Fail closed when supplied NFL event identity disagrees with the immutable row."""
+    conflicts: list[str] = []
+    if _text(request.event_id) and _text(request.event_id) not in {
+        _text(row.get("official_event_id")), _text(row.get("event_key"))
+    }:
+        conflicts.append("event_id")
+    if _text(request.sport).upper() != "NFL":
+        conflicts.append("sport")
+    if _text(request.team) and _text(request.team) != _text(row.get("selected_participant")):
+        conflicts.append("team")
+    if _text(request.opponent) and _text(request.opponent) != _text(row.get("opponent")):
+        conflicts.append("opponent")
+    for field in ("player", "stat_type", "line", "direction"):
+        if _has_value(request, field):
+            conflicts.append(field)
+    event_start = _aware(row.get("event_start_time_utc"))
+    minimum = _aware(request.event_start_min)
+    maximum = _aware(request.event_start_max)
+    if request.event_start_min and (
+        event_start is None or minimum is None or event_start < minimum
+    ):
+        conflicts.append("event_start_min")
+    if request.event_start_max and (
+        event_start is None or maximum is None or event_start >= maximum
+    ):
+        conflicts.append("event_start_max")
+    return conflicts
+
+
 def _identity_conflicts(
     row: dict[str, Any], request: PredictionReceiptLookupRow
 ) -> list[str]:
@@ -253,6 +312,39 @@ def _receipt(row: dict[str, Any]) -> dict[str, Any]:
         "calibrated_upper_bound": row.get("calibrated_probability_upper_bound"),
         "probability_publishable": bool(row.get("probability_publishable")),
         "terminal_label": row.get("probability_ceiling"),
+        "can_execute": False,
+    }
+
+
+def _nfl_event_receipt(row: dict[str, Any]) -> dict[str, Any]:
+    """Expose persisted NFL model evidence without certifying or terminally publishing."""
+    created = _aware(row.get("created_at"))
+    model_ts = _aware(row.get("model_timestamp"))
+    event_start = _aware(row.get("event_start_time_utc"))
+    immutable_pregame = bool(
+        created is not None and model_ts is not None and event_start is not None
+        and created < event_start and model_ts < event_start
+        and row.get("can_execute") is False
+        and row.get("model_package_valid") is True
+        and row.get("provenance_complete") is True
+    )
+    return {
+        "governed_prediction_id": row.get("event_prediction_id"),
+        "governed_prediction_table": NFL_EVENT_PREDICTION_TABLE,
+        "is_immutable_pregame": immutable_pregame,
+        "prediction": row,
+        "calibrated_probability": row.get("calibrated_selection_probability"),
+        "calibrated_lower_bound": row.get("calibrated_selection_lower_bound"),
+        "calibrated_upper_bound": row.get("calibrated_selection_upper_bound"),
+        "model_probability_publishable": row.get("model_probability_publishable") is True,
+        "blend_publishable": row.get("blend_publishable") is True,
+        "probability_publishable": (
+            row.get("model_probability_publishable") is True
+            and row.get("blend_publishable") is True
+        ),
+        "model_family": row.get("model_family"),
+        "model_version": row.get("model_version"),
+        "terminal_label": None,  # Only V17_TERMINAL_REDUCER can supply authority.
         "can_execute": False,
     }
 
@@ -431,7 +523,14 @@ def lookup_prediction_receipts(
     for index, requested in enumerate(batch.rows):
         row_key = requested.row_key or f"row-{index + 1}"
         try:
-            result = _query_for(db, requested).execute()
+            event_lookup = _text(requested.market_family).upper() == "OUTRIGHT_WINNER"
+            if _text(requested.market_family) and not event_lookup:
+                raise ValueError("MODEL_ROUTE_UNSUPPORTED")
+            query = (
+                _nfl_event_query_for(db, requested)
+                if event_lookup else _query_for(db, requested)
+            )
+            result = query.execute()
             rows = list(getattr(result, "data", None) or [])
         except ValueError as exc:
             blocked += 1
@@ -463,7 +562,10 @@ def lookup_prediction_receipts(
             continue
 
         if _text(requested.prediction_id) and len(rows) == 1:
-            conflicts = _identity_conflicts(dict(rows[0]), requested)
+            conflicts = (
+                _nfl_event_identity_conflicts(dict(rows[0]), requested)
+                if event_lookup else _identity_conflicts(dict(rows[0]), requested)
+            )
             if conflicts:
                 blocked += 1
                 outcomes.append(
@@ -482,9 +584,12 @@ def lookup_prediction_receipts(
                 )
                 continue
 
-        receipts = [_receipt(dict(row)) for row in rows]
+        receipts = [
+            _nfl_event_receipt(dict(row)) if event_lookup else _receipt(dict(row))
+            for row in rows
+        ]
         if not receipts:
-            durable = _durable_recovery_outcome(
+            durable = None if event_lookup else _durable_recovery_outcome(
                 db,
                 request_id=batch.request_id,
                 requested=requested,
