@@ -75,3 +75,34 @@ def test_existing_transient_read_recovery_is_preserved(monkeypatch, status):
     assert result == (200, {"verified": True})
     assert len(calls) == 2
     assert sleeps == [1]
+
+
+@pytest.mark.parametrize('status', [403, 429])
+@pytest.mark.parametrize('retry_after,reset,expected_delay', [('1','1004',4),('4','1001',4)])
+def test_combined_hints_honor_the_longer_wait(monkeypatch,status,retry_after,reset,expected_delay):
+    result,calls,sleeps=exercise(monkeypatch,status=status,headers={
+        'Retry-After':retry_after,'X-RateLimit-Remaining':'0','X-RateLimit-Reset':reset})
+    assert result == (200,{'verified':True})
+    assert calls == ['GET','GET']
+    assert sleeps == [expected_delay]
+
+
+@pytest.mark.parametrize('status', [403, 429])
+@pytest.mark.parametrize('retry_after,reset', [('1','1010'),('10','1001')])
+def test_either_over_budget_hint_prevents_early_retry(monkeypatch,status,retry_after,reset):
+    result,calls,sleeps=exercise(monkeypatch,status=status,headers={
+        'Retry-After':retry_after,'X-RateLimit-Remaining':'0','X-RateLimit-Reset':reset})
+    assert result == (status,None)
+    assert calls == ['GET']
+    assert sleeps == []
+
+
+@pytest.mark.parametrize('headers', [
+    {'Retry-After':'200'}, {'Retry-After':'invalid'},
+    {'X-RateLimit-Remaining':'0','X-RateLimit-Reset':'invalid'},
+])
+def test_long_or_malformed_429_hints_stay_failed_closed(monkeypatch,headers):
+    result,calls,sleeps=exercise(monkeypatch,status=429,headers=headers)
+    assert result == (429,None)
+    assert calls == ['GET']
+    assert sleeps == []
