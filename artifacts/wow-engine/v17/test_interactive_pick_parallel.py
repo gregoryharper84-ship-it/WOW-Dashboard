@@ -164,3 +164,33 @@ def test_full_mode_keeps_canonical_serial_boundary(monkeypatch):
     assert response.status_code == 200
     assert response.json()["can_execute"] is False
     assert calls == [2]
+
+
+def test_parallel_rejected_board_finishes_without_approving_a_pick():
+    batch = PickRequestBatch(request_id='parallel-rejected', response_mode='COMPACT',
+                             rows=[_row('a'), _row('b')])
+    outcomes = [{
+        'row_key': key, 'terminal_status':'REJECTED', 'code':'NO_LOW_PROBABILITY',
+        'model_evaluated':False, 'rank_eligible':False,
+        'probability_publishable':False, 'can_execute':False,
+    } for key in ['a','b']]
+    response = subject._merge_compact_response(batch,outcomes,workers=2)
+    assert response['run_controller_status'] == 'COMPLETE'
+    assert response['reconciliation_pass'] is True
+    assert response['rows_rejected'] == 2
+    assert response['ok'] is False
+    assert all(row['terminal_status'] == 'REJECTED' for row in response['rows'])
+    assert all(row['rank_eligible'] is False for row in response['rows'])
+    assert response['can_execute'] is False
+
+
+def test_parallel_missing_outcome_cannot_report_complete():
+    batch = PickRequestBatch(request_id='parallel-missing',response_mode='COMPACT',
+                             rows=[_row('a'),_row('b')])
+    response = subject._merge_compact_response(batch,[{
+        'row_key':'a','terminal_status':'COMPLETED','model_evaluated':False,
+        'rank_eligible':False,'probability_publishable':False,'can_execute':False,
+    }],workers=2)
+    assert response['reconciliation_pass'] is False
+    assert response['run_controller_status'] == 'BLOCKED'
+    assert response['can_execute'] is False
