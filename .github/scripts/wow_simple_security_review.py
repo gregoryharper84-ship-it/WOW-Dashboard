@@ -5,7 +5,7 @@ Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 """
 import hashlib
-from http.client import IncompleteRead
+from http.client import HTTPException
 import json
 import os
 import re
@@ -167,7 +167,8 @@ def github_http_rejection_label(exc):
         return "PRIMARY_RATE_LIMIT"
     try:
         obj = json.loads(exc.read(4096))
-    except (ValueError, TypeError, AttributeError, OSError, IncompleteRead):
+    except (ValueError, TypeError, AttributeError, OSError,
+            HTTPException, RecursionError):
         obj = {}
     message = obj.get("message", "") if isinstance(obj, dict) else ""
     words = message.lower() if isinstance(message, str) else ""
@@ -290,7 +291,8 @@ def request_json(url, *, token=None, data=None, headers=None, _github_get_retry=
                                or 500 <= exc.code <= 599):
             try:
                 parsed = json.loads(exc.read(4096))
-            except (ValueError, TypeError, AttributeError, OSError, IncompleteRead):
+            except (ValueError, TypeError, AttributeError, OSError,
+            HTTPException, RecursionError):
                 parsed = {}
             provider_body = parsed if isinstance(parsed, dict) else {}
             print("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_" + str(exc.code) + ":"
