@@ -470,6 +470,22 @@ def test_dispatcher_route_receipt_from_unsuccessful_run_never_admits(
     assert not any("engineering-worker.yml/runs?" in path for path in calls)
 
 
+@pytest.mark.parametrize("provider,action,reason", [
+    ("gemini", "DISPATCH", "REMOTE_WRITER_RECONCILIATION_REQUIRED"),
+    ("openai", "DISPATCH", "REMOTE_WRITER_RECONCILIATION_REQUIRED"),
+    ("deterministic", "DISPATCH", "REMOTE_WRITER_RECONCILIATION_REQUIRED"),
+    ("gemini", "SURVIVAL", "REMOTE_WRITER_RECONCILIATION_REQUIRED"),
+])
+def test_failed_dispatcher_unrelated_route_never_uses_cursor_release(
+    monkeypatch, provider, action, reason,
+):
+    client, run, route, calls = _provider_evidence(monkeypatch, action=action)
+    run["conclusion"] = "failure"
+    route.update(provider=provider, action=action, reason=reason)
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+    assert not any("remote-writer-finalize" in path for path in calls)
+
+
 def test_gemini_successful_dispatch_receipt_is_not_a_second_resident_launch(monkeypatch):
     client, run, route, calls = _provider_evidence(monkeypatch, action="DISPATCH")
     route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
