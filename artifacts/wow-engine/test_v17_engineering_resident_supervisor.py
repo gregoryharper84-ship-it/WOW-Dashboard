@@ -1385,7 +1385,7 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
                 "id": 900, "run_attempt": 1,
                 "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
                 "head_branch": "main", "head_sha": sha, "status": "completed",
-                "updated_at": stamp,
+                "conclusion": "success", "updated_at": stamp,
             }]}
         if suffix == "actions/runs/900/artifacts?per_page=100":
             return {"total_count": 1, "artifacts": [{
