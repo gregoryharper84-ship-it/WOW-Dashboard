@@ -107,6 +107,30 @@ class Test24x7(unittest.TestCase):
         ], [])
         self.assertEqual((result["action"], result["incident"]), ("BUILD", 1021))
 
+    def test_held_ready_pr_does_not_starve_unrelated_restoration(self):
+        result = mod.plan([
+            issue(1021, "P0", updated_at="2026-11-02T23:00:00Z"),
+            issue(1688, "P0", updated_at="2026-11-02T22:00:00Z"),
+        ], [pr(2374, 1021)])
+        self.assertEqual((result["action"], result["incident"]),
+                         ("BUILD", 1688))
+        self.assertFalse(result["can_execute"])
+
+    def test_held_pr_falls_back_to_exact_pr_resume_if_no_build_exists(self):
+        result = mod.plan([
+            issue(1021, "P0", updated_at="2026-11-02T23:00:00Z"),
+            issue(1988, "P0", updated_at="2026-11-02T22:00:00Z"),
+        ], [pr(2374, 1021), pr(2211, 1988, draft=True)])
+        self.assertEqual((result["action"], result["incident"], result["pr"]),
+                         ("RESUME_PR", 1021, 2374))
+        self.assertFalse(result["can_execute"])
+
+    def test_exact_target_still_follows_its_own_held_pr(self):
+        result = mod.plan([issue(1021, "P0"), issue(1688, "P0")],
+                          [pr(2374, 1021)], target=1021)
+        self.assertEqual((result["action"], result["pr"]),
+                         ("RESUME_PR", 2374))
+
     def test_existing_draft_does_not_spawn_duplicate_or_starve_other_recovery(self):
         result = mod.plan([
             issue(1021, "P0", updated_at="2026-11-02T01:10:00Z"),
