@@ -593,12 +593,12 @@ def hydrate(
                     )
                     first_covered_et = last_completed_et - timedelta(days=13)
                     if latest_before < first_covered_et - timedelta(days=1):
-                        recent_supplement[year] = (
-                            "SOURCE_BLOCKED:ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+                        # Never silently omit a requested season from the
+                        # acquisition result. Emit a typed hydration blocker
+                        # and do not advance the persisted date fence.
+                        raise BasketballHydrationError(
+                            "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
                         )
-                        # Leave the licensed settled corpus unchanged; a
-                        # trusted full-season backfill must bridge this gap.
-                        continue
                     try:
                         recent = fetch_recent_espn_settlements(sport, now=clock)
                         supplemental_rows = [
