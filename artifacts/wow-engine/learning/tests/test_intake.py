@@ -83,6 +83,26 @@ class ReporterLearningIntakeTests(unittest.TestCase):
         self.assertIn("lookup_status: UNAVAILABLE", pm.postmortem.read_text())
         self.assertNotIn("prior_root_cause:", pm.postmortem.read_text())
 
+    def test_helper_syntax_and_runtime_import_failures_preserve_intake(self):
+        helper = reporter.ROOT.parent / "learning" / "lessons.py"
+        for source in (
+            "def broken(:\n",
+            "raise RuntimeError('helper initialization failed')\n",
+            "def intake_advice(*args, **kwargs):\n"
+            "    raise RuntimeError('advisory lookup failed')\n",
+        ):
+            with self.subTest(source=source):
+                helper.write_text(source)
+                pm = self.create("OBSERVABILITY_CORRELATION")
+                body = pm.postmortem.read_text()
+                self.assertIn("lookup_status: UNAVAILABLE", body)
+                self.assertNotIn("prior_root_cause:", body)
+                incident = json.loads(self.ledger.read_text())["records"][-1]
+                self.assertEqual(incident["workflow_stage"], "REPORTER_INTAKE")
+                self.assertEqual(incident["root_cause_status"], "PENDING")
+                self.assertIs(incident["release"]["production_verified"], False)
+                self.assertIs(json.loads(self.ledger.read_text())["can_execute"], False)
+
     def test_helper_without_the_advisory_api_is_typed_unavailable(self):
         (reporter.ROOT.parent / "learning" / "lessons.py").write_text(
             "def unrelated():\n    return None\n")
