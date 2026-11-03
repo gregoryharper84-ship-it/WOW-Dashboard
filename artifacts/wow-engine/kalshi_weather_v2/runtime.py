@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -15,7 +16,7 @@ from .orchestrator import evaluate_weather_contract
 from .persistence import KalshiWeatherPersistence, content_id
 from .probability_core import WeatherProbabilityCore
 from .settlement_digital_twin import build_atomic_temperature_twin
-from .source_adapters import NwsAdapter, OpenMeteoAdapter
+from .free_forecast_acquisition import acquire_hourly_forecasts
 
 
 MODEL_VERSION = "KALSHI_WEATHER_V2_HOURLY_SHADOW_R1"
@@ -103,29 +104,21 @@ def capture_hourly_shadow(
         contract = parsed.to_contract_snapshot(rules)
         persistence.persist_rule_package(rules)
 
-        nws = NwsAdapter(get_json)
-        point_snapshot = nws.point_metadata(
-            float(forecast_latitude),
-            float(forecast_longitude),
-            retrieved_at=now,
-        )
-        forecast_hourly_url = _forecast_hourly_url(point_snapshot.payload)
-        nws_hourly = nws.hourly_forecast(forecast_hourly_url, retrieved_at=now)
-
         target = _parse_utc(parsed.observation_time_utc)
-        target_date = target.date().isoformat()
-        open_meteo = OpenMeteoAdapter(get_json).multi_model_hourly_temperatures(
-            float(forecast_latitude),
-            float(forecast_longitude),
-            target_date,
-            target_date,
-            models,
+        sources = acquire_hourly_forecasts(
+            get_json,
+            latitude=float(forecast_latitude),
+            longitude=float(forecast_longitude),
+            target_date=target.date().isoformat(),
+            models=models,
             retrieved_at=now,
+            secondary_enabled=os.getenv("WOW_KALSHI_WEATHER_OPEN_METEO_ENABLED", "0") == "1",
         )
+        point_snapshot, nws_hourly, open_meteo = sources.point, sources.nws, sources.secondary
 
         point_id = source_snapshot_id(point_snapshot)
         nws_id = source_snapshot_id(nws_hourly)
-        om_id = source_snapshot_id(open_meteo)
+        om_id = source_snapshot_id(open_meteo) if open_meteo is not None else None
         persistence.persist_source_snapshot(
             rule_snapshot_id=contract.rule_snapshot_id,
             source_snapshot_id=point_id,
@@ -136,11 +129,12 @@ def capture_hourly_shadow(
             source_snapshot_id=nws_id,
             snapshot=nws_hourly,
         )
-        persistence.persist_source_snapshot(
-            rule_snapshot_id=contract.rule_snapshot_id,
-            source_snapshot_id=om_id,
-            snapshot=open_meteo,
-        )
+        if open_meteo is not None:
+            persistence.persist_source_snapshot(
+                rule_snapshot_id=contract.rule_snapshot_id,
+                source_snapshot_id=om_id,
+                snapshot=open_meteo,
+            )
 
         evidence = build_hourly_weather_evidence(
             contract=contract,
@@ -175,9 +169,9 @@ def capture_hourly_shadow(
             lane=contract.lane,
             lead_time_bucket=lead_bucket,
             fitted_before=now,
-        )
+        ) if evidence.evidence_complete else None
         blockers: list[str] = []
-        warnings: list[str] = []
+        warnings: list[str] = list(sources.warnings)
         calibration_profile_id: str | None = None
         if calibration_row is None:
             probability = _missing_probability("CALIBRATION_PROFILE_UNAVAILABLE")
@@ -255,6 +249,8 @@ def capture_hourly_shadow(
             "probability_source": probability.probability_source,
             "capability": dict(capability),
             "terminal": asdict(terminal),
+            "forecast_acquisition_policy": "NWS_REQUIRED_SECONDARY_OPTIONAL_R1",
+            "source_acquisition_warnings": list(sources.warnings),
             "market_price_used_as_model_input": False,
             "can_execute": False,
         }
