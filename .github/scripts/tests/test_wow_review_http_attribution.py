@@ -207,6 +207,31 @@ class HttpAttributionTests(unittest.TestCase):
         self.assertEqual(m.provider_rejection_label({"error": {"type": "x"}}),
                          "ERROR_TYPE_UNCLASSIFIED")
 
+    def test_truncated_provider_error_body_keeps_status_based_decision(self):
+        """A broken chunk must not interrupt 429/503 reviewer-provider fallback."""
+        import contextlib
+        from http.client import IncompleteRead
+
+        class BrokenBody:
+            def read(self, _limit):
+                raise IncompleteRead(b"SECRET PARTIAL BODY", 100)
+
+        for url, code, expected in (
+            (ANTHROPIC, 429, "PROVIDER_HTTP_429"),
+            (GEMINI, 503, "PROVIDER_HTTP_503"),
+        ):
+            with self.subTest(url=url, status=code):
+                error = HTTPError(url, code, "broken", {}, BrokenBody())
+                stderr = io.StringIO()
+                with patch.object(m.HTTP_CLIENT, "open", side_effect=error):
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(m.ProviderUnavailable) as outcome:
+                            m.request_json(url, data={"model": "approved"}, headers={})
+                self.assertEqual(str(outcome.exception), expected)
+                self.assertIn("ERROR_UNCLASSIFIED", stderr.getvalue())
+                self.assertNotIn("SECRET", stderr.getvalue())
+                self.assertNotIn("PARTIAL BODY", stderr.getvalue())
+
     def test_rate_limit_rejection_is_attributed_and_still_fallback_eligible(self):
         import contextlib
         body = {"type": "error",
