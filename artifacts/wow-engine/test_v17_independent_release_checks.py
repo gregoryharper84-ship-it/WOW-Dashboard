@@ -546,6 +546,20 @@ def test_missing_aggregate_defers_only_for_authentic_active_native_job():
     assert m.pending_required_regressions(ev) == ["WOW required-three regression"]
 
 
+def test_raw_qa_app_reject_is_derived_from_signed_failing_check_only():
+    raw = {"id": 9701, "name": m.SECURITY_REVIEW_CHECK,
+           "head_sha": HEAD, "status": "completed", "conclusion": "failure",
+           "app": {"id": m.SECURITY_REVIEW_APP_ID},
+           "output": {"title": m.SECURITY_REJECT_TITLE}}
+    assert m._raw_security_check_rejected(raw) is True
+    for key, value in (
+        ("conclusion", "success"),
+        ("app", {"id": m.SECURITY_REVIEW_APP_ID + 1}),
+        ("output", {"title": "HOLD — independent semantic source review"}),
+    ):
+        assert m._raw_security_check_rejected({**raw, key: value}) is False
+
+
 def signed_semantic_reject_check(*, app_id=m.SECURITY_REVIEW_APP_ID, head=HEAD,
                                   reject=True):
     return {"id": 9701, "name": m.SECURITY_REVIEW_CHECK,
