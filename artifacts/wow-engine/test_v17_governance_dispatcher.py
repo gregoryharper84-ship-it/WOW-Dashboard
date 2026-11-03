@@ -964,6 +964,41 @@ def test_dispatch_attempts_never_blindly_repeat(role, reviewer_status, role_stat
 
 
 @pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize("review_decision,expected", [
+    ("PASS", "PASS"), ("REJECT", "REJECT"), ("HOLD", "INVALID"),
+])
+def test_provenance_valid_source_artifact_does_not_erase_semantic_reject(
+    review_decision, expected,
+):
+    class SignedFixture:
+        SourceReviewError = FakeSourceReviewError
+
+        @staticmethod
+        def resolve_current_source_review(**kwargs):
+            assert kwargs["pr_number"] == 41
+            assert kwargs["head_sha"] == HEAD
+            return {"artifact": {"review": {"decision": review_decision}}}
+
+    class FakeClient:
+        token = "read-only-test-token"
+
+        def get(self, _):
+            pytest.fail("validated reviewer fixture must not request extra API data")
+
+    result = transport.source_review_status(
+        FakeClient(), module=SignedFixture(), pr=make_pull(),
+        files=[make_file()], source_runs=[],
+    )
+    assert result == expected
+    if expected == "REJECT":
+        blocked = classify(
+            source_review=result, zero_credit_mode=False,
+            check_runs=required_ci_checks(),
+        )
+        assert blocked["action"] == "HOLD"
+        assert blocked["findings"] == ["SOURCE_REVIEW_REJECT"]
+
+
 def test_expired_source_review_artifact_is_identified_for_bounded_refresh(expired):
     module = source_review_module()
 
