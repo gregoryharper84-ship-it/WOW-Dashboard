@@ -93,6 +93,7 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
     expected_total: int | None = None
     count = 0
     current_seen = False
+    verified_other_incident_refusal = False
     # Bounded pagination, never infer first-use from a truncated run inventory.
     for page in range(1, 51):
         try:
@@ -205,16 +206,21 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                         and run.get("path") == f".github/workflows/{workflow}"
                         and _verified_different_incident_delivery(
                             job, logs, target_incident)):
-                    return {"status": "ADMITTED",
-                            "code": "PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT",
-                            "can_execute": False}
+                    # Continue scanning earlier authenticated attempts. A
+                    # refusal for this exact target may precede another
+                    # incident's refusal; the latter cannot erase the former.
+                    verified_other_incident_refusal = True
+                    continue
                 # All other policy, code and unclassified failures remain held.
                 return held("PROVIDER_WORKER_FAILED_REVIEW_REQUIRED:"+finding.code)
         count += len(entries)
         if count == total:
             if not current_seen:
                 return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
-            return {"status": "ADMITTED", "code": "NO_PREVIOUS_PROVIDER_INVOCATION",
+            return {"status": "ADMITTED",
+                    "code": ("PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT"
+                             if verified_other_incident_refusal
+                             else "NO_PREVIOUS_PROVIDER_INVOCATION"),
                     "can_execute": False}
     return held("PROVIDER_WORKER_INVENTORY_PAGE_CAP")
 
