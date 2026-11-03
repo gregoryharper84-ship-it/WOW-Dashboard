@@ -6,8 +6,8 @@ service credential. A skipped test is never concurrency evidence.
 
 It proves, on real backends rather than in-process mocks:
 
-* the reconciler's NOWAIT ledger lock makes concurrent maintenance passes and
-  live worker writes mutually exclusive instead of interleaved;
+* the reconciler locks parent rows before a new-command lease check;
+  claims share-lock those same parents, preventing stale-snapshot stops;
 * a heartbeat committed while a pass is already running cannot be clobbered by
   that pass (the second stale/status re-check after the row lock is released);
 * an unexpired worker lease keeps its run untouched;
@@ -279,3 +279,27 @@ def test_claim_and_reconcile_interleavings_never_resurrect_or_deadlock():
 
     assert violations == [], violations[:3]
     assert deadlocks == [], deadlocks[:3]
+
+
+def test_uncommitted_parent_share_claim_is_skipped_then_fresh_lease_is_preserved():
+    seed_run(total=1, row_terms=[("PENDING", False, 0)], lease_seconds=-60)
+    with connection(autocommit=False) as worker:
+        assert claim(worker)
+        # A real uncommitted claim holds the parent SHARE lock. Reconciliation
+        # must skip it; after commit the new command must see its fresh lease.
+        assert reconcile() == []
+        assert run_state()[0] == "RUNNING"
+        worker.commit()
+    assert reconcile() == []
+    assert run_state()[0] == "RUNNING"
+    assert job_state()[0:2] == ("RUNNING", "worker-a")
+
+
+def test_reconciler_refuses_a_stale_repeatable_read_snapshot():
+    seed_run()
+    with connection(autocommit=False) as db:
+        db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        with pytest.raises(psycopg.errors.ActiveSqlTransaction, match="READ COMMITTED"):
+            reconcile(db)
+        db.rollback()
+    assert run_state()[0] == "RUNNING"

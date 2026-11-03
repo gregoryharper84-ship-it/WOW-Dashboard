@@ -47,3 +47,14 @@ def test_reconciler_stopped_run_trigger_guards_upsert_and_plain_update():
     assert "j.lease_expires_at > v_now" in sql
     assert "r.run_status = 'running'" in sql
     assert "r.updated_at < v_cutoff" in sql
+
+
+def test_reconciler_rechecks_active_lease_in_new_command_after_parent_lock():
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parent / 'migrations' /
+           '20261103_pick_request_governed_rejection_status.sql').read_text().lower()
+    lock_end = sql.index('for update of r skip locked')
+    query_start = sql.index('return query')
+    assert lock_end < query_start
+    assert ';' in sql[lock_end:query_start]
+    assert 'r.run_id = any(v_locked_run_ids)' in sql[query_start:]

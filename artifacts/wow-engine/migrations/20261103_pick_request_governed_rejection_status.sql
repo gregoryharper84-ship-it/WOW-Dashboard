@@ -24,23 +24,32 @@ as $$
 declare
     v_now timestamptz := clock_timestamp();
     v_cutoff timestamptz;
+    v_locked_run_ids text[];
 begin
     if p_stale_after_seconds < 300 then
         raise exception 'STALE_AFTER_SECONDS_TOO_SMALL';
     end if;
 
-    -- A maintenance pass must not race a worker reclaim or a run heartbeat.
-    -- A whole-table SHARE ROW EXCLUSIVE lock cannot deliver that: it is
-    -- compatible with the ROW SHARE lock an in-flight writer already holds
-    -- after `SELECT ... FOR UPDATE`, yet it conflicts with the ROW EXCLUSIVE
-    -- lock that same writer needs next. The result is a real deadlock with any
-    -- run-state writer (heartbeat, finalize, claim), not exclusion.
-    -- Lock the candidate run rows instead. SKIP LOCKED skips work another
-    -- transaction already owns, so a pass neither waits nor deadlocks, and no
-    -- external I/O ever happens while a row lock is held.
-
+    -- Claims take FOR SHARE on the parent. Lock eligible parents first,
+    -- then check leases in a separate command with a fresh snapshot.
+    -- A reclaim committed during the lock scan must be visible to that check.
+    if current_setting('transaction_isolation') <> 'read committed' then
+        raise exception 'reconciliation requires READ COMMITTED'
+            using errcode = '25001';
+    end if;
     v_now := clock_timestamp();
     v_cutoff := v_now - make_interval(secs => p_stale_after_seconds);
+    select array_agg(locked.run_id) into v_locked_run_ids
+    from (
+        select r.run_id
+        from public.wow_pick_request_runs r
+        where r.run_status = 'RUNNING' and r.updated_at < v_cutoff
+        for update of r skip locked
+    ) locked;
+    if v_locked_run_ids is null then
+        return;
+    end if;
+    v_now := clock_timestamp();
 
     return query
     with candidates as (
@@ -52,7 +61,8 @@ begin
             r.resumed_rows,
             r.updated_at
         from public.wow_pick_request_runs r
-        where r.run_status = 'RUNNING'
+        where r.run_id = any(v_locked_run_ids)
+          and r.run_status = 'RUNNING'
           and r.updated_at < v_cutoff
           and not exists (
               select 1
