@@ -225,3 +225,35 @@ $$;
 revoke all on function public.wow_reconcile_stale_pick_request_runs(integer) from public, anon, authenticated;
 grant execute on function public.wow_reconcile_stale_pick_request_runs(integer) to service_role;
 
+-- Exact-once terminal fence. A direct /score-pick-request writer can finish
+-- after this reconciler stops an expired parent run. A later plain UPDATE or
+-- INSERT ... ON CONFLICT DO UPDATE must not resurrect that stopped run.
+-- This is independent of Python wrapper patches and applies to all writers.
+create or replace function public.wow_reject_stopped_pick_request_run_reopen()
+returns trigger
+language plpgsql
+security invoker
+set search_path = pg_catalog, public
+as $
+begin
+    if left(coalesce(old.run_status, ''), 8) = 'STOPPED_'
+       and new.run_status is distinct from old.run_status then
+        raise exception 'PICK_REQUEST_STOPPED_RUN_IMMUTABLE'
+            using errcode = '23514';
+    end if;
+    return new;
+end;
+$;
+
+revoke all on function public.wow_reject_stopped_pick_request_run_reopen()
+    from public, anon, authenticated;
+grant execute on function public.wow_reject_stopped_pick_request_run_reopen()
+    to service_role;
+
+drop trigger if exists wow_pick_request_stopped_run_fence
+    on public.wow_pick_request_runs;
+create trigger wow_pick_request_stopped_run_fence
+    before update on public.wow_pick_request_runs
+    for each row
+    execute function public.wow_reject_stopped_pick_request_run_reopen();
+
