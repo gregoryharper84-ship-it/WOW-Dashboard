@@ -14,6 +14,7 @@ import ctypes
 import gc
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
@@ -30,6 +31,29 @@ CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
 LEASE_SECONDS = 900
 POLL_SECONDS = 2.0
+
+
+def free_core_runtime_verified() -> bool:
+    """The *running web process* must attest zero-paid Scout handoff policy.
+
+    The separate GitHub runner's FREE_CORE environment is not enough.
+    Unknown/missing environment values fail closed, preventing both enqueue
+    and claim while the target Render service still runs HYBRID fallback.
+    """
+    mode = os.environ.get("WOW_V17_SOURCE_MODE", "").strip().upper()
+    def disabled(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in {"0", "false", "off"}
+    def zero(name: str) -> bool:
+        return os.environ.get(name, "") == "0"
+    return (
+        mode == "FREE_CORE"
+        and disabled("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED")
+        and disabled("WOW_MARKET_EVIDENCE_ENABLED")
+        and os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "").lower() == "true"
+        and zero("WOW_V17_PAID_CALL_BUDGET_PER_SCAN")
+        and zero("WOW_V17_PAID_FINAL_REFRESH_RESERVE")
+    )
+
 
 def _release_process_memory() -> None:
     """Best-effort RSS reclamation after an in-process specialist job.
@@ -731,6 +755,14 @@ async def worker_loop(
     while not stop_event.is_set():
         permit = None
         try:
+            # Never claim an existing queued row on a HYBRID/paid-eligible
+            # backend, even if GitHub's earlier enqueue ran in FREE_CORE.
+            if not free_core_runtime_verified():
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
             # Own the one process-wide heavyweight slot before claiming durable
             # work. Memory pressure therefore defers the claim itself instead
             # of consuming a lease/attempt and later failing the candidate.
