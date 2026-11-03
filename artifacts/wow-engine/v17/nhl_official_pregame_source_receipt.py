@@ -106,9 +106,13 @@ def capture_nhl_official_pregame(
             raise NHLPregameSourceError(
                 "NHL_SOURCE_RATE_LIMITED" if status == 429 else "NHL_SOURCE_HTTP_FAILED"
             )
+        streaming = getattr(response, "iter_content", None)
+        if not callable(streaming):
+            # Never fall back to .content: that would disable the transfer cap.
+            raise NHLPregameSourceError("NHL_SOURCE_STREAMING_UNAVAILABLE")
         chunks: list[bytes] = []
         total = 0
-        for chunk in response.iter_content(chunk_size=65536):
+        for chunk in streaming(chunk_size=65536):
             if time.monotonic() - started > MAX_TOTAL_SECONDS:
                 raise NHLPregameSourceError("NHL_SOURCE_TOTAL_DEADLINE_EXCEEDED")
             if not isinstance(chunk, bytes):
@@ -129,7 +133,9 @@ def capture_nhl_official_pregame(
         raise NHLPregameSourceError("NHL_SOURCE_FETCH_FAILED") from exc
     finally:
         if response is not None:
-            response.close()
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
     try:
         payload = json.loads(raw)
     except (UnicodeError, ValueError) as exc:
