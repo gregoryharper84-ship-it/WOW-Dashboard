@@ -51,12 +51,16 @@ class KalshiWeatherPartialCaptureError(RuntimeError):
         prediction_id: str,
         rule_snapshot_id: str,
         source_snapshot_ids: Sequence[str] = (),
+        persisted_source_snapshot_ids: Sequence[str] = (),
     ):
         self.prediction_id = prediction_id
         self.rule_snapshot_id = rule_snapshot_id
         # Core evidence rows are durable before the market write fails; carry
         # their ids so write accounting stays truthful, never inflated.
         self.source_snapshot_ids = tuple(str(value) for value in source_snapshot_ids)
+        self.persisted_source_snapshot_ids = tuple(
+            str(value) for value in persisted_source_snapshot_ids
+        )
         super().__init__(self.code)
 
 
@@ -150,6 +154,7 @@ def capture_hourly_shadow(
         point_id = source_snapshot_id(point_snapshot)
         nws_id = source_snapshot_id(nws_hourly)
         om_id = source_snapshot_id(open_meteo)
+        persisted_source_ids = (point_id, nws_id, om_id)
         persistence.persist_source_snapshot(
             rule_snapshot_id=contract.rule_snapshot_id,
             source_snapshot_id=point_id,
@@ -332,6 +337,7 @@ def capture_hourly_shadow(
                     prediction_id=prediction_id,
                     rule_snapshot_id=contract.rule_snapshot_id,
                     source_snapshot_ids=evidence.source_snapshot_ids,
+                    persisted_source_snapshot_ids=persisted_source_ids,
                 ) from exc
 
         return {
@@ -339,6 +345,7 @@ def capture_hourly_shadow(
             "prediction_id": prediction_id,
             "rule_snapshot_id": contract.rule_snapshot_id,
             "source_snapshot_ids": list(evidence.source_snapshot_ids),
+            "persisted_source_snapshot_ids": list(persisted_source_ids),
             "settlement_twin_snapshot_id": settlement_twin_id,
             "market_snapshot_id": market_snapshot_id,
             "ticker": contract.ticker,
