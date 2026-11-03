@@ -664,7 +664,7 @@ def test_stale_pr_head_aborts_early_without_accepting_existing_artifact(tmp_path
     assert "head_sha=" not in output
 
 
-def test_release_verification_requires_trusted_exact_head_governance_and_exact_merge_sha():
+def test_v4_postmerge_release_verifies_five_pinned_checks_and_exact_main_lineage():
     text = RELEASE.read_text(encoding="utf-8")
     assert "startsWith(github.event.pull_request.head.ref" not in text
     assert "Resolve exact merged identity" in text
@@ -672,25 +672,24 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert "Verify required exact-head CI" in text
     assert '"wow-verify|.github/workflows/wow-verify.yml"' in text
     assert '"wow-engine-verify|.github/workflows/wow-engine-verify.yml"' in text
-    assert "Trusted exact-head engineering governance" in text
     assert "/actions/runs?head_sha=${HEAD_SHA}&per_page=100" in text
-    assert "Resolve trusted exact-head governance artifact" in text
-    assert 'artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"' in text
-    assert "Verify governance-producing workflow provenance" in text
-    assert 'protected_main_source=false' in text
-    assert '[ "$head_repo" = "$GITHUB_REPOSITORY" ]' in text
-    assert "wow-v17-existing-pr-governance-review.yml" in text
-    assert "pull_request_target" in text
-    assert "Download and verify trusted governance receipt" in text
-    assert "RELEASE_GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in text
-    assert "verify_engineering_governance_receipt.py" in text
-    assert "verify_existing_pr_governance_receipt.py" in text
-    assert '--head-sha "$HEAD_SHA"' in text
-    assert '--head-ref "$HEAD_REF"' in text
-    assert '--workflow-run-id "$RUN_ID"' in text
-    assert '--workflow-name "$WORKFLOW_NAME"' in text
-    assert "trusted_handoff_receipt: VERIFIED" in text
-
+    for exact_name, app_id in (
+        ("WOW required-three regression", 15368),
+        ("WOW governed probability backend", 15368),
+        ("WOW additional required regression", 15368),
+        ("WOW Independent QA exact-head", 5245832),
+        ("WOW Release Authority exact-head", 5245853),
+    ):
+        assert f'"{exact_name}|{app_id}"' in text
+    assert 'select(.name == $name and .head_sha == $sha)' in text
+    assert '$check.app.id == $app' in text
+    assert '$check.status == "completed"' in text
+    assert '$check.conclusion == "success"' in text
+    assert "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED" in text
+    assert "Resolve trusted exact-head governance artifact" not in text
+    assert "RELEASE_GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" not in text
+    assert "trusted_handoff_receipt: VERIFIED" not in text
+    assert "v4_exact_head_qa_release_checks: VERIFIED" in text
 
 
 def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
