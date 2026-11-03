@@ -142,6 +142,38 @@ def test_render_rollout_enables_one_bounded_handoff_worker():
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
 
 
+def test_render_web_policy_disables_paid_research_and_fences_async_scout():
+    render = yaml.safe_load(RENDER.read_text(encoding="utf-8"))
+    service = next(
+        item for item in render["services"]
+        if item.get("name") == "wow-governed-probability-engine"
+    )
+    env = {item["key"]: item.get("value") for item in service["envVars"]}
+    assert env["WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED"] == "false"
+    assert env["WOW_MARKET_EVIDENCE_ENABLED"] == "false"
+    assert env["WOW_MARKET_EVIDENCE_KILL_SWITCH"] == "true"
+    assert env["WOW_V17_PAID_CALL_BUDGET_PER_SCAN"] == "0"
+    assert env["WOW_V17_PAID_FINAL_REFRESH_RESERVE"] == "0"
+    # The existing HYBRID service cannot claim a FREE_CORE Scout certificate
+    # merely because the GitHub discovery runner is configured FREE_CORE.
+    assert env["WOW_V17_SOURCE_MODE"] == "HYBRID"
+
+
+def test_paid_market_acceptance_never_runs_on_schedule_or_unconfirmed_dispatch():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "confirm_paid_market_probe:" in text
+    block = text.split("  market-evidence-acceptance:", 1)[1].split(
+        "  nightly-discovery:", 1
+    )[0]
+    before_needs = block.split("    needs: verify", 1)[0]
+    assert "vars.WOW_PAID_MARKET_ACCEPTANCE_ENABLED == 'true'" in before_needs
+    assert "github.event_name == 'workflow_dispatch'" in before_needs
+    assert "inputs.confirm_paid_market_probe == true" in before_needs
+    assert "github.event_name == 'schedule'" not in before_needs
+    assert "PAID_ACCEPTANCE_NOT_IMPLEMENTED_IN_FREE_CORE" in block
+    assert "PAID_ACCEPTANCE_CREDENTIALS_MISSING" in block
+
+
 def test_nightly_caller_uses_same_async_handoff_feature_gate():
     text = WORKFLOW.read_text(encoding="utf-8")
     live = text.split("  nightly-discovery:\n", 1)[1]
