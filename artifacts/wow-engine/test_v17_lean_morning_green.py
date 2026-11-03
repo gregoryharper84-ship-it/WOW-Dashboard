@@ -28,7 +28,7 @@ def _gate_script():
     workflow = yaml.load(WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     step = next(
         s for s in workflow["jobs"]["continue-repair"]["steps"]
-        if s["id"] == "governance"
+        if s.get("id") == "governance"
     )
     assert "Verify V4 exact-head QA and Release checks" in step["name"]
     assert "wow-v17-engineering-governance" not in step["run"]
