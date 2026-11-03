@@ -34,6 +34,7 @@ def _time(value: Any) -> datetime | None:
 def validate_nhl_pregame_evidence(
     evidence: Mapping[str, Any], *, as_of_utc: datetime,
     max_status_age_minutes: int = 60,
+    resolved_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return typed blockers. PASS means only source completeness, not model readiness."""
     if as_of_utc.tzinfo is None:
@@ -70,6 +71,36 @@ def validate_nhl_pregame_evidence(
     status_at = _time(evidence.get("goalie_status_observed_at"))
     start_at = _time(evidence.get("event_start_time_utc"))
     now = as_of_utc.astimezone(timezone.utc)
+    # This must be supplied by the trusted server-side NHL schedule resolver,
+    # never taken from caller-controlled sport_specific_evidence. A numeric
+    # string or a claimed provider name is not sufficient canonical identity.
+    if not isinstance(resolved_identity, Mapping):
+        reasons.append("NHL_CANONICAL_IDENTITY_RECEIPT_MISSING")
+    else:
+        source = resolved_identity.get("identity_source")
+        verified_at = _time(resolved_identity.get("identity_verified_at"))
+        resolved_start = _time(resolved_identity.get("event_start_time"))
+        receipt_home = resolved_identity.get("home_team")
+        receipt_away = resolved_identity.get("away_team")
+        receipt_home = team_abbreviation(receipt_home) if isinstance(receipt_home, str) else None
+        receipt_away = team_abbreviation(receipt_away) if isinstance(receipt_away, str) else None
+        if (
+            resolved_identity.get("identity_provider") != "NHL_PUBLIC_WEB_API"
+            or not isinstance(source, str)
+            or not source.startswith("https://api-web.nhle.com/v1/club-schedule-season/")
+            or not isinstance(official_id, str)
+            or str(resolved_identity.get("event_id") or "") != official_id
+            or not home or not away
+            or receipt_home != home or receipt_away != away
+            or resolved_start is None or start_at is None
+            or abs((resolved_start - start_at).total_seconds()) > 30 * 60
+            or verified_at is None or verified_at > now
+            or (now - verified_at).total_seconds() > 24 * 3600
+            or resolved_identity.get("market_features_used") is not False
+            or resolved_identity.get("prediction_authority") is not False
+            or resolved_identity.get("can_execute") is not False
+        ):
+            reasons.append("NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH")
     if status_at is None or status_at > now or (now - status_at).total_seconds() > max_status_age_minutes * 60:
         reasons.append("NHL_GOALIE_STATUS_STALE")
     if start_at is None or start_at <= now:
