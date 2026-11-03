@@ -149,8 +149,10 @@ class GitHubTransport:
                     or route.get("can_execute") is not False
                     or route.get("terminal_authority") != "V17_TERMINAL_REDUCER"
                     or route.get("action") not in {"SURVIVAL", "DISPATCH"}
-                    or (route.get("provider") != "cursor"
-                        and route.get("reason") != "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
+                    or not (route.get("provider") == "cursor"
+                        or (route.get("action") == "SURVIVAL"
+                            and route.get("provider") == "deterministic"
+                            and route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED"))):
                 return "PROVIDER_STATUS_UNVERIFIED"
             return self._verified_failed_dispatcher_writer_release(run)
         now = datetime.now(timezone.utc)
