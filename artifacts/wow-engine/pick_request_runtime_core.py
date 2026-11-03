@@ -1310,12 +1310,10 @@ def install_pick_request_routes(
                 },
             )
 
-        if completed == rows_in:
-            run_controller_status = "COMPLETE"
-        elif completed > 0:
-            run_controller_status = "DEGRADED"
-        else:
-            run_controller_status = "BLOCKED"
+        from v17.pick_request_run_status import governed_run_status
+        run_controller_status = governed_run_status(
+            total=rows_in, completed=completed, held=held, rejected=rejected,
+        )
 
         return {
             "ok": completed > 0,

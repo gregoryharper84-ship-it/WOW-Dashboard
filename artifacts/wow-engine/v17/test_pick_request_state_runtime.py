@@ -345,3 +345,34 @@ def test_record_inputs_ready_persists_normalized_identity_and_hydration_evidence
     assert record["hydration_evidence"]["box_score_log_n"] == 10
     assert record["hydration_evidence"]["opportunity_status"] == "PASS"
     assert record["can_execute"] is False
+
+
+def test_rejected_receipt_is_complete_processing_without_rank_approval():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    ctx = store.begin(_batch('rejected-complete', [_row(1)]))
+    outcome = _completed('board-row-1', 'pred-rejected')
+    outcome.update(terminal_status='REJECTED', code='NO_LOW_PROBABILITY', rank_eligible=False)
+    manifest = store.finalize(ctx, [outcome])
+    assert manifest['run_status'] == 'COMPLETE'
+    assert manifest['rejected_rows'] == 1
+    assert manifest['unresolved_rows'] == 0
+    assert ctx.rows['board-row-1']['rank_eligible'] is False
+    assert manifest['can_execute'] is False
+
+
+def test_rejected_missing_receipt_cannot_be_complete_processing():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    ctx = store.begin(_batch('rejected-no-receipt', [_row(1)]))
+    outcome = _held('board-row-1', 'NO_LOW_PROBABILITY')
+    outcome.update(terminal_status='REJECTED', model_evaluated=True)
+    manifest = store.finalize(ctx, [outcome])
+    # Reliability patch blocks synthetic receipt-stage advancement in production.
+    # Exercise that durable truth directly without relying on installer order.
+    ctx.rows['board-row-1']['stage_seq'] = subject.STAGE_SEQ['MODEL_COMPUTED']
+    store._persist_row(ctx, 'board-row-1', operation='TEST_MISSING_RECEIPT')
+    manifest = store.finalize(ctx, [])
+    assert manifest['unresolved_rows'] == 1
+    assert manifest['run_status'] == 'BLOCKED'
+    assert manifest['can_execute'] is False
