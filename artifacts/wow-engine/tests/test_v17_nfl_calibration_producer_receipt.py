@@ -217,6 +217,15 @@ class _CertifiedDb:
             {
                 "official_event_id": f"nfl-game-{i}",
                 "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+                "event_prediction_id": f"nfl-pred-{i}",
+                "event_start_time_utc": "2026-10-25T17:00:00Z",
+                "prediction_created_at": "2026-10-24T16:00:00Z",
+                "selected_participant": "San Francisco 49ers",
+                "calibrated_probability": 0.7,
+                "calibrated_lower_bound": 0.65,
+                "calibrated_upper_bound": 0.75,
+                "outcome": int(i % 10 < 7),
+                "source_game_id": f"nfl-settlement-{i}",
             }
             for i in range(count)
         ]
