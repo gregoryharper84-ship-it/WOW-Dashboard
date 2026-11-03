@@ -65,7 +65,7 @@ def supabase_ref(url: str) -> str:
         )
     except ValueError as exc:
         raise DeliveryError("DELIVERY_SUPABASE_TARGET_INVALID") from exc
-    match = re.fullmatch(r"([a-z0-9]{20})\\.supabase\\.co", parsed.hostname or "")
+    match = re.fullmatch(r"([a-z0-9]{20})\.supabase\.co", parsed.hostname or "")
     if not valid_url or not match or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise DeliveryError("DELIVERY_SUPABASE_TARGET_INVALID")
     return match.group(1)
@@ -81,7 +81,7 @@ def _request_json(url: str, headers: dict[str, str]) -> tuple[Any, dict[str, str
 
 
 def _count_from_header(headers: dict[str, str]) -> int:
-    match = re.fullmatch(r"(?:\\d+-\\d+|\\*)/(\\d+)", headers.get("content-range", ""))
+    match = re.fullmatch(r"(?:\d+-\d+|\*)/(\d+)", headers.get("content-range", ""))
     if not match:
         raise DeliveryError("DELIVERY_COUNT_NOT_PROVEN")
     return int(match.group(1))
