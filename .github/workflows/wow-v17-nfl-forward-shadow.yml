@@ -145,8 +145,12 @@ jobs:
               "certification_recommendation": health.get("certification_recommendation"),
               "can_execute": False,
           }, sort_keys=True))
-          assert payload.get("status") == "COMPLETED", (
-              "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT:"
-              + str(payload.get("overdue_unsettled_event_ids"))
+          overdue_count = payload.get("overdue_unsettled_count")
+          overdue_ids = payload.get("overdue_unsettled_event_ids")
+          assert type(overdue_count) is int and overdue_count >= 0, "NFL_SETTLEMENT_COUNT_MISSING_OR_INVALID"
+          assert isinstance(overdue_ids, list) and len(overdue_ids) == overdue_count, "NFL_SETTLEMENT_IDS_MISSING_OR_MISMATCHED"
+          assert all(isinstance(item, str) and item for item in overdue_ids), "NFL_SETTLEMENT_ID_INVALID"
+          assert payload.get("status") == "COMPLETED" and overdue_count == 0, (
+              "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT:" + str(overdue_ids)
           )
           PY
