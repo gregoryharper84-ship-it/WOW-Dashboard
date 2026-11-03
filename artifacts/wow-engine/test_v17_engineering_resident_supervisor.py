@@ -317,7 +317,7 @@ def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
     run = {
         "id": 900, "run_attempt": 1, "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
         "head_branch": "main", "head_sha": sha, "status": "completed",
-        "updated_at": stamp,
+        "event": "schedule", "updated_at": stamp,
     }
     route = {
         "action": action, "provider": "deterministic" if action == "SURVIVAL" else "openai",
@@ -397,6 +397,52 @@ def test_later_gemini_worker_run_invalidates_only_its_own_admitted_route(monkeyp
         fresh=("chatgpt", "gemini"),
     )
     route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
+
+
+def test_gemini_manual_attestation_text_never_admits(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="success", fresh=("gemini",),
+    )
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    # Even a forged otherwise allowlisted reason from a workflow_dispatch
+    # may not inherit the trusted automatic schedule's checks.
+    run["event"] = "workflow_dispatch"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+    run["event"] = "schedule"
+    route["reason"] = "GEMINI_OPERATOR_CANARY"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_gemini_own_failure_vetoes_other_provider_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="success", gemini="failure",
+        fresh=("chatgpt", "gemini"),
+    )
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_openai_own_failure_vetoes_other_provider_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="failure", secondary="success",
+        fresh=("chatgpt", "claude"),
+    )
+    route.update(provider="openai", reason="OPENAI_PRIMARY_AVAILABLE")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_unrelated_unclassified_worker_does_not_revoke_valid_gemini_route(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    original_get = client.get
+    def with_unrelated_unclassified(suffix):
+        if suffix.startswith("actions/workflows/wow-v17-claude-engineering-worker.yml/runs?"):
+            result = original_get(suffix)
+            result["workflow_runs"][0]["conclusion"] = "action_required"
+            return result
+        return original_get(suffix)
+    monkeypatch.setattr(client, "get", with_unrelated_unclassified)
     assert client.provider_admission() == "PROVIDER_ADMITTED"
 
 
