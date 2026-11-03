@@ -470,6 +470,20 @@ def compact_row(row: dict[str, Any], *, run_id: str, row_index: int, detail_avai
         compact["directions"] = [
             compact_direction(outcome) for outcome in outcomes if isinstance(outcome, dict)
         ] if isinstance(outcomes, list) else []
+        provenance = row.get("line_provenance") or result.get("line_provenance")
+        if not isinstance(provenance, dict):
+            provenance = {
+                "line_source": "UNKNOWN",
+                "source_type": "UNKNOWN",
+                "book_offer_verified": False,
+                "research_only": True,
+                "pick_presentation_eligible": False,
+                "presentation_blocker": "LINE_PROVENANCE_NOT_RECORDED_ON_SNAPSHOT",
+            }
+        # Transport may not silently upgrade a research threshold to a pick.
+        compact["line_provenance"] = dict(provenance)
+        compact["pick_presentation_eligible"] = False
+        compact["official_leaderboard_eligible"] = False
     else:
         summary = compact_moneyline_result(result)
         compact["result_summary"] = summary
