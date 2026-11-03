@@ -317,7 +317,7 @@ def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
     run = {
         "id": 900, "run_attempt": 1, "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
         "head_branch": "main", "head_sha": sha, "status": "completed",
-        "event": "schedule", "updated_at": stamp,
+        "conclusion": "success", "event": "schedule", "updated_at": stamp,
     }
     route = {
         "action": action, "provider": "deterministic" if action == "SURVIVAL" else "openai",
@@ -380,7 +380,7 @@ def test_recent_protected_worker_success_proves_recovery(monkeypatch):
 def test_real_transport_admits_fresh_owner_attested_gemini_canary(monkeypatch):
     client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
     route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
-    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
     # A human-run canary probe is not standing authorization for automation.
     route["reason"] = "GEMINI_OPERATOR_CANARY"
     assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
@@ -397,7 +397,7 @@ def test_later_gemini_worker_run_invalidates_only_its_own_admitted_route(monkeyp
         fresh=("chatgpt", "gemini"),
     )
     route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
-    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
 
 
 def test_gemini_manual_attestation_text_never_admits(monkeypatch):
@@ -443,7 +443,7 @@ def test_unrelated_unclassified_worker_does_not_revoke_valid_gemini_route(monkey
             return result
         return original_get(suffix)
     monkeypatch.setattr(client, "get", with_unrelated_unclassified)
-    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
 
 
 def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch):
@@ -453,6 +453,44 @@ def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch)
     assert client.provider_admission() == "PROVIDER_ADMITTED"
     route["parent_run_id"] = "999"
     assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+@pytest.mark.parametrize("conclusion", [
+    "failure", "cancelled", "timed_out", "action_required", None,
+])
+def test_dispatcher_route_receipt_from_unsuccessful_run_never_admits(
+    monkeypatch, conclusion,
+):
+    client, run, route, calls = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    run["conclusion"] = conclusion
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+    # A route artifact does not prove the remote-fence/worker-dispatch steps.
+    assert not any("engineering-worker.yml/runs?" in path for path in calls)
+
+
+def test_gemini_successful_dispatch_receipt_is_not_a_second_resident_launch(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    # The original dispatcher has already submitted the provider child. The
+    # resident must not send force_provider=auto, which may now hit cooldown
+    # and choose SURVIVAL or another provider while counting an attempt.
+    fake = FakeClient()
+    fake.provider_state = "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    store = FakeRedis()
+    assert dispatch_once(fake, store, MANIFEST) == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    assert fake.sent == []
+    assert store.attempts == 0
+    assert store.get(PENDING_DISPATCH_KEY) is None
+
+
+def test_gemini_route_does_not_become_second_launch_even_with_fresh_child_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="success", fresh=("gemini",),
+    )
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
 
 
 def test_gemini_acknowledgment_cannot_substitute_for_an_attested_route(monkeypatch):
