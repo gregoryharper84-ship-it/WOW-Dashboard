@@ -197,3 +197,119 @@ independent review are required. Operational acceptance still requires two real,
 owner-budget-authorized unattended cycles yielding independently reviewed repair
 PRs. No merge, deployment, sporting probability authority or wager execution is
 authorized here; `can_execute=false` and `V17_TERMINAL_REDUCER` remain unchanged.
+
+
+## Owner-controlled Gemini recovery runbook (#1021; PR #2408)
+
+**Default is no additional provider spending.** This is an operational procedure
+for an already-approved, limited provider canary, not blanket spend permission,
+a release waiver or a request to start a job. The owner controls any billing cap
+and the decision to invoke a potentially metered Gemini run. Repository variables
+attest policy state; they **do not** create, verify or enforce a provider billing
+limit. Do not enable Gemini automatically to clear \`PROVIDER_QUOTA_BLOCKED\`.
+
+### A. Zero-spend preflight (read-only)
+
+1. Confirm the admission PR has **independent exact-head acceptance** and has
+   been merged through protected \`main\`. A feature-branch test or local pass
+   cannot activate the deployed resident; check actual Render web/worker source
+   parity and the deployed resident implementation independently.
+2. On the existing GitHub repository, inspect the latest provider-dispatcher and
+   Gemini-worker workflow runs, their *immutable* run IDs, conclusions, source
+   SHAs and applicable receipt artifacts. Check the #1138 remote writer ledger
+   for effective authenticated releases; an immutable old \`hold=true\` record
+   can have a separate signed release receipt. Never rerun a successful finalizer.
+3. Confirm the existing single-writer lease, no unresolved dispatch reservation,
+   and an exact eligible incident/lease pair from
+   \`artifacts/wow-engine/v17/engineering_dispatch_manifest.json\`.
+   Do not create a second scheduler or use an arbitrary incident to force a
+   provider canary. Inspect current \`PROVIDER_QUOTA_BLOCKED\`/breaker evidence.
+4. Inspect **names and non-secret flags only**; never print secret values:
+
+   \`\`\`bash
+   REPO=gregoryharper84-ship-it/WOW-Dashboard
+   gh pr view 2408 -R "$REPO" --json state,headRefOid,mergeStateStatus
+   gh run list -R "$REPO" --workflow wow-v17-engineering-provider-dispatcher.yml --limit 5
+   gh run list -R "$REPO" --workflow wow-v17-gemini-engineering-worker.yml --limit 5
+   gh variable list -R "$REPO"
+   gh secret list -R "$REPO"
+   \`\`\`
+
+   A listed \`GEMINI_API_KEY\` secret does **not** prove that it works or carries
+   quota. Verify owner-provider entitlement, budget exhaustion behavior and the
+   actual stop-spend control out of band; do not use trial-and-error paid probes.
+
+### B. Owner-attested one-shot manual canary (metered; **not automatic**)
+
+**Prerequisites:** approved available Gemini entitlement and credential;
+separately established provider budget/stop-spend policy; no conflicting writer
+or unresolved handoff; a selected open issue with its manifest-owned lease;
+the merged protected-main workflow; one specifically authorized canary only.
+
+The existing \`wow-v17-engineering-provider-dispatcher.yml\` workflow accepts a
+manual \`force_provider=gemini\` dispatch and launches the existing
+\`wow-v17-gemini-engineering-worker.yml\` in manual mode. The worker requires
+\`GEMINI_ENGINEERING_ENABLED=true\`, \`GEMINI_SPEND_CAP_CONFIRMED=true\` and a
+configured \`GEMINI_API_KEY\` secret. Keep \`GEMINI_AUTO_ROUTING_ENABLED=false\`
+until the manual result and durable provider history are reviewed. Only the
+owner may attest/change these flags after independently confirming the actual
+provider budget. **No automation, this documentation, or ChatGPT response
+should flip them.**
+
+Invoke via the existing dispatcher using a manifest-selected target and lease;
+do **not** run with placeholders or repeatedly retry ambiguous results:
+
+\`\`\`bash
+# METERS PROVIDER USAGE. OWNER ACTION ONLY AFTER ALL PREREQUISITES.
+# Replace both placeholders with the same manifest-approved incident/lease.
+gh workflow run wow-v17-engineering-provider-dispatcher.yml \
+  -R gregoryharper84-ship-it/WOW-Dashboard --ref main \
+  -f force_provider=gemini \
+  -f reason=GEMINI_OPERATOR_CANARY \
+  -f target_incident=MANIFEST_INCIDENT_NUMBER \
+  -f lease_group=MANIFEST_LEASE_GROUP
+\`\`\`
+
+The resulting \`GEMINI_OPERATOR_CANARY\` can establish bounded manual health
+evidence, **never resident automatic admission**. Record actual parent/child run
+IDs, run attempts, tested source SHA, typed model/patch/regression receipts,
+verified provider outcome, cost/quota observation and any negative case. Do not
+confuse \`workflow_dispatch\` acceptance with completed code or a reviewed PR.
+
+### C. Admit auto-routing only after durable evidence and an owner decision
+
+Only if the operator canary is valid, provider capacity and stop-spend controls
+remain confirmed, and review has established safe single-writer history, the
+owner may consider \`GEMINI_AUTO_ROUTING_ENABLED=true\`. The protected dispatcher
+must **independently** emit a fresh \`DISPATCH/gemini\` route with one of:
+
+- \`GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY\`
+- \`GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX\`
+
+Those reasons must be backed by its own config/history tests, not manually
+asserted in JSON or a forced reason string. The resident re-checks receipt
+integrity, ≤15-minute freshness, current \`main\` SHA and later same-provider
+worker failures before admission. It also retains the existing provider cooldown,
+attempt limits, pending handoff accounting and the one-writer fence.
+A recent manual success does not override a cooldown, and waiting does not cure
+persistent quota or authentication failures.
+
+### D. Stop, reconcile and independently accept
+
+On \`GEMINI_API_QUOTA_EXHAUSTED\`, bad credential, missing receipts, stale or
+unclassified history, provider error, ambiguous dispatch or any new writer
+conflict: **stop additional provider invocations**, disable owner-controlled
+automatic Gemini routing, retain exact native failure codes and reconcile the
+existing run/reservation. Do not increase attempt ceilings, clear persistent
+breakers by elapsed time, relabel errors or retry by creating another controller.
+The owner may use the previously documented **manual \`force_provider=openai\`
+recovery probe** only when that credential and quota are confirmed healthy and
+an individual paid probe is explicitly authorized.
+
+Do not call this incident COMPLETE until a new exact incident has a successful,
+authenticated *resident-generated* provider run and code SHA, a proposed PR with
+independent exact-head security/QA acceptance, a protected merge and live
+web+worker SHA verification, and a successful real user-function canary with
+appropriate read-only Action/receipt evidence. Report each separately.
+No sporting model is certified by an engineering recovery canary.
+\`can_execute=false\`; terminal authority stays \`V17_TERMINAL_REDUCER\`.
