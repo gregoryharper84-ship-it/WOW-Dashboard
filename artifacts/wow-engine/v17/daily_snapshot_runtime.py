@@ -26,6 +26,7 @@ from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_discovery import acquire_daily_prop_snapshots
+from v17.daily_line_provenance import line_provenance_for_daily_prop
 from v17.daily_response_contract import (
     ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
     ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
@@ -643,14 +644,26 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
             publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
-            rows.append(
-                _terminal_row(
-                    "PROPS",
-                    identity,
-                    {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
-                    _props_row_reduction(outcomes),
-                )
+            line_provenance = line_provenance_for_daily_prop(row, prop_acquisition)
+            # Model sporting probability may be valid for a research threshold.
+            # Never present that threshold as an actual posted bookmaker offer.
+            terminal_row = _terminal_row(
+                "PROPS",
+                identity,
+                {
+                    "outcomes": outcomes,
+                    "probability_publishable": publishable,
+                    "rank_eligible": publishable,
+                    "line_provenance": line_provenance,
+                    "pick_presentation_eligible": False,
+                    "can_execute": False,
+                },
+                _props_row_reduction(outcomes),
             )
+            terminal_row["line_provenance"] = line_provenance
+            terminal_row["pick_presentation_eligible"] = False
+            terminal_row["official_leaderboard_eligible"] = False
+            rows.append(terminal_row)
 
     cross_sport_audit: dict[str, Any] | None = None
     if "MONEYLINE" in requested_lanes:
