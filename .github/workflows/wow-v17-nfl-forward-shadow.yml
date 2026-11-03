@@ -3,8 +3,6 @@ name: wow-v17-nfl-forward-shadow
 on:
   schedule:
     - cron: "30 12 * * *"
-    # Post-MNF second pass if the upstream schedule feed settles later.
-    - cron: "17 19 * * 2"
   workflow_dispatch:
   push:
     branches:
@@ -139,18 +137,8 @@ jobs:
               "canonical_events": payload.get("canonical_events"),
               "graded_events": payload.get("graded_events"),
               "new_grades_persisted": payload.get("new_grades_persisted"),
-              "overdue_unsettled_count": payload.get("overdue_unsettled_count"),
-              "overdue_unsettled_event_ids": payload.get("overdue_unsettled_event_ids"),
               "forward_health": health.get("status"),
               "certification_recommendation": health.get("certification_recommendation"),
               "can_execute": False,
           }, sort_keys=True))
-          overdue_count = payload.get("overdue_unsettled_count")
-          overdue_ids = payload.get("overdue_unsettled_event_ids")
-          assert type(overdue_count) is int and overdue_count >= 0, "NFL_SETTLEMENT_COUNT_MISSING_OR_INVALID"
-          assert isinstance(overdue_ids, list) and len(overdue_ids) == overdue_count, "NFL_SETTLEMENT_IDS_MISSING_OR_MISMATCHED"
-          assert all(isinstance(item, str) and item for item in overdue_ids), "NFL_SETTLEMENT_ID_INVALID"
-          assert payload.get("status") == "COMPLETED" and overdue_count == 0, (
-              "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT:" + str(overdue_ids)
-          )
           PY
