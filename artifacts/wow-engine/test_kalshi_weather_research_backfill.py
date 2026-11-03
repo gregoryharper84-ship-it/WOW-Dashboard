@@ -262,3 +262,26 @@ def test_missing_or_invalid_durable_progress_never_writes_placeholder_outcomes(s
     with pytest.raises(BackfillDataError, match=code):
         reconcile_miami_settlements(client=db, now=CLOCK, settle=settle)
     assert called == [] and db.outcomes == []
+
+
+
+def test_durable_progress_sql_has_atomic_service_role_boundary():
+    from pathlib import Path
+    path = (Path(__file__).resolve().parent / "migrations" /
+            "20261103_kalshi_weather_research_progress.sql")
+    sql = path.read_text().lower()
+    for required in (
+        "enable row level security",
+        "from public, anon, authenticated",
+        "grant select, insert, update on table",
+        "to service_role",
+        "security invoker",
+        "set search_path = ''",
+        "for update",
+        "on conflict (station_scope) do nothing",
+        "p_population > 500",
+        "p_attempt_limit > 3",
+        "return next",
+    ):
+        assert required in sql
+    assert "security definer" not in sql
