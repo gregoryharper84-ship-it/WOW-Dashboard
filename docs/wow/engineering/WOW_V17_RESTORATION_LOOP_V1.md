@@ -35,7 +35,13 @@ separate authoritative mechanisms. The observer cannot clear reservation
 
 Merged repairs are tracked independently for still-open governed incidents.
 An unrelated newer PR cannot hide an unproved release. A user-function probe
-must bind to the exact live commit. **The collector has no authenticated probe
+must bind to the exact live commit. If the live SHA differs from an earlier
+merged repair, this read-only observer holds with `DEPLOYED_COMMIT_MISMATCH`
+and requests an authenticated ancestry check and live user-function proof.
+It must **not** recommend rolling production back to that earlier commit merely
+because the SHA strings differ; a newer protected-main deployment may already
+contain the repaired change. No ancestry flag or untrusted observation can
+substitute for actual proof. **The collector has no authenticated probe
 adapter yet**, so deployed repairs hold at `USER_FUNCTION_PROBE_MISSING`.
 There is no automatic issue close.
 
