@@ -127,7 +127,7 @@ class GitHubTransport:
             return "PROVIDER_STATUS_UNVERIFIED"
         run = runs[0]
         if (run.get("head_branch") != "main" or run.get("status") != "completed"
-                or run.get("conclusion") != "success"
+                or run.get("conclusion") not in {"success", "failure"}
                 or run.get("path") != f".github/workflows/{PROVIDER_WORKFLOW}"
                 or type(run.get("id")) is not int or run["id"] <= 0
                 or not re.fullmatch(r"[0-9a-f]{40}", str(run.get("head_sha", "")))):
@@ -142,6 +142,20 @@ class GitHubTransport:
         if len(selected) != 1 or type(selected[0].get("id")) is not int:
             return "PROVIDER_STATUS_UNVERIFIED"
         route = self.provider_receipt(selected[0]["id"])
+        failed_dispatch = run["conclusion"] == "failure"
+        # A failed provider dispatcher cannot attest a child worker dispatch.
+        # The one exception is recovery from an independently verified Cursor
+        # writer release, checked against the immutable #1138 ledger and an
+        # exact-main successful finalizer below. A receipt alone is insufficient.
+        if failed_dispatch and not (
+            (route.get("provider") == "cursor" and route.get("action") == "DISPATCH")
+            or (
+                route.get("action") == "SURVIVAL"
+                and route.get("provider") == "deterministic"
+                and route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+            )
+        ):
+            return "PROVIDER_STATUS_UNVERIFIED"
         now = datetime.now(timezone.utc)
         decision = resident_provider_admission(route, updated_at=run.get("updated_at"), now=now)
         if decision == "PROVIDER_STATUS_UNVERIFIED":
@@ -243,6 +257,10 @@ class GitHubTransport:
                       and route_provider == workflow_provider):
                     decision = "PROVIDER_RECOVERY_UNVERIFIED"
                     route_revoked = True
+        # Worker success cannot rescue an unsuccessful dispatcher. Only the
+        # independent finalizer path is valid in that case.
+        if failed_dispatch:
+            latest_success = False
         if (not latest_success
                 and (route.get("provider") == "cursor"
                      or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
