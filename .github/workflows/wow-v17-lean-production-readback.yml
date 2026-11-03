@@ -3,7 +3,7 @@ name: wow-v17-lean-production-readback
 # Zero semantic-review credits. GET-only postdeploy observation; SIRT acceptance is separate.
 on:
   workflow_run:
-    workflows: [wow-v17-render-production-deploy]
+    workflows: [wow-verify]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   production-readback:
-    name: Read-only Render exact-SHA observation (SIRT acceptance pending)
+    name: Read-only web/worker Render CI-gated SHA observation (SIRT pending)
     if: >-
       github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
       (github.event_name == 'workflow_dispatch' ||
@@ -54,7 +54,7 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test "$GITHUB_REF" = "refs/heads/main"
 
-      - name: Observe verified deploy workflow, current main, Render LIVE and health
+      - name: Observe main CI, current SHA, web/worker Render LIVE and health
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
       - name: Preserve immutable observation receipt for independent SIRT
