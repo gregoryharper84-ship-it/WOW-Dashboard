@@ -560,3 +560,28 @@ A valid empty catalog, malformed listing, authentication failure, or
 partial paginated listing cannot be treated as approved availability.
 Changing source invalidates prior owner review; no code may forge the
 current-head approval or a signed independent semantic PASS.
+
+
+## V17 delivery receipt collector (Class A observability; non-authoritative)
+
+| Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---:|
+| `DELIVERY_CONFIGURATION_MISSING` | Delivery collector / read-only provenance | Missing one or more required secret names/expected SHA. Exit 2 before any query. | No |
+| `DELIVERY_CLOCK_INVALID` | Delivery collector / read-only provenance | Collector received an unzoned reference timestamp; no freshness conclusion. | No |
+| `DELIVERY_WINDOW_INVALID` | Delivery collector / read-only provenance | Activity or calibrator window is invalid or out of bounded range. | No |
+| `DELIVERY_SUPABASE_TARGET_INVALID` | Delivery collector / read-only provenance | Configured Supabase URL is not the expected HTTPS project host. | No |
+| `DELIVERY_SOURCE_READ_FAILED` | Delivery collector / read-only provenance | Authenticated Render/PostgREST read fails or is not parseable; retain native read failure. | No |
+| `DELIVERY_COUNT_NOT_PROVEN` | Delivery collector / read-only provenance | PostgREST did not return exact Content-Range count; reject invented totals. | No |
+| `DELIVERY_SOURCE_SHAPE_INVALID` | Delivery collector / read-only provenance | PostgREST list payload has an unexpected shape; reject partial inventory. | No |
+| `DELIVERY_TABLE_INVALID` | Delivery collector / read-only provenance | Attempt to query a table outside bounded WOW naming contract. | No |
+| `DELIVERY_RENDER_SERVICE_ID_INVALID` | Delivery collector / read-only provenance | Render service identifier malformed; do not query an arbitrary target. | No |
+| `DELIVERY_RENDER_DEPLOY_UNVERIFIED` | Delivery collector / read-only provenance | Latest Render deploy is missing or not live; SHA parity cannot be accepted. | No |
+| `DELIVERY_RENDER_SHA_UNVERIFIED` | Delivery collector / read-only provenance | Render API lacks a full exact git commit SHA; no deploy proof. | No |
+| `DELIVERY_RENDER_ENV_UNVERIFIED` | Delivery collector / read-only provenance | Render SUPABASE_URL environment binding missing/redacted/unreadable; attribution remains blocked. | No |
+| `DELIVERY_EXPECTED_SHA_INVALID` | Delivery collector / read-only provenance | Expected protected-engine source SHA is missing full 40-char git form. | No |
+| `DELIVERY_SUPABASE_PROJECT_MISMATCH` | Delivery collector / read-only provenance | Collector Supabase URL identifies a different project than the pinned governed database. | No |
+| `DELIVERY_RENDER_SUPABASE_TARGET_MISMATCH` | Delivery collector / read-only provenance | Render service environment and collector target disagree; production attribution not proven. | No |
+| `DELIVERY_RENDER_SHA_MISMATCH` | Delivery collector / read-only provenance | Latest live Render commit differs from supplied expected applicable source SHA. | No |
+| `DELIVERY_READBACK_COMPLETED` | Delivery collector / read-only provenance | Positive read-only evidence collection after validated Render SHA and project binding; not terminal model publication or full product acceptance. | No |
+
+All these codes are diagnostic only, and never change sporting probabilities, `V17_TERMINAL_REDUCER`, or `can_execute=false`.
