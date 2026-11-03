@@ -122,18 +122,23 @@ class _Query:
         returned = rows[: self.page_limit]
         if self.db.remove_after_first_page and len(self.db.calls) == 1:
             self.db.rows = self.db.rows[1:]
+        if self.db.mutate_after_second_page and len(self.db.calls) == 2:
+            # The already-read first row changes while later pages are fetched;
+            # total cardinality and its declared SHA are intentionally unchanged.
+            self.db.rows[0] = {**self.db.rows[0], "response_rows": [{"changed": True}]}
         return SimpleNamespace(data=returned)
 
 
 class _Db:
     def __init__(self, rows, new_row_after_fence=None, repeat_previous_page=False,
-                 remove_after_first_page=False):
+                 remove_after_first_page=False, mutate_after_second_page=False):
         self.rows = rows
         self.calls = []
         self.count_reads = 0
         self.new_row_after_fence = new_row_after_fence
         self.repeat_previous_page = repeat_previous_page
         self.remove_after_first_page = remove_after_first_page
+        self.mutate_after_second_page = mutate_after_second_page
 
     def table(self, name):
         assert name == "wow_ncaaf_source_snapshots"
@@ -145,12 +150,13 @@ def test_keyset_pagination_is_exact_once_across_three_pages():
     output = load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
     assert len(output) == 5
     assert [r.week for r in output] == [1, 2, 3, 4, 5]
-    assert db.calls == [
+    expected_pages = [
         (None, 2),
         (_row(2)["source_snapshot_id"], 2),
         (_row(4)["source_snapshot_id"], 2),
     ]
-    assert db.count_reads == 2
+    assert db.calls == expected_pages + expected_pages
+    assert db.count_reads == 3
     assert CAN_EXECUTE is False
     assert all(x.can_execute is False for x in output)
 
@@ -251,3 +257,15 @@ def test_empty_seasons_fail_closed_without_fallback():
     with pytest.raises(NCAAFPropChallengerRunnerError) as err:
         load_source_snapshots(_Db([]), endpoint="/games/players", seasons=[], page_size=2)
     assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_EMPTY")
+
+
+
+def test_in_place_source_mutation_between_pages_fails_even_without_count_drift():
+    db = _Db([_row(n) for n in range(1, 6)], mutate_after_second_page=True)
+    with pytest.raises(NCAAFPropChallengerRunnerError) as err:
+        load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
+    assert (err.value.code, err.value.detail) == (
+        "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+    )
+    assert db.count_reads >= 2
+    assert len(db.rows) == 5
