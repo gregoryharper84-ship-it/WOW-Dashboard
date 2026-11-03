@@ -55,6 +55,10 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
 
       - name: Observe main CI, current SHA, web/worker Render LIVE and health
+        id: readback
+        # Render checksPass must not wait on a postdeploy observer that itself
+        # waits for Render; a typed HOLD receipt is not a failing source CI.
+        continue-on-error: true
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
       - name: Preserve immutable observation receipt for independent SIRT
@@ -70,4 +74,5 @@ jobs:
         if: always()
         run: |
           echo "This is read-only observation, not production/model certification." >> "$GITHUB_STEP_SUMMARY"
+          echo "Readback step outcome: ${{ steps.readback.outcome }} (not a release gate)." >> "$GITHUB_STEP_SUMMARY"
           echo "Independent SIRT acceptance is mandatory; can_execute=false." >> "$GITHUB_STEP_SUMMARY"
