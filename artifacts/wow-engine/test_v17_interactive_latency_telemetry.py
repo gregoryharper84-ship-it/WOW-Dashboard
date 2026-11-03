@@ -82,12 +82,17 @@ def test_stage_timers_labels_percentiles_and_typed_outcomes(caplog):
     def prop():
         raise HTTPException(status_code=503, detail="x")
 
+    @app.post("/score-team-event")
+    def client_error():
+        raise HTTPException(status_code=422, detail="invalid test payload")
+
     client = TestClient(app)
     with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
         for _ in range(3):
             assert client.post("/score-pick-request").status_code == 200
         assert client.post("/score-team-event-request").status_code == 504
         assert client.post("/score-prop").status_code == 503
+        assert client.post("/score-team-event").status_code == 422
 
     messages = [r.getMessage() for r in caplog.records]
     pick = [m for m in messages if "route=/score-pick-request" in m]
@@ -97,10 +102,11 @@ def test_stage_timers_labels_percentiles_and_typed_outcomes(caplog):
     assert all("can_execute=false" in m for m in messages)
     assert any("route=/score-team-event-request" in m and "outcome=timeout" in m for m in messages)
     assert any("route=/score-prop" in m and "outcome=overload" in m for m in messages)
+    assert any("route=/score-team-event" in m and "status_code=422" in m and "outcome=client_error" in m for m in messages)
     assert not any("MODEL_UNAVAILABLE" in m for m in messages)
 
-    rows = {(r["route"], r["sport"]): r for r in t.latency_percentiles()}
-    row = rows[("/score-pick-request", "mlb")]
+    rows = {(r["route"], r["sport"], r["outcome"]): r for r in t.latency_percentiles()}
+    row = rows[("/score-pick-request", "mlb", "ok")]
     assert row["samples"] == 3 and row["p50_ms"] <= row["p95_ms"]
     assert row["can_execute"] is False
 
@@ -171,6 +177,7 @@ def test_interactive_latency_diagnostics_route_exposes_only_bounded_aggregates()
         "sport": "mlb",
         "row_count": "le4",
         "batch_size": "le4",
+        "outcome": "ok",
         "samples": 2,
         "p50_ms": 125.0,
         "p95_ms": 225.0,
@@ -193,3 +200,26 @@ def test_team_event_request_runtime_wires_current_latency_stage_contract():
     assert "row_count=len(batch.rows)" in runtime
     assert "batch_size=len(batch.rows)" in runtime
     assert '"MIXED" if batch_sports else "UNKNOWN"' in runtime
+
+
+def test_latency_percentiles_do_not_mix_success_and_client_error_samples():
+    from v17 import interactive_latency_telemetry as t
+
+    t.reset_latency_samples()
+    ctx = {"sport": "mlb", "row_count": "le1", "batch_size": "le1"}
+    t._record("/score-prop", ctx, 100.0, "ok")
+    t._record("/score-prop", ctx, 9_000.0, "client_error")
+
+    rows = {
+        (row["route"], row["sport"], row["outcome"]): row
+        for row in t.latency_percentiles()
+    }
+    success = rows[("/score-prop", "mlb", "ok")]
+    invalid = rows[("/score-prop", "mlb", "client_error")]
+
+    assert success["samples"] == 1
+    assert success["p50_ms"] == 100.0
+    assert invalid["samples"] == 1
+    assert invalid["p50_ms"] == 9_000.0
+    assert success["can_execute"] is False
+    assert invalid["can_execute"] is False
