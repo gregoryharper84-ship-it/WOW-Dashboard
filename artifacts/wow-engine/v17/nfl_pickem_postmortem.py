@@ -23,6 +23,8 @@ CAN_EXECUTE = False
 PRODUCTION_PROBABILITY_MUTATION_ALLOWED = False
 AUTOMATIC_PROMOTION_ALLOWED = False
 SERVING_MODE = "POSTMORTEM_DIAGNOSTIC_ONLY"
+NFL_TIE_OUTCOME = "TIE"
+TIE_POLICY_NO_POINT = "NO_POINT"
 
 LEARNING_PRESERVE = "PRESERVE"
 LEARNING_LOG_ONLY = "LOG_ONLY"
@@ -80,12 +82,20 @@ def analyze_settled_pickem_week(
     user_name: str,
     tiebreaker_predictions: Mapping[str, float] | None = None,
     actual_tiebreaker_total: float | None = None,
+    tie_policy: str | None = None,
 ) -> dict[str, Any]:
     """Analyze one fully settled pick'em week without hindsight probability mutation."""
     events = _validate_inputs(participant_picks, winners, user_name=user_name)
     participants = list(participant_picks)
     pool_size = len(participants)
     clean_winners = {event: _clean(winners[event]) for event in events}
+    tied_events = [event for event in events if clean_winners[event] == NFL_TIE_OUTCOME]
+    if tie_policy not in (None, TIE_POLICY_NO_POINT):
+        raise ValueError("PICKEM_POSTMORTEM_TIE_POLICY_UNSUPPORTED")
+    if tied_events and tie_policy != TIE_POLICY_NO_POINT:
+        raise ValueError("PICKEM_POSTMORTEM_TIE_RULE_REQUIRED")
+    if any(_clean(side) == NFL_TIE_OUTCOME for picks in participant_picks.values() for side in picks.values()):
+        raise ValueError("PICKEM_POSTMORTEM_TIE_NOT_A_PICKABLE_SIDE")
 
     per_event: list[dict[str, Any]] = []
     wins_by_participant = {participant: 0 for participant in participants}
@@ -105,13 +115,14 @@ def analyze_settled_pickem_week(
 
         user_pick = _clean(participant_picks[user_name][event])
         user_pick_count = counts[user_pick]
-        user_correct = user_pick == winner
+        event_tied = winner == NFL_TIE_OUTCOME
+        user_correct = not event_tied and user_pick == winner
         user_is_minority = user_pick_count < max_count
         user_is_majority = majority_side == user_pick
         user_is_split_top = not user_is_minority and majority_side is None
         unanimous_side = next(iter(counts)) if len(counts) == 1 else None
-        unanimous_shared_loss = unanimous_side is not None and unanimous_side != winner
-        majority_side_lost = majority_side is not None and majority_side != winner
+        unanimous_shared_loss = not event_tied and unanimous_side is not None and unanimous_side != winner
+        majority_side_lost = not event_tied and majority_side is not None and majority_side != winner
 
         per_event.append(
             {
@@ -119,6 +130,8 @@ def analyze_settled_pickem_week(
                 "winner": winner,
                 "user_pick": user_pick,
                 "user_correct": user_correct,
+                "event_tied": event_tied,
+                "scored_for_pickem": not event_tied,
                 "pool_pick_counts": dict(sorted(counts.items())),
                 "user_pick_count": user_pick_count,
                 "user_pick_share": user_pick_count / pool_size,
@@ -146,7 +159,8 @@ def analyze_settled_pickem_week(
             {
                 "participant": participant,
                 "wins": wins,
-                "losses": len(events) - wins,
+                "losses": len(events) - len(tied_events) - wins,
+                "ties": len(tied_events),
             }
             for participant, wins in wins_by_participant.items()
         ),
@@ -255,7 +269,10 @@ def analyze_settled_pickem_week(
         "pool_size": pool_size,
         "event_count": len(events),
         "user_wins": user_wins,
-        "user_losses": len(events) - user_wins,
+        "user_losses": len(events) - len(tied_events) - user_wins,
+        "user_ties": len(tied_events),
+        "tie_policy": tie_policy,
+        "tied_events": tied_events,
         "best_wins": best_wins,
         "gap_to_best": best_wins - user_wins,
         "wins_rank": wins_rank,
@@ -284,5 +301,7 @@ __all__ = [
     "CAN_EXECUTE",
     "PRODUCTION_PROBABILITY_MUTATION_ALLOWED",
     "SERVING_MODE",
+    "NFL_TIE_OUTCOME",
+    "TIE_POLICY_NO_POINT",
     "analyze_settled_pickem_week",
 ]
