@@ -111,11 +111,24 @@ def _request_json(
         provider.auth_name: api_key,
     }
     request = Request(url, headers=headers)
+    from v17 import rundown_datapoint_budget as dp_budget
+
+    # Health probes are paid Rundown calls too: same reservation ledger.
+    reservation = dp_budget.reserve()
+    if not reservation.allowed:
+        return _typed_status(
+            "MARKET_DATA_UNOBTAINABLE",
+            provider_code=reservation.code,
+            auth_ok=None,
+            blocker=reservation.code,
+        ), None
     try:
         with (opener or urlopen)(request, timeout=5) as response:
+            reservation.observe(getattr(response, "headers", None))
             status_code = int(getattr(response, "status", None) or getattr(response, "code", None) or 200)
             body = response.read().decode("utf-8")
     except HTTPError as exc:
+        reservation.observe(getattr(exc, "headers", None), failed=True)
         if exc.code in {401, 403}:
             return _typed_status(
                 "AUTH_FAILED",
@@ -140,6 +153,7 @@ def _request_json(
             blocker=f"RUNDOWN_HTTP_{exc.code}",
         ), None
     except (URLError, TimeoutError, OSError) as exc:
+        reservation.observe(None, failed=True)
         code = f"RUNDOWN_{type(exc).__name__}"
         return _typed_status(
             "MARKET_DATA_UNOBTAINABLE",
@@ -147,6 +161,8 @@ def _request_json(
             auth_ok=None,
             blocker=code,
         ), None
+    finally:
+        reservation.settle()
 
     if status_code != 200:
         code = f"RUNDOWN_HTTP_{status_code}"

@@ -347,6 +347,11 @@ def fetch(
     base_query = {k: v for k, v in (params or {}).items() if v is not None}
     url = _base_url(provider) + (path if path.startswith("/") else "/" + path)
 
+    metered = provider.name == "RUNDOWN"
+    if metered:
+        from v17 import rundown_datapoint_budget as dp_budget
+
+
     allow_auth_failover = provider.name == "RUNDOWN" and provider.auth_style == "header"
     attempt_keys = api_keys if allow_auth_failover else api_keys[:1]
 
@@ -362,11 +367,24 @@ def fetch(
         safe_endpoint = _redact(url, api_key)
         request = Request(full, headers=headers)
 
+        # Every network attempt (including auth-alias failover) reserves one
+        # call atomically before I/O and settles exactly once afterwards.
+        reservation = dp_budget.reserve() if metered else None
+        if reservation is not None and not reservation.allowed:
+            return _fail(
+                provider.name, capability, reservation.code,
+                request_audit={"budget": reservation.audit(), "can_execute": False},
+            )
+
         try:
             with (opener or urlopen)(request, timeout=TIMEOUT_SECONDS) as response:
+                if reservation is not None:
+                    reservation.observe(getattr(response, "headers", None))
                 body = response.read().decode("utf-8")
                 status = getattr(response, "status", None) or getattr(response, "code", None)
         except HTTPError as exc:
+            if reservation is not None:
+                reservation.observe(getattr(exc, "headers", None), failed=True)
             has_next_alias = attempt_index + 1 < len(attempt_keys)
             if allow_auth_failover and exc.code in (401, 403) and has_next_alias:
                 continue
@@ -386,7 +404,12 @@ def fetch(
                 status=exc.code, endpoint=safe_endpoint, rate_limit=rate_limit,
             )
         except (URLError, TimeoutError, OSError) as exc:
+            if reservation is not None:
+                reservation.observe(None, failed=True)
             return _fail(provider.name, capability, f"{provider.name}_{type(exc).__name__}", endpoint=safe_endpoint)
+        finally:
+            if reservation is not None:
+                reservation.settle()
 
         try:
             payload = json.loads(body)
@@ -613,6 +636,29 @@ def _rundown_market_id_map() -> dict[str, str]:
         if canonical:
             out[str(key)] = canonical
     return out
+
+
+# Provider-catalog-verified affiliates (wow_market_provider_catalog, refreshed
+# 2026-09-25): 3=Pinnacle, 19=DraftKings, 23=FanDuel. Same default the
+# discovery feed and market-history collector already use.
+_DEFAULT_RUNDOWN_EVIDENCE_AFFILIATE_IDS = ("3", "19", "23")
+
+
+def rundown_evidence_affiliate_ids() -> tuple[str, ...] | None:
+    """Books requested by Rundown evidence/snapshot calls (data-point cost control).
+
+    Rundown bills per returned price, so an unfiltered request pays for every
+    book. Default is the three-book set above. ``WOW_RUNDOWN_EVIDENCE_AFFILIATE_IDS``
+    overrides it; the value ``ALL`` restores the unfiltered request. Narrowing
+    is a quota measure only and never changes parsing or model authority.
+    """
+    raw = os.environ.get("WOW_RUNDOWN_EVIDENCE_AFFILIATE_IDS")
+    if raw is None or not raw.strip():
+        return _DEFAULT_RUNDOWN_EVIDENCE_AFFILIATE_IDS
+    if raw.strip().upper() == "ALL":
+        return None
+    ids = tuple(token.strip() for token in raw.split(",") if token.strip())
+    return ids or _DEFAULT_RUNDOWN_EVIDENCE_AFFILIATE_IDS
 
 
 def rundown_winner_market_ids() -> tuple[str, ...]:
