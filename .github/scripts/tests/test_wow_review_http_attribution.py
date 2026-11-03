@@ -232,6 +232,57 @@ class HttpAttributionTests(unittest.TestCase):
                 self.assertNotIn("SECRET", stderr.getvalue())
                 self.assertNotIn("PARTIAL BODY", stderr.getvalue())
 
+    def test_broken_diagnostic_body_keeps_typed_status_and_fails_closed(self):
+        """HTTPException and deep JSON must not change provider fallback typing."""
+        import contextlib
+        from http.client import LineTooLong
+
+        class BrokenBody:
+            def __init__(self, error):
+                self.error = error
+
+            def read(self, _limit):
+                raise self.error
+
+        for error in (LineTooLong("SECRET malformed chunk"),
+                      RecursionError("SECRET deeply nested JSON")):
+            for url, code, expected in (
+                (ANTHROPIC, 429, "PROVIDER_HTTP_429"),
+                (GEMINI, 503, "PROVIDER_HTTP_503"),
+            ):
+                with self.subTest(code=code, error=type(error).__name__):
+                    denied = HTTPError(url, code, "SECRET", {}, BrokenBody(error))
+                    output = io.StringIO()
+                    with patch.object(m.HTTP_CLIENT, "open", side_effect=denied):
+                        with contextlib.redirect_stderr(output):
+                            with self.assertRaises(m.ProviderUnavailable) as result:
+                                m.request_json(url, data={"model": "approved"})
+                    self.assertEqual(str(result.exception), expected)
+                    self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:", output.getvalue())
+                    self.assertNotIn("SECRET", output.getvalue())
+
+    def test_github_403_body_http_exception_remains_hold_without_retry(self):
+        import contextlib
+        from http.client import LineTooLong
+
+        class BrokenBody:
+            def read(self, _limit):
+                raise LineTooLong("SECRET malformed chunk")
+
+        url = GITHUB + "/pulls/2382"
+        denied = HTTPError(url, 403, "SECRET", {}, BrokenBody())
+        output = io.StringIO()
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=denied) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(output):
+                    with self.assertRaises(m.Hold) as result:
+                        m.request_json(url, token="SECRET_TOKEN")
+        self.assertEqual(str(result.exception), "HTTP_403")
+        self.assertEqual(opened.call_count, 1)
+        sleep.assert_not_called()
+        self.assertIn("GITHUB_API:GET:PR_METADATA:UNCLASSIFIED", output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
     def test_rate_limit_rejection_is_attributed_and_still_fallback_eligible(self):
         import contextlib
         body = {"type": "error",
