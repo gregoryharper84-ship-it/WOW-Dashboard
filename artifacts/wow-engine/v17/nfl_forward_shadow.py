@@ -451,6 +451,30 @@ def active_nfl_season(now: Any = None) -> int:
     return current.year - 1 if current.month <= 2 else current.year
 
 
+
+def require_complete_settlement_run(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Fail the existing grading workflow when official finals are overdue.
+
+    Kept in the runtime rather than weakening or editing trusted GitHub Actions
+    workflow files. The previously deployed handler can only return successful
+    HTTP for a complete, explicitly versioned settlement response.
+    """
+    if not isinstance(payload, Mapping):
+        raise NFLForwardShadowError("NFL_FORWARD_SHADOW_RESPONSE_INVALID")
+    count = payload.get("overdue_unsettled_count")
+    event_ids = payload.get("overdue_unsettled_event_ids")
+    if (
+        type(count) is not int or count < 0
+        or not isinstance(event_ids, list) or len(event_ids) != count
+        or not all(isinstance(item, str) and item for item in event_ids)
+    ):
+        raise NFLForwardShadowError("NFL_FORWARD_SHADOW_SETTLEMENT_CONTRACT_INVALID")
+    if payload.get("status") != "COMPLETED" or count:
+        raise NFLForwardShadowError("NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT")
+    return payload
+
+
+
 def _refresh_feature_table(db: Any, settlement_refresh: Mapping[str, Any], fn: Any) -> dict[str, Any]:
     """Keep the training/replay feature table current. Never fails grading."""
     refreshed = {int(s) for s in (settlement_refresh or {}).get("seasons") or []}
