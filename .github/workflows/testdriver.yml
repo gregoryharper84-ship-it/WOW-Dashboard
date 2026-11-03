@@ -19,7 +19,8 @@ jobs:
     # convert this workflow to a PR/push/scheduled trigger.
     if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Covers the 240s sandbox + 45s startup + 660s test/hooks budget, plus setup.
+    timeout-minutes: 20
     concurrency:
       group: testdriver-trial-e2e
       cancel-in-progress: true
