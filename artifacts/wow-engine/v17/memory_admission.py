@@ -288,6 +288,51 @@ def release_process_memory() -> None:
         pass
 
 
+def run_admitted_background_job(operation: str, fn: Any) -> Any:
+    """Run one in-process background maintenance job under the shared slot.
+
+    Maintenance/training routes previously ran outside heavyweight admission,
+    so overlapping scheduled sweeps (and Daily/Scout work) could stack in one
+    Render process until the cgroup OOM killer restarted it. Background jobs
+    never wait: a busy slot or memory pressure is a typed, retryable deferral.
+    The job result itself is returned unchanged.
+    """
+    permit = try_acquire_heavy_job(operation)
+    if permit is None:
+        raise HeavyJobDeferred(
+            code="HEAVY_JOB_BUSY",
+            operation=operation,
+            detail={
+                "reason": "SERIALIZATION_BUSY",
+                "retry_after_seconds": pressure_retry_seconds(),
+            },
+        )
+    try:
+        with permit:
+            return fn()
+    finally:
+        release_process_memory()
+
+
+def http_deferral(exc: HeavyJobDeferred) -> Exception:
+    """Translate a typed deferral into a retryable HTTP 503 with Retry-After."""
+    from fastapi import HTTPException
+
+    retry_after = exc.detail.get("retry_after_seconds") or pressure_retry_seconds()
+    LOGGER.warning(
+        "WOW_V17_MEMORY_ADMISSION operation=%s status=DEFERRED code=%s memory_ratio=%s retry_after_seconds=%s can_execute=false",
+        exc.operation,
+        exc.code,
+        exc.detail.get("memory_ratio"),
+        retry_after,
+    )
+    return HTTPException(
+        status_code=503,
+        detail=exc.receipt(),
+        headers={"Retry-After": str(int(max(1.0, float(retry_after))))},
+    )
+
+
 def pressure_retry_seconds() -> float:
     return _float_env(
         "WOW_V17_MEMORY_PRESSURE_RETRY_SECONDS",
@@ -318,8 +363,10 @@ __all__ = [
     "MemorySample",
     "acquire_heavy_job",
     "admission_snapshot",
+    "http_deferral",
     "memory_sample",
     "pressure_retry_seconds",
     "release_process_memory",
+    "run_admitted_background_job",
     "try_acquire_heavy_job",
 ]
