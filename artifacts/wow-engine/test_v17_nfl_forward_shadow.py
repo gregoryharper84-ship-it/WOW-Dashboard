@@ -234,3 +234,37 @@ def test_overdue_settlement_rejects_invalid_grace_or_naive_reference():
         overdue_unsettled_events([prediction], [], grace_period_hours=-1)
     with pytest.raises(ValueError, match="TIMESTAMP_MUST_BE_TIMEZONE_AWARE"):
         overdue_unsettled_events([prediction], [], now=datetime(2026, 11, 3))
+
+
+def test_run_forward_shadow_reports_missing_final_then_recovery(monkeypatch):
+    from v17 import nfl_forward_shadow as shadow
+    prediction = _prediction(
+        event_id="2026_08_CHI_SEA", p=0.5114, lower=0.4555, upper=0.5673, index=0
+    )
+    outcomes = []
+    saved = set()
+    monkeypatch.setattr(shadow, "load_prediction_rows", lambda db: [])
+    monkeypatch.setattr(shadow, "select_canonical_forward_predictions", lambda rows: [prediction])
+    monkeypatch.setattr(shadow, "load_outcome_rows", lambda db: outcomes)
+
+    def persist(db, grades):
+        additions = [g for g in grades if g.official_event_id not in saved]
+        saved.update(g.official_event_id for g in additions)
+        return len(additions)
+
+    monkeypatch.setattr(shadow, "persist_new_grades", persist)
+    monkeypatch.setattr(shadow, "persist_health", lambda db, health: None)
+    refresh = lambda db: {"status": "COMPLETED", "seasons": [], "can_execute": False}
+    missing = shadow.run_forward_shadow(object(), settlement_refresh_fn=refresh)
+    assert (missing["status"], missing["overdue_unsettled_count"]) == ("INCOMPLETE_SETTLEMENT", 1)
+    assert missing["overdue_unsettled_event_ids"] == ["2026_08_CHI_SEA"]
+    assert (missing["graded_events"], missing["new_grades_persisted"]) == (0, 0)
+
+    outcomes.append({"game_id": "2026_08_CHI_SEA", "home_score": 17, "away_score": 34,
+                     "home_win": False, "tie": False})
+    settled = shadow.run_forward_shadow(object(), settlement_refresh_fn=refresh)
+    assert (settled["status"], settled["overdue_unsettled_count"]) == ("COMPLETED", 0)
+    assert settled["overdue_unsettled_event_ids"] == []
+    assert (settled["graded_events"], settled["new_grades_persisted"]) == (1, 1)
+    assert saved == {"2026_08_CHI_SEA"}
+    assert settled["can_execute"] is False
