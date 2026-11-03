@@ -356,7 +356,7 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
         # or silently retried through an unverified direct-table query.
         raise RuntimeError("NBA_CALIBRATOR_RESOLUTION_FAILED") from exc
     data = getattr(response, "data", None)
-    row = data[0] if isinstance(data, list) and data else data
+    row = (data[0] if data else None) if isinstance(data, list) else data
     if row is None:
         raise LookupError("NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE")
     if not isinstance(row, Mapping):
