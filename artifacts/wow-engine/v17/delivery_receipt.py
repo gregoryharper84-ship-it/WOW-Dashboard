@@ -6,6 +6,7 @@ outputs as final publication authority, certification, or execution.
 from __future__ import annotations
 
 import argparse
+from http.client import HTTPException
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -76,7 +77,7 @@ def _request_json(url: str, headers: dict[str, str]) -> tuple[Any, dict[str, str
         with urlopen(Request(url, headers=headers, method="GET"), timeout=20) as response:
             raw = response.read(2_000_000)
             return json.loads(raw), {str(k).lower(): str(v) for k, v in response.headers.items()}
-    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError, HTTPException) as exc:
         raise DeliveryError("DELIVERY_SOURCE_READ_FAILED") from exc
 
 
@@ -127,6 +128,8 @@ def _render_deploy_sha(service_id: str, key: str) -> str:
 
 
 def _render_supabase_ref(service_id: str, key: str) -> str:
+    if not re.fullmatch(r"srv-[a-z0-9]+", service_id):
+        raise DeliveryError("DELIVERY_RENDER_SERVICE_ID_INVALID")
     data, _ = _request_json(
         "https://api.render.com/v1/services/" + service_id + "/env-vars",
         {"Authorization": "Bearer " + key, "Accept": "application/json"},
@@ -139,8 +142,12 @@ def _render_supabase_ref(service_id: str, key: str) -> str:
             value = var.get("value")
             if not isinstance(value, str):
                 raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
-            # A redacted Render value is not a verified project binding.
-            return supabase_ref(value)
+            # Render's saved secret may be redacted. Never classify masked
+            # environment data as a verified project target.
+            try:
+                return supabase_ref(value)
+            except DeliveryError as exc:
+                raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED") from exc
     raise DeliveryError("DELIVERY_RENDER_ENV_UNVERIFIED")
 
 
@@ -180,6 +187,8 @@ def build_receipt(
     ref = supabase_ref(config["SUPABASE_URL"])
     if ref != config.get("WOW_DELIVERY_EXPECTED_SUPABASE_PROJECT_REF", EXPECTED_PROJECT_REF):
         raise DeliveryError("DELIVERY_SUPABASE_PROJECT_MISMATCH")
+    if not re.fullmatch(r"srv-[a-z0-9]+", config["RENDER_SERVICE_ID"]):
+        raise DeliveryError("DELIVERY_RENDER_SERVICE_ID_INVALID")
     if render_env(config["RENDER_SERVICE_ID"], config["RENDER_API_KEY"]) != ref:
         raise DeliveryError("DELIVERY_RENDER_SUPABASE_TARGET_MISMATCH")
     deployed = render_deploy(config["RENDER_SERVICE_ID"], config["RENDER_API_KEY"])
