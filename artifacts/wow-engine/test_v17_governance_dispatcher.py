@@ -963,7 +963,6 @@ def test_dispatch_attempts_never_blindly_repeat(role, reviewer_status, role_stat
         transport.next_dispatch_attempt(role, reviewer_status, role_statuses, previous)
 
 
-@pytest.mark.parametrize("expired", [False, True])
 @pytest.mark.parametrize("review_decision,expected", [
     ("PASS", "PASS"), ("REJECT", "REJECT"), ("HOLD", "INVALID"),
 ])
@@ -999,6 +998,7 @@ def test_provenance_valid_source_artifact_does_not_erase_semantic_reject(
         assert blocked["findings"] == ["SOURCE_REVIEW_REJECT"]
 
 
+@pytest.mark.parametrize("expired", [False, True])
 def test_expired_source_review_artifact_is_identified_for_bounded_refresh(expired):
     module = source_review_module()
 
