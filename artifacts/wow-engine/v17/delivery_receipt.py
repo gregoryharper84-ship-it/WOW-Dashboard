@@ -209,10 +209,11 @@ def build_receipt(
         "wow_event_source_attempts", attempted_at="gt." + stamp(now + timedelta(minutes=5))
     )
     return {
-        "status": "VERIFIED_DELIVERY_EVIDENCE", "code": "DELIVERY_READBACK_COMPLETED",
+        "status": "BLOCKED", "code": "DELIVERY_RENDER_RUNTIME_BINDING_UNVERIFIED",
         "can_execute": False, "generated_at": stamp(now),
         "render": {"service_id": config["RENDER_SERVICE_ID"], "deployed_sha": deployed,
-                   "expected_sha": sha, "supabase_project_ref_matches": True},
+                   "expected_sha": sha, "saved_supabase_project_ref_matches": True,
+                   "runtime_supabase_binding_verified": False},
         "supabase": {
             "project_ref": ref, "activity_window_hours": hours, "lanes": lanes,
             "calibrators": {
@@ -226,6 +227,7 @@ def build_receipt(
         },
         "interpretation": {
             "mlb_event_idle_is_not_global_event_outage": True,
+            "saved_config_is_not_running_process_proof": True,
             "nfl_numerical_package_is_not_final_publication": True,
             "nfl_forward_certification_requires_independent_acceptance": True,
             "no_automatic_model_or_artifact_promotion": True,
