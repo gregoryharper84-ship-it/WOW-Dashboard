@@ -33,4 +33,6 @@ After independent security/adoption and protected merge, deploy Trigger
 and accepted main to Render (auto-deploy off). Independently verify
 SHA, Trigger production terminal receipt, canonical target, original
 prediction time, new Supabase outcome IDs, retry dedupe and error holds.
-Rollback: disable request key/task and restore the prior accepted Render SHA; retain the\nprogress ledger for audit unless an authorized rollback plan explicitly removes it.\nPreserve Cron and immutable prediction/outcome evidence.
+Rollback: disable request key/task and restore the prior accepted Render SHA; retain the
+progress ledger for audit unless an authorized rollback plan explicitly removes it.
+Preserve Cron and immutable prediction/outcome evidence.
