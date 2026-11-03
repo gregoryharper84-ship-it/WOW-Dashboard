@@ -8,7 +8,7 @@ NOW = datetime(2026, 10, 31, 17, 0, tzinfo=timezone.utc)
 def valid():
     d = {k: "verified" for k in REQUIRED}
     d.update(
-        official_event_id="2026020219", home_team="HOME", away_team="AWAY",
+        official_event_id="2026020219", home_team="BOS", away_team="NYR",
         event_start_time_utc=(NOW + timedelta(hours=3)).isoformat(),
         goalie_status="CONFIRMED", goalie_status_observed_at=NOW.isoformat(),
         goalie_identity_snapshot_id="starter-source-1", source_snapshot_id="source-1",
@@ -16,6 +16,8 @@ def valid():
         home_elo=1510.0, away_elo=1490.0,
         home_goalie_sv_pct=.91, away_goalie_sv_pct=.92,
         home_pp_pct=.21, away_pk_pct=.80,
+        injury_report={"status": "CURRENT"}, rest_travel={"status": "CURRENT"},
+        calibration_artifact={"artifact_type": "V17_BINARY_CALIBRATION", "model_family": "NHL_ELO_GOALIE_SPECIAL_TEAMS_OT_V1"},
     )
     return d
 
@@ -117,3 +119,56 @@ def test_boolean_and_nonfinite_percentages_never_pass():
             result = validate_nhl_pregame_evidence(row, as_of_utc=NOW)
             assert result["status"] == "HELD"
             assert "NHL_NUMERIC_FEATURE_INVALID" in result["blockers"]
+
+
+def test_teams_must_be_recognized_and_distinct_after_canonicalization():
+    for home, away, code in (
+        ("BOS", " bos ", "NHL_DUPLICATE_OPPONENT_IDENTITY"),
+        ("Boston Bruins", "BOS", "NHL_DUPLICATE_OPPONENT_IDENTITY"),
+        (["BOS"], "NYR", "NHL_TEAM_IDENTITY_UNVERIFIED"),
+        ("UNKNOWN FRANCHISE", "NYR", "NHL_TEAM_IDENTITY_UNVERIFIED"),
+        ("BOS", {}, "NHL_TEAM_IDENTITY_UNVERIFIED"),
+    ):
+        d = valid()
+        d["home_team"], d["away_team"] = home, away
+        result = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+        assert result["status"] == "HELD"
+        assert code in result["blockers"]
+        assert result["probability_publishable"] is False
+
+
+def test_provider_alias_cannot_pass_as_official_nhl_event_identity():
+    for official_id in ("espn-401234", "202602021", 2026020219, "2026020219\u0660"):
+        d = valid()
+        d["official_event_id"] = official_id
+        result = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+        assert result["status"] == "HELD"
+        assert "NHL_EVENT_IDENTITY_UNVERIFIED" in result["blockers"]
+
+
+def test_required_structured_inputs_reject_truthy_wrong_shapes():
+    for key in ("injury_report", "rest_travel", "calibration_artifact"):
+        for invalid in (False, True, 1, "verified", ["claimed"], {}):
+            d = valid()
+            d[key] = invalid
+            result = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+            assert result["status"] == "HELD"
+            assert key in result["missing_fields"]
+            assert "MODEL_INPUTS_INSUFFICIENT" in result["blockers"]
+
+
+def test_overflow_and_extreme_times_return_typed_hold_without_crashing():
+    for key, val, blocker in (
+        ("home_elo", 10 ** 400, "NHL_NUMERIC_FEATURE_INVALID"),
+        ("away_elo", 10 ** 400, "NHL_NUMERIC_FEATURE_INVALID"),
+        ("home_pp_pct", 10 ** 400, "NHL_NUMERIC_FEATURE_INVALID"),
+        ("away_goalie_sv_pct", 10 ** 400, "NHL_NUMERIC_FEATURE_INVALID"),
+        ("goalie_status_observed_at", "0001-01-01T00:00:00+01:00", "NHL_GOALIE_STATUS_STALE"),
+        ("event_start_time_utc", "0001-01-01T00:00:00+01:00", "NHL_EVENT_NOT_PREGAME"),
+    ):
+        d = valid()
+        d[key] = val
+        result = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+        assert result["status"] == "HELD"
+        assert blocker in result["blockers"]
+        assert result["can_execute"] is False
