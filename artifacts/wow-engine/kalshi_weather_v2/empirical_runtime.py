@@ -119,6 +119,9 @@ def _latest_capture_at(
         response = (
             db.table("wow_kalshi_weather_predictions")
             .select("created_at,model_version,model_payload")
+            .eq("model_version", MODEL_VERSION)
+            .eq("model_payload->contract->>lane", "HOURLY_TEMPERATURE")
+            .in_("model_payload->contract->>settlement_location_code", station_ids)
             .order("created_at", desc=True)
             .limit(FRESHNESS_SCAN_LIMIT)
             .execute()
