@@ -15,6 +15,8 @@ Fail-closed rules:
 - durable PENDING state permits resume only with the same request_id + row_key;
 - durable terminal/model-complete state is reported but never fabricated into a
   prediction receipt;
+- NFL outright event UUIDs may be queried only with explicit NFL/OUTRIGHT_WINNER
+  routing and never receive publication authority from the receipt reader;
 - can_execute is always false.
 """
 from __future__ import annotations
@@ -338,10 +340,11 @@ def _nfl_event_receipt(row: dict[str, Any]) -> dict[str, Any]:
         "calibrated_upper_bound": row.get("calibrated_selection_upper_bound"),
         "model_probability_publishable": row.get("model_probability_publishable") is True,
         "blend_publishable": row.get("blend_publishable") is True,
-        "probability_publishable": (
-            row.get("model_probability_publishable") is True
-            and row.get("blend_publishable") is True
-        ),
+        # This lookup is observational, not a certification/terminal decision.
+        # Keep the stored model and blend signals separately, but never upgrade
+        # a readback into V17 publication authority.
+        "probability_publishable": False,
+        "rank_eligible": False,
         "model_family": row.get("model_family"),
         "model_version": row.get("model_version"),
         "terminal_label": None,  # Only V17_TERMINAL_REDUCER can supply authority.
