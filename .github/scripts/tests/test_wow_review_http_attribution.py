@@ -392,6 +392,88 @@ class HttpAttributionTests(unittest.TestCase):
                 self.assertNotIn("120", output.getvalue())
                 self.assertNotIn(url, output.getvalue())
 
+    def test_github_read_only_rate_limit_retries_once_with_exact_auth(self):
+        """A proved GitHub rate limit gets one paced GET, never a silent PASS."""
+        import contextlib
+        url = GITHUB + "/pulls/2382"
+        for reason_headers, message in (
+            ({"X-RateLimit-Remaining": "0"}, "SECRET exhaustion"),
+            ({}, "You have exceeded a secondary rate limit. SECRET"),
+        ):
+            with self.subTest(headers=reason_headers):
+                denied = HTTPError(url, 403, "SECRET", reason_headers,
+                                   io.BytesIO(json.dumps({"message": message}).encode()))
+                success = io.BytesIO(b'{"head":{"sha":"abc"}}')
+                output = io.StringIO()
+                with patch.object(m.HTTP_CLIENT, "open",
+                                  side_effect=[denied, success]) as opened:
+                    with patch.object(m.time, "sleep") as sleep:
+                        with contextlib.redirect_stderr(output):
+                            result = m.request_json(url, token="SECRET_TOKEN")
+                self.assertEqual(result, {"head": {"sha": "abc"}})
+                self.assertEqual(opened.call_count, 2)
+                sleep.assert_called_once_with(60)
+                self.assertEqual(opened.call_args_list[0].args[0].get_header(
+                    "Authorization"), "Bearer SECRET_TOKEN")
+                self.assertEqual(opened.call_args_list[1].args[0].get_header(
+                    "Authorization"), "Bearer SECRET_TOKEN")
+                self.assertIn("REVIEW_GITHUB_READ_RETRY_ONCE:", output.getvalue())
+                self.assertNotIn("SECRET", output.getvalue())
+                self.assertNotIn(url, output.getvalue())
+
+    def test_github_get_second_rate_limit_fails_closed_without_third_attempt(self):
+        import contextlib
+        url = GITHUB + "/pulls/2382"
+        def limit():
+            return HTTPError(url, 403, "SECRET",
+                             {"X-RateLimit-Remaining": "0"},
+                             io.BytesIO(b'{"message":"rate limit"}'))
+        output = io.StringIO()
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=[limit(), limit()]) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(output):
+                    with self.assertRaises(m.Hold) as err:
+                        m.request_json(url, token="SECRET_TOKEN")
+        self.assertEqual(str(err.exception), "HTTP_403")
+        self.assertEqual(opened.call_count, 2)
+        sleep.assert_called_once_with(60)
+        self.assertEqual(output.getvalue().count("REVIEW_GITHUB_READ_RETRY_ONCE:"), 1)
+
+    def test_github_permission_or_ambiguous_403_never_retries(self):
+        import contextlib
+        url = GITHUB + "/pulls/2382"
+        for body in (
+            {"message": "Resource not accessible by integration"},
+            {"message": "SECRET unknown 403"},
+        ):
+            with self.subTest(body=body):
+                denied = HTTPError(url, 403, "SECRET", {},
+                                   io.BytesIO(json.dumps(body).encode()))
+                with patch.object(m.HTTP_CLIENT, "open",
+                                  side_effect=denied) as opened:
+                    with patch.object(m.time, "sleep") as sleep:
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            with self.assertRaises(m.Hold) as err:
+                                m.request_json(url, token="SECRET_TOKEN")
+                self.assertEqual(str(err.exception), "HTTP_403")
+                self.assertEqual(opened.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_github_check_publication_never_retries_rate_limit(self):
+        import contextlib
+        url = GITHUB + "/check-runs"
+        denied = HTTPError(url, 429, "SECRET", {},
+                           io.BytesIO(b'{"message":"secondary rate limit"}'))
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=denied) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(m.Hold) as err:
+                        m.request_json(url, token="SECRET_TOKEN", data={"name": "check"})
+        self.assertEqual(str(err.exception), "HTTP_429")
+        self.assertEqual(opened.call_count, 1)
+        sleep.assert_not_called()
+
     def test_github_429_keeps_hold_and_reports_secondary_limit(self):
         import contextlib
         url = GITHUB + "/pulls/2375"
