@@ -2563,6 +2563,65 @@ def test_trusted_gate_bootstrap_receipts_are_not_rejected_as_unsupported(cert_mo
     assert "ROUTE_ALLOWED" in result.stdout
 
 
+def test_trusted_gate_bootstrap_schema3_verifier_invocation_accepts_owner_receipt(tmp_path):
+    """Exercise the downstream half of the gate for the accepted V3 owner path.
+
+    The existing argv-shape test only drives a schema-2 non-owner bootstrap
+    receipt, so an owner-authored schema-3 receipt could fail inside the gate's
+    --live-checks-json branch without any test noticing.
+    """
+    workflow = TRUSTED_GATE.read_text(encoding="utf-8")
+    start = workflow.index('verifier=".github/scripts/verify_engineering_governance_receipt.py"')
+    marker = 'echo "Trusted exact-head governance receipt verified. can_execute=false."'
+    invocation = textwrap.dedent(workflow[start:workflow.index(marker, start) + len(marker)])
+
+    def run(receipt, reviews, checks):
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text(json.dumps(reviews), encoding="utf-8")
+        checks_path = tmp_path / "checks.json"
+        checks_path.write_text(json.dumps(checks), encoding="utf-8")
+        script = (
+            "set -euo pipefail\n"
+            'receipt="$RECEIPT_PATH"\n'
+            'live_reviews="$LIVE_REVIEWS_PATH"\n'
+            'live_checks="$LIVE_CHECKS_PATH"\n'
+            'cert_mode=$(python -c \'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")\' "$receipt")\n'
+            'receipt_schema=$(python -c \'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("receipt_schema_version") or "")\' "$receipt")\n'
+            f"{invocation}\n"
+        )
+        env = os.environ | {
+            "WORKFLOW_NAME": verifier.WORKFLOW_NAME,
+            "RECEIPT_PATH": str(receipt_path),
+            "LIVE_REVIEWS_PATH": str(reviews_path),
+            "LIVE_CHECKS_PATH": str(checks_path),
+            "PR_NUMBER": "1822",
+            "PR_HEAD_SHA": HEAD,
+            "PR_HEAD_REF": "fix/issue-1806",
+            "RUN_ID": "12345",
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        }
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+        )
+
+    data = owner_v3_evidence()
+    accepted = run(build_bootstrap(data, now=datetime.now(timezone.utc)),
+                   data["reviews"], data["check_runs"])
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert "TRUST_ROOT_BOOTSTRAP_VERIFIED" in accepted.stdout
+
+    tampered_data = owner_v3_evidence()
+    tampered = build_bootstrap(tampered_data, now=datetime.now(timezone.utc))
+    tampered["owner_authorization"]["release_authorized"] = True
+    rejected = run(tampered, tampered_data["reviews"], tampered_data["check_runs"])
+    assert rejected.returncode == 1
+    assert "OWNER_AUTHORIZATION_SCOPE_INVALID" in rejected.stdout
+
+
 def test_trusted_gate_still_rejects_an_unrecognized_receipt_schema():
     script = ("set -euo pipefail\n"
               f"WORKFLOW_NAME={verifier.WORKFLOW_NAME}\n"
