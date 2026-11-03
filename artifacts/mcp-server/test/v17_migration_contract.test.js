@@ -268,6 +268,18 @@ test("MCP exact NFL event receipt mode admits discriminator and forwards same UU
     type: ["string", "null"], enum: ["OUTRIGHT_WINNER", null],
   });
   assert.equal(rowSchema.additionalProperties, false);
+  assert.deepEqual(rowSchema.if, {
+    required: ["market_family"],
+    properties: { market_family: { const: "OUTRIGHT_WINNER" } },
+  });
+  assert.deepEqual(rowSchema.then, {
+    required: ["prediction_id", "sport"],
+    properties: {
+      prediction_id: { type: "string", format: "uuid" },
+      sport: { const: "NFL" },
+    },
+  });
+  assert.deepEqual(rowSchema.anyOf[1].required, ["event_id", "player", "stat_type", "line", "direction"]);
   assert.equal(tool.annotations.readOnlyHint, true);
 
   const predictionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
