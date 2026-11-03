@@ -97,12 +97,13 @@ def test_same_eastern_day_uses_one_partition():
     }) == ["20261102"]
 
 
-def test_eastern_dst_fall_back_does_not_use_fixed_utc_offset():
-    # Two UTC calendar dates, same Eastern local day across DST fall back.
+def test_eastern_dst_fall_back_retains_original_utc_day_coverage():
+    # Both timestamps are Nov 1 Eastern despite falling on two UTC dates;
+    # additive partitioning must preserve the original Nov 2 UTC request.
     assert secondary._date_keys({
         "commenceTimeFrom": "2026-11-01T04:10:00Z",
         "commenceTimeTo": "2026-11-02T02:00:00Z",
-    }) == ["20261101"]
+    }) == ["20261101", "20261102"]
 
 
 @pytest.mark.parametrize("family", ["NFL", "NBA", "NHL"])
