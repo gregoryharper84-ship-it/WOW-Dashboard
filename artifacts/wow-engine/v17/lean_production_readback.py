@@ -123,8 +123,10 @@ def _readback() -> dict[str, Any]:
             raise ReadbackHold("MAIN_CI_SOURCE_RUN_ID_INVALID")
         source = _get_json(api + "/actions/runs/" + source_id, gh_headers)
         validate_source_run(source, target_sha=target)
-    elif event != "workflow_dispatch":
+    elif event not in {"workflow_dispatch", "schedule"}:
         raise ReadbackHold("SOURCE_EVENT_NOT_ALLOWED")
+    # Scheduled runs observe an existing deployment without becoming a source
+    # CI gate. Exact-current-main and both LIVE SHAs are checked below.
     branch = _get_json(api + "/branches/main", gh_headers)
     main_sha = str((branch.get("commit") or {}).get("sha") or "")
     render_headers = {
@@ -156,8 +158,9 @@ def main() -> int:
     try:
         outcome = _readback()
         code = 0
-    except (ReadbackHold, KeyError, TypeError, ValueError, urllib.error.URLError,
-            urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+    except Exception as exc:
+        # Even a transport reset, truncated HTTP response or malformed JSON
+        # shape must leave a typed, credential-free HOLD for independent SIRT.
         reason = str(exc) if isinstance(exc, ReadbackHold) else "READBACK_SOURCE_UNAVAILABLE_OR_INVALID"
         outcome = {
             "status": "READBACK_HOLD",
