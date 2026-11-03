@@ -11,7 +11,7 @@ price as the model forecast, and never authorizes execution.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import os
@@ -176,6 +176,33 @@ def _outcome_index(rows: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, 
             raise NFLForwardShadowError(f"DUPLICATE_SETTLED_OUTCOME:{game_id}")
         out[game_id] = row
     return out
+
+
+def overdue_unsettled_events(
+    predictions: Sequence[ForwardPrediction],
+    outcome_rows: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime | None = None,
+    grace_period_hours: int = 6,
+) -> list[str]:
+    """Report mature pregame events whose official settlement is absent.
+
+    A six-hour grace interval avoids treating in-progress games as incomplete.
+    Binary ties are correctly excluded. Missing outcomes remain visible even
+    when the upstream refresh returned an HTTP success.
+    """
+    if type(grace_period_hours) is not int or grace_period_hours < 0:
+        raise NFLForwardShadowError("SETTLEMENT_GRACE_PERIOD_INVALID")
+    reference = _utc(now) if now is not None else datetime.now(timezone.utc)
+    outcomes = _outcome_index(outcome_rows)
+    overdue: set[str] = set()
+    for prediction in predictions:
+        if prediction.event_start_time_utc + timedelta(hours=grace_period_hours) > reference:
+            continue
+        result = outcomes.get(prediction.official_event_id)
+        if result is None or (result.get("tie") is not True and result.get("home_win") is None):
+            overdue.add(prediction.official_event_id)
+    return sorted(overdue)
 
 
 def grade_forward_predictions(
@@ -392,13 +419,17 @@ def run_forward_shadow(
     settlement_refresh = settlement_refresh_fn(db)
     prediction_rows = load_prediction_rows(db)
     canonical = select_canonical_forward_predictions(prediction_rows)
-    grades = grade_forward_predictions(canonical, load_outcome_rows(db))
+    outcome_rows = load_outcome_rows(db)
+    grades = grade_forward_predictions(canonical, outcome_rows)
+    overdue = overdue_unsettled_events(canonical, outcome_rows)
     inserted = persist_new_grades(db, grades)
     health = calibration_health(grades, min_forward=min_forward)
     persist_health(db, health)
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
-        "status": "COMPLETED",
+        "status": "INCOMPLETE_SETTLEMENT" if overdue else "COMPLETED",
+        "overdue_unsettled_count": len(overdue),
+        "overdue_unsettled_event_ids": overdue,
         "settlement_refresh": settlement_refresh,
         "feature_table_refresh": feature_refresh,
         "prediction_rows_seen": len(prediction_rows),
