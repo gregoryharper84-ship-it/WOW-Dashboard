@@ -103,7 +103,15 @@ def validate_nhl_pregame_evidence(
             reasons.append("NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH")
     if status_at is None or status_at > now or (now - status_at).total_seconds() > max_status_age_minutes * 60:
         reasons.append("NHL_GOALIE_STATUS_STALE")
-    if start_at is None or start_at <= now:
+    # A caller may supply a start time up to 30 minutes different from the
+    # official schedule. Only the server-owned resolved start can prove that
+    # the game is still pregame; a later caller timestamp cannot override it.
+    if (
+        start_at is None
+        or start_at <= now
+        or (isinstance(resolved_identity, Mapping)
+            and (resolved_start is None or resolved_start <= now))
+    ):
         reasons.append("NHL_EVENT_NOT_PREGAME")
     for key in ("home_goalie_sv_pct", "away_goalie_sv_pct", "home_pp_pct", "away_pk_pct"):
         try:
