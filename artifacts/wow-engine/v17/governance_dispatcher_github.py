@@ -879,6 +879,27 @@ def reconcile(
                     **target_evidence,
                     source_review=reviewer_status,
                 )
+            elif (zero_credit_mode and preflight.get("action") == "DISPATCH"
+                  and (role_runs.get("source_review") or {}).get("history")):
+                # No paid provider call: the existing authenticated source-review
+                # run inventory can contain an actual semantic REJECT. Resolve
+                # that receipt before zero-credit QA/Release; never allow the
+                # absence of inference billing to erase a signed veto.
+                reviewer_status = source_review_status(
+                    client, module=module, pr=pr, files=files,
+                    source_runs=role_runs["source_review"]["history"],
+                )
+                if reviewer_status in {"REJECT", "INVALID"}:
+                    decision = policy.classify_target(
+                        **target_evidence, source_review=reviewer_status,
+                    )
+                elif reviewer_status in {"PENDING", "STALE", "MISSING"}:
+                    decision = {
+                        "action": "HOLD", "head_sha": head_sha,
+                        "findings": ["SOURCE_REVIEW_" + reviewer_status],
+                    }
+                else:
+                    decision = preflight
             else:
                 decision = preflight
                 reviewer_status = "PENDING"
