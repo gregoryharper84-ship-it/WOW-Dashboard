@@ -90,10 +90,12 @@ def _authenticated_semantic_reject(check_runs: list[dict[str, Any]], head_sha: s
         isinstance(row, dict)
         and row.get("name") == "WOW Independent Security Review"
         and row.get("head_sha") == head_sha
-        and str((row.get("app") or {}).get("id")) == str(QA_APP_ID)
+        and isinstance(row.get("app"), dict)
+        and str(row["app"].get("id")) == str(QA_APP_ID)
         and row.get("status") == "completed"
-        and (row.get("output") or {}).get("title") == "REJECT — independent semantic source review"
-        for row in check_runs if isinstance(check_runs, list)
+        and isinstance(row.get("output"), dict)
+        and row["output"].get("title") == "REJECT — independent semantic source review"
+        for row in (check_runs if isinstance(check_runs, list) else [])
     )
 
 
