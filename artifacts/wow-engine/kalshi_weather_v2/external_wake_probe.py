@@ -72,10 +72,10 @@ def verify(health: Mapping[str, Any], readiness: Mapping[str, Any]) -> None:
         raise ProbeError("WEATHER_DATABASE_READ_NOT_VERIFIED")
     if readiness.get("mode") != "SHADOW" or readiness.get("trigger_installed") is not True:
         raise ProbeError("WEATHER_COLLECTOR_TRIGGER_NOT_INSTALLED")
-    if readiness.get("capture_trigger_installed") is False:
+    # A missing readiness field is not evidence of an installed trigger.
+    if readiness.get("capture_trigger_installed") is not True:
         raise ProbeError("WEATHER_CAPTURE_TRIGGER_NOT_INSTALLED")
-    collection_path = readiness.get("collection_path")
-    if collection_path is not None and collection_path != "AUTHENTICATED_POST_TRIGGER":
+    if readiness.get("collection_path") != "AUTHENTICATED_POST_TRIGGER":
         raise ProbeError("WEATHER_COLLECTION_PATH_UNVERIFIED")
     if any(v.get("can_execute") is not False or v.get("probability_publishable") is not False for v in (health, readiness)):
         raise ProbeError("WEATHER_PROBABILITY_SAFETY_INVALID")
