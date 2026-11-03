@@ -4,7 +4,10 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 
-from v17.nfl_daily_stage_receipts import attach_nfl_daily_stage_receipt
+from v17.nfl_daily_stage_receipts import (
+    _forward_certification_proven,
+    attach_nfl_daily_stage_receipt,
+)
 from v17.llp_governed_package_scoring import validate_governed_scoring_package
 from v17.full_board_stabilization import publication_chain_audit
 
@@ -234,3 +237,202 @@ def test_absent_prediction_does_not_reuse_upstream_calibration_pass():
     assert result["calibration_status"] == "UNPROVEN"
     assert result["nfl_stage_receipt"]["status"] == "HOLD"
     assert result["can_execute"] is False
+
+
+# --- Forward-certification gate: registry state + prospective cohort ----------
+#
+# `wow_nfl_event_fitted_model_artifacts` carries
+#   constraint wow_nfl_event_fitted_registry_not_probability_publication
+#     check (probability_publishable = false)
+# so the registry can never grant publication. The gate must read the governed
+# champion state and leave publication authority with the row-level
+# model_probability_publishable flag.
+
+FORWARD_VERSION = "NFL_EVENT_LOGREG_PLATT_V1_5d603a873fbb"
+
+
+class _ForwardTable:
+    def __init__(self, db, name):
+        self.db = db
+        self.name = name
+        self.rows = None
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, field, value):
+        if self.name == "wow_nfl_event_fitted_model_artifacts":
+            self.rows = [r for r in self.db.artifacts if str(r.get("artifact_id")) == str(value)]
+        elif self.name == "wow_nfl_forward_shadow_grades":
+            self.rows = [r for r in self.db.grades if str(r.get("model_version")) == str(value)]
+        else:
+            raise AssertionError(f"unexpected eq on {self.name}")
+        return self
+
+    def order(self, _field, desc=False):
+        self.rows = list(self.db.health)
+        return self
+
+    def limit(self, value):
+        source = self.db.health if self.rows is None else self.rows
+        self.rows = list(source)[:value]
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.rows or [])
+
+
+class _FailingTable:
+    def select(self, *_a):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        raise RuntimeError("database offline; not a pass")
+
+
+class _ForwardDb:
+    def __init__(self, *, artifacts, health, grades, fails=False):
+        self.artifacts = artifacts
+        self.health = health
+        self.grades = grades
+        self.fails = fails
+
+    def table(self, name):
+        return _FailingTable() if self.fails else _ForwardTable(self, name)
+
+
+def _champion_artifact(**extra):
+    artifact = {
+        "artifact_id": MODEL,
+        "active": True,
+        "promoted": True,
+        "lifecycle_state": "CHAMPION",
+        "probability_publishable": False,
+    }
+    artifact.update(extra)
+    return artifact
+
+
+def _healthy_assessment(**extra):
+    assessment = {
+        "graded_n": 100,
+        "minimum_forward_required": 100,
+        "status": "PASS",
+        "certification_recommendation": "FORWARD_EVIDENCE_PASS",
+        "blockers": [],
+    }
+    assessment.update(extra)
+    return assessment
+
+
+def _grades(n, version=FORWARD_VERSION):
+    return [
+        {"official_event_id": f"2026_{i:02d}_SF_ATL", "model_version": version}
+        for i in range(n)
+    ]
+
+
+def _forward_row(version=FORWARD_VERSION):
+    return {"model_artifact_id": MODEL, "model_version": version}
+
+
+def test_champion_registry_state_plus_minimum_cohort_proves_forward_certification():
+    db = _ForwardDb(
+        artifacts=[_champion_artifact()],
+        health=[_healthy_assessment()],
+        grades=_grades(100),
+    )
+    assert _forward_certification_proven(db, _forward_row()) is True
+
+
+def test_registry_publication_flag_is_never_the_forward_gate():
+    # The column is schema-pinned to false in production; requiring true made the
+    # gate unsatisfiable, while trusting true here would bypass the row-level
+    # publication flag the package readback already enforces.
+    for flag in (False, True):
+        db = _ForwardDb(
+            artifacts=[_champion_artifact(probability_publishable=flag)],
+            health=[_healthy_assessment()],
+            grades=_grades(100),
+        )
+        assert _forward_certification_proven(db, _forward_row()) is True
+
+
+def test_non_champion_or_unpromoted_artifact_never_certifies():
+    for override in (
+        {"lifecycle_state": "CANDIDATE"},
+        {"lifecycle_state": "PROSPECTIVE_CERTIFIED"},
+        {"lifecycle_state": "RETIRED"},
+        {"promoted": False},
+        {"active": False},
+    ):
+        db = _ForwardDb(
+            artifacts=[_champion_artifact(**override)],
+            health=[_healthy_assessment()],
+            grades=_grades(100),
+        )
+        assert _forward_certification_proven(db, _forward_row()) is False, override
+
+
+def test_cohort_must_be_unique_and_bound_to_this_exact_model_version():
+    cases = (
+        # one game short of the required cohort
+        _grades(99),
+        # duplicates of the same game never add a second grade
+        _grades(99) + [{"official_event_id": "2026_00_SF_ATL", "model_version": FORWARD_VERSION}],
+        # a different champion's grades cannot authorize this model
+        _grades(100, version="NFL_EVENT_LOGREG_PLATT_V1_other"),
+    )
+    for grades in cases:
+        db = _ForwardDb(
+            artifacts=[_champion_artifact()],
+            health=[_healthy_assessment()],
+            grades=grades,
+        )
+        assert _forward_certification_proven(db, _forward_row()) is False
+
+
+def test_health_snapshot_must_recommend_forward_pass_with_no_blockers():
+    for override in (
+        {"status": "INSUFFICIENT_FORWARD_EVIDENCE"},
+        {"certification_recommendation": "DO_NOT_CERTIFY_YET"},
+        {"blockers": ["FORWARD_GRADED_N_80_LT_100"]},
+        {"graded_n": 80},
+        {"minimum_forward_required": 80},
+        {"graded_n": "100"},
+        {"minimum_forward_required": "100"},
+    ):
+        db = _ForwardDb(
+            artifacts=[_champion_artifact()],
+            health=[_healthy_assessment(**override)],
+            grades=_grades(100),
+        )
+        assert _forward_certification_proven(db, _forward_row()) is False, override
+
+
+def test_absent_duplicate_or_unreadable_forward_readback_never_certifies():
+    for db in (
+        _ForwardDb(artifacts=[], health=[_healthy_assessment()], grades=_grades(100)),
+        _ForwardDb(
+            artifacts=[_champion_artifact(), _champion_artifact()],
+            health=[_healthy_assessment()],
+            grades=_grades(100),
+        ),
+        _ForwardDb(artifacts=[_champion_artifact()], health=[], grades=_grades(100)),
+        _ForwardDb(
+            artifacts=[_champion_artifact()],
+            health=[_healthy_assessment()],
+            grades=_grades(100),
+            fails=True,
+        ),
+    ):
+        assert _forward_certification_proven(db, _forward_row()) is False

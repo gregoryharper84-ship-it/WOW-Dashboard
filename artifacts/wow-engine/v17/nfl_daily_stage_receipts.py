@@ -157,7 +157,7 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     """Independent cohort and champion certification, never automatic promotion."""
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
-            "artifact_id,active,promoted,probability_publishable"
+            "artifact_id,active,promoted,lifecycle_state"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
             "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
@@ -190,11 +190,17 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         }
     except Exception:
         return False
+    # The registry can never grant publication itself: its schema requires
+    # probability_publishable = false (wow_nfl_event_fitted_registry_not_probability_publication),
+    # and the promotion path plus the certified-artifact reader both report false.
+    # This row's publication authority is model_probability_publishable, already
+    # enforced by the package readback above. What the registry must contribute
+    # here is the governed champion state, exactly as the terminal reducer uses it.
     return bool(
         len(unique_games) >= minimum
         and model.get("active") is True
         and model.get("promoted") is True
-        and model.get("probability_publishable") is True
+        and model.get("lifecycle_state") == "CHAMPION"
         and isinstance(assessment.get("graded_n"), int)
         and isinstance(assessment.get("minimum_forward_required"), int)
         and assessment["minimum_forward_required"] >= 100

@@ -198,9 +198,13 @@ class _Query:
 
 class _CertifiedDb:
     def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None):
+        # The registry schema pins probability_publishable to false, so the
+        # explicit champion authorization this gate can observe is the governed
+        # lifecycle state, not the publication flag.
         self.model = {
             "active": True, "promoted": True,
-            "probability_publishable": approved,
+            "lifecycle_state": "CHAMPION" if approved else "PROSPECTIVE_CERTIFIED",
+            "probability_publishable": False,
         }
         self.health = {
             "graded_n": graded, "minimum_forward_required": 100,
