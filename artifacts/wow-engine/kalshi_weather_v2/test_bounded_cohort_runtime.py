@@ -551,18 +551,48 @@ def test_persisted_prediction_late_market_snapshot_failure_is_partial_and_dedupe
 class _FakeQuery:
     def __init__(self, rows):
         self._rows = rows
+        self._filters = []
+        self._limit = None
+        self._sort = None
 
     def select(self, *args, **kwargs):
         return self
 
-    def order(self, *args, **kwargs):
+    def _field(self, row, path):
+        if path == "model_version":
+            return row.get("model_version")
+        if path.startswith("model_payload->contract->>"):
+            field = path.split("->>", 1)[1]
+            return (row.get("model_payload") or {}).get("contract", {}).get(field)
+        return row.get(path)
+
+    def eq(self, path, value):
+        self._filters.append((path, (value,)))
         return self
 
-    def limit(self, *args, **kwargs):
+    def in_(self, path, values):
+        self._filters.append((path, tuple(values)))
+        return self
+
+    def order(self, field, desc=False):
+        self._sort = (field, desc)
+        return self
+
+    def limit(self, n):
+        self._limit = n
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self._rows)
+        rows = [
+            row for row in self._rows
+            if all(self._field(row, path) in values for path, values in self._filters)
+        ]
+        if self._sort:
+            field, desc = self._sort
+            rows = sorted(rows, key=lambda row: self._field(row, field), reverse=desc)
+        if self._limit is not None:
+            rows = rows[:self._limit]
+        return SimpleNamespace(data=rows)
 
 
 class _FakeDb:
@@ -644,6 +674,21 @@ def test_freshness_lookup_ignores_other_models_and_unselected_targets():
     assert runtime._latest_capture_at(miami, targets=()) == (None, None)
 
 
+def test_freshness_database_filters_run_before_global_row_cap():
+    """A Miami prediction cannot disappear behind 501 newer Chicago rows."""
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+    stale = (now - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+    other = [
+        _prediction_row("KALSHI_WEATHER_INDEX:chicago", recent)
+        for _ in range(runtime.FRESHNESS_SCAN_LIMIT + 1)
+    ]
+    db = _FakeDb(other + [_prediction_row("KALSHI_WEATHER_INDEX:miami", stale)])
+    value, city = runtime._latest_capture_at(db, targets=(_target("miami"),))
+    assert value == runtime._normalize_utc(stale)
+    assert city == "miami"
+
+
 def test_diagnostics_totals_include_verified_core_writes():
     diagnostics = runtime.build_collection_diagnostics(
         result=_empty_result(
@@ -695,7 +740,8 @@ def _partial_capture_setup(monkeypatch, *, low_memory: bool):
         raise bounded.KalshiWeatherPartialCaptureError(
             prediction_id="immutable-prediction-id",
             rule_snapshot_id="rule-id",
-            source_snapshot_ids=("s1", "s2", "s3"),
+            source_snapshot_ids=("s1", "s2"),
+            persisted_source_snapshot_ids=("point", "s1", "s2"),
         )
 
     monkeypatch.setattr(bounded, "capture_hourly_shadow", partial_capture)
