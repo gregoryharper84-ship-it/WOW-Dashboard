@@ -278,3 +278,22 @@ def test_resolver_receipt_allows_only_small_capture_clock_skew():
     )
     assert held["status"] == "HELD"
     assert "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH" in held["blockers"]
+
+
+def test_numeric_strings_are_not_validated_as_verified_evidence():
+    # A provider string representation is not an independently typed number.
+    for name, value in (
+        ("home_elo", "1510"),
+        ("away_elo", "1490.5"),
+        ("home_goalie_sv_pct", "0.91"),
+        ("away_goalie_sv_pct", "0.92"),
+        ("home_pp_pct", "0.21"),
+        ("away_pk_pct", "0.80"),
+    ):
+        evidence = valid()
+        evidence[name] = value
+        result = verify(evidence, as_of_utc=NOW)
+        assert result["status"] == "HELD", name
+        assert "NHL_NUMERIC_FEATURE_INVALID" in result["blockers"], name
+        assert result["probability_publishable"] is False
+        assert result["can_execute"] is False
