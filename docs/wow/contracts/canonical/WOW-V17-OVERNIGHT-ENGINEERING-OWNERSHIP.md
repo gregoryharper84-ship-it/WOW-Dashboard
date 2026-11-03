@@ -318,19 +318,24 @@ attempt limits, pending handoff accounting and the one-writer fence.
 A recent manual success does not override a cooldown, and waiting does not cure
 persistent quota or authentication failures.
 
-The schedule, not the canary, is what turns an attested route into admission.
-The dispatcher's automatic routing runs on the hourly `17 * * * *` cron, and the
-resident consumes only the **latest completed** dispatcher receipt while it is at
-most 15 minutes old. After the owner sets `GEMINI_AUTO_ROUTING_ENABLED=true`,
-admission therefore becomes possible only inside the window between that hour's
-`:17` dispatcher run and 15 minutes later; the resident cycle that observes the
-receipt inside that window is the one that admits. A canary, a manual probe, a
-forced reason string, a `SURVIVAL` receipt or a dispatcher run older than 15
-minutes all resolve to `PROVIDER_RECOVERY_UNVERIFIED` or
-`PROVIDER_STATUS_UNVERIFIED`, and each later dispatcher run replaces the earlier
-receipt rather than stacking with it. Expect at most one admission opportunity
-per hour, not continuous admission, and do not read a quiet hour as a new
-blocker.
+The existing dispatcher, not the resident, owns the actual authorized Gemini
+child submission. Automatic routing runs on the hourly `17 * * * *` cron.
+The resident consumes only the latest **successfully completed** dispatcher
+receipt while it is no more than 15 minutes old and bound to current `main`.
+A qualifying `DISPATCH/gemini` route has **already** submitted one Gemini
+worker via the protected dispatcher's own `dispatch_gemini` step. The resident
+therefore reports `EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED` rather than
+issuing another `force_provider=auto` workflow POST or counting another bounded
+attempt. That second POST would re-evaluate 24-hour Gemini cooldown and could
+select a different provider or `SURVIVAL`. An already-submitted child is **not**
+a completed repair or guaranteed successful provider call.
+
+A canary, a manual probe, forced reason string, `SURVIVAL` receipt, failed
+dispatcher run, or dispatcher receipt older than 15 minutes cannot satisfy this
+gate. Each newer dispatcher run replaces the prior route evidence; missing
+admissible evidence leaves a typed hold. At most one *observational* opportunity
+per qualifying hourly run is expected, not a standing authorization to create
+additional Gemini work.
 
 ### D. Stop, reconcile and independently accept
 
@@ -344,22 +349,28 @@ The owner may use the previously documented **manual `force_provider=openai`
 recovery probe** only when that credential and quota are confirmed healthy and
 an individual paid probe is explicitly authorized.
 
-`PROVIDER_QUOTA_BLOCKED` is cleared by an attested route, never by the operator
-canary. The required evidence is a fresh `DISPATCH/gemini` receipt carrying
+`PROVIDER_QUOTA_BLOCKED` is not cleared by an operator probe or flags alone.
+A fresh **successful** protected dispatcher run with an authenticated,
+owner-attested `DISPATCH/gemini` receipt can establish
+`EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED`: a real **dispatcher-owned
+submission**, not a second resident invocation. The route reason must be
 `GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY` or
-`GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX` that the resident consumes inside its
-15-minute window and resolves to `PROVIDER_ADMITTED`, followed by
-`DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW` against a fresh eligible incident.
-A `GEMINI_OPERATOR_CANARY` receipt is phase-C health evidence and nothing more:
-it neither clears the breaker nor keeps an admission opportunity open. If the
-only fresh receipt available is a canary, `SURVIVAL` or an expired one, the
-correct state is the existing hold, not a relaxed gate.
+`GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX`, the exact main SHA must match, and
+provider-specific post-route failures still revoke recognition.
+A `GEMINI_OPERATOR_CANARY` is health evidence only, never unattended authority.
+Actual restored engineering delivery additionally requires the authenticated
+Gemini child run, exact incident/lease and produced source candidate receipts,
+not just successful parent dispatch. If provider capacity or this chain cannot
+be proven, retain its exact typed hold and do not count a new resident attempt.
 
 Do not call this incident COMPLETE until a new exact incident has a successful,
-authenticated *resident-generated* provider run and code SHA, a proposed PR with
-independent exact-head security/QA acceptance, a protected merge and live
-web+worker SHA verification, and a successful real user-function canary with
+authenticated *existing-dispatcher-generated* provider run and code SHA (with
+exact incident/lease, matching worker attempt and source receipts), a proposed
+PR with independent exact-head security/QA acceptance, a protected merge and
+live web+worker SHA verification, and a successful real user-function canary with
 appropriate read-only Action/receipt evidence. Report each separately.
+A second resident dispatch is neither necessary nor an acceptable substitute
+for that evidence.
 No sporting model is certified by an engineering recovery canary.
 `can_execute=false`; terminal authority stays `V17_TERMINAL_REDUCER`.
 
