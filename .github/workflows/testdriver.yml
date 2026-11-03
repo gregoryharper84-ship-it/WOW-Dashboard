@@ -15,8 +15,8 @@ jobs:
   testdriver-e2e:
     # A manual owner-confirmed dispatch is the only entrypoint. The account
     # has a 360-minute trial but auto-converts at exhaustion/expiry.
-    # Never convert this workflow to a PR/push/scheduled trigger.
-    if: ${{ inputs.confirm_usage }}
+    # Also require an explicit repository no-charge verification flag. Never\n    # convert this workflow to a PR/push/scheduled trigger.
+    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
