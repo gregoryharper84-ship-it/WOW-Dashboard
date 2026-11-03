@@ -41,10 +41,10 @@ begin
     values ('KALSHI_WEATHER_INDEX:MIAMI')
     on conflict (station_scope) do nothing;
 
-    select next_offset, claim_sequence
+    select progress.next_offset, progress.claim_sequence
       into v_offset, v_sequence
-      from public.wow_kalshi_weather_research_progress
-      where station_scope = 'KALSHI_WEATHER_INDEX:MIAMI'
+      from public.wow_kalshi_weather_research_progress as progress
+      where progress.station_scope = 'KALSHI_WEATHER_INDEX:MIAMI'
       for update;
 
     if not found or v_sequence is null then
