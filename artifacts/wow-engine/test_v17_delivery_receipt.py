@@ -28,8 +28,10 @@ class StubDB:
         if table == "wow_event_source_attempts":
             return 21
         if table == "wow_calibrators":
-            return 10
+            return 0 if str(filters.get("fitted_at", "")).startswith("gt.") else 10
         if table == "wow_action_invocation_receipts" and "caller_class" in filters:
+            if str(filters.get("occurred_at", "")).startswith("gt."):
+                return 0
             return 23 if filters["caller_class"] == "neq.SELF_ACCEPTANCE" else 5
         if filters and any(key in filters for key in ("created_at", "occurred_at")):
             if any(str(v).startswith("gt.") for v in filters.values()):
@@ -98,6 +100,58 @@ def test_activity_and_calibrator_windows_independently_configurable():
     assert out["supabase"]["activity_window_hours"] == 24
     assert out["supabase"]["calibrators"]["fit_window_days"] == 90
     assert ("wow_calibrators", {"fitted_at": "gte.2026-08-04T23:59:00Z"}) in db.calls
+
+
+def test_future_only_calibrators_and_actions_do_not_look_current():
+    class FutureOnlyDB(StubDB):
+        def count(self, table, **filters):
+            if table == "wow_calibrators" and filters.get("fitted_at"):
+                self.calls.append((table, filters))
+                return 11  # Same 11 events are after both gte and future cutoffs.
+            if table == "wow_action_invocation_receipts" and "caller_class" in filters:
+                self.calls.append((table, filters))
+                return 23 if filters["caller_class"] == "neq.SELF_ACCEPTANCE" else 5
+            return super().count(table, **filters)
+
+        def rows(self, table, select, **filters):
+            if table == "wow_calibrators":
+                self.calls.append((table, filters))
+                assert filters["fitted_at"] == "lte.2026-11-03T00:04:00Z"
+                return [], 0  # Only existing fitter records are future dated.
+            return super().rows(table, select, **filters)
+
+    db = FutureOnlyDB()
+    result = d.build_receipt(
+        CFG, at=NOW, db=db, render_deploy=lambda *_: SHA,
+        render_env=lambda *_: "iczfhsmjrrafhvcpmqhr",
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["supabase"]["calibrators"]["within_fit_window"] == 0
+    assert result["supabase"]["calibrators"]["latest_fit"] is None
+    assert result["supabase"]["action_receipt_composition"] == {
+        "non_self_acceptance": 0, "chatgpt_action": 0,
+    }
+    assert ("wow_calibrators", {"fitted_at": "gt.2026-11-03T00:04:00Z"}) in db.calls
+    assert ("wow_action_invocation_receipts", {
+        "occurred_at": "gt.2026-11-03T00:04:00Z",
+        "caller_class": "eq.CHATGPT_ACTION",
+    }) in db.calls
+    assert result["can_execute"] is False
+
+
+def test_non_subset_future_count_does_not_produce_negative_recent_counts():
+    class InvalidCountDB(StubDB):
+        def count(self, table, **filters):
+            if table == "wow_calibrators" and str(filters.get("fitted_at", "")).startswith("gt."):
+                return 999
+            return super().count(table, **filters)
+
+    with pytest.raises(d.DeliveryError, match="DELIVERY_COUNT_NOT_PROVEN"):
+        d.build_receipt(
+            CFG, at=NOW, db=InvalidCountDB(),
+            render_deploy=lambda *_: SHA,
+            render_env=lambda *_: "iczfhsmjrrafhvcpmqhr",
+        )
 
 
 def test_bogus_window_and_wrong_database_hold():
