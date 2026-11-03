@@ -636,3 +636,109 @@ def test_unlicensed_recent_espn_is_not_fetched_or_persisted_during_shadow_refres
     )
     assert persisted == []
     assert result["can_execute"] is False
+
+
+def test_nba_2027_asset_uses_bdl_2026_start_year_and_licensed_empty_fallback(monkeypatch):
+    """BDL 200/empty cannot hide 2026-27 settled games in SDV 2027 asset."""
+    attempted = []
+
+    def empty_bdl(sport, season):
+        attempted.append(("BALLDONTLIE", sport, season))
+        return []  # HTTP 200, no rows
+
+    def live_sdv(sport, season):
+        attempted.append(("SPORTSDATAVERSE_ESPN", sport, season))
+        row = _sportsdataverse_row(event_id="401909001", game_date="2026-10-26")
+        row["season"] = "2027"
+        return [row]
+
+    stored = []
+    dates = iter([date(2026, 6, 13), date(2026, 10, 26)])
+    monkeypatch.setattr(hydration, "fetch_games", empty_bdl)
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", live_sdv)
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: next(dates))
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda client, sport, rows: (stored.extend(rows), len(rows))[1],
+    )
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+    )
+    assert attempted == [
+        ("BALLDONTLIE", "NBA", 2026),
+        ("SPORTSDATAVERSE_ESPN", "NBA", 2027),
+    ]
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["fallback_reasons"][2027] == "BALLDONTLIE_EMPTY_SEASON"
+    assert result["fresh_acquisition_new_settled_games"] == 1
+    assert len(stored) == 1
+    assert stored[0]["game_date"] == "2026-10-26"
+    assert stored[0]["source_endpoint"].endswith("/nba_schedule_2027.csv")
+    assert stored[0]["source_provider"] == "SPORTSDATAVERSE_ESPN"
+    assert result["can_execute"] is False
+
+
+def test_wnba_year_is_not_shifted_by_nba_provider_mapping(monkeypatch):
+    years = []
+    monkeypatch.setattr(
+        hydration, "fetch_games",
+        lambda sport, season: (
+            years.append(("BDL", season)) or
+            (_ for _ in ()).throw(hydration.BasketballHydrationError("BALLDONTLIE_AUTH_FAILED"))
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_sportsdataverse_games",
+        lambda sport, season: years.append(("SDV", season)) or [],
+    )
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
+    monkeypatch.setattr(hydration, "_persist_rows", lambda *_: 0)
+    result = hydration.hydrate(
+        "WNBA", [2026], client=object(),
+        now=datetime(2026, 11, 2, tzinfo=timezone.utc),
+    )
+    assert years == [("BDL", 2026), ("SDV", 2026)]
+    assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
+    assert result["fresh_acquisition_new_settled_games"] == 0
+    assert result["can_execute"] is False
+
+
+def test_entitled_espn_nba_fallback_queries_current_calendar_not_asset_year(monkeypatch):
+    requested = []
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_games",
+        lambda sport, season: (_ for _ in ()).throw(
+            hydration.BasketballHydrationError("BALLDONTLIE_AUTH_FAILED")
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_sportsdataverse_games",
+        lambda sport, season: (_ for _ in ()).throw(
+            hydration.BasketballHydrationError("SPORTSDATAVERSE_ESPN_HTTP_404")
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_espn_games",
+        lambda sport, year: requested.append(year) or [
+            _espn_event(event_id="401909002", game_date="2026-10-27")
+        ],
+    )
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
+    stored = []
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda db, sport, rows: (stored.extend(rows), len(rows))[1],
+    )
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+    )
+    assert requested == [2026]
+    assert len(stored) == 1
+    assert result["source_by_season"][2027] == "ESPN_SCOREBOARD"
+    assert result["can_execute"] is False
