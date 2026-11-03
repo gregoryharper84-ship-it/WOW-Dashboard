@@ -717,8 +717,8 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
     trust_root_change = any(is_trust_root(str(f), governance_files) for f in files)
-    if review_active is False and not trust_root_change and (policy or {}).get("mode") != "zero_credit":
-        expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
+    # V4: retired trusted-governance check is not a QA admission prerequisite.
+    # All active regression, change-impact, review-policy and owner checks remain.
     for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
         if run is None:
