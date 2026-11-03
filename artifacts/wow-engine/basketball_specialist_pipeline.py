@@ -59,7 +59,7 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
     while True:
         result = (
             client.table(table)
-            .select("game_id,season,game_date,home_team_id,away_team_id,home_score,away_score")
+            .select("game_id,season,game_date,home_team_id,away_team_id,home_score,away_score,source_provider")
             .eq("settled", True)
             .order("game_date")
             .order("game_id")
@@ -92,6 +92,7 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
             game_date=datetime.fromisoformat(str(r["game_date"])).date(),
             home_team_id=str(r["home_team_id"]), away_team_id=str(r["away_team_id"]),
             home_score=int(r["home_score"]), away_score=int(r["away_score"]),
+            source_provider=str(r.get("source_provider") or "").strip().upper(),
         )
         for r in rows
     ]
