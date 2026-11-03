@@ -9,6 +9,7 @@ from v17.nfl_forward_shadow import (
     ForwardPrediction,
     calibration_health,
     grade_forward_predictions,
+    overdue_unsettled_events,
     select_canonical_forward_predictions,
 )
 
@@ -177,3 +178,59 @@ def test_overconfident_lower_bound_fails_even_when_point_forecast_is_reasonable(
         select_canonical_forward_predictions([
             _prediction_row(p=0.70, lower=0.75, upper=0.80)
         ])
+
+
+def test_overdue_settlement_flags_missing_final_but_not_in_progress_or_tie():
+    prediction = _prediction(
+        event_id="2026_08_CHI_SEA",
+        p=0.5114,
+        lower=0.4555,
+        upper=0.5673,
+        index=0,
+    )
+    event = prediction.official_event_id
+    cutoff = prediction.event_start_time_utc
+
+    assert overdue_unsettled_events(
+        [prediction], [], now=cutoff + timedelta(hours=5)
+    ) == []
+    assert overdue_unsettled_events(
+        [prediction], [], now=cutoff + timedelta(hours=7)
+    ) == [event]
+    assert overdue_unsettled_events(
+        [prediction], [{
+            "game_id": event,
+            "home_score": 17,
+            "away_score": 34,
+            "home_win": False,
+            "tie": False,
+        }], now=cutoff + timedelta(hours=7)
+    ) == []
+    assert overdue_unsettled_events(
+        [prediction], [{
+            "game_id": event,
+            "home_score": 17,
+            "away_score": 17,
+            "home_win": False,
+            "tie": True,
+        }], now=cutoff + timedelta(hours=7)
+    ) == []
+    assert overdue_unsettled_events(
+        [prediction], [{
+            "game_id": event,
+            "home_score": 17,
+            "away_score": 34,
+            "home_win": None,
+            "tie": False,
+        }], now=cutoff + timedelta(hours=7)
+    ) == [event]
+
+
+def test_overdue_settlement_rejects_invalid_grace_or_naive_reference():
+    prediction = _prediction(
+        event_id="2026_08_CHI_SEA", p=.51, lower=.45, upper=.57, index=0
+    )
+    with pytest.raises(ValueError, match="SETTLEMENT_GRACE_PERIOD_INVALID"):
+        overdue_unsettled_events([prediction], [], grace_period_hours=-1)
+    with pytest.raises(ValueError, match="TIMESTAMP_MUST_BE_TIMEZONE_AWARE"):
+        overdue_unsettled_events([prediction], [], now=datetime(2026, 11, 3))
