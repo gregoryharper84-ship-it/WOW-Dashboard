@@ -91,6 +91,9 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
+          import sys
+          import urllib.error
           import urllib.parse
           import urllib.request
 
@@ -114,8 +117,37 @@ jobs:
                   "Content-Type": "application/json",
               },
           )
-          with urllib.request.urlopen(request, timeout=90) as response:
-              payload = json.load(response)
+          try:
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  payload = json.load(response)
+          except urllib.error.HTTPError as exc:
+              # Preserve the typed 503 signal without echoing arbitrary server
+              # bodies (which may contain credentials or other private data).
+              diagnostic = {"http_status": exc.code}
+              try:
+                  body = json.loads(exc.read(8192))
+                  detail = body.get("detail") if isinstance(body, dict) else None
+                  if isinstance(detail, dict):
+                      code = detail.get("code")
+                      if code in {
+                          "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT",
+                          "NFL_FORWARD_SHADOW_SETTLEMENT_CONTRACT_INVALID",
+                      }:
+                          diagnostic["code"] = code
+                          count = detail.get("overdue_unsettled_count")
+                          ids = detail.get("overdue_unsettled_event_ids")
+                          if type(count) is int and 0 <= count <= 100:
+                              diagnostic["overdue_count"] = count
+                          if (isinstance(ids, list) and len(ids) <= 100
+                                  and all(isinstance(x, str) and
+                                          re.fullmatch(r"[A-Za-z0-9_-]{1,80}", x)
+                                          for x in ids)):
+                              diagnostic["overdue_ids"] = ids
+              except (ValueError, UnicodeError, TypeError):
+                  pass
+              print("NFL_FORWARD_SHADOW_HTTP_FAILURE:" +
+                    json.dumps(diagnostic, sort_keys=True), file=sys.stderr)
+              raise
 
           # This is checked at the caller, not just the backend: an older
           # deployed endpoint that omits settlement evidence must fail closed.
