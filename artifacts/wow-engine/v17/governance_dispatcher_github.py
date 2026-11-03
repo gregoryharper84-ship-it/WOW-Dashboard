@@ -424,7 +424,7 @@ def source_review_status(
         return body
 
     try:
-        module.resolve_current_source_review(
+        validated = module.resolve_current_source_review(
             repository=REPOSITORY,
             pr_number=pr["number"],
             head_sha=(pr.get("head") or {}).get("sha") or "",
@@ -433,7 +433,12 @@ def source_review_status(
             expected_file_paths=paths,
             get_json=get_json,
         )
-        return "PASS"
+        # Provenance-valid is not a semantic PASS. The canonical source-review
+        # artifact verifier permits signed REJECT evidence; never relabel it.
+        artifact = validated.get("artifact") if isinstance(validated, dict) else None
+        review = artifact.get("review") if isinstance(artifact, dict) else None
+        decision = review.get("decision") if isinstance(review, dict) else None
+        return decision if decision in {"PASS", "REJECT"} else "INVALID"
     except module.SourceReviewError as exc:
         text = str(exc)
         if text == "SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING":
