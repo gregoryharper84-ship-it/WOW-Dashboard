@@ -1337,7 +1337,10 @@ def test_numeric_repository_link_alias_only_for_configured_repository(monkeypatc
         client.get_open_pull_request_page(1)
 
 
-def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_release(monkeypatch):
+@pytest.mark.parametrize("dispatcher_conclusion", ["success", "failure"])
+def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_release(
+    monkeypatch, dispatcher_conclusion,
+):
     from v17 import cursor_cloud_handoff as handoff
     from v17 import engineering_remote_fallback as remote
     from v17 import engineering_remote_writer_release as release
@@ -1385,7 +1388,7 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
                 "id": 900, "run_attempt": 1,
                 "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
                 "head_branch": "main", "head_sha": sha, "status": "completed",
-                "conclusion": "success", "updated_at": stamp,
+                "conclusion": dispatcher_conclusion, "updated_at": stamp,
             }]}
         if suffix == "actions/runs/900/artifacts?per_page=100":
             return {"total_count": 1, "artifacts": [{
