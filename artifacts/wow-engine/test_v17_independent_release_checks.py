@@ -546,6 +546,35 @@ def test_missing_aggregate_defers_only_for_authentic_active_native_job():
     assert m.pending_required_regressions(ev) == ["WOW required-three regression"]
 
 
+@pytest.mark.parametrize("state", ["queued", "in_progress"])
+def test_new_trusted_native_run_with_unpublished_jobs_defers_not_fails(state):
+    # GitHub can expose a genuine exact-head workflow before the first job is
+    # instantiated. Missing aggregate check-runs during that bounded startup
+    # window are not evidence that native regression has failed.
+    ev = evidence()
+    ev["check_runs"] = [
+        c for c in ev["check_runs"] if c["name"] not in {
+            "WOW required-three regression", "WOW additional required regression"
+        }
+    ]
+    ev["native_workflow_runs"] = [_native_verify_run(status=state, jobs=[])]
+    assert set(m.pending_required_regressions(ev)) == {
+        "WOW required-three regression", "WOW additional required regression"
+    }
+
+
+@pytest.mark.parametrize("override", [
+    {"workflow_id": -1},
+    {"head_sha": OLD},
+    {"status": "completed"},
+    {"created_at": (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat()},
+])
+def test_native_empty_jobs_cannot_defer_untrusted_stale_or_completed_run(override):
+    ev = evidence()
+    ev["native_workflow_runs"] = [_native_verify_run(jobs=[], **override)]
+    assert m.pending_required_regressions(ev) == []
+
+
 @pytest.mark.parametrize("run_changes", [
     {"workflow_id": 1},
     {"path": ".github/workflows/other.yml"},
