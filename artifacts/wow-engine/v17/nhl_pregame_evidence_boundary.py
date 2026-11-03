@@ -117,14 +117,14 @@ def validate_nhl_pregame_evidence(
         try:
             n = float(evidence[key])
             from math import isfinite
-            if isinstance(evidence[key], bool) or not isfinite(n) or not 0 <= n <= 1:
+            if isinstance(evidence[key], bool) or not isinstance(evidence[key], (int, float)) or not isfinite(n) or not 0 <= n <= 1:
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
         except (KeyError, ValueError, TypeError, OverflowError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
     for key in ("home_elo", "away_elo"):
         try:
             from math import isfinite
-            if isinstance(evidence[key], bool) or not isfinite(float(evidence[key])):
+            if isinstance(evidence[key], bool) or not isinstance(evidence[key], (int, float)) or not isfinite(float(evidence[key])):
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
         except (KeyError, ValueError, TypeError, OverflowError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
