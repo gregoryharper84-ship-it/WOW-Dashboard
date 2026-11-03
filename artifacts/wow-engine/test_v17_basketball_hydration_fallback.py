@@ -234,7 +234,7 @@ def test_second_season_failure_after_persisted_first_season_blocks_replay(monkey
     monkeypatch.setattr(hydration, "_persist_rows", lambda *_args: 1)
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: date(2025, 10, 25))
     try:
-        hydration.hydrate("NBA", [2026, 2027], client=object())
+        hydration.hydrate("WNBA", [2025, 2026], client=object())
         raise AssertionError("expected partial-season HOLD")
     except hydration.BasketballHydrationPartialWriteError as exc:
         assert str(exc) == "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
@@ -267,7 +267,7 @@ def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_
     result = hydration.hydrate("WNBA", [2026], client=object())
 
     assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
-    assert result["fallback_reasons"][2026] == "BALLDONTLIE_API_KEY unavailable"
+    assert 2026 not in result["fallback_reasons"]
     assert result["settled_rows"] == 1
     assert result["latest_game_date_before"] == "2022-09-18"
     assert result["latest_game_date_after"] == "2026-09-20"
