@@ -15,8 +15,9 @@ from v17.basketball_team_event_forward_features import (
 from basketball_team_event_specialist import FEATURE_NAMES, FEATURE_SCHEMA_VERSION
 
 
-def _game(gid, day, home, away, hs, aas):
+def _game(gid, day, home, away, hs, aas, source_provider="SPORTSDATAVERSE_ESPN"):
     return SimpleNamespace(
+        source_provider=source_provider,
         game_id=gid,
         game_date=date.fromisoformat(day),
         home_team_id=home,
@@ -247,3 +248,51 @@ def test_raw_nba_capture_binding_rejects_contradictory_or_fabricated_evidence(mu
             feature_freeze_timestamp=freeze,
         )
     assert exc.value.code == expected_code
+
+
+def test_nba_mixed_provider_numeric_team_ids_cannot_be_misread_as_espn_history(monkeypatch):
+    rows = _history() + [
+        # BDL ids live in a DIFFERENT numeric namespace from ESPN ids.
+        _game(
+            "bdl-12345", "2026-09-13", "1", "2", 101, 95,
+            source_provider="BALLDONTLIE",
+        )
+    ]
+    monkeypatch.setattr(
+        "v17.basketball_team_event_forward_features.load_games",
+        lambda _db, sport: rows,
+    )
+
+    def resolver(**_kwargs):
+        return {
+            "event_id": "espn-401999999",
+            "home_team_id": "espn-1", "away_team_id": "espn-2",
+            "identity_provider": "SPORTSDATAVERSE_ESPN",
+        }
+
+    with pytest.raises(BasketballForwardFeatureError) as caught:
+        hydrate_current_basketball_features(
+            object(), sport="NBA", event_start_time="2026-10-07T23:00:00Z",
+            home_team_alias="espn-1", away_team_alias="espn-2",
+            nba_identity_resolver=resolver,
+        )
+    assert caught.value.code == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+
+
+def test_nba_unknown_training_provider_is_not_treated_as_verified_espn(monkeypatch):
+    rows = _history()
+    rows[0].source_provider = ""
+    monkeypatch.setattr(
+        "v17.basketball_team_event_forward_features.load_games",
+        lambda _db, sport: rows,
+    )
+    with pytest.raises(BasketballForwardFeatureError) as caught:
+        hydrate_current_basketball_features(
+            object(), sport="NBA", event_start_time="2026-10-07T23:00:00Z",
+            home_team_alias="espn-1", away_team_alias="espn-2",
+            nba_identity_resolver=lambda **_kwargs: {
+                "event_id": "espn-401999999",
+                "home_team_id": "espn-1", "away_team_id": "espn-2",
+            },
+        )
+    assert caught.value.code == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
