@@ -94,7 +94,7 @@ def validate_nhl_pregame_evidence(
             or receipt_home != home or receipt_away != away
             or resolved_start is None or start_at is None
             or abs((resolved_start - start_at).total_seconds()) > 30 * 60
-            or verified_at is None or verified_at > now
+            or verified_at is None or (verified_at - now).total_seconds() > 5 * 60
             or (now - verified_at).total_seconds() > 24 * 3600
             or resolved_identity.get("market_features_used") is not False
             or resolved_identity.get("prediction_authority") is not False
