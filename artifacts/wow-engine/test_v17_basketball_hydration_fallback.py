@@ -111,6 +111,62 @@ def test_fetch_sportsdataverse_rejects_schema_drift(monkeypatch):
         assert "home_id" in str(exc)
 
 
+def test_repeat_hydration_upserts_are_not_miscounted_as_new_games(monkeypatch):
+    """Same BDL season on the second pass is refreshed, not newly acquired."""
+    saved_ids = {"bdl-old"}
+
+    class FakeQuery:
+        def __init__(self):
+            self.lookup = []
+            self.writes = None
+
+        def select(self, *_args):
+            return self
+
+        def in_(self, field, values):
+            assert field == "game_id"
+            self.lookup = list(values)
+            return self
+
+        def upsert(self, rows, on_conflict):
+            assert on_conflict == "game_id"
+            self.writes = list(rows)
+            return self
+
+        def execute(self):
+            if self.writes is not None:
+                saved_ids.update(row["game_id"] for row in self.writes)
+                return SimpleNamespace(data=self.writes)
+            return SimpleNamespace(
+                data=[{"game_id": value} for value in self.lookup if value in saved_ids]
+            )
+
+    class FakeClient:
+        def table(self, _name):
+            return FakeQuery()
+
+    monkeypatch.setattr(hydration, "fetch_games", lambda *_: [
+        {"game_id": "bdl-old"}, {"game_id": "bdl-new"},
+    ])
+    monkeypatch.setattr(
+        hydration, "normalize_game",
+        lambda row, _sport, _retrieved_at: {
+            "game_id": row["game_id"], "game_date": "2026-10-20", "settled": True
+        },
+    )
+    monkeypatch.setattr(
+        hydration, "_latest_persisted_game_date",
+        lambda _client, _sport: date(2026, 10, 20),
+    )
+    db = FakeClient()
+    first = hydration.hydrate("NBA", [2026], client=db)
+    second = hydration.hydrate("NBA", [2026], client=db)
+    assert first["settled_rows"] == second["settled_rows"] == 2
+    assert first["fresh_acquisition_new_settled_games"] == 1
+    assert second["fresh_acquisition_new_settled_games"] == 0
+    assert saved_ids == {"bdl-old", "bdl-new"}
+
+
 def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_newer_rows(monkeypatch):
     def primary_fail(*_args, **_kwargs):
         raise hydration.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
