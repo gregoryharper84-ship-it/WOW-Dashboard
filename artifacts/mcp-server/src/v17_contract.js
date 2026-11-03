@@ -49,6 +49,7 @@ const receiptLookupRowSchema = {
   properties: {
     row_key: { type: ["string", "null"] },
     prediction_id: { type: ["string", "null"] },
+    market_family: { type: ["string", "null"], enum: ["OUTRIGHT_WINNER", null] },
     event_id: { type: ["string", "null"] },
     sport: { type: ["string", "null"] },
     player: { type: ["string", "null"] },
