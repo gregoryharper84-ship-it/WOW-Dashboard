@@ -335,8 +335,22 @@ def _healthy_assessment(**extra):
 
 
 def _grades(n, version=FORWARD_VERSION):
+    # 70/100 realized wins for an immutable 70% model: actual forward
+    # Brier/log loss/ECE/bias and lower-bound reliability all pass.
     return [
-        {"official_event_id": f"2026_{i:02d}_SF_ATL", "model_version": version}
+        {
+            "official_event_id": f"2026_{i:02d}_SF_ATL",
+            "model_version": version,
+            "event_prediction_id": f"forward-prediction-{i}",
+            "event_start_time_utc": "2026-10-25T17:00:00Z",
+            "prediction_created_at": "2026-10-24T13:00:00Z",
+            "selected_participant": "San Francisco 49ers",
+            "calibrated_probability": 0.7,
+            "calibrated_lower_bound": 0.65,
+            "calibrated_upper_bound": 0.75,
+            "outcome": int(i % 10 < 7),
+            "source_game_id": f"forward-source-game-{i}",
+        }
         for i in range(n)
     ]
 
@@ -397,6 +411,42 @@ def test_cohort_must_be_unique_and_bound_to_this_exact_model_version():
             artifacts=[_champion_artifact()],
             health=[_healthy_assessment()],
             grades=grades,
+        )
+        assert _forward_certification_proven(db, _forward_row()) is False
+
+
+def test_mixed_model_global_pass_cannot_hide_champion_own_bad_calibration():
+    bad_champion = _grades(100)
+    for grade in bad_champion:
+        grade["calibrated_probability"] = 0.95
+        grade["calibrated_lower_bound"] = 0.9
+        grade["calibrated_upper_bound"] = 0.98
+        grade["outcome"] = 0
+    db = _ForwardDb(
+        artifacts=[_champion_artifact()],
+        # A's old grades can still give the shared health table a global PASS.
+        health=[_healthy_assessment(graded_n=200)],
+        grades=_grades(100, version="NFL_PRIOR_CHAMPION_A") + bad_champion,
+    )
+    assert _forward_certification_proven(db, _forward_row()) is False
+
+
+def test_version_grades_require_complete_valid_unique_immutable_evidence():
+    mutations = (
+        lambda rows: rows[0].update(outcome=True),
+        lambda rows: rows[0].update(outcome=None),
+        lambda rows: rows[0].update(calibrated_probability=float("nan")),
+        lambda rows: rows[0].update(prediction_created_at="2026-10-25T18:00:00Z"),
+        lambda rows: rows[0].update(model_version="UNRELATED_MODEL"),
+        lambda rows: rows[0].update(source_game_id=""),
+    )
+    for change in mutations:
+        rows = _grades(100)
+        change(rows)
+        db = _ForwardDb(
+            artifacts=[_champion_artifact()],
+            health=[_healthy_assessment()],
+            grades=rows,
         )
         assert _forward_certification_proven(db, _forward_row()) is False
 
