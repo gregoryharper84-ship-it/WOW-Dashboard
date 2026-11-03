@@ -133,7 +133,7 @@ def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_
     latest_calls = iter([date(2022, 9, 18), date(2026, 9, 20)])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: next(latest_calls))
     persisted = []
-    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: (persisted.extend(rows), len(rows))[1])
 
     result = hydration.hydrate("WNBA", [2026], client=object())
 
@@ -350,7 +350,7 @@ def _mock_stale_sportsdataverse(monkeypatch):
         ],
     )
     persisted = []
-    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: (persisted.extend(rows), len(rows))[1])
     latest = iter([date(2026, 6, 13), date(2026, 10, 22)])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: next(latest))
     return persisted
