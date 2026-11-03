@@ -38,7 +38,7 @@ jobs:
       EXPECTED_SHA: ${{ inputs.expected_sha || github.event.workflow_run.head_sha }}
       SOURCE_EVENT: ${{ github.event_name }}
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
-      READBACK_RECEIPT: ${{ runner.temp }}/wow-v17-lean-production-readback.json
+      READBACK_RECEIPT: "wow-v17-lean-production-readback.json"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
@@ -62,7 +62,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-lean-production-readback-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/wow-v17-lean-production-readback.json
+          path: wow-v17-lean-production-readback.json
           if-no-files-found: warn
           retention-days: 30
 
