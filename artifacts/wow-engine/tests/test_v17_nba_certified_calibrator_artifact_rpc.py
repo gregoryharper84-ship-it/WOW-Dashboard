@@ -111,6 +111,7 @@ def _lookup_row(payload, sha, **overrides):
         "calibration_sha256": sha,
         "independent_verification_status": "PASS",
         "artifact_payload": payload,
+        "bounds_approval_receipt": None,
     }
     row.update(overrides)
     return row
@@ -367,3 +368,46 @@ def test_transport_failure_is_never_reported_as_a_missing_artifact():
             _Client(None, failure=RuntimeError("transport")),
             _certification(),
         )
+
+
+def test_bounds_approval_is_an_independent_registry_receipt_not_content_self_hash():
+    code = _code_sql()
+    assert "bounds_approval_receipt jsonb" in code
+    assert "cert.verification_receipt->'nba_bounds_approval'" in code
+    assert "c.calibration_artifact_payload->'nba_bounds_approval'" not in code
+    payload, sha = _paid(
+        bounds_approval_receipt={
+            "status": "APPROVED", "calibration_sha256": "f" * 64,
+        }
+    )
+    approved = {
+        "status": "APPROVED",
+        "policy_version": "NBA_DYNAMIC_BOUNDS_V1",
+        "independent_verification_status": "PASS",
+        "calibration_artifact_id": CAL_ID,
+        "calibration_sha256": sha,
+        "certification_id": CERT_ID,
+        "can_execute": False,
+    }
+    resolved = resolve_nba_calibrator_artifact(
+        _Client(_lookup_row(payload, sha, bounds_approval_receipt=approved)),
+        _certification(sha),
+    )
+    assert resolved["bounds_approval_receipt"] == approved
+    assert resolved["bounds_approval_receipt"] != payload["bounds_approval_receipt"]
+    assert resolved["calibration_sha256"] == sha
+
+
+def test_payload_cannot_inject_bounds_approval_when_registry_receipt_is_missing():
+    payload, sha = _paid(
+        bounds_approval_receipt={
+            "status": "APPROVED",
+            "calibration_sha256": "f" * 64,
+            "certification_id": CERT_ID,
+        }
+    )
+    resolved = resolve_nba_calibrator_artifact(
+        _Client(_lookup_row(payload, sha, bounds_approval_receipt=None)),
+        _certification(sha),
+    )
+    assert resolved["bounds_approval_receipt"] is None
