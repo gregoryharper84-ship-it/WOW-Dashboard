@@ -132,6 +132,10 @@ def test_endpoint_requires_distinct_worker_key(monkeypatch):
     client = TestClient(api.app)
     endpoint = "/internal/research/miami-settlement-reconcile"
     assert client.post(endpoint).status_code == 401
+    assert client.post(endpoint, json={"scope": "miami"},
+                       headers={"Authorization": "Bearer é"}).status_code == 401
+    assert client.post("/research/backfill", json={"scope": "miami"},
+                       headers={"Authorization": "Bearer é"}).status_code == 401
     assert client.post(endpoint, json={"scope": "miami"}, headers={"Authorization": "Bearer launch-secret"}).status_code == 401
     ok = client.post(endpoint, json={"scope": "miami"}, headers={"Authorization": "Bearer worker-secret"})
     assert ok.status_code == 200 and ok.json()["can_execute"] is False
