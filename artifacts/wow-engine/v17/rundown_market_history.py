@@ -49,7 +49,7 @@ def interval_seconds() -> int:
 
 
 def max_calls_per_day() -> int:
-    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_MAX_CALLS_PER_DAY", 12, low=1, high=48)
+    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_MAX_CALLS_PER_DAY", 24, low=1, high=48)
 
 
 def max_datapoints_per_day() -> int:
@@ -61,10 +61,11 @@ def _csv(name: str, default: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
-# Owner direction 2026-10-09: minimize paid-provider usage. Rundown history
-# keeps its original MLB-only footprint; free ESPN capture is the primary
-# closing-line source.
-DEFAULT_HISTORY_SPORT_KEYS = "baseball_mlb"
+# Owner direction 2026-10-09: keep Rundown with minimal calls. History covers
+# the sports that have graded predictions (MLB, NFL) and, in the default TIMED
+# schedule (rundown_timed_capture), calls only for a morning snapshot and once
+# per near-start window. WNBA/NCAAF closes come from free ESPN capture.
+DEFAULT_HISTORY_SPORT_KEYS = "baseball_mlb,americanfootball_nfl"
 
 
 def configured_sports() -> tuple[str, ...]:
@@ -393,8 +394,13 @@ def collect_history_once(
     *,
     now: datetime | None = None,
     opener: Callable[..., Any] | None = None,
+    sports: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Collect one bounded history cycle and materialize captured references."""
+    """Collect one bounded history cycle and materialize captured references.
+
+    ``sports`` limits the cycle to the given sport keys (timed captures);
+    default is every configured sport.
+    """
     current_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     tz = _timezone()
     local_date = current_now.astimezone(tz).date().isoformat()
@@ -436,7 +442,7 @@ def collect_history_once(
     reason_code: str | None = None
     next_suspend: str | None = None
 
-    for sport_key in configured_sports():
+    for sport_key in (tuple(sports) if sports is not None else configured_sports()):
         if calls >= max_calls_per_day() or datapoints >= max_datapoints_per_day():
             break
         result = ingestor.collect_snapshot(
@@ -510,7 +516,24 @@ async def run_history_loop(
     log = logger or LOGGER
     initial_delay = _int_env("WOW_RUNDOWN_MARKET_HISTORY_INITIAL_DELAY_SECONDS", 30, low=5, high=600)
     await asyncio.sleep(initial_delay)
+    from v17 import rundown_timed_capture as timed
+
     while enabled():
+        if timed.schedule_mode() == "TIMED":
+            try:
+                result = await asyncio.to_thread(lambda: timed.run_timed_cycle(db_client_fn()))
+                log.info(
+                    "RUNDOWN_MARKET_HISTORY=%s schedule=TIMED calls=%s due=%s completed=%s schedule_failures=%s can_execute=false",
+                    result.get("status"),
+                    result.get("provider_calls"),
+                    result.get("due"),
+                    result.get("windows_completed"),
+                    result.get("schedule_failures"),
+                )
+            except Exception as exc:  # noqa: BLE001 - evidence loop must not affect service liveness
+                log.exception("RUNDOWN_MARKET_HISTORY=FAIL schedule=TIMED error_type=%s can_execute=false", type(exc).__name__)
+            await asyncio.sleep(timed.tick_seconds())
+            continue
         try:
             result = await asyncio.to_thread(lambda: collect_history_once(db_client_fn()))
             log.info(
