@@ -80,6 +80,23 @@ def latest_check(check_runs: list[dict[str, Any]], name: str, head_sha: str, app
     }
 
 
+def _authenticated_semantic_reject(check_runs: list[dict[str, Any]], head_sha: str) -> bool:
+    """An earlier exact-head QA-App semantic REJECT is a permanent veto.
+
+    Read only the authenticated GitHub check identity, never a PR comment,
+    untrusted review text, or a same-named check from another App.
+    """
+    return any(
+        isinstance(row, dict)
+        and row.get("name") == "WOW Independent Security Review"
+        and row.get("head_sha") == head_sha
+        and str((row.get("app") or {}).get("id")) == str(QA_APP_ID)
+        and row.get("status") == "completed"
+        and (row.get("output") or {}).get("title") == "REJECT — independent semantic source review"
+        for row in check_runs if isinstance(check_runs, list)
+    )
+
+
 def _owner_approved_at_head(reviews: list[dict[str, Any]], owner_id: int, head_sha: str) -> bool:
     owner_reviews = [
         review
@@ -162,6 +179,11 @@ def classify_target(
                 return {"action": "HOLD", "findings": ["PR_AUTHOR_IDENTITY_UNKNOWN"], "head_sha": head}
         elif not _owner_approved_at_head(reviews, owner_id, head):
             return {"action": "HOLD", "findings": ["TRUST_ROOT_OWNER_APPROVAL_MISSING"], "head_sha": head}
+
+    # Do not let zero-credit mode erase a genuine signed semantic veto.
+    # The check inventory is already fetched for the exact head.
+    if _authenticated_semantic_reject(check_runs, head):
+        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_REJECT"], "head_sha": head}
 
     if not isinstance(zero_credit_mode, bool):
         return {"action": "HOLD", "findings": ["ZERO_CREDIT_POLICY_INVALID"], "head_sha": head}
