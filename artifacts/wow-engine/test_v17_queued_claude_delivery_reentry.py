@@ -23,7 +23,8 @@ def _read_factory(*, previous="1150", target="1021", mode="valid"):
     if mode == "bad-step":
         steps[0]["conclusion"] = "failure"
     job = {"run_id": 71, "name": module.WORKFLOWS["anthropic"][1],
-           "status": "completed", "conclusion": "failure", "steps": steps}
+           "status": "completed", "conclusion": "failure", "steps": steps,
+           "completed_at": "2026-10-23T07:41:06Z"}
     lines = [
         f"2026-10-23T07:41:06Z ##[error]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: incident={previous}; triage repairable=false."
     ]
