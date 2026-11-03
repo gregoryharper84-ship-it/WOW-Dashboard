@@ -27,6 +27,7 @@ from pick_request_runtime_core import PickRequestBatch
 from v17.interactive_pick_hydration import prehydrate_batch
 from v17.interactive_latency_telemetry import annotate_request, stage_timer
 from v17.top10_model_reconciliation import enforce_top10_completion
+from v17.pick_request_run_status import governed_run_status
 
 _LOG = logging.getLogger("wow.v17.interactive.parallel")
 _STATE_KEY = "_wow_v17_interactive_parallel_installed"
@@ -127,12 +128,9 @@ def _merge_compact_response(
     rejected = sum(outcome.get("terminal_status") == "REJECTED" for outcome in outcomes)
     rows_in = len(batch.rows)
     reconciliation_pass = rows_in == completed + held + rejected
-    if completed == rows_in:
-        controller = "COMPLETE"
-    elif completed > 0:
-        controller = "DEGRADED"
-    else:
-        controller = "BLOCKED"
+    controller = governed_run_status(
+        total=rows_in, completed=completed, held=held, rejected=rejected,
+    )
 
     response = {
         "ok": completed > 0,
