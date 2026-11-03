@@ -405,6 +405,10 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
         merged["calibration_method"] = str(row.get("calibration_method") or "")
         merged["independent_verification_status"] = row.get("independent_verification_status")
         merged["certification_id"] = row.get("certification_id") or certification_id
+        # This receipt is selected separately from the protected, independently
+        # certified registry row. Never accept an approval embedded in the
+        # content-hashed calibrator payload: it cannot hash itself.
+        merged["bounds_approval_receipt"] = row.get("bounds_approval_receipt")
         row = merged
     if str(row.get("sport") or "").upper() != "NBA":
         raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
@@ -673,23 +677,34 @@ def prepare_nba_current_pregame_scorer_receipt(
             research_receipt=research_receipt,
         )
 
-    # A calibrator's existence/type is NOT authority to publish its bounds.
-    # Require explicit approval and exact binding to the separately certified
-    # specialist/calibrator registry entry. Missing fields fail closed.
+    # A certified calibrator can only be scored against bounds independently
+    # preapproved in a SEPARATE protected registry receipt. The receipt binds
+    # the exact SHA of the immutable calibrator payload; placing a self-hash in
+    # the payload is mathematically circular and can never prove approval.
+    bounds = (
+        calibration_artifact.get("bounds_approval_receipt")
+        if isinstance(calibration_artifact, Mapping) else None
+    )
     bounds_approved = (
         isinstance(calibration_artifact, Mapping)
+        and isinstance(bounds, Mapping)
         and calibration_artifact.get("artifact_type") == "BINARY_PLATT_CALIBRATOR"
-        and calibration_artifact.get("bounds_policy") == "APPROVED"
-        and calibration_artifact.get("bounds_preapproval_status") == "APPROVED"
+        and calibration_artifact.get("health_status") == "PASS"
         and calibration_artifact.get("certification_status") == "PASS"
         and calibration_artifact.get("calibration_version") != "NBA_PLATT_REVIEW_REQUIRED"
         and str(calibration_artifact.get("calibration_artifact_id") or "")
         == str(getattr(certification, "calibration_artifact_id", ""))
         and str(calibration_artifact.get("calibration_sha256") or "").lower()
         == str(getattr(certification, "calibration_sha256", "")).lower()
-        and str(calibration_artifact.get("bounds_certification_id") or "")
+        and bounds.get("status") == "APPROVED"
+        and bounds.get("policy_version") == "NBA_DYNAMIC_BOUNDS_V1"
+        and bounds.get("independent_verification_status") == "PASS"
+        and bounds.get("can_execute") is False
+        and str(bounds.get("certification_id") or "")
         == str(getattr(certification, "certification_id", ""))
-        and str(calibration_artifact.get("bounds_calibrator_sha256") or "").lower()
+        and str(bounds.get("calibration_artifact_id") or "")
+        == str(getattr(certification, "calibration_artifact_id", ""))
+        and str(bounds.get("calibration_sha256") or "").lower()
         == str(getattr(certification, "calibration_sha256", "")).lower()
         and getattr(certification, "independent_verification_status", None) == "PASS"
         and getattr(certification, "certification_status", None) == "CERTIFIED"
