@@ -121,6 +121,33 @@ paths:
       responses:
         '200': {description: One page of full all-sports row evidence}
         '401': {description: Authentication failed}
+  /functions/v1/wow-llp-action-gateway/v17/llp-team-intelligence/{run_id}/events:
+    get:
+      operationId: readLlpV17TeamIntelligenceEvents
+      x-openai-isConsequential: false
+      description: >-
+        Read-only, opt-in NFL/NBA/NHL team-event synthesis from saved Daily winner
+        receipts. Unsupported spreads/totals remain explicitly unverified.
+        Does not score, certify, rank, update Pick'em, or execute.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 25, default: 5}
+      responses:
+        '200': {description: Read-only LLP event receipt projection with typed holds}
+        '401': {description: Authentication failed}
+        '404': {description: Readback not enabled in backend}
+        '422': {description: Invalid run ID or pagination request}
   /functions/v1/wow-llp-action-gateway/score-team-event:
     post:
       operationId: scoreLlpV17TeamEvent
