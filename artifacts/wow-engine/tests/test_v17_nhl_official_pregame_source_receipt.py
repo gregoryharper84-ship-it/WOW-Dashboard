@@ -275,3 +275,29 @@ def test_total_stream_deadline_enforced(monkeypatch):
         _capture(_Session(response))
     assert raised.value.code == "NHL_SOURCE_TOTAL_DEADLINE_EXCEEDED"
     assert response.closed is True
+
+
+def test_nonstreaming_adapter_cannot_disable_download_limit():
+    class ContentOnlyResponse:
+        status_code = 200
+        url = "https://api-web.nhle.com/v1/gamecenter/2026020245/landing"
+        content = json.dumps(_payload()).encode("utf-8")
+        def close(self):
+            self.closed = True
+
+    response = ContentOnlyResponse()
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(_Session(response))
+    assert raised.value.code == "NHL_SOURCE_STREAMING_UNAVAILABLE"
+    assert response.closed is True
+
+
+def test_streamable_response_without_close_method_is_supported():
+    class SimpleResponse:
+        status_code = 200
+        url = "https://api-web.nhle.com/v1/gamecenter/2026020245/landing"
+        def iter_content(self, *, chunk_size):
+            yield json.dumps(_payload()).encode("utf-8")
+    receipt = _capture(_Session(SimpleResponse()))
+    assert receipt["status"] == "NHL_OFFICIAL_SOURCE_CAPTURED_NOT_MODEL_READY"
+    assert receipt["probability_publishable"] is False
