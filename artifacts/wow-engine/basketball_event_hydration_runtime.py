@@ -58,6 +58,10 @@ class BasketballHydrationError(RuntimeError):
     pass
 
 
+class BasketballHydrationPartialWriteError(BasketballHydrationError):
+    """A write may have persisted part of the corpus; never replay it this cycle."""
+
+
 def _key() -> str:
     return os.getenv("balldontlie") or os.getenv("BALLDONTLIE_API_KEY") or ""
 
@@ -437,30 +441,39 @@ def _latest_persisted_game_date(client: Any, sport: str) -> date | None:
 
 
 def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
-    """Persist settled rows and count previously absent game identities only.
+    """Count genuinely new IDs; refuse duplicates and uncertain partial writes."""
+    all_ids = [str(row.get("game_id") or "") for row in rows]
+    # Validate the *whole invocation* before the first database write; two
+    # repeated IDs in different 100-row batches are still duplicates.
+    if any(not identifier for identifier in all_ids) or len(all_ids) != len(set(all_ids)):
+        raise BasketballHydrationError("BASKETBALL_SETTLED_GAME_ID_INVALID")
 
-    A BDL season replay upserts old rows too. Upsert count is not new-game
-    count, so check exact game_id membership before each bounded batch. Read
-    failures fail closed rather than reporting a fabricated freshness gain.
-    """
     new_ids: set[str] = set()
-    for offset in range(0, len(rows), 100):
-        batch = rows[offset:offset + 100]
-        ids = [str(row.get("game_id") or "") for row in batch]
-        if any(not identifier for identifier in ids) or len(ids) != len(set(ids)):
-            raise BasketballHydrationError("BASKETBALL_SETTLED_GAME_ID_INVALID")
-        result = (
-            client.table(TABLES[sport]).select("game_id")
-            .in_("game_id", ids).execute()
-        )
-        if not isinstance(getattr(result, "data", None), list):
-            raise BasketballHydrationError("BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED")
-        existing = {
-            str(row.get("game_id") or "") for row in result.data
-            if isinstance(row, dict)
-        }
-        new_ids.update(set(ids) - existing)
-        client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
+    write_attempted = False
+    try:
+        for offset in range(0, len(rows), 100):
+            batch = rows[offset:offset + 100]
+            ids = all_ids[offset:offset + 100]
+            result = (
+                client.table(TABLES[sport]).select("game_id")
+                .in_("game_id", ids).execute()
+            )
+            if not isinstance(getattr(result, "data", None), list):
+                raise BasketballHydrationError("BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED")
+            existing = {
+                str(row.get("game_id") or "") for row in result.data
+                if isinstance(row, dict)
+            }
+            new_ids.update(set(ids) - existing)
+            # A failed/ambiguous response may still represent a committed write.
+            write_attempted = True
+            client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
+    except Exception as exc:
+        if write_attempted:
+            raise BasketballHydrationPartialWriteError(
+                "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+            ) from exc
+        raise
     return len(new_ids)
 
 
@@ -483,107 +496,122 @@ def hydrate(
     latest_before = _latest_persisted_game_date(client, sport)
     recent_supplement: dict[int, str] = {}
 
-    for season in seasons:
-        year = int(season)
-        raw: list[dict[str, Any]]
-        normalizer: Callable[[dict[str, Any], str, str], dict[str, Any] | None]
-        provider: str
-        primary_error: BasketballHydrationError | None = None
-        sportsdataverse_error: BasketballHydrationError | None = None
-        try:
-            raw = fetch_games(sport, year)
-            normalizer = normalize_game
-            provider = "BALLDONTLIE"
-        except BasketballHydrationError as exc:
-            primary_error = exc
+    prior_season_persisted = False
+    try:
+        for season in seasons:
+            year = int(season)
+            raw: list[dict[str, Any]]
+            normalizer: Callable[[dict[str, Any], str, str], dict[str, Any] | None]
+            provider: str
+            primary_error: BasketballHydrationError | None = None
+            sportsdataverse_error: BasketballHydrationError | None = None
             try:
-                raw = fetch_sportsdataverse_games(sport, year)
-                normalizer = lambda row, league, at, release_year=year: normalize_sportsdataverse_game(
-                    row, league, at, source_release_year=release_year
-                )
-                provider = "SPORTSDATAVERSE_ESPN"
-            except BasketballHydrationError as source_exc:
-                sportsdataverse_error = source_exc
-                # Raw ESPN scoreboard data is PUBLIC RESEARCH, not in the
-                # approved fitted-training source registry. Do not populate
-                # a model corpus by silently adopting an unentitled source.
+                raw = fetch_games(sport, year)
+                normalizer = normalize_game
+                provider = "BALLDONTLIE"
+            except BasketballHydrationError as exc:
+                primary_error = exc
+                try:
+                    raw = fetch_sportsdataverse_games(sport, year)
+                    normalizer = lambda row, league, at, release_year=year: normalize_sportsdataverse_game(
+                        row, league, at, source_release_year=release_year
+                    )
+                    provider = "SPORTSDATAVERSE_ESPN"
+                except BasketballHydrationError as source_exc:
+                    sportsdataverse_error = source_exc
+                    # Raw ESPN scoreboard data is PUBLIC RESEARCH, not in the
+                    # approved fitted-training source registry. Do not populate
+                    # a model corpus by silently adopting an unentitled source.
+                    entitlement = source_readiness("ESPN_SCOREBOARD")
+                    if not entitlement.ready_for_candidate_training:
+                        raise BasketballHydrationError(
+                            "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
+                            f"primary={str(primary_error)} "
+                            f"sportsdataverse={str(sportsdataverse_error)} "
+                            "espn=ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
+                            + ",".join(entitlement.blockers)
+                        ) from source_exc
+                    try:
+                        raw = fetch_espn_games(sport, year)
+                    except BasketballHydrationError as fallback_exc:
+                        raise BasketballHydrationError(
+                            "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
+                            f"primary={str(primary_error)} "
+                            f"sportsdataverse={str(sportsdataverse_error)} "
+                            f"espn={str(fallback_exc)}"
+                        ) from fallback_exc
+                    normalizer = normalize_espn_game
+                    provider = "ESPN_SCOREBOARD"
+                fallback_reasons[year] = str(primary_error)
+
+            total_raw += len(raw)
+            normalized_rows = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
+
+            # Keep ESPN scoreboard evidence separately typed from open-licensed
+            # SportsDataverse training. Never auto-promote an unregistered public
+            # source to fitted historical training, even if it returns scores.
+            has_new = latest_before is None or any(
+                date.fromisoformat(str(row["game_date"])[:10]) > latest_before for row in normalized_rows
+            )
+            if (
+                provider == "SPORTSDATAVERSE_ESPN"
+                and year >= clock.year and latest_before is not None
+                and 2 <= (clock.date() - latest_before).days <= 200
+                and not has_new
+            ):
                 entitlement = source_readiness("ESPN_SCOREBOARD")
                 if not entitlement.ready_for_candidate_training:
-                    raise BasketballHydrationError(
-                        "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
-                        f"primary={str(primary_error)} "
-                        f"sportsdataverse={str(sportsdataverse_error)} "
-                        "espn=ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
+                    recent_supplement[year] = (
+                        "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
                         + ",".join(entitlement.blockers)
-                    ) from source_exc
-                try:
-                    raw = fetch_espn_games(sport, year)
-                except BasketballHydrationError as fallback_exc:
-                    raise BasketballHydrationError(
-                        "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
-                        f"primary={str(primary_error)} "
-                        f"sportsdataverse={str(sportsdataverse_error)} "
-                        f"espn={str(fallback_exc)}"
-                    ) from fallback_exc
-                normalizer = normalize_espn_game
-                provider = "ESPN_SCOREBOARD"
-            fallback_reasons[year] = str(primary_error)
+                    )
+                else:
+                    try:
+                        recent = fetch_recent_espn_settlements(sport, now=clock)
+                        supplemental_rows = [
+                            row for raw_event in recent
+                            if (row := normalize_espn_game(raw_event, sport, retrieved_at)) is not None
+                            and date.fromisoformat(row["game_date"]) > latest_before
+                        ]
+                        seen_recent: set[str] = set()
+                        for row in supplemental_rows:
+                            if row["game_id"] in seen_recent:
+                                raise BasketballHydrationError("ESPN_RECENT_DUPLICATE_GAME_ID")
+                            seen_recent.add(row["game_id"])
+                        if supplemental_rows:
+                            normalized_rows = supplemental_rows
+                            provider = "ESPN_SCOREBOARD"
+                            recent_supplement[year] = "SETTLED_SOURCE_UPDATED"
+                        else:
+                            recent_supplement[year] = "NO_NEW_SETTLEMENT"
+                    except BasketballHydrationError as exc:
+                        recent_supplement[year] = "SOURCE_BLOCKED:" + str(exc)
 
-        total_raw += len(raw)
-        normalized_rows = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
+            if provider != "BALLDONTLIE" and latest_before is not None:
+                # Provider IDs are not globally comparable. Restrict fallback writes
+                # to rows newer than the existing corpus so old BDL rows cannot be
+                # duplicated under ESPN-derived IDs.
+                normalized_rows = [
+                    row for row in normalized_rows
+                    if date.fromisoformat(str(row["game_date"])[:10]) > latest_before
+                ]
+            per_season[year] = len(normalized_rows)
+            source_by_season[year] = provider
+            total_settled += len(normalized_rows)
+            new_settled += _persist_rows(client, sport, normalized_rows)
+            if normalized_rows:
+                prior_season_persisted = True
 
-        # Keep ESPN scoreboard evidence separately typed from open-licensed
-        # SportsDataverse training. Never auto-promote an unregistered public
-        # source to fitted historical training, even if it returns scores.
-        has_new = latest_before is None or any(
-            date.fromisoformat(str(row["game_date"])[:10]) > latest_before for row in normalized_rows
-        )
-        if (
-            provider == "SPORTSDATAVERSE_ESPN"
-            and year >= clock.year and latest_before is not None
-            and 2 <= (clock.date() - latest_before).days <= 200
-            and not has_new
-        ):
-            entitlement = source_readiness("ESPN_SCOREBOARD")
-            if not entitlement.ready_for_candidate_training:
-                recent_supplement[year] = (
-                    "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
-                    + ",".join(entitlement.blockers)
-                )
-            else:
-                try:
-                    recent = fetch_recent_espn_settlements(sport, now=clock)
-                    supplemental_rows = [
-                        row for raw_event in recent
-                        if (row := normalize_espn_game(raw_event, sport, retrieved_at)) is not None
-                        and date.fromisoformat(row["game_date"]) > latest_before
-                    ]
-                    seen_recent: set[str] = set()
-                    for row in supplemental_rows:
-                        if row["game_id"] in seen_recent:
-                            raise BasketballHydrationError("ESPN_RECENT_DUPLICATE_GAME_ID")
-                        seen_recent.add(row["game_id"])
-                    if supplemental_rows:
-                        normalized_rows = supplemental_rows
-                        provider = "ESPN_SCOREBOARD"
-                        recent_supplement[year] = "SETTLED_SOURCE_UPDATED"
-                    else:
-                        recent_supplement[year] = "NO_NEW_SETTLEMENT"
-                except BasketballHydrationError as exc:
-                    recent_supplement[year] = "SOURCE_BLOCKED:" + str(exc)
-
-        if provider != "BALLDONTLIE" and latest_before is not None:
-            # Provider IDs are not globally comparable. Restrict fallback writes
-            # to rows newer than the existing corpus so old BDL rows cannot be
-            # duplicated under ESPN-derived IDs.
-            normalized_rows = [
-                row for row in normalized_rows
-                if date.fromisoformat(str(row["game_date"])[:10]) > latest_before
-            ]
-        per_season[year] = len(normalized_rows)
-        source_by_season[year] = provider
-        total_settled += len(normalized_rows)
-        new_settled += _persist_rows(client, sport, normalized_rows)
+    except BasketballHydrationPartialWriteError:
+        raise
+    except Exception as exc:
+        if prior_season_persisted:
+            # Earlier seasons were committed but this refresh did not finish.
+            # Do not replay an incompletely refreshed corpus.
+            raise BasketballHydrationPartialWriteError(
+                "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+            ) from exc
+        raise
 
     latest_after = _latest_persisted_game_date(client, sport)
     return {
