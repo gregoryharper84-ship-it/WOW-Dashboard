@@ -34,11 +34,12 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
 FINALIZE_WORKFLOW = "wow-v17-remote-writer-finalize.yml"
-# Only the three registered engineering workflows can own the implementation
-# writer. Unrelated CI run churn must never corrupt this busy check.
+# All registered implementation workers and the provider dispatcher own
+# the shared writer. Unrelated CI run churn must never corrupt this busy check.
 ACTIVE_WORKFLOW_FILES = (
     "wow-v17-chatgpt-engineering-worker.yml",
     "wow-v17-claude-engineering-worker.yml",
+    "wow-v17-gemini-engineering-worker.yml",
     "wow-v17-engineering-provider-dispatcher.yml",
 )
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
