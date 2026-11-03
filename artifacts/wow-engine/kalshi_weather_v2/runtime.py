@@ -113,6 +113,7 @@ def capture_hourly_shadow(
             models=models,
             retrieved_at=now,
             secondary_enabled=os.getenv("WOW_KALSHI_WEATHER_OPEN_METEO_ENABLED", "0") == "1",
+            target_time_utc=target,
         )
         point_snapshot, nws_hourly, open_meteo = sources.point, sources.nws, sources.secondary
 
