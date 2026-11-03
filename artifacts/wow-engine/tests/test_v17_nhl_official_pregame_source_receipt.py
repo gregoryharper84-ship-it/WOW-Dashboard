@@ -173,3 +173,47 @@ def test_rejects_bad_inputs_without_network():
         _capture(session, home_team="unknown")
     assert raised.value.code == "NHL_SOURCE_TEAMS_INVALID"
     assert session.calls == []
+
+
+def test_network_failure_yields_typed_hold():
+    class BrokenSession:
+        def get(self, *args, **kwargs):
+            raise TimeoutError("source offline")
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(session=BrokenSession())
+    assert raised.value.code == "NHL_SOURCE_FETCH_FAILED"
+
+
+@pytest.mark.parametrize("raw", [b"x" * 2_000_001, b""])
+def test_oversize_or_empty_raw_bytes_are_not_evidence(raw):
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(_Session(_Response(raw=raw)))
+    assert raised.value.code == "NHL_SOURCE_RAW_BYTES_MISSING_OR_OVERSIZE"
+
+
+def test_non_utf8_source_json_is_not_accepted():
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(_Session(_Response(raw=b"\xff")))
+    assert raised.value.code == "NHL_SOURCE_JSON_INVALID"
+
+
+@pytest.mark.parametrize(
+    "start",
+    ["not-an-instant", "2026-11-04T01:00:00", "0001-01-01T00:00:00+01:00"],
+)
+def test_invalid_and_overflowing_event_time_fails_closed(start):
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(event_start_time_utc=start)
+    assert raised.value.code == "NHL_SOURCE_TIME_INVALID"
+
+
+def test_invalid_clock_timezone_fails_closed():
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(clock=lambda: datetime(2026, 11, 3, 23, 0))
+    assert raised.value.code == "NHL_SOURCE_TIME_INVALID"
+
+
+def test_event_id_and_team_identity_cannot_be_collapsed():
+    with pytest.raises(NHLPregameSourceError) as raised:
+        _capture(home_team="Carolina Hurricanes", away_team="CAR")
+    assert raised.value.code == "NHL_SOURCE_TEAMS_INVALID"
