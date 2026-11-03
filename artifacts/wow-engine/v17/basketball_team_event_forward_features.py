@@ -178,6 +178,18 @@ def hydrate_current_basketball_features(
         raise BasketballForwardFeatureError("BASKETBALL_CANONICAL_IDENTITY_INCOMPLETE")
 
     games = load_games(db, normalized)
+    if normalized == "NBA":
+        # The certified schedule resolver produces ESPN team identities.
+        # BallDontLie uses different numeric team IDs; equal-looking numbers
+        # are NOT an authorized cross-provider mapping. Refuse to combine
+        # namespaces until an independently sourced 1:1 crosswalk exists.
+        providers = {str(getattr(game, "source_provider", "") or "").strip().upper()
+                     for game in games}
+        if providers != {"SPORTSDATAVERSE_ESPN"}:
+            raise BasketballForwardFeatureError(
+                "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED",
+                "mixed, missing, or BallDontLie team identity provenance",
+            )
     target_date = target.astimezone(ZoneInfo("America/New_York")).date()
     features, audit = build_basketball_forward_features(
         games,
