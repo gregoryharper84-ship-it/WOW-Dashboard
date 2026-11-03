@@ -903,6 +903,68 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         base.update(changes)
         return base
 
+    def test_owner_preflight_validates_exact_github_read_without_generation(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        target = "a" * 40
+        event = {"inputs": {"pr_number": "2382", "head_sha": target}}
+        pr = {"state": "open",
+              "head": {"sha": target, "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "repo": {"full_name": m.REPO}}}
+        env = self._pref_env(GH_READ_TOKEN="SECRET_TOKEN",
+                             GITHUB_EVENT_PATH="/tmp/unused-preflight-event.json")
+        output = io.StringIO()
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=json.dumps(event)), \
+             patch.object(m, "gh", return_value=pr) as read, \
+             patch.object(m, "review_models") as model, \
+             patch.object(m, "publish_check") as publish, \
+             contextlib.redirect_stdout(output):
+            m.github_read_preflight()
+        read.assert_called_once_with("/pulls/2382", "SECRET_TOKEN")
+        model.assert_not_called()
+        publish.assert_not_called()
+        self.assertEqual(output.getvalue().strip(),
+                         "GITHUB_PR_READ_READY:PR_METADATA:READ_ONLY")
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_owner_preflight_rejects_stale_or_untrusted_pr_identity(self):
+        from unittest.mock import patch
+        event = {"inputs": {"pr_number": "2382", "head_sha": "a" * 40}}
+        good = {"state": "open",
+                "head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
+                "base": {"ref": "main", "repo": {"full_name": m.REPO}}}
+        env = self._pref_env(GH_READ_TOKEN="SECRET_TOKEN",
+                             GITHUB_EVENT_PATH="/tmp/unused-preflight-event.json")
+        for bad in (
+            {**good, "head": {"sha": "b" * 40, "repo": {"full_name": m.REPO}}},
+            {**good, "base": {"ref": "other",
+                              "repo": {"full_name": m.REPO}}},
+            {**good, "state": "closed"},
+        ):
+            with self.subTest(bad=bad):
+                with patch.dict(m.os.environ, env, clear=True), \
+                     patch.object(m.Path, "read_text", return_value=json.dumps(event)), \
+                     patch.object(m, "gh", return_value=bad):
+                    with self.assertRaisesRegex(m.Hold, "PR_TARGET_STALE_OR_UNTRUSTED"):
+                        m.github_read_preflight()
+
+    def test_owner_preflight_requires_credential_and_owner_identity(self):
+        from unittest.mock import patch
+        for changes, reason in (
+            ({"GITHUB_ACTOR": "foreign-bot", "GH_READ_TOKEN": "SECRET_TOKEN"},
+             "REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED"),
+            ({"GH_READ_TOKEN": ""}, "READ_TOKEN_MISSING"),
+        ):
+            env = self._pref_env(GITHUB_EVENT_PATH="/tmp/unread", **changes)
+            with self.subTest(reason=reason):
+                with patch.dict(m.os.environ, env, clear=True), \
+                     patch.object(m, "gh") as read:
+                    with self.assertRaisesRegex(m.Hold, reason):
+                        m.github_read_preflight()
+                    read.assert_not_called()
+
     def test_preflight_catalog_read_only_no_inference(self):
         env = self._pref_env()
         env["WOW_QA_REVIEW_ANTHROPIC_API_KEY"] = ""
