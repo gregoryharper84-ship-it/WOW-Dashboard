@@ -15,6 +15,7 @@ from v17 import team_event_request_runtime as v17_team_event_base
 from v17.basketball_model_maintenance import install_basketball_model_maintenance_route
 from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
 from v17.nfl_forward_shadow import run_forward_shadow
+from v17.nfl_ml_challenger_forward_grading import run_challenger_forward_grading
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 from v17.interactive_latency_telemetry import annotate_request, stage_timer
 from v17.team_event_probability_preservation import score_team_event_request as score_v17_team_event_request
@@ -481,7 +482,11 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
             @app.post("/internal/v17/nfl-forward-shadow", dependencies=[scout_route_auth_dependency(auth_dependency)], operation_id="runWowV17NflForwardShadow")
             def run_nfl_forward_shadow():
                 try:
-                    return run_forward_shadow(db_client_fn())
+                    db = db_client_fn()
+                    result = run_forward_shadow(db)
+                    result["challenger_forward_shadow"] = run_challenger_forward_grading(db)
+                    result["can_execute"] = False
+                    return result
                 except HTTPException:
                     raise
                 except Exception as exc:
