@@ -967,3 +967,46 @@ def test_nba_bridge_registration_and_model_invocation(monkeypatch):
     assert detail["model_invoked"] is False
     assert "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE" in detail["blockers"]
     assert detail["backend_route_status"] == "SPORT_SPECIFIC_TEAM_EVENT_BRIDGE_BLOCKED"
+
+def test_public_nba_route_requires_real_server_hydration_not_caller_verified_labels():
+    """An unimplemented canonical path must reject fake VERIFIED user evidence."""
+    from datetime import datetime, timedelta, timezone
+    from fastapi import HTTPException
+    from v17.team_event_request_runtime import TeamEventRequest
+    from v17.nba_current_pregame_scorer import score_nba_team_event_request
+
+    start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    req = TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id="nba-public-attestation-negative",
+        requested_slate_date=start[:10],
+        requested_timezone="UTC",
+        candidate_family="OUTRIGHT_WINNER",
+        decision_intent="BEST_SIDE",
+        event_key="NBA:fake-verified",
+        sport="NBA",
+        league="NBA",
+        official_event_id="espn-401999001",
+        home_team="espn-1",
+        away_team="espn-2",
+        event_start_time_utc=start,
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        source_snapshot_id="caller-only-snapshot",
+        sport_specific_evidence={
+            "source_snapshot_id": "caller-only-snapshot",
+            "feature_package": _feature_package(),
+            "lineup_evidence": _lineup(),
+            "timestamp_attestation": "VERIFIED",
+        },
+    )
+    with pytest.raises(HTTPException) as caught:
+        score_nba_team_event_request(
+            req, event_api=object(), canonical_hydration_required=True,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in caught.value.detail["blockers"]
+    assert caught.value.detail["model_invoked"] is False
+    assert caught.value.detail["probability_publishable"] is False
+    assert caught.value.detail["can_execute"] is False
+
