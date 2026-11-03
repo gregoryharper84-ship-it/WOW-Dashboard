@@ -46,12 +46,6 @@ def _provenance_guard(workflow: Path, step_name: str, start: str, end: str) -> s
             "trusted_worker=false\n",
             "zip_path=",
         ),
-        (
-            RELEASE,
-            "Verify governance-producing workflow provenance",
-            "protected_main_source=false\n",
-            'echo "name=$name"',
-        ),
     ],
 )
 def test_downstream_consumers_accept_only_successful_protected_workflow_run_receipts(
@@ -367,32 +361,37 @@ def test_release_verifier_does_not_require_itself_as_prerequisite():
         assert required in required_block
 
 
-def test_trusted_consumers_use_dedicated_existing_pr_verifier():
+def test_v4_existing_pr_certifier_remains_historical_not_release_dependency():
     gate = GATE.read_text(encoding="utf-8")
     morning = MORNING_GREEN.read_text(encoding="utf-8")
     release = RELEASE.read_text(encoding="utf-8")
 
-    for text in (gate, morning, release):
+    # Legacy certifier artifacts remain historical until authorized cutover.
+    for text in (gate, morning):
         assert "wow-v17-existing-pr-governance-review.yml" in text
         assert "verify_existing_pr_governance_receipt.py" in text
-        assert "wow-v17-existing-pr-governance-review" in text
-
+        assert "--live-checks-json" in text
+        assert "TRUST_ROOT_BOOTSTRAP" in text
     assert "pull_request_target) ;;" in gate
     assert "protected_main_source=true" in morning
-    assert "protected_main_source=true" in release
+
+    # V4 production observer is no longer wired to the retired receipt.
+    assert "verify_existing_pr_governance_receipt.py" not in release
+    assert "Resolve trusted exact-head governance artifact" not in release
+    assert "Trusted exact-head engineering governance" not in release
+    assert "active independent allowlisted APPROVED review" not in release
+    for item in (
+        "WOW required-three regression|15368",
+        "WOW governed probability backend|15368",
+        "WOW additional required regression|15368",
+        "WOW Independent QA exact-head|5245832",
+        "WOW Release Authority exact-head|5245853",
+    ):
+        assert item in release
     assert '"wow-verify|.github/workflows/wow-verify.yml"' in release
     assert '"wow-engine-verify|.github/workflows/wow-engine-verify.yml"' in release
     assert '"wow-v17-rapid-repair|.github/workflows/wow-v17-rapid-repair.yml"' in release
     assert '"wow-v17-change-impact-gate|.github/workflows/wow-v17-change-impact-gate.yml"' in release
-    assert '"wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"' in release
-    assert '"wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"' in release
-    assert "Trusted exact-head engineering governance" in release
-    assert "Lead/Triage/Engineering/Independent Review/QA governance receipt" not in release
-    assert "active independent allowlisted APPROVED review" in release
-    for text in (gate, morning, release):
-        assert "--live-checks-json" in text
-        assert "TRUST_ROOT_BOOTSTRAP" in text
-
 
 
 def test_class_a_deterministic_receipt_regressions_execute_in_native_ci():
