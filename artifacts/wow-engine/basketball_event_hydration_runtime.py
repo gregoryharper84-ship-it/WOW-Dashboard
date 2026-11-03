@@ -628,6 +628,15 @@ def hydrate(
                     row for row in normalized_rows
                     if date.fromisoformat(str(row["game_date"])[:10]) > latest_before
                 ]
+            # Authorization to read ESPN scoreboard history does not certify
+            # compatibility with the fitted NBA corpus. The current NBA
+            # resolver uses ESPN team identities, while this provider can
+            # introduce a different, unverified ID namespace into stored
+            # seasons. Do not pollute the durable fitted-training ledger.
+            if sport == "NBA" and provider == "ESPN_SCOREBOARD" and normalized_rows:
+                raise BasketballHydrationError(
+                    "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+                )
             per_season[year] = len(normalized_rows)
             source_by_season[year] = provider
             total_settled += len(normalized_rows)
