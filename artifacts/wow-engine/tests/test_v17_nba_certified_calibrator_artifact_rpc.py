@@ -349,6 +349,18 @@ def test_shadow_payload_cannot_become_publishable_through_the_lookup():
     assert "CALIBRATION_CERTIFICATION_NOT_PASS" in str(error.value)
 
 
+@pytest.mark.parametrize("missing_rows", [None, []])
+def test_missing_calibrator_rpc_rows_are_unavailable_not_invalid(missing_rows):
+    """PostgREST returns [] for a valid no-match, not a broken artifact."""
+    client = _Client(missing_rows)
+    with pytest.raises(LookupError, match="^NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE$"):
+        resolve_nba_calibrator_artifact(client, _certification())
+    assert client.calls == [
+        ("wow_basketball_certified_calibrator_artifact",
+         {"p_sport": "NBA", "p_calibrator_id": CAL_ID}),
+    ]
+
+
 def test_transport_failure_is_never_reported_as_a_missing_artifact():
     with pytest.raises(RuntimeError, match="NBA_CALIBRATOR_RESOLUTION_FAILED"):
         resolve_nba_calibrator_artifact(
