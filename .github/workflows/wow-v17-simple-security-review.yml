@@ -72,6 +72,7 @@ jobs:
       - name: Authenticate Gemini model without generating content
         if: inputs.preflight_only == true
         env:
+          GH_READ_TOKEN: ${{ github.token }}
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
         run: python .github/scripts/wow_simple_security_review.py --preflight
