@@ -260,7 +260,11 @@ def _require_scoped_bearer(env_name: str, authorization: Optional[str]) -> None:
         raise HTTPException(status_code=503, detail="RESEARCH_JOB_AUTH_NOT_CONFIGURED")
     prefix = "Bearer "
     token = authorization[len(prefix):] if authorization and authorization.startswith(prefix) else ""
-    if not token or not secrets.compare_digest(token, configured):
+    # Python's str compare_digest rejects non-ASCII authorization tokens;
+    # both sides as UTF-8 bytes preserve constant-time comparison and 401.
+    if not token or not secrets.compare_digest(
+        token.encode("utf-8"), configured.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="RESEARCH_JOB_AUTH_REQUIRED")
 
 
