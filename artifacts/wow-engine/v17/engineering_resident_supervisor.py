@@ -145,9 +145,19 @@ class GitHubTransport:
         decision = resident_provider_admission(route, updated_at=run.get("updated_at"), now=now)
         if decision == "PROVIDER_STATUS_UNVERIFIED":
             return decision
+        route_provider = route.get("provider")
+        if route_provider == "gemini":
+            # Only the authenticated automatic dispatcher event can attest
+            # Gemini's enabled flags and durable history. A manually forced
+            # reason string (or a successful operator probe) is not authority.
+            if (run.get("event") not in {"schedule", "workflow_run"}
+                    or decision != "PROVIDER_ADMITTED"
+                    or self.get("commits/main").get("sha") != run["head_sha"]):
+                return "PROVIDER_RECOVERY_UNVERIFIED"
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
+        route_revoked = False
         for workflow, workflow_provider in (
             ("wow-v17-chatgpt-engineering-worker.yml", "openai"),
             ("wow-v17-claude-engineering-worker.yml", "anthropic"),
@@ -167,6 +177,11 @@ class GitHubTransport:
                     or type(worker.get("id")) is not int or worker["id"] <= 0
                     or not re.fullmatch(r"[0-9a-f]{40}", str(worker.get("head_sha", "")))
                     or worker.get("conclusion") not in {"success", "failure", "cancelled", "timed_out"}):
+                # Another provider's malformed history may not revoke this
+                # otherwise verified provider. The matching worker must fail
+                # closed, as must an unattributed NO_ACTION/SURVIVAL recovery.
+                if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
+                    continue
                 return "PROVIDER_STATUS_UNVERIFIED"
             updated = datetime.fromisoformat(worker["updated_at"].replace("Z", "+00:00"))
             route_time = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
@@ -183,8 +198,9 @@ class GitHubTransport:
                 if worker["conclusion"] == "success" and age <= 900:
                     latest_success |= worker["head_sha"] == self.get("commits/main").get("sha")
                 elif (decision == "PROVIDER_ADMITTED"
-                      and route.get("provider") == workflow_provider):
+                      and route_provider == workflow_provider):
                     decision = "PROVIDER_RECOVERY_UNVERIFIED"
+                    route_revoked = True
         if (not latest_success
                 and (route.get("provider") == "cursor"
                      or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
@@ -229,7 +245,7 @@ class GitHubTransport:
                             and fin["head_sha"] == pre_main_sha
                             and post_main_sha == pre_main_sha
                         )
-        if latest_success:
+        if latest_success and not route_revoked:
             return "PROVIDER_ADMITTED"
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:
             return "PROVIDER_RECOVERY_UNVERIFIED"
