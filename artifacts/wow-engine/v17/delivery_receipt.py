@@ -196,26 +196,47 @@ def build_receipt(
         raise DeliveryError("DELIVERY_RENDER_SHA_MISMATCH")
     client = db or SupabaseReadOnly(config["SUPABASE_URL"], config["SUPABASE_SERVICE_ROLE_KEY"])
     lanes = {name: _table_window(client, name, now, hours) for name in _ACTIVITY_TIME}
+    # Use the same bounded future cutoff as the activity ledgers. Each exact
+    # future count is a subset of the corresponding gte count, so an anomalous
+    # future timestamp cannot inflate operator-facing recent data.
+    future_cutoff = stamp(now + timedelta(minutes=5))
     action_since = stamp(now - timedelta(hours=hours))
-    non_self_actions = client.count(
+    non_self_actions_all = client.count(
         "wow_action_invocation_receipts",
         occurred_at="gte." + action_since, caller_class="neq.SELF_ACCEPTANCE",
     )
-    chatgpt_actions = client.count(
+    non_self_actions_future = client.count(
+        "wow_action_invocation_receipts",
+        occurred_at="gt." + future_cutoff, caller_class="neq.SELF_ACCEPTANCE",
+    )
+    chatgpt_actions_all = client.count(
         "wow_action_invocation_receipts",
         occurred_at="gte." + action_since, caller_class="eq.CHATGPT_ACTION",
     )
+    chatgpt_actions_future = client.count(
+        "wow_action_invocation_receipts",
+        occurred_at="gt." + future_cutoff, caller_class="eq.CHATGPT_ACTION",
+    )
+    non_self_actions = non_self_actions_all - non_self_actions_future
+    chatgpt_actions = chatgpt_actions_all - chatgpt_actions_future
     fitted_after = stamp(now - timedelta(days=days))
     calibration_total = client.count("wow_calibrators")
-    calibration_recent = client.count("wow_calibrators", fitted_at="gte." + fitted_after)
-    latest_fit, _ = client.rows("wow_calibrators", "fitted_at,active,promoted", order="fitted_at.desc")
+    calibration_including_future = client.count("wow_calibrators", fitted_at="gte." + fitted_after)
+    calibration_future = client.count("wow_calibrators", fitted_at="gt." + future_cutoff)
+    calibration_recent = calibration_including_future - calibration_future
+    if min(non_self_actions, chatgpt_actions, calibration_recent) < 0:
+        raise DeliveryError("DELIVERY_COUNT_NOT_PROVEN")
+    latest_fit, _ = client.rows(
+        "wow_calibrators", "fitted_at,active,promoted",
+        order="fitted_at.desc", fitted_at="lte." + future_cutoff,
+    )
     latest_health, _ = client.rows(
         "wow_nfl_forward_calibration_health",
         "generated_at,graded_n,minimum_forward_required,status,certification_recommendation,blockers",
         order="generated_at.desc",
     )
     future_attempts = client.count(
-        "wow_event_source_attempts", attempted_at="gt." + stamp(now + timedelta(minutes=5))
+        "wow_event_source_attempts", attempted_at="gt." + future_cutoff
     )
     return {
         "status": "BLOCKED", "code": "DELIVERY_RENDER_RUNTIME_BINDING_UNVERIFIED",
