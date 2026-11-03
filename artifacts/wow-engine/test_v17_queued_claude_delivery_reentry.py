@@ -95,3 +95,74 @@ def test_claude_workflow_passes_its_own_exact_target():
     assert "inputs.target_incident" in block
     assert "--target-incident" in block
     assert "engineering_provider_worker_admission.py" in block
+
+
+
+def _three_run_history(*, target="1150", middle_success=False):
+    """Authenticated simulated A -> B -> requested target, without paid calls."""
+    incidents = {71: "1150", 72: "1200"}
+    def read(cmd):
+        path = cmd[2] if len(cmd) > 2 else ""
+        if "/actions/workflows/" in path:
+            return json.dumps({"total_count": 3, "workflow_runs": [
+                {"id": 73, "run_attempt": 1, "status": "in_progress",
+                 "display_title": f"wow-v17-claude-engineering-worker lease=GLOBAL incident={target}"},
+                *[
+                    {"id": ident, "run_attempt": 1, "status": "completed",
+                     "conclusion": "success" if ident == 72 and middle_success else "failure",
+                     "head_branch": "main", "event": "workflow_dispatch",
+                     "path": f".github/workflows/{FLOW}"}
+                    for ident in (72, 71)
+                ],
+            ]})
+        for ident in (72, 71):
+            if f"/actions/runs/{ident}/attempts/1/jobs?" in path:
+                succeeded = ident == 72 and middle_success
+                steps = (
+                    [{"name": module.AGENT_STEP, "status": "completed",
+                      "conclusion": "success"}]
+                    if succeeded else
+                    [{"name": name, "status": "completed", "conclusion": conclusion}
+                     for name, conclusion in module.DELIVERY_ONLY_STEPS]
+                )
+                return json.dumps({"total_count": 1, "jobs": [{
+                    "run_id": ident, "name": module.WORKFLOWS["anthropic"][1],
+                    "status": "completed",
+                    "conclusion": "success" if succeeded else "failure",
+                    "steps": steps, "completed_at": "2026-10-23T07:41:06Z",
+                }]})
+        if cmd[:3] == ["gh", "run", "view"]:
+            incident = incidents[int(cmd[3])]
+            return (
+                "2026-10-23T07:41:06Z "
+                f"##[error]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: incident={incident}; "
+                "triage repairable=false."
+            )
+        raise AssertionError("Unexpected authenticated GitHub request: " + repr(cmd))
+    return read
+
+
+def test_historical_same_incident_refusal_blocks_reentry():
+    # Re-asking for incident A must not be admitted merely because the
+    # immediately preceding attempt was B, including after a healthy B.
+    for middle_success in (False, True):
+        decision = module.admission(
+            "anthropic", 73,
+            _three_run_history(target="1150", middle_success=middle_success),
+            target_incident="1150", now=CLOCK,
+        )
+        assert decision["status"] == "HELD", decision
+        assert "ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE" in decision["code"]
+        assert decision["can_execute"] is False
+
+
+def test_new_incident_after_two_independent_refusals_remains_eligible():
+    decision = module.admission(
+        "anthropic", 73, _three_run_history(target="1021"),
+        target_incident="1021", now=CLOCK,
+    )
+    assert decision == {
+        "status": "ADMITTED",
+        "code": "PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT",
+        "can_execute": False,
+    }
