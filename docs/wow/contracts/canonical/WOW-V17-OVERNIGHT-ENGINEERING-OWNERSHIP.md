@@ -294,6 +294,20 @@ attempt limits, pending handoff accounting and the one-writer fence.
 A recent manual success does not override a cooldown, and waiting does not cure
 persistent quota or authentication failures.
 
+The schedule, not the canary, is what turns an attested route into admission.
+The dispatcher's automatic routing runs on the hourly `17 * * * *` cron, and the
+resident consumes only the **latest completed** dispatcher receipt while it is at
+most 15 minutes old. After the owner sets `GEMINI_AUTO_ROUTING_ENABLED=true`,
+admission therefore becomes possible only inside the window between that hour's
+`:17` dispatcher run and 15 minutes later; the resident cycle that observes the
+receipt inside that window is the one that admits. A canary, a manual probe, a
+forced reason string, a `SURVIVAL` receipt or a dispatcher run older than 15
+minutes all resolve to `PROVIDER_RECOVERY_UNVERIFIED` or
+`PROVIDER_STATUS_UNVERIFIED`, and each later dispatcher run replaces the earlier
+receipt rather than stacking with it. Expect at most one admission opportunity
+per hour, not continuous admission, and do not read a quiet hour as a new
+blocker.
+
 ### D. Stop, reconcile and independently accept
 
 On `GEMINI_API_QUOTA_EXHAUSTED`, bad credential, missing receipts, stale or
@@ -305,6 +319,17 @@ breakers by elapsed time, relabel errors or retry by creating another controller
 The owner may use the previously documented **manual `force_provider=openai`
 recovery probe** only when that credential and quota are confirmed healthy and
 an individual paid probe is explicitly authorized.
+
+`PROVIDER_QUOTA_BLOCKED` is cleared by an attested route, never by the operator
+canary. The required evidence is a fresh `DISPATCH/gemini` receipt carrying
+`GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY` or
+`GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX` that the resident consumes inside its
+15-minute window and resolves to `PROVIDER_ADMITTED`, followed by
+`DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW` against a fresh eligible incident.
+A `GEMINI_OPERATOR_CANARY` receipt is phase-C health evidence and nothing more:
+it neither clears the breaker nor keeps an admission opportunity open. If the
+only fresh receipt available is a canary, `SURVIVAL` or an expired one, the
+correct state is the existing hold, not a relaxed gate.
 
 Do not call this incident COMPLETE until a new exact incident has a successful,
 authenticated *resident-generated* provider run and code SHA, a proposed PR with
