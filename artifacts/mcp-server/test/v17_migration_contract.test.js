@@ -258,3 +258,37 @@ test("MCP server factory loads using the installed protocol SDK", () => {
   const server = createV17McpServer({ backend: { backendKey: "test-only" } });
   assert.ok(server);
 });
+
+
+test("MCP exact NFL event receipt mode admits discriminator and forwards same UUID", async () => {
+  const tool = V17_TOOLS.find((entry) => entry.name === "lookupWowV17PredictionReceipts");
+  assert.ok(tool);
+  const rowSchema = tool.inputSchema.properties.rows.items;
+  assert.deepEqual(rowSchema.properties.market_family, {
+    type: ["string", "null"], enum: ["OUTRIGHT_WINNER", null],
+  });
+  assert.equal(rowSchema.additionalProperties, false);
+  assert.equal(tool.annotations.readOnlyHint, true);
+
+  const predictionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  let observed;
+  const fetchImpl = async (url, request) => {
+    observed = { url, request: JSON.parse(request.body) };
+    return new Response(JSON.stringify({ rows_matched: 1, can_execute: false }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  const result = await invokeV17Operation(
+    "lookupWowV17PredictionReceipts",
+    { rows: [{
+      prediction_id: predictionId, sport: "NFL",
+      market_family: "OUTRIGHT_WINNER", event_id: "2026_09_TB_CHI",
+    }] },
+    { fetchImpl, backendKey: "server-secret", baseUrl: "https://backend.example" },
+  );
+  assert.equal(observed.url, "https://backend.example/v17/prediction-receipts/lookup");
+  assert.equal(observed.request.rows[0].prediction_id, predictionId);
+  assert.equal(observed.request.rows[0].market_family, "OUTRIGHT_WINNER");
+  assert.equal(result.can_execute, false);
+  assert.equal(result.mcp_gateway.can_execute, false);
+});
