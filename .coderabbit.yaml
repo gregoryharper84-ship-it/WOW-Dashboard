@@ -22,8 +22,9 @@ reviews:
     enabled: true
     drafts: false
     auto_incremental_review: true
-    # Avoid repeated reviews on PRs with many bot-generated pushes.
-    auto_pause_after_reviewed_commits: 5
+    # Keep incremental advisory review coverage through later PR commits.
+    # Advisory comments remain non-gating; independent QA owns release decisions.
+    auto_pause_after_reviewed_commits: 0
 
   # Do not let CodeRabbit create code or follow-up PRs automatically.
   finishing_touches:
