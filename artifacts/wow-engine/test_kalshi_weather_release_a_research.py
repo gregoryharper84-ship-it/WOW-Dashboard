@@ -253,6 +253,10 @@ def test_release_a_candidate_samples_are_not_pooled_across_lead_buckets():
     assert progress["eligible_unique_settled_samples"] == 30
     assert progress["remaining_to_candidate"] is None
     assert progress["readiness_scope"] == "PER_LEAD_BUCKET_NOT_POOLED"
+    from kalshi_weather_v2.research_release_a import render_research_html
+    page = render_research_html(data)
+    assert "Settled target/bucket samples" in page
+    assert "Unique settled targets (all buckets)" not in page
     assert set(progress["by_lead_bucket"]) == {"H0", "H1"}
     for bucket in ("H0", "H1"):
         assert progress["by_lead_bucket"][bucket]["eligible_unique_settled_samples"] == 15

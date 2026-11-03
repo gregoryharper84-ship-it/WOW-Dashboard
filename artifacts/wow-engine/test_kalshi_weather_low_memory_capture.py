@@ -111,6 +111,28 @@ def test_low_memory_mode_excludes_non_h0_even_without_current_sample(monkeypatch
     assert result.predictions_settled == 0
 
 
+def test_low_memory_mode_limits_failed_capture_to_one_attempt(monkeypatch):
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
+    attempts = []
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", lambda: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda _db: set())
+    monkeypatch.setattr(bounded, "_discover_target_contracts", lambda *_args: (
+        sample("MIA-A", "2026-11-01T14:15:00Z"),
+        sample("MIA-B", "2026-11-01T14:45:00Z"),
+    ))
+    def failed_capture(**kwargs):
+        attempts.append(kwargs["ticker"])
+        raise RuntimeError("upstream unavailable")
+    monkeypatch.setattr(bounded, "capture_hourly_shadow", failed_capture)
+    result = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(), targets=(target(),), now="2026-11-01T14:00:00Z",
+    )
+    assert attempts == ["MIA-A"]
+    assert result.samples_captured == 0
+    assert result.low_memory_suppressed == 1
+    assert result.status == bounded.STATUS_FAILED
+
+
 def test_low_memory_suppresses_settlement_even_when_owner_flag_enabled(monkeypatch):
     settlement_calls = []
     def forbidden_settlement(*args, **kwargs):

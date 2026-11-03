@@ -93,6 +93,7 @@ def run_bounded_capture_only_cohort_once(
     supplemental_failures: list[str] = []
     contracts_discovered = 0
     captured = 0
+    h0_attempted = False
     skipped = 0
     low_memory_suppressed = 0
     supplemental_captured = 0
@@ -184,7 +185,7 @@ def run_bounded_capture_only_cohort_once(
 
                 if bucket not in CAPTURE_BUCKETS:
                     continue
-                if low_memory and (bucket != "H0" or captured >= 1):
+                if low_memory and (bucket != "H0" or h0_attempted):
                     # Deferred, not unavailable: this mode trades horizon coverage
                     # for survival inside 512 MiB. It must stay visible.
                     low_memory_suppressed += 1
@@ -195,6 +196,8 @@ def run_bounded_capture_only_cohort_once(
                     continue
 
                 chosen = min(items, key=lambda item: item.ticker)
+                if low_memory:
+                    h0_attempted = True
                 try:
                     capture = capture_hourly_shadow(
                         client=db,

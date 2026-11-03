@@ -560,3 +560,33 @@ A valid empty catalog, malformed listing, authentication failure, or
 partial paginated listing cannot be treated as approved availability.
 Changing source invalidates prior owner review; no code may forge the
 current-head approval or a signed independent semantic PASS.
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
+
+
+## Simple V1 deterministic delivery re-entry
+
+These are read-only delivery **decisions**, not fitted-model failure substitutes,
+approval checks, or new release gates. Only the trusted QA App on the exact SHA
+can create independent review evidence. A prior signed semantic REJECT is binding
+on that SHA even when a later attempt produces a provider HOLD.
+
+| Decision / typed reason | Owner / stage | Recovery class | Safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `SEMANTIC_REJECT_SAME_SHA` | Independent QA / PR continuation | CODE_REPAIR | QA App ID, exact PR/SHA, signed check title | Repair findings on a new source SHA, then independent review |
+| `REVIEWER_MODEL_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Explicit typed model-unavailable reason, no response body | Verify supported model and authorized credential, then obtain a new signed review |
+| `REVIEWER_PROVIDER_DIAGNOSIS` | QA provider / preflight | PROVIDER_CONFIGURATION | Ambiguous bare HTTP 404 only | Prove endpoint, model and credential scope with authorized preflight before any reviewer retry |
+| `REVIEWER_AUTH_OR_QUOTA_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Typed provider credit / 401, no credentials or billing data | Repair existing entitlement or credential without new vendor/spend |
+| `REVIEWER_TRANSIENT_OUTAGE` | QA provider / review | TRANSIENT | Bounded 429/5xx/transport code only | One bounded retry after provider recovery, never on signed REJECT |
+| `OWNER_REVIEW_REQUIRED` | Owner / protected release | EXTERNAL_AUTHORIZATION | Exact PR/SHA and established owner-fallback reason | Authenticated independent owner review where policy allows, then fresh exact-head QA |
+| `INDEPENDENT_QA_NOT_ACCEPTED` | Independent QA / PR continuation | FAIL_CLOSED | Unknown/invalid/missing definitive review evidence | Diagnose signed QA receipt; no automatic override |
+| `EVIDENCE_PENDING` | Engineering controller / PR continuation | RETRY_ON_NEW_EVIDENCE | Missing/pending exact-head QA check | Re-enter on signed QA App check or explicit authorized owner dispatch |
+
+The existing controller performs no automatic protected merge, no semantic
+self-approval, no live betting and no unbounded provider retry. Production DONE
+requires authentic merged/live/verified SHA parity, healthy route and persisted
+business result; a green workflow is not proof of production delivery.
