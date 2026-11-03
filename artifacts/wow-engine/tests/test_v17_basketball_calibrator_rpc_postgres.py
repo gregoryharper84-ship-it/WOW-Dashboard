@@ -314,6 +314,27 @@ def _lookup(conn, calibrator_id, *, sport="NBA", role="service_role"):
 # ---------------------------------------------------------------------------
 
 
+def test_service_role_can_execute_digest_serializer_without_public_grant(conn):
+    """The normal writer's digest trigger must not hit permission denied."""
+    assert conn.execute(
+        "select has_function_privilege("
+        "'service_role', 'public.wow_canonical_json_text(jsonb)', 'EXECUTE') as ok"
+    ).fetchone()["ok"] is True
+    assert conn.execute(
+        "select not has_function_privilege("
+        "'anon', 'public.wow_canonical_json_text(jsonb)', 'EXECUTE') as ok"
+    ).fetchone()["ok"] is True
+    conn.execute("set role service_role")
+    try:
+        result = conn.execute(
+            "select public.wow_canonical_json_text(%s::jsonb) as canonical",
+            (Jsonb({"z": 1, "a": 2}),),
+        ).fetchone()
+        assert result["canonical"] == '{"a":2,"z":1}'
+    finally:
+        conn.execute("reset role")
+
+
 def test_service_role_reads_the_exact_bound_certified_artifact(conn):
     seeded = _seed(conn)
     rows = _lookup(conn, seeded["calibrator_id"])
