@@ -6,7 +6,6 @@ The official Kalshi index and frozen contract remain the settlement authority.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
 from typing import Any, Callable, Mapping
 
 from .persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
@@ -99,17 +98,32 @@ def reconcile_miami_settlements(
             continue
         eligible.append((target, prediction_id))
 
-    # A fixed-stride rotation can alias a periodic caller: nine eligible
-    # predictions and a 30-minute cadence with limit=3 repeatedly select the
-    # same three. Mix each five-minute window deterministically instead so
-    # periodic wakes do not lock onto that subset. No new scheduler or state.
-    # This is best-effort coverage, not a durable progress guarantee.
+    # A durable service-role-only Postgres claim atomically reserves the next
+    # bounded slice BEFORE attempting any settlement. Never use clock-hash
+    # rotation here: recurring launches can alias the same missing three forever.
+    # A missing migration or malformed claim fails closed, without outcomes.
     eligible.sort(key=lambda item: (item[0], item[1]))
-    window = int(clock.timestamp()) // 300
-    rotation_offset = (
-        int.from_bytes(sha256(f"miami-backfill:{window}".encode("ascii")).digest()[:8], "big")
-        % len(eligible)
-    ) if eligible else 0
+    rotation_offset = 0
+    progress_claim_sequence = 0
+    if eligible:
+        try:
+            response = client.rpc("wow_kalshi_weather_claim_research_window", {
+                "p_station_scope": STATION,
+                "p_population": len(eligible),
+                "p_attempt_limit": limit,
+            }).execute()
+        except Exception as exc:
+            raise BackfillDataError("BACKFILL_PROGRESS_LEDGER_UNAVAILABLE") from exc
+        claims = getattr(response, "data", None)
+        if (not isinstance(claims, list) or len(claims) != 1
+                or not isinstance(claims[0], Mapping)):
+            raise BackfillDataError("BACKFILL_PROGRESS_CLAIM_INVALID")
+        claim = claims[0]
+        rotation_offset = claim.get("rotation_offset")
+        progress_claim_sequence = claim.get("claim_sequence")
+        if (type(rotation_offset) is not int or not 0 <= rotation_offset < len(eligible)
+                or type(progress_claim_sequence) is not int or progress_claim_sequence < 1):
+            raise BackfillDataError("BACKFILL_PROGRESS_CLAIM_INVALID")
     eligible = eligible[rotation_offset:] + eligible[:rotation_offset]
     attempted = 0
     written: list[dict[str, str]] = []
@@ -166,6 +180,7 @@ def reconcile_miami_settlements(
         "scanned_limit": MAX_SCAN,
         "eligible_preexisting_predictions": len(eligible),
         "rotation_offset": rotation_offset,
+        "progress_claim_sequence": progress_claim_sequence,
         "attempted": attempted,
         "new_outcomes": len(written),
         "already_recorded": skipped_existing,
