@@ -17,22 +17,28 @@ def test_persistence_requires_recoverable_artifact_before_sync():
     assert "id: artifact" in text
     assert "present=false" in text
     assert "steps.artifact.outputs.present == 'true'" in text
-    # Every sync step is guarded on present == 'true'. Echoing a summary line
-    # from a step that exits 0 left the job concluding success with nothing
-    # persisted, so the missing-artifact path has to fail the job instead.
-    assert "persistence failed closed rather than reporting success" in text
-    assert "persistence blocked without fabricating a run" not in text
+    # Verified code-only runs are neutral no-ops, never persistence receipts.
+    # True discovery with missing artifacts remains a hard typed HOLD, not PASS.
+    assert "SCOUT_DISCOVERY_NOT_APPLICABLE" in text
+    assert 'if [ "$discovery_state" != "success" ]; then' in text
+    assert "SCOUT_DISCOVERY_ARTIFACT_MISSING_HOLD" in text
+    assert "SCOUT_SKIPPED_DISCOVERY_ARTIFACT_CONFLICT_HOLD" in text
 
 
-def test_push_and_pull_request_runs_are_missing_artifact_exemptions():
+def test_verification_only_source_runs_require_actual_skipped_discovery():
     text = _workflow_text()
-    # Push and pull_request source runs execute verification only in the
-    # Multi-Scout workflow; discovery is skipped by design, so there is no
-    # artifact to persist. Scheduled/dispatch/workflow_run sources must still
-    # fail closed if their expected discovery artifact is missing.
-    assert 'source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}"' in text
-    assert 'if [ "$source_event" = "pull_request" ] || [ "$source_event" = "push" ]' in text
-    assert "discovery is skipped by design and persistence is not applicable" in text
+    # push / PR / workflow_run are neutral only when the exact source's actual
+    # discovery job was SKIPPED and its contract-verification job succeeded.
+    # Scheduled/dispatch discovery and any genuinely missing artifact HOLD.
+    assert "source_json=$(gh api" in text
+    assert "jobs_json=$(gh api" in text
+    assert "source_event=$(jq -r '.event // \"\"' <<<\"$source_json\")" in text
+    assert '[ "$source_event" = "pull_request" ]' in text
+    assert '[ "$source_event" = "push" ]' in text
+    assert '[ "$source_event" = "workflow_run" ]' in text
+    assert '[ "$discovery_state" = "skipped" ]' in text
+    assert '[ "$verification_state" = "success" ]' in text
+    assert "SCOUT_DISCOVERY_NOT_APPLICABLE" in text
 
 
 def test_governance_contract_remains_research_only():
