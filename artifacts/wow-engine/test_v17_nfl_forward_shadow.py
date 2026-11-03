@@ -302,3 +302,35 @@ def test_complete_settlement_contract_rejects_stale_api_and_missing_final():
             "overdue_unsettled_count": 0,
             "overdue_unsettled_event_ids": [],
         })
+
+
+
+def test_forward_shadow_workflow_rejects_stale_endpoint_contract():
+    """Execute the workflow caller's actual settlement guard against response shapes."""
+    from pathlib import Path
+    from textwrap import dedent
+
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-nfl-forward-shadow.yml").read_text()
+    start = '          overdue_count = payload.get("overdue_unsettled_count")'
+    end = '          assert payload.get("can_execute") is False'
+    assert workflow.count(start) == 1 and workflow.count(end) == 1
+    guard = dedent(start + workflow.split(start, 1)[1].split(end, 1)[0])
+    cases = [
+        ({"status": "COMPLETED"}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": True,
+          "overdue_unsettled_event_ids": []}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": 0}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": 1,
+          "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"]}, False),
+        ({"status": "INCOMPLETE_SETTLEMENT", "overdue_unsettled_count": 0,
+          "overdue_unsettled_event_ids": []}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": 0,
+          "overdue_unsettled_event_ids": []}, True),
+    ]
+    for payload, should_pass in cases:
+        if should_pass:
+            exec(guard, {"payload": payload})
+        else:
+            with pytest.raises(AssertionError):
+                exec(guard, {"payload": payload})
