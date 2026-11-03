@@ -360,6 +360,58 @@ class HttpAttributionTests(unittest.TestCase):
         self.assertIn("HTTP_429:ANTHROPIC_API:POST:MESSAGES:ERROR_UNCLASSIFIED",
                       stderr.getvalue())
 
+    def test_github_403_distinguishes_rate_limit_permission_and_unknown(self):
+        """Diagnostic-only evidence, never a retry, approval, or raw-header log."""
+        import contextlib
+        cases = (
+            ({"X-RateLimit-Remaining": "0"}, {"message": "SECRET"},
+             "PRIMARY_RATE_LIMIT"),
+            ({}, {"message": "You have exceeded a secondary rate limit. SECRET"},
+             "SECONDARY_RATE_LIMIT"),
+            ({}, {"message": "Resource not accessible by integration"},
+             "CREDENTIAL_PERMISSION_DENIED"),
+            ({"Retry-After": "120"}, {"message": "SECRET"},
+             "RETRY_AFTER_PRESENT"),
+            ({}, {"message": "SECRET unknown GitHub denial"}, "UNCLASSIFIED"),
+        )
+        url = GITHUB + "/pulls/2375"
+        for headers, body, label in cases:
+            with self.subTest(label=label):
+                error = HTTPError(url, 403, "SECRET HTTP reason", headers,
+                                  io.BytesIO(json.dumps(body).encode()))
+                output = io.StringIO()
+                with patch.object(m.HTTP_CLIENT, "open", side_effect=error):
+                    with contextlib.redirect_stderr(output):
+                        with self.assertRaises(m.Hold) as raised:
+                            m.request_json(url, token="SECRET_TOKEN")
+                self.assertNotIsInstance(raised.exception, m.ProviderUnavailable)
+                self.assertEqual(str(raised.exception), "HTTP_403")
+                self.assertIn("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_403:"
+                              "GITHUB_API:GET:PR_METADATA:" + label, output.getvalue())
+                self.assertNotIn("SECRET", output.getvalue())
+                self.assertNotIn("120", output.getvalue())
+                self.assertNotIn(url, output.getvalue())
+
+    def test_github_429_keeps_hold_and_reports_secondary_limit(self):
+        import contextlib
+        url = GITHUB + "/pulls/2375"
+        error = HTTPError(
+            url, 429, "SECRET", {},
+            io.BytesIO(json.dumps({
+                "message": "You have exceeded a secondary rate limit. SECRET"
+            }).encode()))
+        output = io.StringIO()
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=error):
+            with contextlib.redirect_stderr(output):
+                with self.assertRaises(m.Hold) as raised:
+                    m.request_json(url, token="SECRET_TOKEN")
+        self.assertNotIsInstance(raised.exception, m.ProviderUnavailable)
+        self.assertEqual(str(raised.exception), "HTTP_429")
+        self.assertIn("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_429:"
+                      "GITHUB_API:GET:PR_METADATA:SECONDARY_RATE_LIMIT",
+                      output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
     def test_transport_and_json_failures_keep_their_original_cause(self):
         from urllib.error import URLError
         with patch.object(m.HTTP_CLIENT, "open", side_effect=URLError("boom")):
