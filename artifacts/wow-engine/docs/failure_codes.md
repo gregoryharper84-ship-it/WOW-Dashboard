@@ -211,6 +211,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_INDEPENDENT_SOURCE_REVIEW_MISSING` | independent QA | No current, authenticated, exact-head source-review artifact is available; CI or a trusted-governance receipt cannot substitute. | N/A |
 | `QA_INDEPENDENT_SOURCE_REVIEW_INVALID` | independent QA | The source-review artifact, workflow provenance, PR author, reviewed file inventory, or exact-head binding is invalid. Release prefixes the finding when independently re-deriving QA. | N/A |
 | `QA_INDEPENDENT_SOURCE_REVIEW_REJECTED` | independent QA | The authenticated exact-head adversarial review explicitly rejected the source; Release independently preserves the rejection. | N/A |
+| `QA_PREVIOUS_SEMANTIC_REJECT_SAME_SHA` | independent QA and Release | The genuine QA App published an exact-head `WOW Independent Security Review` check with a signed semantic `REJECT` verdict. Preserve that same-SHA veto across subsequent review modes, including zero-credit; foreign-App, stale-head, or non-REJECT HOLD checks cannot manufacture this finding. Release independently re-derives the prefixed finding. | N/A |
 | `QA_PR_NOT_OPEN` | independent QA | PR is closed or merged. | N/A |
 | `QA_PR_DRAFT` | independent QA | PR is a draft. | N/A |
 | `QA_PR_BASE_NOT_MAIN` | independent QA | PR does not target `main`. | N/A |
