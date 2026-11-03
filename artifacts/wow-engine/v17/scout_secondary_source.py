@@ -21,6 +21,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 ESPN_BASE = os.environ.get("WOW_SCOUT_ESPN_BASE_URL", "https://site.api.espn.com/apis/site/v2/sports").rstrip("/")
 SECONDARY_ENABLED = os.environ.get("WOW_SCOUT_SECONDARY_SOURCE_ENABLED", "true").strip().lower() == "true"
@@ -74,10 +75,25 @@ def _date_key(value: str | None) -> str:
     return (dt or datetime.now(timezone.utc)).strftime("%Y%m%d")
 
 
+def _scoreboard_date_key(value: str | None) -> str:
+    """Map timestamp windows to ESPN's Eastern-date scoreboard partitions.
+
+    Date-only lookups are already explicit provider partition keys and must not
+    be shifted. Only timestamp endpoints need conversion from UTC to Eastern.
+    The caller's exact UTC start/end are enforced separately after acquisition.
+    """
+    if not value or re.fullmatch(r"\\d{8}|\\d{4}-\\d{2}-\\d{2}", value):
+        return _date_key(value)
+    instant = _parse_utc(value)
+    if instant is None:
+        return _date_key(value)
+    return instant.astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+
+
 def _date_keys(params: dict[str, Any] | None) -> list[str]:
     params = params or {}
-    start = _date_key(str(params.get("commenceTimeFrom") or ""))
-    end = _date_key(str(params.get("commenceTimeTo") or ""))
+    start = _scoreboard_date_key(str(params.get("commenceTimeFrom") or ""))
+    end = _scoreboard_date_key(str(params.get("commenceTimeTo") or ""))
     start_date = datetime.strptime(start, "%Y%m%d").date()
     end_date = datetime.strptime(end, "%Y%m%d").date()
     if end_date < start_date:
