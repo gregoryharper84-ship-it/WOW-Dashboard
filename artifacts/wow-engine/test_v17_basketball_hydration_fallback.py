@@ -234,7 +234,7 @@ def test_second_season_failure_after_persisted_first_season_blocks_replay(monkey
     monkeypatch.setattr(hydration, "_persist_rows", lambda *_args: 1)
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: date(2025, 10, 25))
     try:
-        hydration.hydrate("NBA", [2025, 2026], client=object())
+        hydration.hydrate("NBA", [2026, 2027], client=object())
         raise AssertionError("expected partial-season HOLD")
     except hydration.BasketballHydrationPartialWriteError as exc:
         assert str(exc) == "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
