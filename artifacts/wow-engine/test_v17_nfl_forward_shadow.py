@@ -334,3 +334,53 @@ def test_forward_shadow_workflow_rejects_stale_endpoint_contract():
         else:
             with pytest.raises(AssertionError):
                 exec(guard, {"payload": payload})
+
+
+
+def test_nfl_forward_shadow_http_error_diagnostics_are_bounded(monkeypatch):
+    """The actual API route preserves overdue identity, but never raw payloads."""
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    import team_event_request_runtime as runtime
+
+    monkeypatch.setenv("WOW_V17_ACTIVE", "1")
+    for name in (
+        "install_nfl_hydration_startup",
+        "install_nfl_model_startup",
+        "install_nfl_team_event_publication",
+        "install_basketball_model_maintenance_route",
+        "install_ncaaf_model_maintenance_route",
+    ):
+        monkeypatch.setattr(runtime, name, lambda *args, **kwargs: None)
+
+    result = {
+        "status": "INCOMPLETE_SETTLEMENT",
+        "overdue_unsettled_count": 1,
+        "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"],
+        "private_api_token": "MUST_NOT_APPEAR_IN_ERROR",
+        "can_execute": False,
+    }
+    monkeypatch.setattr(runtime, "run_forward_shadow", lambda db: result)
+    app = FastAPI()
+    runtime.install_team_event_request_routes(
+        app,
+        auth_dependency=Depends(lambda: None),
+        db_client_fn=lambda: object(),
+        event_api=object(),
+    )
+    client = TestClient(app)
+    response = client.post("/internal/v17/nfl-forward-shadow")
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"
+    assert detail["overdue_unsettled_count"] == 1
+    assert detail["overdue_unsettled_event_ids"] == ["2026_08_CHI_SEA"]
+    assert detail["can_execute"] is False
+    assert "MUST_NOT_APPEAR" not in response.text
+
+    # A malformed/oversized event identity must never be echoed in 503 details.
+    result["overdue_unsettled_event_ids"] = ["SENSITIVE_" + "x" * 250]
+    hidden = client.post("/internal/v17/nfl-forward-shadow")
+    assert hidden.status_code == 503
+    assert "overdue_unsettled_event_ids" not in hidden.json()["detail"]
+    assert "SENSITIVE_" not in hidden.text
