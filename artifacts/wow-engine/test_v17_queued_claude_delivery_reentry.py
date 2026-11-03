@@ -85,6 +85,72 @@ def test_source_job_target_binding_is_mandatory():
     assert decision["status"] == "HELD"
 
 
+def test_alternating_incident_refusals_never_reset_earlier_target_hold():
+    """A -> B -> A must not spend another provider attempt on refused A."""
+    def read(command):
+        path = command[2] if len(command) > 2 else ""
+        if "/actions/workflows/" in path:
+            return json.dumps({
+                "total_count": 3,
+                "workflow_runs": [
+                    {"id": 73, "run_attempt": 1, "status": "in_progress",
+                     "display_title": "lease=GLOBAL incident=1150"},
+                    {"id": 72, "run_attempt": 1, "status": "completed",
+                     "conclusion": "failure", "head_branch": "main",
+                     "event": "workflow_dispatch", "path": f".github/workflows/{FLOW}"},
+                    {"id": 71, "run_attempt": 1, "status": "completed",
+                     "conclusion": "failure", "head_branch": "main",
+                     "event": "workflow_dispatch", "path": f".github/workflows/{FLOW}"},
+                ],
+            })
+        if "/attempts/1/jobs?" in path:
+            run_id = 72 if "/runs/72/" in path else 71 if "/runs/71/" in path else None
+            assert run_id is not None
+            steps = [
+                {"name": name, "status": "completed", "conclusion": outcome}
+                for name, outcome in module.DELIVERY_ONLY_STEPS
+            ]
+            return json.dumps({
+                "total_count": 1,
+                "jobs": [{
+                    "run_id": run_id, "name": module.WORKFLOWS["anthropic"][1],
+                    "status": "completed", "conclusion": "failure",
+                    "completed_at": "2026-10-23T07:41:06Z", "steps": steps,
+                }],
+            })
+        if command[:3] == ["gh", "run", "view"]:
+            incident = "1021" if command[3] == "72" else "1150"
+            return (
+                "##[error]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: "
+                f"incident={incident}; triage repairable=false."
+            )
+        raise AssertionError(repr(command))
+
+    refused_a = module.admission(
+        "anthropic", 73, read, target_incident="1150", now=CLOCK,
+    )
+    assert refused_a["status"] == "HELD"
+    assert refused_a["code"] == (
+        "PROVIDER_WORKER_FAILED_REVIEW_REQUIRED:ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE"
+    )
+
+    # With two verified *different* refusals, new incident C is still eligible;
+    # test C's correct current-run title while retaining the same history.
+    def read_c(command):
+        if "/actions/workflows/" in str(command):
+            result = json.loads(read(command))
+            result["workflow_runs"][0]["display_title"] = "lease=GLOBAL incident=2040"
+            return json.dumps(result)
+        return read(command)
+
+    new_c = module.admission(
+        "anthropic", 73, read_c, target_incident="2040", now=CLOCK,
+    )
+    assert new_c["status"] == "ADMITTED"
+    assert new_c["code"] == "PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT"
+    assert new_c["can_execute"] is False
+
+
 def test_claude_workflow_passes_its_own_exact_target():
     workflow = (Path(__file__).resolve().parents[2] /
                 ".github/workflows/wow-v17-claude-engineering-worker.yml").read_text()
