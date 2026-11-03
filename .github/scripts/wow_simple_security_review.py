@@ -5,6 +5,7 @@ Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 """
 import hashlib
+from http.client import IncompleteRead
 import json
 import os
 import re
@@ -241,7 +242,7 @@ def request_json(url, *, token=None, data=None, headers=None):
                                or 500 <= exc.code <= 599):
             try:
                 parsed = json.loads(exc.read(4096))
-            except (ValueError, TypeError, AttributeError, OSError):
+            except (ValueError, TypeError, AttributeError, OSError, IncompleteRead):
                 parsed = {}
             provider_body = parsed if isinstance(parsed, dict) else {}
             print("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_" + str(exc.code) + ":"
