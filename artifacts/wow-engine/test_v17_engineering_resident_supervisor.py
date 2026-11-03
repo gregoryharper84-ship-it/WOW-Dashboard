@@ -470,17 +470,21 @@ def test_dispatcher_route_receipt_from_unsuccessful_run_never_admits(
 
 
 def test_gemini_successful_dispatch_receipt_is_not_a_second_resident_launch(monkeypatch):
-    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    client, run, route, calls = _provider_evidence(monkeypatch, action="DISPATCH")
     route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
     assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
-    # The original dispatcher has already submitted the provider child. The
-    # resident must not send force_provider=auto, which may now hit cooldown
-    # and choose SURVIVAL or another provider while counting an attempt.
-    fake = FakeClient()
-    fake.provider_state = "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    # Exercise the real transport's admission inside the actual resident cycle,
+    # not a fake manually returning the desired status. The protected
+    # dispatcher already submitted the Gemini worker; a second auto POST would
+    # re-evaluate cooldown and potentially count an ineffective attempt.
+    monkeypatch.setattr(client, "remote_writer_clear", lambda: True)
+    monkeypatch.setattr(
+        "v17.engineering_resident_supervisor.active_engineering_workflow",
+        lambda _: False,
+    )
     store = FakeRedis()
-    assert dispatch_once(fake, store, MANIFEST) == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
-    assert fake.sent == []
+    assert dispatch_once(client, store, MANIFEST) == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    assert not any(path.endswith("/dispatches") for path in calls)
     assert store.attempts == 0
     assert store.get(PENDING_DISPATCH_KEY) is None
 
