@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 import pytest
@@ -19,7 +20,7 @@ def getter(calls, fail_secondary=False):
     return get
 
 def acquire(get, secondary_enabled=False):
-    return acquire_hourly_forecasts(get, latitude=40.7, longitude=-74, target_date='2026-09-10', models=('gfs_seamless',), retrieved_at='2026-09-10T16:10:00Z', secondary_enabled=secondary_enabled)
+    return acquire_hourly_forecasts(get, latitude=40.7, longitude=-74, target_date='2026-09-10', models=('gfs_seamless',), retrieved_at='2026-09-10T16:10:00Z', secondary_enabled=secondary_enabled, target_time_utc=datetime(2026, 9, 10, 17, tzinfo=timezone.utc))
 
 def test_default_uses_only_free_official_forecast():
     calls=[]
@@ -43,6 +44,41 @@ def test_enabled_secondary_retains_existing_fusion():
     result=acquire(getter([]), True)
     assert result.secondary.provider=='OPEN_METEO'
     assert result.warnings==()
+
+@pytest.mark.parametrize('secondary_time,expected', [
+    ([], 'OPEN_METEO_EXACT_TARGET_MISSING'),
+    (['2026-09-10T18:00'], 'OPEN_METEO_EXACT_TARGET_MISSING'),
+    (None, 'OPEN_METEO_HOURLY_TIMES_INVALID'),
+    ('2026-09-10T17:00', 'OPEN_METEO_HOURLY_TIMES_INVALID'),
+])
+def test_optional_secondary_wrong_hour_or_bad_shape_keeps_nws(secondary_time, expected):
+    calls = []
+    base_get = getter(calls)
+    def malformed_secondary(url, headers=None):
+        payload = base_get(url, headers)
+        if urlsplit(url).hostname == 'api.open-meteo.com':
+            payload['hourly']['time'] = secondary_time
+        return payload
+
+    result = acquire(malformed_secondary, True)
+    assert result.nws.provider == 'NWS'
+    assert result.secondary is None
+    assert result.warnings == ('SECONDARY_FORECAST_UNAVAILABLE:' + expected,)
+    assert len(calls) == 3
+
+
+def test_secondary_enabled_without_attested_target_hour_stays_primary_only():
+    result = acquire_hourly_forecasts(
+        getter([]), latitude=40.7, longitude=-74,
+        target_date='2026-09-10', models=('gfs_seamless',),
+        retrieved_at='2026-09-10T16:10:00Z', secondary_enabled=True,
+    )
+    assert result.nws.provider == 'NWS'
+    assert result.secondary is None
+    assert result.warnings == (
+        'SECONDARY_FORECAST_UNAVAILABLE:OPEN_METEO_TARGET_UNVERIFIED',
+    )
+
 
 def test_primary_failure_is_not_filled_with_secondary():
     def fail(url, headers=None):
@@ -74,7 +110,7 @@ def test_official_forecast_cannot_redirect_to_another_host():
     assert seen==['https://api.weather.gov/points/40.7,-74']
 
 @pytest.mark.parametrize('secondary_enabled', [False, True])
-@pytest.mark.parametrize('secondary_shape', ['429', 'empty', 'wrong_hour', 'wrong_units'])
+@pytest.mark.parametrize('secondary_shape', ['429', 'empty', 'wrong_hour', 'wrong_units', 'null_time', 'not_list_time'])
 def test_runtime_persists_primary_only_capture_without_publication(monkeypatch, secondary_enabled, secondary_shape):
     import kalshi_weather_v2.runtime as runtime
     saved = {'sources': [], 'predictions': []}
@@ -98,6 +134,8 @@ def test_runtime_persists_primary_only_capture_without_publication(monkeypatch, 
         payload=base_get(url, headers)
         if urlsplit(url).hostname=='api.open-meteo.com':
             if secondary_shape=='empty': payload['hourly']['time']=[]
+            if secondary_shape=='null_time': payload['hourly']['time']=None
+            if secondary_shape=='not_list_time': payload['hourly']['time']='2026-09-10T17:00'
             if secondary_shape=='wrong_hour': payload['hourly']['time']=['2026-09-10T18:00']
             if secondary_shape=='wrong_units': payload['hourly_units']['temperature_2m_gfs_seamless']='°C'
         return payload
