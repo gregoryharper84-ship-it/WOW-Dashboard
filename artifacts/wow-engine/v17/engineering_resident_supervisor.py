@@ -147,6 +147,7 @@ class GitHubTransport:
         if decision == "PROVIDER_STATUS_UNVERIFIED":
             return decision
         route_provider = route.get("provider")
+        gemini_route_created_at = None
         if route_provider == "gemini":
             # Only the authenticated automatic dispatcher event can attest
             # Gemini's enabled flags and durable history. A manually forced
@@ -155,6 +156,21 @@ class GitHubTransport:
                     or decision != "PROVIDER_ADMITTED"
                     or self.get("commits/main").get("sha") != run["head_sha"]):
                 return "PROVIDER_RECOVERY_UNVERIFIED"
+            # The child may fail while its parent is still uploading artifacts.
+            # For Gemini, compare worker outcomes to the authenticated route's
+            # creation time, never the later dispatcher completion timestamp.
+            try:
+                gemini_route_created_at = datetime.fromisoformat(
+                    run["created_at"].replace("Z", "+00:00")
+                )
+                finished = datetime.fromisoformat(
+                    run["updated_at"].replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError, KeyError, TypeError):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            if (gemini_route_created_at.tzinfo is None or finished.tzinfo is None
+                    or not gemini_route_created_at <= finished <= now):
+                return "PROVIDER_STATUS_UNVERIFIED"
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
@@ -169,8 +185,14 @@ class GitHubTransport:
             workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
             items = workers.get("workflow_runs")
             if not isinstance(items, list):
+                if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
+                    continue
                 return "PROVIDER_STATUS_UNVERIFIED"
             if not items:
+                # No completed history of the controlling worker is not
+                # affirmative recovery; do not borrow another provider's pass.
+                if route_provider == workflow_provider:
+                    return "PROVIDER_STATUS_UNVERIFIED"
                 continue
             worker = items[0]
             if (worker.get("path") != f".github/workflows/{workflow}"
@@ -184,11 +206,25 @@ class GitHubTransport:
                 if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
                     continue
                 return "PROVIDER_STATUS_UNVERIFIED"
-            updated = datetime.fromisoformat(worker["updated_at"].replace("Z", "+00:00"))
-            route_time = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
-            age = (now - updated).total_seconds()
-            if age < 0:
+            try:
+                updated = datetime.fromisoformat(
+                    worker["updated_at"].replace("Z", "+00:00")
+                )
+                route_time = (gemini_route_created_at if route_provider == "gemini"
+                              else datetime.fromisoformat(
+                                  run["updated_at"].replace("Z", "+00:00")
+                              ))
+                age = (now - updated).total_seconds()
+                if (updated.tzinfo is None or route_time.tzinfo is None or age < 0):
+                    raise ValueError("INVALID_WORKER_TIMESTAMP")
+            except (KeyError, ValueError, AttributeError, TypeError):
+                if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
+                    continue
                 return "PROVIDER_STATUS_UNVERIFIED"
+            # A manual Gemini worker can never clear OpenAI/Anthropic SURVIVAL
+            # or NO_ACTION evidence by this generic recent-success shortcut.
+            if workflow_provider == "gemini" and route_provider != "gemini":
+                continue
             # A parent-linked acknowledgment proves a protected worker ran, not
             # that an automatic provider route was attested. Gemini recovery is
             # authorized only by the automatic route itself, so this shape must
