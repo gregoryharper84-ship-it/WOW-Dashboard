@@ -209,6 +209,11 @@ def classify_target(
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_PENDING:{name}"], "head_sha": head}
         if check.get("conclusion") != "success":
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_FAILED:{name}"], "head_sha": head}
+    # Genuine verified source review vetoes cannot disappear when paid review is
+    # disabled. Missing review may follow the explicit reduced-assurance route,
+    # but REJECT/INVALID must never be promoted to QA or Release dispatch.
+    if source_review in {"REJECT", "INVALID"}:
+        return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
     if not zero_credit_mode:
         if source_review not in {
             "PASS",
@@ -220,8 +225,6 @@ def classify_target(
             "ACTION_REQUIRED_ZERO_JOBS",
         }:
             return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STATUS_INVALID"], "head_sha": head}
-        if source_review in {"REJECT", "INVALID"}:
-            return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
         if source_review == "ACTION_REQUIRED_ZERO_JOBS":
             if runs.get("source_review") != "action_required":
                 return {"action": "HOLD", "findings": ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"], "head_sha": head}
