@@ -139,7 +139,9 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         "side": side,
         # No canonical producer-side receipt_id is present on legacy Daily
         # discovery rows. Never synthesize it from event/snapshot/run IDs.
-        "source_receipt_id": scorer.get("source_receipt_id") or result.get("source_receipt_id"),
+        "source_receipt_id": (
+            scorer.get("source_receipt_id") or result.get("source_receipt_id")
+        ),
         "probability_publishable": (
             row.get("row_status") == "COMPLETED"
             and detail.get("probability_publishable") is True
@@ -147,14 +149,23 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         ),
         "rank_eligible": result.get("rank_eligible") is True,
         "terminal_authority": (
-            scorer.get("terminal_authority") or scorer.get("global_terminal_authority") or result.get("terminal_authority") or result.get("global_terminal_authority")
+            scorer.get("terminal_authority")
+            or scorer.get("global_terminal_authority")
+            or result.get("terminal_authority")
+            or result.get("global_terminal_authority")
         ),
-        "controlling_engine_identity": scorer.get("controlling_engine_identity") or result.get("controlling_engine_identity"),
+        "controlling_engine_identity": (
+            scorer.get("controlling_engine_identity")
+            or result.get("controlling_engine_identity")
+        ),
         "model_class": scorer.get("model_class") or result.get("model_class"),
         "model_version": scorer.get("model_version") or result.get("model_version"),
         "calibration_version": scorer.get("calibration_version") or result.get("calibration_version"),
         "model_timestamp": scorer.get("model_timestamp") or result.get("model_timestamp"),
-        "source_snapshot_timestamp": scorer.get("source_snapshot_timestamp") or result.get("source_snapshot_timestamp"),
+        "source_snapshot_timestamp": (
+            scorer.get("source_snapshot_timestamp")
+            or result.get("source_snapshot_timestamp")
+        ),
         "calibrated_probability": point,
         "calibrated_probability_lower_bound": lower,
         "calibrated_probability_upper_bound": upper,
