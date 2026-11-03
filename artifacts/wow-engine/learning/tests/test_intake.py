@@ -1,5 +1,6 @@
 """End-to-end Reporter intake and historical-lesson integration, no network."""
 import contextlib
+import io
 import json
 import shutil
 import sys
@@ -81,6 +82,47 @@ class ReporterLearningIntakeTests(unittest.TestCase):
         pm = self.create("OBSERVABILITY_CORRELATION")
         self.assertIn("lookup_status: UNAVAILABLE", pm.postmortem.read_text())
         self.assertNotIn("prior_root_cause:", pm.postmortem.read_text())
+
+    def test_helper_without_the_advisory_api_is_typed_unavailable(self):
+        (reporter.ROOT.parent / "learning" / "lessons.py").write_text(
+            "def unrelated():\n    return None\n")
+        pm = self.create("OBSERVABILITY_CORRELATION")
+        body = pm.postmortem.read_text()
+        self.assertIn("lookup_status: UNAVAILABLE", body)
+        self.assertNotIn("prior_root_cause:", body)
+
+    def test_malformed_advisory_result_is_typed_unavailable(self):
+        (reporter.ROOT.parent / "learning" / "lessons.py").write_text(
+            "def intake_advice(*args, **kwargs):\n"
+            "    return ['not', 'a', 'result']\n\n"
+            "def intake_markdown(result):\n"
+            "    return result['status']\n")
+        pm = self.create("OBSERVABILITY_CORRELATION")
+        body = pm.postmortem.read_text()
+        self.assertIn("lookup_status: UNAVAILABLE", body)
+        self.assertNotIn("prior_root_cause:", body)
+
+    def test_unloadable_helper_spec_is_typed_unavailable(self):
+        with patch("importlib.util.spec_from_file_location", return_value=None):
+            pm = self.create("OBSERVABILITY_CORRELATION")
+        body = pm.postmortem.read_text()
+        self.assertIn("lookup_status: UNAVAILABLE", body)
+        self.assertNotIn("prior_root_cause:", body)
+
+    def test_cli_create_postmortem_accepts_the_exact_failure_category(self):
+        argv = ["nightly_incident_records.py", "create-postmortem",
+                "--title", "Self acceptance correlation", "--severity", "P2",
+                "--domain", "observability",
+                "--evidence", "Seen: OBSERVABILITY_CORRELATION",
+                "--failure-category", "OBSERVABILITY_CORRELATION"]
+        out = io.StringIO()
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+            reporter.main()
+        written = Path(out.getvalue().strip())
+        self.assertEqual(written.parent, reporter.POSTMORTEMS)
+        body = written.read_text()
+        self.assertIn("lookup_status: VERIFIED_MATCH", body)
+        self.assertIn("prior_incident: PM-2026-09-25-001", body)
 
     def test_invalid_category_refused_before_creation(self):
         count_before = len(json.loads(self.ledger.read_text())["records"])
