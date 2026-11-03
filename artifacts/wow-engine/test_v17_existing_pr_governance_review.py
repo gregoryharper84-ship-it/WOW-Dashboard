@@ -294,7 +294,11 @@ def test_release_verifier_jq_selectors_compile_and_match():
 
     release = RELEASE.read_text(encoding="utf-8")
     assert workflow_selector in release
-    assert gate_selector in release
+    # V4: trusted gate selector remains testable as historical evidence only.
+    # Release now authenticates five App-pinned exact-head checks directly.
+    assert "Trusted exact-head engineering governance" not in release
+    assert "WOW Independent QA exact-head|5245832" in release
+    assert "WOW Release Authority exact-head|5245853" in release
     assert r'\(.conclusion // \\"\\"' not in release
 
 
