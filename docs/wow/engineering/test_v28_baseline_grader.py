@@ -76,6 +76,22 @@ class Indicators(unittest.TestCase):
         b["committed_at"] = "2026-09-06T10:57:36Z"
         self.assertFalse(g.same_cause_candidate(a, b))
 
+    def test_protected_probability_overlap_remains_reviewable(self):
+        paths = [".github/workflows/model-release.yml",
+                 "artifacts/wow-engine/v17/nfl_event_model_v17.py"]
+        self.assertEqual(g.class_from_paths(paths), "P")
+        self.assertTrue(g.production_model_named_python_path(paths))
+        item = {"sha":"c"*40,"committed_at":"2026-10-01T10:00:00Z","class":"P",
+                "paths":paths,"subject":"feat: fitted model and protected release",
+                "diff":{"additions":3,"deletions":0,"files":2,"new_files":0},
+                "indicators":{"failure_codes":[]}}
+        packet = g.build_review_packet([item], [])
+        self.assertEqual(len(packet["C_REVIEW_REQUIRED"]), 0)
+        self.assertEqual(len(packet["P_WITH_MODEL_CODE_PATH_UNREVIEWED"]), 1)
+        self.assertEqual(packet["P_WITH_MODEL_CODE_PATH_UNREVIEWED"][0]["class_verdict"],
+                         "P_AND_POSSIBLE_C_UNREVIEWED")
+        self.assertFalse(g.production_model_named_python_path(["tests/test_model_fit.py"]))
+
     def test_review_packet_preserves_uncertainty_and_exact_identity(self):
         def row(sha, category, when, paths):
             return {"sha": sha, "committed_at": when, "class": category,
