@@ -191,15 +191,19 @@ def test_llp_requester_team_event_is_controlled_by_llp():
 
 
 def test_unsupported_sport_fails_closed_without_probability():
-    # NBA is declared in the discovery catalog but has no fitted team/event
-    # model, adapter or scorer anywhere in the repository. NFL is deliberately
-    # no longer the fixture here: it now has a registered bridge, so a failure
-    # on an NFL row is a failure of that bridge (inputs/scorer/output), never
-    # "the sport is unsupported" -- see the NFL test below.
+    # A sport with no bridge, scorer or adapter is "unsupported" and must fail
+    # closed as MODEL_UNAVAILABLE. NFL and NBA are deliberately no longer the
+    # fixture here: both now register a real bridge at production startup
+    # (team_event_bridge_runtime.install_team_event_bridge_runtime), so a
+    # failure on those rows is a failure of that bridge's own typed inputs or
+    # scorer -- never "the sport is unsupported". An evidence-free NBA row is
+    # therefore MODEL_INPUTS_INSUFFICIENT once the runtime is installed, which
+    # is why using NBA here only passed while startup had not yet run.
+    # CRICKET is cataloged for discovery but has no registered bridge or scorer.
     req = _base(
-        sport="NBA",
-        league="NBA",
-        event_key="NBA:test-2",
+        sport="CRICKET",
+        league="CRICKET",
+        event_key="CRICKET:test-2",
         official_event_id="test-2",
         settlement_basis="FULL_GAME_OUTRIGHT",
         sport_specific_evidence={},
