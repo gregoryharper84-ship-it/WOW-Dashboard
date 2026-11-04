@@ -470,7 +470,7 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
     """Resolve a free discovery NCAAB alias through the ESPN college scoreboard.
 
     The discovery event id stays an alias. The row earns a canonical
-    ``NCAAB:<game_id>`` identity only after a unique exact participant + date
+    ``NCAAB:<game_id>`` identity only after a unique exact participant + tip-time
     match, and earning identity never registers a model: an uncertified NCAAB
     lane still terminates as MODEL_UNAVAILABLE rather than publishing.
     """
@@ -481,8 +481,11 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
     provider_event_id = str(
         raw.get("provider_event_id")
         or raw.get("_wow_secondary_event_id")
+        or getattr(event, "official_event_id", None)
         or ""
     ).strip()
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
     home_alias = str(raw.get("_wow_secondary_home_team_id") or "").strip()
     away_alias = str(raw.get("_wow_secondary_away_team_id") or "").strip()
     if not home_alias or not away_alias:
@@ -490,7 +493,7 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
         return replace(event, official_event_id=None, raw=raw)
 
-    from v17.ncaab_event_identity import resolve_ncaab_current_event_identity
+    from v17.ncaab_event_identity import NCAABEventIdentityError, resolve_ncaab_current_event_identity
 
     try:
         resolution = resolve_ncaab_current_event_identity(
@@ -500,8 +503,9 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
         )
     except Exception as exc:  # noqa: BLE001 - preserve typed canonical hold
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
-        raw["canonical_identity_blocker"] = str(
-            getattr(exc, "code", None) or type(exc).__name__
+        raw["canonical_identity_blocker"] = (
+            exc.code if isinstance(exc, NCAABEventIdentityError)
+            else "NCAAB_CANONICAL_RESOLVER_FAILED"
         )
         return replace(event, official_event_id=None, raw=raw)
 
@@ -519,7 +523,7 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
     )
     raw["canonical_identity_resolution"] = str(
         resolution.get("identity_resolution")
-        or "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH"
+        or "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_START_MATCH"
     )
     raw["canonical_identity_market_features_used"] = False
     return replace(event, official_event_id=canonical_event_id, raw=raw)
