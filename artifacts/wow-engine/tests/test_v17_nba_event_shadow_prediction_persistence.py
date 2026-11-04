@@ -15,9 +15,12 @@ CAL = "c" * 64
 
 
 def scored(**extra):
-    s = dict(
+    """Shape returned by score_nba_team_event_request, not a raw research result."""
+    receipt = dict(
         status="SCORED", code="NBA_PREGAME_SCORED", sport="NBA",
         official_event_id="espn-401809999",
+        home_team_id="espn-1610612749",
+        away_team_id="espn-1610612741",
         source_snapshot_id="sha256:" + "a" * 64,
         source_snapshot_timestamp=(NOW - timedelta(minutes=20)).isoformat(),
         feature_timestamp=(NOW - timedelta(minutes=10)).isoformat(),
@@ -28,9 +31,33 @@ def scored(**extra):
         calibrated_lower_bound=0.50, calibrated_upper_bound=0.60,
         probability_publishable=False, rank_eligible=False, can_execute=False,
     )
-    s.update(extra)
-    return s
-
+    outer = dict(
+        sport="NBA",
+        official_event_id=receipt["official_event_id"],
+        event_start_time_utc=EVENT,
+        home_team="Milwaukee Bucks",
+        away_team="Chicago Bulls",
+        source_snapshot_id=receipt["source_snapshot_id"],
+        source_snapshot_timestamp=receipt["source_snapshot_timestamp"],
+        model_version=receipt["model_artifact_version"],
+        calibration_artifact_fingerprint=receipt["calibration_artifact_sha256"],
+        raw_model_probability=receipt["raw_probability"],
+        calibrated_probability=receipt["calibrated_probability"],
+        calibrated_lower_bound=receipt["calibrated_lower_bound"],
+        calibrated_upper_bound=receipt["calibrated_upper_bound"],
+        model_status="RESEARCH_ONLY_NOT_FOR_PUBLICATION",
+        model_invoked=True,
+        global_terminal_authority="V17_TERMINAL_REDUCER",
+        terminal_label="MODEL_RESEARCH_ONLY_HOLD",
+        probability_publishable=False, rank_eligible=False, can_execute=False,
+        nba_receipt=receipt,
+    )
+    for key, value in extra.items():
+        if key in outer:
+            outer[key] = value
+        else:
+            receipt[key] = value
+    return outer
 
 class Db:
     def __init__(self):
@@ -76,11 +103,10 @@ class Db:
 
 
 def save(db, s=None, event=EVENT):
-    return persist_nba_shadow_prediction(
-        db, scored=s if s is not None else scored(),
-        home_team="Milwaukee Bucks", away_team="Chicago Bulls",
-        event_start_time_utc=event, now=NOW,
-    )
+    row = dict(s) if s is not None else scored()
+    if event != EVENT:
+        row["event_start_time_utc"] = event
+    return persist_nba_shadow_prediction(db, scored=row, now=NOW)
 
 
 def test_prospective_insert_and_exact_duplicate_readback():
@@ -95,6 +121,9 @@ def test_prospective_insert_and_exact_duplicate_readback():
         assert first[key] is False
         assert db.rows[0][key] is False
     assert db.rows[0]["terminal_label"] == "MODEL_RESEARCH_ONLY_HOLD"
+    assert db.rows[0]["home_team_id"] == "espn-1610612749"
+    assert db.rows[0]["away_team_id"] == "espn-1610612741"
+    assert "home_team" not in db.rows[0]  # caller display aliases never become immutable IDs
 
 
 @pytest.mark.parametrize("changes", [
@@ -109,6 +138,14 @@ def test_prospective_insert_and_exact_duplicate_readback():
     {"certification_id": ""},
     {"raw_probability": float("nan")},
     {"calibrated_lower_bound": 0.70},
+    {"home_team_id": "unverified-1610612749"},
+    {"away_team_id": "espn-1610612749"},
+    {"global_terminal_authority": "OTHER"},
+    {"model_status": "CERTIFIED_AND_PUBLISHABLE"},
+    {"model_invoked": False},
+    {"nba_receipt": {}},
+    {"calibration_artifact_fingerprint": "f" * 64},
+    {"model_version": "DIFFERENT_ARTIFACT"},
 ])
 def test_negative_source_score_publication_bounds_or_identity_denied(changes):
     db = Db()
@@ -128,8 +165,11 @@ def test_past_event_cannot_be_retroactively_written():
 def test_competing_changed_probability_is_immutable_conflict():
     db = Db()
     save(db)
+    changed = scored()
+    changed["calibrated_probability"] = 0.56
+    changed["nba_receipt"]["calibrated_probability"] = 0.56
     with pytest.raises(NBAShadowReceiptHold) as caught:
-        save(db, scored(calibrated_probability=0.56))
+        save(db, changed)
     assert caught.value.code == "NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT"
     assert db.insert_count == 1
 
@@ -163,6 +203,9 @@ def test_sql_contract_restricts_roles_and_fixes_shadow_state():
     assert "rank_eligible = false" in sql and "can_execute = false" in sql
     assert "created_at < event_start_time_utc" in sql
     assert "unique (" in sql
+    assert "home_team_id text not null" in sql
+    assert "away_team_id text not null" in sql
+    assert "home_team text not null" not in sql
     # Do not alter the MLB-only event table or player-prop prediction ledger.
     tail = sql.split("create table if not exists")[1]
     assert "alter table public.wow_event_predictions" not in tail

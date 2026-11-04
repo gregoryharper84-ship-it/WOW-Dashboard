@@ -5,8 +5,8 @@ create table if not exists public.wow_nba_event_shadow_predictions (
   created_at timestamptz not null default now(),
   official_event_id text not null,
   event_start_time_utc timestamptz not null,
-  home_team text not null,
-  away_team text not null,
+  home_team_id text not null,
+  away_team_id text not null,
   source_snapshot_id text not null,
   source_snapshot_timestamp timestamptz not null,
   model_timestamp timestamptz not null,
@@ -35,7 +35,11 @@ create table if not exists public.wow_nba_event_shadow_predictions (
     and model_timestamp < event_start_time_utc
     and created_at < event_start_time_utc
   ),
-  constraint nba_shadow_distinct_teams check (home_team <> away_team),
+  constraint nba_shadow_distinct_teams check (
+    home_team_id <> away_team_id
+    and home_team_id ~ '^espn-[0-9]+$'
+    and away_team_id ~ '^espn-[0-9]+$'
+  ),
   constraint nba_shadow_source_digest check (source_snapshot_id ~ '^sha256:[0-9a-f]{64}$'),
   constraint nba_shadow_hashes check (
     model_artifact_sha256 ~ '^[0-9a-f]{64}$'
