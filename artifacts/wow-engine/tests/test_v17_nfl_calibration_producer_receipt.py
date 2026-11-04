@@ -177,23 +177,34 @@ class _Query:
     def __init__(self, rows, *, filter_field=None):
         self.rows = rows
         self.filter_field = filter_field
+        self.total = None
 
-    def select(self, *_a):
+    def select(self, *_a, **_kw):
         return self
 
     def eq(self, field, value):
         if field == self.filter_field:
             self.rows = [row for row in self.rows if row.get(field) == value]
+            if field == "model_version":
+                self.total = len(self.rows)
         return self
 
-    def order(self, *_a, **_kw):
+    def order(self, field, **_kw):
+        if self.filter_field == "model_version":
+            assert field == "official_event_id"
+            self.rows = sorted(self.rows, key=lambda row: row["official_event_id"])
+        return self
+
+    def range(self, start, end):
+        assert self.filter_field == "model_version"
+        self.rows = self.rows[start:end + 1]
         return self
 
     def limit(self, *_a):
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self.rows)
+        return SimpleNamespace(data=self.rows, count=self.total)
 
 
 class _CertifiedDb:
