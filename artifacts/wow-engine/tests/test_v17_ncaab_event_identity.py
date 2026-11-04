@@ -101,3 +101,31 @@ def test_bad_schedule_time_not_evidence_of_identity():
     with pytest.raises(NCAABEventIdentityError) as raised:
         _resolve([_row(start="2026-11-04T19:00:00")])
     assert raised.value.code == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_oversized_untrusted_team_id_rejected_before_lookup():
+    with pytest.raises(NCAABEventIdentityError) as raised:
+        resolve_ncaab_current_event_identity(
+            event_start_time=START, home_team_alias="9" * 10000,
+            away_team_alias="204", fetcher=lambda _year: [_row()],
+        )
+    assert raised.value.code == "NCAAB_PROVIDER_TEAM_ALIAS_INVALID"
+
+
+def test_duplicate_identical_schedule_row_is_one_event():
+    assert _resolve([_row(), _row()])["event_id"] == "espn-401999999"
+
+
+def test_concurrent_identity_lookups_do_not_corrupt_cached_schedule(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import v17.ncaab_event_identity as identity
+
+    identity.reset_cache()
+    monkeypatch.setattr(identity, "fetch_ncaab_schedule", lambda _year: [_row()])
+    def lookup(_index):
+        return identity.resolve_ncaab_current_event_identity(
+            event_start_time=START, home_team_alias="2641", away_team_alias="204",
+        )["event_id"]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert list(pool.map(lookup, range(24))) == ["espn-401999999"] * 24
+    identity.reset_cache()
