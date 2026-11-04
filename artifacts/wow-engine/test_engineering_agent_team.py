@@ -205,3 +205,25 @@ def test_frontier_candidate_cannot_directly_change_production() -> None:
     assert validate_frontier_candidate(candidate) == []
     candidate["production_change"] = True
     assert "frontier candidate must set production_change=false" in validate_frontier_candidate(candidate)
+
+
+def test_continuation_skips_only_deployed_pending_proof_not_live_repairs() -> None:
+    records = [
+        {"postmortem_id": "PM-OLD", "severity": "P0", "state": "DEPLOYED_PENDING_VERIFY"},
+        {"postmortem_id": "PM-NEW", "severity": "P1", "state": "OPEN"},
+    ]
+    assert select_priority_incident(records).incident_id == "PM-OLD"
+    next_work = select_priority_incident(records, skip_deployed_pending_verify=True)
+    assert next_work.incident_id == "PM-NEW"
+    assert next_work.frontier_allowed is False
+
+
+def test_continuation_never_unblocks_frontier_from_unverified_release() -> None:
+    records = [{"postmortem_id": "PM-OLD", "severity": "P0", "state": "DEPLOYED_PENDING_VERIFY"}]
+    next_work = select_priority_incident(records, skip_deployed_pending_verify=True)
+    assert next_work.incident_id is None
+    assert next_work.frontier_allowed is False
+    assert select_priority_incident(
+        [{"postmortem_id": "PM-MERGED", "severity": "P0", "state": "MERGED_PENDING_DEPLOY"}],
+        skip_deployed_pending_verify=True,
+    ).incident_id == "PM-MERGED"
