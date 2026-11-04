@@ -120,9 +120,9 @@ jobs:
             exit 0
           }
           echo '## Live Release Truth Preflight (advisory; no merge/deploy authority)' >> "$GITHUB_STEP_SUMMARY"
-          echo '\`\`\`json' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\\n' "$result" >> "$GITHUB_STEP_SUMMARY"
-          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve non-execution governance receipt
         if: always()
