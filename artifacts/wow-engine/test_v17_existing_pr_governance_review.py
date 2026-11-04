@@ -37,60 +37,6 @@ def _provenance_guard(workflow: Path, step_name: str, start: str, end: str) -> s
     return start + script.split(start, 1)[1].split(end, 1)[0]
 
 
-@pytest.mark.parametrize(
-    ("workflow", "step_name", "start", "end"),
-    [
-        (
-            MORNING_GREEN,
-            "Verify trusted exact-head governance receipt",
-            "trusted_worker=false\n",
-            "zip_path=",
-        ),
-        (
-            RELEASE,
-            "Verify governance-producing workflow provenance",
-            "protected_main_source=false\n",
-            'echo "name=$name"',
-        ),
-    ],
-)
-def test_downstream_consumers_accept_only_successful_protected_workflow_run_receipts(
-    workflow, step_name, start, end, tmp_path
-):
-    guard = "set -euo pipefail\n" + _provenance_guard(workflow, step_name, start, end)
-    env = {
-        "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
-        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
-        "GITHUB_OUTPUT": str(tmp_path / "output"),
-        "name": "wow-v17-existing-pr-governance-review",
-        "path": ".github/workflows/wow-v17-existing-pr-governance-review.yml",
-        "event": "workflow_run",
-        "head_branch": "main",
-        "head_repo": "gregoryharper84-ship-it/WOW-Dashboard",
-        "status": "completed",
-        "conclusion": "success",
-    }
-
-    accepted = subprocess.run(
-        ["bash", "-c", guard], env=os.environ | env,
-        capture_output=True, text=True, check=False,
-    )
-    assert accepted.returncode == 0, accepted.stderr
-
-    for field, value in (
-        ("head_branch", "feature"),
-        ("head_repo", "attacker/fork"),
-        ("status", "in_progress"),
-        ("conclusion", "failure"),
-        ("event", "push"),
-    ):
-        rejected = subprocess.run(
-            ["bash", "-c", guard], env=os.environ | (env | {field: value}),
-            capture_output=True, text=True, check=False,
-        )
-        assert rejected.returncode != 0, (workflow, field, value)
-
-
 def test_schema_one_worker_receipt_is_not_rejected_by_existing_pr_schema_guard(tmp_path):
     workflow = GATE.read_text(encoding="utf-8")
     step = workflow.split("      - name: Download and verify exact-head receipt\n", 1)[1]
@@ -348,7 +294,11 @@ def test_release_verifier_jq_selectors_compile_and_match():
 
     release = RELEASE.read_text(encoding="utf-8")
     assert workflow_selector in release
-    assert gate_selector in release
+    # V4: trusted gate selector remains testable as historical evidence only.
+    # Release now authenticates five App-pinned exact-head checks directly.
+    assert "Trusted exact-head engineering governance" not in release
+    assert "WOW Independent QA exact-head|5245832" in release
+    assert "WOW Release Authority exact-head|5245853" in release
     assert r'\(.conclusion // \\"\\"' not in release
 
 
@@ -367,32 +317,39 @@ def test_release_verifier_does_not_require_itself_as_prerequisite():
         assert required in required_block
 
 
-def test_trusted_consumers_use_dedicated_existing_pr_verifier():
+def test_v4_existing_pr_certifier_remains_historical_not_release_dependency():
     gate = GATE.read_text(encoding="utf-8")
     morning = MORNING_GREEN.read_text(encoding="utf-8")
     release = RELEASE.read_text(encoding="utf-8")
 
-    for text in (gate, morning, release):
-        assert "wow-v17-existing-pr-governance-review.yml" in text
-        assert "verify_existing_pr_governance_receipt.py" in text
-        assert "wow-v17-existing-pr-governance-review" in text
-
+    # Legacy certifier artifacts remain historical until authorized cutover.
+    assert "wow-v17-existing-pr-governance-review.yml" in gate
+    assert "verify_existing_pr_governance_receipt.py" in gate
+    assert "--live-checks-json" in gate
+    assert "TRUST_ROOT_BOOTSTRAP" in gate
+    assert "verify_existing_pr_governance_receipt.py" not in morning
+    assert "WOW Independent QA exact-head|5245832" in morning
+    assert "WOW Release Authority exact-head|5245853" in morning
     assert "pull_request_target) ;;" in gate
-    assert "protected_main_source=true" in morning
-    assert "protected_main_source=true" in release
+    assert "V4_FINAL_HEAD_CHANGED" in morning
+
+    # V4 production observer is no longer wired to the retired receipt.
+    assert "verify_existing_pr_governance_receipt.py" not in release
+    assert "Resolve trusted exact-head governance artifact" not in release
+    assert "Trusted exact-head engineering governance" not in release
+    assert "active independent allowlisted APPROVED review" not in release
+    for item in (
+        "WOW required-three regression|15368",
+        "WOW governed probability backend|15368",
+        "WOW additional required regression|15368",
+        "WOW Independent QA exact-head|5245832",
+        "WOW Release Authority exact-head|5245853",
+    ):
+        assert item in release
     assert '"wow-verify|.github/workflows/wow-verify.yml"' in release
     assert '"wow-engine-verify|.github/workflows/wow-engine-verify.yml"' in release
     assert '"wow-v17-rapid-repair|.github/workflows/wow-v17-rapid-repair.yml"' in release
     assert '"wow-v17-change-impact-gate|.github/workflows/wow-v17-change-impact-gate.yml"' in release
-    assert '"wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"' in release
-    assert '"wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"' in release
-    assert "Trusted exact-head engineering governance" in release
-    assert "Lead/Triage/Engineering/Independent Review/QA governance receipt" not in release
-    assert "active independent allowlisted APPROVED review" in release
-    for text in (gate, morning, release):
-        assert "--live-checks-json" in text
-        assert "TRUST_ROOT_BOOTSTRAP" in text
-
 
 
 def test_class_a_deterministic_receipt_regressions_execute_in_native_ci():

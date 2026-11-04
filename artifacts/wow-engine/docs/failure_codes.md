@@ -12,6 +12,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
 | `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
+| `SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE` | Scout persistence / cancelled-writer source reconciliation | Non-expired discovery artifact is absent for a source referenced by a cancelled persistence writer. Allowed bounded context: numeric `source_run_id` and authenticated discovery-job status only, no payload bytes. **Recovery class:** `NOT_APPLICABLE` only when GitHub proves the unique discovery job was completed/skipped; continue oldest-first without falsely claiming a persisted receipt. Otherwise `EVIDENCE_PENDING`: fail closed and investigate source artifacts/jobs before any replay, never fabricate source evidence. **Next action:** verify the source run's immutable jobs and discovery artifact inventory; repair upstream collection if discovery actually ran. | No |
 | `SEMANTIC_FINDINGS_INVALID` | independent semantic reviewer / response validation | Untrusted verdict has missing/wrong findings array or more than 12 items (`:NOT_LIST`, `:TOO_MANY`); a finding is not an object, has the wrong exact key set, invalid severity/category, or malformed file/detail/evidence (`:NOT_OBJECT`, `:FIELD_SET`, `:SEVERITY`, `:CATEGORY`, and `:TEXT_{FILE,DETAIL,EVIDENCE}_{TYPE,EMPTY,TOO_LONG}`). Historical pre-patch receipts may retain `:TEXT`. The nine new suffixes identify the field and condition without emitting untrusted text. The 500-character bound remains unchanged. All are allowlisted reasons with no provider body or secrets. **EVIDENCE_PENDING**; preserve authenticated attempt identity, publish HOLD, inspect source/schema/provider preflight and produce a new reviewed source head if repair is required. A malformed response is never an automatic Gemini failover, retry, PASS, or review approval. | No |
 | `CLAUDE_REVIEW_TRUNCATED` | independent semantic reviewer / Claude response | A single Anthropic request with a 6144-token output budget returned explicit `max_tokens` without the required structured-tool verdict. No replay of the untrusted diff or same-head reviewer shopping is permitted. `EVIDENCE_PENDING`; QA App publishes HOLD, reviewer operations investigates output length/model health, never fails over, never self-approves or reattempts solely for a friendlier decision. | No |
 | `CLAUDE_REVIEW_REFUSED` | independent semantic reviewer / Claude response | Provider returned an explicit `refusal` stop reason rather than a typed verdict. `EVIDENCE_PENDING` policy HOLD (not a substantive security REJECT): no retry, no fallback and no PASS; escalate genuine provider refusal to an authenticated independent Security/Architect. No response text logged. | No |
@@ -560,3 +561,33 @@ A valid empty catalog, malformed listing, authentication failure, or
 partial paginated listing cannot be treated as approved availability.
 Changing source invalidates prior owner review; no code may forge the
 current-head approval or a signed independent semantic PASS.
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
+
+
+## Simple V1 deterministic delivery re-entry
+
+These are read-only delivery **decisions**, not fitted-model failure substitutes,
+approval checks, or new release gates. Only the trusted QA App on the exact SHA
+can create independent review evidence. A prior signed semantic REJECT is binding
+on that SHA even when a later attempt produces a provider HOLD.
+
+| Decision / typed reason | Owner / stage | Recovery class | Safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `SEMANTIC_REJECT_SAME_SHA` | Independent QA / PR continuation | CODE_REPAIR | QA App ID, exact PR/SHA, signed check title | Repair findings on a new source SHA, then independent review |
+| `REVIEWER_MODEL_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Explicit typed model-unavailable reason, no response body | Verify supported model and authorized credential, then obtain a new signed review |
+| `REVIEWER_PROVIDER_DIAGNOSIS` | QA provider / preflight | PROVIDER_CONFIGURATION | Ambiguous bare HTTP 404 only | Prove endpoint, model and credential scope with authorized preflight before any reviewer retry |
+| `REVIEWER_AUTH_OR_QUOTA_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Typed provider credit / 401, no credentials or billing data | Repair existing entitlement or credential without new vendor/spend |
+| `REVIEWER_TRANSIENT_OUTAGE` | QA provider / review | TRANSIENT | Bounded 429/5xx/transport code only | One bounded retry after provider recovery, never on signed REJECT |
+| `OWNER_REVIEW_REQUIRED` | Owner / protected release | EXTERNAL_AUTHORIZATION | Exact PR/SHA and established owner-fallback reason | Authenticated independent owner review where policy allows, then fresh exact-head QA |
+| `INDEPENDENT_QA_NOT_ACCEPTED` | Independent QA / PR continuation | FAIL_CLOSED | Unknown/invalid/missing definitive review evidence | Diagnose signed QA receipt; no automatic override |
+| `EVIDENCE_PENDING` | Engineering controller / PR continuation | RETRY_ON_NEW_EVIDENCE | Missing/pending exact-head QA check | Re-enter on signed QA App check or explicit authorized owner dispatch |
+
+The existing controller performs no automatic protected merge, no semantic
+self-approval, no live betting and no unbounded provider retry. Production DONE
+requires authentic merged/live/verified SHA parity, healthy route and persisted
+business result; a green workflow is not proof of production delivery.
