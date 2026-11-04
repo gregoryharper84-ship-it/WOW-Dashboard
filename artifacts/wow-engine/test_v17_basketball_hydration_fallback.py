@@ -787,3 +787,46 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
         raise AssertionError("expected a typed backfill failure")
     except hydration.BasketballHydrationError as exc:
         assert str(exc) == "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+
+
+
+def test_multiseason_nba_hydration_only_supplements_latest_season(monkeypatch):
+    """Earlier finished seasons must not trigger false fresh-source blocks."""
+    years = []
+    saved = []
+    monkeypatch.setattr(
+        hydration, "fetch_sportsdataverse_games",
+        lambda sport, year: (
+            years.append(year) or [
+                _sportsdataverse_row(
+                    event_id=f"sdv-{year}",
+                    game_date="2026-06-13" if year == 2026 else "2026-10-31",
+                ),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "_latest_persisted_game_date",
+        lambda *_: date(2026, 6, 13),
+    )
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda _db, _sport, rows: (saved.extend(rows), len(rows))[1],
+    )
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("No ESPN supplement when latest season has new rows")
+        ),
+    )
+    result = hydration.hydrate(
+        "NBA", (year for year in (2026, 2027)), client=object(),
+        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+    )
+    assert years == [2026, 2027]
+    assert result["seasons"] == [2026, 2027]
+    assert result["recent_supplement_status"] == {}
+    assert result["fresh_acquisition_new_settled_games"] == 1
+    assert len(saved) == 1
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["can_execute"] is False

@@ -223,7 +223,12 @@ def classify(
 
 
 def gh_json(route: str) -> Any:
-    proc = subprocess.run(["gh", "api", route], capture_output=True, text=True, timeout=25)
+    try:
+        proc = subprocess.run(["gh", "api", route], capture_output=True, text=True, timeout=25)
+    except OSError as exc:
+        # Reporting-only: unavailable GitHub CLI yields UNVERIFIED evidence,
+        # never a traceback or a fabricated release blocker.
+        raise RuntimeError(f"GITHUB_CLI_UNAVAILABLE:{type(exc).__name__}") from exc
     if proc.returncode:
         raise RuntimeError(f"GITHUB_READ_FAILED: {route.split('?')[0]}")
     return json.loads(proc.stdout)
