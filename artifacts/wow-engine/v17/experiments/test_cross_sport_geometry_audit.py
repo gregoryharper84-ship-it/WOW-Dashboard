@@ -190,3 +190,21 @@ def test_cross_sport_workflow_uses_package_aware_module_invocation():
 
     assert "python v17/experiments/cross_sport_geometry_audit.py" not in workflow
     assert "python v17/experiments/cross_sport_geometry_audit_bundle.py" not in workflow
+
+
+
+def test_cross_sport_workflow_executes_wave1_stationarity_triage():
+    workflow = (
+        Path(__file__).resolve().parents[4]
+        / ".github"
+        / "workflows"
+        / "wow-v17-cross-sport-geometry-audit.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "v17/experiments/test_cross_sport_stationarity_triage.py" in workflow
+    assert "python -m v17.experiments.cross_sport_stationarity_triage" in workflow
+    assert "--input \"$RUNNER_TEMP/cross-sport-geometry-audit.json\"" in workflow
+    assert "--output \"$RUNNER_TEMP/cross-sport-stationarity-triage.json\"" in workflow
+    assert "STATIONARITY_TRIAGE_GOVERNANCE_PASS" in workflow
+    assert "${{ runner.temp }}/cross-sport-stationarity-triage.json" in workflow
+    assert "${{ runner.temp }}/cross-sport-stationarity-triage.log" in workflow
