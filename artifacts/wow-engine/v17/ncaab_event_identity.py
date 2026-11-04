@@ -3,14 +3,13 @@
 ESPN discovery event ids and team ids remain provider *aliases*. WOW assigns the
 canonical NCAAB event id ``NCAAB:<espn_game_id>`` only after the public ESPN
 men's college basketball scoreboard proves exactly one unique participant + date
-match. That prefix is the identity the NCAAB training corpus is keyed by, so a
-resolved row speaks the same event language as the fitted lane.
+and start-time match. That prefix is the identity the NCAAB training corpus is
+keyed by, so a resolved row speaks the same event language as the fitted lane.
 
-Why the scoreboard and not SportsDataverse: there is no NCAAB *schedule* release.
-SportsDataverse publishes only ``espn_mens_college_basketball_team_boxscores``
-(verified 404 for the schedules release), which contains already-completed games
-and therefore cannot prove a pregame identity. The scoreboard is the only open
-source in this repository that can.
+SportsDataverse does publish an MBB schedules release, but its current-slate
+freshness and coverage must be verified before treating it as live identity
+authority. Here the ESPN scoreboard provides current dated fixtures. Neither
+source can certify a fitted model or authorize probabilities.
 
 No market price, sporting probability, calibration, ranking or execution
 authority exists in this module. can_execute is false unconditionally.
@@ -31,7 +30,9 @@ BASE_URL = (
     "mens-college-basketball/scoreboard"
 )
 CANONICAL_EVENT_PREFIX = "NCAAB:"
-IDENTITY_RESOLUTION = "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH"
+IDENTITY_RESOLUTION = "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_START_MATCH"
+START_TOLERANCE_SECONDS = 30 * 60
+SCOREBOARD_LIMIT = 500
 
 # A pregame probability must never be reused as a live one, and one unreachable
 # source must not be re-requested for every row. Successful reads and typed
@@ -62,8 +63,9 @@ def _aware(value: Any) -> datetime:
 
 
 def _strip_espn(value: Any) -> str:
-    token = str(value or "").strip()
-    return token.removeprefix("espn-").strip()
+    token = str(value or "").strip().removeprefix("espn-").strip()
+    return token if (1 <= len(token) <= 20 and token.isascii()
+                     and token.isdecimal() and int(token) > 0) else ""
 
 
 def _competitors(row: Mapping[str, Any]) -> tuple[str, str] | None:
@@ -75,13 +77,17 @@ def _competitors(row: Mapping[str, Any]) -> tuple[str, str] | None:
     if not isinstance(competition, Mapping):
         return None
     sides: dict[str, str] = {}
-    for competitor in competition.get("competitors") or []:
+    members = competition.get("competitors")
+    if not isinstance(members, list) or len(members) != 2:
+        return None
+    for competitor in members:
         if not isinstance(competitor, Mapping):
-            continue
+            return None
         side = str(competitor.get("homeAway") or "").strip().lower()
-        if side in {"home", "away"}:
-            sides[side] = _strip_espn(competitor.get("id"))
-    if not sides.get("home") or not sides.get("away"):
+        if side not in {"home", "away"} or side in sides:
+            return None
+        sides[side] = _strip_espn(competitor.get("id"))
+    if not sides.get("home") or not sides.get("away") or sides["home"] == sides["away"]:
         return None
     return sides["home"], sides["away"]
 
@@ -90,7 +96,7 @@ def _fetch_scoreboard(date_key: str) -> list[Mapping[str, Any]]:
     try:
         response = requests.get(
             BASE_URL,
-            params={"dates": date_key, "limit": 500},
+            params={"dates": date_key, "groups": 50, "limit": SCOREBOARD_LIMIT},
             timeout=15,
             headers={"Accept": "application/json", "User-Agent": "WOW-V17-Free-Core/1.0"},
         )
@@ -99,11 +105,14 @@ def _fetch_scoreboard(date_key: str) -> list[Mapping[str, Any]]:
             "NCAAB_OFFICIAL_SOURCE_TRANSPORT_FAILED", type(exc).__name__
         ) from exc
 
-    status = int(getattr(response, "status_code", 0) or 0)
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
     if status == 429:
         raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_RATE_LIMITED")
     if status != 200:
-        raise NCAABEventIdentityError(f"NCAAB_OFFICIAL_SOURCE_HTTP_{status or 'UNKNOWN'}")
+        raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_HTTP_FAILED", str(status))
     try:
         payload = response.json()
     except Exception as exc:  # noqa: BLE001
@@ -111,9 +120,21 @@ def _fetch_scoreboard(date_key: str) -> list[Mapping[str, Any]]:
             "NCAAB_OFFICIAL_SOURCE_RESPONSE_INVALID", type(exc).__name__
         ) from exc
     events = payload.get("events") if isinstance(payload, Mapping) else None
-    if not isinstance(events, list):
+    if not isinstance(events, list) or any(not isinstance(event, Mapping) for event in events):
         raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT")
-    return [event for event in events if isinstance(event, Mapping)]
+    total = payload.get("total") if isinstance(payload, Mapping) else None
+    if total is not None:
+        try:
+            total_count = int(total)
+        except (TypeError, ValueError) as exc:
+            raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT") from exc
+        if total_count < 0:
+            raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT")
+        if total_count > len(events):
+            raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_PARTIAL")
+    if len(events) >= SCOREBOARD_LIMIT:
+        raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_PARTIAL")
+    return list(events)
 
 
 def _scoreboard_rows(
@@ -137,10 +158,10 @@ def _scoreboard_rows(
         rows = list(_fetch_scoreboard(date_key))
     except NCAABEventIdentityError as exc:
         with _CACHE_LOCK:
-            _CACHE[date_key] = (now_value, None, exc.code)
+            _CACHE[date_key] = (time.monotonic(), None, exc.code)
         raise
     with _CACHE_LOCK:
-        _CACHE[date_key] = (now_value, list(rows), None)
+        _CACHE[date_key] = (time.monotonic(), list(rows), None)
     return rows
 
 
@@ -188,6 +209,10 @@ def resolve_ncaab_current_event_identity(
         try:
             start = _aware(row.get("date"))
         except NCAABEventIdentityError:
+            continue
+        if abs((start - event_time).total_seconds()) > START_TOLERANCE_SECONDS:
+            continue
+        if not (1 <= len(event_id) <= 20 and event_id.isascii() and event_id.isdecimal()):
             continue
         matches.append((event_id, start))
 
