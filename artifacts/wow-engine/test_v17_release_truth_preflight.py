@@ -29,7 +29,8 @@ def rule(*, count=0):
 
 def pr(state="clean"):
     return {"number": 2424, "state": "open", "draft": False,
-            "mergeable_state": state, "head": {"sha": HEAD}}
+            "mergeable_state": state, "head": {"sha": HEAD},
+            "base": {"ref": "main"}}
 
 
 def checks():
@@ -142,3 +143,10 @@ def test_rule_list_corruption_fail_closed():
     out = report(rules=[r])
     assert out["ruleset_human_review"] == "UNVERIFIED"
     assert "RULESET_REQUIREMENTS_UNVERIFIED" in names(out)
+
+
+def test_non_main_target_is_not_mislabeled_as_main_release_ready():
+    p = pr()
+    p["base"]["ref"] = "development"
+    out = report(p=p)
+    assert "PR_TARGET_MAIN_UNVERIFIED" in names(out)
