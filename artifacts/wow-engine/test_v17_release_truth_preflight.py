@@ -194,3 +194,45 @@ def test_ambiguous_github_blocked_state_is_unverified_not_self_certified():
     out = report(p=pr("blocked"))
     assert "PR_MERGEABILITY_UNVERIFIED" in names(out)
     assert out["merge_evidence"] == "UNVERIFIED"
+
+
+def test_malformed_ruleset_structures_are_unverified_not_runtime_errors():
+    assert applies_to_main(None) is None
+    rs = rule()
+    rs["conditions"] = []
+    out = report(rules=[rs])
+    assert out["ruleset_human_review"] == "UNVERIFIED"
+    rs = rule()
+    rs["rules"][0] = None
+    out = report(rules=[rs])
+    assert out["ruleset_human_review"] == "UNVERIFIED"
+
+
+def test_zero_review_count_does_not_hide_additional_review_controls():
+    for key, value in (
+        ("require_code_owner_review", True),
+        ("require_last_push_approval", True),
+        ("required_reviewers", [{"file_pattern": "**"}]),
+        ("required_review_thread_resolution", True),
+    ):
+        rs = rule()
+        rs["rules"][0]["parameters"][key] = value
+        out = report(rules=[rs])
+        assert out["ruleset_human_review"] == "UNVERIFIED"
+        assert out["rejected_obsolete_claims"] == []
+
+
+def test_malformed_check_inventory_is_unverified_not_missing_checks():
+    out = report(cc=[{"app": None, "id": 7}])
+    assert "CHECK_INVENTORY_UNVERIFIED" in names(out)
+    assert not any(x.startswith("REQUIRED_CHECK_MISSING:") for x in names(out))
+
+
+def test_malformed_pr_identity_does_not_invent_real_blocker():
+    p = pr()
+    p["head"] = "corrupt"
+    p.pop("state")
+    out = report(p=p)
+    assert "PR_HEAD_UNVERIFIED" in names(out)
+    assert "PR_STATE_UNVERIFIED" in names(out)
+    assert "PR_NOT_OPEN" not in names(out)

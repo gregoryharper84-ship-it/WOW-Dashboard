@@ -18,9 +18,12 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 
 def applies_to_main(rs: dict[str, Any]) -> bool | None:
     """Return None for patterns we cannot evaluate safely."""
+    if not isinstance(rs, dict) or "enforcement" not in rs or "target" not in rs:
+        return None
     if rs.get("enforcement") != "active" or rs.get("target") != "branch":
         return False
-    refs = (rs.get("conditions") or {}).get("ref_name")
+    conditions = rs.get("conditions")
+    refs = conditions.get("ref_name") if isinstance(conditions, dict) else None
     if not isinstance(refs, dict):
         return None
     includes, excludes = refs.get("include"), refs.get("exclude")
@@ -45,7 +48,10 @@ def classify(
     *,
     repository: str,
 ) -> dict[str, Any]:
-    head = (pr.get("head") or {}).get("sha")
+    if not isinstance(pr, dict):
+        pr = {}
+    head_record = pr.get("head")
+    head = head_record.get("sha") if isinstance(head_record, dict) else None
     findings: list[dict[str, str]] = []
     known = lambda code, source: findings.append(
         {"finding": code, "state": "BLOCKED", "source": source}
@@ -59,11 +65,14 @@ def classify(
 
     if not isinstance(head, str) or not SHA.fullmatch(head):
         unknown("PR_HEAD_UNVERIFIED", "live_pr")
-    if pr.get("state") != "open":
+    if pr.get("state") not in ("open", "closed"):
+        unknown("PR_STATE_UNVERIFIED", "live_pr")
+    elif pr["state"] != "open":
         known("PR_NOT_OPEN", "live_pr")
     if pr.get("draft") is True:
         known("PR_DRAFT", "live_pr")
-    base = (pr.get("base") or {}).get("ref")
+    base_record = pr.get("base")
+    base = base_record.get("ref") if isinstance(base_record, dict) else None
     if base != "main":
         unknown("PR_TARGET_MAIN_UNVERIFIED", "live_pr")
     merge_state = pr.get("mergeable_state")
@@ -73,8 +82,8 @@ def classify(
         unknown("PR_MERGEABILITY_UNVERIFIED", "live_pr")
 
     applicable: list[dict[str, Any]] = []
-    policy_unknown = rulesets is None
-    for rs in rulesets or []:
+    policy_unknown = not isinstance(rulesets, list)
+    for rs in rulesets if isinstance(rulesets, list) else []:
         state = applies_to_main(rs)
         if state is None:
             policy_unknown = True
@@ -93,13 +102,35 @@ def classify(
                 policy_unknown = True
                 break
             for rule in rules:
-                kind, params = rule.get("type"), rule.get("parameters") or {}
+                if not isinstance(rule, dict):
+                    policy_unknown = True
+                    continue
+                kind, params = rule.get("type"), rule.get("parameters")
+                if kind not in ("pull_request", "required_status_checks"):
+                    continue
+                if not isinstance(params, dict):
+                    policy_unknown = True
+                    continue
                 if kind == "pull_request":
                     count = params.get("required_approving_review_count")
                     if type(count) is not int or count < 0:
                         policy_unknown = True
                     else:
                         review_counts.append(count)
+                    # Zero in the approval-count field is insufficient proof if
+                    # another review control is active or its type is unknown.
+                    for flag in (
+                        "require_code_owner_review",
+                        "require_last_push_approval",
+                        "require_extra_approval_for_unattributed_changes",
+                        "required_review_thread_resolution",
+                    ):
+                        value = params.get(flag, False)
+                        if type(value) is not bool or value:
+                            policy_unknown = True
+                    reviewers = params.get("required_reviewers", [])
+                    if not isinstance(reviewers, list) or reviewers:
+                        policy_unknown = True
                 if kind == "required_status_checks":
                     strict = params.get("strict_required_status_checks_policy")
                     if type(strict) is not bool:
@@ -111,6 +142,9 @@ def classify(
                         policy_unknown = True
                         continue
                     for entry in arr:
+                        if not isinstance(entry, dict):
+                            policy_unknown = True
+                            continue
                         name, app = entry.get("context"), entry.get("integration_id")
                         if not isinstance(name, str) or not name or type(app) is not int:
                             policy_unknown = True
@@ -137,7 +171,12 @@ def classify(
     else:
         rejected = []
 
-    if checks is None:
+    if not isinstance(checks, list) or any(
+        not isinstance(c, dict)
+        or not isinstance(c.get("app"), dict)
+        or type(c.get("id")) is not int
+        for c in checks
+    ):
         unknown("CHECK_INVENTORY_UNVERIFIED", "github_check_runs")
     elif not policy_unknown and isinstance(head, str) and SHA.fullmatch(head):
         latest: dict[tuple[str, int], dict[str, Any]] = {}
@@ -198,13 +237,16 @@ def live_report(repo: str, number: int) -> dict[str, Any]:
     rulesets: list[dict[str, Any]] | None = None
     try:
         index = gh_json(f"/repos/{repo}/rulesets?includes_parents=true&per_page=100")
-        if not isinstance(index, list) or len(index) >= 100:
+        if (
+            not isinstance(index, list) or len(index) >= 100
+            or any(not isinstance(r, dict) or type(r.get("id")) is not int for r in index)
+        ):
             raise ValueError("RULESET_INVENTORY_UNVERIFIED")
         rulesets = [
             gh_json(f"/repos/{repo}/rulesets/{r['id']}")
             for r in index if r.get("enforcement") == "active" and r.get("target") == "branch"
         ]
-    except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired):
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):
         rulesets = None
 
     checks: list[dict[str, Any]] | None = None
@@ -227,7 +269,7 @@ def live_report(repo: str, number: int) -> dict[str, Any]:
                     raise ValueError("CHECK_INVENTORY_TRUNCATED")
                 checks = pages
                 break
-    except (RuntimeError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):
         checks = None
     return classify(pr, rulesets, checks, repository=repo)
 
@@ -239,7 +281,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         data = live_report(args.repo, args.pr_number)
-    except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as exc:
         data = {
             "pr": args.pr_number, "repository": args.repo,
             "findings": [{"finding": "LIVE_PR_EVIDENCE_UNVERIFIED",
