@@ -622,7 +622,7 @@ class _SourceSession:
         return self.response
 
 
-def _nhl_request():
+def _nhl_request(*, capture_official_source: bool = True):
     start = _nhl_start()
     req = _base(
         sport="NHL",
@@ -635,8 +635,43 @@ def _nhl_request():
         away_team="Carolina Hurricanes",
         official_source_capture=True,
         sport_specific_evidence={},
+        capture_official_source=capture_official_source,
     )
     return req, start
+
+
+
+@pytest.mark.parametrize("entrypoint", ["public_route", "bridge_dispatcher"])
+def test_nhl_official_source_is_default_off_with_no_network_or_changed_model_code(monkeypatch, entrypoint):
+    """Default NHL scoring is never delayed by optional official-source capture.
+
+    Exercise both runtime compositions: observability may replace the public
+    scorer with the bridge dispatcher, which must preserve the typed blocker.
+    """
+    from v17 import team_event_bridge_runtime as bridges
+
+    req, _ = _nhl_request(capture_official_source=False)
+    session = _SourceSession(error=AssertionError("default NHL rows must not fetch"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    scorer = (
+        team_event_module.score_team_event_request
+        if entrypoint == "public_route"
+        else bridges.score_registered_team_event_request
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        scorer(req, event_api=_FakeEventApi)
+
+    detail = exc_info.value.detail
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    assert detail["team_event_capability"]["blocker"] == (
+        "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    )
+    assert detail["official_source"]["status"] == "HELD"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
+    assert detail["official_source"]["freshness"] is None
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+    assert session.calls == []
 
 
 def test_nhl_row_reports_captured_official_identity_beside_the_capability_blocker(monkeypatch):
