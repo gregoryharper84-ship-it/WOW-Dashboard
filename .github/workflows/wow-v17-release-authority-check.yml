@@ -238,8 +238,18 @@ jobs:
               echo "::error::RELEASE_PR_NUMBER_INVALID"; exit 1;
             }
             policy_args+=(--pr "$INPUT_PR")
+          else
+            # A PR may move again while this job waits for its per-PR writer.
+            # Re-authenticate the source policy; neutralize only a proven
+            # superseded historical workflow_run, never a manual release.
+            policy_args+=(--neutral-if-superseded)
           fi
           policy_bundle=$(python "$tool" "${policy_args[@]}")
+          if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<<"$policy_bundle")" = "neutral" ]; then
+            echo "::notice::RELEASE_NEUTRAL_AT_DECIDE:$(jq -r .reason <<<"$policy_bundle")"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           policy=$(jq -ce '.policy' <<<"$policy_bundle")
           printf '%s\n' "$policy" > "$out/qa-policy.json"
           pr=$(jq -r '.target.pr_number' <<<"$policy")
