@@ -82,6 +82,28 @@ class GitFixtures(unittest.TestCase):
             self.assertEqual(result["mechanism_lexical_counts"]["R"],1)
             self.assertEqual(result["classes"]["R"],2)
 
+    def test_merge_count_and_no_double_classification(self):
+        with tempfile.TemporaryDirectory() as root:
+            def cmd(*args):
+                return subprocess.run(["git",*args],cwd=root,capture_output=True,text=True,check=True).stdout.strip()
+            cmd("init","-q");cmd("config","user.email","fixture@example.invalid");cmd("config","user.name","Fixture")
+            env={**os.environ,"GIT_AUTHOR_DATE":"2026-08-10T00:00:00+00:00","GIT_COMMITTER_DATE":"2026-08-10T00:00:00+00:00"}
+            def commit(path,value):
+                Path(root,path).write_text(value)
+                cmd("add",path)
+                subprocess.run(["git","commit","-qm","fix: fixture"],cwd=root,env=env,check=True)
+            commit("a.txt","a")
+            original=cmd("branch","--show-current")
+            cmd("checkout","-qb","topic")
+            commit("b.txt","b")
+            cmd("checkout","-q",original)
+            commit("c.txt","c")
+            subprocess.run(["git","merge","--no-ff","-m","merge fixture","topic"],cwd=root,env=env,check=True,capture_output=True)
+            result=g.census(root,cmd("rev-parse","HEAD"))
+            self.assertEqual(result["merges"],1)
+            self.assertEqual(result["classes"]["MERGE_UNCLASSIFIED"],1)
+            self.assertEqual(result["population_commits"],4)
+
     def test_shallow_history_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
             subprocess.run(["git","init","-q",root],check=True)
