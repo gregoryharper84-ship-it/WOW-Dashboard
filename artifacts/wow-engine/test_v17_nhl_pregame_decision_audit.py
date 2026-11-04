@@ -127,10 +127,21 @@ def test_injury_coverage_normalizes_official_team_names_to_nhl_codes():
     assert _audit(evidence)["context_blockers"] == []
 
 
-def test_duplicate_goalie_id_cannot_pass():
+@pytest.mark.parametrize(("home_id", "away_id"), [
+    ("111", "111"),
+    ("111", " 111"),
+    (" 111 ", "111"),
+    ("abc-42", " ABC-42 "),
+])
+def test_duplicate_goalie_id_cannot_pass(home_id, away_id):
     evidence = _evidence()
-    evidence["starting_goalies"]["away"]["goalie_id"] = "111"
-    assert _audit(evidence)["status"] == "PREGAME_CONTEXT_INCOMPLETE"
+    evidence["starting_goalies"]["home"]["goalie_id"] = home_id
+    evidence["starting_goalies"]["away"]["goalie_id"] = away_id
+    result = _audit(evidence)
+    assert result["status"] == "PREGAME_CONTEXT_INCOMPLETE"
+    assert "NHL_STARTING_GOALIES_NOT_CONFIRMED_AND_SOURCE_PINNED" in result["context_blockers"]
+    assert result["winner_receipt_status"] == "NO_CERTIFIED_FITTED_WINNER_RECEIPT"
+    assert result["value_claim_allowed"] is False
 
 
 @pytest.mark.parametrize("mutation", [
