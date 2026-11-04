@@ -846,7 +846,12 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     script = read_only["Resolve authenticated exact-PR release lane"]["run"]
     assert "classify-upstream-qa" in script
     assert "resolve-qa-policy" in script
+    assert "--neutral-if-superseded" in script
     assert script.index("classify-upstream-qa") < script.index("resolve-qa-policy")
+    assert script.index("--neutral-if-superseded") < script.index('bundle=$(python "$tool"')
+    assert "RELEASE_QA_SOURCE_PR_SUPERSEDED" in (
+        ROOT / ".github/scripts/independent_source_review_receipt.py"
+    ).read_text(encoding="utf-8")
     assert "RELEASE_NEUTRAL_BEFORE_PR_LOCK" in script
     assert "RELEASE_POLICY_TARGET_STALE" in script
     assert "applicable=true" in script
