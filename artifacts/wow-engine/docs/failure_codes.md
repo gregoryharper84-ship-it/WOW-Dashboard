@@ -592,3 +592,12 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+## NBA season-boundary and fitted-calibrator RPC integrity (2026-11-04)
+
+These pre-existing detail failures remain in the NBA hydration / calibrated-specialist lane. They cannot become a fitted probability, and do not grant any release authority.
+
+| Canonical detail code | Owning lane/stage | Exact condition | Recovery class | Rank eligible? |
+|---|---|---|---|---|
+| \`ESPN_RECENT_WINDOW_GAP_NOT_COVERED\` | NBA current-season SportsDataverse/ESPN hydration | For the **current NBA ending-year season only**, the permitted 14-day ESPN supplement cannot cover the complete gap from the persisted canonical corpus. A completed preceding season must never trigger this code. | DATA_SOURCE_COVERAGE | No |
+| \`NBA_CERTIFIED_CALIBRATOR_INVALID\` | NBA fitted specialist certified-calibrator RPC | RPC row missing nested mapping \`artifact_payload\` or containing a legacy flat outer \`artifact_type\` that would bypass digest verification; reject even if declared digest/ID appear to match certification. | CODE_REPAIR | No |
