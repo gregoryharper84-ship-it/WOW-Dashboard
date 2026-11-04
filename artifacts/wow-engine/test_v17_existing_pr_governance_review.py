@@ -424,6 +424,6 @@ def test_retired_governance_review_workflows_have_no_automatic_events():
     ):
         source = (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
         triggers = source.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
-        assert "\n  workflow_dispatch:" in triggers, filename
+        assert triggers.startswith("  workflow_dispatch:\n"), filename
         for event in ("pull_request_target", "pull_request", "workflow_run", "check_run", "push", "schedule"):
-            assert f"\n  {event}:" not in triggers, (filename, event)
+            assert f"  {event}:" not in triggers, (filename, event)
