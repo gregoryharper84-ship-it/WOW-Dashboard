@@ -1253,11 +1253,13 @@ def resolve_qa_review_policy(
         head = pr.get("head") if isinstance(pr.get("head"), Mapping) else {}
         base = pr.get("base") if isinstance(pr.get("base"), Mapping) else {}
         live_sha = head.get("sha")
+        head_repo = head.get("repo") if isinstance(head.get("repo"), Mapping) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), Mapping) else {}
         same_origin = (
             pr.get("number") == pr_number
-            and ((head.get("repo") or {}).get("full_name") == repository)
+            and head_repo.get("full_name") == repository
             and base.get("ref") == "main"
-            and ((base.get("repo") or {}).get("full_name") == repository)
+            and base_repo.get("full_name") == repository
             and isinstance(live_sha, str)
             and SHA.fullmatch(live_sha) is not None
         )
