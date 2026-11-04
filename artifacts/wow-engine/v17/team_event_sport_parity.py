@@ -466,6 +466,65 @@ def canonicalize_nba_discovery_identity(event: Any) -> Any:
     return replace(event, official_event_id=canonical_event_id, raw=raw)
 
 
+def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
+    """Resolve a free discovery NCAAB alias through the ESPN college scoreboard.
+
+    The discovery event id stays an alias. The row earns a canonical
+    ``NCAAB:<game_id>`` identity only after a unique exact participant + date
+    match, and earning identity never registers a model: an uncertified NCAAB
+    lane still terminates as MODEL_UNAVAILABLE rather than publishing.
+    """
+    if str(getattr(event, "sport", "") or "").upper() != "NCAAB":
+        return event
+
+    raw = dict(getattr(event, "raw", None) or {})
+    provider_event_id = str(
+        raw.get("provider_event_id")
+        or raw.get("_wow_secondary_event_id")
+        or ""
+    ).strip()
+    home_alias = str(raw.get("_wow_secondary_home_team_id") or "").strip()
+    away_alias = str(raw.get("_wow_secondary_away_team_id") or "").strip()
+    if not home_alias or not away_alias:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
+        return replace(event, official_event_id=None, raw=raw)
+
+    from v17.ncaab_event_identity import resolve_ncaab_current_event_identity
+
+    try:
+        resolution = resolve_ncaab_current_event_identity(
+            event_start_time=str(event.commence_time_utc),
+            home_team_alias=home_alias,
+            away_team_alias=away_alias,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve typed canonical hold
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            getattr(exc, "code", None) or type(exc).__name__
+        )
+        return replace(event, official_event_id=None, raw=raw)
+
+    canonical_event_id = str(resolution.get("event_id") or "").strip()
+    if not canonical_event_id:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "NCAAB_CANONICAL_EVENT_ID_MISSING"
+        return replace(event, official_event_id=None, raw=raw)
+
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
+    raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
+    raw["canonical_identity_source"] = str(
+        resolution.get("identity_provider") or "ESPN_NCAAB_SCOREBOARD"
+    )
+    raw["canonical_identity_resolution"] = str(
+        resolution.get("identity_resolution")
+        or "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH"
+    )
+    raw["canonical_identity_market_features_used"] = False
+    return replace(event, official_event_id=canonical_event_id, raw=raw)
+
+
 def canonicalize_ncaaf_discovery_identity(event: Any) -> Any:
     """Resolve free ESPN discovery through WOW's established CFBD event identity."""
     if str(getattr(event, "sport", "") or "").upper() != "NCAAF":
@@ -730,6 +789,8 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 return canonicalize_wnba_discovery_identity(event)
             if sport == "NBA":
                 return canonicalize_nba_discovery_identity(event)
+            if sport == "NCAAB":
+                return canonicalize_ncaab_discovery_identity(event)
             if sport == "NCAAF":
                 return canonicalize_ncaaf_discovery_identity(event)
             if sport == "NHL":
@@ -854,6 +915,7 @@ __all__ = [
     "build_discovery_evidence",
     "canonicalize_mlb_discovery_identity",
     "canonicalize_nba_discovery_identity",
+    "canonicalize_ncaab_discovery_identity",
     "canonicalize_nfl_discovery_identity",
     "canonicalize_ncaaf_discovery_identity",
     "canonicalize_nhl_discovery_identity",
