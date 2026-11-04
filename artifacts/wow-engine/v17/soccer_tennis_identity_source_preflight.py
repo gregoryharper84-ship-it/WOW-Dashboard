@@ -91,7 +91,8 @@ def preflight_fixture_source(
             return _hold("SOURCE_EVIDENCE_UNVERIFIED", source_id=source_id)
     else:
         rows = source_payload.get("data")
-        if not isinstance(rows, list) or source_payload.get("hasNextPage") is not False:
+        if (not isinstance(rows, list) or source_payload.get("hasNextPage") is not False
+                or type(source_payload.get("pageNo")) is not int or source_payload["pageNo"] != 1):
             return _hold("SOURCE_FIXTURE_PARTIAL", source_id=source_id)
         tour = str(crosswalk.get("tour") or "").upper()
         tournament = _id(crosswalk.get("tournament_id"))
