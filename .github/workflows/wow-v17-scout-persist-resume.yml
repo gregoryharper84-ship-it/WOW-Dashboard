@@ -100,8 +100,11 @@ jobs:
                   # A verified SKIPPED discovery job never produced bytes to
                   # persist. Any attempted/unknown source with missing bytes
                   # is real evidence loss and must HOLD, not be skipped.
-                  source_jobs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/jobs?per_page=100") || return 2
-                  discovery_job_state=$(printf '%s' "$source_jobs" | jq -er '
+                  if ! source_jobs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/jobs?filter=all&per_page=100"); then
+                    echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=discovery_jobs_unreadable recovery_class=EVIDENCE_PENDING" >> "$GITHUB_STEP_SUMMARY"
+                    return 2
+                  fi
+                  if ! discovery_job_state=$(printf '%s' "$source_jobs" | jq -er '
                     if (.jobs | type) != "array"
                        or (.total_count | type) != "number"
                        or .total_count != (.jobs | length)
@@ -112,7 +115,10 @@ jobs:
                           and .[0].conclusion == "skipped"
                        then "SKIPPED" else "NOT_SKIPPED" end)
                     end
-                  ') || return 2
+                  '); then
+                    echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=discovery_jobs_invalid recovery_class=EVIDENCE_PENDING" >> "$GITHUB_STEP_SUMMARY"
+                    return 2
+                  fi
                   if [ "$discovery_job_state" != "SKIPPED" ]; then
                     echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=discovery_not_proven_skipped recovery_class=EVIDENCE_PENDING" >> "$GITHUB_STEP_SUMMARY"
                     return 2
