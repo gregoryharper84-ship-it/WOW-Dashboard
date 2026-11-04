@@ -236,3 +236,59 @@ def test_malformed_pr_identity_does_not_invent_real_blocker():
     assert "PR_HEAD_UNVERIFIED" in names(out)
     assert "PR_STATE_UNVERIFIED" in names(out)
     assert "PR_NOT_OPEN" not in names(out)
+
+
+def test_skipped_and_neutral_required_checks_are_not_falsely_blocked():
+    # GitHub allows these conclusions, but neither is proof of semantic review.
+    for conclusion in ("skipped", "neutral"):
+        cc = checks()
+        cc[0]["conclusion"] = conclusion
+        out = report(cc=cc)
+        expected = "REQUIRED_CHECK_NON_SUCCESS_ACCEPTED_BY_GITHUB:WOW Independent QA exact-head:5245832"
+        assert expected in names(out)
+        assert out["merge_evidence"] == "UNVERIFIED"
+        assert not any(x["state"] == "BLOCKED" for x in out["findings"])
+        assert out["semantic_review"] == "NOT_ASSESSED"
+        assert out["not_release_authorization"] is True
+
+
+def test_failed_required_checks_remain_known_blockers():
+    for conclusion in ("failure", "cancelled", "timed_out", "action_required", "stale"):
+        cc = checks()
+        cc[0]["conclusion"] = conclusion
+        out = report(cc=cc)
+        assert "REQUIRED_CHECK_NOT_SUCCESS:WOW Independent QA exact-head:5245832" in names(out)
+        assert out["merge_evidence"] == "BLOCKED"
+
+
+def test_engineering_digest_latest_app_check_is_selected_across_pages():
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    assert shutil.which("jq"), "jq is required by the digest workflow"
+    workflow = (Path(__file__).resolve().parents[2]
+                / ".github/workflows/wow-v17-engineering-digest.yml")
+    script = workflow.read_text(encoding="utf-8")
+    # Execute the exact deployed jq expression with two pages in one input.
+    selector = script.split("summary=$(jq -sr '", 1)[1].split(
+        "' <<<\"$checks\")", 1
+    )[0]
+    def select(pages):
+        proc = subprocess.run(
+            ["jq", "-sr", selector],
+            input="\n".join(json.dumps(page) for page in pages),
+            capture_output=True, text=True, check=True,
+        )
+        return proc.stdout.strip()
+    def check(check_id, conclusion, message):
+        return {"id": check_id, "name": "WOW Independent QA exact-head",
+                "app": {"id": APP_QA}, "conclusion": conclusion,
+                "output": {"summary": message}}
+    old_failed = check(10, "failure", "OBSOLETE_HOLD")
+    current_pass = check(50, "success", "CURRENT_PASS")
+    newest_fail = check(99, "failure", "CURRENT_FAILURE")
+    assert select([[current_pass], [old_failed]]) == ""
+    assert select([[old_failed], [current_pass]]) == ""
+    assert select([[old_failed], [newest_fail]]) == "CURRENT_FAILURE"
