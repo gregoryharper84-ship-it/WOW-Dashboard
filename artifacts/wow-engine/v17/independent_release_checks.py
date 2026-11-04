@@ -334,7 +334,8 @@ MAX_TARGETS = 20
 
 
 def targets(repo: str, *, pr: str | None = None,
-            workflow_run_prs: list[dict] | None = None, fetch: Fetch = gh_fetch) -> dict[str, Any]:
+            workflow_run_prs: list[dict] | None = None,
+            neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
     """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input."""
     errors: list[str] = []
     out: list[dict] = []
@@ -354,6 +355,34 @@ def targets(repo: str, *, pr: str | None = None,
             if status != 200 or not isinstance(live, dict):
                 errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
                 continue
+            # A source PR can move between the workflow_run event and QA.
+            # A single proved same-origin moved/closed source is no longer a
+            # target; never publish QA for its old SHA, and do not fail a
+            # main-scoped optional run. Ambiguous/foreign/malformed remains
+            # strict. Manual dispatch never enables this classification.
+            current_sha = head.get("sha")
+            head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+            base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+            same_origin = (
+                live.get("number") == number
+                and head_repo.get("full_name") == repo
+                and base.get("ref") == "main"
+                and base_repo.get("full_name") == repo
+                and SHA_RE.match(str(current_sha or "")) is not None
+            )
+            if (
+                neutral_superseded and len(workflow_run_prs) == 1
+                and same_origin and (
+                    live.get("state") == "closed"
+                    or (live.get("state") == "open" and live.get("draft") is False
+                        and not live.get("merged_at") and current_sha != sha)
+                )
+            ):
+                return {
+                    "targets": [], "errors": [],
+                    "disposition": "neutral",
+                    "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
+                }
             if (
                 live.get("number") != number
                 or head.get("sha") != sha
@@ -791,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--repo", required=True)
     t.add_argument("--pr")
     t.add_argument("--workflow-run-prs", help="JSON array from github.event.workflow_run.pull_requests")
+    t.add_argument("--neutral-superseded", action="store_true")
     g = sub.add_parser("gather")
     g.add_argument("--repo", required=True)
     g.add_argument("--pr", required=True, type=int)
@@ -826,7 +856,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "targets":
         prs = json.loads(args.workflow_run_prs) if args.workflow_run_prs else None
-        print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs)))
+        print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs,
+                                 neutral_superseded=args.neutral_superseded)))
         return 0
     if args.cmd == "resolve-qa-policy":
         try:
