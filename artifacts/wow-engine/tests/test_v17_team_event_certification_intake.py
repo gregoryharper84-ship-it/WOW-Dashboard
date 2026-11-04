@@ -188,3 +188,10 @@ def test_registry_unavailability_does_not_relabel_as_model_failure(tmp_path):
     assert result["status"] == "BLOCKED"
     assert result["blockers"] == ["TEAM_EVENT_CERTIFICATION_REGISTRY_UNAVAILABLE"]
     assert result["probability_publishable"] is False
+
+
+def test_repository_catalog_integrity_guards_future_ledger_edits():
+    """Main's real catalog must never drift beyond available verified proof."""
+    result = catalog_integrity()
+    assert result["status"] == "PASS", result
+    assert result["can_execute"] is False
