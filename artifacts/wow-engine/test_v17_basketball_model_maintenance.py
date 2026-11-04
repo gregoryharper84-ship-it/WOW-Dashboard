@@ -15,8 +15,8 @@ def test_default_seasons_are_four_year_window():
 def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
     seen = []
 
-    def fake_hydrate(sport, seasons, client=None):
-        seen.append(("hydrate", sport, tuple(seasons), client))
+    def fake_hydrate(sport, seasons, client=None, *, now=None):
+        seen.append(("hydrate", sport, tuple(seasons), client, now))
         return {"sport": sport, "settled_rows": 100, "can_execute": False}
 
     def fake_replay(sport, client=None):
@@ -44,6 +44,7 @@ def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
     assert all(row["hydration_status"] == "FRESH_ACQUISITION_UPDATED" for row in result["rows"])
     assert all(row["promotion_attempted"] is False for row in result["rows"])
     assert seen[0][:3] == ("hydrate", "NBA", (2025, 2026))
+    assert seen[0][4] is not None and seen[0][4].utcoffset() is not None
 
 
 def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
@@ -242,8 +243,8 @@ def test_missing_fresh_acquisition_counter_is_unverified_not_updated(monkeypatch
 
 def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypatch):
     calls = []
-    def fake_hydrate(sport, seasons, client=None):
-        calls.append((sport, tuple(seasons)))
+    def fake_hydrate(sport, seasons, client=None, *, now=None):
+        calls.append((sport, tuple(seasons), now))
         return {
             "sport": sport, "settled_rows": 1,
             "fresh_acquisition_new_settled_games": 1,
@@ -260,9 +261,10 @@ def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypat
         object(), sports=("NBA", "WNBA"),
         now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
     )
+    expected_clock = datetime(2026, 10, 23, 17, tzinfo=timezone.utc)
     assert calls == [
-        ("NBA", (2024, 2025, 2026, 2027)),
-        ("WNBA", (2023, 2024, 2025, 2026)),
+        ("NBA", (2024, 2025, 2026, 2027), expected_clock),
+        ("WNBA", (2023, 2024, 2025, 2026), expected_clock),
     ]
     assert outcome["seasons_by_sport"] == {
         "NBA": [2024, 2025, 2026, 2027],
