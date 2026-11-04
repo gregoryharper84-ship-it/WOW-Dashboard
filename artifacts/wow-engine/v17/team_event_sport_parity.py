@@ -478,6 +478,10 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
         or getattr(event, "official_event_id", None)
         or ""
     ).strip()
+    # Preserve the acquisition alias even when official_event_id is cleared on
+    # a typed identity hold; downstream diagnostics must retain provenance.
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
     home_alias = str(raw.get("_wow_secondary_home_team_id") or "").strip()
     away_alias = str(raw.get("_wow_secondary_away_team_id") or "").strip()
     if not home_alias or not away_alias:
