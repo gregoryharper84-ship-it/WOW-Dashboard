@@ -60,6 +60,9 @@ def classify(
         known("PR_NOT_OPEN", "live_pr")
     if pr.get("draft") is True:
         known("PR_DRAFT", "live_pr")
+    base = (pr.get("base") or {}).get("ref")
+    if base != "main":
+        unknown("PR_TARGET_MAIN_UNVERIFIED", "live_pr")
     merge_state = pr.get("mergeable_state")
     if merge_state == "dirty":
         known("PR_MERGE_CONFLICT", "live_pr")
@@ -177,14 +180,14 @@ def live_report(repo: str, number: int) -> dict[str, Any]:
     index = None
     rulesets: list[dict[str, Any]] | None = None
     try:
-        index = gh_json(f"/repos/{repo}/rulesets?per_page=100")
+        index = gh_json(f"/repos/{repo}/rulesets?includes_parents=true&per_page=100")
         if not isinstance(index, list) or len(index) >= 100:
             raise ValueError("RULESET_INVENTORY_UNVERIFIED")
         rulesets = [
             gh_json(f"/repos/{repo}/rulesets/{r['id']}")
             for r in index if r.get("enforcement") == "active" and r.get("target") == "branch"
         ]
-    except (RuntimeError, ValueError, KeyError):
+    except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired):
         rulesets = None
 
     checks: list[dict[str, Any]] | None = None
@@ -207,7 +210,7 @@ def live_report(repo: str, number: int) -> dict[str, Any]:
                     raise ValueError("CHECK_INVENTORY_TRUNCATED")
                 checks = pages
                 break
-    except (RuntimeError, ValueError, KeyError, TypeError):
+    except (RuntimeError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
         checks = None
     return classify(pr, rulesets, checks, repository=repo)
 
@@ -219,7 +222,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         data = live_report(args.repo, args.pr_number)
-    except (RuntimeError, ValueError, KeyError) as exc:
+    except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
         data = {
             "pr": args.pr_number, "repository": args.repo,
             "findings": [{"finding": "LIVE_PR_EVIDENCE_UNVERIFIED",
