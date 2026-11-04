@@ -270,12 +270,15 @@ def _typed_mlb_failure(detail: dict[str, Any]) -> tuple[str, str]:
 
 def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> None:
     """Bind downstream card admission to the exact governed event prediction."""
-    rank_eligible = bool(outcome.get("objective_rank_eligible", outcome.get("rank_eligible")) is True)
+    # Sporting rank belongs to the fitted-model lane; objective/card gates are separate.
+    sporting_rank_eligible = outcome.get("probability_rank_eligible", outcome.get("rank_eligible")) is True
+    objective_rank_eligible = outcome.get("objective_rank_eligible") is True
+    card_rank_eligible = sporting_rank_eligible and objective_rank_eligible
     probability_publishable = outcome.get("probability_publishable") is True
     blockers: list[str] = []
     if outcome.get("terminal_status") != "COMPLETED":
         blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
-    if not rank_eligible:
+    if not card_rank_eligible:
         blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
     if not probability_publishable:
         blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
@@ -285,7 +288,7 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
     selected = str(outcome.get("selected_team") or "").strip() or None
     if selected is None:
         blockers.append("CARD_ADMISSION:SELECTION_MISSING")
-    outcome["rank_eligible"] = rank_eligible
+    outcome["rank_eligible"] = sporting_rank_eligible
     outcome["card_admission_eligible"] = not blockers
     outcome["card_admission_blockers"] = blockers
     outcome["card_admission_receipt"] = {
@@ -294,7 +297,8 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
         "event_key": row.event_key,
         "selection": selected,
         "market_family": "OUTRIGHT_WINNER",
-        "rank_eligible": rank_eligible,
+        "rank_eligible": sporting_rank_eligible,
+        "objective_rank_eligible": objective_rank_eligible,
         "probability_publishable": probability_publishable,
         "can_execute": False,
     } if outcome.get("terminal_status") == "COMPLETED" else None
@@ -352,7 +356,7 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         decision = "INPUT_INCOMPLETE"
     elif row.objective_lane == "MARKET_EDGE":
         decision = "MARKET_DATA_UNOBTAINABLE"
-    probability_rank_eligible = bool(scored.get("rank_eligible", scored.get("probability_publishable")))
+    probability_rank_eligible = scored.get("rank_eligible") is True and scored.get("probability_publishable") is True
     outcome = {
         "research_run_id": row.research_run_id, "event_key": row.event_key,
         "objective_lane": row.objective_lane, "terminal_status": "COMPLETED",
@@ -409,7 +413,7 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
-    probability_rank_eligible = bool(scored.get("rank_eligible", True))
+    probability_rank_eligible = scored.get("rank_eligible") is True
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,

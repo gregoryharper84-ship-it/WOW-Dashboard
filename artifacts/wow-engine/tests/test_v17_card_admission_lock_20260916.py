@@ -150,3 +150,47 @@ def test_team_event_held_row_is_explicitly_card_ineligible():
     assert outcome["can_execute"] is False
 
 # CI context refresh: preserve exact card-admission regression coverage.
+
+
+def test_team_event_market_objective_hold_does_not_erase_sporting_rank():
+    row = _team_row().model_copy(update={
+        "objective_lane": "MARKET_EDGE",
+        "price_required_for_objective": True,
+    })
+    outcome = team_runtime._completed(row, _team_event(), _team_scored(rank_eligible=True))
+
+    assert outcome["probability_rank_eligible"] is True
+    assert outcome["rank_eligible"] is True
+    assert outcome["objective_rank_eligible"] is False
+    assert outcome["card_admission_eligible"] is False
+    assert "CARD_ADMISSION:RANK_INELIGIBLE" in outcome["card_admission_blockers"]
+    assert outcome["card_admission_receipt"]["rank_eligible"] is True
+    assert outcome["card_admission_receipt"]["objective_rank_eligible"] is False
+    assert outcome["can_execute"] is False
+
+
+def test_team_event_upset_requires_objective_proof_without_erasing_sporting_rank():
+    row = _team_row().model_copy(update={
+        "objective_lane": "UPSET_PROBABILITY",
+        "price_required_for_objective": True,
+    })
+    outcome = team_runtime._completed(row, _team_event(), _team_scored(rank_eligible=True))
+
+    assert outcome["rank_eligible"] is True
+    assert outcome["objective_rank_eligible"] is False
+    assert outcome["card_admission_eligible"] is False
+    assert outcome["card_admission_receipt"]["rank_eligible"] is True
+    assert outcome["can_execute"] is False
+
+
+def test_team_event_missing_sporting_rank_fails_closed_even_if_publishable():
+    scored = _team_scored(rank_eligible=True)
+    scored.pop("rank_eligible")
+    outcome = team_runtime._completed(_team_row(), _team_event(), scored)
+
+    assert outcome["probability_rank_eligible"] is False
+    assert outcome["rank_eligible"] is False
+    assert outcome["objective_rank_eligible"] is False
+    assert outcome["card_admission_eligible"] is False
+    assert "CARD_ADMISSION:RANK_INELIGIBLE" in outcome["card_admission_blockers"]
+    assert outcome["can_execute"] is False
