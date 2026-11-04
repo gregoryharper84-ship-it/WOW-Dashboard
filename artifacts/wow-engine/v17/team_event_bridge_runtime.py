@@ -327,7 +327,51 @@ def _attach_feature_consumption_receipt(
     return out
 
 
+def _with_official_source_evidence(exc: HTTPException, req: Any) -> HTTPException:
+    """Attach NHL official-source evidence to a typed fail-closed detail.
+
+    The bridge's own code, status and blockers are preserved exactly; the evidence
+    and manifest capability blocks are added beside them, never in place of them,
+    so an audited row can never be read as a publishable probability.
+    """
+    # Deferred: this module is imported by the base runtime at install time.
+    from v17.team_event_request_runtime import official_source_evidence
+
+    try:
+        blocks = official_source_evidence(req)
+    except Exception:  # noqa: BLE001 - enrichment must never displace a typed failure
+        return exc
+    detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"detail": exc.detail}
+    for key, value in blocks.items():
+        detail.setdefault(key, value)
+    return HTTPException(status_code=exc.status_code, detail=detail, headers=exc.headers)
+
+
 def score_registered_team_event_request(
+    req: Any,
+    *,
+    event_api: Any,
+    canonical_hydration_required: bool = False,
+) -> dict[str, Any]:
+    """Dispatch through the exact registered sport bridge or fail closed.
+
+    NHL rows also report their official-source evidence beside whatever typed
+    fail-closed result the registered bridge produced, so the same evidence is
+    available whether or not the bridge runtime is installed.
+    """
+    try:
+        return _dispatch_registered_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
+    except HTTPException as exc:
+        if request_sport(req) != "NHL":
+            raise
+        raise _with_official_source_evidence(exc, req) from None
+
+
+def _dispatch_registered_team_event_request(
     req: Any,
     *,
     event_api: Any,
@@ -623,6 +667,40 @@ def _register_nfl_bridge_if_available() -> bool:
     return True
 
 
+def _register_nba_bridge_if_available() -> bool:
+    """Additive registration for the fitted NBA current-pregame bridge.
+
+    NBA has an independent fitted basketball candidate/training/calibration
+    pipeline, official event and team identity, and a pregame scorer. If the
+    adapter or scorer cannot be imported, the bridge is not registered and the
+    route fails closed.
+    """
+    if os.getenv("WOW_V17_NBA_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+    try:
+        from v17.nba_current_pregame_scorer import score_nba_team_event_request
+    except Exception:  # noqa: BLE001 - absence is an audit answer, not a crash
+        return False
+
+    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
+        return score_nba_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
+
+    register_team_event_bridge(
+        "NBA",
+        adapter_name="V17_NBA_TEAM_EVENT_BRIDGE",
+        controlling_specialist="NBA_GAME_WIN_PROBABILITY_EXPERT_V1",
+        scorer=scorer,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS["NBA"],
+        standard_package_validation=False,
+        supported_regimes=(REGULAR_SEASON,),
+    )
+    return True
+
+
 def install_team_event_bridge_runtime() -> dict[str, Any]:
     """Install the authoritative production registry exactly once."""
     global _INSTALLED
@@ -657,6 +735,7 @@ def install_team_event_bridge_runtime() -> dict[str, Any]:
     # condition, and with no promoted champion the scorer still fails closed as
     # MODEL_UNAVAILABLE at score time.
     _register_nfl_bridge_if_available()
+    _register_nba_bridge_if_available()
 
     _base_runtime.score_team_event_request = score_registered_team_event_request
     _install_health_overlay()

@@ -9,9 +9,15 @@ name: wow-v17-engineering-digest
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional exact PR for live release-truth preflight; otherwise scan recent open PRs
+        required: false
+        type: string
 
 permissions:
   contents: read
+  checks: read
   pull-requests: read
   deployments: read
   issues: read
@@ -87,10 +93,14 @@ jobs:
 
             checks=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${number}" --jq '.head.sha' | \
               xargs -I{} gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/{}/check-runs?per_page=100" --jq '.check_runs')
-            summary=$(jq -r '
-              [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
-                   | select(.conclusion == "failure")]
-              | sort_by(.started_at // .created_at) | last // {} | .output.summary // ""
+            # Newest authenticated App check per name wins. Old failed receipts
+            # must not create a waiting-on-owner claim after the current PASS.
+            summary=$(jq -sr '
+              (add // []) | [.[] | select((.name == "WOW Independent QA exact-head" and .app.id == 5245832)
+                         or (.name == "WOW Release Authority exact-head" and .app.id == 5245853))]
+              | group_by(.name) | map(max_by(.id))
+              | map(select(.conclusion == "failure"))
+              | sort_by(.id) | last // {} | .output.summary // ""
             ' <<<"$checks")
 
             if [ -n "$summary" ]; then
@@ -130,6 +140,53 @@ jobs:
           python artifacts/wow-engine/v17/engineering_digest.py \
             --evidence-json "$RUNNER_TEMP/digest-evidence.json" > "$RUNNER_TEMP/digest-body.md"
 
+      - name: Report live ruleset and exact-head truth (non-gating)
+        # This is an informational diagnostic, not a required check or semantic review.
+        continue-on-error: true
+        # Bounded non-gating diagnostic; preserve time for the pinned digest update.
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ inputs.pr_number || '' }}
+        run: |
+          set -euo pipefail
+          {
+            printf '\n## Live release truth (read-only; NOT merge or deploy authorization)\n'
+            printf 'Observed ruleset/PR/check evidence only. Branch protection, semantic review, production and model acceptance are separate.\n'
+          } >> "$RUNNER_TEMP/digest-body.md"
+          if [ -n "$TARGET_PR" ]; then
+            [[ "$TARGET_PR" =~ ^[1-9][0-9]*$ ]] || {
+              echo '- UNVERIFIED: invalid requested PR number' >> "$RUNNER_TEMP/digest-body.md"
+              exit 0
+            }
+            numbers="$TARGET_PR"
+            scope="explicit PR #$TARGET_PR"
+          else
+            # Bounded observability scope: never imply unseen PRs are clean.
+            numbers=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=30" --jq '.[].number') || {
+              echo '- UNVERIFIED: open-PR discovery API unavailable' >> "$RUNNER_TEMP/digest-body.md"
+              exit 0
+            }
+            scope="30 most recently updated open main-targeted PRs (not exhaustive)"
+          fi
+          echo "- Scan scope: $scope" >> "$RUNNER_TEMP/digest-body.md"
+          if [ -z "$numbers" ]; then
+            echo '- No PRs in selected scope' >> "$RUNNER_TEMP/digest-body.md"
+          fi
+          for number in $numbers; do
+            result=$(python artifacts/wow-engine/v17/release_truth_preflight.py \
+              --repo "$GITHUB_REPOSITORY" --pr-number "$number") || {
+              echo "- PR #$number: UNVERIFIED (preflight unavailable)" >> "$RUNNER_TEMP/digest-body.md"
+              continue
+            }
+            printf '%s\n' "$result" | jq -r \
+              '"- PR #\(.pr): ruleset_human_review=\(.ruleset_human_review // "UNVERIFIED"); merge_evidence=\(.merge_evidence // "UNVERIFIED"); exact-head findings=\([.findings[]?.finding] | join(", ") | if . == "" then "none observed" else . end); head=\(.head_sha // "UNKNOWN"); can_execute=false"' \
+              >> "$RUNNER_TEMP/digest-body.md" || {
+              echo "- PR #$number: UNVERIFIED (invalid preflight output)" >> "$RUNNER_TEMP/digest-body.md"
+            }
+          done
+          echo '- NOTE: A zero-review active ruleset rejects the obsolete ruleset-based human-approval claim; it does not prove any other unseen protection absent.' >> "$RUNNER_TEMP/digest-body.md"
       - name: Create or update the pinned digest issue
         shell: bash
         env:

@@ -27,6 +27,11 @@ from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
+from v17.nhl_official_pregame_source_receipt import (
+    NHLPregameSourceError,
+    capture_nhl_official_pregame,
+)
+from v17.team_event_capability_manifest import team_event_capability
 from v17.v17_candidate_envelopes import V17TeamEventCandidateEnvelope, V17GovernedProbabilityPackage, DataUnavailable
 
 CAN_EXECUTE = False
@@ -81,6 +86,8 @@ class TeamEventRequest(BaseModel):
     market_prior: dict[str, Any] | None = None
     market_input: dict[str, Any] | None = None
     sport_specific_evidence: dict[str, Any] = Field(default_factory=dict)
+    # Optional evidence-only source fetch; never implicit on a blocked scoring row.
+    capture_official_source: bool = False
 
 
 class TeamEventCapabilityResponse(BaseModel):
@@ -149,6 +156,144 @@ def _augment_detail(detail: Any, req: TeamEventRequest) -> dict[str, Any]:
         "can_execute": False,
     })
     return payload
+
+
+def _team_event_capability_block(sport: str) -> dict[str, Any]:
+    """Certification status for the row's sport, straight from the manifest.
+
+    Reported so a caller can see *why* the row is MODEL_UNAVAILABLE without
+    inferring capability from the presence of evidence or an adapter.
+    """
+    capability = team_event_capability(sport)
+    return {
+        "sport": capability.sport,
+        "status": capability.status,
+        "controlling_specialist": capability.controlling_specialist,
+        "blocker": capability.blocker,
+        "required_inputs": list(capability.required_inputs),
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def _nhl_official_source_block(
+    req: TeamEventRequest,
+    *,
+    source_session: Any = None,
+    source_clock: Any = None,
+) -> dict[str, Any]:
+    """Capture first-party NHL event identity/freshness as evidence only.
+
+    Explicitly opted-in capture can establish identity and recency; it cannot establish
+    goalies, injuries, Elo, or a calibrated probability. A capture failure is
+    reported as a typed hold *beside* the capability blocker: it never replaces
+    MODEL_UNAVAILABLE, never erases the certification blocker, and never emits a
+    probability or a market/historical substitute.
+    """
+    fields = {
+        "official_event_id": getattr(req, "official_event_id", None),
+        "event_start_time_utc": getattr(req, "event_start_time_utc", None),
+        "home_team": getattr(req, "home_team", None),
+        "away_team": getattr(req, "away_team", None),
+    }
+    requested_identity = dict(fields)
+    # Synchronous source evidence cannot unblock the fitted specialist; never
+    # spend the source module's bounded 20-second deadline on ordinary scoring.
+    # A true request flag is required, including for duck-typed bridge requests.
+    if getattr(req, "capture_official_source", False) is not True:
+        return {
+            "status": "HELD",
+            "hold_code": "NHL_SOURCE_CAPTURE_NOT_REQUESTED",
+            "requested_identity": requested_identity,
+            "freshness": None,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+
+    if not all(str(value or "").strip() for value in fields.values()):
+        # A duck-typed or partially populated request yields a typed hold. It must
+        # never raise here, because that would displace the caller's own typed
+        # failure with an untyped error.
+        return {
+            "status": "HELD",
+            "hold_code": "NHL_SOURCE_REQUEST_IDENTITY_MISSING",
+            "requested_identity": requested_identity,
+            "freshness": None,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+    capture_kwargs: dict[str, Any] = dict(fields)
+    # Only override the source module's own bounded transport defaults when a
+    # caller injects them (tests); production keeps redirect rejection, the
+    # transfer cap and the total deadline from the receipt module.
+    if source_session is not None:
+        capture_kwargs["session"] = source_session
+    if source_clock is not None:
+        capture_kwargs["clock"] = source_clock
+    try:
+        receipt = capture_nhl_official_pregame(**capture_kwargs)
+    except NHLPregameSourceError as exc:
+        return {
+            "status": "HELD",
+            "hold_code": exc.code,
+            "requested_identity": requested_identity,
+            "freshness": None,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+    start = datetime.fromisoformat(receipt["event_start_time_utc"])
+    captured_at = datetime.fromisoformat(receipt["as_of"])
+    return {
+        "status": "CAPTURED",
+        "hold_code": None,
+        "requested_identity": requested_identity,
+        "identity": {
+            "official_event_id": receipt["official_event_id"],
+            "event_start_time_utc": receipt["event_start_time_utc"],
+            "home_team": receipt["home_team"],
+            "away_team": receipt["away_team"],
+            "game_state": receipt["game_state"],
+            "source_id": receipt["source_id"],
+            "source_uri": receipt["source_uri"],
+        },
+        "freshness": {
+            "captured_at_utc": receipt["as_of"],
+            "seconds_until_start": int((start - captured_at).total_seconds()),
+            "is_pregame": True,
+            "source_snapshot_id": receipt["source_snapshot_id"],
+            "source_payload_sha256": receipt["source_payload_sha256"],
+            "raw_payload_bytes": receipt["raw_payload_bytes"],
+            "raw_payload_archived": False,
+            "source_signature_independently_verified": False,
+        },
+        "missing_fields": list(receipt["missing_fields"]),
+        "goalies_confirmed": False,
+        "model_invoked": False,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+
+
+def official_source_evidence(req: TeamEventRequest) -> dict[str, Any]:
+    """Evidence-only blocks reported beside an NHL fail-closed result.
+
+    Shared by this runtime and the registered-bridge dispatcher so the same
+    evidence appears regardless of which layer answers the row. Both blocks carry
+    ``probability_publishable=False``; they document identity, freshness and
+    certification status, and cannot upgrade the row.
+    """
+    return {
+        "team_event_capability": _team_event_capability_block("NHL"),
+        "official_source": _nhl_official_source_block(
+            req,
+            source_session=_OFFICIAL_SOURCE_SESSION,
+            source_clock=_OFFICIAL_SOURCE_CLOCK,
+        ),
+    }
 
 
 def _canonicalize_public_mlb_request(req: TeamEventRequest, event_api: Any) -> TeamEventRequest:
@@ -770,7 +915,24 @@ def _build_governed_probability_package(
         return None
 
 
-def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
+# Offline-verification seams for the NHL official-source capture. Production
+# never sets these, so the source module's own bounded transport defaults
+# (redirect rejection, transfer cap, total deadline) always apply.
+#
+# They are deliberately NOT parameters of score_team_event_request: the governed
+# observability wrapper in v17.team_event_sport_parity re-exposes that function
+# with the canonical keyword signature, so widening the signature would make the
+# new arguments unusable wherever observability is installed.
+_OFFICIAL_SOURCE_SESSION: Any = None
+_OFFICIAL_SOURCE_CLOCK: Any = None
+
+
+def score_team_event_request(
+    req: TeamEventRequest,
+    *,
+    event_api: Any,
+    canonical_hydration_required: bool = False,
+) -> dict[str, Any]:
     try:
         route = resolve_host_route(req.requester_host_identity, req.candidate_family)
     except ValueError as exc:
@@ -823,13 +985,19 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical
         if canonical_hydration_required:
             governed["canonical_acquisition"] = {"status": "PASS", "source_snapshot_id": effective_req.source_snapshot_id, "latest_material_update_timestamp": effective_req.latest_material_update_timestamp, "can_execute": False}
         return governed
-    raise HTTPException(status_code=409, detail=_augment_detail({
+    detail: dict[str, Any] = {
         "code": "MODEL_UNAVAILABLE", "failed_contract_scope": ["CONTROLLING_SPECIALIST"],
         "sport": sport, "league": req.league,
         "backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_ADAPTER_NOT_REGISTERED",
         "market_probability_substitution_allowed": False, "generic_reasoning_substitution_allowed": False,
         "probability_publishable": False, "blockers": [f"{sport}_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE"],
-    }, req))
+    }
+    if sport == "NHL":
+        # Evidence-only enrichment: the row reports its captured official
+        # identity/freshness and its manifest capability status beside the same
+        # fail-closed MODEL_UNAVAILABLE result. This cannot upgrade the row.
+        detail.update(official_source_evidence(req))
+    raise HTTPException(status_code=409, detail=_augment_detail(detail, req))
 
 
 def install_team_event_routes(app: FastAPI, *, event_api: Any, auth_dependency: Any) -> None:

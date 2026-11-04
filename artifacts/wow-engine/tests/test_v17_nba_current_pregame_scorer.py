@@ -11,6 +11,7 @@ from v17.fitted_team_event_certification import TeamEventCertificationError
 from v17.multisport_team_event_calibration import CalibrationArtifactInvalid
 from v17.nba_current_pregame_scorer import (
     prepare_nba_current_pregame_scorer_receipt,
+    resolve_nba_calibrator_artifact,
     resolve_nba_champion_artifact,
 )
 from v17.nba_event_identity import resolve_nba_current_event_identity
@@ -764,3 +765,297 @@ def test_research_only_source_clock_cannot_reach_certified_model_even_when_manif
     assert receipt["probability_publishable"] is False
     assert receipt["rank_eligible"] is False
     assert receipt["can_execute"] is False
+
+
+def _valid_nba_calibration_artifact():
+    return {
+        "artifact_type": "BINARY_PLATT_CALIBRATOR",
+        "sport": "NBA",
+        "calibration_method": "BINARY_PLATT_CALIBRATOR",
+        "calibration_version": "v1.0",
+        "health_status": "PASS",
+        "certification_status": "PASS",
+        # Synthetic TEST-ONLY approval is a SEPARATE registry receipt, never
+        # placed inside the digest-protected calibrator payload in production.
+        "bounds_approval_receipt": {
+            "status": "APPROVED",
+            "policy_version": "NBA_DYNAMIC_BOUNDS_V1",
+            "independent_verification_status": "PASS",
+            "can_execute": False,
+            "certification_id": "nba-cert-1",
+            "calibration_artifact_id": "nba-calibrator-1",
+            "calibration_sha256": "b" * 64,
+        },
+        "calibration_artifact_id": "nba-calibrator-1",
+        "calibration_sha256": "b" * 64,
+        "training_n": 100,
+        "platt_a": 1.0,
+        "platt_b": 0.0,
+        "residual_quantile_90": 0.05,
+        "source_data_hash": "a" * 64,
+        "split_hash": "b" * 64,
+        "fit_end": "2026-10-22T00:00:00Z",
+        "brier_score": 0.21,
+        "calibration_error": 0.03,
+    }
+
+
+def test_approved_bounds_policy_computes_dynamic_calibrated_bounds(monkeypatch):
+    _enable_certified_nba_test_lane(monkeypatch)
+    certification = _certification()
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: certification,
+        champion_artifact_resolver=lambda _client, cert: _champion_artifact(cert),
+        calibration_artifact_resolver=lambda _client, _cert: _valid_nba_calibration_artifact(),
+    )
+
+    assert result["status"] == "SCORED"
+    assert result["code"] == "NBA_PREGAME_SCORED"
+    assert result["raw_probability"] is not None
+    assert result["calibrated_probability"] is not None
+    assert 0.001 <= result["calibrated_lower_bound"] <= result["calibrated_probability"] <= result["calibrated_upper_bound"] <= 0.999
+    assert result["dynamic_uncertainty"] == 0.05
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
+
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"bounds_approval_receipt": None},
+        {"bounds_approval_receipt": {}},
+        {"bounds_approval_receipt": {"status": "REVIEW_REQUIRED"}},
+        {"calibration_artifact_id": "other-artifact"},
+        {"calibration_sha256": "c" * 64},
+        {"artifact_type": "OTHER"},
+        {"health_status": "REVIEW_REQUIRED"},
+        {"certification_status": "REVIEW_REQUIRED"},
+    ],
+)
+def test_nba_bounds_type_or_unapproved_proof_never_scored(monkeypatch, mutation):
+    _enable_certified_nba_test_lane(monkeypatch)
+    artifact = _valid_nba_calibration_artifact()
+    artifact.update(mutation)
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_a, **_kw: _certification(),
+        champion_artifact_resolver=lambda _client, cert: _champion_artifact(cert),
+        calibration_artifact_resolver=lambda _client, _cert: artifact,
+    )
+    assert result["status"] == "HOLD"
+    assert result["blockers"] == ["NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED"]
+    assert result["calibrated_probability"] is None
+    assert result["calibrated_lower_bound"] is None
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("status", "REVIEW_REQUIRED"),
+        ("policy_version", "UNKNOWN"),
+        ("independent_verification_status", "FAIL"),
+        ("can_execute", True),
+        ("certification_id", "other-certification"),
+        ("calibration_artifact_id", "other-calibrator"),
+        ("calibration_sha256", "c" * 64),
+    ],
+)
+def test_nba_bounds_approval_must_be_separately_bound(monkeypatch, field, value):
+    _enable_certified_nba_test_lane(monkeypatch)
+    artifact = _valid_nba_calibration_artifact()
+    artifact["bounds_approval_receipt"] = {
+        **artifact["bounds_approval_receipt"], field: value
+    }
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: _certification(),
+        champion_artifact_resolver=lambda _client, cert: _champion_artifact(cert),
+        calibration_artifact_resolver=lambda _client, _cert: artifact,
+    )
+    assert result["status"] == "HOLD"
+    assert result["blockers"] == ["NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED"]
+    assert result["calibrated_lower_bound"] is None
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+
+def test_nba_calibrator_resolver_requires_bound_artifact_and_no_table_fallback():
+    certification = _certification()
+    artifact = _valid_nba_calibration_artifact()
+
+    class RPCClient:
+        def __init__(self, record=None, failure=None):
+            self.record = record
+            self.failure = failure
+            self.table_called = False
+
+        def rpc(self, name, params):
+            assert name == "wow_basketball_certified_calibrator_artifact"
+            assert params == {
+                "p_sport": "NBA",
+                "p_calibrator_id": certification.calibration_artifact_id,
+            }
+            if self.failure is not None:
+                raise self.failure
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.record))
+
+        def table(self, _name):
+            self.table_called = True
+            raise AssertionError("direct-table fallback is forbidden")
+
+    good = RPCClient(artifact)
+    assert resolve_nba_calibrator_artifact(good, certification) == artifact
+    assert good.table_called is False
+
+    mismatch = RPCClient({**artifact, "calibration_sha256": "c" * 64})
+    with pytest.raises(ValueError, match="NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH"):
+        resolve_nba_calibrator_artifact(mismatch, certification)
+    assert mismatch.table_called is False
+
+    empty = RPCClient(None)
+    with pytest.raises(LookupError, match="NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE"):
+        resolve_nba_calibrator_artifact(empty, certification)
+    assert empty.table_called is False
+
+    failed = RPCClient(failure=RuntimeError("transport"))
+    with pytest.raises(RuntimeError, match="NBA_CALIBRATOR_RESOLUTION_FAILED"):
+        resolve_nba_calibrator_artifact(failed, certification)
+    assert failed.table_called is False
+
+def test_nba_bridge_registration_and_model_invocation(monkeypatch):
+    import v17.nba_current_pregame_scorer as nba_scorer
+    import v17.team_event_bridge_runtime as bridge_runtime
+
+    # The bridge registry is global. Isolate its mutation from other tests.
+    monkeypatch.setattr(
+        bridge_runtime,
+        "TEAM_EVENT_BRIDGES",
+        dict(bridge_runtime.TEAM_EVENT_BRIDGES),
+    )
+
+    # Real pregame identity is a server-owned boundary; test its downstream
+    # missing-feature HOLD without reaching an external schedule provider.
+    monkeypatch.setattr(
+        nba_scorer,
+        "resolve_nba_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "espn-401999001",
+            "home_team_id": "espn-1",
+            "away_team_id": "espn-2",
+            "identity_provider": "TEST_ONLY",
+            "identity_resolution": "TEST_FIXTURE",
+        },
+    )
+    from v17.team_event_bridge_runtime import (
+        _register_nba_bridge_if_available,
+        score_registered_team_event_request,
+    )
+    from v17.team_event_request_runtime import TeamEventRequest
+
+    registered = _register_nba_bridge_if_available()
+    assert registered is True
+    assert "NBA" in bridge_runtime.TEAM_EVENT_BRIDGES
+    reg = bridge_runtime.TEAM_EVENT_BRIDGES["NBA"]
+    assert reg.adapter_name == "V17_NBA_TEAM_EVENT_BRIDGE"
+    assert reg.controlling_specialist == "NBA_GAME_WIN_PROBABILITY_EXPERT_V1"
+
+    from datetime import datetime, timedelta, timezone
+    future_start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+    req = TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id="test-nba",
+        requested_slate_date=future_start[:10],
+        requested_timezone="UTC",
+        candidate_family="OUTRIGHT_WINNER",
+        decision_intent="BEST_SIDE",
+        event_key="NBA:401999001",
+        sport="NBA",
+        league="NBA",
+        official_event_id="espn-401999001",
+        home_team="espn-1",
+        away_team="espn-2",
+        event_start_time_utc=future_start,
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        source_snapshot_id="snapshot-1",
+    )
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        score_registered_team_event_request(req, event_api=object())
+
+    detail = exc_info.value.detail
+    assert exc_info.value.status_code == 422
+    assert detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert detail["model_invoked"] is False
+    assert "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE" in detail["blockers"]
+    assert detail["backend_route_status"] == "SPORT_SPECIFIC_TEAM_EVENT_BRIDGE_BLOCKED"
+
+def test_public_nba_route_requires_real_server_hydration_not_caller_verified_labels():
+    """An unimplemented canonical path must reject fake VERIFIED user evidence."""
+    from datetime import datetime, timedelta, timezone
+    from fastapi import HTTPException
+    from v17.team_event_request_runtime import TeamEventRequest
+    from v17.nba_current_pregame_scorer import score_nba_team_event_request
+
+    start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    req = TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id="nba-public-attestation-negative",
+        requested_slate_date=start[:10],
+        requested_timezone="UTC",
+        candidate_family="OUTRIGHT_WINNER",
+        decision_intent="BEST_SIDE",
+        event_key="NBA:fake-verified",
+        sport="NBA",
+        league="NBA",
+        official_event_id="espn-401999001",
+        home_team="espn-1",
+        away_team="espn-2",
+        event_start_time_utc=start,
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        source_snapshot_id="caller-only-snapshot",
+        sport_specific_evidence={
+            "source_snapshot_id": "caller-only-snapshot",
+            "feature_package": _feature_package(),
+            "lineup_evidence": _lineup(),
+            "timestamp_attestation": "VERIFIED",
+        },
+    )
+    with pytest.raises(HTTPException) as caught:
+        score_nba_team_event_request(
+            req, event_api=object(), canonical_hydration_required=True,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in caught.value.detail["blockers"]
+    assert caught.value.detail["model_invoked"] is False
+    assert caught.value.detail["probability_publishable"] is False
+    assert caught.value.detail["can_execute"] is False
+

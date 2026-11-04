@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -191,15 +192,19 @@ def test_llp_requester_team_event_is_controlled_by_llp():
 
 
 def test_unsupported_sport_fails_closed_without_probability():
-    # NBA is declared in the discovery catalog but has no fitted team/event
-    # model, adapter or scorer anywhere in the repository. NFL is deliberately
-    # no longer the fixture here: it now has a registered bridge, so a failure
-    # on an NFL row is a failure of that bridge (inputs/scorer/output), never
-    # "the sport is unsupported" -- see the NFL test below.
+    # A sport with no bridge, scorer or adapter is "unsupported" and must fail
+    # closed as MODEL_UNAVAILABLE. NFL and NBA are deliberately no longer the
+    # fixture here: both now register a real bridge at production startup
+    # (team_event_bridge_runtime.install_team_event_bridge_runtime), so a
+    # failure on those rows is a failure of that bridge's own typed inputs or
+    # scorer -- never "the sport is unsupported". An evidence-free NBA row is
+    # therefore MODEL_INPUTS_INSUFFICIENT once the runtime is installed, which
+    # is why using NBA here only passed while startup had not yet run.
+    # CRICKET is cataloged for discovery but has no registered bridge or scorer.
     req = _base(
-        sport="NBA",
-        league="NBA",
-        event_key="NBA:test-2",
+        sport="CRICKET",
+        league="CRICKET",
+        event_key="CRICKET:test-2",
         official_event_id="test-2",
         settlement_basis="FULL_GAME_OUTRIGHT",
         sport_specific_evidence={},
@@ -567,3 +572,570 @@ def test_scout_research_workers_cannot_smuggle_predictive_authority_into_the_bar
     assert "model_probability" in FORBIDDEN_AUTHORITY_KEYS
     assert "terminal_label" in FORBIDDEN_AUTHORITY_KEYS
     assert "calibrated_probability_lower_bound" in FORBIDDEN_AUTHORITY_KEYS
+
+
+# --- NHL: official pregame source receipt beside the capability blocker ------
+
+_NHL_EVENT_ID = "2026020245"
+_NHL_GAMECENTER_URL = f"https://api-web.nhle.com/v1/gamecenter/{_NHL_EVENT_ID}/landing"
+
+
+def _nhl_start() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat()
+
+
+class _SourceResponse:
+    """Streamable response shaped like the official gamecenter landing payload."""
+
+    def __init__(self, *, start: str, raw: bytes | None = None, status: int = 200,
+                 url: str = _NHL_GAMECENTER_URL):
+        self.status_code = status
+        self.url = url
+        self.content = raw if raw is not None else json.dumps({
+            "id": int(_NHL_EVENT_ID),
+            "startTimeUTC": start,
+            "homeTeam": {"abbrev": "NSH"},
+            "awayTeam": {"abbrev": "CAR"},
+            "gameType": 2,
+            "gameState": "FUT",
+        }).encode("utf-8")
+        self.closed = False
+
+    def iter_content(self, *, chunk_size):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index:index + chunk_size]
+
+    def close(self):
+        self.closed = True
+
+
+class _SourceSession:
+    def __init__(self, response=None, *, error: Exception | None = None):
+        self.response = response
+        self.error = error
+        self.calls: list[tuple[str, dict]] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+def _nhl_request(**overrides):
+    start = _nhl_start()
+    values = {
+        "sport": "NHL",
+        "league": "NHL",
+        "event_key": f"NHL:{_NHL_EVENT_ID}",
+        "official_event_id": _NHL_EVENT_ID,
+        "event_start_time_utc": start,
+        "settlement_basis": "FULL_GAME_INCLUDING_OT_SO",
+        "home_team": "Nashville Predators",
+        "away_team": "Carolina Hurricanes",
+        "capture_official_source": True,
+        "sport_specific_evidence": {},
+    }
+    values.update(overrides)
+    return _base(**values), start
+
+
+
+@pytest.mark.parametrize("entrypoint", ["public_route", "bridge_dispatcher"])
+def test_nhl_official_source_is_default_off_with_no_network_or_changed_model_code(monkeypatch, entrypoint):
+    """Default NHL scoring is never delayed by optional official-source capture.
+
+    Exercise both runtime compositions: observability may replace the public
+    scorer with the bridge dispatcher, which must preserve the typed blocker.
+    """
+    from v17 import team_event_bridge_runtime as bridges
+
+    req, _ = _nhl_request(capture_official_source=False)
+    session = _SourceSession(error=AssertionError("default NHL rows must not fetch"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    scorer = (
+        team_event_module.score_team_event_request
+        if entrypoint == "public_route"
+        else bridges.score_registered_team_event_request
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        scorer(req, event_api=_FakeEventApi)
+
+    detail = exc_info.value.detail
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    assert detail["team_event_capability"]["blocker"] == (
+        "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    )
+    assert detail["official_source"]["status"] == "HELD"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
+    assert detail["official_source"]["freshness"] is None
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+    assert session.calls == []
+
+
+def test_nhl_row_reports_captured_official_identity_beside_the_capability_blocker(monkeypatch):
+    req, start = _nhl_request()
+    session = _SourceSession(_SourceResponse(start=start))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    monkeypatch.setattr(
+        team_event_module, "_OFFICIAL_SOURCE_CLOCK",
+        lambda: datetime.now(timezone.utc),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code in (409, 422)
+    detail = exc_info.value.detail
+    # Which layer answers depends on whether the governed bridge runtime is
+    # installed: the registered bridge reports typed input insufficiency, the
+    # base runtime reports MODEL_UNAVAILABLE. Both are fail-closed, and neither
+    # may carry a probability or displace the certification blocker.
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    capability = detail["team_event_capability"]
+    assert capability["status"] == "MODEL_UNAVAILABLE"
+    assert capability["blocker"] == "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    assert capability["controlling_specialist"] is None
+    assert "goalie_status" in capability["required_inputs"]
+    source = detail["official_source"]
+    assert source["status"] == "CAPTURED"
+    assert source["identity"]["official_event_id"] == _NHL_EVENT_ID
+    assert source["identity"]["home_team"] == "NSH"
+    assert source["identity"]["away_team"] == "CAR"
+    assert source["identity"]["game_state"] == "FUT"
+    assert source["freshness"]["is_pregame"] is True
+    assert source["freshness"]["seconds_until_start"] > 0
+    assert source["goalies_confirmed"] is False
+    assert source["model_invoked"] is False
+    assert source["probability_publishable"] is False
+    assert source["rank_eligible"] is False
+    assert source["can_execute"] is False
+    assert session.calls[0][1]["allow_redirects"] is False
+    assert session.calls[0][1]["stream"] is True
+
+
+def test_nhl_source_capture_failure_never_replaces_the_capability_blocker(monkeypatch):
+    req, _start = _nhl_request()
+    session = _SourceSession(error=TimeoutError("source offline"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code in (409, 422)
+    detail = exc_info.value.detail
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    assert detail["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+    assert detail["team_event_capability"]["blocker"] == (
+        "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    )
+    assert detail["official_source"]["status"] == "HELD"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_FETCH_FAILED"
+    assert detail["official_source"]["freshness"] is None
+    assert detail["official_source"]["requested_identity"]["official_event_id"] == _NHL_EVENT_ID
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+
+
+def test_nhl_identity_mismatch_is_a_typed_hold_not_a_probability(monkeypatch):
+    req, start = _nhl_request()
+    mismatched = _SourceResponse(start=start, raw=json.dumps({
+        "id": 2026020246,
+        "startTimeUTC": start,
+        "homeTeam": {"abbrev": "NSH"},
+        "awayTeam": {"abbrev": "CAR"},
+        "gameType": 2,
+        "gameState": "FUT",
+    }).encode("utf-8"))
+    monkeypatch.setattr(
+        team_event_module, "_OFFICIAL_SOURCE_SESSION", _SourceSession(mismatched)
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    detail = exc_info.value.detail
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_EVENT_IDENTITY_MISMATCH"
+    assert "identity" not in detail["official_source"]
+    assert detail["official_source"]["probability_publishable"] is False
+
+
+def test_official_source_evidence_never_raises_for_a_duck_typed_request():
+    # The bridge dispatcher accepts duck-typed requests. Enrichment must degrade
+    # to a typed hold rather than raising, otherwise it would replace the
+    # caller's own typed failure with an untyped 500.
+    from types import SimpleNamespace
+
+    blocks = team_event_module.official_source_evidence(
+        SimpleNamespace(sport="NHL", official_event_id="2026020245")
+    )
+    assert blocks["official_source"]["status"] == "HELD"
+    captured = team_event_module.official_source_evidence(
+        SimpleNamespace(
+            sport="NHL", official_event_id="2026020245", capture_official_source=True
+        )
+    )
+    source = captured["official_source"]
+    assert source["status"] == "HELD"
+    assert source["hold_code"] == "NHL_SOURCE_REQUEST_IDENTITY_MISSING"
+    assert source["freshness"] is None
+    assert source["probability_publishable"] is False
+    assert source["can_execute"] is False
+    assert captured["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+
+
+def test_non_nhl_rows_never_attempt_capture_official_source(monkeypatch):
+    req = _base(
+        sport="CRICKET",
+        league="CRICKET",
+        event_key="CRICKET:test-9",
+        official_event_id="test-9",
+        settlement_basis="FULL_GAME_OUTRIGHT",
+        sport_specific_evidence={},
+    )
+    session = _SourceSession(error=AssertionError("capture must not be attempted"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert "official_source" not in detail
+    assert "team_event_capability" not in detail
+    assert session.calls == []
+
+
+def test_nhl_official_source_evidence_carries_no_probability_fields(monkeypatch):
+    req, start = _nhl_request()
+    monkeypatch.setattr(
+        team_event_module, "_OFFICIAL_SOURCE_SESSION",
+        _SourceSession(_SourceResponse(start=start)),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    detail = exc_info.value.detail
+    assert not any(
+        key in detail
+        for key in ("raw_probability", "calibrated_probability", "calibrated_lower_bound")
+    )
+    assert detail["probability_publishable"] is False
+    assert detail["market_probability_substitution_allowed"] is False
+    assert detail["generic_reasoning_substitution_allowed"] is False
+    assert detail["official_source"]["probability_publishable"] is False
+
+
+def test_nhl_capture_is_not_attempted_unless_the_request_opts_in(monkeypatch):
+    req, _start = _nhl_request()
+    req = req.model_copy(update={"capture_official_source": False})
+    session = _SourceSession(error=AssertionError("capture must not run by default"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    detail = exc_info.value.detail
+    assert detail["official_source"]["status"] == "HELD"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
+    assert detail["official_source"]["freshness"] is None
+    assert detail["official_source"]["requested_identity"]["official_event_id"] == _NHL_EVENT_ID
+    assert detail["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+    assert detail["probability_publishable"] is False
+    assert session.calls == []
+
+
+_NHL_EVIDENCE_BLOCKS = {
+    "team_event_capability": {
+        "sport": "NHL",
+        "status": "MODEL_UNAVAILABLE",
+        "blocker": "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED",
+        "controlling_specialist": None,
+        "required_inputs": ["home_goalie_status"],
+    },
+    "official_source": {
+        "status": "HELD",
+        "hold_code": "NHL_SOURCE_CAPTURE_NOT_REQUESTED",
+        "freshness": None,
+        "requested_identity": {"official_event_id": _NHL_EVENT_ID},
+        "probability_publishable": False,
+    },
+}
+
+
+def _audited_consumer(name, req):
+    """Return one production detail-rewriting consumer keyed by ``name``."""
+    from v17 import full_board_overlay
+    from v17 import team_event_recoverable_hold_overlay as holds
+    from v17 import team_event_sport_parity as parity
+    from v17 import universal_team_event_governance as governance
+    from v17.team_event_governance_profiles import governance_profile_preflight
+
+    if name == "recoverable_hold":
+        return lambda detail: holds._typed_hold(dict(detail))
+    if name == "sport_parity":
+        return lambda detail: parity._annotate_payload(req, dict(detail), {})
+    if name == "universal_governance":
+        preflight = governance_profile_preflight(req)
+        return lambda detail: governance._augment_exception(
+            HTTPException(status_code=409, detail=detail), preflight
+        ).detail
+    if name == "full_board":
+        return lambda detail: dict(
+            full_board_overlay._typed_http_failure(
+                HTTPException(status_code=409, detail=detail)
+            )
+        )
+    raise AssertionError(f"unknown audited consumer: {name}")
+
+
+@pytest.mark.parametrize(
+    "consumer", ["recoverable_hold", "sport_parity", "universal_governance", "full_board"]
+)
+@pytest.mark.parametrize("code", ["MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT"])
+def test_detail_rewriting_consumers_preserve_official_source_evidence(consumer, code):
+    """Every stage that rewrites the fail-closed detail must copy these blocks.
+
+    These wrappers annotate with ``dict(detail)``; a consumer that re-keyed the
+    detail, or read the nested blocks as the row verdict, would silently erase or
+    relabel the NHL evidence on its way to the caller.
+    """
+    req, _start = _nhl_request(capture_official_source=False)
+    source = {
+        "code": code,
+        "blockers": ["NHL_MODEL_NOT_CERTIFIED"],
+        "probability_publishable": False,
+        "can_execute": False,
+        **_NHL_EVIDENCE_BLOCKS,
+    }
+
+    out = _audited_consumer(consumer, req)(source)
+
+    assert out["code"] == code
+    assert out["team_event_capability"] == _NHL_EVIDENCE_BLOCKS["team_event_capability"]
+    assert out["official_source"] == _NHL_EVIDENCE_BLOCKS["official_source"]
+    assert out["can_execute"] is False
+    assert out["probability_publishable"] is False
+
+
+def test_official_source_evidence_survives_the_installed_governance_stack(monkeypatch):
+    """The real overlay stack must not drop or relabel the NHL evidence blocks.
+
+    Installs the production order from ``v17_observability`` (bridge, recoverable
+    holds, universal governance, then the outer sport-parity wrapper) and verifies
+    the outermost scorer still reports both blocks with the upstream typed code.
+    """
+    from v17 import team_event_bridge_runtime as bridges
+    from v17 import team_event_recoverable_hold_overlay as holds
+    from v17 import team_event_sport_parity as parity
+    from v17 import universal_team_event_governance as governance
+
+    watched = [
+        (bridges, "score_registered_team_event_request", True),
+        (bridges, "team_event_bridge_health", True),
+        (team_event_module, "score_team_event_request", True),
+        (bridges, "_v17_team_event_recoverable_hold_installed", False),
+        (bridges, "_v17_team_event_sport_parity_installed", False),
+        (governance, "_INSTALLED", False),
+        (governance, "_ORIGINAL_SCORE", False),
+        (governance, "_ORIGINAL_HEALTH", False),
+    ]
+    for module, attribute, required in watched:
+        if required or hasattr(module, attribute):
+            monkeypatch.setattr(
+                module, attribute, getattr(module, attribute, None), raising=not required
+            )
+
+    req, _start = _nhl_request(capture_official_source=False)
+    # The runtime's own evidence is the reference: the stack must return these
+    # exact blocks, not a re-derived or relabelled copy.
+    reference = team_event_module.official_source_evidence(req)
+    session = _SourceSession(error=AssertionError("the overlay stack must not capture"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+
+    bridges.install_team_event_bridge_runtime()
+    holds.install_team_event_recoverable_hold_overlay()
+    governance.install_universal_team_event_governance()
+    parity.install_team_event_sport_parity()
+
+    with pytest.raises(HTTPException) as exc_info:
+        team_event_module.score_team_event_request(req, event_api=_FakeEventApi)
+
+    detail = exc_info.value.detail
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    assert detail["team_event_capability"] == reference["team_event_capability"]
+    assert detail["official_source"] == reference["official_source"]
+    assert detail["sport_parity_contract"]["sport"] == "NHL"
+    assert "universal_governance_profile" in detail
+    assert detail["can_execute"] is False
+    assert detail["probability_publishable"] is False
+    assert detail["rank_eligible"] is False
+    assert session.calls == []
+
+
+class _JsonRowDetailDB:
+    """Fake PostgREST table that stores rows only as JSON text, like jsonb.
+
+    Encoding through ``json.dumps`` makes the fake reject anything a real jsonb
+    column could not hold, so a non-serializable evidence value fails here rather
+    than at the production write boundary.
+    """
+
+    def __init__(self):
+        self.stored = {}
+        self._op = None
+        self._run_id = None
+        self._start = 0
+        self._end = 9999
+        self._fields = None
+        self._payload = None
+
+    def table(self, name):
+        from v17.daily_response_contract import DAILY_ROW_DETAIL_TABLE
+
+        assert name == DAILY_ROW_DETAIL_TABLE
+        self._op = None
+        self._run_id = None
+        self._start, self._end, self._fields, self._payload = 0, 9999, None, None
+        return self
+
+    def upsert(self, payload, **_kwargs):
+        self._op = "upsert"
+        self._payload = payload
+        return self
+
+    def select(self, fields):
+        self._op = "select"
+        self._fields = [field.strip() for field in str(fields).split(",")]
+        return self
+
+    def eq(self, field, value):
+        assert field == "run_id"
+        self._run_id = value
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self._start, self._end = start, end
+        return self
+
+    def execute(self):
+        from types import SimpleNamespace
+
+        if self._op == "upsert":
+            for row in self._payload:
+                self.stored[(row["run_id"], row["row_index"])] = json.dumps(row, allow_nan=False)
+            return SimpleNamespace(data=[])
+        rows = []
+        for (run_id, _index), raw in sorted(self.stored.items(), key=lambda item: item[0][1]):
+            if run_id != self._run_id:
+                continue
+            decoded = json.loads(raw)
+            rows.append({field: decoded.get(field) for field in self._fields})
+        return SimpleNamespace(data=rows[self._start:self._end + 1])
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_nhl_evidence_blocks_survive_row_detail_persistence_and_read_back(
+    monkeypatch, capture
+):
+    """The evidence blocks must cross the jsonb boundary unchanged.
+
+    ``persist_row_detail`` writes the whole terminal row under one ``detail``
+    column and only reconciles ``row_index``; a compact response therefore loses
+    the evidence unless the stored payload keeps it. This drives the real write,
+    a jsonb-faithful store, and the real paged read-back.
+    """
+    from v17.daily_response_contract import persist_row_detail, read_row_detail_page
+    from v17.daily_snapshot_runtime import _terminal_row
+
+    req, start = _nhl_request(capture_official_source=capture)
+    session = (
+        _SourceSession(_SourceResponse(start=start))
+        if capture
+        else _SourceSession(error=AssertionError("persistence must not trigger a capture"))
+    )
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    payload = exc_info.value.detail
+
+    row = _terminal_row(
+        "MONEYLINE",
+        {"official_event_id": _NHL_EVENT_ID, "sport": "NHL", "can_execute": False},
+        payload,
+        {
+            "final_terminal": "HELD",
+            "stages": ["EVENT_IDENTITY", "SPORT_MODEL_SELECTED"],
+            "can_execute": False,
+        },
+    )
+    db = _JsonRowDetailDB()
+    context = {
+        "requested_slate_date": "2026-11-04",
+        "requested_timezone": "America/Chicago",
+        "caller_class": "V17_DAILY_ACTION",
+        "can_execute": False,
+    }
+
+    receipt = persist_row_detail(
+        db, run_id="v17-nhl-held", rows=[row], request_context=context
+    )
+    assert receipt["status"] == "PERSISTED"
+    assert receipt["rows_persisted"] == 1
+    assert receipt["detail_available"] is True
+
+    page = read_row_detail_page(db, run_id="v17-nhl-held")
+    assert page["status"] == "OK"
+    assert page["returned"] == 1
+    stored = page["rows"][0]["detail"]
+
+    assert stored["row_status"] == "HELD"
+    assert stored["result"]["code"] == payload["code"]
+    assert stored["result"]["team_event_capability"] == payload["team_event_capability"]
+    assert stored["result"]["official_source"] == payload["official_source"]
+    assert stored["result"]["probability_publishable"] is False
+    assert stored["result"]["rank_eligible"] is False
+    assert stored["result"]["can_execute"] is False
+    assert stored["probability_publishable"] is False
+    assert stored["can_execute"] is False
+    assert stored["terminal_reduction"]["can_execute"] is False
+    assert stored["daily_request_context"]["requested_slate_date"] == "2026-11-04"
+
+    source = stored["result"]["official_source"]
+    # A captured receipt is evidence persisted beside the hold; it is never a
+    # published probability, and an uncaptured row stays an explicit typed hold.
+    assert source["status"] == ("CAPTURED" if capture else "HELD")
+    if capture:
+        assert source.get("hold_code") is None
+    else:
+        assert source["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
+    assert stored["result"]["team_event_capability"]["blocker"] == (
+        "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    )
+    assert not any(
+        key in stored["result"]
+        for key in ("model_probability", "calibrated_probability", "calibrated_lower_bound")
+    )
+    if not capture:
+        assert session.calls == []
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_jsonb_fake_rejects_non_finite_nhl_evidence(nonfinite):
+    """A jsonb-incompatible number must fail closed at the real persistence seam."""
+    from v17.daily_response_contract import persist_row_detail
+    from v17.daily_snapshot_runtime import _terminal_row
+
+    row = _terminal_row(
+        "MONEYLINE",
+        {"sport": "NHL", "can_execute": False},
+        {
+            "official_source": {"nonfinite_evidence": nonfinite},
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        {"final_terminal": "HELD", "can_execute": False},
+    )
+    db = _JsonRowDetailDB()
+    receipt = persist_row_detail(db, run_id="v17-nhl-invalid-jsonb", rows=[row])
+
+    assert receipt["status"] == "PERSISTENCE_UNAVAILABLE"
+    assert receipt["detail_available"] is False
+    assert receipt["rows_persisted"] == 0
+    assert any("ValueError" in blocker for blocker in receipt["blockers"])
+    assert db.stored == {}

@@ -1,0 +1,228 @@
+# V17 model restoration receipt — 2026-11-04
+
+```text
+can_execute=false
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+WORKING_BRANCH = freebuff/b45b277542429f777af32f00
+BASELINE_MAIN = 287d41483 (merge of #2427)
+STATUS = SOURCE_LANES_INTEGRATED__PRODUCTION_CERTIFICATION_BLOCKED
+```
+
+This receipt records what was actually integrated and verified in a local
+repository worktree. It is not a production certification and does not
+publish a governed probability. Every number below comes from a pytest run
+against this branch, not from CI or from the live Render deployment.
+
+## 0. Publication record
+
+```text
+PUBLISHED_BRANCH          = freebuff/b45b277542429f777af32f00
+PUBLISHED_CODE_HEAD       = 2952e872a07e27b9b8754d520618d7bbb9eae4c3
+RECEIPT_COMMIT            = the docs commit immediately after PUBLISHED_CODE_HEAD
+                            (no source change between them; diff on *.py is empty)
+ORIGIN_MAIN_AT_WRITE      = 2c2bf35da5d0bdd13c42f8016de1a7b4ffa1ca88
+ORIGIN_MAIN_SUBJECT       = 2026-11-04 15:39:49 -0600 Merge pull request #2385 from gregoryharper84-ship-it/chore/coderabbit-wow-v17-20261102
+WORK_STARTED_FROM         = 287d41483 (contained in ORIGIN_MAIN_AT_WRITE: true)
+MAIN_ADVANCED_BY          = 46 commits since work started (other writers; no rewind)
+MY_BRANCH_AHEAD_OF_MAIN   = 122 commits
+MERGE_WITH_ORIGIN_MAIN    = conflict-free
+FULL_SUITE_AT_CODE_HEAD   = 9013 passed, 55 skipped, 0 failed (393.19s)
+PUSH_MODE                 = fast-forward update of a feature branch; main never written, never forced
+```
+
+`main` was never written by this work, so protected review and CI still own the
+merge decision. This branch also carries commits pushed by another writer
+(upstream #2431 hydration/QA-receipt work), which were merged rather than
+discarded.
+
+### Opt-in reconciliation on the NHL evidence lane
+
+The same opt-in idea was implemented twice — once here and once by the repository
+owner. Merging them left **two** request flags (`official_source_capture` and
+`capture_official_source`) gating the same capture, so a fetch would have required
+both, and the not-requested condition reported two different statuses. The
+owner's `capture_official_source` field and its `HELD` /
+`NHL_SOURCE_CAPTURE_NOT_REQUESTED` status are now the single contract; the opt-in
+check runs before identity validation, and the duck-typed-request guard is kept.
+That reconciliation is the change measured above.
+
+An earlier revision of this receipt recorded a protected-main *rewind* to
+`3fbc4c5de`. That was wrong and has been removed: the sandbox's
+`refs/remotes/origin/main` tracking ref was stale at `3fbc4c5de`, and
+`git fetch origin main` refreshed only `FETCH_HEAD`, not the tracking ref. Every
+value above is read from the remote at write time. No history was rewritten and
+no commits were dropped.
+
+## 1. Lanes integrated on the working branch
+
+| Lane | Disposition | Evidence |
+| --- | --- | --- |
+| NBA source PR #2386 | **Integrated** (`64e0a92f5`, conflict-free) | 284 passed / 22 skipped |
+| NBA integration wrapper #2428 | **Superseded** — closed unmerged; #2386 merged directly | n/a |
+| NHL PR #2395 | **Already on main** — diff vs `main` is one whitespace line | 52 passed baseline |
+| Release automation #2429 | **Integrated** (`99edcfa7c`, conflict-free) | 402 passed |
+| Release automation #2430 | **Integrated** (`66937ae1e`, conflict-free) | 402 passed |
+| AMRT PR #1843 | **Already superseded by main — do not merge** | see §3 |
+| NHL source receipt PR #2419 | **Integrated** (merge `93efb7846`, conflict-free, all 9 commits preserved) | 37 new tests + 24 request-runtime passed |
+
+### NBA lane contents now on the branch
+
+- `v17/nba_current_pregame_scorer.py` — fail-closed fitted pregame scorer seam
+  (identity → feature lineage → rotation → certification → champion artifact →
+  certified calibrator → separately approved dynamic bounds → calibrated output)
+- `v17/nba_event_identity.py`, `v17/nba_points_*`, `nba_scalar_*` lineage
+  hardening (canonical SportsDataVortex namespace; ESPN/BallDontLie provenance
+  holds instead of silent mixing)
+- `migrations/20261007_basketball_calibration_artifact_evidence.sql`
+- `migrations/20261102_basketball_certified_calibrator_artifact_rpc.sql`
+- `v17/basketball_team_event_calibration_artifact.py`,
+  `v17/basketball_team_event_forward_features.py`,
+  `v17/multisport_team_event_calibration.py` (bounds receipt binding)
+- `v17/team_event_bridge_runtime.py`, `v17/team_event_model_registry_audit.py`
+
+### NHL lane contents now on the branch (PR #2419, head `3fe2eccaf`)
+
+- `v17/nhl_official_pregame_source_receipt.py` — read-only first-party
+  gamecenter capture that establishes event identity and freshness only.
+  `can_execute=False`, `probability_publishable=False`, `rank_eligible=False`,
+  `model_invoked=False`; every unhydrated input (goalies, injuries, rest/travel,
+  Elo, special teams, calibrator) is reported in `missing_fields` rather than
+  filled from odds, historical `goalieComparison` leaders, or guesses.
+  Fails closed on non-UTC or out-of-range clocks, non-`FUT`/`PRE` states,
+  identity mismatch, redirects, oversize or empty bodies, missing streaming,
+  and a 20s total deadline.
+- `tests/test_v17_nhl_official_pregame_source_receipt.py` — 37 offline boundary
+  tests, no provider calls.
+- **No certification change.** `CERTIFIED_TEAM_EVENT_SPORTS` is untouched and no
+  NHL bridge is registered, so NHL capability correctly remains
+  `MODEL_UNAVAILABLE` / `NOT_CERTIFIED`. This lane produces evidence, not a
+  publishable probability.
+
+## 2. Verification actually run on this branch
+
+| Suite | Files | Result |
+| --- | --- | --- |
+| Basketball / NBA / team-event / NHL boundary | 19 | **284 passed, 22 skipped** |
+| Release, QA, render and governance gates | 11 | **402 passed** |
+| AMRT, resident supervisor, Claude runtime | 11 | **271 passed** |
+| Cross-sport consumers (certification replay, publication guard, NHL totals, NFL governed publication) | 14 | **178 passed** |
+| Baseline before integration | 6 | **52 passed** |
+| Whole `artifacts/wow-engine` tree, after NHL #2419 | 293 test files | **9001 passed, 55 skipped, 0 failed** |
+
+1,187 passed, 22 skipped, 0 failed across those five batches. The 22 skips are the
+PostgreSQL-mirror and live-credential cases that require a real database;
+they are skipped, not passed, and are called out in §4.
+
+The whole-tree run after integrating NHL #2419 is **9001 passed, 55 skipped,
+0 failed** in 360s — exactly the previous 8964 plus the 37 tests this lane adds,
+so the integration neither regressed nor silently skipped anything. The new test
+file is assigned to CI shard 2 by `scripts/wow_rapid.py shard-files`, so hosted
+CI will actually execute it.
+
+### NHL official source is now reported on the team-event request path
+
+An NHL row that fails closed now carries two evidence blocks beside the
+unchanged typed code: `team_event_capability` (manifest status, blocker,
+controlling specialist, required inputs) and `official_source` (captured
+first-party identity, `seconds_until_start`, snapshot id, payload hash, or a
+typed `hold_code`). A source hold never replaces the capability blocker, and
+neither block can emit a probability or upgrade the row. Non-NHL rows attempt no
+capture at all, and an NHL row captures nothing unless the request opts in with
+`capture_official_source=true`, so the default fail-closed row performs no
+outbound I/O and adds no latency.
+
+Two implementation facts were forced by the runtime's own composition, and both
+were discovered by the whole-suite run rather than by design review:
+
+- The evidence seams are module-level, not parameters of
+  `score_team_event_request`: the governed observability wrapper
+  (`v17.team_event_sport_parity`) re-exposes that function with the canonical
+  keyword signature, so widening it made the new arguments unusable wherever
+  observability is installed.
+- NHL rows are normally answered by the registered-bridge dispatcher
+  (`install_team_event_bridge_runtime` rebinds the base function), which reports
+  `MODEL_INPUTS_INSUFFICIENT` while the uninstalled base runtime reports
+  `MODEL_UNAVAILABLE`. The evidence is therefore attached in both layers, and the
+  code itself is never relabelled in either.
+
+Verified by **9010 passed, 55 skipped, 0 failed** in 363.63s across the
+whole `artifacts/wow-engine` tree, plus a targeted run that installs the parity
+wrapper and bridge runtime alongside the request-runtime tests.
+This head also merges the six upstream #2431 commits that were pushed to
+this branch by another writer (NBA recent-season hydration bound, QA receipt
+pagination, GitHub CLI reporting). They touch the basketball hydrator, release
+truth preflight and the digest workflow; none touches the NHL evidence path.
+
+## 3. AMRT PR #1843 is stale, not pending
+
+Every file #1843 adds already exists on `main`, and `main`'s copies are
+strictly larger. Merging it would *delete* working code:
+
+```text
+v17/amrt_operational_lanes.py                  -56 lines
+v17/engineering_resident_supervisor.py        -560 lines
+test_v17_engineering_resident_supervisor.py   -872 lines
+docs/wow/engineering/WOW_AMRT_RECOVERY_TEAM.md  -5 lines
+```
+
+The AMRT lane on `main` passes 271 tests. The correct disposition for #1843
+is close-as-superseded, which is a repository action outside this receipt.
+
+## 4. Why the model is still not "restored" in the governed sense
+
+The source lane is integrated and green, but the governing capability
+manifest refuses to publish. Measured from this branch:
+
+```json
+{
+  "MLB": {"certification_state": "CERTIFIED", "capability_status": "AVAILABLE"},
+  "NBA": {"certification_state": "NOT_CERTIFIED", "capability_status": "MODEL_UNAVAILABLE",
+           "capability_blocker": "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"},
+  "NHL": {"certification_state": "NOT_CERTIFIED", "capability_status": "MODEL_UNAVAILABLE",
+           "declared_identity": "NHL_GAME_WIN_PROBABILITY_EXPERT_V1"}
+}
+```
+
+`CERTIFIED_TEAM_EVENT_SPORTS` contains MLB only. NBA is not present even as a
+declared identity; NHL is declared-only, and the manifest states explicitly
+that a declared specialist identity is a routing identity, not certification.
+
+The NBA scorer itself is already written to stop at `MODEL_RESEARCH_ONLY_HOLD`
+even on a fully passing certification path: it returns
+`probability_publishable=false`, `rank_eligible=false`, and blockers
+`LLP_EVENT_GOVERNANCE_NOT_PROVEN` +
+`NBA_IMMUTABLE_PREDICTION_RECEIPT_UNAVAILABLE`. There is no code defect to fix
+here — the remaining gap is production evidence.
+
+Required to actually flip NBA/NHL to `AVAILABLE`, none of which can be
+performed from a source worktree:
+
+1. Apply `20261007_basketball_calibration_artifact_evidence.sql` and
+   `20261102_basketball_certified_calibrator_artifact_rpc.sql` to the governed
+   Supabase schema.
+2. Register the certified NBA champion artifact, its certified calibrator and
+   a **separate** `NBA_DYNAMIC_BOUNDS_V1` approval receipt binding that
+   calibrator's SHA-256 in the protected registry
+   (`v17/fitted_team_event_certification.py` / `wow_basketball_certified_*` RPCs).
+3. Only then admit `NBA` to `CERTIFIED_TEAM_EVENT_SPORTS` — a governance
+   decision that changes probability behavior and is a documented stop
+   condition for an engineering-only change.
+4. Produce the immutable pregame prediction receipt from the live runtime so
+   `NBA_IMMUTABLE_PREDICTION_RECEIPT_UNAVAILABLE` can clear.
+5. Repeat 1–4 for NHL against its own fitted artifact, plus valid goalie /
+   rest-travel pregame inputs at the current event boundary.
+6. Reconcile the deployed Render SHA against this branch and capture live
+   scoring receipts.
+
+## 5. Honest status language
+
+```text
+BACKEND_RUNTIME                = not re-verified (no production access from this worktree)
+MODEL_CAPABILITY_NBA           = MODEL_UNAVAILABLE (source integrated, artifact not certified)
+MODEL_CAPABILITY_NHL           = MODEL_UNAVAILABLE (declared identity only)
+REPOSITORY_GOVERNANCE          = 1,187 targeted tests green on working branch
+PROTECTED_MAIN                 = unchanged; this work sits on a feature branch pending PR
+LIVE_GPT_EDITOR_SYNC           = RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED
+USER_JOURNEY_HEALTH            = FAIL (no end-to-end governed production result)
+can_execute                    = false
+```
