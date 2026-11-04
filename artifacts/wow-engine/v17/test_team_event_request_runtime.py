@@ -633,6 +633,7 @@ def _nhl_request():
         settlement_basis="FULL_GAME_INCLUDING_OT_SO",
         home_team="Nashville Predators",
         away_team="Carolina Hurricanes",
+        official_source_capture=True,
         sport_specific_evidence={},
     )
     return req, start
@@ -729,13 +730,19 @@ def test_official_source_evidence_never_raises_for_a_duck_typed_request():
     blocks = team_event_module.official_source_evidence(
         SimpleNamespace(sport="NHL", official_event_id="2026020245")
     )
-    source = blocks["official_source"]
+    assert blocks["official_source"]["status"] == "NOT_REQUESTED"
+    captured = team_event_module.official_source_evidence(
+        SimpleNamespace(
+            sport="NHL", official_event_id="2026020245", official_source_capture=True
+        )
+    )
+    source = captured["official_source"]
     assert source["status"] == "HELD"
     assert source["hold_code"] == "NHL_SOURCE_REQUEST_IDENTITY_MISSING"
     assert source["freshness"] is None
     assert source["probability_publishable"] is False
     assert source["can_execute"] is False
-    assert blocks["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+    assert captured["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
 
 
 def test_non_nhl_rows_never_attempt_official_source_capture(monkeypatch):
@@ -775,3 +782,20 @@ def test_nhl_official_source_evidence_carries_no_probability_fields(monkeypatch)
     assert detail["market_probability_substitution_allowed"] is False
     assert detail["generic_reasoning_substitution_allowed"] is False
     assert detail["official_source"]["probability_publishable"] is False
+
+
+def test_nhl_capture_is_not_attempted_unless_the_request_opts_in(monkeypatch):
+    req, _start = _nhl_request()
+    req = req.model_copy(update={"official_source_capture": False})
+    session = _SourceSession(error=AssertionError("capture must not run by default"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    detail = exc_info.value.detail
+    assert detail["official_source"]["status"] == "NOT_REQUESTED"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
+    assert detail["official_source"]["freshness"] is None
+    assert detail["official_source"]["requested_identity"]["official_event_id"] == _NHL_EVENT_ID
+    assert detail["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+    assert detail["probability_publishable"] is False
+    assert session.calls == []

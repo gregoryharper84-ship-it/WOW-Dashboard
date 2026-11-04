@@ -113,7 +113,9 @@ controlling specialist, required inputs) and `official_source` (captured
 first-party identity, `seconds_until_start`, snapshot id, payload hash, or a
 typed `hold_code`). A source hold never replaces the capability blocker, and
 neither block can emit a probability or upgrade the row. Non-NHL rows attempt no
-capture at all.
+capture at all, and an NHL row captures nothing unless the request opts in with
+`official_source_capture=true`, so the default fail-closed row performs no
+outbound I/O and adds no latency.
 
 Two implementation facts were forced by the runtime's own composition, and both
 were discovered by the whole-suite run rather than by design review:
