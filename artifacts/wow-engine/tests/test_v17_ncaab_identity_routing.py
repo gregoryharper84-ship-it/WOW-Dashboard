@@ -162,3 +162,32 @@ def test_identity_alone_never_publishes_a_probability():
     assert row.rank_eligible is False
     assert row.detail["model_invoked"] is False
     assert row.as_dict()["can_execute"] is False
+
+
+def test_missing_team_alias_preserves_original_discovery_id():
+    event = ncaab_alias_event(
+        raw_extra={
+            "provider_event_id": "",
+            "_wow_secondary_event_id": "",
+            "_wow_secondary_home_team_id": "",
+        }
+    )
+    event = DiscoveredEvent(
+        **{**event.__dict__, "official_event_id": "espn-401999999"}
+    )
+    held = canonicalize_ncaab_discovery_identity(event)
+    assert held.official_event_id is None
+    assert held.raw["provider_event_id"] == "espn-401999999"
+    assert held.raw["canonical_identity_blocker"] == "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
+
+
+def test_unexpected_identity_failure_uses_fixed_registered_code(monkeypatch):
+    import v17.ncaab_event_identity as identity
+
+    def fail(**_kwargs):
+        raise RuntimeError("provider secret response must not be exposed")
+
+    monkeypatch.setattr(identity, "resolve_ncaab_current_event_identity", fail)
+    held = canonicalize_ncaab_discovery_identity(ncaab_alias_event())
+    assert held.official_event_id is None
+    assert held.raw["canonical_identity_blocker"] == "NCAAB_CANONICAL_RESOLVER_FAILED"
