@@ -70,7 +70,7 @@ def test_bound_challenger_is_non_serving_event_dynamic_and_uses_untouched_test(m
             "can_execute": False,
         },
     )
-    monkeypatch.setattr(challenger, "_paginate_rows", lambda db, candidate: rows)
+    monkeypatch.setattr(challenger, "_candidate_bound_rows", lambda db, candidate: rows)
 
     result = challenger.run_ncaaf_publication_bound_challenger(object(), "candidate-1")
 
