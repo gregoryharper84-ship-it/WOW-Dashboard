@@ -134,6 +134,13 @@ def _fetch_scoreboard(date_key: str) -> list[Mapping[str, Any]]:
             raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_PARTIAL")
     if len(events) >= SCOREBOARD_LIMIT:
         raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_PARTIAL")
+    for event in events:
+        try:
+            _aware(event.get("date"))
+        except NCAABEventIdentityError as exc:
+            raise NCAABEventIdentityError(
+                "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT", "scoreboard timestamp invalid"
+            ) from exc
     return list(events)
 
 
@@ -200,18 +207,18 @@ def resolve_ncaab_current_event_identity(
 
     matches: list[tuple[str, datetime]] = []
     for row in rows:
-        event_id = str(row.get("id") or "").strip()
-        if not event_id:
-            continue
         sides = _competitors(row)
         if sides is None or sides != (home_id, away_id):
             continue
         try:
             start = _aware(row.get("date"))
-        except NCAABEventIdentityError:
-            continue
+        except NCAABEventIdentityError as exc:
+            raise NCAABEventIdentityError(
+                "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT", "matching event timestamp invalid"
+            ) from exc
         if abs((start - event_time).total_seconds()) > START_TOLERANCE_SECONDS:
             continue
+        event_id = str(row.get("id") or "").strip()
         if not (1 <= len(event_id) <= 20 and event_id.isascii() and event_id.isdecimal()):
             continue
         matches.append((event_id, start))

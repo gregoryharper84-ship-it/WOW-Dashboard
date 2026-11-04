@@ -9,7 +9,9 @@ import re
 import pytest
 
 from v17 import soccer_event_identity as identity
+from v17.cross_sport_winner_discovery import DiscoveredEvent
 from v17.team_event_governance_profiles import TEAM_EVENT_GOVERNANCE_PROFILES
+from v17.team_event_sport_parity import canonicalize_soccer_discovery_identity
 
 EVENT_AT = "2026-11-07T12:30:00Z"
 
@@ -266,6 +268,26 @@ def test_malformed_matching_fixture_cannot_prove_absence_or_uniqueness(date, val
     with pytest.raises(identity.SoccerEventIdentityError) as exc:
         _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
     assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("malformed", [None, "bad-row", []])
+@pytest.mark.parametrize("malformed_first", [False, True])
+def test_mixed_scoreboard_keeps_valid_fixture_unresolved(monkeypatch, malformed, malformed_first):
+    events = [malformed, scoreboard_event()] if malformed_first else [scoreboard_event(), malformed]
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(status_code=200, json=lambda: {"events": events}),
+    )
+    event = DiscoveredEvent(
+        sport="SOCCER", league="SOCCER", sport_key="soccer_epl",
+        official_event_id=None, home_team="Leeds United", away_team="Tottenham Hotspur",
+        commence_time_utc=EVENT_AT, event_status="PREGAME", source="DISCOVERY_FEED",
+        raw={"provider_event_id": "alias-epl-1"},
+    )
+    held = canonicalize_soccer_discovery_identity(event)
+    assert held.official_event_id is None
+    assert held.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert held.raw["canonical_identity_blocker"] == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
 
 
 def test_soccer_failure_codes_are_registered():
