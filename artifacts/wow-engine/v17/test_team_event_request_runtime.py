@@ -962,3 +962,150 @@ def test_official_source_evidence_survives_the_installed_governance_stack(monkey
     assert detail["probability_publishable"] is False
     assert detail["rank_eligible"] is False
     assert session.calls == []
+
+
+class _JsonRowDetailDB:
+    """Fake PostgREST table that stores rows only as JSON text, like jsonb.
+
+    Encoding through ``json.dumps`` makes the fake reject anything a real jsonb
+    column could not hold, so a non-serializable evidence value fails here rather
+    than at the production write boundary.
+    """
+
+    def __init__(self):
+        self.stored = {}
+        self._op = None
+        self._run_id = None
+        self._start = 0
+        self._end = 9999
+        self._fields = None
+        self._payload = None
+
+    def table(self, name):
+        from v17.daily_response_contract import DAILY_ROW_DETAIL_TABLE
+
+        assert name == DAILY_ROW_DETAIL_TABLE
+        self._op = None
+        self._run_id = None
+        self._start, self._end, self._fields, self._payload = 0, 9999, None, None
+        return self
+
+    def upsert(self, payload, **_kwargs):
+        self._op = "upsert"
+        self._payload = payload
+        return self
+
+    def select(self, fields):
+        self._op = "select"
+        self._fields = [field.strip() for field in str(fields).split(",")]
+        return self
+
+    def eq(self, field, value):
+        assert field == "run_id"
+        self._run_id = value
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self._start, self._end = start, end
+        return self
+
+    def execute(self):
+        from types import SimpleNamespace
+
+        if self._op == "upsert":
+            for row in self._payload:
+                self.stored[(row["run_id"], row["row_index"])] = json.dumps(row)
+            return SimpleNamespace(data=[])
+        rows = []
+        for (run_id, _index), raw in sorted(self.stored.items(), key=lambda item: item[0][1]):
+            if run_id != self._run_id:
+                continue
+            decoded = json.loads(raw)
+            rows.append({field: decoded.get(field) for field in self._fields})
+        return SimpleNamespace(data=rows[self._start:self._end + 1])
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_nhl_evidence_blocks_survive_row_detail_persistence_and_read_back(
+    monkeypatch, capture
+):
+    """The evidence blocks must cross the jsonb boundary unchanged.
+
+    ``persist_row_detail`` writes the whole terminal row under one ``detail``
+    column and only reconciles ``row_index``; a compact response therefore loses
+    the evidence unless the stored payload keeps it. This drives the real write,
+    a jsonb-faithful store, and the real paged read-back.
+    """
+    from v17.daily_response_contract import persist_row_detail, read_row_detail_page
+    from v17.daily_snapshot_runtime import _terminal_row
+
+    req, start = _nhl_request(capture_official_source=capture)
+    session = (
+        _SourceSession(_SourceResponse(start=start))
+        if capture
+        else _SourceSession(error=AssertionError("persistence must not trigger a capture"))
+    )
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    payload = exc_info.value.detail
+
+    row = _terminal_row(
+        "MONEYLINE",
+        {"official_event_id": _NHL_EVENT_ID, "sport": "NHL", "can_execute": False},
+        payload,
+        {
+            "final_terminal": "HELD",
+            "stages": ["EVENT_IDENTITY", "SPORT_MODEL_SELECTED"],
+            "can_execute": False,
+        },
+    )
+    db = _JsonRowDetailDB()
+    context = {
+        "requested_slate_date": "2026-11-04",
+        "requested_timezone": "America/Chicago",
+        "caller_class": "V17_DAILY_ACTION",
+        "can_execute": False,
+    }
+
+    receipt = persist_row_detail(
+        db, run_id="v17-nhl-held", rows=[row], request_context=context
+    )
+    assert receipt["status"] == "PERSISTED"
+    assert receipt["rows_persisted"] == 1
+    assert receipt["detail_available"] is True
+
+    page = read_row_detail_page(db, run_id="v17-nhl-held")
+    assert page["status"] == "OK"
+    assert page["returned"] == 1
+    stored = page["rows"][0]["detail"]
+
+    assert stored["row_status"] == "HELD"
+    assert stored["result"]["code"] == payload["code"]
+    assert stored["result"]["team_event_capability"] == payload["team_event_capability"]
+    assert stored["result"]["official_source"] == payload["official_source"]
+    assert stored["result"]["probability_publishable"] is False
+    assert stored["probability_publishable"] is False
+    assert stored["can_execute"] is False
+    assert stored["daily_request_context"]["requested_slate_date"] == "2026-11-04"
+
+    source = stored["result"]["official_source"]
+    # A captured receipt is evidence persisted beside the hold; it is never a
+    # published probability, and an uncaptured row stays an explicit typed hold.
+    assert source["status"] == ("CAPTURED" if capture else "HELD")
+    if capture:
+        assert source.get("hold_code") is None
+    else:
+        assert source["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
+    assert stored["result"]["team_event_capability"]["blocker"] == (
+        "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    )
+    assert not any(
+        key in stored["result"]
+        for key in ("model_probability", "calibrated_probability", "calibrated_lower_bound")
+    )
+    if not capture:
+        assert session.calls == []
