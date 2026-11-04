@@ -51,9 +51,13 @@ def parse_commit(raw):
     sha, stamp, parents, message = fields
     return {"sha": sha, "committed_at": stamp, "parents": parents.split() if parents else [], "message": message}
 
+def parse_time(value):
+    """Accept Git ISO-8601 UTC Z on Python 3.9+ without altering the instant."""
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
 def is_within(stamp, start=START, end=END):
-    t = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    return dt.datetime.fromisoformat(start) <= t <= dt.datetime.fromisoformat(end)
+    t = parse_time(stamp.replace("Z", "+00:00"))
+    return parse_time(start) <= t <= parse_time(end)
 
 def red_first_from_evidence(fix_sha, first_edit_at, evidence):
     """Cross-check pre/post test evidence; authenticity still needs independent audit."""
@@ -69,8 +73,8 @@ def red_first_from_evidence(fix_sha, first_edit_at, evidence):
                 and pre["commit_sha"] != fix_sha and post.get("commit_sha") == fix_sha
                 and type(pre.get("exit_code")) is int and pre["exit_code"] != 0
                 and post.get("exit_code") == 0
-                and dt.datetime.fromisoformat(pre["executed_at"]) < dt.datetime.fromisoformat(first_edit_at)
-                and dt.datetime.fromisoformat(post["executed_at"]) >= dt.datetime.fromisoformat(first_edit_at))
+                and parse_time(pre["executed_at"]) < parse_time(first_edit_at)
+                and parse_time(post["executed_at"]) >= parse_time(first_edit_at))
     except (KeyError, ValueError, TypeError):
         return False
 
@@ -82,7 +86,7 @@ def same_cause_candidate(a, b):
         return False
     if not set(a["paths"]) & set(b["paths"]):
         return False
-    delta = abs((dt.datetime.fromisoformat(a["committed_at"]) - dt.datetime.fromisoformat(b["committed_at"])).total_seconds())
+    delta = abs((parse_time(a["committed_at"]) - parse_time(b["committed_at"])).total_seconds())
     return delta <= 72 * 3600
 
 def census(repo, head=BOUNDARY, start=START, end=END):
@@ -142,10 +146,10 @@ def census(repo, head=BOUNDARY, start=START, end=END):
             by_code[code].append(x)
     pairs = {}
     for code, matches in by_code.items():
-        matches.sort(key=lambda x: x["committed_at"])
+        matches.sort(key=lambda x: parse_time(x["committed_at"]))
         for i, a in enumerate(matches):
             for b in matches[i+1:]:
-                delta = (dt.datetime.fromisoformat(b["committed_at"]) - dt.datetime.fromisoformat(a["committed_at"])).total_seconds()
+                delta = (parse_time(b["committed_at"]) - parse_time(a["committed_at"])).total_seconds()
                 if delta > 72*3600:
                     break
                 if same_cause_candidate(a,b):
