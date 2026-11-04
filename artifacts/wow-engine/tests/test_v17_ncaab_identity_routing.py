@@ -58,7 +58,7 @@ def test_resolved_identity_is_recorded_and_the_alias_is_preserved(monkeypatch):
         lambda **_kwargs: {
             "event_id": "NCAAB:401950001",
             "identity_provider": "ESPN_NCAAB_SCOREBOARD",
-            "identity_resolution": "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH",
+            "identity_resolution": "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_START_MATCH",
             "prediction_authority": False,
             "can_execute": False,
         },
