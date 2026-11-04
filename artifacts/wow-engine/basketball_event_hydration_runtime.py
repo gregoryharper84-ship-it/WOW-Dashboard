@@ -585,9 +585,14 @@ def hydrate(
             has_new = latest_before is None or any(
                 date.fromisoformat(str(row["game_date"])[:10]) > latest_before for row in normalized_rows
             )
+            # NBA season assets are labelled by their ending year: from
+            # October 2026, 2027 is current and 2026 is completed.
+            current_season_label = (
+                clock.year + 1 if sport == "NBA" and clock.month >= 10 else clock.year
+            )
             if (
                 provider == "SPORTSDATAVERSE_ESPN"
-                and year >= clock.year and latest_before is not None
+                and year >= current_season_label and latest_before is not None
                 and 2 <= (clock.date() - latest_before).days <= 200
                 and not has_new
             ):
