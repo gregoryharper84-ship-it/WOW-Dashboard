@@ -932,6 +932,11 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     assert "resolve-qa-policy" not in script
     assert "check-runs" not in script
     assert "classify-upstream-qa" in script
+    decide_script = _step_script(REL_WF, "Decide at exact head (read-only)")
+    assert "policy_args+=(--neutral-if-superseded)" in decide_script
+    assert "RELEASE_NEUTRAL_AT_DECIDE" in decide_script
+    assert decide_script.index("RELEASE_NEUTRAL_AT_DECIDE") < decide_script.index("gather_args=(gather")
+    assert 'echo "count=0" >> "$GITHUB_OUTPUT"' in decide_script
 
 
 def test_source_qa_release_certifier_dag_has_no_cycle():
