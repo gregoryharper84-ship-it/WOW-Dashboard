@@ -265,9 +265,12 @@ def test_verified_payload_is_unwrapped_with_database_identity_authoritative():
     ]
 
 
-def test_flat_artifact_row_still_passes_through_unchanged():
+def test_flat_artifact_row_cannot_bypass_verified_payload_digest():
+    # The production RPC binds a nested payload; a flat legacy/test row must
+    # not skip canonical payload hashing even with a matching declared digest.
     artifact = {**_payload(), "calibration_artifact_id": CAL_ID, "calibration_sha256": SHA}
-    assert resolve_nba_calibrator_artifact(_Client(artifact), _certification()) == artifact
+    with pytest.raises(ValueError, match="^NBA_CERTIFIED_CALIBRATOR_INVALID$"):
+        resolve_nba_calibrator_artifact(_Client(artifact), _certification())
 
 
 @pytest.mark.parametrize(
