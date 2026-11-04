@@ -97,7 +97,27 @@ jobs:
                 discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/artifacts" \
                   --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length') || return 2
                 if [ "$discovery_count" -lt 1 ]; then
-                  echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=cancelled_writer_no_nonexpired_discovery_artifact" >> "$GITHUB_STEP_SUMMARY"
+                  # A verified SKIPPED discovery job never produced bytes to
+                  # persist. Any attempted/unknown source with missing bytes
+                  # is real evidence loss and must HOLD, not be skipped.
+                  source_jobs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/jobs?per_page=100") || return 2
+                  discovery_job_state=$(printf '%s' "$source_jobs" | jq -er '
+                    if (.jobs | type) != "array"
+                       or (.total_count | type) != "number"
+                       or .total_count != (.jobs | length)
+                    then "UNVERIFIED"
+                    else
+                      ([.jobs[] | select(.name == "Nightly all-sport discovery and governed specialist handoff")] |
+                       if length == 1 and .[0].status == "completed"
+                          and .[0].conclusion == "skipped"
+                       then "SKIPPED" else "NOT_SKIPPED" end)
+                    end
+                  ') || return 2
+                  if [ "$discovery_job_state" != "SKIPPED" ]; then
+                    echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=discovery_not_proven_skipped recovery_class=EVIDENCE_PENDING" >> "$GITHUB_STEP_SUMMARY"
+                    return 2
+                  fi
+                  echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=verified_discovery_job_skipped recovery_class=NOT_APPLICABLE" >> "$GITHUB_STEP_SUMMARY"
                   continue
                 fi
                 printf '%s\n' "$source_id"
