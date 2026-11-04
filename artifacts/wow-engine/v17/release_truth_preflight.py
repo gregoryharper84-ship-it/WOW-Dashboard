@@ -195,6 +195,11 @@ def classify(
                 pending(f"REQUIRED_CHECK_MISSING:{name}:{app}", "github_check_runs")
             elif item.get("status") != "completed":
                 pending(f"REQUIRED_CHECK_PENDING:{name}:{app}", "github_check_runs")
+            elif item.get("conclusion") in ("neutral", "skipped"):
+                # GitHub accepts these results for required status checks, but
+                # this report does not interpret them as semantic QA approval.
+                unknown(f"REQUIRED_CHECK_NON_SUCCESS_ACCEPTED_BY_GITHUB:{name}:{app}",
+                        "github_check_runs")
             elif item.get("conclusion") != "success":
                 known(f"REQUIRED_CHECK_NOT_SUCCESS:{name}:{app}", "github_check_runs")
 
