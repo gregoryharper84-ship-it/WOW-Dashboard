@@ -365,8 +365,8 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
     # immutable artifact payload in one JSONB column. Unwrap so the bounds gate
     # below reads a single flat artifact. Database columns stay authoritative
     # for identity and fingerprint: a payload cannot restate its own hash or
-    # rename its calibrator. A row that is already flat (legacy table read or
-    # test double) is passed through unchanged.
+    # rename its calibrator. Legacy flat rows bypass digest verification and
+    # must fail closed; only the certified RPC nested shape is supported.
     payload = row.get("artifact_payload")
     bound_calibrator_id = str(
         row.get("calibration_artifact_id") or row.get("calibrator_id") or ""
@@ -381,7 +381,9 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
         or declared_sha != certified_sha
     ):
         raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
-    if isinstance(payload, Mapping) and "artifact_type" not in row:
+    if not isinstance(payload, Mapping) or "artifact_type" in row:
+        raise ValueError("NBA_CERTIFIED_CALIBRATOR_INVALID")
+    if isinstance(payload, Mapping):
         # The certified lookup row and the payload must be the same artifact: a
         # matching identity is not proof of content. Recompute SHA-256 over the
         # canonical payload and require it to equal BOTH the stored digest and
