@@ -74,6 +74,8 @@ def red_first_from_evidence(fix_sha, first_edit_at, evidence):
                 and pre["commit_sha"] != fix_sha and post.get("commit_sha") == fix_sha
                 and type(pre.get("exit_code")) is int and pre["exit_code"] != 0
                 and post.get("exit_code") == 0
+                and isinstance(pre.get("executed_at"), str)
+                and isinstance(post.get("executed_at"), str)
                 and parse_time(pre["executed_at"]) < parse_time(first_edit_at)
                 and parse_time(post["executed_at"]) >= parse_time(first_edit_at))
     except (KeyError, ValueError, TypeError):
