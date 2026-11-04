@@ -13,6 +13,20 @@ repository worktree. It is not a production certification and does not
 publish a governed probability. Every number below comes from a pytest run
 against this branch, not from CI or from the live Render deployment.
 
+## 0. Publication record
+
+```text
+PUBLISHED_BRANCH = freebuff/b45b277542429f777af32f00
+PUBLISHED_HEAD   = e9b1e39c06b012760dd6b6e6c62a41509f5c8580
+ORIGIN_MAIN      = 287d41483 (unchanged by this work)
+PUSH_MODE        = fast-forward create of a new feature branch; no force, no history rewrite
+```
+
+The integration branch is public on origin and can be opened as a PR directly
+against `main`. `main` itself was not written, so protected review and CI still
+own the merge decision. Any later commit on this branch supersedes the SHA
+above; resolve the live head with `git ls-remote origin <PUBLISHED_BRANCH>`.
+
 ## 1. Lanes integrated on the working branch
 
 | Lane | Disposition | Evidence |
