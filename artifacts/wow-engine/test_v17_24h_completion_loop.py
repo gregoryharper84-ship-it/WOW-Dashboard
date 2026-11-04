@@ -246,3 +246,10 @@ def test_deployed_pending_proof_does_not_starve_product_or_detection() -> None:
     assert 'action="VERIFY_PRODUCT"' in text
     assert 'wow-v17-release-resume-agent.yml' in text
     assert 'release_waiting:$release_waiting' in text
+
+
+def test_legacy_controller_never_dispatches_against_active_24x7_cutover() -> None:
+    text = _text(LOOP)
+    assert "vars.WOW_24X7_ACTIVE != 'true'" in text
+    assert "vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'" in text
+    assert "Never dispatch a parallel legacy writer" in text
