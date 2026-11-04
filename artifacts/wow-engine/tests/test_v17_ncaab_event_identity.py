@@ -129,3 +129,45 @@ def test_concurrent_identity_lookups_do_not_corrupt_cached_schedule(monkeypatch)
     with ThreadPoolExecutor(max_workers=8) as pool:
         assert list(pool.map(lookup, range(24))) == ["espn-401999999"] * 24
     identity.reset_cache()
+
+
+def test_unavailable_source_is_cached_per_season_during_shared_scan(monkeypatch):
+    import v17.ncaab_event_identity as identity
+
+    identity.reset_cache()
+    calls = []
+
+    def fail(_season):
+        calls.append(_season)
+        raise identity.NCAABEventIdentityError("NCAAB_SCHEDULE_SOURCE_HTTP_FAILED")
+
+    monkeypatch.setattr(identity, "fetch_ncaab_schedule", fail)
+    for _ in range(26):
+        with pytest.raises(NCAABEventIdentityError) as raised:
+            identity.resolve_ncaab_current_event_identity(
+                event_start_time=START, home_team_alias="2641",
+                away_team_alias="204",
+            )
+        assert raised.value.code == "NCAAB_SCHEDULE_SOURCE_HTTP_FAILED"
+    assert calls == [2027], "one failed source call must not block 26 candidate rows"
+    identity.reset_cache()
+    with pytest.raises(NCAABEventIdentityError):
+        identity.resolve_ncaab_current_event_identity(
+            event_start_time=START, home_team_alias="2641", away_team_alias="204",
+        )
+    assert calls == [2027, 2027]
+    identity.reset_cache()
+
+
+def test_success_clears_expired_negative_cache(monkeypatch):
+    import v17.ncaab_event_identity as identity
+
+    identity.reset_cache()
+    identity._FAILURE_CACHE[2027] = (-1.0, "NCAAB_SCHEDULE_SOURCE_RATE_LIMITED")
+    monkeypatch.setattr(identity, "fetch_ncaab_schedule", lambda _year: [_row()])
+    actual = identity.resolve_ncaab_current_event_identity(
+        event_start_time=START, home_team_alias="2641", away_team_alias="204",
+    )
+    assert actual["event_id"] == "espn-401999999"
+    assert 2027 not in identity._FAILURE_CACHE
+    identity.reset_cache()
