@@ -195,3 +195,11 @@ def test_repository_catalog_integrity_guards_future_ledger_edits():
     result = catalog_integrity()
     assert result["status"] == "PASS", result
     assert result["can_execute"] is False
+
+
+def test_dangling_symlink_directory_is_never_treated_as_empty(tmp_path):
+    link = tmp_path / "untrusted-receipts"
+    link.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(CertificationIntakeError) as error:
+        load_receipts(link)
+    assert error.value.code == "TEAM_EVENT_RECEIPT_DIRECTORY_INVALID"
