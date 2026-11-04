@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
+import re
 
 import pytest
 
@@ -253,3 +255,24 @@ def test_si_016_repository_competition_keys_are_all_verified_slugs():
         "soccer_italy_serie_a",
     ):
         assert identity.normalize_competition(token)
+
+
+@pytest.mark.parametrize("date", [None, "not-a-time", "2026-11-07T12:30:00"])
+@pytest.mark.parametrize("valid_match", [False, True])
+def test_malformed_matching_fixture_cannot_prove_absence_or_uniqueness(date, valid_match):
+    rows = [scoreboard_event("401800001", date=date)]
+    if valid_match:
+        rows.append(scoreboard_event("401800002"))
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_soccer_failure_codes_are_registered():
+    registry = (Path(__file__).resolve().parents[1] / "docs/failure_codes.md").read_text()
+    source = Path(identity.__file__).read_text()
+    fixed_codes = set(re.findall(r'"(SOCCER_[A-Z_]+)"', source)) - {identity.SOURCE_PROVIDER}
+    assert fixed_codes
+    assert not {code for code in fixed_codes if f"`{code}`" not in registry}
+    assert "`SOCCER_OFFICIAL_SOURCE_HTTP_{status}`" in registry
+

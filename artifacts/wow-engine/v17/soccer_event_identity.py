@@ -243,8 +243,12 @@ def resolve_soccer_current_event_identity(
             continue
         try:
             start = _aware(row.get("date"))
-        except SoccerEventIdentityError:
-            continue
+        except SoccerEventIdentityError as exc:
+            # This participant match cannot be excluded from the candidate set.
+            # Neither absence nor uniqueness is proven while its time is invalid.
+            raise SoccerEventIdentityError(
+                "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "matching fixture timestamp invalid"
+            ) from exc
         # The ±1 day window can surface the same fixture twice; a repeated
         # source row is still one event, not an ambiguity.
         matches.setdefault(event_id, (start, row))
@@ -300,3 +304,4 @@ __all__ = [
     "reset_cache",
     "resolve_soccer_current_event_identity",
 ]
+
