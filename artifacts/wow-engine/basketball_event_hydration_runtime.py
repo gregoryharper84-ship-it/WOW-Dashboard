@@ -481,6 +481,9 @@ def hydrate(
     sport: str, seasons: Iterable[int], client=None, *, now: datetime | None = None
 ) -> dict[str, Any]:
     sport = sport.upper().strip()
+    # The iterable is consumed both for acquisition and the returned season list.
+    seasons = tuple(seasons)
+    latest_season = max((int(season) for season in seasons), default=None)
     if sport not in TABLES:
         raise BasketballHydrationError(f"unsupported sport {sport}")
     clock = now if now is not None else datetime.now(timezone.utc)
@@ -587,6 +590,10 @@ def hydrate(
             )
             if (
                 provider == "SPORTSDATAVERSE_ESPN"
+                # Only the latest requested season may need a recency
+                # supplement; do not let prior years poison a fresh run.
+                and year == latest_season
+                and new_settled == 0
                 and year >= clock.year and latest_before is not None
                 and 2 <= (clock.date() - latest_before).days <= 200
                 and not has_new
