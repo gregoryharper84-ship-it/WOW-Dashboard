@@ -109,7 +109,7 @@ def test_invalid_goalie_timestamp_and_missing_identity_fail_closed():
     assert "NHL_GOALIE_STATUS_STALE" in r["blockers"]
     assert "NHL_GOALIE_IDENTITY_UNVERIFIED" in r["blockers"]
 
- 
+
 def test_empty_structured_evidence_fails_closed():
     for key in ("injury_report", "rest_travel", "calibration_artifact"):
         for empty in ({}, [], ()):
