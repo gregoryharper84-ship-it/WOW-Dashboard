@@ -638,19 +638,23 @@ def _nhl_request():
     return req, start
 
 
-def test_nhl_row_reports_captured_official_identity_beside_the_capability_blocker():
+def test_nhl_row_reports_captured_official_identity_beside_the_capability_blocker(monkeypatch):
     req, start = _nhl_request()
     session = _SourceSession(_SourceResponse(start=start))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+    monkeypatch.setattr(
+        team_event_module, "_OFFICIAL_SOURCE_CLOCK",
+        lambda: datetime.now(timezone.utc),
+    )
     with pytest.raises(HTTPException) as exc_info:
-        score_team_event_request(
-            req,
-            event_api=_FakeEventApi,
-            official_source_session=session,
-            official_source_clock=lambda: datetime.now(timezone.utc),
-        )
-    assert exc_info.value.status_code == 409
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code in (409, 422)
     detail = exc_info.value.detail
-    assert detail["code"] == "MODEL_UNAVAILABLE"
+    # Which layer answers depends on whether the governed bridge runtime is
+    # installed: the registered bridge reports typed input insufficiency, the
+    # base runtime reports MODEL_UNAVAILABLE. Both are fail-closed, and neither
+    # may carry a probability or displace the certification blocker.
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
     capability = detail["team_event_capability"]
     assert capability["status"] == "MODEL_UNAVAILABLE"
     assert capability["blocker"] == "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
@@ -673,16 +677,15 @@ def test_nhl_row_reports_captured_official_identity_beside_the_capability_blocke
     assert session.calls[0][1]["stream"] is True
 
 
-def test_nhl_source_capture_failure_never_replaces_the_capability_blocker():
+def test_nhl_source_capture_failure_never_replaces_the_capability_blocker(monkeypatch):
     req, _start = _nhl_request()
     session = _SourceSession(error=TimeoutError("source offline"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
     with pytest.raises(HTTPException) as exc_info:
-        score_team_event_request(
-            req, event_api=_FakeEventApi, official_source_session=session
-        )
-    assert exc_info.value.status_code == 409
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code in (409, 422)
     detail = exc_info.value.detail
-    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
     assert detail["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
     assert detail["team_event_capability"]["blocker"] == (
         "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
@@ -695,7 +698,7 @@ def test_nhl_source_capture_failure_never_replaces_the_capability_blocker():
     assert detail["can_execute"] is False
 
 
-def test_nhl_identity_mismatch_is_a_typed_hold_not_a_probability():
+def test_nhl_identity_mismatch_is_a_typed_hold_not_a_probability(monkeypatch):
     req, start = _nhl_request()
     mismatched = _SourceResponse(start=start, raw=json.dumps({
         "id": 2026020246,
@@ -705,19 +708,19 @@ def test_nhl_identity_mismatch_is_a_typed_hold_not_a_probability():
         "gameType": 2,
         "gameState": "FUT",
     }).encode("utf-8"))
+    monkeypatch.setattr(
+        team_event_module, "_OFFICIAL_SOURCE_SESSION", _SourceSession(mismatched)
+    )
     with pytest.raises(HTTPException) as exc_info:
-        score_team_event_request(
-            req, event_api=_FakeEventApi,
-            official_source_session=_SourceSession(mismatched),
-        )
+        score_team_event_request(req, event_api=_FakeEventApi)
     detail = exc_info.value.detail
-    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
     assert detail["official_source"]["hold_code"] == "NHL_SOURCE_EVENT_IDENTITY_MISMATCH"
     assert "identity" not in detail["official_source"]
     assert detail["official_source"]["probability_publishable"] is False
 
 
-def test_non_nhl_rows_never_attempt_official_source_capture():
+def test_non_nhl_rows_never_attempt_official_source_capture(monkeypatch):
     req = _base(
         sport="CRICKET",
         league="CRICKET",
@@ -727,10 +730,9 @@ def test_non_nhl_rows_never_attempt_official_source_capture():
         sport_specific_evidence={},
     )
     session = _SourceSession(error=AssertionError("capture must not be attempted"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
     with pytest.raises(HTTPException) as exc_info:
-        score_team_event_request(
-            req, event_api=_FakeEventApi, official_source_session=session
-        )
+        score_team_event_request(req, event_api=_FakeEventApi)
     detail = exc_info.value.detail
     assert detail["code"] == "MODEL_UNAVAILABLE"
     assert "official_source" not in detail
@@ -738,13 +740,14 @@ def test_non_nhl_rows_never_attempt_official_source_capture():
     assert session.calls == []
 
 
-def test_nhl_official_source_evidence_carries_no_probability_fields():
+def test_nhl_official_source_evidence_carries_no_probability_fields(monkeypatch):
     req, start = _nhl_request()
+    monkeypatch.setattr(
+        team_event_module, "_OFFICIAL_SOURCE_SESSION",
+        _SourceSession(_SourceResponse(start=start)),
+    )
     with pytest.raises(HTTPException) as exc_info:
-        score_team_event_request(
-            req, event_api=_FakeEventApi,
-            official_source_session=_SourceSession(_SourceResponse(start=start)),
-        )
+        score_team_event_request(req, event_api=_FakeEventApi)
     detail = exc_info.value.detail
     assert not any(
         key in detail

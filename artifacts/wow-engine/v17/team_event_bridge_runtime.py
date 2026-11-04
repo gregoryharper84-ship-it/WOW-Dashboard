@@ -327,7 +327,47 @@ def _attach_feature_consumption_receipt(
     return out
 
 
+def _with_official_source_evidence(exc: HTTPException, req: Any) -> HTTPException:
+    """Attach NHL official-source evidence to a typed fail-closed detail.
+
+    The bridge's own code, status and blockers are preserved exactly; the evidence
+    and manifest capability blocks are added beside them, never in place of them,
+    so an audited row can never be read as a publishable probability.
+    """
+    # Deferred: this module is imported by the base runtime at install time.
+    from v17.team_event_request_runtime import official_source_evidence
+
+    detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"detail": exc.detail}
+    for key, value in official_source_evidence(req).items():
+        detail.setdefault(key, value)
+    return HTTPException(status_code=exc.status_code, detail=detail, headers=exc.headers)
+
+
 def score_registered_team_event_request(
+    req: Any,
+    *,
+    event_api: Any,
+    canonical_hydration_required: bool = False,
+) -> dict[str, Any]:
+    """Dispatch through the exact registered sport bridge or fail closed.
+
+    NHL rows also report their official-source evidence beside whatever typed
+    fail-closed result the registered bridge produced, so the same evidence is
+    available whether or not the bridge runtime is installed.
+    """
+    try:
+        return _dispatch_registered_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
+    except HTTPException as exc:
+        if request_sport(req) != "NHL":
+            raise
+        raise _with_official_source_evidence(exc, req) from None
+
+
+def _dispatch_registered_team_event_request(
     req: Any,
     *,
     event_api: Any,

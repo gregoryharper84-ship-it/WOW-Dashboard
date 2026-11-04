@@ -253,6 +253,24 @@ def _nhl_official_source_block(
     }
 
 
+def official_source_evidence(req: TeamEventRequest) -> dict[str, Any]:
+    """Evidence-only blocks reported beside an NHL fail-closed result.
+
+    Shared by this runtime and the registered-bridge dispatcher so the same
+    evidence appears regardless of which layer answers the row. Both blocks carry
+    ``probability_publishable=False``; they document identity, freshness and
+    certification status, and cannot upgrade the row.
+    """
+    return {
+        "team_event_capability": _team_event_capability_block("NHL"),
+        "official_source": _nhl_official_source_block(
+            req,
+            source_session=_OFFICIAL_SOURCE_SESSION,
+            source_clock=_OFFICIAL_SOURCE_CLOCK,
+        ),
+    }
+
+
 def _canonicalize_public_mlb_request(req: TeamEventRequest, event_api: Any) -> TeamEventRequest:
     """Replace public caller evidence with the exact server-owned MLB snapshot."""
     resolution = resolve_mlb_team_event_evidence(req, event_api=event_api)
@@ -872,13 +890,23 @@ def _build_governed_probability_package(
         return None
 
 
+# Offline-verification seams for the NHL official-source capture. Production
+# never sets these, so the source module's own bounded transport defaults
+# (redirect rejection, transfer cap, total deadline) always apply.
+#
+# They are deliberately NOT parameters of score_team_event_request: the governed
+# observability wrapper in v17.team_event_sport_parity re-exposes that function
+# with the canonical keyword signature, so widening the signature would make the
+# new arguments unusable wherever observability is installed.
+_OFFICIAL_SOURCE_SESSION: Any = None
+_OFFICIAL_SOURCE_CLOCK: Any = None
+
+
 def score_team_event_request(
     req: TeamEventRequest,
     *,
     event_api: Any,
     canonical_hydration_required: bool = False,
-    official_source_session: Any = None,
-    official_source_clock: Any = None,
 ) -> dict[str, Any]:
     try:
         route = resolve_host_route(req.requester_host_identity, req.candidate_family)
@@ -946,8 +974,8 @@ def score_team_event_request(
         detail["team_event_capability"] = _team_event_capability_block(sport)
         detail["official_source"] = _nhl_official_source_block(
             req,
-            source_session=official_source_session,
-            source_clock=official_source_clock,
+            source_session=_OFFICIAL_SOURCE_SESSION,
+            source_clock=_OFFICIAL_SOURCE_CLOCK,
         )
     raise HTTPException(status_code=409, detail=_augment_detail(detail, req))
 

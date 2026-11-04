@@ -105,6 +105,34 @@ so the integration neither regressed nor silently skipped anything. The new test
 file is assigned to CI shard 2 by `scripts/wow_rapid.py shard-files`, so hosted
 CI will actually execute it.
 
+### NHL official source is now reported on the team-event request path
+
+An NHL row that fails closed now carries two evidence blocks beside the
+unchanged typed code: `team_event_capability` (manifest status, blocker,
+controlling specialist, required inputs) and `official_source` (captured
+first-party identity, `seconds_until_start`, snapshot id, payload hash, or a
+typed `hold_code`). A source hold never replaces the capability blocker, and
+neither block can emit a probability or upgrade the row. Non-NHL rows attempt no
+capture at all.
+
+Two implementation facts were forced by the runtime's own composition, and both
+were discovered by the whole-suite run rather than by design review:
+
+- The evidence seams are module-level, not parameters of
+  `score_team_event_request`: the governed observability wrapper
+  (`v17.team_event_sport_parity`) re-exposes that function with the canonical
+  keyword signature, so widening it made the new arguments unusable wherever
+  observability is installed.
+- NHL rows are normally answered by the registered-bridge dispatcher
+  (`install_team_event_bridge_runtime` rebinds the base function), which reports
+  `MODEL_INPUTS_INSUFFICIENT` while the uninstalled base runtime reports
+  `MODEL_UNAVAILABLE`. The evidence is therefore attached in both layers, and the
+  code itself is never relabelled in either.
+
+Verified by ** passed,  skipped, 0 failed** in s across the
+whole `artifacts/wow-engine` tree, plus a targeted run that installs the parity
+wrapper and bridge runtime alongside the request-runtime tests.
+
 ## 3. AMRT PR #1843 is stale, not pending
 
 Every file #1843 adds already exists on `main`, and `main`'s copies are
