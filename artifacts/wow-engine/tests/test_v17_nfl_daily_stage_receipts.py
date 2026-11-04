@@ -398,6 +398,19 @@ def test_paginated_champion_cohort_uses_complete_ordered_400_game_set():
     assert db.pages == [(0, 249), (250, 499)]
 
 
+def test_exact_maximum_full_page_count_is_accepted_without_extra_query():
+    # Forty full 250-row pages are complete by the server's exact count;
+    # a missing 41st page is not a reason to reject a valid 10k cohort.
+    db = _ForwardDb(
+        artifacts=[_champion_artifact()],
+        health=[_healthy_assessment(graded_n=10_000)],
+        grades=_grades(10_000),
+    )
+    assert _forward_certification_proven(db, _forward_row()) is True
+    assert len(db.pages) == 40
+    assert db.pages[-1] == (9750, 9999)
+
+
 def test_server_response_cap_cannot_certify_truncated_champion_grades():
     # Simulate a PostgREST service that silently caps every 250-row request
     # to 100 rows despite reporting the exact 400-row model-version count.
