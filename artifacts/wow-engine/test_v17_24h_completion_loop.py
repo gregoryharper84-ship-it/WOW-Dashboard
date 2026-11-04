@@ -22,9 +22,19 @@ def _assert_experiment_auto_merge_contract(text: str) -> None:
     pattern = re.compile(
         r'gh\s+pr\s+merge\s+"\$PR_NUMBER"\s+'
         r'--repo\s+"\$GITHUB_REPOSITORY"\s+'
-        r'--auto\s+--merge(?:\s+\|\|\s+true)?'
+        r'--auto\s+--merge\s+--match-head-commit\s+"\$head_sha"'
     )
-    assert pattern.search(text), "experiment PR must remain on protected GitHub auto-merge"
+    assert pattern.search(text), "experiment PR must remain on protected GitHub auto-merge pinned to the scope-checked head"
+    _assert_no_masked_merge(text)
+
+
+def _assert_no_masked_merge(text: str) -> None:
+    """Every bot merge must pin the exact head and no merge failure may be swallowed."""
+    for line in text.splitlines():
+        if re.search(r'\bgh\s+pr\s+merge\b', line) and "--disable-auto" not in line:
+            assert "--match-head-commit" in line, f"unpinned bot merge: {line.strip()}"
+        if re.search(r'\bgh\s+pr\s+merge\b', line):
+            assert "|| true" not in line, f"masked merge failure: {line.strip()}"
 
 
 def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
@@ -147,7 +157,8 @@ def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
     assert "Experiment repair run produced no corrective change." in text
     assert "python -m pytest -q artifacts/wow-engine/v17/experiments" in text
     assert "python -m pytest -q artifacts/wow-engine" in text
-    assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
+    assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge --match-head-commit "$head_sha"' in text
+    _assert_no_masked_merge(text)
     _assert_experiment_auto_merge_contract(_text(LOOP))
 
 
@@ -233,3 +244,19 @@ def test_capability_matrix_is_explicit_and_fail_closed() -> None:
     ):
         assert dimension in team
     assert "production_enabled requires every upstream capability" in team
+
+
+def test_closure_loop_repins_and_fails_closed_on_experiment_auto_merge() -> None:
+    text = _text(LOOP)
+    assert "EXPERIMENT_AUTO_MERGE_ENABLE_FAILED" in text
+    assert "EXPERIMENT_AUTO_MERGE_REPIN_FAILED" in text
+    assert '--disable-auto' in text  # stale auto-merge for an older head is cleared before re-pinning
+    step = text[text.index("- name: Resume governed model-experiment PR"):text.index("- name: Execute governed model-improvement experiment")]
+    assert step.rstrip().endswith("exit 1\n          fi") or 'exit 1' in step.split('automerge_failed" = "true" ]; then', 2)[-1]
+
+
+def test_experiment_repair_repins_auto_merge_to_repaired_head() -> None:
+    text = _text(EXPERIMENT)
+    step = text[text.index("- name: Restore auto-merge after experiment repair"):text.index("- name: Record experiment receipt")]
+    assert "EXPERIMENT_PR_HEAD_UNRESOLVED" in step
+    assert step.index("--disable-auto") < step.index("--match-head-commit")
