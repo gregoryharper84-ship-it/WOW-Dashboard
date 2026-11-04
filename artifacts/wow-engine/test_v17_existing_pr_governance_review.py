@@ -413,3 +413,17 @@ def test_semantic_canary_jq_receipt_cardinality_rejects_unbound_attempts():
         )
         assert result.returncode == 0, result.stderr
         assert int(result.stdout.strip()) == expected
+
+
+def test_retired_governance_review_workflows_have_no_automatic_events():
+    """Regression: obsolete governance results must not reappear on new PR heads."""
+    for filename in (
+        "wow-v17-trusted-governance-gate.yml",
+        "wow-v17-existing-pr-governance-review.yml",
+        "wow-v17-simple-security-review.yml",
+    ):
+        source = (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
+        triggers = source.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+        assert "\n  workflow_dispatch:" in triggers, filename
+        for event in ("pull_request_target", "pull_request", "workflow_run", "check_run", "push", "schedule"):
+            assert f"\n  {event}:" not in triggers, (filename, event)
