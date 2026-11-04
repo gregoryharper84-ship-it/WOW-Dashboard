@@ -55,6 +55,13 @@ class Indicators(unittest.TestCase):
         self.assertFalse(g.red_first_from_evidence(fix,"2026-10-01T10:00:00+00:00",bad))
         with self.assertRaisesRegex(ValueError,"RED_FIRST_UNAVAILABLE"):
             g.red_first_from_evidence(fix,"2026-10-01T10:00:00+00:00",{})
+        for key in ("pre", "post"):
+            for malformed in (None, 123, []):
+                broken = {**evidence, key: {**evidence[key], "executed_at": malformed}}
+                with self.subTest(key=key, malformed=malformed):
+                    self.assertFalse(g.red_first_from_evidence(
+                        fix, "2026-10-01T10:00:00+00:00", broken
+                    ))
 
     def test_git_utc_z_timestamp_rework_candidate(self):
         self.assertEqual(g.parse_time("2026-09-02T10:57:35Z"),
