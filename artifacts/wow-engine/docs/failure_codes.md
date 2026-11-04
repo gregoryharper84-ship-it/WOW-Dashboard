@@ -38,6 +38,19 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CREDENTIAL_UNCONFIGURED` | market acquisition | No credential is configured for a provider that requires one. | Does not decide sporting rank |
 | `RATE_LIMITED` | market acquisition | Provider refused the request due to rate/quota limits. | Does not decide sporting rank |
 | `IDENTITY_UNRESOLVED` | event identity | Official canonical event identity has not been resolved. Provider IDs remain aliases only. | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_MISSING` | NCAAB discovery handoff | Required home or away ESPN team alias absent; preserve provider event alias and identity HOLD. Recovery: upstream discovery evidence. | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_INVALID` | NCAAB ESPN identity resolver | Missing, duplicated, nonnumeric or oversized ESPN team alias; no canonical promotion. Recovery: input integrity. | No |
+| `NCAAB_EVENT_TIME_INVALID` | NCAAB ESPN identity resolver | Event start or provider tip lacks a timezone-aware ISO timestamp. Recovery: input integrity. | No |
+| `NCAAB_OFFICIAL_SOURCE_TRANSPORT_FAILED` | NCAAB ESPN scoreboard acquisition | Official dated scoreboard transport failed; typed source HOLD with bounded cache, never missing model. Recovery: upstream transport. | No |
+| `NCAAB_OFFICIAL_SOURCE_RATE_LIMITED` | NCAAB ESPN scoreboard acquisition | ESPN scoreboard returned HTTP 429; no repeated per-event fetch. Recovery: bounded transient source retry. | No |
+| `NCAAB_OFFICIAL_SOURCE_HTTP_FAILED` | NCAAB ESPN scoreboard acquisition | ESPN scoreboard returned non-200 status; retain HTTP status as non-authoritative diagnostic. Recovery: upstream source. | No |
+| `NCAAB_OFFICIAL_SOURCE_RESPONSE_INVALID` | NCAAB ESPN scoreboard acquisition | Provider body cannot be parsed as JSON. Recovery: source integrity. | No |
+| `NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT` | NCAAB ESPN scoreboard acquisition | Provider events or total/count contract malformed; reject entire source page, not individual rows. Recovery: source schema. | No |
+| `NCAAB_OFFICIAL_SOURCE_PARTIAL` | NCAAB ESPN scoreboard acquisition | All-Division-I scorecard truncated by reported total or page capacity; do not falsely certify missing events. Recovery: source pagination. | No |
+| `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB ESPN event identity | No event with unique ordered ESPN participants and scheduled tip within the 30-minute tolerance. Recovery: canonical evidence. | No |
+| `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB ESPN event identity | More than one distinct ESPN event ID satisfies the full identity match. Recovery: resolve upstream identity conflict. | No |
+| `NCAAB_CANONICAL_EVENT_ID_MISSING` | NCAAB canonical handoff | Exact resolver provided no canonical event ID. Recovery: code contract. | No |
+| `NCAAB_CANONICAL_RESOLVER_FAILED` | NCAAB canonical handoff | Unexpected resolver exception; preserve alias and typed HOLD without exposing raw exception details. Recovery: code diagnosis. | No |
 | `OFFICIAL_EVENT_ID_REQUIRED_FOR_CANONICALIZATION` | event identity | Canonical event key cannot be constructed because authoritative official event identity is absent. | No |
 | `RUN_INVALID_EVIDENCE_BINDING` | producer→consumer evidence handoff | A required field is demonstrably populated in the controlling sporting package/canonical evidence but downstream governance reports that same field as missing/not called. The run is invalid rather than an ordinary no-pick; the completed sporting package is preserved for diagnosis but cannot rank/publish. | No |
 | `DISCOVERED_ROW_MISSING_TERMINAL_DISPOSITION` | row reconciliation | A discovered candidate reached publication without exactly one terminal disposition. The row must remain visible and the run is incomplete. | No |

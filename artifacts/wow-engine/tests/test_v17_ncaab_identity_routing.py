@@ -58,7 +58,7 @@ def test_resolved_identity_is_recorded_and_the_alias_is_preserved(monkeypatch):
         lambda **_kwargs: {
             "event_id": "NCAAB:401950001",
             "identity_provider": "ESPN_NCAAB_SCOREBOARD",
-            "identity_resolution": "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH",
+            "identity_resolution": "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_START_MATCH",
             "prediction_authority": False,
             "can_execute": False,
         },
@@ -74,11 +74,8 @@ def test_resolved_identity_is_recorded_and_the_alias_is_preserved(monkeypatch):
 def test_unproven_identity_keeps_the_row_alias_only(monkeypatch):
     import v17.ncaab_event_identity as identity
 
-    class IdentityFailure(RuntimeError):
-        code = "NCAAB_CANONICAL_EVENT_NOT_FOUND"
-
     def fail(**_kwargs):
-        raise IdentityFailure("no exact scoreboard event")
+        raise identity.NCAABEventIdentityError("NCAAB_CANONICAL_EVENT_NOT_FOUND")
 
     monkeypatch.setattr(identity, "resolve_ncaab_current_event_identity", fail)
     out = canonicalize_ncaab_discovery_identity(ncaab_alias_event())
@@ -162,3 +159,32 @@ def test_identity_alone_never_publishes_a_probability():
     assert row.rank_eligible is False
     assert row.detail["model_invoked"] is False
     assert row.as_dict()["can_execute"] is False
+
+
+def test_missing_team_alias_preserves_original_discovery_id():
+    event = ncaab_alias_event(
+        raw_extra={
+            "provider_event_id": "",
+            "_wow_secondary_event_id": "",
+            "_wow_secondary_home_team_id": "",
+        }
+    )
+    event = DiscoveredEvent(
+        **{**event.__dict__, "official_event_id": "espn-401999999"}
+    )
+    held = canonicalize_ncaab_discovery_identity(event)
+    assert held.official_event_id is None
+    assert held.raw["provider_event_id"] == "espn-401999999"
+    assert held.raw["canonical_identity_blocker"] == "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
+
+
+def test_unexpected_identity_failure_uses_fixed_registered_code(monkeypatch):
+    import v17.ncaab_event_identity as identity
+
+    def fail(**_kwargs):
+        raise RuntimeError("provider secret response must not be exposed")
+
+    monkeypatch.setattr(identity, "resolve_ncaab_current_event_identity", fail)
+    held = canonicalize_ncaab_discovery_identity(ncaab_alias_event())
+    assert held.official_event_id is None
+    assert held.raw["canonical_identity_blocker"] == "NCAAB_CANONICAL_RESOLVER_FAILED"
