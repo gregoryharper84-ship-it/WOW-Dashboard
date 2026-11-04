@@ -504,7 +504,7 @@ def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch
     )
     try:
         hydration.hydrate(
-            "NBA", [2026], client=object(),
+            "NBA", [2027], client=object(),
             now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
         )
         raise AssertionError("raw ESPN data must never be inserted into the fitted NBA ledger")
@@ -527,10 +527,10 @@ def test_recent_source_failure_never_advertises_updated_games(monkeypatch):
         ),
     )
     result = hydration.hydrate(
-        "NBA", [2026], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
     )
-    assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
-    assert result["recent_supplement_status"][2026] == "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"
     assert result["settled_rows"] == 0
     assert result["fresh_acquisition_new_settled_games"] == 0
     assert persisted == []
@@ -549,9 +549,9 @@ def test_duplicated_recent_event_ids_do_not_create_duplicate_training_games(monk
         lambda *_args, **_kwargs: [repeated, repeated],
     )
     result = hydration.hydrate(
-        "NBA", [2026], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
     )
-    assert result["recent_supplement_status"][2026] == "SOURCE_BLOCKED:ESPN_RECENT_DUPLICATE_GAME_ID"
+    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_DUPLICATE_GAME_ID"
     assert result["settled_rows"] == 0
     assert persisted == []
 
@@ -625,11 +625,11 @@ def test_unlicensed_recent_espn_is_not_fetched_or_persisted_during_shadow_refres
         ),
     )
     result = hydration.hydrate(
-        "NBA", [2026], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
     )
-    assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
     assert result["settled_rows"] == 0
-    assert result["recent_supplement_status"][2026] == (
+    assert result["recent_supplement_status"][2027] == (
         "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:MODEL_SOURCE_UNCLASSIFIED"
     )
     assert persisted == []
