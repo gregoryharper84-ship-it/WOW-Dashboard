@@ -29,7 +29,8 @@ def _selector() -> str:
 
 
 def _execute(tmp_path: Path, *, valid_source: str = "", broken_source: str = "",
-             attempted_missing_source: str = "", broken_jobs_source: str = ""):
+             attempted_missing_source: str = "", broken_jobs_source: str = "",
+             rerun_source: str = "", malformed_jobs_source: str = ""):
     gh = tmp_path / "gh"
     gh.write_text(
         """#!/usr/bin/env python3
@@ -53,14 +54,24 @@ elif "/actions/runs/" in url and "/jobs" in url:
     source_id = re.search(r"/actions/runs/([0-9]+)/jobs", url).group(1)
     if source_id == os.environ.get("MOCK_BROKEN_JOBS_SOURCE"):
         raise SystemExit(46)
+    if "filter=all" not in url:
+        raise SystemExit(47)
     conclusion = (
         "success" if source_id == os.environ.get("MOCK_ATTEMPTED_MISSING_SOURCE")
         else "skipped"
     )
-    payload = {"total_count": 1, "jobs": [{
+    jobs = [{
         "name": "Nightly all-sport discovery and governed specialist handoff",
         "status": "completed", "conclusion": conclusion,
-    }]}
+    }]
+    if source_id == os.environ.get("MOCK_RERUN_SOURCE"):
+        jobs.append({
+            "name": "Nightly all-sport discovery and governed specialist handoff",
+            "status": "completed", "conclusion": "success",
+        })
+    payload = {"total_count": len(jobs), "jobs": jobs}
+    if source_id == os.environ.get("MOCK_MALFORMED_JOBS_SOURCE"):
+        payload["total_count"] += 1
 elif "/actions/runs/" in url and "/artifacts" in url:
     source_id = re.search(r"/actions/runs/([0-9]+)/artifacts", url).group(1)
     if source_id == os.environ.get("MOCK_BROKEN_SOURCE"):
@@ -109,6 +120,8 @@ print(json.dumps(payload))
             "MOCK_BROKEN_SOURCE": broken_source,
             "MOCK_ATTEMPTED_MISSING_SOURCE": attempted_missing_source,
             "MOCK_BROKEN_JOBS_SOURCE": broken_jobs_source,
+            "MOCK_RERUN_SOURCE": rerun_source,
+            "MOCK_MALFORMED_JOBS_SOURCE": malformed_jobs_source,
         }
     )
     result = subprocess.run(
@@ -165,6 +178,7 @@ def test_unverifiable_discovery_job_inventory_fails_closed(tmp_path):
     assert result.returncode == 2, result.stderr
     assert result.stdout.strip() == ""
     assert "39974206881" not in summary
+    assert "provenance=discovery_jobs_unreadable recovery_class=EVIDENCE_PENDING" in summary
 
 
 def test_skipped_discovery_sources_are_not_mistaken_for_data_loss(tmp_path):
@@ -175,3 +189,24 @@ def test_skipped_discovery_sources_are_not_mistaken_for_data_loss(tmp_path):
         "provenance=verified_discovery_job_skipped recovery_class=NOT_APPLICABLE"
         in summary
     )
+
+
+def test_prior_attempt_discovery_success_does_not_become_skipped(tmp_path):
+    # Job inventory contains both attempts, even when latest attempt skipped.
+    result, summary = _execute(
+        tmp_path, valid_source="39974206881", rerun_source="39974206880",
+    )
+    assert result.returncode == 2, result.stderr
+    assert result.stdout.strip() == ""
+    assert "recovery_class=EVIDENCE_PENDING" in summary
+    assert "recovery_class=NOT_APPLICABLE" not in summary
+
+
+def test_incomplete_jobs_inventory_is_logged_and_held(tmp_path):
+    result, summary = _execute(
+        tmp_path, valid_source="39974206881",
+        malformed_jobs_source="39974206880",
+    )
+    assert result.returncode == 2, result.stderr
+    assert result.stdout.strip() == ""
+    assert "provenance=discovery_not_proven_skipped recovery_class=EVIDENCE_PENDING" in summary
