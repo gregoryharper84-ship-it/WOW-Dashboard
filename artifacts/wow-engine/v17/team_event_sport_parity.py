@@ -617,6 +617,87 @@ def canonicalize_nhl_discovery_identity(event: Any) -> Any:
     return replace(event, official_event_id=canonical_event_id, raw=raw)
 
 
+def canonicalize_soccer_discovery_identity(event: Any) -> Any:
+    """Resolve a free discovery SOCCER alias inside its own competition.
+
+    The competition is resolved before the source is consulted: an unattested
+    league key stays alias-only instead of being guessed. A resolved row
+    carries the three-way outcome space forward, so downstream stages can never
+    treat a draw as an away/loser result. Identity never registers a model, and
+    an uncertified SOCCER lane still terminates as MODEL_UNAVAILABLE.
+    """
+    if str(getattr(event, "sport", "") or "").upper() != "SOCCER":
+        return event
+
+    raw = dict(getattr(event, "raw", None) or {})
+    provider_event_id = str(
+        raw.get("provider_event_id")
+        or raw.get("_wow_secondary_event_id")
+        or ""
+    ).strip()
+
+    from v17.soccer_event_identity import (
+        resolve_soccer_current_event_identity,
+    )
+
+    competition_token = next(
+        (
+            value
+            for value in (
+                raw.get("sport_key"),
+                raw.get("provider_sport_key"),
+                getattr(event, "sport_key", None),
+                getattr(event, "league", None),
+                raw.get("league"),
+            )
+            if str(value or "").strip()
+        ),
+        None,
+    )
+
+    try:
+        resolution = resolve_soccer_current_event_identity(
+            competition=str(competition_token or ""),
+            event_start_time=str(event.commence_time_utc),
+            home_team=str(event.home_team or ""),
+            away_team=str(event.away_team or ""),
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve typed canonical hold
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            getattr(exc, "code", None) or type(exc).__name__
+        )
+        return replace(event, official_event_id=None, raw=raw)
+
+    canonical_event_id = str(resolution.get("event_id") or "").strip()
+    if not canonical_event_id:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "SOCCER_CANONICAL_EVENT_ID_MISSING"
+        return replace(event, official_event_id=None, raw=raw)
+
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
+    raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
+    raw["canonical_identity_source"] = str(
+        resolution.get("identity_provider") or "ESPN_SOCCER_SCOREBOARD"
+    )
+    raw["canonical_identity_resolution"] = str(
+        resolution.get("identity_resolution")
+        or "ESPN_COMPETITION_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH"
+    )
+    raw["canonical_identity_competition"] = resolution.get("competition")
+    # Three-way is carried, never inferred by a later stage from goal counts.
+    raw["canonical_identity_outcome_space"] = str(
+        resolution.get("outcome_space") or "HOME_DRAW_AWAY"
+    )
+    raw["canonical_identity_draw_possible"] = resolution.get("draw_possible") is True
+    raw["canonical_identity_settlement_contract"] = resolution.get(
+        "settlement_contract"
+    )
+    raw["canonical_identity_market_features_used"] = False
+    return replace(event, official_event_id=canonical_event_id, raw=raw)
+
+
 def canonicalize_wnba_discovery_identity(event: Any) -> Any:
     """Resolve an ESPN WNBA discovery alias through the official WNBA schedule.
 
@@ -795,6 +876,8 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 return canonicalize_ncaaf_discovery_identity(event)
             if sport == "NHL":
                 return canonicalize_nhl_discovery_identity(event)
+            if sport == "SOCCER":
+                return canonicalize_soccer_discovery_identity(event)
             return event
 
         def resolve_model(event: Any) -> Any:
@@ -919,6 +1002,7 @@ __all__ = [
     "canonicalize_nfl_discovery_identity",
     "canonicalize_ncaaf_discovery_identity",
     "canonicalize_nhl_discovery_identity",
+    "canonicalize_soccer_discovery_identity",
     "canonicalize_wnba_discovery_identity",
     "cross_sport_model_coverage",
     "install_cross_sport_discovery_evidence_handoff",
