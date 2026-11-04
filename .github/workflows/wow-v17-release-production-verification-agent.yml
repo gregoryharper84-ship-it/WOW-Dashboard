@@ -1,8 +1,9 @@
 name: wow-v17-release-production-verification-agent
 
-# Superseded by read-only lean production observer and independent SIRT.
-# Retained for audit; no automatic or manual job can execute.
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -22,7 +23,6 @@ concurrency:
 
 jobs:
   release-verification:
-    if: ${{ false }}
     name: Release / Production Verification agent
     runs-on: ubuntu-latest
     timeout-minutes: 45
