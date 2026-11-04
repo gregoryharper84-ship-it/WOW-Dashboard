@@ -16,34 +16,28 @@ against this branch, not from CI or from the live Render deployment.
 ## 0. Publication record
 
 ```text
-PUBLISHED_BRANCH = freebuff/b45b277542429f777af32f00
-PUBLISHED_HEAD   = e9b1e39c06b012760dd6b6e6c62a41509f5c8580
-ORIGIN_MAIN      = 287d41483 (unchanged by this work)
-PUSH_MODE        = fast-forward create of a new feature branch; no force, no history rewrite
+PUBLISHED_BRANCH        = freebuff/b45b277542429f777af32f00
+PUBLISHED_HEAD          = c9e254f5d4080071b875a2a5486b0f85d9c76dac
+ORIGIN_MAIN_AT_WRITE    = 014f879a88bd8a07e172196af6aa6acae5f2e221
+ORIGIN_MAIN_SUBJECT     = 2026-11-04 12:10:21 -0600 Merge pull request #2426 from gregoryharper84-ship-it/docs/v28-impact-20261104-one-shot
+WORK_STARTED_FROM       = 287d41483 (contained in ORIGIN_MAIN_AT_WRITE: true)
+MAIN_ADVANCED_BY        = 29 commits since work started (normal fast-forward, no rewind)
+MY_BRANCH_AHEAD_OF_MAIN = 91 commits
+MERGE_WITH_ORIGIN_MAIN  = conflict-free
+PUSH_MODE               = fast-forward update of a feature branch; main never written, never forced
 ```
 
-### Protected-main rewind observed
+The integration branch is public on origin and can be opened as a PR against
+`main`. `main` itself was not written by this work, so protected review and CI
+still own the merge decision.
 
-```text
-MAIN_AT_WORK_START   = 287d41483 (merge of #2427)
-MAIN_AT_RECEIPT_EDIT = 3fbc4c5de (2026-11-02 22:45:30 -0600, #2374)
-MAIN_DIRECTION       = rewind, not advance (new head is an ancestor of the old head)
-COMMITS_DROPPED      = 64 (includes #2427, #2424, #2423 NHL, #2417)
-MY_BRANCH_CONTAINS   = all 64 dropped commits; 154 commits ahead of the rewound main
-MERGE_WITH_NEW_MAIN  = conflict-free
-```
-
-`main` no longer contains the work that was merged into it earlier today, so a
-deployment from the current `main` would regress those lanes. This branch does
-not touch `main`: it was not written, force-pushed, or reset by this work, and
-no attempt was made to repair the rewind. Restoring `main` is an owner/reviewer
-action. Because the rewound head is an ancestor of this branch, merging this PR
-would itself restore the 64 dropped commits.
-
-The integration branch is public on origin and can be opened as a PR directly
-against `main`. `main` itself was not written, so protected review and CI still
-own the merge decision. Any later commit on this branch supersedes the SHA
-above; resolve the live head with `git ls-remote origin <PUBLISHED_BRANCH>`.
+An earlier revision of this receipt recorded a protected-main *rewind* to
+`3fbc4c5de`. That was wrong and has been removed: the sandbox's
+`refs/remotes/origin/main` tracking ref was stale at `3fbc4c5de`, and
+`git fetch origin main` refreshed only `FETCH_HEAD`, not the tracking ref. The
+authoritative `git ls-remote origin refs/heads/main` shows 014f879a88bd8a07e172196af6aa6acae5f2e221, which
+fast-forwards normally from the work-start baseline `287d41483`. No history was
+rewritten and no commits were dropped.
 
 ## 1. Lanes integrated on the working branch
 
