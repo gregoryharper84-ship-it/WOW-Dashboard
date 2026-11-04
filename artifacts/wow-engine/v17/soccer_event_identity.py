@@ -160,9 +160,9 @@ def _fetch_scoreboard(competition: str, date_key: str) -> list[Mapping[str, Any]
             "SOCCER_OFFICIAL_SOURCE_RESPONSE_INVALID", type(exc).__name__
         ) from exc
     events = payload.get("events") if isinstance(payload, Mapping) else None
-    if not isinstance(events, list):
+    if not isinstance(events, list) or any(not isinstance(event, Mapping) for event in events):
         raise SoccerEventIdentityError("SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT")
-    return [event for event in events if isinstance(event, Mapping)]
+    return list(events)
 
 
 def _scoreboard_rows(

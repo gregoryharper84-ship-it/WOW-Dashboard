@@ -40,12 +40,12 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `IDENTITY_UNRESOLVED` | event identity | Official canonical event identity has not been resolved. Provider IDs remain aliases only. | No |
 | `NCAAB_PROVIDER_TEAM_ALIAS_MISSING` | NCAAB discovery handoff | Required home or away ESPN team alias absent; preserve provider event alias and identity HOLD. Recovery: upstream discovery evidence. | No |
 | `NCAAB_PROVIDER_TEAM_ALIAS_INVALID` | NCAAB ESPN identity resolver | Missing, duplicated, nonnumeric or oversized ESPN team alias; no canonical promotion. Recovery: input integrity. | No |
-| `NCAAB_EVENT_TIME_INVALID` | NCAAB ESPN identity resolver | Event start or provider tip lacks a timezone-aware ISO timestamp. Recovery: input integrity. | No |
+| `NCAAB_EVENT_TIME_INVALID` | NCAAB ESPN identity resolver | Requested event start lacks a timezone-aware ISO timestamp. Recovery: input integrity. | No |
 | `NCAAB_OFFICIAL_SOURCE_TRANSPORT_FAILED` | NCAAB ESPN scoreboard acquisition | Official dated scoreboard transport failed; typed source HOLD with bounded cache, never missing model. Recovery: upstream transport. | No |
 | `NCAAB_OFFICIAL_SOURCE_RATE_LIMITED` | NCAAB ESPN scoreboard acquisition | ESPN scoreboard returned HTTP 429; no repeated per-event fetch. Recovery: bounded transient source retry. | No |
 | `NCAAB_OFFICIAL_SOURCE_HTTP_FAILED` | NCAAB ESPN scoreboard acquisition | ESPN scoreboard returned non-200 status; retain HTTP status as non-authoritative diagnostic. Recovery: upstream source. | No |
 | `NCAAB_OFFICIAL_SOURCE_RESPONSE_INVALID` | NCAAB ESPN scoreboard acquisition | Provider body cannot be parsed as JSON. Recovery: source integrity. | No |
-| `NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT` | NCAAB ESPN scoreboard acquisition | Provider events or total/count contract malformed; reject entire source page, not individual rows. Recovery: source schema. | No |
+| `NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT` | NCAAB ESPN scoreboard acquisition | Provider events, timestamps, or total/count contract malformed; reject entire source page, not individual rows. Recovery: source schema. | No |
 | `NCAAB_OFFICIAL_SOURCE_PARTIAL` | NCAAB ESPN scoreboard acquisition | All-Division-I scorecard truncated by reported total or page capacity; do not falsely certify missing events. Recovery: source pagination. | No |
 | `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB ESPN event identity | No event with unique ordered ESPN participants and scheduled tip within the 30-minute tolerance. Recovery: canonical evidence. | No |
 | `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB ESPN event identity | More than one distinct ESPN event ID satisfies the full identity match. Recovery: resolve upstream identity conflict. | No |
@@ -621,4 +621,4 @@ Malformed matching fixtures prevent proving either absence or uniqueness.
 | `SOCCER_OFFICIAL_SOURCE_RATE_LIMITED` | Scoreboard returned HTTP 429 | Respect provider limits; retain unresolved identity |
 | `SOCCER_OFFICIAL_SOURCE_HTTP_{status}` | Non-200 response, including UNKNOWN status | Diagnose provider response; do not invent a fixture |
 | `SOCCER_OFFICIAL_SOURCE_RESPONSE_INVALID` | Response JSON cannot be decoded | Repair source response handling |
-| `SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT` | Invalid events collection or invalid timestamp on a matching fixture | Repair source data before assigning canonical identity |
+| `SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT` | Invalid events collection or member, or invalid timestamp on a matching fixture | Repair source data before assigning canonical identity |

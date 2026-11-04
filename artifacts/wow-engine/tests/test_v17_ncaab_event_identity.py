@@ -237,3 +237,27 @@ def test_ni_017_malformed_event_row_holds_source_instead_of_dropping_data(monkey
     with pytest.raises(identity.NCAABEventIdentityError) as exc:
         identity._fetch_scoreboard("20261104")
     assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("date", [None, "not-a-time", "2026-11-04T23:30:00"])
+@pytest.mark.parametrize("matching", [False, True])
+def test_invalid_provider_time_rejects_whole_scoreboard(monkeypatch, date, matching):
+    malformed = scoreboard_event("401800018", date=date, home_id="150" if matching else "151")
+    valid = scoreboard_event("401800019")
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(status_code=200, json=lambda: {"events": [valid, malformed]}),
+    )
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve()
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("valid_match", [False, True])
+def test_invalid_matching_time_from_custom_fetcher_cannot_prove_identity(valid_match):
+    rows = [scoreboard_event("401800020", date="bad-time")]
+    if valid_match:
+        rows.append(scoreboard_event("401800021"))
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({"20261104": rows}))
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"

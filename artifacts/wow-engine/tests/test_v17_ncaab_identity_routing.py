@@ -127,16 +127,16 @@ def _route(event):
     )[0]
 
 
-def test_identity_repair_moves_the_row_out_of_the_identity_bucket():
+def test_identity_repair_moves_the_row_out_of_the_identity_bucket(monkeypatch):
     """The exact board symptom: a NCAAB row stuck as EVENT_IDENTITY_UNRESOLVED."""
+    import v17.ncaab_event_identity as identity
+
+    monkeypatch.setattr(
+        identity, "resolve_ncaab_current_event_identity",
+        lambda **_kwargs: {"event_id": "NCAAB:401950001"},
+    )
     resolved = canonicalize_ncaab_discovery_identity(
         ncaab_alias_event(raw_extra={"official_event_id": None})
-    )
-    resolved = DiscoveredEvent(
-        **{
-            **resolved.__dict__,
-            "official_event_id": "NCAAB:401950001",
-        }
     )
     row = _route(resolved)
     assert row.bucket == MODEL_UNAVAILABLE
