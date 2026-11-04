@@ -176,8 +176,8 @@ def test_success_clears_expired_negative_cache(monkeypatch):
 def test_published_sportsdataverse_schedule_contract_can_reconcile_csv():
     # Producer columns documented by hoopR-mbb-data/docs/datasets/schedules.md.
     csv_text = (
-        "id,game_id,home_id,away_id,game_date_time,time_valid,date,status_type_state\\n"
-        "401999999,401999999,2641,204,2026-11-04T19:00:00-05:00,True,2026-11-04,pre\\n"
+        "id,game_id,home_id,away_id,game_date_time,time_valid,date,status_type_state\n"
+        "401999999,401999999,2641,204,2026-11-04T19:00:00-05:00,True,2026-11-04,pre\n"
     )
     rows = fetch_ncaab_schedule(
         2027, session=_Session(_Response(text=csv_text))
