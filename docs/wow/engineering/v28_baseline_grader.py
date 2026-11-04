@@ -27,11 +27,23 @@ def git(*args, cwd=None):
         raise RuntimeError(f"git {args[0]} failed: {p.stderr.strip()}")
     return p.stdout
 
+def model_named_python_path(paths):
+    """Independent path flag; P commits may also change probability-producing code."""
+    return any(p.endswith(".py") and any(t in p.lower() for t in MODEL_FRAGMENT) for p in paths)
+
+
+def production_model_named_python_path(paths):
+    """Path-only lead; excludes clearly test-only Python filenames."""
+    return any(p.endswith(".py") and any(t in p.lower() for t in MODEL_FRAGMENT)
+               and not (p.rsplit("/", 1)[-1].startswith("test_") or "/tests/" in p)
+               for p in paths)
+
+
 def class_from_paths(paths):
     """Safety triage, not final C classification. Inspect actual diff for C."""
     if any(p.startswith(PROTECTED_PREFIX) or any(t in p.lower() for t in PROTECTED_FRAGMENT) for p in paths):
         return "P"
-    if any(p.endswith(".py") and any(t in p.lower() for t in MODEL_FRAGMENT) for p in paths):
+    if model_named_python_path(paths):
         return "C_REVIEW_REQUIRED"
     return "R"
 
@@ -124,9 +136,22 @@ def build_review_packet(records, pairs):
             "causal_rework_verdict": "UNREVIEWED",
             "required_evidence": "Read both full patches and original red/green evidence; code/path/time overlap is not proof of a re-fix",
         })
+    # Model-named code that was collapsed under P precedence must remain visible.
+    overlap = []
+    for r in records:
+        if r["class"] != "P" or not production_model_named_python_path(r["paths"]):
+            continue
+        overlap.append({
+            "sha": r["sha"], "committed_at": r["committed_at"],
+            "subject": r.get("subject", ""), "changed_paths": r["paths"],
+            "class_verdict": "P_AND_POSSIBLE_C_UNREVIEWED",
+            "required_evidence": "Inspect exact diff for both protected surface and actual probability-producing code",
+        })
+    overlap.sort(key=lambda r: (parse_time(r["committed_at"]), r["sha"]))
     rework.sort(key=lambda r: (parse_time(r["older_at"]), r["older_sha"], r["newer_sha"]))
     return {
-        "C_REVIEW_REQUIRED": potential_c, "same_code_same_file_72h": rework,
+        "C_REVIEW_REQUIRED": potential_c, "P_WITH_MODEL_CODE_PATH_UNREVIEWED": overlap,
+        "same_code_same_file_72h": rework,
         "instructions": "All rows UNREVIEWED. Inspect full commit diffs with git show --format=fuller <SHA>; never infer causal proof from a match.",
     }
 
@@ -195,6 +220,7 @@ def census(repo, head=BOUNDARY, start=START, end=END, include_review_packet=Fals
                 "indicators": indicators(message),
                 "subject": message.splitlines()[0] if message else ""}
         records.append(item)
+    overlap_counts = Counter(x["class"] for x in records if production_model_named_python_path(x["paths"]))
     groups = Counter(x["class"] for x in records)
     lexical = Counter(x["class"] for x in records if x["indicators"]["mechanism_lexical"])
     reverts = Counter(x["class"] for x in records if x["indicators"]["revert_explicit"])
@@ -216,7 +242,8 @@ def census(repo, head=BOUNDARY, start=START, end=END, include_review_packet=Fals
                     pairs[(a["sha"],b["sha"])] = {"older":a["sha"],"newer":b["sha"],"shared_code":code}
     result = {"boundary_sha":sha,"start_utc":start,"end_utc":end,
             "population_commits":len(records),"merges":sum(len(x["parents"])>1 for x in records),
-            "classes":dict(groups),"mechanism_lexical_counts":dict(lexical),
+            "classes":dict(groups),"model_named_production_python_paths_by_primary_bucket":dict(overlap_counts),
+            "mechanism_lexical_counts":dict(lexical),
             "explicit_revert_counts":dict(reverts),"diff_totals_by_class":sizes,
             "same_code_same_file_72h_candidate_count":len(pairs),
             "same_code_same_file_72h_candidates":list(pairs.values()),
