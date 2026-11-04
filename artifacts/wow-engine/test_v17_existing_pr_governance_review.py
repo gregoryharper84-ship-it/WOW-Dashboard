@@ -72,7 +72,8 @@ def test_existing_pr_certifier_is_protected_main_read_only_and_same_repo_only():
     text = WORKFLOW.read_text(encoding="utf-8")
     data = yaml.safe_load(text)
 
-    assert "pull_request_target:" in text
+    assert "on:\n  workflow_dispatch:" in text
+    assert "on:\n  pull_request_target:" not in text
     assert "workflow_dispatch:" in text
     assert "ref: main" in text
     assert "persist-credentials: false" in text
@@ -412,3 +413,17 @@ def test_semantic_canary_jq_receipt_cardinality_rejects_unbound_attempts():
         )
         assert result.returncode == 0, result.stderr
         assert int(result.stdout.strip()) == expected
+
+
+def test_retired_governance_review_workflows_have_no_automatic_events():
+    """Regression: obsolete governance results must not reappear on new PR heads."""
+    for filename in (
+        "wow-v17-trusted-governance-gate.yml",
+        "wow-v17-existing-pr-governance-review.yml",
+        "wow-v17-simple-security-review.yml",
+    ):
+        source = (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
+        triggers = source.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+        assert triggers.startswith("  workflow_dispatch:\n"), filename
+        for event in ("pull_request_target", "pull_request", "workflow_run", "check_run", "push", "schedule"):
+            assert f"  {event}:" not in triggers, (filename, event)
