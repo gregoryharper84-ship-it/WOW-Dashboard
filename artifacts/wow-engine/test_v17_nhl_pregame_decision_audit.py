@@ -149,6 +149,7 @@ def test_both_team_injury_and_replacement_coverage_required(mutation):
     lambda rest: rest.update(as_of=(START+timedelta(minutes=1)).isoformat()),
     lambda rest: rest.update(away={"back_to_back": "maybe", "rest_days": 1}),
     lambda rest: rest.update(away={"back_to_back": True, "rest_days": 1}),
+    lambda rest: rest.update(away={"back_to_back": False, "rest_days": 0}),
     lambda rest: rest.update(source_snapshot_id=""),
 ])
 def test_rest_and_back_to_back_require_structured_pregame_proof(mutation):
