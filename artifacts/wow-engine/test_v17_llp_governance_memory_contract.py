@@ -23,6 +23,12 @@ def test_memory_documents_v17_terminal_and_safety_boundary():
     assert "legacy local market/classification outcome only" in text
     assert "use `effective_label` as the terminal label" not in text
     assert "Do not pass it to a V17 global terminal reducer as an override" in text
+    assert (
+        "No \`LLPLabel\`, legacy \`effective_label\`, historic edge floor, market prior, "
+        "sportsbook odds, or recent-form estimate is a V17 model probability, "
+        "calibrated lower bound, rank eligibility flag, publication approval, "
+        "or execution authorization."
+    ) in text
     assert "model probability" in text
     assert "typed model and Action failures remain distinct" in text
 
