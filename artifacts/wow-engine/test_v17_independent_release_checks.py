@@ -2135,6 +2135,13 @@ def test_publish_failure_is_typed(fake_gh):
 def test_every_phase_c_code_is_registered():
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
+    # Release's authenticated QA-policy resolver is a separate protected
+    # source module. Its typed RELEASE_QA_* dispositions must appear in the
+    # canonical registry, just like codes emitted by the Release workflow.
+    policy_resolver = (
+        ROOT / ".github/scripts/independent_source_review_receipt.py"
+    ).read_text(encoding="utf-8")
+    emitted |= set(re.findall(r'"(RELEASE_QA_[A-Z_]+)"', policy_resolver))
     for wf in (QA_WF, REL_WF):
         text = wf.read_text()
         emitted |= set(re.findall(r"::error::((?:QA|RELEASE)_[A-Z_]+)", text))
