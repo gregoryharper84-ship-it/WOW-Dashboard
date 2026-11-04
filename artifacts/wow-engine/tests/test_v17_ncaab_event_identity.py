@@ -165,3 +165,75 @@ def test_ni_010_successful_reads_are_cached_and_reset_clears_them(monkeypatch):
     identity.reset_cache()
     _resolve()
     assert calls["n"] == 6
+
+
+def test_ni_011_same_teams_wrong_tip_time_cannot_be_canonical():
+    wrong_tip = scoreboard_event("401800011", date="2026-11-04T18:00:00Z")
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({"20261104": [wrong_tip]}))
+    assert exc.value.code == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_ni_012_cross_midnight_tips_are_normalized_to_one_instant():
+    out = _resolve(
+        event_start_time="2026-11-05T00:15:00Z",
+        fetcher=fetcher_for({"20261104": [
+            scoreboard_event("401800012", date="2026-11-04T19:15:00-05:00"),
+        ]}),
+    )
+    assert out["event_id"] == "NCAAB:401800012"
+
+
+def test_ni_013_scoreboard_fetches_all_division_i(monkeypatch):
+    seen = {}
+
+    def fetch(_url, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(status_code=200, json=lambda: {"events": []})
+
+    monkeypatch.setattr(identity.requests, "get", fetch)
+    assert identity._fetch_scoreboard("20261104") == []
+    assert seen["params"]["groups"] == 50
+    assert seen["params"]["limit"] >= 500
+
+
+def test_ni_014_duplicate_home_team_assignment_is_not_unique():
+    row = scoreboard_event("401800014")
+    row["competitions"][0]["competitors"].append({"id": "151", "homeAway": "home"})
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve(
+            home_team_alias="151",
+            fetcher=fetcher_for({"20261104": [row]}),
+        )
+    assert exc.value.code == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_ni_015_partial_scoreboard_is_typed_source_hold(monkeypatch):
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200,
+            json=lambda: {"events": [scoreboard_event("401800015")], "total": 36},
+        ),
+    )
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        identity._fetch_scoreboard("20261104")
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_PARTIAL"
+
+
+def test_ni_016_bogus_espn_team_identifier_is_not_canonical():
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve(home_team_alias="espn-notanid", fetcher=fetcher_for({}))
+    assert exc.value.code == "NCAAB_PROVIDER_TEAM_ALIAS_INVALID"
+
+
+def test_ni_017_malformed_event_row_holds_source_instead_of_dropping_data(monkeypatch):
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200, json=lambda: {"events": [None]},
+        ),
+    )
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        identity._fetch_scoreboard("20261104")
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
