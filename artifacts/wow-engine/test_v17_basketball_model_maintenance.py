@@ -392,6 +392,12 @@ def test_nba_current_season_hydration_failure_is_not_successful_replay(monkeypat
     assert result["rows_updated"] == 0
     assert result["rows"][0]["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
     assert result["rows"][0]["hydration_blocker"]["latest_persisted_game_date"] is None
+    upstream = result["rows"][0]["hydration_blocker"]["upstream_hydration_blocker"]
+    assert upstream["code"] == "NBA_SOURCE_HTTP_503"
+    assert upstream["error_type"] == "BasketballHydrationError"
+    assert upstream["stage"] == "FRESH_SOURCE_HYDRATION"
+    assert upstream["can_execute"] is False
+    assert result["rows"][0]["probability_publishable"] is False
     assert result["can_execute"] is False
 
 

@@ -198,6 +198,11 @@ def run_basketball_model_maintenance(
         if sport == "NBA" and explicit_seasons is None:
             gap = _nba_current_season_data_gap(hydration, clock)
             if gap is not None:
+                # Preserve the original acquisition failure underneath the
+                # current-season data gap; callers must not mistake HTTP 503
+                # for a confirmed absence of settled training history.
+                if hydration_blocker is not None:
+                    gap = {**gap, "upstream_hydration_blocker": hydration_blocker}
                 results.append(_blocked(
                     sport, gap["code"],
                     hydration_blocker=gap,
