@@ -86,9 +86,11 @@ def test_ci_completion_has_only_one_protected_release_handoff():
     verify = _verify_workflow_text()
     triggers = deploy.split("\npermissions:", 1)[0]
 
-    assert "\n  workflow_run:\n" not in triggers
+    assert triggers.count("\n  workflow_run:\n") == 1
+    assert 'workflows: ["wow-verify"]' in triggers
+    assert "types: [completed]" in triggers
+    assert "branches: [main]" in triggers
     assert "workflow_dispatch:" in triggers
-    assert "    if: ${{ false }}" in deploy
     assert "dispatch-protected-deploy:" not in verify
     assert "gh workflow run wow-v17-render-production-deploy.yml" not in verify
     assert "actions: write" not in verify
@@ -118,7 +120,7 @@ def test_morning_green_resumes_ci_and_uses_the_single_workflow_run_handoff():
 
     assert "gh workflow run wow-verify.yml --repo \"$GITHUB_REPOSITORY\" --ref main" in morning_green
     assert "gh workflow run wow-v17-render-production-deploy.yml" not in morning_green
-    assert "    if: ${{ false }}" in deploy
+    assert 'workflows: ["wow-verify"]' in deploy
 
 
 def test_repeated_attempts_remain_inside_the_protected_single_writer_fence():
