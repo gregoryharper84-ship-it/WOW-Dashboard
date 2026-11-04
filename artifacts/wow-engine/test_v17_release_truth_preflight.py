@@ -236,3 +236,29 @@ def test_malformed_pr_identity_does_not_invent_real_blocker():
     assert "PR_HEAD_UNVERIFIED" in names(out)
     assert "PR_STATE_UNVERIFIED" in names(out)
     assert "PR_NOT_OPEN" not in names(out)
+
+
+def test_gh_binary_errors_remain_non_gating(monkeypatch, capsys):
+    """Absent/non-executable gh must produce typed unknown, never false BLOCKED."""
+    import json
+    import sys
+    from v17 import release_truth_preflight as live
+
+    for exception in (FileNotFoundError, PermissionError):
+        def no_cli(*_args, **_kwargs):
+            raise exception("intentionally unavailable gh executable")
+
+        monkeypatch.setattr(live.subprocess, "run", no_cli)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["release_truth_preflight.py", "--repo", "owner/repo", "--pr-number", "2431"],
+        )
+        assert live.main() == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["findings"] == [
+            {"finding": "LIVE_PR_EVIDENCE_UNVERIFIED", "state": "UNVERIFIED",
+             "source": "github_api"}
+        ]
+        assert report["can_execute"] is False
+        assert report["not_release_authorization"] is True
+        assert "GITHUB_CLI_UNAVAILABLE:" in report["read_error"]
