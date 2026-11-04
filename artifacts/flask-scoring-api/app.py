@@ -145,7 +145,11 @@ from gate_engine.daily_run_lifecycle import (
     start_manifest_reaper,
 )
 ensure_manifest_ready()
-start_manifest_reaper()
+# CI owns the test database lifecycle and mutates the process environment.
+# Do not leave a recurring database worker running alongside those tests.
+_CI_MODE = os.environ.get("WOW_CI", "").strip().lower() in {"1", "true", "yes"}
+if not _CI_MODE:
+    start_manifest_reaper()
 _bt("flask app created — registering routes")
 
 BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"
@@ -22198,8 +22202,13 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
-_bt("startup daemon spawned — app fully ready")
+if _CI_MODE:
+    # Finish database initialization before tests can patch the environment or
+    # reset the schema; libpq may read environment variables during connect.
+    _run_startup_warmup()
+else:
+    _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+_bt("startup warmup initialized — app fully ready")
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
