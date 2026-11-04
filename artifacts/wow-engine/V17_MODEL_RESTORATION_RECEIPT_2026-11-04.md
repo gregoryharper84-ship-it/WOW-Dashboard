@@ -22,6 +22,24 @@ ORIGIN_MAIN      = 287d41483 (unchanged by this work)
 PUSH_MODE        = fast-forward create of a new feature branch; no force, no history rewrite
 ```
 
+### Protected-main rewind observed
+
+```text
+MAIN_AT_WORK_START   = 287d41483 (merge of #2427)
+MAIN_AT_RECEIPT_EDIT = 3fbc4c5de (2026-11-02 22:45:30 -0600, #2374)
+MAIN_DIRECTION       = rewind, not advance (new head is an ancestor of the old head)
+COMMITS_DROPPED      = 64 (includes #2427, #2424, #2423 NHL, #2417)
+MY_BRANCH_CONTAINS   = all 64 dropped commits; 154 commits ahead of the rewound main
+MERGE_WITH_NEW_MAIN  = conflict-free
+```
+
+`main` no longer contains the work that was merged into it earlier today, so a
+deployment from the current `main` would regress those lanes. This branch does
+not touch `main`: it was not written, force-pushed, or reset by this work, and
+no attempt was made to repair the rewind. Restoring `main` is an owner/reviewer
+action. Because the rewound head is an ancestor of this branch, merging this PR
+would itself restore the 64 dropped commits.
+
 The integration branch is public on origin and can be opened as a PR directly
 against `main`. `main` itself was not written, so protected review and CI still
 own the merge decision. Any later commit on this branch supersedes the SHA
