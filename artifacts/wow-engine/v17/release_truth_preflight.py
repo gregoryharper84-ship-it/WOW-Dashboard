@@ -53,6 +53,9 @@ def classify(
     unknown = lambda code, source: findings.append(
         {"finding": code, "state": "UNVERIFIED", "source": source}
     )
+    pending = lambda code, source: findings.append(
+        {"finding": code, "state": "PENDING", "source": source}
+    )
 
     if not isinstance(head, str) or not SHA.fullmatch(head):
         unknown("PR_HEAD_UNVERIFIED", "live_pr")
@@ -138,9 +141,9 @@ def classify(
         for name, app in sorted(required_checks):
             item = latest.get((name, app))
             if item is None:
-                known(f"REQUIRED_CHECK_MISSING:{name}:{app}", "github_check_runs")
+                pending(f"REQUIRED_CHECK_MISSING:{name}:{app}", "github_check_runs")
             elif item.get("status") != "completed":
-                known(f"REQUIRED_CHECK_PENDING:{name}:{app}", "github_check_runs")
+                pending(f"REQUIRED_CHECK_PENDING:{name}:{app}", "github_check_runs")
             elif item.get("conclusion") != "success":
                 known(f"REQUIRED_CHECK_NOT_SUCCESS:{name}:{app}", "github_check_runs")
 
@@ -155,7 +158,9 @@ def classify(
         "rejected_obsolete_claims": rejected,
         "findings": findings,
         "merge_evidence": "BLOCKED" if any(x["state"] == "BLOCKED" for x in findings)
-            else "UNVERIFIED" if findings else "NO_IDENTIFIED_RULESET_OR_PR_BLOCKER",
+            else "UNVERIFIED" if any(x["state"] == "UNVERIFIED" for x in findings)
+            else "PENDING" if any(x["state"] == "PENDING" for x in findings)
+            else "NO_IDENTIFIED_RULESET_OR_PR_BLOCKER",
         "branch_protection_separate": "NOT_ASSESSED",
         "semantic_review": "NOT_ASSESSED",
         "deployment": "NOT_ASSESSED",
