@@ -129,9 +129,13 @@ were discovered by the whole-suite run rather than by design review:
   `MODEL_UNAVAILABLE`. The evidence is therefore attached in both layers, and the
   code itself is never relabelled in either.
 
-Verified by **9005 passed, 55 skipped, 1 failed** in 404.52s across the
+Verified by **9010 passed, 55 skipped, 0 failed** in 363.63s across the
 whole `artifacts/wow-engine` tree, plus a targeted run that installs the parity
 wrapper and bridge runtime alongside the request-runtime tests.
+This head also merges the six upstream #2431 commits that were pushed to
+this branch by another writer (NBA recent-season hydration bound, QA receipt
+pagination, GitHub CLI reporting). They touch the basketball hydrator, release
+truth preflight and the digest workflow; none touches the NHL evidence path.
 
 ## 3. AMRT PR #1843 is stale, not pending
 
