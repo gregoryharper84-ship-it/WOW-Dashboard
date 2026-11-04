@@ -49,6 +49,7 @@ rewritten and no commits were dropped.
 | Release automation #2429 | **Integrated** (`99edcfa7c`, conflict-free) | 402 passed |
 | Release automation #2430 | **Integrated** (`66937ae1e`, conflict-free) | 402 passed |
 | AMRT PR #1843 | **Already superseded by main — do not merge** | see §3 |
+| NHL source receipt PR #2419 | **Integrated** (merge `93efb7846`, conflict-free, all 9 commits preserved) | 37 new tests + 24 request-runtime passed |
 
 ### NBA lane contents now on the branch
 
@@ -65,6 +66,24 @@ rewritten and no commits were dropped.
   `v17/multisport_team_event_calibration.py` (bounds receipt binding)
 - `v17/team_event_bridge_runtime.py`, `v17/team_event_model_registry_audit.py`
 
+### NHL lane contents now on the branch (PR #2419, head `3fe2eccaf`)
+
+- `v17/nhl_official_pregame_source_receipt.py` — read-only first-party
+  gamecenter capture that establishes event identity and freshness only.
+  `can_execute=False`, `probability_publishable=False`, `rank_eligible=False`,
+  `model_invoked=False`; every unhydrated input (goalies, injuries, rest/travel,
+  Elo, special teams, calibrator) is reported in `missing_fields` rather than
+  filled from odds, historical `goalieComparison` leaders, or guesses.
+  Fails closed on non-UTC or out-of-range clocks, non-`FUT`/`PRE` states,
+  identity mismatch, redirects, oversize or empty bodies, missing streaming,
+  and a 20s total deadline.
+- `tests/test_v17_nhl_official_pregame_source_receipt.py` — 37 offline boundary
+  tests, no provider calls.
+- **No certification change.** `CERTIFIED_TEAM_EVENT_SPORTS` is untouched and no
+  NHL bridge is registered, so NHL capability correctly remains
+  `MODEL_UNAVAILABLE` / `NOT_CERTIFIED`. This lane produces evidence, not a
+  publishable probability.
+
 ## 2. Verification actually run on this branch
 
 | Suite | Files | Result |
@@ -74,10 +93,17 @@ rewritten and no commits were dropped.
 | AMRT, resident supervisor, Claude runtime | 11 | **271 passed** |
 | Cross-sport consumers (certification replay, publication guard, NHL totals, NFL governed publication) | 14 | **178 passed** |
 | Baseline before integration | 6 | **52 passed** |
+| Whole `artifacts/wow-engine` tree, after NHL #2419 | 293 test files | **9001 passed, 55 skipped, 0 failed** |
 
 1,187 passed, 22 skipped, 0 failed across those five batches. The 22 skips are the
 PostgreSQL-mirror and live-credential cases that require a real database;
 they are skipped, not passed, and are called out in §4.
+
+The whole-tree run after integrating NHL #2419 is **9001 passed, 55 skipped,
+0 failed** in 360s — exactly the previous 8964 plus the 37 tests this lane adds,
+so the integration neither regressed nor silently skipped anything. The new test
+file is assigned to CI shard 2 by `scripts/wow_rapid.py shard-files`, so hosted
+CI will actually execute it.
 
 ## 3. AMRT PR #1843 is stale, not pending
 
