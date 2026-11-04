@@ -256,8 +256,9 @@ class _ForwardTable:
         self.db = db
         self.name = name
         self.rows = None
+        self.total = None
 
-    def select(self, *_a):
+    def select(self, *_a, **_kw):
         return self
 
     def eq(self, field, value):
@@ -265,12 +266,26 @@ class _ForwardTable:
             self.rows = [r for r in self.db.artifacts if str(r.get("artifact_id")) == str(value)]
         elif self.name == "wow_nfl_forward_shadow_grades":
             self.rows = [r for r in self.db.grades if str(r.get("model_version")) == str(value)]
+            self.total = len(self.rows)
         else:
             raise AssertionError(f"unexpected eq on {self.name}")
         return self
 
-    def order(self, _field, desc=False):
-        self.rows = list(self.db.health)
+    def order(self, field, desc=False):
+        if self.name == "wow_nfl_forward_shadow_grades":
+            assert field == "official_event_id"
+            self.rows = sorted(self.rows, key=lambda r: r["official_event_id"], reverse=desc)
+        else:
+            self.rows = list(self.db.health)
+        return self
+
+    def range(self, start, end):
+        assert self.name == "wow_nfl_forward_shadow_grades"
+        self.db.pages.append((start, end))
+        selection = self.rows[start:end + 1]
+        if self.db.response_cap is not None:
+            selection = selection[:self.db.response_cap]
+        self.rows = selection
         return self
 
     def limit(self, value):
@@ -279,17 +294,20 @@ class _ForwardTable:
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self.rows or [])
+        return SimpleNamespace(data=self.rows or [], count=self.total)
 
 
 class _FailingTable:
-    def select(self, *_a):
+    def select(self, *_a, **_kw):
         return self
 
     def eq(self, *_a):
         return self
 
     def order(self, *_a, **_k):
+        return self
+
+    def range(self, *_a):
         return self
 
     def limit(self, *_a):
@@ -300,11 +318,13 @@ class _FailingTable:
 
 
 class _ForwardDb:
-    def __init__(self, *, artifacts, health, grades, fails=False):
+    def __init__(self, *, artifacts, health, grades, fails=False, response_cap=None):
         self.artifacts = artifacts
         self.health = health
         self.grades = grades
         self.fails = fails
+        self.response_cap = response_cap
+        self.pages = []
 
     def table(self, name):
         return _FailingTable() if self.fails else _ForwardTable(self, name)
@@ -366,6 +386,29 @@ def test_champion_registry_state_plus_minimum_cohort_proves_forward_certificatio
         grades=_grades(100),
     )
     assert _forward_certification_proven(db, _forward_row()) is True
+
+
+def test_paginated_champion_cohort_uses_complete_ordered_400_game_set():
+    db = _ForwardDb(
+        artifacts=[_champion_artifact()],
+        health=[_healthy_assessment(graded_n=400)],
+        grades=_grades(400),
+    )
+    assert _forward_certification_proven(db, _forward_row()) is True
+    assert db.pages == [(0, 249), (250, 499)]
+
+
+def test_server_response_cap_cannot_certify_truncated_champion_grades():
+    # Simulate a PostgREST service that silently caps every 250-row request
+    # to 100 rows despite reporting the exact 400-row model-version count.
+    db = _ForwardDb(
+        artifacts=[_champion_artifact()],
+        health=[_healthy_assessment(graded_n=400)],
+        grades=_grades(400),
+        response_cap=100,
+    )
+    assert _forward_certification_proven(db, _forward_row()) is False
+    assert db.pages == [(0, 249)]
 
 
 def test_registry_publication_flag_is_never_the_forward_gate():
