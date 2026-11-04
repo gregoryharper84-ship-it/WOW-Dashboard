@@ -108,3 +108,9 @@ def test_schema_corruption_holds_entire_source():
 def test_started_fixture_is_never_a_pregame_candidate():
     out = module.preflight_fixture_source(sport="SOCCER", source_id=module.SOURCES["SOCCER"], source_payload=SOCCER, crosswalk=SOCCER_XWALK, as_of_utc="2026-11-05T01:00:00Z")
     assert out["code"] == "SOURCE_FIXTURE_INELIGIBLE"
+
+def test_actual_source_start_already_passed_even_if_alias_start_is_future():
+    soccer = copy.deepcopy(SOCCER)
+    soccer["matches"][0]["utcDate"] = "2026-11-05T00:40:00Z"
+    out = module.preflight_fixture_source(sport="SOCCER", source_id=module.SOURCES["SOCCER"], source_payload=soccer, crosswalk=SOCCER_XWALK, as_of_utc="2026-11-05T00:50:00Z")
+    assert out["code"] == "SOURCE_FIXTURE_INELIGIBLE"
