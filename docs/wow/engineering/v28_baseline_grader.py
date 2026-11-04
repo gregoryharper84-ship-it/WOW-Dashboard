@@ -21,7 +21,8 @@ PROTECTED_FRAGMENT = ("release", "governance", "security", "auth", "writer_lease
 MODEL_FRAGMENT = ("model", "calibrat", "predict", "fitted", "probabilit", "scorer", "specialist")
 
 def git(*args, cwd=None):
-    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
     if p.returncode:
         raise RuntimeError(f"git {args[0]} failed: {p.stderr.strip()}")
     return p.stdout
@@ -94,23 +95,38 @@ def census(repo, head=BOUNDARY, start=START, end=END):
         raise RuntimeError("SHALLOW_CLONE: obtain full object history; no denominator emitted")
     sha = git("rev-parse", "--verify", head + "^{commit}", cwd=repo).strip()
     # Two batched Git history reads rather than two subprocesses per commit.
-    fmt = "%x1e%H%x1f%cI%x1f%P%x1f%B%x1f"
+    # Raw commit bodies cannot share a framing stream with NUL-delimited paths.
+    fmt = "%x1e%H%x1f%cI%x1f%P%x1f"
     def parse_batch(data):
+        """Parse Git's -z path records; never C-unquote filenames or frame commit bodies."""
         rows = {}
-        for block in data.split("\x1e"):
-            if not block.strip() or "\x1f" not in block:
+        current = None
+        for token in data.split("\\x00"):
+            if not token:
                 continue
-            fields = block.split("\x1f", 4)
-            if len(fields) != 5:
-                raise ValueError("invalid batched git record")
-            oid, stamp, parents, message, lines = fields
-            rows[oid] = {"committed_at": stamp, "parents": parents.split() if parents else [],
-                         "message": message, "lines": lines.splitlines()}
+            if token.startswith("\\x1e"):
+                fields = token[1:].split("\\x1f")
+                if len(fields) != 4 or fields[-1] != "":
+                    raise ValueError("invalid batched git metadata")
+                oid, stamp, parents, _ = fields
+                if not re.fullmatch(r"[0-9a-f]{40}", oid) or oid in rows:
+                    raise ValueError("invalid or duplicate git commit id")
+                rows[oid] = {"committed_at": stamp, "parents": parents.split(), "lines": []}
+                current = oid
+                continue
+            if current is None:
+                raise ValueError("orphan Git path record")
+            # Git writes one line separator after the pretty-format header.
+            # Keep every subsequent byte of the NUL-delimited filename.
+            if token.startswith("\\n"):
+                token = token[1:]
+            if token:
+                rows[current]["lines"].append(token)
         return rows
 
-    stats = parse_batch(git("log", "--no-show-signature", "--no-renames", "--root",
+    stats = parse_batch(git("log", "-z", "--no-show-signature", "--no-renames", "--root",
                             "--numstat", f"--format={fmt}", sha, cwd=repo))
-    new_files = parse_batch(git("log", "--no-show-signature", "--no-renames", "--root",
+    new_files = parse_batch(git("log", "-z", "--no-show-signature", "--no-renames", "--root",
                                 "--diff-filter=A", "--name-only", f"--format={fmt}", sha, cwd=repo))
     records = []
     for oid, raw in stats.items():
@@ -127,13 +143,16 @@ def census(repo, head=BOUNDARY, start=START, end=END):
             paths.append(filename)
             added += int(add) if add.isdigit() else 0
             deleted += int(remove) if remove.isdigit() else 0
-        new = [line for line in new_files.get(oid, {}).get("lines", []) if line.strip()]
+        new = [line for line in new_files.get(oid, {}).get("lines", []) if line]
+        # Fetch each in-window body separately: arbitrary text cannot corrupt
+        # the batched record framing. This is a one-shot offline census.
+        message = git("show", "-s", "--format=%B", oid, cwd=repo)
         item = {"sha": oid, "committed_at": raw["committed_at"], "parents": raw["parents"],
                 "diff": {"additions": added, "deletions": deleted,
                          "files": len(paths), "new_files": len(new)},
                 "paths": paths,
                 "class": class_from_paths(paths) if len(raw["parents"]) <= 1 else "MERGE_UNCLASSIFIED",
-                "indicators": indicators(raw["message"])}
+                "indicators": indicators(message)}
         records.append(item)
     groups = Counter(x["class"] for x in records)
     lexical = Counter(x["class"] for x in records if x["indicators"]["mechanism_lexical"])
