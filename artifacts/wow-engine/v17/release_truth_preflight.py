@@ -69,9 +69,7 @@ def classify(
     merge_state = pr.get("mergeable_state")
     if merge_state == "dirty":
         known("PR_MERGE_CONFLICT", "live_pr")
-    elif merge_state == "behind":
-        known("PR_HEAD_BEHIND_MAIN", "live_pr")
-    elif merge_state in (None, "unknown"):
+    elif merge_state in (None, "unknown", "blocked", "unstable"):
         unknown("PR_MERGEABILITY_UNVERIFIED", "live_pr")
 
     applicable: list[dict[str, Any]] = []
@@ -85,6 +83,7 @@ def classify(
 
     required_checks: dict[tuple[str, int], bool] = {}
     review_counts: list[int] = []
+    strict_base_checks = False
     if policy_unknown:
         unknown("RULESET_REQUIREMENTS_UNVERIFIED", "github_rulesets")
     else:
@@ -102,6 +101,11 @@ def classify(
                     else:
                         review_counts.append(count)
                 if kind == "required_status_checks":
+                    strict = params.get("strict_required_status_checks_policy")
+                    if type(strict) is not bool:
+                        policy_unknown = True
+                    elif strict:
+                        strict_base_checks = True
                     arr = params.get("required_status_checks")
                     if not isinstance(arr, list):
                         policy_unknown = True
@@ -114,6 +118,14 @@ def classify(
                             required_checks[(name, app)] = True
         if policy_unknown:
             unknown("RULESET_REQUIREMENTS_UNVERIFIED", "github_rulesets")
+
+    if merge_state == "behind":
+        if policy_unknown:
+            unknown("PR_BASE_SYNC_POLICY_UNVERIFIED", "github_rulesets")
+        elif strict_base_checks:
+            known("PR_HEAD_BEHIND_STRICT_BASE", "github_rulesets")
+        else:
+            unknown("PR_BEHIND_BASE_REQUIREMENT_UNVERIFIED", "github_rulesets")
 
     # Only statements about the observed rulesets are authorized. Ordinary
     # branch-protection and separate model/product acceptance are not inferred.
