@@ -181,7 +181,8 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '--arg workflow_name "wow-v17-chatgpt-engineering-worker"' in worker
     assert '--arg workflow_name "wow-v17-claude-engineering-worker"' in claude_worker
 
-    assert "pull_request_target:" in gate
+    assert "on:\n  workflow_dispatch:" in gate
+    assert "on:\n  pull_request_target:" not in gate
     assert "ref: main" in gate
     artifact_step = gate.split("- name: Resolve trusted exact-head governance artifact", 1)[1].split(
         "- name: Verify trusted workflow identity and completion", 1
