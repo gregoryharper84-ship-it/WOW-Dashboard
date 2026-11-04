@@ -54,7 +54,7 @@ jobs:
           # writer runs retain the source id in their display title, so recover
           # the oldest unreceipted source before considering newer fallbacks.
           resolve_oldest_cancelled_without_receipt() {
-            local tmp page page_json count oldest_created source_id receipt_count
+            local tmp page page_json count oldest_created source_id receipt_count discovery_count
             tmp=$(mktemp)
             page=1
 
@@ -91,6 +91,15 @@ jobs:
               receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-scout-brain-persistence-${source_id}&per_page=1" \
                 --jq '[.artifacts[] | select(.expired == false)] | length')
               if [ "$receipt_count" -eq 0 ]; then
+                # A cancelled writer receipt is not a discovery artifact. Some
+                # historical source runs (including verification-only runs) have
+                # no recoverable payload; never select them for persistence.
+                discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/artifacts" \
+                  --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length') || return 2
+                if [ "$discovery_count" -lt 1 ]; then
+                  echo "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=${source_id} provenance=cancelled_writer_no_nonexpired_discovery_artifact" >> "$GITHUB_STEP_SUMMARY"
+                  continue
+                fi
                 printf '%s\n' "$source_id"
                 rm -f "$tmp"
                 return 0
