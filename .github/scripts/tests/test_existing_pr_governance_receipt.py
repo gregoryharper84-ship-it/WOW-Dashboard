@@ -1916,8 +1916,8 @@ def test_trusted_gate_revalidates_authenticated_automated_review_source():
 def test_trusted_gate_accepts_only_authenticated_release_check_run_certifications():
     workflow = TRUSTED_GATE.read_text(encoding="utf-8")
 
-    assert "github.event.workflow_run.event == 'check_run'" in workflow
-    assert '(.event == "workflow_run" or .event == "check_run")' in workflow
+    assert "if: ${{ false }}" in workflow
+    assert "\n  workflow_run:" not in workflow.split("\npermissions:", 1)[0]
     assert "Release check-run certification must run from protected main" in workflow
 
 
