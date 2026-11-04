@@ -38,6 +38,17 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CREDENTIAL_UNCONFIGURED` | market acquisition | No credential is configured for a provider that requires one. | Does not decide sporting rank |
 | `RATE_LIMITED` | market acquisition | Provider refused the request due to rate/quota limits. | Does not decide sporting rank |
 | `IDENTITY_UNRESOLVED` | event identity | Official canonical event identity has not been resolved. Provider IDs remain aliases only. | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_MISSING` | NCAAB discovery identity | Required ESPN home/away team IDs absent from the discovery row. Recovery class: EVIDENCE_PENDING; repair discovery capture, never promote event alias. | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_INVALID` | NCAAB canonical resolver | Team IDs missing, equal, nonnumeric or otherwise not valid ESPN IDs. Recovery class: DATA_CONTRACT; correct upstream IDs. | No |
+| `NCAAB_EVENT_TIME_INVALID` | NCAAB canonical resolver | Event or schedule start lacks a valid timezone-aware timestamp. Recovery class: DATA_CONTRACT; repair input timestamp. | No |
+| `NCAAB_SCHEDULE_SOURCE_UNAVAILABLE` | NCAAB schedule acquisition | SportsDataverse schedule transport/reader unavailable. Recovery class: EVIDENCE_PENDING; investigate source, retain identity hold. | No |
+| `NCAAB_SCHEDULE_SOURCE_RATE_LIMITED` | NCAAB schedule acquisition | SportsDataverse schedule returned HTTP 429. Recovery class: TRANSIENT only when retry policy permits, otherwise EVIDENCE_PENDING. | No |
+| `NCAAB_SCHEDULE_SOURCE_HTTP_FAILED` | NCAAB schedule acquisition | SportsDataverse schedule returned non-success HTTP status. Recovery class: EVIDENCE_PENDING; investigate source/status. | No |
+| `NCAAB_SCHEDULE_SOURCE_SCHEMA_DRIFT` | NCAAB schedule acquisition | Published MBB schedule does not include required identifiers/start-validity columns. Recovery class: REPAIRABLE_CODE after verified upstream schema. | No |
+| `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB canonical resolver | No unique compatible team/start schedule row; includes missing or invalid start proof. Recovery class: EVIDENCE_PENDING; preserve alias-only status. | No |
+| `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB canonical resolver | More than one distinct schedule event ID matches participants and start. Recovery class: DATA_CONTRACT; resolve upstream ambiguity. | No |
+| `NCAAB_CANONICAL_EVENT_ID_MISSING` | NCAAB discovery handoff | Resolver returned no canonical event ID. Recovery class: REPAIRABLE_CODE; retain identity hold. | No |
+| `NCAAB_CANONICAL_RESOLVER_FAILED` | NCAAB discovery handoff | Unexpected resolver exception, never treated as model absence. Recovery class: REPAIRABLE_CODE; inspect typed exception and retain alias-only state. | No |
 | `OFFICIAL_EVENT_ID_REQUIRED_FOR_CANONICALIZATION` | event identity | Canonical event key cannot be constructed because authoritative official event identity is absent. | No |
 | `RUN_INVALID_EVIDENCE_BINDING` | producer→consumer evidence handoff | A required field is demonstrably populated in the controlling sporting package/canonical evidence but downstream governance reports that same field as missing/not called. The run is invalid rather than an ordinary no-pick; the completed sporting package is preserved for diagnosis but cannot rank/publish. | No |
 | `DISCOVERED_ROW_MISSING_TERMINAL_DISPOSITION` | row reconciliation | A discovered candidate reached publication without exactly one terminal disposition. The row must remain visible and the run is incomplete. | No |
