@@ -118,7 +118,7 @@ def census(repo, head=BOUNDARY, start=START, end=END):
                 raise ValueError("orphan Git path record")
             # Git writes one line separator after the pretty-format header.
             # Keep every subsequent byte of the NUL-delimited filename.
-            if token.startswith("\\n"):
+            if token.startswith("\n"):
                 token = token[1:]
             if token:
                 rows[current]["lines"].append(token)
