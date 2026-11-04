@@ -176,3 +176,21 @@ def test_running_required_check_is_pending_not_failure():
     assert "REQUIRED_CHECK_PENDING:WOW Independent QA exact-head:5245832" in names(out)
     assert out["merge_evidence"] == "PENDING"
 
+
+
+def test_behind_main_blocked_only_when_effective_ruleset_requires_strict_base():
+    out = report(p=pr("behind"))
+    assert "PR_HEAD_BEHIND_STRICT_BASE" in names(out)
+    assert out["merge_evidence"] == "BLOCKED"
+
+    rs = rule()
+    rs["rules"][1]["parameters"]["strict_required_status_checks_policy"] = False
+    out = report(p=pr("behind"), rules=[rs])
+    assert "PR_HEAD_BEHIND_STRICT_BASE" not in names(out)
+    assert "PR_BEHIND_BASE_REQUIREMENT_UNVERIFIED" in names(out)
+
+
+def test_ambiguous_github_blocked_state_is_unverified_not_self_certified():
+    out = report(p=pr("blocked"))
+    assert "PR_MERGEABILITY_UNVERIFIED" in names(out)
+    assert out["merge_evidence"] == "UNVERIFIED"
