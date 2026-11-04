@@ -42,19 +42,42 @@ url = sys.argv[2]
 if "wow-v17-scout-brain-persist.yml/runs?" in url:
     if "page=1" not in url:
         raise SystemExit(33)
-    print(json.dumps({"workflow_runs": [
+    payload = {"workflow_runs": [
         {"created_at": "2026-10-23T14:58:23Z", "display_title": "writer source=39974206880"},
         {"created_at": "2026-10-24T14:58:23Z", "display_title": "writer source=39974206881"}
-    ]}))
+    ]}
 elif "/actions/artifacts?name=wow-v17-scout-brain-persistence-" in url:
-    print("0")
+    payload = {"artifacts": []}
 elif "/actions/runs/" in url and "/artifacts" in url:
     source_id = re.search(r"/actions/runs/([0-9]+)/artifacts", url).group(1)
     if source_id == os.environ.get("MOCK_BROKEN_SOURCE"):
         raise SystemExit(44)
-    print("1" if source_id == os.environ.get("MOCK_VALID_SOURCE") else "0")
+    artifacts = [
+        # An expired matching discovery must never be selected.
+        {"name": "wow-v17-multiscout-wow-scout-expired-discovery", "expired": True},
+        # An unrelated non-expired artifact must never be selected.
+        {"name": "unrelated-run-artifact", "expired": False},
+    ]
+    if source_id == os.environ.get("MOCK_VALID_SOURCE"):
+        artifacts.append({
+            "name": "wow-v17-multiscout-wow-scout-events-discovery",
+            "expired": False,
+        })
+    payload = {"artifacts": artifacts}
 else:
     raise SystemExit(45)
+
+if "--jq" in sys.argv:
+    import subprocess
+    expression = sys.argv[sys.argv.index("--jq") + 1]
+    result = subprocess.run(
+        ["jq", "-r", expression], input=json.dumps(payload),
+        capture_output=True, text=True, check=False,
+    )
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    raise SystemExit(result.returncode)
+print(json.dumps(payload))
 """,
         encoding="utf-8",
     )
