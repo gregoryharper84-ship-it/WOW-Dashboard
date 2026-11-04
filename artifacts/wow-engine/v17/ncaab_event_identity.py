@@ -46,7 +46,7 @@ def _aware(value: Any) -> datetime:
 
 def _espn_id(value: Any) -> str:
     token = str(value or "").strip().removeprefix("espn-")
-    return token if token.isascii() and token.isdecimal() and int(token) > 0 else ""
+    return token if 1 <= len(token) <= 20 and token.isascii() and token.isdecimal() and int(token) > 0 else ""
 
 
 def season_end_year(event_time: datetime) -> int:
