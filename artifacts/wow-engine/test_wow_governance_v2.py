@@ -38,7 +38,8 @@ def test_source_review_negative_suite_runs_on_pr_head():
 def test_protected_main_workflow_and_separate_qa_app_are_required():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     code = SCRIPT.read_text(encoding="utf-8")
-    assert "pull_request_target:" in workflow
+    assert "on:\n  workflow_dispatch:" in workflow
+    assert "on:\n  pull_request_target:" not in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "environment: wow-qa" in workflow
     assert "ref: main" in workflow
