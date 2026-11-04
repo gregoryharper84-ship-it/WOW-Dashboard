@@ -23,8 +23,12 @@ SCHEDULE_URL = (
 )
 START_TOLERANCE_MINUTES = 30
 _CACHE_TTL_SECONDS = 300.0
+# Cache typed acquisition failures briefly: an unavailable season must not
+# consume one 20-second request for every row in a shared cross-sport scan.
+_FAILURE_TTL_SECONDS = 30.0
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[int, tuple[float, list[Mapping[str, Any]]]] = {}
+_FAILURE_CACHE: dict[int, tuple[float, str]] = {}
 _REQUIRED_COLUMNS = frozenset({"game_id", "home_id", "away_id", "game_date_time", "time_valid"})
 
 
@@ -86,9 +90,20 @@ def _schedule_rows(year: int, fetcher: Any = None) -> list[Mapping[str, Any]]:
         cached = _CACHE.get(year)
         if cached is not None and now - cached[0] <= _CACHE_TTL_SECONDS:
             return list(cached[1])
-    rows = fetch_ncaab_schedule(year)
+        failure = _FAILURE_CACHE.get(year)
+        if failure is not None and now - failure[0] <= _FAILURE_TTL_SECONDS:
+            raise NCAABEventIdentityError(failure[1])
+    try:
+        rows = fetch_ncaab_schedule(year)
+    except NCAABEventIdentityError as exc:
+        with _CACHE_LOCK:
+            _FAILURE_CACHE[year] = (time.monotonic(), exc.code)
+        raise
+    # Timestamp completion, not request admission: slow downloads must not
+    # return an already-expired success cache to the next row.
     with _CACHE_LOCK:
-        _CACHE[year] = (now, list(rows))
+        _CACHE[year] = (time.monotonic(), list(rows))
+        _FAILURE_CACHE.pop(year, None)
     return rows
 
 
@@ -147,6 +162,7 @@ def resolve_ncaab_current_event_identity(
 def reset_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+        _FAILURE_CACHE.clear()
 
 
 __all__ = [
