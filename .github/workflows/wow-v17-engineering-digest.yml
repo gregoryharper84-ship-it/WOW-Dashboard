@@ -14,8 +14,6 @@ on:
         description: Optional exact PR for live release-truth preflight; otherwise scan recent open PRs
         required: false
         type: string
-  schedule:
-    - cron: "27 13 * * *"  # Daily UTC; existing digest only, no new workflow or paid reviewer.
 
 permissions:
   contents: read
