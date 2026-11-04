@@ -661,6 +661,71 @@ def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
     )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
 
 
+@pytest.mark.parametrize(("state", "current_head"), [
+    ("open", OLD),   # Real #2426 callback: SHA advanced between event and QA.
+    ("closed", HEAD),
+])
+def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, current_head):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": state, "draft": False, "merged_at": None,
+            "head": {"sha": current_head, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
+    if current_head != HEAD:
+        assert strict["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    neutral = m.targets(
+        REPO, workflow_run_prs=event_pr, neutral_superseded=True, fetch=routes,
+    )
+    assert neutral == {
+        "targets": [], "errors": [], "disposition": "neutral",
+        "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
+    }
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("head.repo", {"full_name": "foreign/WOW-Dashboard"}),
+    ("base.ref", "development"),
+    ("head.sha", "malformed"),
+    ("draft", True),
+])
+def test_qa_superseded_classifier_never_masks_invalid_current_identity(field, value):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
+            "head": {"sha": OLD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    if field == "draft":
+        live["draft"] = value
+    elif field.startswith("head."):
+        live["head"][field.split(".")[1]] = value
+    else:
+        live["base"]["ref"] = value
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert out.get("disposition") != "neutral"
+
+
+def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_step():
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    assert "--neutral-superseded" in steps["Resolve one exact-head QA target"]["run"]
+    assert "QA_SOURCE_PR_HEAD_SUPERSEDED" in steps["Resolve one exact-head QA target"]["run"]
+    for name in (
+        "Select exact-head review policy",
+        "Build immutable QA review-policy receipt",
+        "Upload immutable QA review-policy receipt",
+        "Decide at exact head (read-only)",
+    ):
+        assert steps[name]["if"] == "steps.target.outputs.pr_number != ''"
+    # The original Release classifier already neutralizes a successful QA
+    # job whose terminal outcome upload is deliberately skipped.
+    assert steps["Upload terminal QA outcome"]["if"].startswith(
+        "always() && steps.target.outputs.pr_number != ''"
+    )
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
