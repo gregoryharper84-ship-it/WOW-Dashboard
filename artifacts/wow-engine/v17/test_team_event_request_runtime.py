@@ -622,22 +622,22 @@ class _SourceSession:
         return self.response
 
 
-def _nhl_request(*, capture_official_source: bool = True):
+def _nhl_request(**overrides):
     start = _nhl_start()
-    req = _base(
-        sport="NHL",
-        league="NHL",
-        event_key=f"NHL:{_NHL_EVENT_ID}",
-        official_event_id=_NHL_EVENT_ID,
-        event_start_time_utc=start,
-        settlement_basis="FULL_GAME_INCLUDING_OT_SO",
-        home_team="Nashville Predators",
-        away_team="Carolina Hurricanes",
-        official_source_capture=True,
-        sport_specific_evidence={},
-        capture_official_source=capture_official_source,
-    )
-    return req, start
+    values = {
+        "sport": "NHL",
+        "league": "NHL",
+        "event_key": f"NHL:{_NHL_EVENT_ID}",
+        "official_event_id": _NHL_EVENT_ID,
+        "event_start_time_utc": start,
+        "settlement_basis": "FULL_GAME_INCLUDING_OT_SO",
+        "home_team": "Nashville Predators",
+        "away_team": "Carolina Hurricanes",
+        "capture_official_source": True,
+        "sport_specific_evidence": {},
+    }
+    values.update(overrides)
+    return _base(**values), start
 
 
 
@@ -765,10 +765,10 @@ def test_official_source_evidence_never_raises_for_a_duck_typed_request():
     blocks = team_event_module.official_source_evidence(
         SimpleNamespace(sport="NHL", official_event_id="2026020245")
     )
-    assert blocks["official_source"]["status"] == "NOT_REQUESTED"
+    assert blocks["official_source"]["status"] == "HELD"
     captured = team_event_module.official_source_evidence(
         SimpleNamespace(
-            sport="NHL", official_event_id="2026020245", official_source_capture=True
+            sport="NHL", official_event_id="2026020245", capture_official_source=True
         )
     )
     source = captured["official_source"]
@@ -780,7 +780,7 @@ def test_official_source_evidence_never_raises_for_a_duck_typed_request():
     assert captured["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
 
 
-def test_non_nhl_rows_never_attempt_official_source_capture(monkeypatch):
+def test_non_nhl_rows_never_attempt_capture_official_source(monkeypatch):
     req = _base(
         sport="CRICKET",
         league="CRICKET",
@@ -821,13 +821,13 @@ def test_nhl_official_source_evidence_carries_no_probability_fields(monkeypatch)
 
 def test_nhl_capture_is_not_attempted_unless_the_request_opts_in(monkeypatch):
     req, _start = _nhl_request()
-    req = req.model_copy(update={"official_source_capture": False})
+    req = req.model_copy(update={"capture_official_source": False})
     session = _SourceSession(error=AssertionError("capture must not run by default"))
     monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
     with pytest.raises(HTTPException) as exc_info:
         score_team_event_request(req, event_api=_FakeEventApi)
     detail = exc_info.value.detail
-    assert detail["official_source"]["status"] == "NOT_REQUESTED"
+    assert detail["official_source"]["status"] == "HELD"
     assert detail["official_source"]["hold_code"] == "NHL_SOURCE_CAPTURE_NOT_REQUESTED"
     assert detail["official_source"]["freshness"] is None
     assert detail["official_source"]["requested_identity"]["official_event_id"] == _NHL_EVENT_ID

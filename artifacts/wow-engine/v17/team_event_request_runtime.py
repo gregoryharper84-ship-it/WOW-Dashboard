@@ -85,10 +85,6 @@ class TeamEventRequest(BaseModel):
     latest_material_update_timestamp: str | None = None
     market_prior: dict[str, Any] | None = None
     market_input: dict[str, Any] | None = None
-    # Opt-in: only a caller that asks for official NHL source evidence pays for
-    # the bounded outbound capture. The fail-closed row never needs it, so the
-    # default request performs no network I/O at all.
-    official_source_capture: bool = False
     sport_specific_evidence: dict[str, Any] = Field(default_factory=dict)
     # Optional evidence-only source fetch; never implicit on a blocked scoring row.
     capture_official_source: bool = False
@@ -183,7 +179,6 @@ def _team_event_capability_block(sport: str) -> dict[str, Any]:
 def _nhl_official_source_block(
     req: TeamEventRequest,
     *,
-    capture_enabled: bool = False,
     source_session: Any = None,
     source_clock: Any = None,
 ) -> dict[str, Any]:
@@ -202,29 +197,6 @@ def _nhl_official_source_block(
         "away_team": getattr(req, "away_team", None),
     }
     requested_identity = dict(fields)
-    if not capture_enabled:
-        return {
-            "status": "NOT_REQUESTED",
-            "hold_code": "NHL_SOURCE_CAPTURE_NOT_REQUESTED",
-            "requested_identity": requested_identity,
-            "freshness": None,
-            "probability_publishable": False,
-            "rank_eligible": False,
-            "can_execute": False,
-        }
-    if not all(str(value or "").strip() for value in fields.values()):
-        # A duck-typed or partially populated request yields a typed hold. It must
-        # never raise here, because that would displace the caller's own typed
-        # failure with an untyped error.
-        return {
-            "status": "HELD",
-            "hold_code": "NHL_SOURCE_REQUEST_IDENTITY_MISSING",
-            "requested_identity": requested_identity,
-            "freshness": None,
-            "probability_publishable": False,
-            "rank_eligible": False,
-            "can_execute": False,
-        }
     # Synchronous source evidence cannot unblock the fitted specialist; never
     # spend the source module's bounded 20-second deadline on ordinary scoring.
     # A true request flag is required, including for duck-typed bridge requests.
@@ -239,6 +211,19 @@ def _nhl_official_source_block(
             "can_execute": False,
         }
 
+    if not all(str(value or "").strip() for value in fields.values()):
+        # A duck-typed or partially populated request yields a typed hold. It must
+        # never raise here, because that would displace the caller's own typed
+        # failure with an untyped error.
+        return {
+            "status": "HELD",
+            "hold_code": "NHL_SOURCE_REQUEST_IDENTITY_MISSING",
+            "requested_identity": requested_identity,
+            "freshness": None,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
     capture_kwargs: dict[str, Any] = dict(fields)
     # Only override the source module's own bounded transport defaults when a
     # caller injects them (tests); production keeps redirect rejection, the
@@ -305,7 +290,6 @@ def official_source_evidence(req: TeamEventRequest) -> dict[str, Any]:
         "team_event_capability": _team_event_capability_block("NHL"),
         "official_source": _nhl_official_source_block(
             req,
-            capture_enabled=bool(getattr(req, "official_source_capture", False)),
             source_session=_OFFICIAL_SOURCE_SESSION,
             source_clock=_OFFICIAL_SOURCE_CLOCK,
         ),
