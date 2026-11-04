@@ -19,6 +19,11 @@ concurrency:
 
 jobs:
   advance-one-stage:
+    # The 5-minute native controller owns new work after its two-flag cutover.
+    # Never dispatch a parallel legacy writer when it is active.
+    if: >-
+      vars.WOW_24X7_ACTIVE != 'true' ||
+      vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'
     name: Advance highest-priority WOW work
     runs-on: ubuntu-latest
     timeout-minutes: 10
