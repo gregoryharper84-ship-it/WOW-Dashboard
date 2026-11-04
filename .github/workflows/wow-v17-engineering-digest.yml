@@ -95,10 +95,14 @@ jobs:
 
             checks=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${number}" --jq '.head.sha' | \
               xargs -I{} gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/{}/check-runs?per_page=100" --jq '.check_runs')
+            # Newest authenticated App check per name wins. Old failed receipts
+            # must not create a waiting-on-owner claim after the current PASS.
             summary=$(jq -r '
-              [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
-                   | select(.conclusion == "failure")]
-              | sort_by(.started_at // .created_at) | last // {} | .output.summary // ""
+              [.[] | select((.name == "WOW Independent QA exact-head" and .app.id == 5245832)
+                         or (.name == "WOW Release Authority exact-head" and .app.id == 5245853))]
+              | group_by(.name) | map(max_by(.id))
+              | map(select(.conclusion == "failure"))
+              | sort_by(.id) | last // {} | .output.summary // ""
             ' <<<"$checks")
 
             if [ -n "$summary" ]; then
