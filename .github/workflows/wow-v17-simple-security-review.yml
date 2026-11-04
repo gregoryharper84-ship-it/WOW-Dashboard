@@ -1,7 +1,7 @@
 name: wow-v17-simple-security-review
 # Independent Claude -> Gemini -> authenticated owner recovery, no certification loop.
 # Owner review never certifies owner-authored source, including App copies.
-# Add WOW Independent Security Review (QA App 5245832) as required after bootstrap.
+# Manual-only independent semantic review; not one of the five pinned required checks.
 # Retired automatic trigger lane: the five pinned main ruleset checks are authoritative.
 # Manual dispatch remains available for non-authoritative historical diagnostics.
 on:
