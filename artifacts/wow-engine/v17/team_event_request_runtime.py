@@ -86,6 +86,8 @@ class TeamEventRequest(BaseModel):
     market_prior: dict[str, Any] | None = None
     market_input: dict[str, Any] | None = None
     sport_specific_evidence: dict[str, Any] = Field(default_factory=dict)
+    # Optional evidence-only source fetch; never implicit on a blocked scoring row.
+    capture_official_source: bool = False
 
 
 class TeamEventCapabilityResponse(BaseModel):
@@ -182,7 +184,7 @@ def _nhl_official_source_block(
 ) -> dict[str, Any]:
     """Capture first-party NHL event identity/freshness as evidence only.
 
-    The captured payload can establish identity and recency; it cannot establish
+    Explicitly opted-in capture can establish identity and recency; it cannot establish
     goalies, injuries, Elo, or a calibrated probability. A capture failure is
     reported as a typed hold *beside* the capability blocker: it never replaces
     MODEL_UNAVAILABLE, never erases the certification blocker, and never emits a
@@ -208,6 +210,20 @@ def _nhl_official_source_block(
             "rank_eligible": False,
             "can_execute": False,
         }
+    # Synchronous source evidence cannot unblock the fitted specialist; never
+    # spend the source module's bounded 20-second deadline on ordinary scoring.
+    # A true request flag is required, including for duck-typed bridge requests.
+    if getattr(req, "capture_official_source", False) is not True:
+        return {
+            "status": "HELD",
+            "hold_code": "NHL_SOURCE_CAPTURE_NOT_REQUESTED",
+            "requested_identity": requested_identity,
+            "freshness": None,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+
     capture_kwargs: dict[str, Any] = dict(fields)
     # Only override the source module's own bounded transport defaults when a
     # caller injects them (tests); production keeps redirect rejection, the
