@@ -119,6 +119,14 @@ def test_goalie_projected_missing_or_stale_cannot_pass(change):
     assert "NHL_STARTING_GOALIES_NOT_CONFIRMED_AND_SOURCE_PINNED" in result["context_blockers"]
 
 
+def test_injury_coverage_normalizes_official_team_names_to_nhl_codes():
+    evidence = _evidence()
+    evidence["injury_report"]["team_coverage"] = [
+        "Nashville Predators", "Carolina Hurricanes",
+    ]
+    assert _audit(evidence)["context_blockers"] == []
+
+
 def test_duplicate_goalie_id_cannot_pass():
     evidence = _evidence()
     evidence["starting_goalies"]["away"]["goalie_id"] = "111"
