@@ -186,7 +186,7 @@ def census(repo, head=BOUNDARY, start=START, end=END, include_review_packet=Fals
         new = [line for line in new_files.get(oid, {}).get("lines", []) if line]
         # Fetch each in-window body separately: arbitrary text cannot corrupt
         # the batched record framing. This is a one-shot offline census.
-        message = git("show", "-s", "--format=%B", oid, cwd=repo)
+        message = git("show", "-s", "--no-show-signature", "--format=%B", oid, cwd=repo)
         item = {"sha": oid, "committed_at": raw["committed_at"], "parents": raw["parents"],
                 "diff": {"additions": added, "deletions": deleted,
                          "files": len(paths), "new_files": len(new)},
