@@ -80,9 +80,9 @@ def _goalies_ok(evidence: Mapping[str, Any], start: datetime | None) -> bool:
                 or not _source_pinned(goalie)
                 or not _fresh(goalie.get("as_of"), start, GOALIE_MAX_AGE)):
             return False
-    return str(_map(goalies.get("home")).get("goalie_id")) != str(
-        _map(goalies.get("away")).get("goalie_id")
-    )
+    home_id = str(_map(goalies.get("home")).get("goalie_id")).strip().upper()
+    away_id = str(_map(goalies.get("away")).get("goalie_id")).strip().upper()
+    return home_id != away_id
 
 
 def _injuries_ok(evidence: Mapping[str, Any], event: Mapping[str, Any],
