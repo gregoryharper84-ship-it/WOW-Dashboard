@@ -11,6 +11,7 @@ from v17.team_event_sport_parity import (
     build_discovery_evidence,
     canonicalize_mlb_discovery_identity,
     canonicalize_nba_discovery_identity,
+    canonicalize_ncaab_discovery_identity,
     canonicalize_nfl_discovery_identity,
     canonicalize_ncaaf_discovery_identity,
     canonicalize_nhl_discovery_identity,
@@ -660,3 +661,76 @@ def test_nba_daily_discovery_alias_stays_unresolved_without_schedule_match(monke
     assert out.official_event_id is None
     assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert out.raw["canonical_identity_blocker"] == "NBA_CANONICAL_EVENT_NOT_FOUND"
+
+
+def _ncaab_alias_event():
+    return DiscoveredEvent(
+        sport="NCAAB",
+        league="NCAAB",
+        sport_key="basketball_ncaab",
+        official_event_id=None,
+        home_team="Texas Tech Red Raiders",
+        away_team="Oregon State Beavers",
+        commence_time_utc="2026-11-05T00:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401999999",
+            "_wow_secondary_home_team_id": "2641",
+            "_wow_secondary_away_team_id": "204",
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_ncaab_daily_identity_routes_only_after_unique_schedule_match(monkeypatch):
+    import v17.ncaab_event_identity as identity
+
+    inputs = {}
+
+    def resolve(**kwargs):
+        inputs.update(kwargs)
+        return {
+            "event_id": "espn-401999999",
+            "identity_provider": "SPORTSDATAVERSE_ESPN_MBB_SCHEDULE",
+            "identity_resolution": "SPORTSDATAVERSE_EXACT_PARTICIPANTS_START_MATCH",
+            "prediction_authority": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(identity, "resolve_ncaab_current_event_identity", resolve)
+    out = canonicalize_ncaab_discovery_identity(_ncaab_alias_event())
+    assert inputs == {
+        "event_start_time": "2026-11-05T00:00:00Z",
+        "home_team_alias": "2641",
+        "away_team_alias": "204",
+    }
+    assert out.official_event_id == "espn-401999999"
+    assert out.raw["provider_event_id"] == "401999999"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_market_features_used"] is False
+    assert out.raw["prediction_authority"] is False
+
+
+def test_ncaab_daily_identity_remains_unresolved_on_ambiguous_schedule(monkeypatch):
+    import v17.ncaab_event_identity as identity
+
+    def fail(**_kwargs):
+        raise identity.NCAABEventIdentityError("NCAAB_CANONICAL_EVENT_AMBIGUOUS")
+
+    monkeypatch.setattr(identity, "resolve_ncaab_current_event_identity", fail)
+    out = canonicalize_ncaab_discovery_identity(_ncaab_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NCAAB_CANONICAL_EVENT_AMBIGUOUS"
+
+
+def test_ncaab_daily_identity_requires_provider_team_aliases():
+    event = _ncaab_alias_event()
+    raw = dict(event.raw)
+    raw.pop("_wow_secondary_home_team_id")
+    event = DiscoveredEvent(**{**event.__dict__, "raw": raw})
+    out = canonicalize_ncaab_discovery_identity(event)
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_blocker"] == "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
