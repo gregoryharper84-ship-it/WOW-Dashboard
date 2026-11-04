@@ -930,9 +930,10 @@ def test_nba_calibrator_resolver_requires_bound_artifact_and_no_table_fallback()
             self.table_called = True
             raise AssertionError("direct-table fallback is forbidden")
 
-    good = RPCClient(artifact)
-    assert resolve_nba_calibrator_artifact(good, certification) == artifact
-    assert good.table_called is False
+    flat = RPCClient(artifact)
+    with pytest.raises(ValueError, match="^NBA_CERTIFIED_CALIBRATOR_INVALID$"):
+        resolve_nba_calibrator_artifact(flat, certification)
+    assert flat.table_called is False
 
     mismatch = RPCClient({**artifact, "calibration_sha256": "c" * 64})
     with pytest.raises(ValueError, match="NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH"):
