@@ -262,3 +262,42 @@ def test_gh_binary_errors_remain_non_gating(monkeypatch, capsys):
         assert report["can_execute"] is False
         assert report["not_release_authorization"] is True
         assert "GITHUB_CLI_UNAVAILABLE:" in report["read_error"]
+
+
+def test_engineering_digest_paginated_checks_select_latest_globally():
+    """Execute the deployed jq across two pages; old failures never trump a pass."""
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+
+    if not shutil.which("jq"):
+        pytest.skip("jq is required by the GitHub digest runner")
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-engineering-digest.yml")
+    body = workflow.read_text(encoding="utf-8")
+    assert "timeout-minutes: 5" in body
+    expression = body.split("summary=$(jq -sr '", 1)[1].split(
+        "' <<<\"$checks\")", 1,
+    )[0]
+
+    def lookup(pages):
+        result = subprocess.run(
+            ["jq", "-sr", expression],
+            input="\n".join(json.dumps(page) for page in pages),
+            capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+
+    def check(i, conclusion, message):
+        return {"id": i, "name": "WOW Independent QA exact-head",
+                "app": {"id": APP_QA}, "conclusion": conclusion,
+                "output": {"summary": message}}
+
+    old_hold = check(5, "failure", "STALE_HOLD")
+    fresh_pass = check(99, "success", "FRESH_PASS")
+    fresh_hold = check(101, "failure", "FRESH_HOLD")
+    assert lookup([[fresh_pass], [old_hold]]) == ""
+    assert lookup([[old_hold], [fresh_pass]]) == ""
+    assert lookup([[old_hold], [fresh_hold]]) == "FRESH_HOLD"
