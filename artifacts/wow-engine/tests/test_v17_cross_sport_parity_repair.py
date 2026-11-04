@@ -734,3 +734,22 @@ def test_ncaab_daily_identity_requires_provider_team_aliases():
     out = canonicalize_ncaab_discovery_identity(event)
     assert out.official_event_id is None
     assert out.raw["canonical_identity_blocker"] == "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
+
+
+def test_ncaab_missing_team_alias_preserves_original_discovery_id():
+    event = _ncaab_alias_event()
+    raw = dict(event.raw)
+    raw.pop("provider_event_id")
+    raw.pop("_wow_secondary_home_team_id")
+    raw["_wow_secondary_event_id"] = "401999999"
+    event = DiscoveredEvent(**{
+        **event.__dict__,
+        "official_event_id": "espn-401999999",
+        "raw": raw,
+    })
+    out = canonicalize_ncaab_discovery_identity(event)
+    assert out.official_event_id is None
+    assert out.raw["provider_event_id"] == "401999999"
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
+    assert build_discovery_evidence(out)["discovery_provider_event_id"] == "401999999"
