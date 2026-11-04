@@ -101,11 +101,11 @@ def census(repo, head=BOUNDARY, start=START, end=END):
         """Parse Git's -z path records; never C-unquote filenames or frame commit bodies."""
         rows = {}
         current = None
-        for token in data.split("\\x00"):
+        for token in data.split("\x00"):
             if not token:
                 continue
-            if token.startswith("\\x1e"):
-                fields = token[1:].split("\\x1f")
+            if token.startswith("\x1e"):
+                fields = token[1:].split("\x1f")
                 if len(fields) != 4 or fields[-1] != "":
                     raise ValueError("invalid batched git metadata")
                 oid, stamp, parents, _ = fields
