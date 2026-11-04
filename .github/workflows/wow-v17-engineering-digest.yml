@@ -9,9 +9,17 @@ name: wow-v17-engineering-digest
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional exact PR for live release-truth preflight; otherwise scan recent open PRs
+        required: false
+        type: string
+  schedule:
+    - cron: "27 13 * * *"  # Daily UTC; existing digest only, no new workflow or paid reviewer.
 
 permissions:
   contents: read
+  checks: read
   pull-requests: read
   deployments: read
   issues: read
@@ -130,6 +138,51 @@ jobs:
           python artifacts/wow-engine/v17/engineering_digest.py \
             --evidence-json "$RUNNER_TEMP/digest-evidence.json" > "$RUNNER_TEMP/digest-body.md"
 
+      - name: Report live ruleset and exact-head truth (non-gating)
+        # This is an informational diagnostic, not a required check or semantic review.
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ inputs.pr_number || '' }}
+        run: |
+          set -euo pipefail
+          {
+            printf '\n## Live release truth (read-only; NOT merge or deploy authorization)\n'
+            printf 'Observed ruleset/PR/check evidence only. Branch protection, semantic review, production and model acceptance are separate.\n'
+          } >> "$RUNNER_TEMP/digest-body.md"
+          if [ -n "$TARGET_PR" ]; then
+            [[ "$TARGET_PR" =~ ^[1-9][0-9]*$ ]] || {
+              echo '- UNVERIFIED: invalid requested PR number' >> "$RUNNER_TEMP/digest-body.md"
+              exit 0
+            }
+            numbers="$TARGET_PR"
+            scope="explicit PR #$TARGET_PR"
+          else
+            # Bounded observability scope: never imply unseen PRs are clean.
+            numbers=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=30" --jq '.[].number') || {
+              echo '- UNVERIFIED: open-PR discovery API unavailable' >> "$RUNNER_TEMP/digest-body.md"
+              exit 0
+            }
+            scope="30 most recently updated open main-targeted PRs (not exhaustive)"
+          fi
+          echo "- Scan scope: $scope" >> "$RUNNER_TEMP/digest-body.md"
+          if [ -z "$numbers" ]; then
+            echo '- No PRs in selected scope' >> "$RUNNER_TEMP/digest-body.md"
+          fi
+          for number in $numbers; do
+            result=$(python artifacts/wow-engine/v17/release_truth_preflight.py \
+              --repo "$GITHUB_REPOSITORY" --pr-number "$number") || {
+              echo "- PR #$number: UNVERIFIED (preflight unavailable)" >> "$RUNNER_TEMP/digest-body.md"
+              continue
+            }
+            printf '%s\n' "$result" | jq -r \
+              '"- PR #\(.pr): ruleset_human_review=\(.ruleset_human_review // "UNVERIFIED"); merge_evidence=\(.merge_evidence // "UNVERIFIED"); exact-head findings=\([.findings[]?.finding] | join(", ") | if . == "" then "none observed" else . end); head=\(.head_sha // "UNKNOWN"); can_execute=false"' \
+              >> "$RUNNER_TEMP/digest-body.md" || {
+              echo "- PR #$number: UNVERIFIED (invalid preflight output)" >> "$RUNNER_TEMP/digest-body.md"
+            }
+          done
+          echo '- NOTE: A zero-review active ruleset rejects the obsolete ruleset-based human-approval claim; it does not prove any other unseen protection absent.' >> "$RUNNER_TEMP/digest-body.md"
       - name: Create or update the pinned digest issue
         shell: bash
         env:
