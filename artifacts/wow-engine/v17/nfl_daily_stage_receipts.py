@@ -180,21 +180,55 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     try:
         from v17.nfl_forward_shadow import ForwardGrade, calibration_health, _safe_log_loss
 
-        grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
-            .select(
-                "official_event_id,model_version,event_prediction_id,"
-                "event_start_time_utc,prediction_created_at,selected_participant,"
-                "calibrated_probability,calibrated_lower_bound,"
-                "calibrated_upper_bound,outcome,source_game_id"
-            )
-            .eq("model_version", str(row["model_version"]))
-            .limit(1001)
-            .execute()
+        # Fetch every exact-version grade in stable event order. A 1001-row
+        # limit is unsafe under PostgREST's common 1000-row response cap:
+        # it can return a truncated but apparently passing partial corpus.
+        # Exact count plus a final short page prove complete bounded readback.
+        PAGE = 250
+        MAX_PAGES = 40
+        columns = (
+            "official_event_id,model_version,event_prediction_id,"
+            "event_start_time_utc,prediction_created_at,selected_participant,"
+            "calibrated_probability,calibrated_lower_bound,"
+            "calibrated_upper_bound,outcome,source_game_id"
         )
-        raw_grades = grade_result.data
-        if (not isinstance(raw_grades, list) or len(raw_grades) < minimum
-                or len(raw_grades) >= 1001):
+        raw_grades: list[Mapping[str, Any]] = []
+        total: int | None = None
+        complete = False
+        for page in range(MAX_PAGES):
+            begin = page * PAGE
+            result = (
+                db.table("wow_nfl_forward_shadow_grades")
+                .select(columns, count="exact")
+                .eq("model_version", str(row["model_version"]))
+                .order("official_event_id")
+                .range(begin, begin + PAGE - 1)
+                .execute()
+            )
+            batch = result.data
+            count = getattr(result, "count", None)
+            if (
+                not isinstance(batch, list)
+                or type(count) is not int or count < 0
+                or len(batch) > PAGE
+                or any(not isinstance(item, Mapping) for item in batch)
+            ):
+                return False
+            if total is None:
+                total = count
+                if total < minimum or total > PAGE * MAX_PAGES:
+                    return False
+            elif count != total:
+                # New grades appeared mid-pagination; retry on an immutable
+                # frozen cohort rather than mixing two observations.
+                return False
+            raw_grades.extend(batch)
+            if len(raw_grades) > total:
+                return False
+            if len(batch) < PAGE:
+                complete = True
+                break
+        if not complete or total is None or len(raw_grades) != total:
             return False
         exact_grades: list[ForwardGrade] = []
         unique_games: set[str] = set()
