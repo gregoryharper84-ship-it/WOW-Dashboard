@@ -98,8 +98,19 @@ jobs:
             --run-id "$QA_RUN_ID" --run-attempt "$QA_RUN_ATTEMPT")
           if [ "$EVENT" = "workflow_dispatch" ]; then
             args+=(--pr "$INPUT_PR")
+          else
+            # The producer policy is fully authenticated first. A PR that
+            # subsequently moved heads or closed is no longer a Release
+            # target; no check is published and this main-scoped callback
+            # exits neutral. Current, malformed and foreign targets retain
+            # the existing fail-closed policy resolution.
+            args+=(--neutral-if-superseded)
           fi
           bundle=$(python "$tool" "${args[@]}")
+          if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<< "$bundle")" = "neutral" ]; then
+            echo "::notice::RELEASE_NEUTRAL_BEFORE_PR_LOCK:$(jq -r .reason <<< "$bundle")"
+            exit 0
+          fi
           pr=$(jq -er '.policy.target.pr_number' <<< "$bundle")
           head=$(jq -er '.policy.target.head_sha' <<< "$bundle")
           [[ "$pr" =~ ^[1-9][0-9]*$ ]] &&
