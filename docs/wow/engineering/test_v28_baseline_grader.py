@@ -76,6 +76,27 @@ class Indicators(unittest.TestCase):
         b["committed_at"] = "2026-09-06T10:57:36Z"
         self.assertFalse(g.same_cause_candidate(a, b))
 
+    def test_review_packet_preserves_uncertainty_and_exact_identity(self):
+        def row(sha, category, when, paths):
+            return {"sha": sha, "committed_at": when, "class": category,
+                    "paths": paths, "subject": "fix: QA_CHECK_FAILED",
+                    "diff": {"additions": 2, "deletions": 1, "files": len(paths), "new_files": 0},
+                    "indicators": {"failure_codes": ["QA_CHECK_FAILED"]}}
+        older = row("a"*40, "C_REVIEW_REQUIRED", "2026-09-01T01:00:00Z", ["v17/model.py"])
+        newer = row("b"*40, "R", "2026-09-02T01:00:00+00:00", ["v17/model.py"])
+        pair = {"older": older["sha"], "newer": newer["sha"], "shared_code": "QA_CHECK_FAILED"}
+        packet = g.build_review_packet([older, newer], [pair])
+        self.assertEqual(len(packet["C_REVIEW_REQUIRED"]), 1)
+        self.assertEqual(len(packet["same_code_same_file_72h"]), 1)
+        self.assertEqual(packet["same_code_same_file_72h"][0]["hours_between"], 24)
+        self.assertEqual(packet["same_code_same_file_72h"][0]["causal_rework_verdict"], "UNREVIEWED")
+        self.assertEqual(packet["C_REVIEW_REQUIRED"][0]["class_verdict"], "UNREVIEWED")
+        with self.assertRaises(KeyError):
+            g.build_review_packet([older, newer], [{"older": older["sha"], "newer": "f"*40}])
+        with self.assertRaisesRegex(ValueError, "CANDIDATE_DOSSIER_INCONSISTENT"):
+            other = {**newer, "paths": ["different.py"]}
+            g.build_review_packet([older, other], [pair])
+
     def test_window_is_inclusive(self):
         self.assertTrue(g.is_within("2026-08-06T00:00:00+00:00"))
         self.assertFalse(g.is_within("2026-08-05T23:59:59+00:00"))
