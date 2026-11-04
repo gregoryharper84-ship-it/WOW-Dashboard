@@ -113,3 +113,37 @@ def test_real_candidate_entrypoints_are_importable(candidate_registry_isolation)
         candidates.candidate_bridge_health(sport)["candidate_bridge_live_routable"] is False
         for sport in ("NBA", "NCAAF", "NCAAB")
     )
+
+
+def test_production_bootstrap_wires_candidate_registry_without_live_route(
+    monkeypatch, candidate_registry_isolation,
+):
+    """Production startup must invoke the shadow installer, not add live scorers."""
+    calls = []
+    monkeypatch.setattr(production, "_INSTALLED", False)
+    monkeypatch.setattr(
+        production, "register_team_event_bridge",
+        lambda sport, **_kwargs: calls.append(("production", sport)),
+    )
+    monkeypatch.setattr(
+        production, "_register_nfl_bridge_if_available",
+        lambda: calls.append(("nfl", "checked")),
+    )
+    monkeypatch.setattr(
+        production, "install_candidate_team_event_bridges",
+        lambda: calls.append(("candidate", "research_only")),
+    )
+    monkeypatch.setattr(production, "_install_health_overlay", lambda: None)
+    monkeypatch.setattr(production, "team_event_bridge_health", lambda: {})
+    monkeypatch.setattr(production._base_runtime, "score_team_event_request", lambda *_a, **_k: {})
+
+    result = production.install_team_event_bridge_runtime()
+
+    assert result["status"] == "INSTALLED"
+    assert calls == [
+        ("production", "MLB"),
+        ("nfl", "checked"),
+        ("candidate", "research_only"),
+    ]
+    assert production.TEAM_EVENT_BRIDGES == {}
+    assert result["can_execute"] is False
