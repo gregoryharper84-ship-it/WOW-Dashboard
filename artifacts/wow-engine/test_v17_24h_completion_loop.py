@@ -233,3 +233,16 @@ def test_capability_matrix_is_explicit_and_fail_closed() -> None:
     ):
         assert dimension in team
     assert "production_enabled requires every upstream capability" in team
+
+
+def test_deployed_pending_proof_does_not_starve_product_or_detection() -> None:
+    text = _text(LOOP)
+    assert 'release_waiting=false' in text
+    assert 'release_waiting=true' in text
+    assert 'priority --skip-deployed-pending-verify' in text
+    assert 'cron: "47 * * * *"' in text
+    assert 'elif [ "$release_waiting" = "true" ] && [ $((utc_hour % 2)) -eq 1 ]; then' in text
+    assert 'action="DETECT"' in text
+    assert 'action="VERIFY_PRODUCT"' in text
+    assert 'wow-v17-release-resume-agent.yml' in text
+    assert 'release_waiting:$release_waiting' in text
