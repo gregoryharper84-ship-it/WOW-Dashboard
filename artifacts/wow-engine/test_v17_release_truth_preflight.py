@@ -150,3 +150,12 @@ def test_non_main_target_is_not_mislabeled_as_main_release_ready():
     p["base"]["ref"] = "development"
     out = report(p=p)
     assert "PR_TARGET_MAIN_UNVERIFIED" in names(out)
+
+
+def test_latest_same_app_pass_retire_old_failed_receipt_from_blocker_report():
+    old = checks()
+    old[0]["conclusion"] = "failure"
+    new = {**old[0], "id": 100, "conclusion": "success"}
+    out = report(cc=old + [new])
+    assert not any(x.startswith("REQUIRED_CHECK_NOT_SUCCESS:WOW Independent QA") for x in names(out))
+    assert out["findings"] == []
