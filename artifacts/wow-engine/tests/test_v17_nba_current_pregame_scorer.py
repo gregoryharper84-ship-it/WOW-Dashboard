@@ -1058,4 +1058,3 @@ def test_public_nba_route_requires_real_server_hydration_not_caller_verified_lab
     assert caught.value.detail["model_invoked"] is False
     assert caught.value.detail["probability_publishable"] is False
     assert caught.value.detail["can_execute"] is False
-
