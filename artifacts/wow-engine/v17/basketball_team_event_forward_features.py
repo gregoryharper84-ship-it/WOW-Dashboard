@@ -262,8 +262,20 @@ def bind_nba_frozen_source_to_features(
         raise BasketballForwardFeatureError("NBA_SOURCE_CLOCK_SKEW_EXCEEDED")
 
     official_id = str(feature_package.get("official_event_id") or "").strip()
-    home_alias = str(feature_package.get("home_team_id") or "").removeprefix("espn-")
-    away_alias = str(feature_package.get("away_team_id") or "").removeprefix("espn-")
+    # Only the ESPN numeric namespace is permitted for an ESPN raw-capture
+    # join. BallDontLie numeric IDs are unrelated and are rejected upstream
+    # rather than being transformed into ESPN aliases.
+    import re
+    def _espn_team(value: Any, *, source: bool) -> str:
+        raw = str(value or "").strip()
+        if not re.fullmatch(r"(?:espn-)?[0-9]+", raw):
+            raise BasketballForwardFeatureError("NBA_CAPTURE_EVENT_IDENTITY_MISMATCH")
+        if not source and not raw.startswith("espn-"):
+            raise BasketballForwardFeatureError("NBA_CAPTURE_EVENT_IDENTITY_MISMATCH")
+        return raw.removeprefix("espn-")
+
+    home_alias = _espn_team(feature_package.get("home_team_id"), source=False)
+    away_alias = _espn_team(feature_package.get("away_team_id"), source=False)
     matches = []
     eligible = capture_manifest.get("events_pregame_eligible")
     if not isinstance(eligible, list):
@@ -280,8 +292,8 @@ def bind_nba_frozen_source_to_features(
     sides = (event.get("home"), event.get("away"))
     if (
         any(not isinstance(side, Mapping) for side in sides)
-        or str(sides[0].get("team_id") or "") != home_alias
-        or str(sides[1].get("team_id") or "") != away_alias
+        or _espn_team(sides[0].get("team_id"), source=True) != home_alias
+        or _espn_team(sides[1].get("team_id"), source=True) != away_alias
         or _aware(event.get("event_start_utc")) != event_at
         or event.get("state") != "pre"
     ):
