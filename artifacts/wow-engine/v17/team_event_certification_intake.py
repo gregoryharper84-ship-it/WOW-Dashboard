@@ -63,9 +63,11 @@ def load_receipts(directory: str | Path | None = None) -> dict[str, FittedTeamEv
     authorized verifier or of the artifact bytes referenced by those hashes.
     """
     root = Path(directory) if directory is not None else RECEIPT_DIRECTORY
+    if root.is_symlink():
+        raise CertificationIntakeError("TEAM_EVENT_RECEIPT_DIRECTORY_INVALID", str(root))
     if not root.exists():
         return {}
-    if root.is_symlink() or not root.is_dir():
+    if not root.is_dir():
         raise CertificationIntakeError("TEAM_EVENT_RECEIPT_DIRECTORY_INVALID", str(root))
     found: dict[str, FittedTeamEventCertification] = {}
     seen_ids: set[str] = set()
