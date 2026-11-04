@@ -159,3 +159,20 @@ def test_latest_same_app_pass_retire_old_failed_receipt_from_blocker_report():
     out = report(cc=old + [new])
     assert not any(x.startswith("REQUIRED_CHECK_NOT_SUCCESS:WOW Independent QA") for x in names(out))
     assert out["findings"] == []
+
+
+def test_unreported_required_checks_are_pending_not_failed_or_denied():
+    out = report(cc=[])
+    assert out["merge_evidence"] == "PENDING"
+    assert len(out["findings"]) == 5
+    assert all(x["state"] == "PENDING" for x in out["findings"])
+
+
+def test_running_required_check_is_pending_not_failure():
+    cc = checks()
+    cc[0]["status"] = "in_progress"
+    cc[0]["conclusion"] = None
+    out = report(cc=cc)
+    assert "REQUIRED_CHECK_PENDING:WOW Independent QA exact-head:5245832" in names(out)
+    assert out["merge_evidence"] == "PENDING"
+
