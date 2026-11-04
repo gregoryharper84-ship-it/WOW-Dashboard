@@ -450,6 +450,13 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
         return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
     def run_step(self, name, env):
+        # The real GitHub runner always exports RUNNER_TEMP and the workflow
+        # steps run under `set -u`, so an interactive shell without it aborts
+        # with "RUNNER_TEMP: unbound variable". Emulate the runner contract
+        # explicitly instead of depending on the invoking shell; this changes
+        # no assertion, only the environment the step is executed in.
+        if not env.get("RUNNER_TEMP"):
+            env = {**env, "RUNNER_TEMP": tempfile.mkdtemp()}
         return subprocess.run(
             ["bash", "-e", "-c", self.step_script(name)],
             env=dict(os.environ, **env),

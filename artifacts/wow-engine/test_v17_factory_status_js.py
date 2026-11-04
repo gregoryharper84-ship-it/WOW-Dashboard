@@ -30,7 +30,10 @@ def test_read_only_factory_status_javascript_contract() -> None:
     output = result.stdout + "\n" + result.stderr
     assert result.returncode == 0, output[-8000:]
     # Check the TAP summary so an empty/filtered run cannot count as verification.
-    pass_match = re.search(r"(?m)^# pass (\d+)\s*$", output)
-    fail_match = re.search(r"(?m)^# fail (\d+)\s*$", output)
+    # Node's legacy TAP reporter prints "# pass N"; Node >= 22 defaults to the
+    # spec reporter and prints "\u2139 pass N". Both carry the same authoritative
+    # counts, so accept either marker while keeping the exact count assertions.
+    pass_match = re.search(r"(?m)^(?:#|\u2139)\s*pass\s+(\d+)\s*$", output)
+    fail_match = re.search(r"(?m)^(?:#|\u2139)\s*fail\s+(\d+)\s*$", output)
     assert pass_match is not None and int(pass_match.group(1)) >= 7, output[-8000:]
     assert fail_match is not None and int(fail_match.group(1)) == 0, output[-8000:]
