@@ -17,6 +17,7 @@ from v17.daily_response_contract import (
     read_row_detail_page,
 )
 from v17.llp_team_intelligence_bundle import build_llp_team_intelligence_bundle
+from v17.nhl_pregame_decision_audit import audit_nhl_pregame_decision
 
 CAN_EXECUTE = False
 ROUTE_PATH = "/v17/llp-team-intelligence/{run_id}/events"
@@ -199,6 +200,11 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
             )
             bundle["daily_row_index"] = row.get("row_index")
             bundle["source_diagnostics"] = _source_failure_context(row)
+            if event["sport"] == "NHL":
+                # Research audit only; upstream fitted winner/reducer is unchanged.
+                bundle["nhl_pregame_decision_audit"] = audit_nhl_pregame_decision(
+                    event=event, row=row, bundle=bundle
+                )
             # Daily's underlying data has winner rows, not certified
             # independent spread/game-total scorer packages.
             bundle["market_coverage"] = {
