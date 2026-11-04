@@ -307,3 +307,30 @@ def test_daily_run_reports_incomplete_board_and_per_sport_receipt(monkeypatch, m
     if mode == "FULL":
         assert payload["rows"][0]["result"]["calibrated_probability"] == 0.62
     assert payload["can_execute"] is False
+
+
+@pytest.mark.parametrize("body", [
+    {"message": "key deactivated", "error_code": "DEACTIVATED_KEY"},
+    {"ok": False, "code": "DEACTIVATED_KEY"},
+    {"detail": {"code": "DEACTIVATED_KEY"}},
+])
+def test_deactivated_odds_key_is_typed_credential_failure(monkeypatch, body) -> None:
+    result = _proxy_result(monkeypatch, 401, body)
+    assert result.ok is False and result.status == 401
+    assert result.code == "ODDS_API_KEY_DEACTIVATED"
+    assert not result.code.startswith("MODEL_")
+    assert scout_oidc._eligible_for_secondary(result) is True
+    assert scout_oidc._is_transient(result) is False
+    assert "test-token-not-secret" not in repr(result)
+
+
+@pytest.mark.parametrize("status,body", [
+    (401, {"detail": {"code": "ODDS_ROUTER_AUTH_INVALID"}}),
+    (401, {"detail": {"code": "ODDS_PROXY_AUTH_INVALID", "error_code": "DEACTIVATED_KEY"}}),
+    (401, {"message": "unauthorized"}),
+    (403, {"error_code": "DEACTIVATED_KEY"}),
+])
+def test_deactivated_key_typing_does_not_loosen_caller_auth_or_generic_failures(monkeypatch, status, body) -> None:
+    result = _proxy_result(monkeypatch, status, body)
+    assert result.code != "ODDS_API_KEY_DEACTIVATED"
+    assert scout_oidc._eligible_for_secondary(result) is False
