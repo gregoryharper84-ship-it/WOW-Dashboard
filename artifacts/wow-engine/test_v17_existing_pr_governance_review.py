@@ -72,7 +72,8 @@ def test_existing_pr_certifier_is_protected_main_read_only_and_same_repo_only():
     text = WORKFLOW.read_text(encoding="utf-8")
     data = yaml.safe_load(text)
 
-    assert "pull_request_target:" in text
+    assert "on:\n  workflow_dispatch:" in text
+    assert "on:\n  pull_request_target:" not in text
     assert "workflow_dispatch:" in text
     assert "ref: main" in text
     assert "persist-credentials: false" in text
