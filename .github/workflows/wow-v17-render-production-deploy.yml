@@ -1,24 +1,9 @@
 name: wow-v17-render-production-deploy
 
+# Legacy release writer is retired; both Render services use checksPass on main.
+# Retained for audit; no automatic or manual job can deploy.
 on:
-  workflow_run:
-    workflows: ["wow-verify"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      secret_sync_request_run_id:
-        description: Successful secret-sync run carrying the release request artifact
-        required: false
-        type: string
-      secret_sync_request_run_attempt:
-        description: Source secret-sync run attempt
-        required: false
-        type: string
-      secret_sync_request_sha:
-        description: Exact main SHA from the source secret-sync run
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -33,6 +18,7 @@ concurrency:
 
 jobs:
   deploy-production:
+    if: ${{ false }}
     name: Deploy exact protected-main SHA to Render
     # Protected GitHub checks are necessary but not sufficient. Render writes
     # stay blocked until the protected job, exact main SHA, and release journal
