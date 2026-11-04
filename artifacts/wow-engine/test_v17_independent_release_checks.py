@@ -661,12 +661,19 @@ def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
     )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
 
 
+def _same_origin_event_pr():
+    """workflow_run.pull_requests item in GitHub's real {id, name, url} repo shape."""
+    repo = {"id": 1, "name": "WOW-Dashboard", "url": "https://api.github.com/repos/" + REPO}
+    return {"number": 7, "head": {"sha": HEAD, "repo": dict(repo)},
+            "base": {"ref": "main", "repo": dict(repo)}}
+
+
 @pytest.mark.parametrize(("state", "current_head"), [
     ("open", OLD),   # Real #2426 callback: SHA advanced between event and QA.
     ("closed", HEAD),
 ])
 def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, current_head):
-    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    event_pr = [_same_origin_event_pr()]
     live = {"number": 7, "state": state, "draft": False, "merged_at": None,
             "head": {"sha": current_head, "repo": {"full_name": REPO}},
             "base": {"ref": "main", "repo": {"full_name": REPO}}}
@@ -705,6 +712,54 @@ def test_qa_superseded_classifier_never_masks_invalid_current_identity(field, va
                     fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
     assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
     assert out.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize("repo_value", [
+    {"id": 2, "name": "WOW-Dashboard", "url": "https://api.github.com/repos/fork/WOW-Dashboard"},
+    {"full_name": "fork/WOW-Dashboard"},
+    {"id": 1, "name": "WOW-Dashboard"},                      # no url, no full_name
+    {"id": 1, "name": "WOW-Dashboard",
+     "url": "https://api.github.com/repos/" + REPO + "/../evil"},
+    {"url": "https://api.github.com/repos/" + REPO.lower()},  # not an exact match
+    "not-a-dict",
+    None,
+    "MISSING",
+])
+def test_qa_superseded_requires_event_origin_repo_not_only_live_pr(side, repo_value):
+    """Forged/foreign/missing/malformed event head or base repo must fail closed.
+
+    The live PR is same-origin and moved, which previously neutralized the run
+    regardless of what the originating workflow_run event claimed.
+    """
+    event = _same_origin_event_pr()
+    if repo_value == "MISSING":
+        del event[side]["repo"]
+    else:
+        event[side]["repo"] = repo_value
+    live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
+            "head": {"sha": OLD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    out = m.targets(REPO, workflow_run_prs=[event], neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert out.get("disposition") != "neutral"
+    assert out["targets"] == []
+
+
+def test_qa_superseded_event_origin_check_does_not_affect_manual_or_strict_paths():
+    live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
+            "head": {"sha": HEAD, "ref": "x", "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    # Manual dispatch (explicit PR) is unchanged.
+    assert m.targets(REPO, pr="7", fetch=routes)["targets"] == [
+        {"pr": 7, "head": HEAD, "head_ref": "x"}]
+    # Current-head workflow_run target is still returned, never neutralized.
+    cur = m.targets(REPO, workflow_run_prs=[_same_origin_event_pr()],
+                    neutral_superseded=True, fetch=routes)
+    assert cur["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "x"}]
+    assert cur.get("disposition") != "neutral"
 
 
 def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_step():
