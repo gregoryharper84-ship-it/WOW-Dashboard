@@ -89,24 +89,47 @@ def census(repo, head=BOUNDARY, start=START, end=END):
     if git("rev-parse", "--is-shallow-repository", cwd=repo).strip() == "true":
         raise RuntimeError("SHALLOW_CLONE: obtain full object history; no denominator emitted")
     sha = git("rev-parse", "--verify", head + "^{commit}", cwd=repo).strip()
-    stream = git("log", "--no-show-signature", "--format=%H%x1f%cI%x1f%P%x1f%B%x1e", sha, cwd=repo)
+    # Two batched Git history reads rather than two subprocesses per commit.
+    fmt = "%x1e%H%x1f%cI%x1f%P%x1f%B%x1f"
+    def parse_batch(data):
+        rows = {}
+        for block in data.split("\x1e"):
+            if not block.strip() or "\x1f" not in block:
+                continue
+            fields = block.split("\x1f", 4)
+            if len(fields) != 5:
+                raise ValueError("invalid batched git record")
+            oid, stamp, parents, message, lines = fields
+            rows[oid] = {"committed_at": stamp, "parents": parents.split() if parents else [],
+                         "message": message, "lines": lines.splitlines()}
+        return rows
+
+    stats = parse_batch(git("log", "--no-show-signature", "--no-renames", "--root",
+                            "--numstat", f"--format={fmt}", sha, cwd=repo))
+    new_files = parse_batch(git("log", "--no-show-signature", "--no-renames", "--root",
+                                "--diff-filter=A", "--name-only", f"--format={fmt}", sha, cwd=repo))
     records = []
-    for raw in stream.split("\x1e"):
-        if not raw.strip():
+    for oid, raw in stats.items():
+        if not is_within(raw["committed_at"], start, end):
             continue
-        item = parse_commit(raw.lstrip("\n"))
-        if not is_within(item["committed_at"], start, end):
-            continue
-        changes = [ln.split("\t", 2) for ln in git("diff-tree", "--root", "--no-commit-id", "--numstat", "-r", item["sha"], cwd=repo).splitlines() if ln]
-        paths = [bits[2] for bits in changes if len(bits) == 3]
-        added = sum(int(bits[0]) for bits in changes if len(bits) == 3 and bits[0].isdigit())
-        deleted = sum(int(bits[1]) for bits in changes if len(bits) == 3 and bits[1].isdigit())
-        new = git("diff-tree", "--root", "--no-commit-id", "--diff-filter=A", "--name-only", "-r", item["sha"], cwd=repo).splitlines()
-        item["diff"] = {"additions": added, "deletions": deleted, "files": len(paths), "new_files": len(new)}
-        item["paths"] = paths
-        item["class"] = class_from_paths(paths) if len(item["parents"]) <= 1 else "MERGE_UNCLASSIFIED"
-        item["indicators"] = indicators(item["message"])
-        del item["message"]
+        paths, added, deleted = [], 0, 0
+        for line in raw["lines"]:
+            fields = line.split("\t", 2)
+            if len(fields) != 3:
+                if line.strip():
+                    raise ValueError("unparseable numstat at " + oid + ": " + repr(line[:70]))
+                continue
+            add, remove, filename = fields
+            paths.append(filename)
+            added += int(add) if add.isdigit() else 0
+            deleted += int(remove) if remove.isdigit() else 0
+        new = [line for line in new_files.get(oid, {}).get("lines", []) if line.strip()]
+        item = {"sha": oid, "committed_at": raw["committed_at"], "parents": raw["parents"],
+                "diff": {"additions": added, "deletions": deleted,
+                         "files": len(paths), "new_files": len(new)},
+                "paths": paths,
+                "class": class_from_paths(paths) if len(raw["parents"]) <= 1 else "MERGE_UNCLASSIFIED",
+                "indicators": indicators(raw["message"])}
         records.append(item)
     groups = Counter(x["class"] for x in records)
     lexical = Counter(x["class"] for x in records if x["indicators"]["mechanism_lexical"])
