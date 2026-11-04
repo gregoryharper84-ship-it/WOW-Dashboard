@@ -50,6 +50,13 @@ jobs:
             --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
 
           priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
+          release_waiting=false
+          if [ "$(jq -r '.state // "NONE"' <<<"$priority")" = "DEPLOYED_PENDING_VERIFY" ]; then
+            # The independent release-resume workflow already runs at :37 every hour.
+            # Keep the incident unverified, but let the :47 loop advance other work.
+            release_waiting=true
+            priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority --skip-deployed-pending-verify)
+          fi
           incident=$(jq -r '.incident_id // ""' <<<"$priority")
           state=$(jq -r '.state // "NONE"' <<<"$priority")
           severity=$(jq -r '.severity // "NONE"' <<<"$priority")
@@ -74,6 +81,9 @@ jobs:
             action="REPAIR"
             target="$incident"
             reason="Highest-priority durable incident still requires engineering closure."
+          elif [ "$release_waiting" = "true" ] && [ $((utc_hour % 2)) -eq 1 ]; then
+            action="DETECT"
+            reason="Release verification continues on its own schedule; run new-incident detection rather than repeat the same pending proof."
           elif [ "$product_health" != "PASS" ]; then
             action="VERIFY_PRODUCT"
             reason="Golden user journey is not PASS; run independent product acceptance before discretionary model research."
@@ -104,6 +114,7 @@ jobs:
             echo "state=$state"
             echo "severity=$severity"
             echo "product_health=$product_health"
+            echo "release_waiting=$release_waiting"
             echo "reason<<EOF"
             echo "$reason"
             echo "EOF"
@@ -117,8 +128,9 @@ jobs:
             --arg state "$state" \
             --arg severity "$severity" \
             --arg product_health "$product_health" \
+            --argjson release_waiting "$release_waiting" \
             --arg reason "$reason" \
-            '{action:$action,lifecycle_owner:$lifecycle_owner,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,reason:$reason,can_execute:false}' \
+            '{action:$action,lifecycle_owner:$lifecycle_owner,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,release_waiting:$release_waiting,reason:$reason,can_execute:false}' \
             | tee "$RUNNER_TEMP/wow-24h-decision.json"
 
       - name: Resume autonomous repair PR
@@ -283,6 +295,7 @@ jobs:
             echo "- target: ${{ steps.decision.outputs.target || 'NONE' }}"
             echo "- incident: ${{ steps.decision.outputs.incident || 'NONE' }}"
             echo "- incident_state: ${{ steps.decision.outputs.state || 'NONE' }}"
+            echo "- separate release proof pending: ${{ steps.decision.outputs.release_waiting || 'false' }}"
             echo "- product_health: ${{ steps.decision.outputs.product_health || 'UNKNOWN' }}"
             echo "- reason: ${{ steps.decision.outputs.reason || 'NONE' }}"
             echo "- policy: finish existing work before starting new work"
