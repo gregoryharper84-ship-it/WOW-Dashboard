@@ -188,18 +188,27 @@ def _nhl_official_source_block(
     MODEL_UNAVAILABLE, never erases the certification blocker, and never emits a
     probability or a market/historical substitute.
     """
-    requested_identity = {
-        "official_event_id": req.official_event_id,
-        "event_start_time_utc": req.event_start_time_utc,
-        "home_team": req.home_team,
-        "away_team": req.away_team,
+    fields = {
+        "official_event_id": getattr(req, "official_event_id", None),
+        "event_start_time_utc": getattr(req, "event_start_time_utc", None),
+        "home_team": getattr(req, "home_team", None),
+        "away_team": getattr(req, "away_team", None),
     }
-    capture_kwargs: dict[str, Any] = {
-        "official_event_id": req.official_event_id,
-        "event_start_time_utc": req.event_start_time_utc,
-        "home_team": req.home_team,
-        "away_team": req.away_team,
-    }
+    requested_identity = dict(fields)
+    if not all(str(value or "").strip() for value in fields.values()):
+        # A duck-typed or partially populated request yields a typed hold. It must
+        # never raise here, because that would displace the caller's own typed
+        # failure with an untyped error.
+        return {
+            "status": "HELD",
+            "hold_code": "NHL_SOURCE_REQUEST_IDENTITY_MISSING",
+            "requested_identity": requested_identity,
+            "freshness": None,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+    capture_kwargs: dict[str, Any] = dict(fields)
     # Only override the source module's own bounded transport defaults when a
     # caller injects them (tests); production keeps redirect rejection, the
     # transfer cap and the total deadline from the receipt module.

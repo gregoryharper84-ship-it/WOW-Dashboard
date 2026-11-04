@@ -720,6 +720,24 @@ def test_nhl_identity_mismatch_is_a_typed_hold_not_a_probability(monkeypatch):
     assert detail["official_source"]["probability_publishable"] is False
 
 
+def test_official_source_evidence_never_raises_for_a_duck_typed_request():
+    # The bridge dispatcher accepts duck-typed requests. Enrichment must degrade
+    # to a typed hold rather than raising, otherwise it would replace the
+    # caller's own typed failure with an untyped 500.
+    from types import SimpleNamespace
+
+    blocks = team_event_module.official_source_evidence(
+        SimpleNamespace(sport="NHL", official_event_id="2026020245")
+    )
+    source = blocks["official_source"]
+    assert source["status"] == "HELD"
+    assert source["hold_code"] == "NHL_SOURCE_REQUEST_IDENTITY_MISSING"
+    assert source["freshness"] is None
+    assert source["probability_publishable"] is False
+    assert source["can_execute"] is False
+    assert blocks["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+
+
 def test_non_nhl_rows_never_attempt_official_source_capture(monkeypatch):
     req = _base(
         sport="CRICKET",

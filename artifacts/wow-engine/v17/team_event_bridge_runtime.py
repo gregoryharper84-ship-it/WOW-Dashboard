@@ -337,8 +337,12 @@ def _with_official_source_evidence(exc: HTTPException, req: Any) -> HTTPExceptio
     # Deferred: this module is imported by the base runtime at install time.
     from v17.team_event_request_runtime import official_source_evidence
 
+    try:
+        blocks = official_source_evidence(req)
+    except Exception:  # noqa: BLE001 - enrichment must never displace a typed failure
+        return exc
     detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"detail": exc.detail}
-    for key, value in official_source_evidence(req).items():
+    for key, value in blocks.items():
         detail.setdefault(key, value)
     return HTTPException(status_code=exc.status_code, detail=detail, headers=exc.headers)
 
