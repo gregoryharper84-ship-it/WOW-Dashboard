@@ -59,7 +59,7 @@ def test_ni_001_unique_participant_date_match_assigns_canonical_ncaab_id():
     assert out["home_team_id"] == "espn-150"
     assert out["away_team_id"] == "espn-2306"
     assert out["identity_provider"] == "ESPN_NCAAB_SCOREBOARD"
-    assert out["identity_resolution"] == "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH"
+    assert out["identity_resolution"] == "ESPN_SCOREBOARD_EXACT_PARTICIPANTS_START_MATCH"
     assert out["market_features_used"] is False
     assert out["prediction_authority"] is False
     assert out["can_execute"] is False
@@ -118,7 +118,7 @@ def test_ni_007_transport_failure_is_typed_not_swallowed(monkeypatch):
     ("response", "expected"),
     [
         (SimpleNamespace(status_code=429, json=lambda: {}), "NCAAB_OFFICIAL_SOURCE_RATE_LIMITED"),
-        (SimpleNamespace(status_code=503, json=lambda: {}), "NCAAB_OFFICIAL_SOURCE_HTTP_503"),
+        (SimpleNamespace(status_code=503, json=lambda: {}), "NCAAB_OFFICIAL_SOURCE_HTTP_FAILED"),
         (SimpleNamespace(status_code=200, json=lambda: {"events": {}}), "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"),
     ],
 )
