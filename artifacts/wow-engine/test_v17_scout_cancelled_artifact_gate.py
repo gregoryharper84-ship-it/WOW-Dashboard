@@ -28,7 +28,8 @@ def _selector() -> str:
     return "set -euo pipefail\n" + match.group(0) + "\nresolve_oldest_cancelled_without_receipt\n"
 
 
-def _execute(tmp_path: Path, *, valid_source: str = "", broken_source: str = ""):
+def _execute(tmp_path: Path, *, valid_source: str = "", broken_source: str = "",
+             attempted_missing_source: str = "", broken_jobs_source: str = ""):
     gh = tmp_path / "gh"
     gh.write_text(
         """#!/usr/bin/env python3
@@ -48,6 +49,18 @@ if "wow-v17-scout-brain-persist.yml/runs?" in url:
     ]}
 elif "/actions/artifacts?name=wow-v17-scout-brain-persistence-" in url:
     payload = {"artifacts": []}
+elif "/actions/runs/" in url and "/jobs" in url:
+    source_id = re.search(r"/actions/runs/([0-9]+)/jobs", url).group(1)
+    if source_id == os.environ.get("MOCK_BROKEN_JOBS_SOURCE"):
+        raise SystemExit(46)
+    conclusion = (
+        "success" if source_id == os.environ.get("MOCK_ATTEMPTED_MISSING_SOURCE")
+        else "skipped"
+    )
+    payload = {"total_count": 1, "jobs": [{
+        "name": "Nightly all-sport discovery and governed specialist handoff",
+        "status": "completed", "conclusion": conclusion,
+    }]}
 elif "/actions/runs/" in url and "/artifacts" in url:
     source_id = re.search(r"/actions/runs/([0-9]+)/artifacts", url).group(1)
     if source_id == os.environ.get("MOCK_BROKEN_SOURCE"):
@@ -94,6 +107,8 @@ print(json.dumps(payload))
             "SCOUT_PERSIST_RECOVERY_MAX_PAGES": "20",
             "MOCK_VALID_SOURCE": valid_source,
             "MOCK_BROKEN_SOURCE": broken_source,
+            "MOCK_ATTEMPTED_MISSING_SOURCE": attempted_missing_source,
+            "MOCK_BROKEN_JOBS_SOURCE": broken_jobs_source,
         }
     )
     result = subprocess.run(
@@ -130,3 +145,33 @@ def test_discovery_api_failure_fails_closed_not_skipped(tmp_path):
     assert result.returncode == 2
     assert result.stdout.strip() == ""
     assert "39974206881" not in summary
+
+
+def test_attempted_discovery_with_missing_artifact_holds_instead_of_skipping(tmp_path):
+    # No evidence is discarded just because a later source has an artifact.
+    result, summary = _execute(
+        tmp_path, valid_source="39974206881",
+        attempted_missing_source="39974206880",
+    )
+    assert result.returncode == 2, result.stderr
+    assert result.stdout.strip() == ""
+    assert "SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE source_run_id=39974206880" in summary
+    assert "recovery_class=EVIDENCE_PENDING" in summary
+    assert "39974206881" not in result.stdout
+
+
+def test_unverifiable_discovery_job_inventory_fails_closed(tmp_path):
+    result, summary = _execute(tmp_path, broken_jobs_source="39974206880")
+    assert result.returncode == 2, result.stderr
+    assert result.stdout.strip() == ""
+    assert "39974206881" not in summary
+
+
+def test_skipped_discovery_sources_are_not_mistaken_for_data_loss(tmp_path):
+    result, summary = _execute(tmp_path, valid_source="39974206881")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "39974206881"
+    assert (
+        "provenance=verified_discovery_job_skipped recovery_class=NOT_APPLICABLE"
+        in summary
+    )
