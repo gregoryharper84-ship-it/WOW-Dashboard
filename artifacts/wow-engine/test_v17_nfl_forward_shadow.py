@@ -9,6 +9,8 @@ from v17.nfl_forward_shadow import (
     ForwardPrediction,
     calibration_health,
     grade_forward_predictions,
+    overdue_unsettled_events,
+    require_complete_settlement_run,
     select_canonical_forward_predictions,
 )
 
@@ -177,3 +179,208 @@ def test_overconfident_lower_bound_fails_even_when_point_forecast_is_reasonable(
         select_canonical_forward_predictions([
             _prediction_row(p=0.70, lower=0.75, upper=0.80)
         ])
+
+
+def test_overdue_settlement_flags_missing_final_but_not_in_progress_or_tie():
+    prediction = _prediction(
+        event_id="2026_08_CHI_SEA",
+        p=0.5114,
+        lower=0.4555,
+        upper=0.5673,
+        index=0,
+    )
+    event = prediction.official_event_id
+    cutoff = prediction.event_start_time_utc
+
+    assert overdue_unsettled_events(
+        [prediction], [], now=cutoff + timedelta(hours=5)
+    ) == []
+    assert overdue_unsettled_events(
+        [prediction], [], now=cutoff + timedelta(hours=7)
+    ) == [event]
+    assert overdue_unsettled_events(
+        [prediction], [{
+            "game_id": event,
+            "home_score": 17,
+            "away_score": 34,
+            "home_win": False,
+            "tie": False,
+        }], now=cutoff + timedelta(hours=7)
+    ) == []
+    assert overdue_unsettled_events(
+        [prediction], [{
+            "game_id": event,
+            "home_score": 17,
+            "away_score": 17,
+            "home_win": False,
+            "tie": True,
+        }], now=cutoff + timedelta(hours=7)
+    ) == []
+    assert overdue_unsettled_events(
+        [prediction], [{
+            "game_id": event,
+            "home_score": 17,
+            "away_score": 34,
+            "home_win": None,
+            "tie": False,
+        }], now=cutoff + timedelta(hours=7)
+    ) == [event]
+
+
+def test_overdue_settlement_rejects_invalid_grace_or_naive_reference():
+    prediction = _prediction(
+        event_id="2026_08_CHI_SEA", p=.51, lower=.45, upper=.57, index=0
+    )
+    with pytest.raises(ValueError, match="SETTLEMENT_GRACE_PERIOD_INVALID"):
+        overdue_unsettled_events([prediction], [], grace_period_hours=-1)
+    with pytest.raises(ValueError, match="TIMESTAMP_MUST_BE_TIMEZONE_AWARE"):
+        overdue_unsettled_events([prediction], [], now=datetime(2026, 11, 3))
+
+
+def test_run_forward_shadow_reports_missing_final_then_recovery(monkeypatch):
+    from v17 import nfl_forward_shadow as shadow
+    prediction = _prediction(
+        event_id="2026_08_CHI_SEA", p=0.5114, lower=0.4555, upper=0.5673, index=0
+    )
+    outcomes = []
+    saved = set()
+    monkeypatch.setattr(shadow, "load_prediction_rows", lambda db: [])
+    monkeypatch.setattr(shadow, "select_canonical_forward_predictions", lambda rows: [prediction])
+    monkeypatch.setattr(shadow, "load_outcome_rows", lambda db: outcomes)
+
+    def persist(db, grades):
+        additions = [g for g in grades if g.official_event_id not in saved]
+        saved.update(g.official_event_id for g in additions)
+        return len(additions)
+
+    monkeypatch.setattr(shadow, "persist_new_grades", persist)
+    monkeypatch.setattr(shadow, "persist_health", lambda db, health: None)
+    refresh = lambda db: {"status": "COMPLETED", "seasons": [], "can_execute": False}
+    missing = shadow.run_forward_shadow(object(), settlement_refresh_fn=refresh)
+    assert (missing["status"], missing["overdue_unsettled_count"]) == ("INCOMPLETE_SETTLEMENT", 1)
+    assert missing["overdue_unsettled_event_ids"] == ["2026_08_CHI_SEA"]
+    assert (missing["graded_events"], missing["new_grades_persisted"]) == (0, 0)
+
+    outcomes.append({"game_id": "2026_08_CHI_SEA", "home_score": 17, "away_score": 34,
+                     "home_win": False, "tie": False})
+    settled = shadow.run_forward_shadow(object(), settlement_refresh_fn=refresh)
+    assert (settled["status"], settled["overdue_unsettled_count"]) == ("COMPLETED", 0)
+    assert settled["overdue_unsettled_event_ids"] == []
+    assert (settled["graded_events"], settled["new_grades_persisted"]) == (1, 1)
+    assert saved == {"2026_08_CHI_SEA"}
+    assert settled["can_execute"] is False
+
+
+def test_complete_settlement_contract_rejects_stale_api_and_missing_final():
+    success = {
+        "status": "COMPLETED",
+        "overdue_unsettled_count": 0,
+        "overdue_unsettled_event_ids": [],
+        "can_execute": False,
+    }
+    assert require_complete_settlement_run(success) is success
+    bad = [
+        {"status": "COMPLETED"},
+        {"status": "COMPLETED", "overdue_unsettled_count": True, "overdue_unsettled_event_ids": []},
+        {"status": "COMPLETED", "overdue_unsettled_count": -1, "overdue_unsettled_event_ids": []},
+        {"status": "COMPLETED", "overdue_unsettled_count": 0, "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"]},
+        {"status": "COMPLETED", "overdue_unsettled_count": 1, "overdue_unsettled_event_ids": []},
+        {"status": "COMPLETED", "overdue_unsettled_count": 0, "overdue_unsettled_event_ids": [None]},
+    ]
+    for payload in bad:
+        with pytest.raises(ValueError, match="NFL_FORWARD_SHADOW_SETTLEMENT_CONTRACT_INVALID"):
+            require_complete_settlement_run(payload)
+    with pytest.raises(ValueError, match="NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"):
+        require_complete_settlement_run({
+            "status": "INCOMPLETE_SETTLEMENT",
+            "overdue_unsettled_count": 1,
+            "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"],
+        })
+    with pytest.raises(ValueError, match="NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"):
+        require_complete_settlement_run({
+            "status": "INCOMPLETE_SETTLEMENT",
+            "overdue_unsettled_count": 0,
+            "overdue_unsettled_event_ids": [],
+        })
+
+
+
+def test_forward_shadow_workflow_rejects_stale_endpoint_contract():
+    """Execute the workflow caller's actual settlement guard against response shapes."""
+    from pathlib import Path
+    from textwrap import dedent
+
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-nfl-forward-shadow.yml").read_text()
+    start = '          overdue_count = payload.get("overdue_unsettled_count")'
+    end = '          assert payload.get("can_execute") is False'
+    assert workflow.count(start) == 1 and workflow.count(end) == 1
+    guard = dedent(start + workflow.split(start, 1)[1].split(end, 1)[0])
+    cases = [
+        ({"status": "COMPLETED"}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": True,
+          "overdue_unsettled_event_ids": []}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": 0}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": 1,
+          "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"]}, False),
+        ({"status": "INCOMPLETE_SETTLEMENT", "overdue_unsettled_count": 0,
+          "overdue_unsettled_event_ids": []}, False),
+        ({"status": "COMPLETED", "overdue_unsettled_count": 0,
+          "overdue_unsettled_event_ids": []}, True),
+    ]
+    for payload, should_pass in cases:
+        if should_pass:
+            exec(guard, {"payload": payload})
+        else:
+            with pytest.raises(AssertionError):
+                exec(guard, {"payload": payload})
+
+
+
+def test_nfl_forward_shadow_http_error_diagnostics_are_bounded(monkeypatch):
+    """The actual API route preserves overdue identity, but never raw payloads."""
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    import team_event_request_runtime as runtime
+
+    monkeypatch.setenv("WOW_V17_ACTIVE", "1")
+    for name in (
+        "install_nfl_hydration_startup",
+        "install_nfl_model_startup",
+        "install_nfl_team_event_publication",
+        "install_basketball_model_maintenance_route",
+        "install_ncaaf_model_maintenance_route",
+    ):
+        monkeypatch.setattr(runtime, name, lambda *args, **kwargs: None)
+
+    result = {
+        "status": "INCOMPLETE_SETTLEMENT",
+        "overdue_unsettled_count": 1,
+        "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"],
+        "private_api_token": "MUST_NOT_APPEAR_IN_ERROR",
+        "can_execute": False,
+    }
+    monkeypatch.setattr(runtime, "run_forward_shadow", lambda db: result)
+    app = FastAPI()
+    runtime.install_team_event_request_routes(
+        app,
+        auth_dependency=Depends(lambda: None),
+        db_client_fn=lambda: object(),
+        event_api=object(),
+    )
+    client = TestClient(app)
+    response = client.post("/internal/v17/nfl-forward-shadow")
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"
+    assert detail["overdue_unsettled_count"] == 1
+    assert detail["overdue_unsettled_event_ids"] == ["2026_08_CHI_SEA"]
+    assert detail["can_execute"] is False
+    assert "MUST_NOT_APPEAR" not in response.text
+
+    # A malformed/oversized event identity must never be echoed in 503 details.
+    result["overdue_unsettled_event_ids"] = ["SENSITIVE_" + "x" * 250]
+    hidden = client.post("/internal/v17/nfl-forward-shadow")
+    assert hidden.status_code == 503
+    assert "overdue_unsettled_event_ids" not in hidden.json()["detail"]
+    assert "SENSITIVE_" not in hidden.text

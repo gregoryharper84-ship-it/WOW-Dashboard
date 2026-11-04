@@ -1,6 +1,7 @@
 """Objective-aware dispatcher for governed team/event probability requests."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime, timezone
 import os
 from typing import Any, Literal, Optional
@@ -14,7 +15,7 @@ from nfl_event_model_startup import install_nfl_model_startup
 from v17 import team_event_request_runtime as v17_team_event_base
 from v17.basketball_model_maintenance import install_basketball_model_maintenance_route
 from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
-from v17.nfl_forward_shadow import run_forward_shadow
+from v17.nfl_forward_shadow import NFLForwardShadowError, require_complete_settlement_run, run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 from v17.interactive_latency_telemetry import annotate_request, stage_timer
 from v17.team_event_probability_preservation import score_team_event_request as score_v17_team_event_request
@@ -480,10 +481,35 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
         if not any(getattr(r, "path", None) == "/internal/v17/nfl-forward-shadow" for r in app.router.routes):
             @app.post("/internal/v17/nfl-forward-shadow", dependencies=[scout_route_auth_dependency(auth_dependency)], operation_id="runWowV17NflForwardShadow")
             def run_nfl_forward_shadow():
+                run_payload = None
                 try:
-                    return run_forward_shadow(db_client_fn())
+                    run_payload = run_forward_shadow(db_client_fn())
+                    return require_complete_settlement_run(run_payload)
                 except HTTPException:
                     raise
+                except NFLForwardShadowError as exc:
+                    detail = {
+                        "code": str(exc).split(":", 1)[0],
+                        "error_type": type(exc).__name__,
+                        "automatic_certification": False,
+                        "automatic_promotion": False,
+                        "probability_publishable": False,
+                        "can_execute": False,
+                    }
+                    # Return only bounded, known settlement identifiers, never
+                    # untrusted source payloads or sensitive API responses.
+                    if (detail["code"] == "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"
+                            and isinstance(run_payload, Mapping)):
+                        count = run_payload.get("overdue_unsettled_count")
+                        ids = run_payload.get("overdue_unsettled_event_ids")
+                        if (type(count) is int and 0 <= count <= 100
+                                and isinstance(ids, list) and len(ids) == count
+                                and all(isinstance(x, str) and 0 < len(x) <= 80
+                                        and all(ch.isalnum() or ch in "_-" for ch in x)
+                                        for x in ids)):
+                            detail["overdue_unsettled_count"] = count
+                            detail["overdue_unsettled_event_ids"] = ids
+                    raise HTTPException(status_code=503, detail=detail) from exc
                 except Exception as exc:
                     raise HTTPException(status_code=503, detail={"code": "NFL_FORWARD_SHADOW_RUN_FAILED", "error_type": type(exc).__name__, "automatic_certification": False, "automatic_promotion": False, "probability_publishable": False, "can_execute": False}) from exc
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
