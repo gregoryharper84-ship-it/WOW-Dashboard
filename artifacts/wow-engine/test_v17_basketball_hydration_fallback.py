@@ -787,3 +787,52 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
         raise AssertionError("expected a typed backfill failure")
     except hydration.BasketballHydrationError as exc:
         assert str(exc) == "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+
+
+def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
+    """In November 2026, NBA ending-year 2026 is completed; 2027 is current."""
+    calls = []
+    stored = []
+
+    def canonical_games(sport, season):
+        calls.append((sport, season))
+        if season == 2026:
+            return [_sportsdataverse_row(
+                event_id="nba-june-2026", game_date="2026-06-13",
+            )]
+        if season == 2027:
+            return [_sportsdataverse_row(
+                event_id="nba-oct-2027", game_date="2026-10-26",
+            )]
+        raise AssertionError("unexpected season")
+
+    dates = iter([date(2026, 6, 13), date(2026, 10, 26)])
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", canonical_games)
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
+    )
+    monkeypatch.setattr(
+        hydration, "_latest_persisted_game_date", lambda *_: next(dates),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_recent_espn_settlements",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("completed 2026 NBA season must not use current ESPN supplement")
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda _client, _sport, rows: (stored.extend(rows), len(rows))[1],
+    )
+
+    result = hydration.hydrate(
+        "NBA", [2026, 2027], client=object(),
+        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+    )
+    assert calls == [("NBA", 2026), ("NBA", 2027)]
+    assert 2026 not in result["recent_supplement_status"]
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["per_season"] == {2026: 0, 2027: 1}
+    assert [r["game_date"] for r in stored] == ["2026-10-26"]
+    assert result["can_execute"] is False
