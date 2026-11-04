@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import Any, Mapping
 
+from v17.nhl_event_identity import team_abbreviation
+
 CAN_EXECUTE = False
 AUDIT_VERSION = "NHL_PREGAME_DECISION_QUALITY_V1"
 
@@ -87,9 +89,14 @@ def _injuries_ok(evidence: Mapping[str, Any], event: Mapping[str, Any],
                  start: datetime | None) -> bool:
     injuries = _map(evidence.get("injury_report"))
     teams = injuries.get("team_coverage")
-    team_set = {str(t).strip().upper() for t in teams} if isinstance(teams, list) else set()
-    expected = {str(event.get(side) or "").strip().upper()
+    # Official/provider teams may be represented by full names or NHL codes;
+    # use the existing canonical alias contract, never loose substring matching.
+    team_set = ({team_abbreviation(t) for t in teams} - {None}
+                if isinstance(teams, list) else set())
+    expected = {team_abbreviation(event.get(side))
                 for side in ("home_team", "away_team")}
+    if None in expected or len(expected) != 2:
+        return False
     replacements = _map(injuries.get("replacement_review"))
     return bool(
         injuries.get("status") == "CURRENT" and _source_pinned(injuries)
