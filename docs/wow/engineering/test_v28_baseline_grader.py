@@ -56,6 +56,19 @@ class Indicators(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"RED_FIRST_UNAVAILABLE"):
             g.red_first_from_evidence(fix,"2026-10-01T10:00:00+00:00",{})
 
+    def test_git_utc_z_timestamp_rework_candidate(self):
+        self.assertEqual(g.parse_time("2026-09-02T10:57:35Z"),
+                         g.parse_time("2026-09-02T10:57:35+00:00"))
+        a = {"sha": "a"*40, "committed_at": "2026-09-02T10:57:35Z",
+             "paths": ["v17/worker.py"],
+             "indicators": {"failure_codes": ["REMOTE_WRITER_RECONCILIATION_REQUIRED"]}}
+        b = {"sha": "b"*40, "committed_at": "2026-09-03T10:57:35+00:00",
+             "paths": ["v17/worker.py"],
+             "indicators": {"failure_codes": ["REMOTE_WRITER_RECONCILIATION_REQUIRED"]}}
+        self.assertTrue(g.same_cause_candidate(a, b))
+        b["committed_at"] = "2026-09-06T10:57:36Z"
+        self.assertFalse(g.same_cause_candidate(a, b))
+
     def test_window_is_inclusive(self):
         self.assertTrue(g.is_within("2026-08-06T00:00:00+00:00"))
         self.assertFalse(g.is_within("2026-08-05T23:59:59+00:00"))
