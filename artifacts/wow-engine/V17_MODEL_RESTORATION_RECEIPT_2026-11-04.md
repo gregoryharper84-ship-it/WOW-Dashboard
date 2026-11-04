@@ -129,7 +129,7 @@ were discovered by the whole-suite run rather than by design review:
   `MODEL_UNAVAILABLE`. The evidence is therefore attached in both layers, and the
   code itself is never relabelled in either.
 
-Verified by ** passed,  skipped, 0 failed** in s across the
+Verified by **9005 passed, 55 skipped, 1 failed** in 404.52s across the
 whole `artifacts/wow-engine` tree, plus a targeted run that installs the parity
 wrapper and bridge runtime alongside the request-runtime tests.
 
