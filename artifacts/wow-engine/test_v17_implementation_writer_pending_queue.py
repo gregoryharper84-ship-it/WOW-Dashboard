@@ -31,6 +31,7 @@ WRITER_WORKFLOWS = (
     "wow-v17-gemini-engineering-worker.yml",
     "wow-v17-engineering-auto-repair.yml",
     "wow-v17-remote-writer-finalize.yml",
+    "wow-engineering-24x7.yml",
 )
 # Live 2026-10-27 manual admissions. NBA and NCAAF were cancelled before any
 # job because the dispatcher group ignored these distinct leases.

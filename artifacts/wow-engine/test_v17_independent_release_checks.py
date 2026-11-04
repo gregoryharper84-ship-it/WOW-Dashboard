@@ -185,11 +185,10 @@ def test_ordinary_pr_with_complete_exact_head_evidence_passes():
     assert m.qa_findings(evidence()) == []
 
 
-def test_legacy_policy_requires_trusted_governance_until_review_activation():
+def test_v4_legacy_qa_does_not_require_retired_trusted_gate():
     ev = evidence(independent_review_active=False, source_review=None)
     ev["qa_review_policy"]["mode"] = "legacy"
-    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in m.qa_findings(ev)
-    ev["check_runs"].append(run_(m.TRUSTED_GOVERNANCE_CHECK, rid=900))
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
     assert m.qa_findings(ev) == []
     with_qa(ev)
     assert m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP) == []
@@ -1282,7 +1281,7 @@ def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
     proc, runner, _ = _run_decide(
         fake_gh,
         QA_WF,
-        _routes_for_pr(_evidence_runs()),
+        _routes_for_pr(_evidence_runs()[1:]),
         {
             "EVENT": "workflow_dispatch",
             "INPUT_PR": "7",
@@ -1293,7 +1292,7 @@ def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
     assert proc.returncode == 0, proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "failure"
-    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in decision["findings"]
+    assert f"QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[0]}" in decision["findings"]
 
 
 def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
