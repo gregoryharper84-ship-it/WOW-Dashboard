@@ -117,7 +117,9 @@ def _rest_ok(evidence: Mapping[str, Any], start: datetime | None) -> tuple[bool,
         consecutive = item.get("back_to_back")
         if not (_valid_number(days, (0, 14)) and isinstance(consecutive, bool)):
             return False, []
-        if consecutive and days != 0:
+        # A zero-rest team is necessarily playing on consecutive dates;
+        # inconsistent input must not hide that fatigue signal.
+        if (consecutive and days != 0) or (not consecutive and days == 0):
             return False, []
         if consecutive:
             b2b.append(side.upper())
