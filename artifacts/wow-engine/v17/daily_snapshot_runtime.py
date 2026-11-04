@@ -64,6 +64,52 @@ class DailySnapshotRequest(BaseModel):
     response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
 
 
+
+
+def evaluate_slate_date_alignment(
+    requested_slate_date: str,
+    requested_timezone: str,
+    *,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Observe Daily date divergence without guessing the caller's intent.
+
+    During the UTC/local rollover, a mistaken UTC-derived "today" and an
+    explicit local "tomorrow" are indistinguishable from this request alone.
+    This metadata never rejects or rewrites a slate or changes row terminals.
+    """
+    observed = (now_utc if now_utc is not None else datetime.now(timezone.utc)).astimezone(timezone.utc)
+    utc_day = observed.date()
+    base: dict[str, Any] = {
+        "requested_slate_date": requested_slate_date,
+        "requested_timezone": requested_timezone,
+        "caller_local_date": None,
+        "utc_date": utc_day.isoformat(),
+        "delta_days": None,
+        "caller_intent_verified": False,
+        "can_execute": False,
+    }
+    try:
+        requested_day = date.fromisoformat(requested_slate_date)
+    except (TypeError, ValueError):
+        return {**base, "status": "REQUESTED_SLATE_DATE_INVALID"}
+    try:
+        local_day = observed.astimezone(ZoneInfo(requested_timezone)).date()
+    except (KeyError, ValueError, TypeError):
+        return {**base, "status": "TIMEZONE_INVALID"}
+
+    delta = (requested_day - local_day).days
+    if delta == 0:
+        status = "ALIGNED"
+    elif requested_day == utc_day and utc_day != local_day:
+        # Observation only. This does not establish UTC-derived *intent*.
+        status = "UTC_LOCAL_DATE_DIVERGENCE"
+    elif delta > 0:
+        status = "AHEAD_OF_CALLER_LOCAL_DATE"
+    else:
+        status = "BEHIND_CALLER_LOCAL_DATE"
+    return {**base, "status": status, "caller_local_date": local_day.isoformat(), "delta_days": delta}
+
 def _detail(exc: HTTPException) -> dict[str, Any]:
     return dict(exc.detail) if isinstance(exc.detail, dict) else {"code": "HTTP_EXCEPTION", "message": str(exc.detail)}
 
@@ -476,10 +522,12 @@ def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str
 
 
 def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
-    try:
-        date.fromisoformat(req.requested_slate_date)
-    except ValueError:
-        return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_SLATE_DATE_INVALID"], "can_execute": False}
+    accepted_at = datetime.now(timezone.utc)
+    slate_alignment = evaluate_slate_date_alignment(
+        req.requested_slate_date, req.requested_timezone, now_utc=accepted_at
+    )
+    if slate_alignment["status"] == "REQUESTED_SLATE_DATE_INVALID":
+        return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_SLATE_DATE_INVALID"], "slate_date_alignment": slate_alignment, "can_execute": False}
 
     run_id = f"v17-daily-{uuid4()}"
     # Server-generated, non-secret provenance; never trust a client-supplied identity.
@@ -493,7 +541,8 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             "INTERNAL_AUTOMATION" if type(req).__name__ == "InternalDailySnapshotRequest"
             else "V17_DAILY_ACTION"
         ),
-        "accepted_at_utc": datetime.now(timezone.utc).isoformat(),
+        "accepted_at_utc": accepted_at.isoformat(),
+        "slate_date_alignment": slate_alignment,
         "can_execute": False,
     }
     rows: list[dict[str, Any]] = []
@@ -689,6 +738,11 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "run_status": run_status,
         "requested_slate_date": req.requested_slate_date,
         "requested_timezone": req.requested_timezone,
+        "slate_date_alignment": slate_alignment,
+        "slate_date_warnings": (
+            ["WOW_V17_DAILY_SLATE_DATE_UTC_LOCAL_DIVERGENCE"]
+            if slate_alignment["status"] == "UTC_LOCAL_DATE_DIVERGENCE" else []
+        ),
         "request_trace_id": request_context["request_trace_id"],
         "caller_class": request_context["caller_class"],
         "requested_lanes": sorted(requested_lanes),
@@ -701,6 +755,21 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "blockers": list(dict.fromkeys(blockers)),
         "can_execute": False,
     }
+    if (
+        not rows
+        and slate_alignment["status"] == "UTC_LOCAL_DATE_DIVERGENCE"
+        and any(requested_limits.get(lane, 0) > 0 for lane in requested_lanes)
+    ):
+        # Do not claim UTC caused the empty board: the intent is unknowable.
+        response["empty_board_diagnosis"] = {
+            "code": "WOW_V17_DAILY_SLATE_DATE_UTC_LOCAL_DIVERGENCE",
+            "observation": "ZERO_ROWS_WITH_DATE_DIVERGENCE",
+            "requested_slate_date": req.requested_slate_date,
+            "caller_local_date": slate_alignment["caller_local_date"],
+            "utc_date": slate_alignment["utc_date"],
+            "caller_intent_verified": False,
+            "can_execute": False,
+        }
     if req.response_mode == "FULL":
         response["response_mode"] = "FULL"
         return response
