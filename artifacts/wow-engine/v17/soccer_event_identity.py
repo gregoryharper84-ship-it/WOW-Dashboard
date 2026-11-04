@@ -35,6 +35,13 @@ BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/{competition}/s
 CANONICAL_EVENT_PREFIX = "SOCCER:"
 IDENTITY_RESOLUTION = "ESPN_COMPETITION_SCOREBOARD_EXACT_PARTICIPANTS_DATE_MATCH"
 
+# The ±1-day scoreboard fetch exists for UTC/local date partitioning, not to
+# permit a different fixture day. The discovered kickoff and the official
+# fixture timestamp must agree inside this drift budget; an adjacent-day
+# fixture is ~24 hours away and can never satisfy it. Two hours absorbs
+# ordinary broadcast/reschedule movement without merging two same-day fixtures.
+MAX_KICKOFF_DRIFT_MINUTES = 120.0
+
 # Governed outcome space. Kept here so the identity layer cannot silently become
 # two-way; the parity tests assert this agrees with the SOCCER governance
 # profile rather than trusting the duplicate.
@@ -249,6 +256,11 @@ def resolve_soccer_current_event_identity(
             raise SoccerEventIdentityError(
                 "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "matching fixture timestamp invalid"
             ) from exc
+        # Participants alone do not prove the fixture: the same clubs can meet
+        # on another day. Require the official fixture timestamp to match the
+        # requested kickoff inside the declared drift budget before accepting.
+        if abs((start - event_time).total_seconds()) / 60.0 > MAX_KICKOFF_DRIFT_MINUTES:
+            continue
         # The ±1 day window can surface the same fixture twice; a repeated
         # source row is still one event, not an ambiguity.
         matches.setdefault(event_id, (start, row))
@@ -277,6 +289,8 @@ def resolve_soccer_current_event_identity(
         "winner_determined_by_resolver": False,
         "identity_provider": SOURCE_PROVIDER,
         "identity_resolution": IDENTITY_RESOLUTION,
+        "requested_event_start_time": event_time.isoformat(),
+        "kickoff_drift_minutes": round(abs((start - event_time).total_seconds()) / 60.0, 3),
         "market_features_used": False,
         "prediction_authority": False,
         "can_execute": False,
