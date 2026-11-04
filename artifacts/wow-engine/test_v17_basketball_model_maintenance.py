@@ -373,6 +373,28 @@ def test_nba_scheduled_unverified_or_future_date_fails_closed(monkeypatch):
         assert result["can_execute"] is False
 
 
+def test_nba_current_season_hydration_failure_is_not_successful_replay(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise maintenance.BasketballHydrationError("NBA_SOURCE_HTTP_503")
+
+    monkeypatch.setattr(maintenance, "hydrate", unavailable)
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cannot replay without current-season settled evidence")
+        ),
+    )
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",),
+        now=datetime(2026, 11, 4, tzinfo=timezone.utc),
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    assert result["rows"][0]["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert result["rows"][0]["hydration_blocker"]["latest_persisted_game_date"] is None
+    assert result["can_execute"] is False
+
+
 def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
     assert maintenance._nba_current_season_data_gap(
         {"latest_game_date_after": "2026-06-13"},

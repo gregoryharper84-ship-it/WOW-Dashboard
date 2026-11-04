@@ -123,7 +123,7 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
     An absent/invalid persisted readback is unverified, never a successful fit.
     This is a source-data guard, not a fitted-model probability threshold.
     """
-    if not isinstance(hydration, dict) or clock.month in (7, 8, 9, 10):
+    if clock.month in (7, 8, 9, 10):
         return None
     season_start_year = clock.year if clock.month >= 11 else clock.year - 1
     season_start = date(season_start_year, 10, 1)

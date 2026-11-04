@@ -102,6 +102,30 @@ def test_nba_hydration_uses_canonical_identity_and_never_publishes(monkeypatch):
     assert out["can_execute"] is False
 
 
+def test_wnba_bdl_team_ids_cannot_be_misread_as_espn_history(monkeypatch):
+    rows = [
+        _game(f"bdl-{i}", "2026-09-01", "1", "2", 90, 80,
+              source_provider="BALLDONTLIE")
+        for i in range(6)
+    ]
+    monkeypatch.setattr(
+        "v17.basketball_team_event_forward_features.load_games",
+        lambda _db, _sport: rows,
+    )
+    with pytest.raises(BasketballForwardFeatureError) as caught:
+        hydrate_current_basketball_features(
+            object(), sport="WNBA",
+            event_start_time="2026-10-07T23:00:00Z",
+            event_id="wnba-stats-401999999",
+            home_team_alias="espn-1", away_team_alias="espn-2",
+            wnba_identity_resolver=lambda **_kwargs: {
+                "event_id": "wnba-stats-401999999",
+                "home_team_id": "espn-1", "away_team_id": "espn-2",
+            },
+        )
+    assert caught.value.code == "WNBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+
+
 def test_wnba_hydration_requires_exact_event_identity(monkeypatch):
     monkeypatch.setattr(
         "v17.basketball_team_event_forward_features.load_games",

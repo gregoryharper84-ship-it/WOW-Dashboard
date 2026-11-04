@@ -203,6 +203,16 @@ def _builder_fit():
     )
 
 
+def test_legacy_cross_sport_fingerprints_keep_original_serialization():
+    import hashlib
+    import json
+
+    artifact = {"sport": "NHL", "platt_a": 1e-05, "source_note": "café"}
+    legacy = json.dumps(artifact, sort_keys=True, separators=(",", ":"), default=str)
+    assert artifact_fingerprint(artifact) == hashlib.sha256(legacy.encode("utf-8")).hexdigest()
+    assert artifact_fingerprint(artifact) != calibration_payload_sha256(artifact)
+
+
 def test_builder_digest_is_the_shared_canonical_digest_and_binds_content():
     count = 240
     raw = [0.3 + (i % 20) * 0.015 for i in range(count)]
@@ -223,7 +233,6 @@ def test_builder_digest_is_the_shared_canonical_digest_and_binds_content():
         fit=_builder_fit(),
     )
     assert fingerprint == calibration_payload_sha256(artifact)
-    assert fingerprint == artifact_fingerprint(artifact)
 
     tampered = {**artifact, "residual_quantile_90": artifact["residual_quantile_90"] + 0.01}
     assert calibration_payload_sha256(tampered) != fingerprint

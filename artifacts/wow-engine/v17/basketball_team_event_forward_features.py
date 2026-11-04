@@ -190,6 +190,21 @@ def hydrate_current_basketball_features(
                 "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED",
                 "mixed, missing, or BallDontLie team identity provenance",
             )
+    else:
+        # WNBA identity resolution uses ESPN-prefixed IDs. The historical
+        # BallDontLie IDs occupy a different, unverified numeric namespace.
+        # Never mistake that mismatch for insufficient sporting history.
+        if any(
+            str(getattr(game, "source_provider", "") or "").strip().upper()
+            not in {"SPORTSDATAVERSE_ESPN", "ESPN_SCOREBOARD"}
+            or not str(getattr(game, "home_team_id", "")).startswith("espn-")
+            or not str(getattr(game, "away_team_id", "")).startswith("espn-")
+            for game in games
+        ):
+            raise BasketballForwardFeatureError(
+                "WNBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED",
+                "WNBA settled history is not in the verified ESPN team namespace",
+            )
     target_date = target.astimezone(ZoneInfo("America/New_York")).date()
     features, audit = build_basketball_forward_features(
         games,

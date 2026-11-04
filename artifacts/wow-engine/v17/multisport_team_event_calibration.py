@@ -335,7 +335,11 @@ def verify_calibration_payload_digest(
 
 
 def artifact_fingerprint(artifact: Mapping[str, Any]) -> str:
-    return calibration_payload_sha256(dict(artifact))
+    # Preserve existing NHL/WNBA/etc. certification fingerprints byte-for-byte.
+    # NBA database-bound payloads use calibration_payload_sha256 explicitly;
+    # silently switching this legacy helper would invalidate prior receipts.
+    payload = json.dumps(dict(artifact), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 __all__ = [
