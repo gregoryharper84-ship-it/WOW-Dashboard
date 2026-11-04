@@ -16,28 +16,30 @@ against this branch, not from CI or from the live Render deployment.
 ## 0. Publication record
 
 ```text
-PUBLISHED_BRANCH        = freebuff/b45b277542429f777af32f00
-PUBLISHED_HEAD          = c9e254f5d4080071b875a2a5486b0f85d9c76dac
-ORIGIN_MAIN_AT_WRITE    = 014f879a88bd8a07e172196af6aa6acae5f2e221
-ORIGIN_MAIN_SUBJECT     = 2026-11-04 12:10:21 -0600 Merge pull request #2426 from gregoryharper84-ship-it/docs/v28-impact-20261104-one-shot
-WORK_STARTED_FROM       = 287d41483 (contained in ORIGIN_MAIN_AT_WRITE: true)
-MAIN_ADVANCED_BY        = 29 commits since work started (normal fast-forward, no rewind)
-MY_BRANCH_AHEAD_OF_MAIN = 91 commits
-MERGE_WITH_ORIGIN_MAIN  = conflict-free
-PUSH_MODE               = fast-forward update of a feature branch; main never written, never forced
+PUBLISHED_BRANCH          = freebuff/b45b277542429f777af32f00
+PUBLISHED_CODE_HEAD       = a4bd71c310a4a0c3a81246ed9e081337e2475ee4
+RECEIPT_COMMIT            = the docs commit immediately after PUBLISHED_CODE_HEAD
+                            (no source change between them; diff on *.py is empty)
+ORIGIN_MAIN_AT_WRITE      = 2c2bf35da5d0bdd13c42f8016de1a7b4ffa1ca88
+ORIGIN_MAIN_SUBJECT       = 2026-11-04 15:39:49 -0600 Merge pull request #2385 from gregoryharper84-ship-it/chore/coderabbit-wow-v17-20261102
+WORK_STARTED_FROM         = 287d41483 (contained in ORIGIN_MAIN_AT_WRITE: true)
+MAIN_ADVANCED_BY          = 46 commits since work started (other writers; no rewind)
+MY_BRANCH_AHEAD_OF_MAIN   = 116 commits
+MERGE_WITH_ORIGIN_MAIN    = conflict-free
+FULL_SUITE_AT_CODE_HEAD   = 9011 passed, 55 skipped, 0 failed (368.24s)
+PUSH_MODE                 = fast-forward update of a feature branch; main never written, never forced
 ```
 
-The integration branch is public on origin and can be opened as a PR against
-`main`. `main` itself was not written by this work, so protected review and CI
-still own the merge decision.
+`main` was never written by this work, so protected review and CI still own the
+merge decision. This branch also carries upstream #2431 commits pushed by another
+writer, which were merged rather than discarded.
 
 An earlier revision of this receipt recorded a protected-main *rewind* to
 `3fbc4c5de`. That was wrong and has been removed: the sandbox's
 `refs/remotes/origin/main` tracking ref was stale at `3fbc4c5de`, and
-`git fetch origin main` refreshed only `FETCH_HEAD`, not the tracking ref. The
-authoritative `git ls-remote origin refs/heads/main` shows 014f879a88bd8a07e172196af6aa6acae5f2e221, which
-fast-forwards normally from the work-start baseline `287d41483`. No history was
-rewritten and no commits were dropped.
+`git fetch origin main` refreshed only `FETCH_HEAD`, not the tracking ref. Every
+value above is read from the remote at write time. No history was rewritten and
+no commits were dropped.
 
 ## 1. Lanes integrated on the working branch
 
