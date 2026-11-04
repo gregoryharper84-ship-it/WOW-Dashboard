@@ -753,3 +753,46 @@ def test_ncaab_missing_team_alias_preserves_original_discovery_id():
     assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert out.raw["canonical_identity_blocker"] == "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
     assert build_discovery_evidence(out)["discovery_provider_event_id"] == "401999999"
+
+
+def test_ncaab_canonical_identity_does_not_create_model_capability(monkeypatch):
+    import v17.ncaab_event_identity as identity
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory,
+        MODEL_UNAVAILABLE,
+        route_discovered_slate,
+    )
+
+    monkeypatch.setattr(
+        identity, "resolve_ncaab_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "espn-401999999",
+            "identity_provider": "SPORTSDATAVERSE_ESPN_MBB_SCHEDULE",
+            "identity_resolution": "SPORTSDATAVERSE_EXACT_PARTICIPANTS_START_MATCH",
+            "prediction_authority": False,
+            "can_execute": False,
+        },
+    )
+    event = canonicalize_ncaab_discovery_identity(_ncaab_alias_event())
+    inventory = DiscoveryInventory(
+        requested_slate_date="2026-11-04",
+        requested_timezone="America/Chicago",
+        events=[event],
+    )
+    calls = []
+
+    def score(_event, _model):
+        calls.append("scored")
+        raise AssertionError("absent fitted model cannot be invoked")
+
+    rows = route_discovered_slate(
+        inventory,
+        resolve_model=lambda _event: None,
+        score_row=score,
+    )
+    assert len(rows) == 1
+    assert rows[0].bucket == MODEL_UNAVAILABLE
+    assert rows[0].rank_eligible is False
+    assert rows[0].probability_publishable is False
+    assert rows[0].detail["model_invoked"] is False
+    assert calls == []
