@@ -810,6 +810,7 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--run-id", required=True, type=int)
     policy.add_argument("--run-attempt", required=True, type=int)
     policy.add_argument("--pr", type=int)
+    policy.add_argument("--neutral-if-superseded", action="store_true")
     classify = sub.add_parser("classify-upstream-qa")
     classify.add_argument("--repo", required=True)
     classify.add_argument("--run-id", required=True, type=int)
@@ -835,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_attempt=args.run_attempt,
                 expected_pr_number=args.pr,
                 token=os.environ.get("GH_TOKEN", ""),
+                allow_superseded_target=args.neutral_if_superseded,
             )
         except _source_review_module.SourceReviewError as exc:
             raise SystemExit(str(exc)) from exc
