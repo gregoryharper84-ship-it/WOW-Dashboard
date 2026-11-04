@@ -1,9 +1,8 @@
 name: wow-v17-existing-pr-governance-review
 
+# Retired automatic trigger lane: the five pinned main ruleset checks are authoritative.
+# Manual dispatch remains available for non-authoritative historical diagnostics.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -14,12 +13,6 @@ on:
         description: Optional canonical incident override
         required: false
         type: string
-  workflow_run:
-    workflows: [wow-v17-independent-qa-check]
-    types: [completed]
-    branches: [main]
-  check_run:
-    types: [completed]
 
 permissions:
   actions: read

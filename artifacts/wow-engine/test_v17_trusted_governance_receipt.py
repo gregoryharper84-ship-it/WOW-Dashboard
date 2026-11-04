@@ -181,7 +181,8 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '--arg workflow_name "wow-v17-chatgpt-engineering-worker"' in worker
     assert '--arg workflow_name "wow-v17-claude-engineering-worker"' in claude_worker
 
-    assert "pull_request_target:" in gate
+    assert "on:\n  workflow_dispatch:" in gate
+    assert "on:\n  pull_request_target:" not in gate
     assert "ref: main" in gate
     artifact_step = gate.split("- name: Resolve trusted exact-head governance artifact", 1)[1].split(
         "- name: Verify trusted workflow identity and completion", 1
@@ -576,7 +577,7 @@ def test_trusted_gate_skips_failed_certifier_runs_and_gates_downstream_steps():
     workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     job = workflow["jobs"]["trusted-governance"]
 
-    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    assert job["if"] == "${{ false }}"
     for step in job["steps"][2:]:
         assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
 

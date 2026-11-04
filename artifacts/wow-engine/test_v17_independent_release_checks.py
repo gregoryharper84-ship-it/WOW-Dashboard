@@ -947,8 +947,10 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert release == ["wow-v17-independent-qa-check"]
     assert "wow-v17-release-authority-check" not in qa
     assert "wow-v17-existing-pr-governance-review" not in qa
-    assert certifier["workflow_run"]["workflows"] == ["wow-v17-independent-qa-check"]
-    assert gate["workflow_run"]["workflows"] == ["wow-v17-existing-pr-governance-review"]
+    assert "workflow_run" not in certifier
+    assert "workflow_run" not in gate
+    assert "workflow_dispatch" in certifier
+    assert "workflow_dispatch" in gate
     qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
     assert "wow-v17-trusted-governance-gate" in qa_if
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
