@@ -225,7 +225,9 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
             raw_grades.extend(batch)
             if len(raw_grades) > total:
                 return False
-            if len(batch) < PAGE:
+            # Exact PostgREST count proves completeness even when the last
+            # bounded page is full (including the 10,000-grade ceiling).
+            if len(batch) < PAGE or len(raw_grades) == total:
                 complete = True
                 break
         if not complete or total is None or len(raw_grades) != total:
