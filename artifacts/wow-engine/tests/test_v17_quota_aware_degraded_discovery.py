@@ -7,6 +7,7 @@ import pytest
 from v17 import cross_sport_discovery_feed as feed
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import quota_aware_degraded_discovery as quota
+from v17 import rundown_sport_registry as registry
 
 
 class _Result:
@@ -22,6 +23,29 @@ def test_definitive_provider_failure_classification_is_conservative():
     assert quota.classify_provider_failure("CREDENTIAL_UNCONFIGURED") == quota.DISABLED_BY_POLICY
     assert quota.classify_provider_failure("HTTP_429_UNKNOWN") == quota.RATE_LIMITED
     assert quota.classify_provider_failure("HTTP_503") == quota.TEMPORARILY_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("DEACTIVATED_KEY", quota.DISABLED_BY_POLICY),
+        ("ODDS_API_DEACTIVATED_KEY", quota.DISABLED_BY_POLICY),
+        ("HTTP_401", quota.AUTH_FAILURE),
+        ("HTTP_403", quota.AUTH_FAILURE),
+        ("HTTP_429", quota.RATE_LIMITED),
+        ("MONTHLY_QUOTA_EXCEEDED", quota.QUOTA_EXHAUSTED),
+    ],
+)
+def test_definitive_failures_never_read_as_empty_or_available(code, expected):
+    state = quota.classify_provider_failure(code)
+    assert state == expected
+    assert state not in (quota.AVAILABLE, "NO_EVENTS_RETURNED", "MODEL_UNAVAILABLE")
+    # Deactivated/auth/quota evidence opens the provider circuit; bare 429 does not.
+    assert (state in quota._CIRCUIT_STATES) is (state != quota.RATE_LIMITED)
+
+
+def test_boxing_has_no_provider_feed_and_stays_explicitly_unsupported():
+    assert "BOXING" in registry.FAMILIES_WITHOUT_PROVIDER_FEED
 
 
 def test_public_schedule_success_consumes_zero_paid_odds_calls(monkeypatch):
