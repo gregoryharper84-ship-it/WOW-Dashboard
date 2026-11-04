@@ -1,7 +1,7 @@
 # WOW V17 Governance Ledger — Historical Reconciliation and Current Control Map
 
 **Ledger ID:** GOV-2026-11-04-001  
-**Revision:** proposed v1.0, 2026-11-04  
+**Revision:** proposed v1.1, 2026-11-04 (live ruleset reconciliation)  
 **Status:** PROPOSED_FOR_INDEPENDENT_REVIEW; not a runtime gate or release authorization  
 **Scope:** WOW Betting Engine, LLP Team Betting Engine, Scout/Research, Kalshi Weather when applicable, engineering/recovery, SIRT and product acceptance  
 **Owner:** WOW Betting Intelligence (policy/audit intent); Engineering (implementation); independent QA/SIRT and Release Authority (acceptance)  
@@ -114,8 +114,8 @@ The model may complete sporting probability without a sportsbook price if the fi
 - Preserve valid behavior; patch root causes, not symptoms.
 
 ### GOV-10 — Exact-head release and product acceptance
-- For every change record the objective ID, scope, owner, acceptance criteria, branch/PR, exact head SHA, required CI, independent QA/security/Release Authority evidence, merge SHA, Render deploy receipt, live runtime acceptance, rollback and closure proof.
-- No duplicate or reclassified failure may bypass required gates. CI PASS != merged != deployed != independent acceptance.
+- For every change record the objective ID, scope, owner, acceptance criteria, branch/PR, exact head SHA, the current effective GitHub ruleset requirements, QA and Release Authority App receipts where required, merge SHA, Render deploy receipt *when runtime is affected*, live runtime acceptance, rollback and closure proof. Do not equate deterministic QA App checks with an independently performed semantic security review.
+- No duplicate or reclassified failure may bypass required gates. CI PASS != merged != deployed != independent product acceptance. At the November 4 verification the active ruleset #24907422 requires FIVE checks: `WOW Independent QA exact-head` (App 5245832); `WOW Release Authority exact-head` (App 5245853); `WOW required-three regression`, `WOW governed probability backend`, and `WOW additional required regression` (GitHub Actions App 15368). Read the ruleset again at release; older V3 narrative about only three checks does not change the live ruleset.
 - Separate BACKEND_RUNTIME, MODEL_CAPABILITY, REPOSITORY_GOVERNANCE and LIVE_GPT_EDITOR_SYNC. User-facing e2e scoring is a further product-acceptance surface.
 - Operational disposition: COMPLETE only with exact independent proof; otherwise WORKING_NOT_COMPLETE, BLOCKED, FAILED, SAFE_HOLD or UNSUPPORTED as applicable.
 
@@ -124,7 +124,7 @@ The model may complete sporting probability without a sportsbook price if the fi
 - WOW Betting Intelligence owns discovery/quality and product acceptance definition, not merge or release self-certification.
 - Engineering and AMRT diagnose/implement/repair through authorized branches and protected controls.
 - SIRT independently challenges security, accuracy/calibration and production claims; SIRT never deploys.
-- Independent QA/Release Authority verify exact head and live outcome; V17_TERMINAL_REDUCER alone decides model terminal disposition.
+- Independent QA App and Release Authority App verify their required exact-head release contracts. SIRT challenges independently where verified; do not claim a separate semantic security review occurred without its receipt. Post-merge runtime/product acceptance requires independent real evidence; V17_TERMINAL_REDUCER alone decides model terminal disposition.
 
 ### GOV-12 — No invented monitoring or runtime state
 - A session audit is not continuous monitoring. Schedules/health checks require authenticated task, cadence, heartbeat and receipts.
@@ -152,7 +152,7 @@ Each proposed governance change should record:
 ## 5. Known drift risks and remediation backlog
 
 1. **Legacy agent memory authority collision (P0, documentation/routing risk):** .agents/memory/llp-governance-reuse.md still calls V16 gate_engine/llp_governance.py the canonical LLP compliance engine and says to use its effective_label as terminal. Restrict this instruction to V16 compatibility/classification until V17 routing and reducer precedence are proven; update via a separately reviewed protected-contract change if .agents/** trust controls require it. Do not delete historic function/tests just to remove naming drift.
-2. **Historical master spec active header:** leave preserved in attached_assets; make current V17 authority discoverable from docs/wow/GENERATION_STATUS.md and this ledger instead of rewriting the historical source.
+2. **Historical master spec active header:** leave preserved in attached_assets; make current V17 authority discoverable from docs/wow/GENERATION_STATUS.md and this ledger instead of rewriting the historical source. **Current governance V3 policy drift:** docs/WOW_GOVERNANCE_V3_SINGLE_OWNER.md describes three native checks, but on 2026-11-04 active ruleset 24907422 lists five including pinned QA and Release Apps; the effective live ruleset takes precedence until changed through authorized controls.
 3. **Static production-status staleness:** artifacts/wow-engine/V17_PRODUCTION_STATUS.md carries September observations. Any November release/route/editor status must be established from new exact receipts, not inferred from the document's historical wording.
 4. **NBA/NHL and other sport adapter availability:** treat unmerged PRs, route declarations, source receipts and CI as distinct from authenticated fitted scoring and calibrated/terminal model output; do not advertise model qualification based on registration alone.
 5. **Failure-code registry completeness:** compare current runtime codes against the canonical registered taxonomy and backfill missing definitions with owner, condition and regression fixture. Do not invent aliases to hide native failures.
@@ -185,4 +185,4 @@ Before closing this governance migration, independently demonstrate:
 
 Engineering may implement the bounded documentation migration through an ordinary protected PR. Independent verification must check the conflicting legacy guidance and all relevant tests before acceptance. Production model logic, probabilities, thresholds, terminal reducer and order/execution controls remain unchanged.
 
-The audit is COMPLETE as a document review once source-to-current dispositions are independently accepted. Runtime governance migration and any agent-memory repair remain WORKING_NOT_COMPLETE until their own exact-head and production/editor evidence is returned.
+The audit draft is COMPLETE as source-to-current research, but its governance adoption remains WORKING_NOT_COMPLETE until the live five-check ruleset, protected merge and exact main readback establish acceptance. Since this PR is documentation-only, no Render deploy or Custom GPT editor parity is claimed or needed to verify the document change itself. Any separate runtime, protected-agent guidance, or editor change remains WORKING_NOT_COMPLETE until independently verified.
