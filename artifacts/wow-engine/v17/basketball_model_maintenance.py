@@ -15,7 +15,7 @@ probability, and never enables execution.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
 from fastapi import FastAPI
@@ -114,6 +114,39 @@ def _fresh_acquisition_status(
     return "FRESH_ACQUISITION_NOT_VERIFIED"
 
 
+def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: datetime) -> dict[str, Any] | None:
+    """Keep a stale historical NBA replay from masquerading as a live-season refresh.
+
+    NBA official seasons begin in autumn and use the ending year for release
+    assets. In Nov-Jun at least one settled game from the *current* season
+    must be persisted; Oct is not gated before tipoff, and Jul-Sep is offseason.
+    An absent/invalid persisted readback is unverified, never a successful fit.
+    This is a source-data guard, not a fitted-model probability threshold.
+    """
+    if not isinstance(hydration, dict) or clock.month in (7, 8, 9, 10):
+        return None
+    season_start_year = clock.year if clock.month >= 11 else clock.year - 1
+    season_start = date(season_start_year, 10, 1)
+    latest_value = hydration.get("latest_game_date_after")
+    try:
+        latest = date.fromisoformat(str(latest_value)[:10]) if latest_value else None
+    except ValueError:
+        latest = None
+    if latest is not None and latest >= season_start and latest <= clock.date():
+        return None
+    return {
+        "status": "BLOCKED",
+        "stage": "FRESH_SOURCE_HYDRATION",
+        "code": "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING",
+        "required_season_start": season_start.isoformat(),
+        "latest_persisted_game_date": latest.isoformat() if latest else None,
+        "recovery_class": "SOURCE_COVERAGE_REPAIR",
+        "next_action": "REACQUIRE_CANONICAL_2027_SDV_SEASON_AND_VERIFY_PERSISTED_SETTLEMENTS",
+        "recoverable": True,
+        "can_execute": False,
+    }
+
+
 def run_basketball_model_maintenance(
     db: Any,
     *,
@@ -156,6 +189,20 @@ def run_basketball_model_maintenance(
             hydration_blocker = _hydration_blocker(exc)
         except Exception as exc:  # noqa: BLE001 - preserve typed acquisition degradation
             hydration_blocker = _hydration_blocker(exc)
+
+        # The scheduled/default NBA run is a current-season refresh, not a
+        # historical backtest. The old June corpus was repeatedly replayed
+        # with a green workflow during the November 2026 season. Fail closed
+        # before another stale-corpus refit even when hydration itself succeeded.
+        # Explicit historical seasons remain a separate research-only route.
+        if sport == "NBA" and explicit_seasons is None:
+            gap = _nba_current_season_data_gap(hydration, clock)
+            if gap is not None:
+                results.append(_blocked(
+                    sport, gap["code"],
+                    hydration_blocker=gap,
+                ))
+                continue
 
         # A blocked fresh-source fetch is not proof that the persisted corpus is
         # unusable. Replay performs its own provenance + freshness preflights and

@@ -290,3 +290,99 @@ def test_nba_release_year_rotates_only_after_october_opening():
     assert maintenance.default_seasons(
         datetime(2027, 1, 1, tzinfo=timezone.utc), sport="NBA",
     ) == (2024, 2025, 2026, 2027)
+
+def test_scheduled_nba_november_rejects_june_only_corpus_before_replay(monkeypatch):
+    # Actual 2026-11-03 scheduler reported COMPLETE despite latest NBA
+    # persisted settled game still being 2026-06-13. This must be a HOLD.
+    monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
+        "sport": "NBA", "settled_rows": 8919,
+        "latest_game_date_before": "2026-06-13",
+        "latest_game_date_after": "2026-06-13",
+        "fresh_acquisition_new_settled_games": 0,
+        "can_execute": False,
+    })
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Never train on a stale current-season corpus")
+        ),
+    )
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",),
+        now=datetime(2026, 11, 4, 12, tzinfo=timezone.utc),
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    assert result["rows_blocked"] == 1
+    assert result["rows"][0]["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert result["rows"][0]["hydration_blocker"]["required_season_start"] == "2026-10-01"
+    assert result["rows"][0]["hydration_blocker"]["latest_persisted_game_date"] == "2026-06-13"
+    assert result["can_execute"] is False
+    assert result["probability_publishable"] is False
+
+
+def test_scheduled_nba_replay_allowed_when_current_season_is_persisted(monkeypatch):
+    called = []
+    monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
+        "sport": "NBA", "settled_rows": 0,
+        "latest_game_date_before": "2026-11-03",
+        "latest_game_date_after": "2026-11-03",
+        "fresh_acquisition_new_settled_games": 0,
+        "can_execute": False,
+    })
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda sport, client=None: (
+            called.append(sport) or {
+                "sport": sport, "persisted_status": "SHADOW",
+                "promotion_attempted": False, "can_execute": False,
+            }
+        ),
+    )
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",),
+        now=datetime(2026, 11, 4, 12, tzinfo=timezone.utc),
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["rows"][0]["hydration_status"] == "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS"
+    assert called == ["NBA"]
+    assert result["automatic_certification"] is False
+    assert result["can_execute"] is False
+
+
+def test_nba_scheduled_unverified_or_future_date_fails_closed(monkeypatch):
+    for invalid in (None, "not-a-date", "2026-11-08"):
+        monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
+            "sport": "NBA",
+            "latest_game_date_after": invalid,
+            "fresh_acquisition_new_settled_games": 0,
+            "can_execute": False,
+        })
+        monkeypatch.setattr(
+            maintenance, "run_training_replay",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("unverified corpus cannot be replayed")
+            ),
+        )
+        result = maintenance.run_basketball_model_maintenance(
+            object(), sports=("NBA",),
+            now=datetime(2026, 11, 4, tzinfo=timezone.utc),
+        )
+        assert result["rows"][0]["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+        assert result["rows_updated"] == 0
+        assert result["can_execute"] is False
+
+
+def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
+    assert maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-06-13"},
+        datetime(2026, 10, 17, tzinfo=timezone.utc),
+    ) is None
+    assert maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-12-31"},
+        datetime(2027, 1, 3, tzinfo=timezone.utc),
+    ) is None
+    assert maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-06-13"},
+        datetime(2027, 1, 3, tzinfo=timezone.utc),
+    )["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
