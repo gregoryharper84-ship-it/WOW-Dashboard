@@ -127,7 +127,7 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
         return None
     season_start_year = clock.year if clock.month >= 11 else clock.year - 1
     season_start = date(season_start_year, 10, 1)
-    latest_value = hydration.get("latest_game_date_after")
+    latest_value = hydration.get("latest_game_date_after") if isinstance(hydration, dict) else None
     try:
         latest = date.fromisoformat(str(latest_value)[:10]) if latest_value else None
     except ValueError:
