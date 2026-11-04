@@ -1017,7 +1017,7 @@ class _JsonRowDetailDB:
 
         if self._op == "upsert":
             for row in self._payload:
-                self.stored[(row["run_id"], row["row_index"])] = json.dumps(row)
+                self.stored[(row["run_id"], row["row_index"])] = json.dumps(row, allow_nan=False)
             return SimpleNamespace(data=[])
         rows = []
         for (run_id, _index), raw in sorted(self.stored.items(), key=lambda item: item[0][1]):
@@ -1088,8 +1088,11 @@ def test_nhl_evidence_blocks_survive_row_detail_persistence_and_read_back(
     assert stored["result"]["team_event_capability"] == payload["team_event_capability"]
     assert stored["result"]["official_source"] == payload["official_source"]
     assert stored["result"]["probability_publishable"] is False
+    assert stored["result"]["rank_eligible"] is False
+    assert stored["result"]["can_execute"] is False
     assert stored["probability_publishable"] is False
     assert stored["can_execute"] is False
+    assert stored["terminal_reduction"]["can_execute"] is False
     assert stored["daily_request_context"]["requested_slate_date"] == "2026-11-04"
 
     source = stored["result"]["official_source"]
@@ -1109,3 +1112,30 @@ def test_nhl_evidence_blocks_survive_row_detail_persistence_and_read_back(
     )
     if not capture:
         assert session.calls == []
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_jsonb_fake_rejects_non_finite_nhl_evidence(nonfinite):
+    """A jsonb-incompatible number must fail closed at the real persistence seam."""
+    from v17.daily_response_contract import persist_row_detail
+    from v17.daily_snapshot_runtime import _terminal_row
+
+    row = _terminal_row(
+        "MONEYLINE",
+        {"sport": "NHL", "can_execute": False},
+        {
+            "official_source": {"nonfinite_evidence": nonfinite},
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        {"final_terminal": "HELD", "can_execute": False},
+    )
+    db = _JsonRowDetailDB()
+    receipt = persist_row_detail(db, run_id="v17-nhl-invalid-jsonb", rows=[row])
+
+    assert receipt["status"] == "PERSISTENCE_UNAVAILABLE"
+    assert receipt["detail_available"] is False
+    assert receipt["rows_persisted"] == 0
+    assert any("ValueError" in blocker for blocker in receipt["blockers"])
+    assert db.stored == {}
