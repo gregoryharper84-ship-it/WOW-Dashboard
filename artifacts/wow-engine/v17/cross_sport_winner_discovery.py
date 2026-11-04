@@ -1272,12 +1272,21 @@ def route_discovered_slate(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
         )
         if purge is not None:
+            detail = {"reason": purge, "model_invoked": False}
+            # Preserve a bounded typed identity blocker on NCAAB held rows.
+            # The raw discovery payload must not become a probability/route.
+            if purge == IDENTITY_UNRESOLVED and event.sport == "NCAAB":
+                code = typed_blocker_code(
+                    (event.raw or {}).get("canonical_identity_blocker")
+                )
+                if code:
+                    detail["canonical_identity_blocker"] = code
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
                     bucket=purge,
                     model_status=None,
-                    detail={"reason": purge, "model_invoked": False},
+                    detail=detail,
                 )
             )
             continue
