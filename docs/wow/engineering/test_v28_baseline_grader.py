@@ -124,5 +124,60 @@ class GitFixtures(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"SHALLOW_CLONE"):
                 g.census(root)
 
+
+    def test_unicode_protected_paths_and_control_bytes_in_messages(self):
+        """Unusual Git filenames and raw body delimiters cannot downgrade P to R."""
+        with tempfile.TemporaryDirectory() as root:
+            def cmd(*args, env=None):
+                return subprocess.run(
+                    ["git", *args], cwd=root, env=env,
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+            cmd("init", "-q")
+            cmd("config", "user.name", "Fixture")
+            cmd("config", "user.email", "fixture@example.invalid")
+            workflow = Path(root, ".github", "workflows", "déploy.yml")
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: fixture\n", encoding="utf-8")
+            cmd("add", "-A")
+            env = {**os.environ,
+                   "GIT_AUTHOR_DATE": "2026-10-01T00:00:00+00:00",
+                   "GIT_COMMITTER_DATE": "2026-10-01T00:00:00+00:00"}
+            subprocess.run(
+                ["git", "commit", "-qm",
+                 "fix: protect QA_CHECK_FAILED\n\nbody containing \x1e and \x1f raw delimiters"],
+                cwd=root, env=env, check=True,
+            )
+            result = g.census(root, cmd("rev-parse", "HEAD"))
+            self.assertEqual(result["population_commits"], 1)
+            self.assertEqual(result["classes"], {"P": 1})
+            self.assertEqual(result["diff_totals_by_class"]["P"]["added_files"], 1)
+            self.assertEqual(result["mechanism_lexical_counts"], {})
+
+    def test_rework_pairs_sort_mixed_timezone_offsets_by_instant(self):
+        with tempfile.TemporaryDirectory() as root:
+            def cmd(*args, env=None):
+                return subprocess.run(
+                    ["git", *args], cwd=root, env=env,
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+            cmd("init", "-q")
+            cmd("config", "user.name", "Fixture")
+            cmd("config", "user.email", "fixture@example.invalid")
+            def commit(value, date):
+                Path(root, "worker.py").write_text(value, encoding="utf-8")
+                cmd("add", "worker.py")
+                env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+                subprocess.run(["git", "commit", "-qm", "fix: QA_CHECK_FAILED"],
+                               cwd=root, env=env, check=True)
+                return cmd("rev-parse", "HEAD")
+            older = commit("one\n", "2026-10-02T01:00:00+02:00")
+            newer = commit("two\n", "2026-10-02T00:00:00+00:00")
+            report = g.census(root, newer)
+            self.assertEqual(report["same_code_same_file_72h_candidate_count"], 1)
+            pair = report["same_code_same_file_72h_candidates"][0]
+            self.assertEqual(pair["older"], older)
+            self.assertEqual(pair["newer"], newer)
+
 if __name__=="__main__":
     unittest.main()
