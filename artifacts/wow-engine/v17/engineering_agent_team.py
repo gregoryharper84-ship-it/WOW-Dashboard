@@ -464,15 +464,30 @@ def reliability_blocks_frontier(records: list[dict[str, Any]]) -> bool:
     return any(is_actionable(record) for record in records)
 
 
-def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
-    actionable = [r for r in records if is_actionable(r)]
+def select_priority_incident(
+    records: list[dict[str, Any]], *, skip_deployed_pending_verify: bool = False
+) -> PriorityDecision:
+    """Select one incident; optionally leave deployed verification to its scheduled owner.
+
+    A pending production proof is never marked closed or removed from the
+    reliability backlog. Only the continuation scheduler excludes it so that
+    other repair/acceptance work does not starve behind a read-only verifier.
+    """
+    actionable = [
+        r for r in records
+        if is_actionable(r)
+        and not (
+            skip_deployed_pending_verify
+            and str(r.get("state") or "").upper() == "DEPLOYED_PENDING_VERIFY"
+        )
+    ]
     if not actionable:
         return PriorityDecision(
             incident_id=None,
             severity="NONE",
             state="NONE",
             reason="No actionable incident in durable ledger.",
-            frontier_allowed=True,
+            frontier_allowed=not reliability_blocks_frontier(records),
         )
 
     def sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
@@ -491,7 +506,7 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
         severity=severity,
         state=state,
         reason=f"Highest-priority actionable ledger item: {severity} {state}.",
-        frontier_allowed=not reliability_blocks_frontier(actionable),
+        frontier_allowed=not reliability_blocks_frontier(records),
     )
 
 
@@ -884,6 +899,7 @@ def main() -> None:
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
     parser.add_argument("--wait-state", default="")
+    parser.add_argument("--skip-deployed-pending-verify", action="store_true")
     args = parser.parse_args()
 
     if args.command == "lifecycle-classify":
@@ -925,7 +941,13 @@ def main() -> None:
 
     records = load_ledger(args.ledger)
     if args.command == "priority":
-        print(json.dumps(select_priority_incident(records).as_dict(), indent=2, sort_keys=True))
+        print(json.dumps(
+            select_priority_incident(
+                records, skip_deployed_pending_verify=args.skip_deployed_pending_verify
+            ).as_dict(),
+            indent=2,
+            sort_keys=True,
+        ))
         return
     if args.command == "dual-priority":
         print(json.dumps(select_dual_stream_work(records).as_dict(), indent=2, sort_keys=True))
