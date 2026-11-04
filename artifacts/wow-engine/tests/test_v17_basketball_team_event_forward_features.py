@@ -203,6 +203,28 @@ def test_exact_espn_raw_capture_can_bind_only_to_matching_pregame_history():
     assert package == source_copy and manifest == manifest_copy
 
 
+def test_nba_capture_accepts_only_symmetric_espn_team_id_prefix_variants():
+    package, manifest, replay = _raw_source_binding_case()
+    manifest["events_pregame_eligible"][0]["home"]["team_id"] = "espn-1"
+    manifest["events_pregame_eligible"][0]["away"]["team_id"] = "espn-2"
+    result = bind_nba_frozen_source_to_features(
+        package, capture_manifest=manifest, replay_receipt=replay,
+        feature_freeze_timestamp="2026-10-07T20:00:00Z",
+    )
+    assert result["source_snapshot_id"] == "sha256:" + "a" * 64
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+    # This binder cannot invent an ESPN identity from a raw BDL-like numeric
+    # feature identity; the training identity remains source-prefixed.
+    package["home_team_id"] = "1"
+    with pytest.raises(BasketballForwardFeatureError, match="NBA_CAPTURE_EVENT_IDENTITY_MISMATCH"):
+        bind_nba_frozen_source_to_features(
+            package, capture_manifest=manifest, replay_receipt=replay,
+            feature_freeze_timestamp="2026-10-07T20:00:00Z",
+        )
+
+
 @pytest.mark.parametrize(("mutation", "expected_code"), [
     ("wrong_raw_hash", "NBA_SOURCE_EVENT_REPLAY_NOT_VERIFIED"),
     ("malformed_raw_hash", "NBA_RAW_SOURCE_SHA256_INVALID"),
