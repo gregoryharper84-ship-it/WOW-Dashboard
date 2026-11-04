@@ -140,7 +140,7 @@ def preflight_fixture_source(
             return _hold("SOURCE_FIXTURE_SCHEMA_INVALID", source_id=source_id)
         if abs((fixture_start - start).total_seconds()) > MATCH_WINDOW_SECONDS:
             continue
-        if not eligible:
+        if fixture_start <= as_of or not eligible:
             return _hold("SOURCE_FIXTURE_INELIGIBLE", source_id=source_id)
         matches.append(fixture_id)
     if len(matches) > 1:
