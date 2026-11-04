@@ -1,7 +1,7 @@
 name: wow-v17-trusted-governance-gate
 
 # Retired automatic trigger lane: the five pinned main ruleset checks are authoritative.
-# Manual dispatch remains available for non-authoritative historical diagnostics.
+# Historical source retained for audit; its job is permanently inert.
 on:
   workflow_dispatch:
 
@@ -19,7 +19,8 @@ concurrency:
 jobs:
   trusted-governance:
     name: Trusted exact-head engineering governance
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || ((github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'check_run') && github.event.workflow_run.conclusion == 'success'))
+    # Retired after the five-check cutover; no manual event may certify a legacy receipt.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
