@@ -53,6 +53,9 @@ class TrainingGame:
     away_team_id: str
     home_score: int
     away_score: int
+    # Provenance-only. Never a sporting model feature. Required by the
+    # current-game identity preflight to detect unjoined provider namespaces.
+    source_provider: str = ""
 
     @property
     def home_win(self) -> int:

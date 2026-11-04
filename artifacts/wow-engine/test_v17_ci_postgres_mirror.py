@@ -16,7 +16,7 @@ OFFICIAL_IMAGE = "postgres:16"
 def test_all_required_postgres_services_use_verified_official_image():
     expected = {
         ".github/workflows/wow-verify.yml": 3,
-        ".github/workflows/wow-engine-verify.yml": 2,
+        ".github/workflows/wow-engine-verify.yml": 3,
     }
     for relative, required in expected.items():
         workflow = yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
@@ -26,6 +26,19 @@ def test_all_required_postgres_services_use_verified_official_image():
                         and isinstance(job.get("services"), dict)
                         and "postgres" in job["services"]]
         assert len(service_jobs) == required, (relative, len(service_jobs))
+        if relative == ".github/workflows/wow-engine-verify.yml":
+            # The NBA calibrator job is an *additional mandatory* isolated DB
+            # proof, never a replacement for Agent Runtime or backend shards.
+            assert {"regression-shards", "agent-runtime-integration",
+                    "nba-calibrator-db-contract"}.issubset(jobs)
+            nba = jobs["nba-calibrator-db-contract"]
+            assert nba["services"]["postgres"]["image"] == OFFICIAL_IMAGE
+            assert "nba-calibrator-db-contract" in jobs["governed-probability-backend"]["needs"]
+            run_steps = [str(step.get("run") or "") for step in nba["steps"]
+                         if isinstance(step, dict)]
+            assert any("NBA_CALIBRATOR_DB_CONTRACT_VERIFIED" in step for step in run_steps)
+            assert any("if total < 19 or skipped or failures or errors" in step
+                       for step in run_steps)
         for job in service_jobs:
             service = job["services"]["postgres"]
             assert service["image"] == OFFICIAL_IMAGE
