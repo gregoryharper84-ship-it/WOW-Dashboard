@@ -407,7 +407,51 @@ def _coverage_status(result: Mapping[str, Any], context: Mapping[str, Any]) -> s
     for state in (context.get("providers") or {}).values():
         if isinstance(state, Mapping) and state.get("circuit_open") is True:
             incomplete = True
+    for detail in discovery_payload.get("acquisition_details") or []:
+        if isinstance(detail, Mapping) and str(detail.get("exhaustion_status") or "").upper() == "NO_CONFIGURED_PATH":
+            incomplete = True
     return "PARTIAL_OR_UNPROVEN" if incomplete else "PROVEN_FOR_CONFIGURED_DISCOVERY_SOURCES"
+
+
+_UNSUPPORTED_CODES = {
+    "NO_CONFIGURED_DISCOVERY_FEED", "NO_CONFIGURED_PATH", "PUBLIC_DISCOVERY_UNSUPPORTED_FOR_FAMILY",
+}
+_FAILED_CODES = {
+    "PROVIDER_REQUEST_FAILED", "PROVIDER_RATE_LIMITED", "PROVIDER_SCHEMA_FAILURE",
+    "DISCOVERY_BUDGET_EXHAUSTED",
+}
+INCOMPLETE_COVERAGE_STATUS = "DISCOVERY_OR_ACQUISITION_INCOMPLETE"
+
+
+def _per_sport_acquisition_state(result: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Additive per-family acquisition state; typed codes are preserved, never probability."""
+    payload = result.get("discovery") if isinstance(result.get("discovery"), Mapping) else {}
+    states: dict[str, dict[str, Any]] = {}
+
+    def record(family: str, code: str | None, failed: bool) -> None:
+        if not family:
+            return
+        code = (code or "").upper() or None
+        if code in _UNSUPPORTED_CODES:
+            state = "CONFIGURED_UNSUPPORTED"
+        elif failed or code in _FAILED_CODES:
+            state, code = "FAILED", code or "COVERAGE_INCOMPLETE"
+        else:
+            state, code = "ACQUIRED", None
+        if states.get(family, {}).get("state") in (None, "ACQUIRED"):
+            states[family] = {"state": state, "blocker_code": code, "can_execute": False}
+
+    for row in payload.get("acquisition_audit") or []:
+        if isinstance(row, Mapping):
+            record(
+                str(row.get("family") or "").upper(),
+                str(row.get("blocker_if_any") or row.get("request_status") or ""),
+                row.get("coverage_complete") is False,
+            )
+    for blocker in payload.get("source_blockers") or []:
+        if isinstance(blocker, Mapping):
+            record(str(blocker.get("sport") or "").upper(), str(blocker.get("status") or ""), True)
+    return states
 
 
 def install_quota_aware_degraded_discovery() -> dict[str, Any]:
@@ -476,6 +520,12 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
             "can_execute": False,
         }
         result["BOARD_COVERAGE_STATUS"] = _coverage_status(result, context)
+        result["PER_SPORT_ACQUISITION_STATE"] = _per_sport_acquisition_state(result)
+        result["ACQUISITION_COVERAGE_STATUS"] = (
+            INCOMPLETE_COVERAGE_STATUS
+            if result["BOARD_COVERAGE_STATUS"] == "PARTIAL_OR_UNPROVEN"
+            else result["BOARD_COVERAGE_STATUS"]
+        )
         result["can_execute"] = False
         return result
 
