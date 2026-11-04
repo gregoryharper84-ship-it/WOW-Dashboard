@@ -95,8 +95,8 @@ jobs:
               xargs -I{} gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/{}/check-runs?per_page=100" --jq '.check_runs')
             # Newest authenticated App check per name wins. Old failed receipts
             # must not create a waiting-on-owner claim after the current PASS.
-            summary=$(jq -r '
-              [.[] | select((.name == "WOW Independent QA exact-head" and .app.id == 5245832)
+            summary=$(jq -sr '
+              (add // []) | [.[] | select((.name == "WOW Independent QA exact-head" and .app.id == 5245832)
                          or (.name == "WOW Release Authority exact-head" and .app.id == 5245853))]
               | group_by(.name) | map(max_by(.id))
               | map(select(.conclusion == "failure"))
@@ -143,6 +143,8 @@ jobs:
       - name: Report live ruleset and exact-head truth (non-gating)
         # This is an informational diagnostic, not a required check or semantic review.
         continue-on-error: true
+        # Bounded non-gating diagnostic; preserve time for the pinned digest update.
+        timeout-minutes: 5
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
