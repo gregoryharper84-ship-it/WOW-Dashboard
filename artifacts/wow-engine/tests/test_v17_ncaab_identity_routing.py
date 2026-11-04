@@ -74,11 +74,8 @@ def test_resolved_identity_is_recorded_and_the_alias_is_preserved(monkeypatch):
 def test_unproven_identity_keeps_the_row_alias_only(monkeypatch):
     import v17.ncaab_event_identity as identity
 
-    class IdentityFailure(RuntimeError):
-        code = "NCAAB_CANONICAL_EVENT_NOT_FOUND"
-
     def fail(**_kwargs):
-        raise IdentityFailure("no exact scoreboard event")
+        raise identity.NCAABEventIdentityError("NCAAB_CANONICAL_EVENT_NOT_FOUND")
 
     monkeypatch.setattr(identity, "resolve_ncaab_current_event_identity", fail)
     out = canonicalize_ncaab_discovery_identity(ncaab_alias_event())
