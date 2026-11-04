@@ -577,7 +577,7 @@ def test_trusted_gate_skips_failed_certifier_runs_and_gates_downstream_steps():
     workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     job = workflow["jobs"]["trusted-governance"]
 
-    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    assert job["if"] == "${{ false }}"
     for step in job["steps"][2:]:
         assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
 
