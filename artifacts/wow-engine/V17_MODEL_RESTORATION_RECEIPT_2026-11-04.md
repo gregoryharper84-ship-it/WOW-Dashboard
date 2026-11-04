@@ -17,22 +17,34 @@ against this branch, not from CI or from the live Render deployment.
 
 ```text
 PUBLISHED_BRANCH          = freebuff/b45b277542429f777af32f00
-PUBLISHED_CODE_HEAD       = a4bd71c310a4a0c3a81246ed9e081337e2475ee4
+PUBLISHED_CODE_HEAD       = 2952e872a07e27b9b8754d520618d7bbb9eae4c3
 RECEIPT_COMMIT            = the docs commit immediately after PUBLISHED_CODE_HEAD
                             (no source change between them; diff on *.py is empty)
 ORIGIN_MAIN_AT_WRITE      = 2c2bf35da5d0bdd13c42f8016de1a7b4ffa1ca88
 ORIGIN_MAIN_SUBJECT       = 2026-11-04 15:39:49 -0600 Merge pull request #2385 from gregoryharper84-ship-it/chore/coderabbit-wow-v17-20261102
 WORK_STARTED_FROM         = 287d41483 (contained in ORIGIN_MAIN_AT_WRITE: true)
 MAIN_ADVANCED_BY          = 46 commits since work started (other writers; no rewind)
-MY_BRANCH_AHEAD_OF_MAIN   = 116 commits
+MY_BRANCH_AHEAD_OF_MAIN   = 122 commits
 MERGE_WITH_ORIGIN_MAIN    = conflict-free
-FULL_SUITE_AT_CODE_HEAD   = 9011 passed, 55 skipped, 0 failed (368.24s)
+FULL_SUITE_AT_CODE_HEAD   = 9013 passed, 55 skipped, 0 failed (393.19s)
 PUSH_MODE                 = fast-forward update of a feature branch; main never written, never forced
 ```
 
 `main` was never written by this work, so protected review and CI still own the
-merge decision. This branch also carries upstream #2431 commits pushed by another
-writer, which were merged rather than discarded.
+merge decision. This branch also carries commits pushed by another writer
+(upstream #2431 hydration/QA-receipt work), which were merged rather than
+discarded.
+
+### Opt-in reconciliation on the NHL evidence lane
+
+The same opt-in idea was implemented twice — once here and once by the repository
+owner. Merging them left **two** request flags (`official_source_capture` and
+`capture_official_source`) gating the same capture, so a fetch would have required
+both, and the not-requested condition reported two different statuses. The
+owner's `capture_official_source` field and its `HELD` /
+`NHL_SOURCE_CAPTURE_NOT_REQUESTED` status are now the single contract; the opt-in
+check runs before identity validation, and the duck-typed-request guard is kept.
+That reconciliation is the change measured above.
 
 An earlier revision of this receipt recorded a protected-main *rewind* to
 `3fbc4c5de`. That was wrong and has been removed: the sandbox's
@@ -116,7 +128,7 @@ first-party identity, `seconds_until_start`, snapshot id, payload hash, or a
 typed `hold_code`). A source hold never replaces the capability blocker, and
 neither block can emit a probability or upgrade the row. Non-NHL rows attempt no
 capture at all, and an NHL row captures nothing unless the request opts in with
-`official_source_capture=true`, so the default fail-closed row performs no
+`capture_official_source=true`, so the default fail-closed row performs no
 outbound I/O and adds no latency.
 
 Two implementation facts were forced by the runtime's own composition, and both
