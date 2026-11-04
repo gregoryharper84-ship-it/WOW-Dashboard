@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -571,3 +572,185 @@ def test_scout_research_workers_cannot_smuggle_predictive_authority_into_the_bar
     assert "model_probability" in FORBIDDEN_AUTHORITY_KEYS
     assert "terminal_label" in FORBIDDEN_AUTHORITY_KEYS
     assert "calibrated_probability_lower_bound" in FORBIDDEN_AUTHORITY_KEYS
+
+
+# --- NHL: official pregame source receipt beside the capability blocker ------
+
+_NHL_EVENT_ID = "2026020245"
+_NHL_GAMECENTER_URL = f"https://api-web.nhle.com/v1/gamecenter/{_NHL_EVENT_ID}/landing"
+
+
+def _nhl_start() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat()
+
+
+class _SourceResponse:
+    """Streamable response shaped like the official gamecenter landing payload."""
+
+    def __init__(self, *, start: str, raw: bytes | None = None, status: int = 200,
+                 url: str = _NHL_GAMECENTER_URL):
+        self.status_code = status
+        self.url = url
+        self.content = raw if raw is not None else json.dumps({
+            "id": int(_NHL_EVENT_ID),
+            "startTimeUTC": start,
+            "homeTeam": {"abbrev": "NSH"},
+            "awayTeam": {"abbrev": "CAR"},
+            "gameType": 2,
+            "gameState": "FUT",
+        }).encode("utf-8")
+        self.closed = False
+
+    def iter_content(self, *, chunk_size):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index:index + chunk_size]
+
+    def close(self):
+        self.closed = True
+
+
+class _SourceSession:
+    def __init__(self, response=None, *, error: Exception | None = None):
+        self.response = response
+        self.error = error
+        self.calls: list[tuple[str, dict]] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+def _nhl_request():
+    start = _nhl_start()
+    req = _base(
+        sport="NHL",
+        league="NHL",
+        event_key=f"NHL:{_NHL_EVENT_ID}",
+        official_event_id=_NHL_EVENT_ID,
+        event_start_time_utc=start,
+        settlement_basis="FULL_GAME_INCLUDING_OT_SO",
+        home_team="Nashville Predators",
+        away_team="Carolina Hurricanes",
+        sport_specific_evidence={},
+    )
+    return req, start
+
+
+def test_nhl_row_reports_captured_official_identity_beside_the_capability_blocker():
+    req, start = _nhl_request()
+    session = _SourceSession(_SourceResponse(start=start))
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(
+            req,
+            event_api=_FakeEventApi,
+            official_source_session=session,
+            official_source_clock=lambda: datetime.now(timezone.utc),
+        )
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    capability = detail["team_event_capability"]
+    assert capability["status"] == "MODEL_UNAVAILABLE"
+    assert capability["blocker"] == "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    assert capability["controlling_specialist"] is None
+    assert "goalie_status" in capability["required_inputs"]
+    source = detail["official_source"]
+    assert source["status"] == "CAPTURED"
+    assert source["identity"]["official_event_id"] == _NHL_EVENT_ID
+    assert source["identity"]["home_team"] == "NSH"
+    assert source["identity"]["away_team"] == "CAR"
+    assert source["identity"]["game_state"] == "FUT"
+    assert source["freshness"]["is_pregame"] is True
+    assert source["freshness"]["seconds_until_start"] > 0
+    assert source["goalies_confirmed"] is False
+    assert source["model_invoked"] is False
+    assert source["probability_publishable"] is False
+    assert source["rank_eligible"] is False
+    assert source["can_execute"] is False
+    assert session.calls[0][1]["allow_redirects"] is False
+    assert session.calls[0][1]["stream"] is True
+
+
+def test_nhl_source_capture_failure_never_replaces_the_capability_blocker():
+    req, _start = _nhl_request()
+    session = _SourceSession(error=TimeoutError("source offline"))
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(
+            req, event_api=_FakeEventApi, official_source_session=session
+        )
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert detail["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
+    assert detail["team_event_capability"]["blocker"] == (
+        "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+    )
+    assert detail["official_source"]["status"] == "HELD"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_FETCH_FAILED"
+    assert detail["official_source"]["freshness"] is None
+    assert detail["official_source"]["requested_identity"]["official_event_id"] == _NHL_EVENT_ID
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+
+
+def test_nhl_identity_mismatch_is_a_typed_hold_not_a_probability():
+    req, start = _nhl_request()
+    mismatched = _SourceResponse(start=start, raw=json.dumps({
+        "id": 2026020246,
+        "startTimeUTC": start,
+        "homeTeam": {"abbrev": "NSH"},
+        "awayTeam": {"abbrev": "CAR"},
+        "gameType": 2,
+        "gameState": "FUT",
+    }).encode("utf-8"))
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(
+            req, event_api=_FakeEventApi,
+            official_source_session=_SourceSession(mismatched),
+        )
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert detail["official_source"]["hold_code"] == "NHL_SOURCE_EVENT_IDENTITY_MISMATCH"
+    assert "identity" not in detail["official_source"]
+    assert detail["official_source"]["probability_publishable"] is False
+
+
+def test_non_nhl_rows_never_attempt_official_source_capture():
+    req = _base(
+        sport="CRICKET",
+        league="CRICKET",
+        event_key="CRICKET:test-9",
+        official_event_id="test-9",
+        settlement_basis="FULL_GAME_OUTRIGHT",
+        sport_specific_evidence={},
+    )
+    session = _SourceSession(error=AssertionError("capture must not be attempted"))
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(
+            req, event_api=_FakeEventApi, official_source_session=session
+        )
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert "official_source" not in detail
+    assert "team_event_capability" not in detail
+    assert session.calls == []
+
+
+def test_nhl_official_source_evidence_carries_no_probability_fields():
+    req, start = _nhl_request()
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(
+            req, event_api=_FakeEventApi,
+            official_source_session=_SourceSession(_SourceResponse(start=start)),
+        )
+    detail = exc_info.value.detail
+    assert not any(
+        key in detail
+        for key in ("raw_probability", "calibrated_probability", "calibrated_lower_bound")
+    )
+    assert detail["probability_publishable"] is False
+    assert detail["market_probability_substitution_allowed"] is False
+    assert detail["generic_reasoning_substitution_allowed"] is False
+    assert detail["official_source"]["probability_publishable"] is False
