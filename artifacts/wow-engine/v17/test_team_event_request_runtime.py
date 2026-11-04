@@ -834,3 +834,131 @@ def test_nhl_capture_is_not_attempted_unless_the_request_opts_in(monkeypatch):
     assert detail["team_event_capability"]["status"] == "MODEL_UNAVAILABLE"
     assert detail["probability_publishable"] is False
     assert session.calls == []
+
+
+_NHL_EVIDENCE_BLOCKS = {
+    "team_event_capability": {
+        "sport": "NHL",
+        "status": "MODEL_UNAVAILABLE",
+        "blocker": "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED",
+        "controlling_specialist": None,
+        "required_inputs": ["home_goalie_status"],
+    },
+    "official_source": {
+        "status": "HELD",
+        "hold_code": "NHL_SOURCE_CAPTURE_NOT_REQUESTED",
+        "freshness": None,
+        "requested_identity": {"official_event_id": _NHL_EVENT_ID},
+        "probability_publishable": False,
+    },
+}
+
+
+def _audited_consumer(name, req):
+    """Return one production detail-rewriting consumer keyed by ``name``."""
+    from v17 import full_board_overlay
+    from v17 import team_event_recoverable_hold_overlay as holds
+    from v17 import team_event_sport_parity as parity
+    from v17 import universal_team_event_governance as governance
+    from v17.team_event_governance_profiles import governance_profile_preflight
+
+    if name == "recoverable_hold":
+        return lambda detail: holds._typed_hold(dict(detail))
+    if name == "sport_parity":
+        return lambda detail: parity._annotate_payload(req, dict(detail), {})
+    if name == "universal_governance":
+        preflight = governance_profile_preflight(req)
+        return lambda detail: governance._augment_exception(
+            HTTPException(status_code=409, detail=detail), preflight
+        ).detail
+    if name == "full_board":
+        return lambda detail: dict(
+            full_board_overlay._typed_http_failure(
+                HTTPException(status_code=409, detail=detail)
+            )
+        )
+    raise AssertionError(f"unknown audited consumer: {name}")
+
+
+@pytest.mark.parametrize(
+    "consumer", ["recoverable_hold", "sport_parity", "universal_governance", "full_board"]
+)
+@pytest.mark.parametrize("code", ["MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT"])
+def test_detail_rewriting_consumers_preserve_official_source_evidence(consumer, code):
+    """Every stage that rewrites the fail-closed detail must copy these blocks.
+
+    These wrappers annotate with ``dict(detail)``; a consumer that re-keyed the
+    detail, or read the nested blocks as the row verdict, would silently erase or
+    relabel the NHL evidence on its way to the caller.
+    """
+    req, _start = _nhl_request(capture_official_source=False)
+    source = {
+        "code": code,
+        "blockers": ["NHL_MODEL_NOT_CERTIFIED"],
+        "probability_publishable": False,
+        "can_execute": False,
+        **_NHL_EVIDENCE_BLOCKS,
+    }
+
+    out = _audited_consumer(consumer, req)(source)
+
+    assert out["code"] == code
+    assert out["team_event_capability"] == _NHL_EVIDENCE_BLOCKS["team_event_capability"]
+    assert out["official_source"] == _NHL_EVIDENCE_BLOCKS["official_source"]
+    assert out["can_execute"] is False
+    assert out["probability_publishable"] is False
+
+
+def test_official_source_evidence_survives_the_installed_governance_stack(monkeypatch):
+    """The real overlay stack must not drop or relabel the NHL evidence blocks.
+
+    Installs the production order from ``v17_observability`` (bridge, recoverable
+    holds, universal governance, then the outer sport-parity wrapper) and verifies
+    the outermost scorer still reports both blocks with the upstream typed code.
+    """
+    from v17 import team_event_bridge_runtime as bridges
+    from v17 import team_event_recoverable_hold_overlay as holds
+    from v17 import team_event_sport_parity as parity
+    from v17 import universal_team_event_governance as governance
+
+    watched = [
+        (bridges, "score_registered_team_event_request", True),
+        (bridges, "team_event_bridge_health", True),
+        (team_event_module, "score_team_event_request", True),
+        (bridges, "_v17_team_event_recoverable_hold_installed", False),
+        (bridges, "_v17_team_event_sport_parity_installed", False),
+        (governance, "_INSTALLED", False),
+        (governance, "_ORIGINAL_SCORE", False),
+        (governance, "_ORIGINAL_HEALTH", False),
+    ]
+    for module, attribute, required in watched:
+        if required or hasattr(module, attribute):
+            monkeypatch.setattr(
+                module, attribute, getattr(module, attribute, None), raising=not required
+            )
+
+    req, _start = _nhl_request(capture_official_source=False)
+    # The runtime's own evidence is the reference: the stack must return these
+    # exact blocks, not a re-derived or relabelled copy.
+    reference = team_event_module.official_source_evidence(req)
+    session = _SourceSession(error=AssertionError("the overlay stack must not capture"))
+    monkeypatch.setattr(team_event_module, "_OFFICIAL_SOURCE_SESSION", session)
+
+    bridges.install_team_event_bridge_runtime()
+    holds.install_team_event_recoverable_hold_overlay()
+    governance.install_universal_team_event_governance()
+    parity.install_team_event_sport_parity()
+
+    with pytest.raises(HTTPException) as exc_info:
+        team_event_module.score_team_event_request(req, event_api=_FakeEventApi)
+
+    detail = exc_info.value.detail
+    assert detail["code"] in ("MODEL_UNAVAILABLE", "MODEL_INPUTS_INSUFFICIENT")
+    assert detail["team_event_capability"] == reference["team_event_capability"]
+    assert detail["official_source"] == reference["official_source"]
+    assert detail["sport_parity_contract"]["sport"] == "NHL"
+    assert "universal_governance_profile" in detail
+    assert detail["can_execute"] is False
+    assert detail["probability_publishable"] is False
+    assert detail["rank_eligible"] is False
+    assert session.calls == []
