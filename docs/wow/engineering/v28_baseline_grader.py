@@ -92,7 +92,45 @@ def same_cause_candidate(a, b):
     delta = abs((parse_time(a["committed_at"]) - parse_time(b["committed_at"])).total_seconds())
     return delta <= 72 * 3600
 
-def census(repo, head=BOUNDARY, start=START, end=END):
+
+def build_review_packet(records, pairs):
+    """Create SHA-specific audit leads; never decide causal rework or C class."""
+    lookup = {r["sha"]: r for r in records}
+    potential_c = []
+    for r in records:
+        if r["class"] != "C_REVIEW_REQUIRED":
+            continue
+        potential_c.append({
+            "sha": r["sha"], "committed_at": r["committed_at"],
+            "subject": r.get("subject", ""), "changed_paths": r["paths"],
+            "additions": r["diff"]["additions"], "deletions": r["diff"]["deletions"],
+            "class_verdict": "UNREVIEWED",
+            "required_evidence": "Inspect exact diff; probability, fitting, calibration, routing, thresholds may require C/P classification",
+        })
+    potential_c.sort(key=lambda r: (parse_time(r["committed_at"]), r["sha"]))
+    rework = []
+    for p in pairs:
+        older, newer = lookup[p["older"]], lookup[p["newer"]]
+        shared_files = sorted(set(older["paths"]) & set(newer["paths"]))
+        common_codes = sorted(set(older["indicators"]["failure_codes"]) & set(newer["indicators"]["failure_codes"]))
+        if not shared_files or not common_codes:
+            raise ValueError("CANDIDATE_DOSSIER_INCONSISTENT")
+        rework.append({
+            "older_sha": older["sha"], "newer_sha": newer["sha"],
+            "older_at": older["committed_at"], "newer_at": newer["committed_at"],
+            "older_subject": older.get("subject", ""), "newer_subject": newer.get("subject", ""),
+            "shared_failure_codes": common_codes, "shared_paths": shared_files,
+            "hours_between": round(abs((parse_time(newer["committed_at"]) - parse_time(older["committed_at"])).total_seconds()) / 3600, 3),
+            "causal_rework_verdict": "UNREVIEWED",
+            "required_evidence": "Read both full patches and original red/green evidence; code/path/time overlap is not proof of a re-fix",
+        })
+    rework.sort(key=lambda r: (parse_time(r["older_at"]), r["older_sha"], r["newer_sha"]))
+    return {
+        "C_REVIEW_REQUIRED": potential_c, "same_code_same_file_72h": rework,
+        "instructions": "All rows UNREVIEWED. Inspect full commit diffs with git show --format=fuller <SHA>; never infer causal proof from a match.",
+    }
+
+def census(repo, head=BOUNDARY, start=START, end=END, include_review_packet=False):
     if git("rev-parse", "--is-shallow-repository", cwd=repo).strip() == "true":
         raise RuntimeError("SHALLOW_CLONE: obtain full object history; no denominator emitted")
     sha = git("rev-parse", "--verify", head + "^{commit}", cwd=repo).strip()
@@ -154,7 +192,8 @@ def census(repo, head=BOUNDARY, start=START, end=END):
                          "files": len(paths), "new_files": len(new)},
                 "paths": paths,
                 "class": class_from_paths(paths) if len(raw["parents"]) <= 1 else "MERGE_UNCLASSIFIED",
-                "indicators": indicators(message)}
+                "indicators": indicators(message),
+                "subject": message.splitlines()[0] if message else ""}
         records.append(item)
     groups = Counter(x["class"] for x in records)
     lexical = Counter(x["class"] for x in records if x["indicators"]["mechanism_lexical"])
@@ -175,7 +214,7 @@ def census(repo, head=BOUNDARY, start=START, end=END):
                     break
                 if same_cause_candidate(a,b):
                     pairs[(a["sha"],b["sha"])] = {"older":a["sha"],"newer":b["sha"],"shared_code":code}
-    return {"boundary_sha":sha,"start_utc":start,"end_utc":end,
+    result = {"boundary_sha":sha,"start_utc":start,"end_utc":end,
             "population_commits":len(records),"merges":sum(len(x["parents"])>1 for x in records),
             "classes":dict(groups),"mechanism_lexical_counts":dict(lexical),
             "explicit_revert_counts":dict(reverts),"diff_totals_by_class":sizes,
@@ -186,6 +225,9 @@ def census(repo, head=BOUNDARY, start=START, end=END):
             "verified_done":"UNAVAILABLE: no independent production SHA/route proof in git",
             "stop_behavior":"UNAVAILABLE: handoff-ending corpus absent",
             "interpretation":"All lexical/candidate counts are screening proxies, NOT causal rates. Manually diff-classify C_REVIEW_REQUIRED; merge commits remain unclassified."}
+    if include_review_packet:
+        result["review_packet"] = build_review_packet(records, list(pairs.values()))
+    return result
 
 def main():
     p=argparse.ArgumentParser()
@@ -194,8 +236,13 @@ def main():
     p.add_argument("--start",default=START)
     p.add_argument("--end",default=END)
     p.add_argument("--output",type=Path)
+    p.add_argument("--review-output",type=Path, help="Optional local SHA-specific leads, all UNREVIEWED")
     a=p.parse_args()
-    report=json.dumps(census(a.repo,a.head,a.start,a.end),indent=2,sort_keys=True)+"\n"
+    data=census(a.repo,a.head,a.start,a.end,include_review_packet=bool(a.review_output))
+    if a.review_output:
+        packet=data.pop("review_packet")
+        a.review_output.write_text(json.dumps(packet,indent=2,sort_keys=True)+"\n")
+    report=json.dumps(data,indent=2,sort_keys=True)+"\n"
     if a.output: a.output.write_text(report)
     else: print(report,end="")
 
