@@ -217,3 +217,130 @@ def test_nfl_intelligence_view_does_not_gain_competing_research_scoring():
     result = build_llp_team_intelligence_bundle(event=nfl, receipts=[winner])
     assert result["deep_research_audit"] is None
     assert result["markets"][0]["calibrated_probability"] == .63
+
+
+@pytest.mark.parametrize("path", ["observed_at", "model_timestamp", "factor_time"])
+@pytest.mark.parametrize("extreme", [
+    "0001-01-01T00:00:00+01:00",
+    "9999-12-31T23:59:59-01:00",
+])
+def test_extreme_aware_utc_offsets_fail_closed_not_crash_readback(path, extreme):
+    ctx = _context("NBA")
+    winner = _winner("NBA")
+    if path == "observed_at":
+        ctx["observed_at"] = extreme
+    elif path == "model_timestamp":
+        winner["model_timestamp"] = extreme
+    else:
+        ctx["factors"][FACTOR_FAMILIES["NBA"][0]]["observed_at"] = extreme
+    out = build_llp_team_intelligence_bundle(
+        event=_event("NBA"), receipts=[winner],
+        deep_research_context=ctx,
+    )
+    audit = out["deep_research_audit"]
+    assert audit["can_execute"] is False
+    assert audit["upset_volatility_index"] is None
+    assert audit["forecast_fragility"] is None
+    if path != "factor_time":
+        assert audit["status"] == "CONTEXT_INVALID_PROVENANCE"
+    else:
+        assert audit["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+        assert audit["factor_families_documented"] == []
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("conflicting_source", ["saved_detail", "result"])
+def test_conflicting_persisted_event_id_holds_both_research_and_winner(
+    sport, conflicting_source,
+):
+    event = _event(sport)
+    saved = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED", "row_index": 4,
+        "identity": deepcopy(event),
+        "detail": {
+            "identity": deepcopy(event),
+            "probability_publishable": True,
+            "result": {
+                **_winner(sport),
+                "selected_side": "BOS",
+                "llp_deep_research_context": _context(sport),
+            },
+        },
+    }
+    if conflicting_source == "saved_detail":
+        saved["detail"]["identity"]["official_event_id"] = "unrelated-fixture"
+    else:
+        saved["detail"]["result"]["official_event_id"] = "unrelated-fixture"
+    page = {
+        "run_id": "r", "status": "OK", "rows": [saved], "returned": 1,
+    }
+    out = project_llp_intelligence_page(page)
+    assert len(out["events"]) == 1
+    item = out["events"][0]
+    assert item["official_event_id"] == event["official_event_id"]
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in item["markets"][0]
+    assert item["governed_winner_receipt_id"] is None
+    assert item["deep_research_audit"]["status"] == "CONTROLLING_WINNER_RECEIPT_REQUIRED"
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in (
+        item["source_diagnostics"]["source_reason_codes"]
+    )
+    assert out["invalid_event_rows"] == 0
+    assert out["can_execute"] is False
+
+
+@pytest.mark.parametrize("corruption", [
+    {"home_team": "CHI"},
+    {"event_start_time_utc": (START + timedelta(days=1)).isoformat()},
+])
+def test_research_rejects_persisted_team_or_fixture_time_conflicts(corruption):
+    event = _event("NBA")
+    saved_result = _winner("NBA")
+    saved_result.update(corruption)
+    saved_result.update(
+        selected_side="BOS", llp_deep_research_context=_context("NBA"),
+    )
+    saved = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED",
+        "identity": deepcopy(event),
+        "detail": {
+            "result": saved_result,
+            "probability_publishable": True,
+        },
+    }
+    out = project_llp_intelligence_page(
+        {"status": "OK", "run_id": "r", "rows": [saved]}
+    )
+    assert len(out["events"]) == 1
+    item = out["events"][0]
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert item["deep_research_audit"]["status"] == "CONTROLLING_WINNER_RECEIPT_REQUIRED"
+
+
+def test_equivalent_offset_event_start_does_not_falsely_hold_research():
+    event = _event("NBA")
+    persisted = deepcopy(event)
+    persisted["event_start_time_utc"] = (
+        START.astimezone(timezone(timedelta(hours=-5))).isoformat()
+    )
+    saved = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED",
+        "identity": deepcopy(event),
+        "detail": {
+            "identity": persisted,
+            "result": {
+                **_winner("NBA"),
+                "selected_side": "BOS",
+                "llp_deep_research_context": _context("NBA"),
+            },
+            "probability_publishable": True,
+        },
+    }
+    out = project_llp_intelligence_page(
+        {"status": "OK", "run_id": "r", "rows": [saved]}
+    )
+    assert len(out["events"]) == 1
+    assert out["events"][0]["deep_research_audit"]["status"] == (
+        "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    )
+    assert out["events"][0]["markets"][0]["calibrated_probability"] == .63
