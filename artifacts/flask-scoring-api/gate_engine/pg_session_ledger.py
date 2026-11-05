@@ -56,17 +56,27 @@ CREATE INDEX IF NOT EXISTS idx_wse_expires ON wow_session_exposure (expires_at);
 def ensure_table_exists(conn_string: str | None = None) -> None:
     """Create the wow_session_exposure table if it doesn't exist."""
     import psycopg2
+    import time
+
     url = conn_string or os.environ.get("DATABASE_URL", "")
-    # Startup schema checks must not hang indefinitely on DNS/connectivity
-    # problems or a conflicting ACCESS EXCLUSIVE PostgreSQL lock. These
-    # transaction-local limits apply only to warmup DDL, not to live ledger
-    # read/write operations or their normal transaction semantics.
-    with psycopg2.connect(url, connect_timeout=5) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL lock_timeout = '3000ms'")
-            cur.execute("SET LOCAL statement_timeout = '10000ms'")
-            cur.execute(_DDL)
-        conn.commit()
+    # Existing libpq connection timeout plus transaction-local DDL limits.
+    # connect_timeout does not independently certify a deadline on all DNS
+    # resolvers. Retry once only for a connection-style OperationalError
+    # without a PostgreSQL SQLSTATE. Lock/statement/auth failures retain
+    # their original typed exception; no write or gate is bypassed.
+    for attempt in range(2):
+        try:
+            with psycopg2.connect(url, connect_timeout=5) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout = '3000ms'")
+                    cur.execute("SET LOCAL statement_timeout = '10000ms'")
+                    cur.execute(_DDL)
+                conn.commit()
+            return
+        except psycopg2.OperationalError as exc:
+            if attempt or getattr(exc, "pgcode", None) is not None:
+                raise
+            time.sleep(0.25)
 
 
 # ---------------------------------------------------------------------------
