@@ -1015,8 +1015,23 @@ def test_nba_bridge_registration_and_model_invocation(monkeypatch):
     assert exc_info.value.status_code == 422
     assert detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
     assert detail["model_invoked"] is False
-    assert "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE" in detail["blockers"]
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in detail["blockers"]
     assert detail["backend_route_status"] == "SPORT_SPECIFIC_TEAM_EVENT_BRIDGE_BLOCKED"
+
+    # Explicitly requesting the legacy caller-feature path is not a security
+    # bypass: no server-owned hydration means no numerical model invocation.
+    with pytest.raises(HTTPException) as override:
+        nba_scorer.score_nba_team_event_request(
+            req, event_api=object(), canonical_hydration_required=False,
+        )
+    assert override.value.status_code == 422
+    denied = override.value.detail
+    assert denied["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert denied["model_invoked"] is False
+    assert denied["canonical_hydration_required"] is False
+    assert "NBA_UNTRUSTED_CALLER_FEATURES_REJECTED" in denied["blockers"]
+    assert denied["probability_publishable"] is False
+    assert denied["can_execute"] is False
 
 def test_public_nba_route_requires_real_server_hydration_not_caller_verified_labels():
     """An unimplemented canonical path must reject fake VERIFIED user evidence."""
