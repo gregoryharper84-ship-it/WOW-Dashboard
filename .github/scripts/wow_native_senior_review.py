@@ -277,17 +277,17 @@ def markdown_summary(result: dict) -> str:
         _COMMENT_MARKER,
         "### WOW Native Senior Review — advisory, not a release gate",
         "",
-        f"PR #{result['pr']} · exact head \`{result['head_sha']}\`",
-        f"Canonical incident: \`{result['incident_id']}\`",
-        f"Review: \`{report['status']}\`; changed paths: {len(report.get('changed_paths', []))}",
+        f"PR #{result['pr']} · exact head `{result['head_sha']}`",
+        f"Canonical incident: `{result['incident_id']}`",
+        f"Review: `{report['status']}`; changed paths: {len(report.get('changed_paths', []))}",
         f"Static hypotheses: {report['finding_count']} (not proven defects)",
         f"AI semantic review: **{result['semantic_review']}**; QA/Release: **NOT PERFORMED**",
         "Source coverage: changed files plus bounded sibling Python imports, **not** whole-repo proof.",
         "",
     ]
     for item in report["findings"][:10]:
-        lines.append(f"- **{item['severity']} candidate** \`{item['rule_id']}\` "
-                     f"in \`{item['file']}:{item['line']}\`: {item['reason']}. "
+        lines.append(f"- **{item['severity']} candidate** `{item['rule_id']}` "
+                     f"in `{item['file']}:{item['line']}`: {item['reason']}. "
                      "Owner: AMRT Root Cause Investigator; reproduce before repair.")
     if report.get("unreported_findings"):
         lines.append(f"- {report['unreported_findings']} additional findings omitted; "
@@ -300,7 +300,7 @@ def markdown_summary(result: dict) -> str:
                          "Requires independent reproduction.")
     if result["warnings"]:
         lines.append("- Limited context: " + ", ".join(result["warnings"][:6]))
-    lines += ["", f"Packet digest: \`{result['packet_sha256']}\`",
+    lines += ["", f"Packet digest: `{result['packet_sha256']}`",
               "**No self-certification, production activation, wager execution or automatic repair.**",
               "Existing independent SIRT, QA/Release and protected merge remain mandatory."]
     return "\n".join(lines)[:13_000]
