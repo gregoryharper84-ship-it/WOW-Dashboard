@@ -177,3 +177,32 @@ def test_overconfident_lower_bound_fails_even_when_point_forecast_is_reasonable(
         select_canonical_forward_predictions([
             _prediction_row(p=0.70, lower=0.75, upper=0.80)
         ])
+
+
+@pytest.mark.parametrize("tie,home_win", [(False, False), (None, False), (False, True)])
+def test_forward_tie_score_overrides_corrupt_tie_flag_and_home_win(tie, home_win):
+    """The dedicated NFL forward CI must run this red-before/green-after test."""
+    p = _prediction(event_id="2026_05_NYG_WAS", p=0.65, lower=0.55, upper=0.75, index=7)
+    grades = grade_forward_predictions([p], [{
+        "game_id": p.official_event_id,
+        "home_score": 27,
+        "away_score": 27,
+        "home_win": home_win,
+        "tie": tie,
+    }])
+    assert grades == []
+
+
+@pytest.mark.parametrize("home_score,away_score,home_win", [
+    (27, 17, False),
+    (17, 27, True),
+])
+def test_forward_grade_excludes_score_winner_flag_conflict(home_score, away_score, home_win):
+    p = _prediction(event_id="2026_05_NYG_WAS", p=0.65, lower=0.55, upper=0.75, index=8)
+    assert grade_forward_predictions([p], [{
+        "game_id": p.official_event_id,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_win": home_win,
+        "tie": False,
+    }]) == []
