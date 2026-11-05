@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -311,7 +313,10 @@ def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypat
         "NBA": [2024, 2025, 2026, 2027],
         "WNBA": [2023, 2024, 2025, 2026],
     }
-    assert outcome["rows_updated"] == 2
+    # Acquisition keeps the explicit clock and sport-specific season labels;
+    # unbounded persisted replay cannot claim historical shadow evidence.
+    assert outcome["rows_updated"] == 0
+    assert all(row["code"] == "BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED" for row in outcome["rows"])
     assert outcome["automatic_certification"] is False
     assert outcome["automatic_promotion"] is False
     assert outcome["probability_publishable"] is False
@@ -363,6 +368,13 @@ def test_scheduled_nba_november_rejects_june_only_corpus_before_replay(monkeypat
 
 
 def test_scheduled_nba_replay_allowed_when_current_season_is_persisted(monkeypatch):
+    """A default live refresh still replays the current verified corpus."""
+    class LiveClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 4, 12, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(maintenance, "datetime", LiveClock)
     called = []
     monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
         "sport": "NBA", "settled_rows": 0,
@@ -382,7 +394,6 @@ def test_scheduled_nba_replay_allowed_when_current_season_is_persisted(monkeypat
     )
     result = maintenance.run_basketball_model_maintenance(
         object(), sports=("NBA",),
-        now=datetime(2026, 11, 4, 12, tzinfo=timezone.utc),
     )
     assert result["status"] == "COMPLETE"
     assert result["rows"][0]["hydration_status"] == "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS"
@@ -558,3 +569,35 @@ def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypa
     )
     assert certification["certification_notes"]["promotion_attempted"] is False
     assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "WNBA"])
+@pytest.mark.parametrize("source_failed", [False, True])
+def test_explicit_clock_never_replays_unbounded_persisted_corpus(monkeypatch, sport, source_failed):
+    """A cutoff on hydration cannot authorize fitting a later persisted corpus."""
+    def hydrate(*_args, **_kwargs):
+        if source_failed:
+            raise maintenance.BasketballHydrationError("SOURCE_HTTP_503")
+        return {"settled_rows": 0, "latest_game_date_after": "2026-11-04"}
+
+    replayed = []
+    monkeypatch.setattr(maintenance, "hydrate", hydrate)
+    monkeypatch.setattr(maintenance, "run_training_replay", lambda *a, **kw: replayed.append(sport) or {})
+    cutoff = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=(sport,), seasons=(2027,), now=cutoff,
+    )
+    assert replayed == []
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    row = result["rows"][0]
+    assert row["code"] == "BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED"
+    assert row["replay_cutoff"] == cutoff.isoformat()
+    assert row["replay_attempted"] is False
+    assert row["promotion_attempted"] is False
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+    if source_failed:
+        assert row["hydration_blocker"]["code"] == "SOURCE_HTTP_503"
+    else:
+        assert row["hydration"]["settled_rows"] == 0

@@ -10,6 +10,10 @@ stages. A temporary/missing acquisition provider must not prevent replay of an
 already persisted, provenance-complete, fresh corpus. Acquisition degradation is
 retained as typed metadata and never converted into model readiness.
 
+Explicit-clock maintenance may hydrate but cannot fit historical shadow evidence
+until persisted replay reads support the same cutoff. Default live maintenance
+continues to replay the current persisted corpus.
+
 It never promotes or activates an artifact, never publishes a betting
 probability, and never enables execution.
 """
@@ -212,6 +216,23 @@ def run_basketball_model_maintenance(
                     hydration_blocker=gap,
                 ))
                 continue
+
+        # Hydration alone honors an explicit replay clock. The persisted
+        # provenance/freshness/feature/fit readers currently load the whole
+        # corpus, including evidence acquired after that clock. Do not create
+        # historical SHADOW evidence until every replay read honors the cutoff.
+        if now is not None:
+            held = _blocked(
+                sport, "BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED",
+                hydration_blocker=hydration_blocker,
+            )
+            held.update({
+                "hydration": hydration,
+                "replay_cutoff": clock.isoformat(),
+                "replay_attempted": False,
+            })
+            results.append(held)
+            continue
 
         # A blocked fresh-source fetch is not proof that the persisted corpus is
         # unusable. Replay performs its own provenance + freshness preflights and
