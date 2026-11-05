@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from v17.nfl_forward_shadow import ForwardPrediction, grade_forward_predictions, calibration_health
 
 
-def _prediction():
+def _prediction(*, select_home=True):
     return ForwardPrediction(
         event_prediction_id="synthetic-pregame-tie-prediction",
         official_event_id="2026_05_NYG_WAS",
@@ -17,7 +17,7 @@ def _prediction():
         model_version="NFL_EVENT_LOGREG_PLATT_V1",
         home_team="Washington Commanders",
         away_team="New York Giants",
-        selected_participant="Washington Commanders",
+        selected_participant=("Washington Commanders" if select_home else "New York Giants"),
         calibrated_probability=0.60,
         calibrated_lower_bound=0.55,
         calibrated_upper_bound=0.65,
@@ -47,13 +47,16 @@ def test_tie_with_home_win_false_is_never_a_binary_loss():
     assert health["can_execute"] is False
 
 
-def test_tie_excluded_regardless_of_home_win_boolean():
-    for home_win in (True, False, None):
-        outcome = {
-            "game_id": "2026_05_NYG_WAS",
-            "home_score": 27,
-            "away_score": 27,
-            "home_win": home_win,
-            "tie": True,
-        }
-        assert grade_forward_predictions([_prediction()], [outcome]) == []
+def test_tie_excluded_regardless_of_selected_side_or_home_win_boolean():
+    for select_home in (True, False):
+        for home_win in (True, False, None):
+            outcome = {
+                "game_id": "2026_05_NYG_WAS",
+                "home_score": 27,
+                "away_score": 27,
+                "home_win": home_win,
+                "tie": True,
+            }
+            assert grade_forward_predictions(
+                [_prediction(select_home=select_home)], [outcome]
+            ) == []
