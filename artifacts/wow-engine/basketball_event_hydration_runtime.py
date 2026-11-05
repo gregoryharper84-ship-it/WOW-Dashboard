@@ -330,6 +330,20 @@ def normalize_sportsdataverse_game(
             ZoneInfo("America/New_York")
         ).date():
             return None
+        # SportsDataverse's ESPN schedule emits game_date_time in Eastern.
+        # A 'completed' source flag from a later release is not evidence that
+        # the fixture was completed at this earlier, immutable capture instant.
+        tipoff_text = str(raw.get("game_date_time") or "").strip()
+        if not tipoff_text:
+            return None
+        tipoff = datetime.fromisoformat(tipoff_text.replace("Z", "+00:00"))
+        if tipoff.utcoffset() is None:
+            tipoff = tipoff.replace(tzinfo=ZoneInfo("America/New_York"))
+        if (
+            tipoff.astimezone(ZoneInfo("America/New_York")).date() != game_day
+            or tipoff.astimezone(timezone.utc) > captured.astimezone(timezone.utc)
+        ):
+            return None
     except (TypeError, ValueError, OverflowError):
         return None
     normalized = sport.upper().strip()
@@ -623,8 +637,15 @@ def hydrate(
                 and 2 <= (clock.date() - latest_before).days <= 200
                 and not has_new
             ):
-                entitlement = source_readiness("ESPN_SCOREBOARD")
-                if not entitlement.ready_for_candidate_training:
+                # No certified ESPN-to-SportsDataverse settlement provider
+                # crosswalk exists for NBA. A fetch cannot yield an admissible
+                # fitted-training row, so do not consume 14 source requests
+                # or turn an impossible supplement into partial-write failure.
+                if sport == "NBA":
+                    recent_supplement[year] = (
+                        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+                    )
+                elif not (entitlement := source_readiness("ESPN_SCOREBOARD")).ready_for_candidate_training:
                     recent_supplement[year] = (
                         "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
                         + ",".join(entitlement.blockers)
