@@ -311,7 +311,7 @@ def normalize_sportsdataverse_game(
     status_text = " ".join(
         str(raw.get(field) or "").strip().lower()
         for field in ("status_type_description", "status_type_name")
-    )
+    ).replace("_", " ").replace("-", " ")
     if not completed or any(token in status_text for token in ("postpon", "cancel", "no contest")):
         return None
     # SportsDataverse includes preseason and postseason schedules in the same

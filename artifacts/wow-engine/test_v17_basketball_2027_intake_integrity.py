@@ -61,6 +61,8 @@ def test_malformed_or_nonintegral_season_holds(season):
     ("status_type_name", "STATUS_POSTPONED"),
     ("status_type_description", "Cancelled"),
     ("status_type_description", "No Contest"),
+    ("status_type_name", "STATUS_NO_CONTEST"),
+    ("status_type_description", "No-Contest"),
 ])
 def test_completed_flag_does_not_override_explicit_nonsettled_state(field, value):
     # Both 'completed=true' and a no-result status can coexist in malformed
