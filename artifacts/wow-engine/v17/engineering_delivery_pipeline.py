@@ -17,6 +17,16 @@ RELEASE_APP_ID = 5245853
 QA_CHECK = "WOW Independent Security Review"
 INDEPENDENT_QA_CHECK = "WOW Independent QA exact-head"
 RELEASE_CHECK = "WOW Release Authority exact-head"
+# The active protected ruleset has five authenticated exact-head checks.
+# The standalone historical semantic review is manual-only and NOT a sixth
+# required check; a signed same-SHA REJECT remains a binding safety veto.
+ACTIONS_APP_ID = 15368
+NATIVE_REGRESSION_CHECKS = (
+    "WOW required-three regression",
+    "WOW governed probability backend",
+    "WOW additional required regression",
+)
+
 
 
 def _result(code: str, next_action: str, trigger: str, *, pr: int | None = None,
@@ -118,6 +128,68 @@ def _failed_qa(check: dict, number: int, head: str) -> dict:
     return _result("INDEPENDENT_QA_NOT_ACCEPTED", "DIAGNOSE_SIGNED_REVIEW_RECEIPT",
                    "NEW_VALID_QA_APP_EVIDENCE", pr=number, sha=head)
 
+def _five_check_continuation(checks: list, by_name: dict, number: int,
+                             expected_sha: str) -> dict | None:
+    """Describe the actual protected five-check review stage, never approve.
+
+    If any current pinned context is present, evaluate that cohort; do not
+    require the retired manual semantic-review workflow to provide a PASS.
+    An incomplete cohort is still a HOLD. All positive results remain
+    evidence-only (merge_authorized=False).
+    """
+    expected_apps = {
+        **{name: ACTIONS_APP_ID for name in NATIVE_REGRESSION_CHECKS},
+        INDEPENDENT_QA_CHECK: QA_APP_ID,
+        RELEASE_CHECK: RELEASE_APP_ID,
+    }
+    if not any(name in by_name for name in expected_apps):
+        return None
+
+    # Retain the entire check inventory's identity and exact-head safety.
+    # A newer valid check must not silently erase an earlier foreign publisher.
+    for check in checks:
+        name = check["name"]
+        if name not in expected_apps:
+            continue
+        if ((check.get("app") or {}).get("id") != expected_apps[name]
+                or check.get("head_sha", expected_sha) != expected_sha):
+            return _result("PROTECTED_CHECK_IDENTITY_INVALID",
+                           "REPAIR_PINNED_CHECK_PRODUCER",
+                           "VALID_EXACT_HEAD_PINNED_CHECK", pr=number, sha=expected_sha)
+
+    for name in NATIVE_REGRESSION_CHECKS:
+        row = by_name.get(name)
+        if row is None or row.get("status") != "completed":
+            return _result("NATIVE_REGRESSION_PENDING", "FOLLOW_REQUIRED_REGRESSION",
+                           "EXACT_HEAD_NATIVE_REGRESSIONS_COMPLETE", pr=number,
+                           sha=expected_sha)
+        if row.get("conclusion") != "success":
+            return _result("NATIVE_REGRESSION_NOT_ACCEPTED", "REPAIR_REGRESSION_FAILURE",
+                           "NEW_EXACT_HEAD_REGRESSION_PASS", pr=number,
+                           sha=expected_sha)
+
+    qa = by_name.get(INDEPENDENT_QA_CHECK)
+    if qa is None:
+        return _result("QA_GATE_PENDING", "FOLLOW_EXISTING_QA_CHECK",
+                       "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
+    if qa.get("status") != "completed" or qa.get("conclusion") != "success":
+        return _result("QA_GATE_NOT_ACCEPTED", "REPAIR_INDEPENDENT_QA_GATE",
+                       "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
+
+    release = by_name.get(RELEASE_CHECK)
+    if release is None:
+        return _result("RELEASE_EVIDENCE_PENDING", "FOLLOW_EXISTING_RELEASE_CHECK",
+                       "RELEASE_APP_CHECK_AT_EXACT_SHA", pr=number, sha=expected_sha)
+    if release.get("status") != "completed" or release.get("conclusion") != "success":
+        return _result("RELEASE_NOT_ACCEPTED", "REPAIR_RELEASE_FAILURE",
+                       "VALID_RELEASE_APP_PASS", pr=number, sha=expected_sha)
+
+    # A valid source review / protected merge authorization / production
+    # deployment must still be independently established; this is read-only.
+    return _result("REVIEW_STAGE_ACCEPTED", "VERIFY_NATIVE_CHECKS_AND_OWNER_APPROVAL",
+                   "EXACT_HEAD_PROTECTED_MERGE", pr=number, sha=expected_sha)
+
+
 def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     """Classify a pre-merge PR without turning a classification into authority."""
     if not isinstance(pr, dict) or not isinstance(checks, list) or len(checks) > 1000:
@@ -143,6 +215,11 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
         return _result("SEMANTIC_REJECT_SAME_SHA", "REPAIR_REJECTED_SOURCE_NEW_SHA",
                        "NEW_SOURCE_SHA", pr=number, sha=expected_sha)
     by_name = _latest(checks)
+    current = _five_check_continuation(checks, by_name, number, expected_sha)
+    if current is not None:
+        return current
+    # Legacy-only evidence is diagnostic, not a substitute for the five
+    # authenticated ruleset checks. Preserve its signed HOLD/REJECT reasons.
     qa = by_name.get(QA_CHECK)
     if not qa:
         return _result("EVIDENCE_PENDING", "VERIFY_INDEPENDENT_REVIEW_DISPATCH",
@@ -182,9 +259,11 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
             or release.get("conclusion") != "success"):
         return _result("RELEASE_NOT_ACCEPTED", "REPAIR_RELEASE_FAILURE",
                        "VALID_RELEASE_APP_PASS", pr=number, sha=expected_sha)
-    # Still no merge approval: protected native checks and CODEOWNER are separate.
-    return _result("REVIEW_STAGE_ACCEPTED", "VERIFY_NATIVE_CHECKS_AND_OWNER_APPROVAL",
-                   "EXACT_HEAD_PROTECTED_MERGE", pr=number, sha=expected_sha)
+    # A legacy-only check cohort cannot meet the native three-regression
+    # acceptance contract, even if its retired semantic review was PASS.
+    return _result("NATIVE_REGRESSION_PENDING", "FOLLOW_REQUIRED_REGRESSION",
+                   "EXACT_HEAD_NATIVE_REGRESSIONS_COMPLETE", pr=number,
+                   sha=expected_sha)
 
 
 def reduce_completion(*, merge_sha: str | None, live_sha: str | None,
