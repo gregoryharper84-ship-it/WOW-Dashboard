@@ -147,6 +147,7 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         "calibration_version": result.get("calibration_version"),
         "model_timestamp": result.get("model_timestamp"),
         "source_snapshot_timestamp": result.get("source_snapshot_timestamp"),
+        "source_snapshot_id": result.get("source_snapshot_id"),
         "calibrated_probability": point,
         "calibrated_probability_lower_bound": lower,
         "calibrated_probability_upper_bound": upper,
@@ -195,7 +196,8 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         seen_ids.add(event_id)
         try:
             bundle = build_llp_team_intelligence_bundle(
-                event=event, receipts=[_winner_receipt_from_row(row, event)]
+                event=event, receipts=[_winner_receipt_from_row(row, event)],
+                deep_research_context=result.get("llp_deep_research_context"),
             )
             bundle["daily_row_index"] = row.get("row_index")
             bundle["source_diagnostics"] = _source_failure_context(row)
