@@ -58,6 +58,43 @@ _TEAM_ALIASES = {
 }
 
 
+_UNAMBIGUOUS_DISCOVERY_ALIASES = {
+    # Explicit city-only scoreboard labels. Never infer ambiguous New York;
+    # no alias grants identity without a unique first-party fixture match.
+    "anaheim": "ANA",
+    "boston": "BOS",
+    "buffalo": "BUF",
+    "calgary": "CGY",
+    "carolina": "CAR",
+    "chicago": "CHI",
+    "colorado": "COL",
+    "columbus": "CBJ",
+    "dallas": "DAL",
+    "detroit": "DET",
+    "edmonton": "EDM",
+    "florida": "FLA",
+    "losangeles": "LAK",
+    "minnesota": "MIN",
+    "montreal": "MTL",
+    "nashville": "NSH",
+    "newjersey": "NJD",
+    "ottawa": "OTT",
+    "philadelphia": "PHI",
+    "pittsburgh": "PIT",
+    "sanjose": "SJS",
+    "seattle": "SEA",
+    "stlouis": "STL",
+    "tampabay": "TBL",
+    "toronto": "TOR",
+    "utah": "UTA",
+    "vancouver": "VAN",
+    "vegas": "VGK",
+    "washington": "WSH",
+    "winnipeg": "WPG",
+    "nyrangers": "NYR",
+    "nyislanders": "NYI",
+}
+
 class NHLEventIdentityError(RuntimeError):
     def __init__(self, code: str, detail: str = ""):
         super().__init__(detail or code)
@@ -77,7 +114,7 @@ def team_abbreviation(value: Any) -> str | None:
         upper = str(value or "").strip().upper()
         if upper in set(_TEAM_ALIASES.values()):
             return upper
-    return _TEAM_ALIASES.get(token)
+    return _TEAM_ALIASES.get(token) or _UNAMBIGUOUS_DISCOVERY_ALIASES.get(token)
 
 
 def _aware(value: Any) -> datetime:
