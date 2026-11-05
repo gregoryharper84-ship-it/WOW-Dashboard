@@ -379,7 +379,9 @@ def post_existing_incident_handoff(client, *, result: dict):
     )
     body = "\n".join(lines)
     comments = []
-    for page in range(1, 6):
+    # Busy canonical P0 incidents can exceed 500 comments. Bound the scan
+    # at 2,000 while failing closed on an unproven exhaustive inventory.
+    for page in range(1, 21):
         portion = client.request(f"/issues/{incident}/comments?per_page=100&page={page}")
         if not isinstance(portion, list):
             raise ReviewHold("INCIDENT_COMMENT_INVENTORY_INVALID")
