@@ -74,10 +74,12 @@ def _module_name(path: str) -> str:
     if not path.endswith(".py"):
         return ""
     if "/v17/" in path:
-        return "v17." + path.split("/v17/", 1)[1][:-3].replace("/", ".")
-    if path.startswith("v17/"):
-        return "v17." + path[len("v17/"):-3].replace("/", ".")
-    return path[:-3].replace("/", ".")
+        name = "v17." + path.split("/v17/", 1)[1][:-3].replace("/", ".")
+    elif path.startswith("v17/"):
+        name = "v17." + path[len("v17/"):-3].replace("/", ".")
+    else:
+        name = path[:-3].replace("/", ".")
+    return name.removesuffix(".__init__")
 
 
 def _imports(path: str, source: str) -> tuple[set[str], bool]:
@@ -88,7 +90,8 @@ def _imports(path: str, source: str) -> tuple[set[str], bool]:
     except (SyntaxError, ValueError, TypeError, RecursionError):
         return set(), False
     module = _module_name(path)
-    package = module.rsplit(".", 1)[0] if "." in module else ""
+    package = (module if path.endswith("/__init__.py") else
+               module.rsplit(".", 1)[0] if "." in module else "")
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -157,7 +160,9 @@ def build_review_packet(
             or sum(len(s.encode("utf-8")) for s in repository_sources.values())
             > _MAX_SCANNED_SOURCE_BYTES):
         raise ValueError("REVIEW_SOURCE_BOUNDS_EXCEEDED")
-    if not all(isinstance(x, str) and 0 < len(x) < 1000 for x in acceptance_criteria):
+    if (not isinstance(acceptance_criteria, (tuple, list)) or
+            not all(isinstance(x, str) and 0 < len(x) < 1000
+                    for x in acceptance_criteria)):
         raise ValueError("ACCEPTANCE_CRITERIA_INVALID")
 
     changed_paths = sorted(changed_patches)
@@ -237,7 +242,10 @@ def preflight_review_finding(packet: dict, finding: dict) -> str:
         return "REVIEW_CLAIM_INVALID"
     check = dict(packet)
     expected_hash = check.pop("packet_sha256", None)
-    if not isinstance(expected_hash, str) or _digest(check) != expected_hash:
+    try:
+        if not isinstance(expected_hash, str) or _digest(check) != expected_hash:
+            return "REVIEW_PACKET_DRIFT"
+    except (TypeError, ValueError, RecursionError):
         return "REVIEW_PACKET_DRIFT"
     if packet.get("status") != "ADVISORY_REVIEW_REQUIRED":
         return "REVIEW_CONTEXT_INCOMPLETE"
@@ -247,10 +255,11 @@ def preflight_review_finding(packet: dict, finding: dict) -> str:
     if not isinstance(path, str) or path not in packet.get("changed_paths", ()):
         return "REVIEW_PATH_UNVERIFIED"
     evidence = finding.get("source_excerpt")
-    if not isinstance(evidence, str) or len(evidence) < 12 or len(evidence) > 500:
+    if (not isinstance(evidence, str) or not 12 <= len(evidence) <= 500
+            or len(evidence.strip()) < 12):
         return "REVIEW_EVIDENCE_INSUFFICIENT"
-    text = packet.get("patches", {}).get(path, "") + "\n" + packet.get(
-        "source_context", {}).get(path, "")
-    if evidence not in text:
+    patch = packet.get("patches", {}).get(path, "")
+    source = packet.get("source_context", {}).get(path, "")
+    if evidence not in patch and evidence not in source:
         return "REVIEW_EVIDENCE_NOT_FOUND"
     return "EVIDENCE_LOCATED_NOT_SEMANTICALLY_VERIFIED"
