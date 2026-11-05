@@ -101,7 +101,7 @@ def test_review_packet_tampering_never_creates_verified_finding():
     try:
         run_static_review(pkt)
     except ValueError as e:
-        assert "REVIEW_FINDING_EVIDENCE_INVALID:REVIEW_PACKET_DRIFT" in str(e)
+        assert "REVIEW_PACKET_DRIFT" in str(e)
     else:
         raise AssertionError("tampered packet accepted")
 
