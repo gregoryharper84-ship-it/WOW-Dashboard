@@ -617,6 +617,8 @@ Malformed matching fixtures prevent proving either absence or uniqueness.
 | `SOCCER_COMPETITION_UNSUPPORTED` | No attested competition slug | Verify the competition mapping; retain provider alias only |
 | `SOCCER_EVENT_TIME_INVALID` | Request kickoff is missing, malformed, or timezone-naive | Supply a verified timezone-aware kickoff |
 | `SOCCER_PROVIDER_TEAM_ALIAS_INVALID` | Missing or identical participant aliases | Repair participant identity |
+| `SOCCER_CANONICAL_EVENT_ID_MISSING` | Canonicalization returned no verified official event ID | Retain unresolved identity; inspect official fixture evidence |
+| `SOCCER_CANONICAL_RESOLVER_FAILED` | Canonicalizer failed before establishing official identity | Diagnose resolver failure; retain unresolved identity |
 | `SOCCER_CANONICAL_EVENT_NOT_FOUND` | No matching fixture in the queried competition/date window | Retain unresolved identity; verify source coverage |
 | `SOCCER_CANONICAL_EVENT_AMBIGUOUS` | Multiple distinct fixture IDs match | Resolve ambiguity from official evidence |
 | `SOCCER_OFFICIAL_SOURCE_TRANSPORT_FAILED` | Scoreboard transport failed | Retry after source recovery within existing bounds |
