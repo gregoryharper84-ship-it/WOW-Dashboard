@@ -623,6 +623,40 @@ def _register_nfl_bridge_if_available() -> bool:
     return True
 
 
+def _register_nba_bridge_if_available() -> bool:
+    """Additive registration for the fitted NBA current-pregame bridge.
+
+    NBA has an independent fitted basketball candidate/training/calibration
+    pipeline, official event and team identity, and a pregame scorer. If the
+    adapter or scorer cannot be imported, the bridge is not registered and the
+    route fails closed.
+    """
+    if os.getenv("WOW_V17_NBA_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+    try:
+        from v17.nba_current_pregame_scorer import score_nba_team_event_request
+    except Exception:  # noqa: BLE001 - absence is an audit answer, not a crash
+        return False
+
+    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
+        return score_nba_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
+
+    register_team_event_bridge(
+        "NBA",
+        adapter_name="V17_NBA_TEAM_EVENT_BRIDGE",
+        controlling_specialist="NBA_GAME_WIN_PROBABILITY_EXPERT_V1",
+        scorer=scorer,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS["NBA"],
+        standard_package_validation=False,
+        supported_regimes=(REGULAR_SEASON,),
+    )
+    return True
+
+
 def install_team_event_bridge_runtime() -> dict[str, Any]:
     """Install the authoritative production registry exactly once."""
     global _INSTALLED
@@ -657,6 +691,7 @@ def install_team_event_bridge_runtime() -> dict[str, Any]:
     # condition, and with no promoted champion the scorer still fails closed as
     # MODEL_UNAVAILABLE at score time.
     _register_nfl_bridge_if_available()
+    _register_nba_bridge_if_available()
 
     _base_runtime.score_team_event_request = score_registered_team_event_request
     _install_health_overlay()
