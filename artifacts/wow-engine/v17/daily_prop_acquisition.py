@@ -332,6 +332,10 @@ def acquire_daily_prop_snapshots(
     else:
         combined["status"] = "COMPLETED"
     combined["candidate_source"] = "+".join(str(leg.get("candidate_source")) for _s, leg in legs)
+    # All current producers use prior-ten half-point discovery lines; never market lines.
+    sources = {leg.get("line_source") for _s, leg in legs if leg.get("line_source")}
+    combined["line_source"] = next(iter(sources)) if len(sources) == 1 else None
+    combined["probability_publishable"] = False
     combined["stat_types"] = list(dict.fromkeys(
         st for _s, leg in legs if leg.get("status") != "DATA_UNOBTAINABLE" for st in leg.get("stat_types") or []
     ))

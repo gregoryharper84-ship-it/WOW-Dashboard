@@ -127,7 +127,8 @@ def _leg(sport, status="COMPLETED", attempted=0, persisted=0, **extra):
         "status": status, "attempted": attempted, "persisted": persisted, "held": 0,
         "hydrated": persisted, "snapshot_write_succeeded": persisted, "snapshot_write_failed": 0,
         "explicit_prewrite_exclusions": 0, "receipts": [], "blockers": [], "stat_types": [sport],
-        "candidate_source": sport, **extra,
+        "candidate_source": sport,
+        "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY", **extra,
     }
 
 
@@ -151,6 +152,8 @@ def test_composite_shares_one_ceiling_and_reports_per_sport(monkeypatch):
     r = _composite()
     assert seen == {"mlb": 10, "nfl": 6}
     assert r["attempted"] == 10 and r["persisted"] == 10 and r["status"] == "COMPLETED"
+    assert r["line_source"] == "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY"
+    assert r["probability_publishable"] is False
     assert [c["sport"] for c in r["sport_coverage"]] == ["MLB", "NFL"]
     assert {"NBA", "NHL"} <= set(r["sports_without_autonomous_discovery"])
     assert r["can_execute"] is False
