@@ -110,6 +110,11 @@ def acquire_daily_nfl_prop_snapshots(
         "can_execute": False,
     }
     if max_candidates <= 0:
+        # No NFL discovery call was made. Unknown candidate counts are not zero.
+        result["status"] = "NOT_ATTEMPTED_ROW_CEILING"
+        result["discovered_candidates"] = None
+        result["unattempted_due_to_row_ceiling"] = None
+        result["blockers"] = ["NFL_PROP_ROW_CEILING_EXHAUSTED"]
         return result
     cached_get = _cp._cached_http_get(http_get)
     try:

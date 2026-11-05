@@ -275,7 +275,10 @@ def _sport_leg(sport: str, leg: dict[str, Any]) -> dict[str, Any]:
         "persisted": int(leg.get("persisted") or 0),
         "held": int(leg.get("held") or 0),
         "discovered_candidates": leg.get("discovered_candidates"),
-        "unattempted_due_to_row_ceiling": int(leg.get("unattempted_due_to_row_ceiling") or 0),
+        "unattempted_due_to_row_ceiling": (
+            None if leg.get("status") == "NOT_ATTEMPTED_ROW_CEILING"
+            else int(leg.get("unattempted_due_to_row_ceiling") or 0)
+        ),
         "blockers": list(leg.get("blockers") or []),
     }
 
@@ -309,8 +312,7 @@ def acquire_daily_prop_snapshots(
         if sport not in sports:
             continue
         leg = producer(max_candidates=remaining, **kwargs)
-        if sport == "NFL" and remaining <= 0:
-            leg.setdefault("unattempted_due_to_row_ceiling", None)
+
         legs.append((sport, leg))
         remaining = max(remaining - int(leg.get("attempted") or 0), 0)
     if len(legs) == 1 and legs[0][0] == "MLB":

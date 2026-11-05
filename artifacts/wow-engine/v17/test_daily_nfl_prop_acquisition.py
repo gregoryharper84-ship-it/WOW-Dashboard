@@ -171,3 +171,41 @@ def test_composite_all_outage_stays_data_unobtainable(monkeypatch):
     monkeypatch.setattr(daily, "acquire_daily_mlb_prop_snapshots", lambda **k: _leg("MLB", "DATA_UNOBTAINABLE"))
     monkeypatch.setattr(nfl_mod, "acquire_daily_nfl_prop_snapshots", lambda **k: _leg("NFL", "DATA_UNOBTAINABLE"))
     assert _composite()["status"] == "DATA_UNOBTAINABLE"
+
+
+def test_nfl_zero_budget_does_not_claim_a_proven_empty_slate(monkeypatch):
+    def unexpected_discovery(*_args, **_kwargs):
+        raise AssertionError("No discovery source call is permitted at zero budget")
+
+    monkeypatch.setattr(nfl_mod._cp, "_discover_candidates", unexpected_discovery)
+    r = _run(_DB(), max_candidates=0)
+    assert r["status"] == "NOT_ATTEMPTED_ROW_CEILING"
+    assert r["discovered_candidates"] is None
+    assert r["unattempted_due_to_row_ceiling"] is None
+    assert r["blockers"] == ["NFL_PROP_ROW_CEILING_EXHAUSTED"]
+    assert r["attempted"] == 0 and r["receipts"] == [] and r["can_execute"] is False
+
+
+def test_mlb_exhaustion_keeps_nfl_discovery_unknown_in_daily_receipt(monkeypatch):
+    from v17.prop_sport_parity import prop_sport_coverage_receipt
+
+    monkeypatch.setattr(daily, "acquire_daily_mlb_prop_snapshots",
+                        lambda **k: _leg("MLB", attempted=10, persisted=10))
+    def unexpected_discovery(*_args, **_kwargs):
+        raise AssertionError("NFL discovery was not attempted")
+    monkeypatch.setattr(nfl_mod._cp, "_discover_candidates", unexpected_discovery)
+    combined = _composite()
+    nfl = next(leg for leg in combined["sport_coverage"] if leg["sport"] == "NFL")
+    assert combined["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
+    assert nfl["status"] == "NOT_ATTEMPTED_ROW_CEILING"
+    assert nfl["unattempted_due_to_row_ceiling"] is None
+    assert "NFL_PROP_ROW_CEILING_EXHAUSTED" in combined["blockers"]
+    receipt = prop_sport_coverage_receipt(
+        requested_sports=["NFL"], rows=[], acquisition=combined,
+    )
+    row = receipt["per_sport"]["NFL"]
+    assert row["coverage_status"] == "NOT_ATTEMPTED_ROW_CEILING"
+    assert row["discovery_attempt_status"] == "NOT_ATTEMPTED_ROW_CEILING"
+    assert row["unattempted_due_to_row_ceiling"] is None
+    assert row["zero_rows_is_not_empty_slate_proof"] is True
+    assert row["can_execute"] is False and receipt["can_execute"] is False

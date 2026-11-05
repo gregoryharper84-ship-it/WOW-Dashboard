@@ -143,6 +143,11 @@ def prop_sport_coverage_receipt(
     parity = prop_sport_parity()
     prop_rows = [r for r in rows if r.get("lane") == "PROPS"]
     receipts = list((acquisition or {}).get("receipts") or [])
+    sport_legs = {
+        _norm_sport(leg.get("sport")): leg
+        for leg in (acquisition or {}).get("sport_coverage") or []
+        if isinstance(leg, dict) and leg.get("sport")
+    }
     requested = [_norm_sport(s) for s in (requested_sports or [])] or sorted(parity)
     sports = list(dict.fromkeys(requested))
     seen = {_norm_sport((r.get("identity") or {}).get("sport")) for r in prop_rows}
@@ -154,6 +159,8 @@ def prop_sport_coverage_receipt(
         executed = [r for r in mine if _scorer_executed(r)]
         mine_receipts = [r for r in receipts if _norm_sport(r.get("sport")) == sport]
         excluded = [r for r in mine_receipts if r.get("write_status") not in (None, "SNAPSHOT_WRITE_SUCCEEDED")]
+        sport_leg = sport_legs.get(sport) or {}
+        ceiling_skipped = sport_leg.get("status") == "NOT_ATTEMPTED_ROW_CEILING"
         cap = parity.get(sport)
         discovery = bool(cap and cap["daily_autonomous_discovery_supported"])
         unscored = len(mine) - len(executed)
@@ -166,13 +173,16 @@ def prop_sport_coverage_receipt(
             "certified_production_lane_count": cap["certified_production_lane_count"] if cap else 0,
             "discovered_current_run": len(mine_receipts),
             "excluded": len(excluded),
+            "discovery_attempt_status": sport_leg.get("status"),
+            "unattempted_due_to_row_ceiling": sport_leg.get("unattempted_due_to_row_ceiling"),
             "canonical_rows": len(mine),
             "scored": len(executed),
             "unscored": unscored,
             "reconciled": len(mine) == len(executed) + unscored,
             "coverage_status": (
                 "ROWS_PRESENT" if mine else
-                ("NO_ROWS_DISCOVERY_ENABLED" if discovery else "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED")
+                ("NOT_ATTEMPTED_ROW_CEILING" if ceiling_skipped else
+                 ("NO_ROWS_DISCOVERY_ENABLED" if discovery else "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED"))
             ),
             "zero_rows_is_not_empty_slate_proof": True,
             "can_execute": False,
