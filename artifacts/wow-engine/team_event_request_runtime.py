@@ -499,6 +499,14 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
     # side explicitly so an away selection can never publish the home number.
     home_team = str(row.home_team or "").strip()
     away_team = str(row.away_team or "").strip()
+    # Only the two exact identified participants may inherit a side-specific
+    # winner package. Draw is a separate three-way outcome and cannot borrow
+    # the home-oriented generic probability triple.
+    if not home_team or not away_team or home_team.casefold() == away_team.casefold():
+        return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_OPPONENT_IDENTITY_INVALID", scored)
+    selected_identity = selected.casefold()
+    if selected_identity not in (home_team.casefold(), away_team.casefold()):
+        return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID", scored)
     probability_key, lower_key, upper_key = (
         "calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound")
     if (away_team and selected.casefold() == away_team.casefold()
