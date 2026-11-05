@@ -201,9 +201,12 @@ def test_readback_projects_optional_nba_research_without_changing_market_status(
     out = project_llp_intelligence_page(page)
     assert len(out["events"]) == 1
     item = out["events"][0]
-    assert item["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
-    assert item["markets"][0]["calibrated_probability"] == .63
-    assert item["deep_research_audit"]["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    # Invented UUID-free receipt strings in a saved Daily detail are not
+    # independent proof of a pregame event-prediction ledger record.
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in item["markets"][0]
+    assert "LLP_EVENT_PREDICTION_ID_UNVERIFIED" in item["markets"][0]["reason_codes"]
+    assert item["deep_research_audit"]["status"] == "CONTROLLING_WINNER_RECEIPT_REQUIRED"
     assert out["source_mutated"] is False
     assert out["nfl_pickem_mutated"] is False
     assert out["can_execute"] is False
@@ -348,9 +351,9 @@ def test_equivalent_offset_event_start_does_not_falsely_hold_research():
     )
     assert len(out["events"]) == 1
     assert out["events"][0]["deep_research_audit"]["status"] == (
-        "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+        "CONTROLLING_WINNER_RECEIPT_REQUIRED"
     )
-    assert out["events"][0]["markets"][0]["calibrated_probability"] == .63
+    assert out["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
 
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
@@ -459,11 +462,174 @@ def test_invalid_optional_research_does_not_withhold_unconflicted_winner(sport):
     }
     researched = project_llp_intelligence_page(page)["events"][0]
     assert researched["markets"] == baseline["markets"]
-    assert researched["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
-    assert researched["markets"][0]["calibrated_probability"] == .63
+    assert researched["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in researched["markets"][0]
     assert researched["governed_winner_receipt_id"] == (
         baseline["governed_winner_receipt_id"]
     )
     assert researched["deep_research_audit"]["status"] == (
         "CONTEXT_INVALID_PROVENANCE"
     )
+
+
+# Independent event-prediction ledger proof: the fake below models the read-only
+# Supabase query interface while storing a separately supplied immutable record.
+# The Daily row alone is never trusted as its own receipt verification.
+LEDGER_ID = "fcd3f8bf-635e-4d01-90e7-952de6cc53f1"
+SNAPSHOT_ID = "f0e7ac5e-997d-4caf-b584-e7abb56aa910"
+
+
+class _EventLedger:
+    def __init__(self, rows):
+        self.rows = rows
+        self.table_name = None
+        self.selected = None
+        self.prediction_id = None
+        self.limit_count = None
+        self.queries = 0
+
+    def table(self, name):
+        self.table_name = name
+        return self
+
+    def select(self, columns):
+        self.selected = columns
+        return self
+
+    def eq(self, key, value):
+        assert key == "event_prediction_id"
+        self.prediction_id = value
+        return self
+
+    def limit(self, count):
+        self.limit_count = count
+        return self
+
+    def execute(self):
+        from types import SimpleNamespace
+        assert self.table_name == "wow_event_predictions"
+        assert self.limit_count == 2
+        assert "calibrated_home_probability" in self.selected
+        self.queries += 1
+        return SimpleNamespace(data=[
+            row for row in self.rows
+            if row.get("event_prediction_id") == self.prediction_id
+        ])
+
+
+def _ledger_case(sport="NBA"):
+    event = _event(sport)
+    winner = _winner(sport)
+    winner["source_receipt_id"] = LEDGER_ID
+    winner["source_snapshot_id"] = SNAPSHOT_ID
+    ctx = _context(sport)
+    ctx["source_receipt_id"] = LEDGER_ID
+    ctx["source_snapshot_id"] = SNAPSHOT_ID
+    source = {
+        **winner, "selected_side": "BOS",
+        "llp_deep_research_context": ctx,
+    }
+    row = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED",
+        "identity": deepcopy(event),
+        "detail": {
+            "result": source,
+            "probability_publishable": True,
+        },
+    }
+    ledger = {
+        "event_prediction_id": LEDGER_ID,
+        "created_at": SOURCE_AT.isoformat(),
+        "official_event_id": event["official_event_id"],
+        "event_start_time": event["event_start_time_utc"],
+        "sport": sport,
+        "market_family": "OUTRIGHT_WINNER",
+        "home_team": "BOS",
+        "away_team": event["away_team"],
+        "selected_participant": "BOS",
+        "model_version": winner["model_version"],
+        "calibration_version": winner["calibration_version"],
+        "model_timestamp": winner["model_timestamp"],
+        "source_snapshot_timestamp": winner["source_snapshot_timestamp"],
+        "source_snapshot_id": SNAPSHOT_ID,
+        "calibrated_home_probability": .63,
+        "calibrated_home_lower_bound": .57,
+        "calibrated_home_upper_bound": .69,
+        "calibrated_away_probability": .37,
+        "calibrated_away_lower_bound": .31,
+        "calibrated_away_upper_bound": .43,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "can_execute": False,
+        "locked_at": (MODEL_AT + timedelta(minutes=1)).isoformat(),
+        "terminal_reduced_at": (MODEL_AT + timedelta(minutes=2)).isoformat(),
+    }
+    page = {"run_id": "r", "status": "OK", "rows": [row]}
+    return page, ledger
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+def test_genuine_exact_immutable_event_prediction_ledger_receipt_only_visible_positive(sport):
+    page, ledger = _ledger_case(sport)
+    db = _EventLedger([ledger])
+    out = project_llp_intelligence_page(page, db=db)
+    assert db.queries == 1
+    item = out["events"][0]
+    assert item["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    assert item["markets"][0]["calibrated_probability"] == .63
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is True
+    assert item["deep_research_audit"]["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    assert item["governed_winner_receipt_id"] == LEDGER_ID
+    assert item["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("corruption", [
+    "nonexistent", "wrong_event", "wrong_version", "wrong_snapshot",
+    "late_lock", "wrong_probability", "not_published", "duplicate",
+])
+def test_fabricated_or_mismatched_ledger_never_promotes_daily_winner(sport, corruption):
+    page, ledger = _ledger_case(sport)
+    if corruption == "nonexistent":
+        rows = []
+    elif corruption == "duplicate":
+        rows = [ledger, deepcopy(ledger)]
+    else:
+        altered = deepcopy(ledger)
+        if corruption == "wrong_event":
+            altered["official_event_id"] = "another-event"
+        elif corruption == "wrong_version":
+            altered["model_version"] = "wrong-fitted-model"
+        elif corruption == "wrong_snapshot":
+            altered["source_snapshot_id"] = "another-snapshot"
+        elif corruption == "late_lock":
+            altered["locked_at"] = START.isoformat()
+        elif corruption == "wrong_probability":
+            altered["calibrated_home_probability"] = .88
+        elif corruption == "not_published":
+            altered["probability_publishable"] = False
+        rows = [altered]
+    db = _EventLedger(rows)
+    out = project_llp_intelligence_page(page, db=db)
+    item = out["events"][0]
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in item["markets"][0]
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert item["governed_winner_receipt_id"] is None
+    assert item["deep_research_audit"]["status"] == "CONTROLLING_WINNER_RECEIPT_REQUIRED"
+    assert item["can_execute"] is False
+
+
+def test_ledger_lookup_failure_holds_without_leaking_provider_text():
+    page, ledger = _ledger_case()
+    class _Down:
+        def table(self, name):
+            raise RuntimeError("secret internal endpoint failure")
+    out = project_llp_intelligence_page(page, db=_Down())
+    item = out["events"][0]
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert "LLP_EVENT_PREDICTION_LOOKUP_UNAVAILABLE" in (
+        item["source_diagnostics"]["source_reason_codes"]
+    )
+    assert "secret" not in str(item)
