@@ -645,3 +645,79 @@ def test_ledger_lookup_failure_holds_without_leaking_provider_text():
         item["source_diagnostics"]["source_reason_codes"]
     )
     assert "secret" not in str(item)
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("malformed", [{}, [], True, False, 123, 1.5])
+@pytest.mark.parametrize("field", [
+    "source_receipt_id", "source_snapshot_id", "official_event_id",
+    "model_version",
+])
+def test_nonstring_matching_immutable_research_identifiers_fail_closed(
+    sport, malformed, field,
+):
+    """Matching JSON objects, booleans and arrays are never receipt IDs."""
+    event = _event(sport)
+    winner = _winner(sport)
+    context = _context(sport)
+    if field == "official_event_id":
+        event[field] = deepcopy(malformed)
+        context[field] = deepcopy(malformed)
+    else:
+        winner[field] = deepcopy(malformed)
+        context[field] = deepcopy(malformed)
+
+    result = inspect_nba_nhl_deep_research(
+        event=event, winner_receipt=winner, context=context
+    )
+    assert result["status"] == "CONTEXT_INVALID_PROVENANCE"
+    assert result["factor_families_documented"] == []
+    assert result["independently_certified"] is False
+    assert result["upset_volatility_index"] is None
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("malformed", [{}, [], True, False, 123, 1.5])
+def test_nonstring_factor_receipt_never_counts_as_documented(sport, malformed):
+    context = _context(sport)
+    first = FACTOR_FAMILIES[sport][0]
+    context["factors"][first]["source_receipt_id"] = deepcopy(malformed)
+    result = inspect_nba_nhl_deep_research(
+        event=_event(sport), winner_receipt=_winner(sport), context=context
+    )
+    assert result["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    assert first in result["factor_families_missing"]
+    assert result["factor_families_documented"] == []
+    assert result["analyst_review_required"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("field", ["source_receipt_id", "source_snapshot_id"])
+def test_identifier_types_do_not_change_valid_string_receipts(sport, field):
+    context = _context(sport)
+    winner = _winner(sport)
+    context[field] = "  " + context[field] + "  "
+    result = inspect_nba_nhl_deep_research(
+        event=_event(sport), winner_receipt=winner, context=context
+    )
+    assert result["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    assert result["factor_families_documented"] == [FACTOR_FAMILIES[sport][0]]
+    assert result["independently_certified"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("malformed", ["\x00bad", "\tbad", "x" * 513])
+def test_control_bytes_or_oversized_research_receipts_fail_closed(sport, malformed):
+    context = _context(sport)
+    winner = _winner(sport)
+    context["source_receipt_id"] = malformed
+    winner["source_receipt_id"] = malformed
+    result = inspect_nba_nhl_deep_research(
+        event=_event(sport), winner_receipt=winner, context=context
+    )
+    assert result["status"] == "CONTEXT_INVALID_PROVENANCE"
+    assert result["factor_families_documented"] == []
+    assert result["can_execute"] is False
