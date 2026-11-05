@@ -23,6 +23,7 @@ def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="
     return {
         "game_id": event_id,
         "game_date": game_date,
+        "game_date_time": f"{game_date}T19:00:00",  # SportsDataverse Eastern local time
         "home_id": "10",
         "away_id": "20",
         "home_score": home_score,
@@ -562,15 +563,15 @@ def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch
             _espn_event(event_id="401908002", game_date="2026-11-02"),
         ],
     )
-    try:
-        hydration.hydrate(
-            "NBA", [2027], client=object(),
-            now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
-        )
-        raise AssertionError("raw ESPN data must never be inserted into the fitted NBA ledger")
-    except hydration.BasketballHydrationError as exc:
-        assert str(exc) == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
-    assert called and called[0][0] == "NBA"
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
+    )
+    assert result["recent_supplement_status"][2027] == (
+        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+    )
+    assert called == []  # no untrusted provider request
+    assert result["settled_rows"] == 0
     assert persisted == []
 
 
@@ -590,7 +591,7 @@ def test_recent_source_failure_never_advertises_updated_games(monkeypatch):
         "NBA", [2027], client=object(), now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
     )
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
-    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"
+    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
     assert result["settled_rows"] == 0
     assert result["fresh_acquisition_new_settled_games"] == 0
     assert persisted == []
@@ -611,7 +612,7 @@ def test_duplicated_recent_event_ids_do_not_create_duplicate_training_games(monk
     result = hydration.hydrate(
         "NBA", [2027], client=object(), now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
     )
-    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_DUPLICATE_GAME_ID"
+    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
     assert result["settled_rows"] == 0
     assert persisted == []
 
@@ -690,7 +691,7 @@ def test_unlicensed_recent_espn_is_not_fetched_or_persisted_during_shadow_refres
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
     assert result["settled_rows"] == 0
     assert result["recent_supplement_status"][2027] == (
-        "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:MODEL_SOURCE_UNCLASSIFIED"
+        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
     )
     assert persisted == []
     assert result["can_execute"] is False
@@ -984,7 +985,7 @@ def test_sdv_future_or_unverified_capture_never_enters_settled_history():
 
         # Exact event day in the source's local calendar is not future-dated.
         assert hydration.normalize_sportsdataverse_game(
-            future, sport, "2026-11-06T18:00:00Z",
+            future, sport, "2026-11-07T02:00:00Z",
             source_release_year=2027,
         ) is not None
 
@@ -994,5 +995,30 @@ def test_sdv_future_or_unverified_capture_never_enters_settled_history():
         future["status_type_description"] = "Final"
         assert hydration.normalize_sportsdataverse_game(
             future, sport, "2026-11-07T18:00:00Z",
+            source_release_year=2027,
+        ) is None
+
+
+def test_sdv_same_eastern_day_started_after_capture_is_not_settled():
+    """Completion in a later release cannot be replayed before tip-off."""
+    for sport in ("NBA", "WNBA"):
+        row = _sportsdataverse_row(event_id="late-flag", game_date="2026-11-05")
+        row["game_date_time"] = "2026-11-05T19:00:00-05:00"
+        assert hydration.normalize_sportsdataverse_game(
+            row, sport, "2026-11-05T22:00:00Z",
+            source_release_year=2027,
+        ) is None  # Same Eastern day, 2pm capture but 7pm start
+        assert hydration.normalize_sportsdataverse_game(
+            row, sport, "2026-11-06T01:00:00Z",
+            source_release_year=2027,
+        ) is not None
+        row["game_date_time"] = ""
+        assert hydration.normalize_sportsdataverse_game(
+            row, sport, "2026-11-06T04:00:00Z",
+            source_release_year=2027,
+        ) is None
+        row["game_date_time"] = "not-a-timestamp"
+        assert hydration.normalize_sportsdataverse_game(
+            row, sport, "2026-11-06T04:00:00Z",
             source_release_year=2027,
         ) is None
