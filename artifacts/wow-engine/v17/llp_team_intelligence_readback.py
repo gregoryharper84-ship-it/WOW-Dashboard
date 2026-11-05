@@ -7,6 +7,7 @@ unless an independent exact-market source is actually present in the saved row.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from fastapi import FastAPI, HTTPException
@@ -60,6 +61,51 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
             "event_start_time_utc", "commence_time_utc", "event_start_time"
         ),
     }
+
+
+def _saved_research_identity_conflict(
+    row: Mapping[str, Any], event: Mapping[str, Any],
+) -> bool:
+    """Fail closed if persisted identities disagree about a researched event.
+
+    The Daily projection coalesces missing identity keys from several locations.
+    That fallback is valid only when *present* values do not contradict one
+    another. In particular, a result receipt with another official_event_id
+    must not appear as valid research for the outer row's event.
+    """
+    detail = _data(row.get("detail"))
+    sources = ( _data(row.get("identity")), _data(detail.get("identity")),
+                _data(detail.get("result")) )
+    for source in sources:
+        for field in ("official_event_id", "sport", "home_team", "away_team"):
+            actual = source.get(field)
+            if actual in (None, ""):
+                continue
+            expected = event.get(field)
+            if field == "official_event_id":
+                if _token(actual) != _token(expected):
+                    return True
+            elif _token(actual).upper() != _token(expected).upper():
+                return True
+        # Distinct same-teams fixtures cannot share research just because
+        # their canonical game IDs were omitted in one persisted source.
+        for key in ("event_start_time_utc", "commence_time_utc", "event_start_time"):
+            raw = source.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                stored = datetime.fromisoformat(_token(raw).replace("Z", "+00:00"))
+                start = datetime.fromisoformat(
+                    _token(event.get("event_start_time_utc")).replace("Z", "+00:00")
+                )
+                if (
+                    stored.tzinfo is None or start.tzinfo is None
+                    or stored.astimezone(timezone.utc) != start.astimezone(timezone.utc)
+                ):
+                    return True
+            except (ValueError, TypeError, OverflowError):
+                return True
+    return False
 
 
 def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,12 +241,30 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
             duplicate_ids.add(event_id)
         seen_ids.add(event_id)
         try:
+            research = result.get("llp_deep_research_context")
+            conflict = (
+                event["sport"] in {"NBA", "NHL"}
+                and research is not None
+                and _saved_research_identity_conflict(row, event)
+            )
+            winner = _winner_receipt_from_row(row, event)
+            if conflict:
+                # Neither a research annotation nor a certified-looking
+                # winner may cross a contradiction in persisted event identity.
+                # Preserve the event on the read-only board, but withhold p.
+                winner["probability_publishable"] = False
+                winner["rank_eligible"] = False
+                research = {"persisted_event_identity_conflict": True}
             bundle = build_llp_team_intelligence_bundle(
-                event=event, receipts=[_winner_receipt_from_row(row, event)],
-                deep_research_context=result.get("llp_deep_research_context"),
+                event=event, receipts=[winner],
+                deep_research_context=research,
             )
             bundle["daily_row_index"] = row.get("row_index")
             bundle["source_diagnostics"] = _source_failure_context(row)
+            if conflict:
+                bundle["source_diagnostics"]["source_reason_codes"].append(
+                    "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT"
+                )
             # Daily's underlying data has winner rows, not certified
             # independent spread/game-total scorer packages.
             bundle["market_coverage"] = {
