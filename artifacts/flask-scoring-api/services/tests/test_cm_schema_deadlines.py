@@ -110,13 +110,19 @@ def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
     import uuid
     schema = "cm_deadline_" + uuid.uuid4().hex
     locked = None
+    bootstrap_connections = []
     try:
         with psycopg2.connect(url) as setup:
             with setup.cursor() as cursor:
                 cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         dsn = psycopg2.extensions.make_dsn(url, options=f"-csearch_path={schema}")
         ns = _bootstrap_namespace(None)
-        ns["get_db_conn"] = lambda: psycopg2.connect(dsn, connect_timeout=10)
+        def connect_schema():
+            connection = psycopg2.connect(dsn, connect_timeout=10)
+            bootstrap_connections.append(connection)
+            return connection
+
+        ns["get_db_conn"] = connect_schema
         # A real optional statement error must not abort required DDL.
         ns["_CM_SLIP_MIGRATE_DDL"] += "\nSELECT 1/0;"
         ns["_cm_ensure_schema"]()
@@ -148,13 +154,18 @@ def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
         assert not ns["_CM_SCHEMA_READY"]
         ns["_cm_ensure_schema"]()
         assert ns["_CM_SCHEMA_READY"]
-        with psycopg2.connect(dsn) as check:
+        # SHOW must inspect the actual bootstrap sessions, including rollback
+        # and recovery. A newly opened session would trivially show defaults.
+        for check in bootstrap_connections:
+            assert not check.closed
             with check.cursor() as cursor:
                 cursor.execute("SHOW lock_timeout")
                 assert cursor.fetchone()[0] == "0"
                 cursor.execute("SHOW statement_timeout")
                 assert cursor.fetchone()[0] == "0"
     finally:
+        for connection in bootstrap_connections:
+            connection.close()
         if locked is not None:
             locked.rollback()
             locked.close()
