@@ -177,7 +177,7 @@ def run_basketball_model_maintenance(
         hydration: dict[str, Any] | None = None
         hydration_blocker: dict[str, Any] | None = None
         try:
-            hydration = hydrate(sport, season_values, client=db, now=clock)
+            hydration = hydrate(sport, season_values, client=db, now=now)
         except BasketballHydrationPartialWriteError as exc:
             # A prior upsert may have committed; do not replay or fit this
             # incompletely refreshed corpus until it is reconciled.

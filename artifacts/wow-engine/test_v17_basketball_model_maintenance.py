@@ -8,6 +8,45 @@ from fastapi.testclient import TestClient
 import v17.basketball_model_maintenance as maintenance
 
 
+def test_default_maintenance_live_fetch_persists_but_explicit_replay_cannot_borrow_later_snapshot(monkeypatch):
+    import basketball_event_hydration_runtime as hydration
+
+    class Clock(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            return cls(2026, 11, 6, 8, 0, cls.calls, tzinfo=timezone.utc)
+
+    row = {
+        "game_id": "401", "game_date": "2026-11-05",
+        "game_date_time": "2026-11-05T23:30:00-05:00",
+        "home_id": "7", "away_id": "8", "season": "2027", "season_type": "2",
+        "home_score": "111", "away_score": "109",
+        "status_type_completed": "true", "status_type_description": "Final",
+        "_wow_source_observed_at": "2026-11-06T08:00:02Z",
+    }
+    monkeypatch.setattr(maintenance, "datetime", Clock)
+    monkeypatch.setattr(hydration, "datetime", Clock)
+    monkeypatch.setattr(maintenance, "hydrate", hydration.hydrate)
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [row])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
+    batches = []
+    monkeypatch.setattr(hydration, "_persist_rows", lambda _db, _sport, rows: (batches.append(list(rows)), len(rows))[1])
+    monkeypatch.setattr(maintenance, "run_training_replay", lambda *_args, **_kwargs: {"status": "TEST_ONLY"})
+    live = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",), seasons=(2027,))
+    assert live["rows"][0]["hydration"]["settled_rows"] == 1
+    assert batches[-1][0]["source_retrieved_at"] == row["_wow_source_observed_at"]
+    replay = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2027,),
+        now=Clock(2026, 11, 6, 8, 0, 1, tzinfo=timezone.utc),
+    )
+    assert replay["rows"][0]["hydration"]["settled_rows"] == 0
+    assert batches[-1] == []
+    assert live["probability_publishable"] is False
+
+
 def test_default_seasons_are_four_year_window():
     assert maintenance.default_seasons(datetime(2026, 9, 15, tzinfo=timezone.utc)) == (2023, 2024, 2025, 2026)
 
@@ -44,7 +83,9 @@ def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
     assert all(row["hydration_status"] == "FRESH_ACQUISITION_UPDATED" for row in result["rows"])
     assert all(row["promotion_attempted"] is False for row in result["rows"])
     assert seen[0][:3] == ("hydrate", "NBA", (2025, 2026))
-    assert seen[0][4] is not None and seen[0][4].utcoffset() is not None
+    # The default run lets hydration acquire its own post-fetch cutoff.
+    # Explicit historical cutoffs are covered separately and remain fixed.
+    assert seen[0][4] is None
 
 
 def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
