@@ -14,9 +14,9 @@ from typing import Mapping
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_FILES = 50
-_MAX_PAYLOAD_BYTES = 90_000
-_MAX_FILE_BYTES = 24_000
-_MAX_CONTEXT_FILES = 12
+_MAX_PAYLOAD_BYTES = 1_000_000
+_MAX_FILE_BYTES = 250_000
+_MAX_CONTEXT_FILES = 64
 _MAX_SCANNED_SOURCES = 1_000
 _MAX_SCANNED_SOURCE_BYTES = 16_000_000
 _MAX_SINGLE_SOURCE_BYTES = 250_000
@@ -64,7 +64,8 @@ def _digest(value: object) -> str:
 def _valid_path(path: str) -> bool:
     return (
         isinstance(path, str) and bool(path) and len(path) <= 400
-        and not path.startswith("/") and "\\" not in path and "\x00" not in path
+        and not path.startswith("/") and "\\" not in path
+        and not any(ord(c) < 32 or ord(c) == 127 or c == "`" for c in path)
         and all(part not in ("", ".", "..") for part in path.split("/"))
     )
 
