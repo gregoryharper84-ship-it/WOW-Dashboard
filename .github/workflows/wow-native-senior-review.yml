@@ -1,0 +1,89 @@
+name: WOW Native Senior Engineering Advisory
+
+# Trusted base-branch source only. Never checkout PR code or execute PR scripts.
+# Advisory findings are NOT an independent QA/Release approval or required check.
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Existing same-repo PR to inspect"
+        required: true
+        type: string
+      expected_head:
+        description: "Exact 40-character head SHA"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: wow-native-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  native-review:
+    name: WOW Native Senior Review (advisory only)
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' &&
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout only protected main reviewer code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify trusted reviewer is from main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          remote="$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          test "$actual" = "$remote" || {
+            echo "::error::NATIVE_REVIEW_TRUSTED_MAIN_SHA_DRIFT"
+            exit 1
+          }
+
+      - name: Review exact PR as source data, never execute changed code
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || inputs.expected_head }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::NATIVE_REVIEW_PR_INVALID"; exit 1;
+          }
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::NATIVE_REVIEW_SHA_INVALID"; exit 1;
+          }
+          python3 .github/scripts/wow_native_senior_review.py \
+            --pr "$PR_NUMBER" \
+            --expected-head "$EXPECTED_HEAD" \
+            --out "$RUNNER_TEMP/wow-native-senior-review.json" \
+            --post-comment
+
+      - name: Preserve review evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-native-senior-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/wow-native-senior-review.json
+          if-no-files-found: ignore
+          retention-days: 14
