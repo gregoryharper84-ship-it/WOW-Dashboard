@@ -296,3 +296,127 @@ def test_tiebreaker_fails_closed_without_certified_total_points_model():
         "sportsbook_total_substitution_allowed": False,
         "can_execute": False,
     }
+
+
+def _research_context(row: dict, *, observed_at: str = "2026-09-30T11:30:00+00:00") -> dict:
+    """Upstream-reported evidence only; these assertions do not certify fitting."""
+    return {
+        "official_event_id": row["candidate_envelope"]["official_event_id"],
+        "modeled_source_snapshot_id": row["source_snapshot_id"],
+        "model_version": row["model_version"],
+        "observed_at": observed_at,
+        "factors": {
+            "PLAYER_VALUE_AND_REPLACEMENT": {
+                "status": "DOCUMENTED",
+                "source_receipt_id": "source-availability-1",
+                "review_flags": ["QB_AVAILABILITY_UNCERTAIN"],
+            },
+            "MARKET_DISAGREEMENT_DIAGNOSTIC": {
+                "status": "DOCUMENTED",
+                "source_receipt_id": "source-market-2",
+                "review_flags": [
+                    "MATERIAL_MARKET_DISAGREEMENT",
+                    "UNSUPPORTED_OR_FABRICATED_FLAG",
+                ],
+            },
+            "UPSET_VARIANCE_AND_SCENARIOS": {
+                "status": "DOCUMENTED",
+                # Without a source receipt, never count as covered.
+                "review_flags": ["HIGH_VARIANCE_UPSET_PATHWAY"],
+            },
+        },
+    }
+
+
+def test_deep_research_missing_is_explicit_not_assumed_safe_or_modeled():
+    row = _row("evt-no-research", "NE", "BUF", 0.72)
+    out = select_pickem_game(row)
+    audit = out["deep_research_audit"]
+    assert audit["status"] == "CONTEXT_NOT_SUPPLIED"
+    assert audit["factor_families_documented"] == []
+    assert len(audit["factor_families_missing"]) == 10
+    assert audit["upset_volatility_index"] is None
+    assert audit["forecast_fragility"] is None
+    assert audit["independently_certified"] is False
+    assert out["selection_volatility_basis"] == "PROBABILITY_GAP_PROXY_NOT_UPSET_VARIANCE"
+    assert out["pool_pick"] == "BUF"
+
+
+def test_deep_research_pregame_source_flags_trigger_recheck_not_pick_flip():
+    row = _row("evt-research", "NE", "BUF", 0.72)
+    row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T19:00:00+00:00"
+    row["pickem_deep_research_context"] = _research_context(row)
+    row["market_probability"] = 0.01
+    out = select_pickem_game(row)
+    audit = out["deep_research_audit"]
+    assert audit["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    assert audit["factor_families_documented"] == [
+        "PLAYER_VALUE_AND_REPLACEMENT", "MARKET_DISAGREEMENT_DIAGNOSTIC"
+    ]
+    assert "UPSET_VARIANCE_AND_SCENARIOS" in audit["factor_families_missing"]
+    assert audit["review_flags"] == [
+        "MATERIAL_MARKET_DISAGREEMENT", "QB_AVAILABILITY_UNCERTAIN"
+    ]
+    assert audit["model_recheck_required"] is True
+    assert audit["independently_certified"] is False
+    assert audit["upset_volatility_index"] is None
+    assert out["pool_pick"] == "BUF"
+    assert out["selected_probability"] == 0.72
+    assert out["source_terminal_upgraded"] is False
+    assert out["market_probability_used"] is False
+    assert out["can_execute"] is False
+
+
+def test_post_kickoff_or_wrong_snapshot_research_is_never_accepted():
+    row = _row("evt-postgame", "NYJ", "CHI", 0.61)
+    row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T19:00:00+00:00"
+    row["pickem_deep_research_context"] = _research_context(
+        row, observed_at="2026-10-01T20:00:00+00:00"
+    )
+    assert select_pickem_game(row)["deep_research_audit"]["status"] == (
+        "CONTEXT_INVALID_PROVENANCE"
+    )
+    row["pickem_deep_research_context"] = _research_context(row)
+    row["pickem_deep_research_context"]["modeled_source_snapshot_id"] = "wrong"
+    assert select_pickem_game(row)["deep_research_audit"]["status"] == (
+        "CONTEXT_INVALID_PROVENANCE"
+    )
+
+
+def test_new_material_evidence_after_model_requests_rescore_not_manual_flip():
+    row = _row("evt-new-evidence", "DAL", "HOU", 0.58)
+    row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T19:00:00+00:00"
+    row["pickem_deep_research_context"] = _research_context(
+        row, observed_at="2026-09-30T13:00:00+00:00"
+    )
+    out = select_pickem_game(row)
+    assert out["deep_research_audit"]["status"] == "MATERIAL_CONTEXT_NEWER_THAN_MODEL"
+    assert out["deep_research_audit"]["model_recheck_required"] is True
+    assert out["deep_research_audit"]["review_flags"] == [
+        "PREGAME_MODEL_REFRESH_REQUIRED"
+    ]
+    assert out["pool_pick"] == "HOU"
+    assert out["selected_probability"] == 0.58
+
+
+def test_deep_research_board_counts_are_advisory_and_cannot_override_terminal():
+    documented = _row("evt-documented", "NE", "BUF", 0.72)
+    documented["candidate_envelope"]["event_start_time_utc"] = (
+        "2026-10-01T19:00:00+00:00"
+    )
+    documented["pickem_deep_research_context"] = _research_context(documented)
+    newer = _row("evt-newer", "DAL", "HOU", 0.58)
+    newer["candidate_envelope"]["event_start_time_utc"] = (
+        "2026-10-01T19:00:00+00:00"
+    )
+    newer["pickem_deep_research_context"] = _research_context(
+        newer, observed_at="2026-09-30T13:00:00+00:00"
+    )
+    board = build_pickem_board([documented, newer], expected_game_count=2)
+    assert board["status"] == PICKEM_BOARD_READY
+    assert board["ready_pick_count"] == 2
+    assert board["deep_research_context_count"] == 1
+    assert board["deep_research_model_recheck_count"] == 2
+    assert board["decision_objective"] == DECISION_OBJECTIVE
+    assert board["source_terminals_preserved"] is True
+    assert board["can_execute"] is False
