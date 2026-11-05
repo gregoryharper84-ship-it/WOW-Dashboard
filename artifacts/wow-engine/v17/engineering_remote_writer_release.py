@@ -305,6 +305,12 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             )
         pr_number = proof.get("pr_number")
         expected_head = proof.get("head_sha")
+        proof_state = proof.get("pr_state")
+        if (is_failed_launch and (
+                proof_state not in {"open", "closed"}
+                or (proof_state == "closed" and (
+                    not isinstance(old.get("branch"), str) or not old["branch"].strip()))):
+            raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_PROOF_INVALID")
         if (type(pr_number) is not int or pr_number <= 0
                 or not isinstance(expected_head, str)
                 or len(expected_head) != 40
@@ -313,10 +319,12 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         fresh_pr = api.request(f"/repos/{REPOSITORY}/pulls/{pr_number}")
         if (not isinstance(fresh_pr, dict)
                 or fresh_pr.get("number") != pr_number
-                or fresh_pr.get("state") != "open"
+                or fresh_pr.get("state") != (proof_state if is_failed_launch else "open")
                 or not isinstance(fresh_pr.get("head"), dict)
                 or not isinstance(fresh_pr.get("base"), dict)
                 or fresh_pr["head"].get("sha") != expected_head
+                or (is_failed_launch and isinstance(old.get("branch"), str)
+                    and fresh_pr["head"].get("ref") != old["branch"])
                 or not isinstance(fresh_pr["head"].get("repo"), dict)
                 or fresh_pr["head"]["repo"].get("full_name") != REPOSITORY
                 or fresh_pr["base"].get("ref") != "main"
