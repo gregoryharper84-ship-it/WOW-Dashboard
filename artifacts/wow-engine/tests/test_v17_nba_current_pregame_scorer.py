@@ -1018,6 +1018,18 @@ def test_nba_bridge_registration_and_model_invocation(monkeypatch):
     assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in detail["blockers"]
     assert detail["backend_route_status"] == "SPORT_SPECIFIC_TEAM_EVENT_BRIDGE_BLOCKED"
 
+    # The shared dispatcher forwards its own historical False default. The
+    # NBA bridge must override it, even when a caller explicitly supplies False.
+    with pytest.raises(HTTPException) as registered_override:
+        score_registered_team_event_request(
+            req, event_api=object(), canonical_hydration_required=False,
+        )
+    registered_detail = registered_override.value.detail
+    assert registered_detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert registered_detail["model_invoked"] is False
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in registered_detail["blockers"]
+    assert registered_detail["can_execute"] is False
+
     # Explicitly requesting the legacy caller-feature path is not a security
     # bypass: no server-owned hydration means no numerical model invocation.
     with pytest.raises(HTTPException) as override:
