@@ -196,7 +196,13 @@ def _related_sources(client, paths: list[str], head: str):
                 warnings.append("SIBLING_CONTEXT_BUDGET_EXHAUSTED")
                 break
             try:
-                related[_path(path)] = _fetch_source(client, path, head)
+                candidate = _fetch_source(client, path, head)
+                if (len(candidate.encode("utf-8")) > 24_000
+                        or sum(len(v.encode("utf-8")) for v in related.values())
+                        + len(candidate.encode("utf-8")) > 128_000):
+                    warnings.append("SIBLING_CONTEXT_TOO_LARGE:" + path)
+                    continue
+                related[_path(path)] = candidate
             except ReviewHold:
                 warnings.append("SIBLING_FILE_UNREADABLE:" + path)
         if len(choices) > _MAX_CONTEXT:
