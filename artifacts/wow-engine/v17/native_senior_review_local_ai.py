@@ -7,6 +7,7 @@ There is no external fallback, automatic model installation, or release authorit
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, HTTPRedirectHandler, build_opener
@@ -30,6 +31,13 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def _make_prompt(packet: dict) -> str:
+    canonical = dict(packet)
+    expected_digest = canonical.pop("packet_sha256", None)
+    actual_digest = hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")).hexdigest()
+    if not isinstance(expected_digest, str) or actual_digest != expected_digest:
+        raise LocalSemanticHold("LOCAL_REVIEW_PACKET_DRIFT")
     if packet.get("status") != "ADVISORY_REVIEW_REQUIRED":
         raise LocalSemanticHold("LOCAL_REVIEW_CONTEXT_INCOMPLETE")
     input_doc = {
