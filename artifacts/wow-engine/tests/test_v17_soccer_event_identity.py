@@ -365,10 +365,9 @@ def test_conflicting_same_id_team_identity_never_borrows_first_fixture():
 
 def test_duplicate_home_competitor_role_is_schema_drift_not_last_write_wins():
     malformed = scoreboard_event("401800017")
-    malformed["competitions"][0]["competitors"].append({
-        "homeAway": "home",
-        "team": {"id": "999", "displayName": "Another Club"},
-    })
+    # Preserve exactly two competitors: three would fail the length guard
+    # before exercising the duplicate-home-role validation.
+    malformed["competitions"][0]["competitors"][1]["homeAway"] = "home"
     with pytest.raises(identity.SoccerEventIdentityError) as exc:
         _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [malformed]}))
     assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
