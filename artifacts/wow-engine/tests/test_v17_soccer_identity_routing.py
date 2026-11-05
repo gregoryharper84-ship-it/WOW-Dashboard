@@ -90,16 +90,72 @@ def test_unattested_competition_stays_alias_only_without_a_source_call(monkeypat
 def test_identity_failure_keeps_the_row_held(monkeypatch):
     import v17.soccer_event_identity as identity
 
-    class IdentityFailure(RuntimeError):
-        code = "SOCCER_CANONICAL_EVENT_NOT_FOUND"
-
     def fail(**_kwargs):
-        raise IdentityFailure("no fixture")
+        raise identity.SoccerEventIdentityError(
+            "SOCCER_CANONICAL_EVENT_NOT_FOUND", "no fixture"
+        )
 
     monkeypatch.setattr(identity, "resolve_soccer_current_event_identity", fail)
     out = canonicalize_soccer_discovery_identity(soccer_alias_event())
     assert out.official_event_id is None
     assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_EVENT_NOT_FOUND"
+
+
+def _soccer_alias_only_in_official_field():
+    # Some discovery adapters place an untrusted provider alias here rather
+    # than in raw; canonicalization must retain it even when resolution fails.
+    event = soccer_alias_event()
+    return DiscoveredEvent(
+        **{**event.__dict__, "official_event_id": "legacy-epl-117", "raw": {}}
+    )
+
+
+def test_unexpected_soccer_resolver_error_is_registered_hold_not_class_name(monkeypatch):
+    import v17.soccer_event_identity as identity
+
+    class UnexpectedFailure(RuntimeError):
+        code = "SOCCER_CANONICAL_EVENT_NOT_FOUND"
+
+    def fail(**_kwargs):
+        raise UnexpectedFailure("synthetic unexpected code attribute")
+
+    monkeypatch.setattr(identity, "resolve_soccer_current_event_identity", fail)
+    out = canonicalize_soccer_discovery_identity(_soccer_alias_only_in_official_field())
+    assert out.official_event_id is None
+    assert out.raw["provider_event_id"] == "legacy-epl-117"
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_RESOLVER_FAILED"
+
+
+def test_missing_soccer_canonical_id_preserves_provider_alias(monkeypatch):
+    import v17.soccer_event_identity as identity
+
+    monkeypatch.setattr(
+        identity, "resolve_soccer_current_event_identity",
+        lambda **_kwargs: {"event_id": ""},
+    )
+    out = canonicalize_soccer_discovery_identity(_soccer_alias_only_in_official_field())
+    assert out.official_event_id is None
+    assert out.raw["provider_event_id"] == "legacy-epl-117"
+    assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_EVENT_ID_MISSING"
+
+
+def test_resolved_soccer_identity_preserves_legacy_official_field_as_alias(monkeypatch):
+    import v17.soccer_event_identity as identity
+
+    monkeypatch.setattr(
+        identity, "resolve_soccer_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "SOCCER:401878758", "competition": "eng.1",
+            "outcome_space": "HOME_DRAW_AWAY", "draw_possible": True,
+            "settlement_contract": "REGULATION_TIME_THREE_WAY_UNLESS_MARKET_EXPLICIT",
+        },
+    )
+    out = canonicalize_soccer_discovery_identity(_soccer_alias_only_in_official_field())
+    assert out.official_event_id == "SOCCER:401878758"
+    assert out.raw["provider_event_id"] == "legacy-epl-117"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_draw_possible"] is True
 
 
 def test_other_sports_pass_through_untouched():
