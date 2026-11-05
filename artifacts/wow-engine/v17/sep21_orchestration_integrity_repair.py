@@ -28,6 +28,7 @@ def install_daily_current_acquisition_repair() -> bool:
     """
     from v17 import daily_snapshot_runtime as daily
     from v17.prop_sport_parity import prop_sport_parity_summary
+    from v17.prop_sport_parity import prop_sport_coverage_receipt
 
     if getattr(daily, "_v17_sep21_current_acquisition_repair_installed", False):
         return True
@@ -85,6 +86,11 @@ def install_daily_current_acquisition_repair() -> bool:
             )
             if "PROPS" in lanes and isinstance(response, dict):
                 response["prop_sport_parity"] = prop_sport_parity_summary()
+                response["prop_sport_coverage_receipt"] = prop_sport_coverage_receipt(
+                    requested_sports=getattr(req, "sports", None),
+                    rows=response.get("rows") or [],
+                    acquisition=response.get("prop_acquisition"),
+                )
                 response["can_execute"] = False
             return response
 
@@ -138,6 +144,11 @@ def install_daily_current_acquisition_repair() -> bool:
         response["current_acquisition_required"] = True
         response["historical_manifest_substitution"] = False
         response["prop_sport_parity"] = prop_sport_parity_summary()
+        response["prop_sport_coverage_receipt"] = prop_sport_coverage_receipt(
+            requested_sports=getattr(req, "sports", None),
+            rows=response.get("rows") or [],
+            acquisition=response.get("prop_acquisition"),
+        )
         response["can_execute"] = False
         if requested_mode == "FULL":
             response["response_mode"] = "FULL"

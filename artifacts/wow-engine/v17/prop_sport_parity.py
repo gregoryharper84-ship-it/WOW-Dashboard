@@ -104,7 +104,95 @@ def prop_sport_parity_summary() -> dict[str, Any]:
     }
 
 
+def _norm_sport(value: Any) -> str:
+    sport = str(value or "").strip().upper()
+    return "PGA" if sport == "GOLF" else sport
+
+
+def _scorer_executed(row: dict[str, Any]) -> bool:
+    outcomes = (row.get("result") or {}).get("outcomes") or []
+    if not outcomes:
+        return False
+    for outcome in outcomes:
+        payload = outcome.get("payload") or {}
+        if payload.get("route_preflight_blocked") is True:
+            return False
+        if payload.get("specialist_scoring_attempted") is False:
+            return False
+        if payload.get("code") == "PROP_SCORER_EXCEPTION":
+            return False
+    return True
+
+
+def prop_sport_coverage_receipt(
+    *,
+    requested_sports: list[str] | None,
+    rows: list[dict[str, Any]],
+    acquisition: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Per-sport PROPS coverage. Never infers coverage from the moneyline lane.
+
+    ``cross_sport_discovery_audit`` belongs to the team-event/moneyline lane; a
+    null there says nothing about prop coverage. Rows are only counted, never
+    upgraded; unscored rows keep their terminal row_status.
+    """
+    parity = prop_sport_parity()
+    prop_rows = [r for r in rows if r.get("lane") == "PROPS"]
+    receipts = list((acquisition or {}).get("receipts") or [])
+    requested = [_norm_sport(s) for s in (requested_sports or [])] or sorted(parity)
+    sports = list(dict.fromkeys(requested))
+    seen = {_norm_sport((r.get("identity") or {}).get("sport")) for r in prop_rows}
+    seen |= {_norm_sport(r.get("sport")) for r in receipts if r.get("sport")}
+    sports += sorted(s for s in seen if s and s not in sports)
+    per_sport: dict[str, Any] = {}
+    for sport in sports:
+        mine = [r for r in prop_rows if _norm_sport((r.get("identity") or {}).get("sport")) == sport]
+        executed = [r for r in mine if _scorer_executed(r)]
+        mine_receipts = [r for r in receipts if _norm_sport(r.get("sport")) == sport]
+        excluded = [r for r in mine_receipts if r.get("write_status") not in (None, "SNAPSHOT_WRITE_SUCCEEDED")]
+        cap = parity.get(sport)
+        discovery = bool(cap and cap["daily_autonomous_discovery_supported"])
+        unscored = len(mine) - len(executed)
+        per_sport[sport] = {
+            "sport": sport,
+            "cataloged": cap is not None,
+            "requested": sport in requested,
+            "autonomous_discovery_supported": discovery,
+            "autonomous_discovery_status": "ENABLED" if discovery else "NOT_IMPLEMENTED",
+            "certified_production_lane_count": cap["certified_production_lane_count"] if cap else 0,
+            "discovered_current_run": len(mine_receipts),
+            "excluded": len(excluded),
+            "canonical_rows": len(mine),
+            "scored": len(executed),
+            "unscored": unscored,
+            "reconciled": len(mine) == len(executed) + unscored,
+            "coverage_status": (
+                "ROWS_PRESENT" if mine else
+                ("NO_ROWS_DISCOVERY_ENABLED" if discovery else "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED")
+            ),
+            "zero_rows_is_not_empty_slate_proof": True,
+            "can_execute": False,
+        }
+    unattributed = [r for r in receipts if not r.get("sport")]
+    return {
+        "contract_version": PROP_PARITY_VERSION + "_COVERAGE_RECEIPT",
+        "lane": "PROPS",
+        "scope_note": (
+            "Prop-lane coverage only. cross_sport_discovery_audit is the moneyline/"
+            "team-event lane; null there is not prop coverage."
+        ),
+        "per_sport": per_sport,
+        "unattributed_acquisition_receipts": len(unattributed),
+        "total_prop_rows": len(prop_rows),
+        "all_reconciled": all(v["reconciled"] for v in per_sport.values())
+        and sum(v["canonical_rows"] for v in per_sport.values()) == len(prop_rows),
+        "silent_sport_omission": False,
+        "can_execute": False,
+    }
+
+
 __all__ = [
+    "prop_sport_coverage_receipt",
     "CAN_EXECUTE",
     "PROP_PARITY_VERSION",
     "prop_sport_parity",
