@@ -39,6 +39,76 @@ def test_worker_markers_follow_real_guard_and_verified_app_result():
     ).returncode == 0
 
 
+
+def test_in_lock_guard_denies_capacity_before_any_writer_admission(tmp_path: Path):
+    """Run the ACTUAL writer step against the real guard and a three-PR API fixture.
+
+    This covers the observed TARGET_APP_WIP_CAP_HOLD mechanism, not merely the
+    textual ordering of commands in the workflow. No external API is contacted.
+    """
+    import shutil
+
+    python_binary = shutil.which("python")
+    assert python_binary is not None
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python_calls = tmp_path / "python-calls.log"
+    gh_calls = tmp_path / "gh-calls.log"
+
+    python_shim = bin_dir / "python"
+    python_shim.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$PYTHON_CALLS\"\n"
+        "exec \"$REAL_PYTHON\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+
+    app_pulls = [
+        {
+            "user": {"login": "wow-engineering[bot]"},
+            "head": {"ref": f"wow-engineering/exact-replay-fixture-{i}"},
+        }
+        for i in range(3)
+    ]
+    gh_shim = bin_dir / "gh"
+    gh_shim.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$GH_CALLS\"\n"
+        "[ \"$1\" = api ] || exit 71\n"
+        + "printf '%s\\n' '" + json.dumps(app_pulls, separators=(",", ":")) + "'\n",
+        encoding="utf-8",
+    )
+    gh_shim.chmod(0o755)
+
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REAL_PYTHON": python_binary,
+        "PYTHON_CALLS": str(python_calls),
+        "GH_CALLS": str(gh_calls),
+        "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
+        "RUNNER_TEMP": str(tmp_path),
+        "SOURCE_PR": "2158",
+        "SOURCE_SHA": SHA,
+    }
+    writer = _step("Re-propose immutable source through authenticated Engineering App")
+    result = subprocess.run(
+        ["bash", "-c", writer["run"]], cwd=ROOT,
+        env=environment, text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert "TARGET_APP_WIP_CAP_HOLD" in result.stderr
+    calls = python_calls.read_text(encoding="utf-8")
+    assert "engineering_targeted_adoption_guard.py" in calls
+    assert "pulls?state=open&base=main" in gh_calls.read_text(encoding="utf-8")
+    assert "engineering_authorized_adoption.py integrate" not in calls
+    assert not (tmp_path / "wow-writer-admitted.marker").exists()
+    assert not (tmp_path / "wow-writer-completed.marker").exists()
+    assert not (tmp_path / "wow-app-adoption-result.json").exists()
+
+
 def test_receipts_share_the_existing_worker_and_never_grant_release():
     steps = _steps()
     receipt = _step("Record actual writer admission and completion")
