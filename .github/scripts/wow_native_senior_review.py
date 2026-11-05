@@ -118,7 +118,7 @@ def _fetch_source(client, path: str, sha: str) -> str:
     if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
         raise ReviewHold("PR_SOURCE_ENCODING_UNSUPPORTED")
     try:
-        raw = base64.b64decode(payload["content"], validate=False)
+        raw = base64.b64decode("".join(payload["content"].split()), validate=True)
         if len(raw) > _MAX_FILE:
             raise ReviewHold("PR_SOURCE_OVERSIZED")
         return raw.decode("utf-8")
