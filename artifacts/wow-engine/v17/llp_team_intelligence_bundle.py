@@ -30,7 +30,7 @@ def _utc(value: Any) -> datetime | None:
     try:
         stamp = datetime.fromisoformat(_str(value).replace("Z", "+00:00"))
         return stamp.astimezone(timezone.utc) if stamp.utcoffset() is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
