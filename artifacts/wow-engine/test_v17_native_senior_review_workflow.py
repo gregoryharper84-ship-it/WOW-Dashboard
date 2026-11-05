@@ -50,3 +50,11 @@ def test_script_never_executes_or_checks_out_pr_code():
     assert "ref=main" not in code
     assert "LOCAL_OLLAMA_ONLY" not in code or "--local-model" in code
     assert "REVIEW_PACKET_DRIFT" not in code or "run_static_review" in code
+
+
+def test_trusted_action_integrity_is_pinned():
+    code = WORKFLOW.read_text(encoding="utf-8")
+    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in code
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in code
+    assert "uses: actions/checkout@v4" not in code
+    assert "uses: actions/upload-artifact@v4" not in code
