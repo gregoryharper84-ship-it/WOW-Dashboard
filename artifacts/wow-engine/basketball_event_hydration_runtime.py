@@ -593,6 +593,7 @@ def _sportsdataverse_regular_season_start(rows: list[dict[str, Any]], release_ye
 def hydrate(
     sport: str, seasons: Iterable[int], client=None, *, now: datetime | None = None
 ) -> dict[str, Any]:
+    """Acquire and persist canonical settled evidence with source and calendar metadata."""
     sport = sport.upper().strip()
     if sport not in TABLES:
         raise BasketballHydrationError(f"unsupported sport {sport}")

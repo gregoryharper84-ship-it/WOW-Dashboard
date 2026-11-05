@@ -11,6 +11,7 @@ import v17.basketball_model_maintenance as maintenance
 
 
 def test_default_maintenance_live_fetch_persists_but_explicit_replay_cannot_borrow_later_snapshot(monkeypatch):
+    """Verify default maintenance live fetch persists but explicit replay cannot borrow later snapshot."""
     import basketball_event_hydration_runtime as hydration
 
     class Clock(datetime):
@@ -18,6 +19,7 @@ def test_default_maintenance_live_fetch_persists_but_explicit_replay_cannot_borr
 
         @classmethod
         def now(cls, tz=None):
+            """Freeze the ambient live clock without requesting a historical replay."""
             cls.calls += 1
             return cls(2026, 11, 6, 8, 0, cls.calls, tzinfo=timezone.utc)
 
@@ -50,10 +52,12 @@ def test_default_maintenance_live_fetch_persists_but_explicit_replay_cannot_borr
 
 
 def test_default_seasons_are_four_year_window():
+    """Verify default seasons are four year window."""
     assert maintenance.default_seasons(datetime(2026, 9, 15, tzinfo=timezone.utc)) == (2023, 2024, 2025, 2026)
 
 
 def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
+    """Verify maintenance updates shadow evidence without promotion."""
     seen = []
 
     def fake_hydrate(sport, seasons, client=None, *, now=None):
@@ -91,6 +95,7 @@ def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
 
 
 def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
+    """Verify missing provider credential replays persisted corpus."""
     def fail_hydration(*_args, **_kwargs):
         raise maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
 
@@ -126,6 +131,7 @@ def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
 
 
 def test_partial_hydration_write_never_trains_a_half_persisted_corpus(monkeypatch):
+    """Verify partial hydration write never trains a half persisted corpus."""
     def partial_hydrate(*_args, **_kwargs):
         raise maintenance.BasketballHydrationPartialWriteError(
             "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
@@ -151,6 +157,7 @@ def test_partial_hydration_write_never_trains_a_half_persisted_corpus(monkeypatc
 
 
 def test_hydration_and_persisted_replay_failure_remain_blocked(monkeypatch):
+    """Verify hydration and persisted replay failure remain blocked."""
     def fail_hydration(*_args, **_kwargs):
         raise maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
 
@@ -170,6 +177,7 @@ def test_hydration_and_persisted_replay_failure_remain_blocked(monkeypatch):
 
 
 def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
+    """Verify maintenance route is internal and auth wrapped."""
     app = FastAPI()
     monkeypatch.setattr(maintenance, "scout_route_auth_dependency", lambda dep: dep)
     monkeypatch.setattr(
@@ -205,6 +213,7 @@ def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
 
 
 def test_live_basketball_maintenance_never_runs_on_push():
+    """Verify live basketball maintenance never runs on push."""
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (
         repo_root / ".github" / "workflows" / "wow-v17-basketball-model-maintenance.yml"
@@ -217,6 +226,7 @@ def test_live_basketball_maintenance_never_runs_on_push():
 
 
 def test_replay_success_cannot_disguise_stale_basketball_source(monkeypatch):
+    """Verify replay success cannot disguise stale basketball source."""
     monkeypatch.setattr(
         maintenance, "hydrate",
         lambda *_args, **_kwargs: {
@@ -247,6 +257,7 @@ def test_replay_success_cannot_disguise_stale_basketball_source(monkeypatch):
 
 
 def test_provider_blocked_after_successful_csv_is_counted_as_degraded(monkeypatch):
+    """Verify provider blocked after successful csv is counted as degraded."""
     monkeypatch.setattr(
         maintenance, "hydrate",
         lambda *_args, **_kwargs: {
@@ -270,6 +281,7 @@ def test_provider_blocked_after_successful_csv_is_counted_as_degraded(monkeypatc
 
 
 def test_missing_fresh_acquisition_counter_is_unverified_not_updated(monkeypatch):
+    """Verify missing fresh acquisition counter is unverified not updated."""
     monkeypatch.setattr(
         maintenance, "hydrate",
         lambda *_args, **_kwargs: {"sport": "NBA", "can_execute": False},
@@ -285,6 +297,7 @@ def test_missing_fresh_acquisition_counter_is_unverified_not_updated(monkeypatch
 
 
 def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypatch):
+    """Verify opening ramp uses trusted 2027 espn nba release but 2026 wnba."""
     calls = []
     def fake_hydrate(sport, seasons, client=None, *, now=None):
         calls.append((sport, tuple(seasons), now))
@@ -325,6 +338,7 @@ def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypat
 
 
 def test_nba_release_year_rotates_only_after_october_opening():
+    """Verify nba release year rotates only after october opening."""
     assert maintenance.default_seasons(
         datetime(2026, 9, 30, tzinfo=timezone.utc), sport="NBA",
     ) == (2023, 2024, 2025, 2026)
@@ -341,6 +355,7 @@ def test_nba_release_year_rotates_only_after_october_opening():
 def test_scheduled_nba_november_rejects_june_only_corpus_before_replay(monkeypatch):
     # Actual 2026-11-03 scheduler reported COMPLETE despite latest NBA
     # persisted settled game still being 2026-06-13. This must be a HOLD.
+    """Verify scheduled nba november rejects june only corpus before replay."""
     monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
         "sport": "NBA", "settled_rows": 8919,
         "latest_game_date_before": "2026-06-13",
@@ -373,6 +388,7 @@ def test_scheduled_nba_replay_allowed_when_current_season_is_persisted(monkeypat
     class LiveClock(datetime):
         @classmethod
         def now(cls, tz=None):
+            """Freeze the ambient live clock without requesting a historical replay."""
             return cls(2026, 11, 4, 12, tzinfo=timezone.utc)
 
     monkeypatch.setattr(maintenance, "datetime", LiveClock)
@@ -404,6 +420,7 @@ def test_scheduled_nba_replay_allowed_when_current_season_is_persisted(monkeypat
 
 
 def test_nba_scheduled_unverified_or_future_date_fails_closed(monkeypatch):
+    """Verify nba scheduled unverified or future date fails closed."""
     for invalid in (None, "not-a-date", "2026-11-08"):
         monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
             "sport": "NBA",
@@ -427,6 +444,7 @@ def test_nba_scheduled_unverified_or_future_date_fails_closed(monkeypatch):
 
 
 def test_nba_current_season_hydration_failure_is_not_successful_replay(monkeypatch):
+    """Verify nba current season hydration failure is not successful replay."""
     def unavailable(*_args, **_kwargs):
         raise maintenance.BasketballHydrationError("NBA_SOURCE_HTTP_503")
 
@@ -455,6 +473,7 @@ def test_nba_current_season_hydration_failure_is_not_successful_replay(monkeypat
 
 
 def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
+    """Verify nba current season gap preserves wnba and offseason."""
     assert maintenance._nba_current_season_data_gap(
         {"latest_game_date_after": "2026-06-13",
          "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"},
@@ -472,6 +491,7 @@ def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
 
 
 def test_nba_current_season_recovery_target_rotates_with_year():
+    """Verify nba current season recovery target rotates with year."""
     gap_2027 = maintenance._nba_current_season_data_gap(
         {"latest_game_date_after": "2026-06-13"},
         datetime(2026, 11, 5, tzinfo=timezone.utc),
@@ -516,6 +536,7 @@ def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypa
     writes = {}
     class FakeTable:
         def __init__(self, name):
+            """Initialize recorded DDL statements and the synthetic failure trigger."""
             self.name = name
         def insert(self, row):
             writes[self.name] = row
@@ -524,6 +545,7 @@ def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypa
             writes[self.name] = row
             return self
         def execute(self):
+            """Record DDL and raise only the configured synthetic failure."""
             return SimpleNamespace(data=[])
 
     class FakeDb:
@@ -579,6 +601,7 @@ def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypa
 def test_explicit_clock_never_replays_unbounded_persisted_corpus(monkeypatch, sport, source_failed):
     """A cutoff on hydration cannot authorize fitting a later persisted corpus."""
     def hydrate(*_args, **_kwargs):
+        """Acquire and persist canonical settled evidence with source and calendar metadata."""
         if source_failed:
             raise maintenance.BasketballHydrationError("SOURCE_HTTP_503")
         return {"settled_rows": 0, "latest_game_date_after": "2026-11-04"}
@@ -716,3 +739,18 @@ def test_conflicting_same_game_calendar_cannot_prove_preopening():
 def test_current_october_settlement_preserves_live_replay_without_calendar_bypass():
     """Actual persisted current-season evidence passes even without an opening exception."""
     assert maintenance._nba_current_season_data_gap({"latest_game_date_after": "2026-10-22"}, datetime(2026, 10, 23, tzinfo=timezone.utc)) is None
+
+
+@pytest.mark.parametrize("latest", ["not-a-date", "2026-10-18", ""])
+def test_preopening_cannot_waive_invalid_persisted_chronology(latest):
+    """A verified future opening cannot authorize malformed or future corpus dates."""
+    evidence = {"latest_game_date_after": latest, "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"}, "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"}}
+    gap = maintenance._nba_current_season_data_gap(evidence, datetime(2026, 10, 17, tzinfo=timezone.utc))
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+
+
+@pytest.mark.parametrize("latest", [None, "2026-06-13"])
+def test_preopening_preserves_absent_or_valid_prior_corpus_contract(latest):
+    """The pre-opening exception remains available only for absent or valid past evidence."""
+    evidence = {"latest_game_date_after": latest, "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"}, "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"}}
+    assert maintenance._nba_current_season_data_gap(evidence, datetime(2026, 10, 17, tzinfo=timezone.utc)) is None

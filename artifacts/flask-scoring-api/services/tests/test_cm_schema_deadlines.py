@@ -12,6 +12,7 @@ APP = Path(__file__).resolve().parents[2] / "app.py"
 
 
 def _bootstrap_namespace(connection):
+    """Load the actual bootstrap function with an isolated connection and readiness state."""
     tree = ast.parse(APP.read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_cm_ensure_schema")
     namespace = {
@@ -34,29 +35,36 @@ def _bootstrap_namespace(connection):
 
 class Connection:
     def __init__(self, fail=None):
+        """Initialize recorded DDL statements and the synthetic failure trigger."""
         self.statements = []
         self.committed = False
         self.fail = fail
 
     def __enter__(self):
+        """Return the isolated connection used by the bootstrap."""
         return self
 
     def __exit__(self, *args):
+        """Propagate failures from the isolated connection context."""
         return False
 
     def cursor(self):
+        """Use the recorded connection as its synthetic cursor."""
         return self
 
     def execute(self, statement):
+        """Record DDL and raise only the configured synthetic failure."""
         self.statements.append(statement)
         if self.fail and self.fail in statement:
             raise RuntimeError("DDL failed")
 
     def commit(self):
+        """Record a successful synthetic transaction commit."""
         self.committed = True
 
 
 def test_cm_required_ddl_failure_never_marks_schema_ready():
+    """Verify cm required ddl failure never marks schema ready."""
     conn = Connection(fail="CREATE TABLE")
     ns = _bootstrap_namespace(conn)
     with pytest.raises(RuntimeError, match="DDL failed"):
@@ -71,6 +79,7 @@ def test_cm_required_ddl_failure_never_marks_schema_ready():
     ("ALTER TABLE kalshi_wx_shadow_results", "cm_shadow_migration"),
 ])
 def test_cm_optional_migration_failure_uses_savepoint_and_retains_required_schema(ddl, savepoint):
+    """Verify cm optional migration failure uses savepoint and retains required schema."""
     conn = Connection(fail=ddl)
     ns = _bootstrap_namespace(conn)
     ns["_cm_ensure_schema"]()
@@ -83,6 +92,7 @@ def test_cm_optional_migration_failure_uses_savepoint_and_retains_required_schem
 
 
 def test_cm_success_keeps_readiness_idempotent_and_deadlines_transaction_local():
+    """Verify cm success keeps readiness idempotent and deadlines transaction local."""
     conn = Connection()
     ns = _bootstrap_namespace(conn)
     ns["_cm_ensure_schema"]()
@@ -94,6 +104,7 @@ def test_cm_success_keeps_readiness_idempotent_and_deadlines_transaction_local()
 
 
 def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema():
+    """Verify cm optional slip failure is retried without restarting required schema."""
     conn = Connection(fail="ALTER TABLE cm_slips")
     ns = _bootstrap_namespace(conn)
     ns["_cm_ensure_schema"]()

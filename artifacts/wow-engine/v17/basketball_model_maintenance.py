@@ -40,6 +40,7 @@ SUPPORTED_SPORTS = ("NBA", "WNBA")
 def default_seasons(
     now: datetime | None = None, *, sport: str = "WNBA",
 ) -> tuple[int, ...]:
+    """Choose league-specific ending-year releases for the validated clock."""
     clock = now or datetime.now(timezone.utc)
     if not isinstance(clock, datetime) or clock.utcoffset() is None:
         raise ValueError("BASKETBALL_SEASON_CLOCK_UNVERIFIED")
@@ -60,6 +61,7 @@ def _blocked(
     error_type: str | None = None,
     hydration_blocker: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Build a typed maintenance hold without granting model or execution authority."""
     lane = development_lane(sport)
     payload: dict[str, Any] = {
         "sport": sport,
@@ -130,6 +132,11 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
     """
     if clock.month in (7, 8, 9):
         return None
+    latest_value = hydration.get("latest_game_date_after") if isinstance(hydration, dict) else None
+    try:
+        latest = date.fromisoformat(str(latest_value)[:10]) if latest_value else None
+    except ValueError:
+        latest = None
     season_start_year = clock.year if clock.month >= 10 else clock.year - 1
     if clock.month == 10 and isinstance(hydration, dict):
         label = season_start_year + 1
@@ -145,16 +152,12 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
                     and opening.utcoffset() is not None
                     and opening.year == season_start_year and opening.month == 10
                     and clock < opening
+                    and (latest_value is None or (latest is not None and latest <= clock.date()))
                 ):
                     return None
             except (ValueError, TypeError, OverflowError):
                 pass
     season_start = date(season_start_year, 10, 1)
-    latest_value = hydration.get("latest_game_date_after") if isinstance(hydration, dict) else None
-    try:
-        latest = date.fromisoformat(str(latest_value)[:10]) if latest_value else None
-    except ValueError:
-        latest = None
     if latest is not None and latest >= season_start and latest <= clock.date():
         return None
     return {
@@ -181,6 +184,7 @@ def run_basketball_model_maintenance(
     seasons: Iterable[int] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    """Hydrate and replay governed current evidence while preserving native holds."""
     clock = now or datetime.now(timezone.utc)
     if not isinstance(clock, datetime) or clock.utcoffset() is None:
         raise ValueError("BASKETBALL_SEASON_CLOCK_UNVERIFIED")
@@ -343,6 +347,7 @@ def install_basketball_model_maintenance_route(
         operation_id="runWowV17BasketballModelMaintenance",
     )
     def run_maintenance() -> dict[str, Any]:
+        """Run authenticated maintenance using the configured database client."""
         return run_basketball_model_maintenance(db_client_fn())
 
 
