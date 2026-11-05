@@ -72,6 +72,20 @@ def _token(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _identifier(value: Any) -> str:
+    """Only bounded nonempty text may identify immutable source evidence.
+
+    Never stringify a dict, list, bool or numeric ID: two equal JSON objects
+    are not two authenticated, matching receipt identifiers.
+    """
+    if not isinstance(value, str):
+        return ""
+    token = value.strip()
+    if not token or len(token) > 512 or any(ord(char) < 32 for char in token):
+        return ""
+    return token
+
+
 def inspect_nba_nhl_deep_research(
     *, event: Mapping[str, Any], winner_receipt: Mapping[str, Any] | None,
     context: Any = None,
@@ -113,19 +127,19 @@ def inspect_nba_nhl_deep_research(
     model_at = _instant(winner_receipt.get("model_timestamp"))
     source_at = _instant(winner_receipt.get("source_snapshot_timestamp"))
     observed = _instant(context.get("observed_at"))
-    source_id = _token(winner_receipt.get("source_snapshot_id"))
-    receipt_id = _token(winner_receipt.get("source_receipt_id"))
-    model_version = _token(winner_receipt.get("model_version"))
+    source_id = _identifier(winner_receipt.get("source_snapshot_id"))
+    receipt_id = _identifier(winner_receipt.get("source_receipt_id"))
+    model_version = _identifier(winner_receipt.get("model_version"))
     if (
-        not _token(event.get("official_event_id"))
+        not _identifier(event.get("official_event_id"))
         or not source_id or not receipt_id or not model_version
         or start is None or model_at is None or source_at is None or observed is None
         or source_at > model_at or model_at >= start or observed >= start
         or _token(context.get("sport")).upper() != sport
-        or _token(context.get("official_event_id")) != _token(event.get("official_event_id"))
-        or _token(context.get("source_snapshot_id")) != source_id
-        or _token(context.get("source_receipt_id")) != receipt_id
-        or _token(context.get("model_version")) != model_version
+        or _identifier(context.get("official_event_id")) != _identifier(event.get("official_event_id"))
+        or _identifier(context.get("source_snapshot_id")) != source_id
+        or _identifier(context.get("source_receipt_id")) != receipt_id
+        or _identifier(context.get("model_version")) != model_version
     ):
         return {**base, "status": "CONTEXT_INVALID_PROVENANCE"}
 
@@ -151,7 +165,7 @@ def inspect_nba_nhl_deep_research(
         observed_factor = _instant(source.get("observed_at"))
         if (
             source.get("status") != "DOCUMENTED"
-            or not _token(source.get("source_receipt_id"))
+            or not _identifier(source.get("source_receipt_id"))
             or observed_factor is None or observed_factor > observed
         ):
             continue
