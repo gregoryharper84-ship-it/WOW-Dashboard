@@ -85,3 +85,13 @@ def test_nba_nhl_remain_without_autonomous_discovery_or_hydration():
         assert rows[sport]["certified_production_lane_count"] == 0
     summary = prop_sport_parity_summary()
     assert {"NBA", "NHL"} <= set(summary["sports_without_daily_autonomous_discovery"])
+
+
+def test_default_full_board_receipt_does_not_claim_explicit_sport_selection():
+    from v17.prop_sport_parity import prop_sport_coverage_receipt
+
+    receipt = prop_sport_coverage_receipt(requested_sports=None, rows=[])
+    assert receipt["request_selection_scope"] == "ALL_CATALOGED_DEFAULT"
+    assert len(receipt["per_sport"]) == 13
+    assert all(v["requested"] and v["explicitly_requested"] is False for v in receipt["per_sport"].values())
+    assert receipt["can_execute"] is False

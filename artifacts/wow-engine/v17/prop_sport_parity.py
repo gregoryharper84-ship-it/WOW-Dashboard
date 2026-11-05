@@ -148,6 +148,7 @@ def prop_sport_coverage_receipt(
         for leg in (acquisition or {}).get("sport_coverage") or []
         if isinstance(leg, dict) and leg.get("sport")
     }
+    explicit_selection = bool(requested_sports)
     requested = [_norm_sport(s) for s in (requested_sports or [])] or sorted(parity)
     sports = list(dict.fromkeys(requested))
     seen = {_norm_sport((r.get("identity") or {}).get("sport")) for r in prop_rows}
@@ -168,6 +169,7 @@ def prop_sport_coverage_receipt(
             "sport": sport,
             "cataloged": cap is not None,
             "requested": sport in requested,
+            "explicitly_requested": explicit_selection and sport in requested,
             "autonomous_discovery_supported": discovery,
             "autonomous_discovery_status": "ENABLED" if discovery else "NOT_IMPLEMENTED",
             "certified_production_lane_count": cap["certified_production_lane_count"] if cap else 0,
@@ -191,6 +193,7 @@ def prop_sport_coverage_receipt(
     return {
         "contract_version": PROP_PARITY_VERSION + "_COVERAGE_RECEIPT",
         "lane": "PROPS",
+        "request_selection_scope": "EXPLICIT_SPORTS" if explicit_selection else "ALL_CATALOGED_DEFAULT",
         "scope_note": (
             "Prop-lane coverage only. cross_sport_discovery_audit is the moneyline/"
             "team-event lane; null there is not prop coverage."

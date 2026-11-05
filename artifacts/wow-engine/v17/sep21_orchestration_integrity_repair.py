@@ -87,7 +87,7 @@ def install_daily_current_acquisition_repair() -> bool:
             if "PROPS" in lanes and isinstance(response, dict):
                 response["prop_sport_parity"] = prop_sport_parity_summary()
                 response["prop_sport_coverage_receipt"] = prop_sport_coverage_receipt(
-                    requested_sports=getattr(req, "sports", None),
+                    requested_sports=None,  # DailySnapshotRequest is full-board; no sports input.
                     rows=response.get("rows") or [],
                     acquisition=response.get("prop_acquisition"),
                 )
@@ -145,7 +145,7 @@ def install_daily_current_acquisition_repair() -> bool:
         response["historical_manifest_substitution"] = False
         response["prop_sport_parity"] = prop_sport_parity_summary()
         response["prop_sport_coverage_receipt"] = prop_sport_coverage_receipt(
-            requested_sports=getattr(req, "sports", None),
+            requested_sports=None,  # DailySnapshotRequest is full-board; no sports input.
             rows=response.get("rows") or [],
             acquisition=response.get("prop_acquisition"),
         )
