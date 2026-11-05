@@ -428,7 +428,53 @@ def test_partial_provider_record_cannot_establish_identity():
     partial["competitions"][0]["competitors"] = partial["competitions"][0]["competitors"][:1]
     with pytest.raises(identity.SoccerEventIdentityError) as exc:
         _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [partial]}))
-    assert exc.value.code == "SOCCER_CANONICAL_EVENT_NOT_FOUND"
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+    assert exc.value.detail == "partial matching fixture"
+
+
+@pytest.mark.parametrize("partial_first", [False, True])
+def test_partially_matching_fixture_prevents_false_uniqueness(partial_first):
+    partial = scoreboard_event("401800015")
+    partial["competitions"][0]["competitors"] = partial["competitions"][0]["competitors"][:1]
+    good = scoreboard_event("401800016")
+    rows = [partial, good] if partial_first else [good, partial]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+    assert exc.value.detail == "partial matching fixture"
+
+
+def test_unrelated_partial_fixture_does_not_block_verified_match():
+    partial = scoreboard_event(
+        "401800017", home=("999", "Unrelated Club", "Unrelated")
+    )
+    partial["competitions"][0]["competitors"] = partial["competitions"][0]["competitors"][:1]
+    out = _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [
+        partial, scoreboard_event("401800018"),
+    ]}))
+    assert out["event_id"] == "SOCCER:401800018"
+    assert out["can_execute"] is False
+
+
+def test_distant_partial_fixture_does_not_block_verified_match():
+    partial = scoreboard_event("401800019", date="2026-11-08T12:30:00Z")
+    partial["competitions"][0]["competitors"] = partial["competitions"][0]["competitors"][:1]
+    out = _resolve(fetcher=fetcher_for({
+        ("eng.1", "20261108"): [partial],
+        ("eng.1", "20261107"): [scoreboard_event("401800020")],
+    }))
+    assert out["event_id"] == "SOCCER:401800020"
+
+
+def test_matching_partial_with_invalid_time_is_source_schema_drift():
+    partial = scoreboard_event("401800021", date="invalid-time")
+    partial["competitions"][0]["competitors"] = partial["competitions"][0]["competitors"][:1]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [
+            scoreboard_event("401800022"), partial,
+        ]}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+    assert exc.value.detail == "partial matching fixture timestamp invalid"
 
 
 def test_soccer_failure_codes_are_registered():
