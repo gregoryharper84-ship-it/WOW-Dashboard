@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Iterable, Mapping
 
+from v17.llp_nba_nhl_deep_research_audit import inspect_nba_nhl_deep_research
+
 CAN_EXECUTE = False
 CONTROLLING_ENGINE = "LLP_TEAM_BETTING_ENGINE"
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -61,6 +63,7 @@ def _distribution_valid(values: Iterable[Any]) -> bool:
 def build_llp_team_intelligence_bundle(
     *, event: Mapping[str, Any], receipts: Iterable[Mapping[str, Any]],
     upset_alert: Mapping[str, Any] | None = None,
+    deep_research_context: Any = None,
 ) -> dict[str, Any]:
     """Assemble a non-authoritative, read-only event view from already-scored receipts.
 
@@ -80,7 +83,8 @@ def build_llp_team_intelligence_bundle(
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     winner_source: str | None = None
-    for raw in receipts:
+    source_receipts = list(receipts)
+    for raw in source_receipts:
         market = _str(raw.get("market_family")).upper()
         if market not in MARKETS:
             raise ValueError("LLP_BUNDLE_MARKET_UNSUPPORTED")
@@ -210,6 +214,19 @@ def build_llp_team_intelligence_bundle(
         if not upset_blockers:
             upset["source_upset_status"] = status
             upset["source_alert"] = bool(upset_alert.get("alert") is True)
+    deep_research = None
+    if sport in {"NBA", "NHL"}:
+        winner_receipts = [
+            raw for raw in source_receipts
+            if _str(raw.get("market_family")).upper() == "OUTRIGHT_WINNER"
+            and _str(raw.get("source_receipt_id")) == winner_source
+            and winner_source is not None
+        ]
+        deep_research = inspect_nba_nhl_deep_research(
+            event=event,
+            winner_receipt=winner_receipts[0] if len(winner_receipts) == 1 else None,
+            context=deep_research_context,
+        )
     return {
         "contract": CONTRACT, "controlling_engine_identity": CONTROLLING_ENGINE,
         "sport": sport, "official_event_id": event_id,
@@ -217,6 +234,7 @@ def build_llp_team_intelligence_bundle(
         "event_start_time_utc": start.isoformat(),
         "markets": result, "governed_winner_receipt_id": winner_source,
         "upset_intelligence": upset,
+        "deep_research_audit": deep_research,
         "probabilities_blended": False, "terminal_decision_generated": False,
         "can_execute": False,
     }
