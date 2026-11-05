@@ -220,7 +220,9 @@ def resolve_ncaab_current_event_identity(
             continue
         event_id = str(row.get("id") or "").strip()
         if not (1 <= len(event_id) <= 20 and event_id.isascii() and event_id.isdecimal()):
-            continue
+            raise NCAABEventIdentityError(
+                "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT", "matching event id invalid"
+            )
         matches.append((event_id, start))
 
     ids = {event_id for event_id, _ in matches}
