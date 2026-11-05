@@ -320,6 +320,18 @@ def normalize_sportsdataverse_game(
         return None
     if not event_id or not date_text or not home_id or not away_id or home_score == away_score:
         return None
+    # A source row cannot be a settled historical result if its scheduled
+    # local game day is still in the future. Validate timestamps before the
+    # research corpus can be written, independent of the completed flag.
+    try:
+        game_day = date.fromisoformat(date_text)
+        captured = datetime.fromisoformat(str(retrieved_at).replace("Z", "+00:00"))
+        if captured.utcoffset() is None or game_day > captured.astimezone(
+            ZoneInfo("America/New_York")
+        ).date():
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
     normalized = sport.upper().strip()
     try:
         year = int(date_text[:4])
