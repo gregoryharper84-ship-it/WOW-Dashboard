@@ -161,6 +161,43 @@ def _sides(row: Mapping[str, Any]) -> dict[str, Mapping[str, Any]] | None:
     return sides
 
 
+def _partial_fixture_may_match(
+    row: Mapping[str, Any], *, home_norm: str, away_norm: str, event_time: datetime,
+) -> bool:
+    """Identify insufficient source records that could be the requested game.
+
+    Only a team matching the requested ordered side and a kickoff within the
+    declared drift window triggers a hold. An unrelated club or distant event
+    must not suppress an otherwise unique genuine fixture.
+    """
+    competitions = row.get("competitions")
+    if not isinstance(competitions, list) or not competitions or not isinstance(competitions[0], Mapping):
+        return False
+    competitors = competitions[0].get("competitors")
+    if not isinstance(competitors, list):
+        return False
+    matching_side = False
+    for competitor in competitors:
+        if not isinstance(competitor, Mapping):
+            continue
+        side = str(competitor.get("homeAway") or "").strip().lower()
+        team = competitor.get("team")
+        if side in {"home", "away"} and isinstance(team, Mapping):
+            requested = home_norm if side == "home" else away_norm
+            if requested in _team_tokens(team):
+                matching_side = True
+                break
+    if not matching_side:
+        return False
+    try:
+        kickoff = _aware(row.get("date"))
+    except SoccerEventIdentityError as exc:
+        raise SoccerEventIdentityError(
+            "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "partial matching fixture timestamp invalid"
+        ) from exc
+    return abs((kickoff - event_time).total_seconds()) / 60.0 <= MAX_KICKOFF_DRIFT_MINUTES
+
+
 def _fetch_scoreboard(competition: str, date_key: str) -> list[Mapping[str, Any]]:
     try:
         response = requests.get(
@@ -259,6 +296,14 @@ def resolve_soccer_current_event_identity(
         event_id = str(row.get("id") or "").strip()
         sides = _sides(row)
         if sides is None:
+            if _partial_fixture_may_match(
+                row, home_norm=home_norm, away_norm=away_norm, event_time=event_time
+            ):
+                # A plausibly matching fixture with missing opponents cannot
+                # prove absence or uniqueness, even beside a valid candidate.
+                raise SoccerEventIdentityError(
+                    "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "partial matching fixture"
+                )
             continue
         home_team_row = sides["home"]
         away_team_row = sides["away"]
