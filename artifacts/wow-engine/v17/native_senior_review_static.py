@@ -131,6 +131,13 @@ def run_static_review(packet: Mapping) -> dict:
     if not isinstance(packet, Mapping) or not isinstance(packet.get("head_sha"), str) \
             or not _KEY.fullmatch(packet["head_sha"]):
         raise ValueError("REVIEW_PACKET_INVALID")
+    canonical = dict(packet)
+    saved_hash = canonical.pop("packet_sha256", None)
+    computed_hash = hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")).hexdigest()
+    if not isinstance(saved_hash, str) or saved_hash != computed_hash:
+        raise ValueError("REVIEW_PACKET_DRIFT")
     if packet.get("status") != "ADVISORY_REVIEW_REQUIRED":
         return {
             "status": "REVIEW_CONTEXT_INCOMPLETE",
