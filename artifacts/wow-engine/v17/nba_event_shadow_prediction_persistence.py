@@ -17,6 +17,17 @@ TABLE = "wow_nba_event_shadow_predictions"
 CAN_EXECUTE = False
 IDENTITY = ("official_event_id", "source_snapshot_id",
             "model_artifact_id", "calibration_artifact_id")
+# Bound columns compared directly against the readback row. A digest column is
+# not proof: these are the immutable identity/probability values a genuine
+# receipt must carry, independent of any hash the writer supplied.
+TIMESTAMP_BOUND_FIELDS = ("event_start_time_utc", "source_snapshot_timestamp")
+NUMERIC_BOUND_FIELDS = (
+    "raw_home_probability", "calibrated_home_probability",
+    "calibrated_home_lower_bound", "calibrated_home_upper_bound",
+)
+_UUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 
 
 class NBAShadowReceiptHold(ValueError):
@@ -52,6 +63,59 @@ def _required(value: Any, code: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise NBAShadowReceiptHold(code)
     return value.strip()
+
+
+def _instant(value: Any) -> datetime | None:
+    try:
+        return _utc(value)
+    except NBAShadowReceiptHold:
+        return None
+
+
+def _verify_persisted_receipt(
+    persisted: Mapping[str, Any],
+    *,
+    exact: Mapping[str, Any],
+    model_timestamp: datetime,
+    source_at: datetime,
+    event_at: datetime,
+) -> None:
+    """Prove the stored row is this server-recorded pregame receipt.
+
+    A matching digest column and a non-empty primary key do not independently
+    prove a genuine immutable receipt. The database-generated identity, the
+    database insertion clock, and every bound identity/timestamp/probability
+    column are re-read and checked here, so a stored row that does not carry
+    the submitted evidence fails closed even if a caller supplied the digest.
+    """
+    prediction_id = persisted.get("nba_prediction_id")
+    if not isinstance(prediction_id, str) or not _UUID.fullmatch(
+        prediction_id.strip().lower()
+    ):
+        raise NBAShadowReceiptHold("NBA_SHADOW_READBACK_INVALID")
+    model_ts = _instant(persisted.get("model_timestamp"))
+    created_at = _instant(persisted.get("created_at"))
+    if model_ts is None or created_at is None:
+        raise NBAShadowReceiptHold("NBA_SHADOW_READBACK_INVALID")
+    # The scoring instant and the durable insertion must both precede tip-off.
+    # Without this, "HOLD" could describe a row recorded after the result.
+    if not (source_at <= model_ts < event_at) or model_ts != model_timestamp:
+        raise NBAShadowReceiptHold("NBA_SHADOW_NOT_PROSPECTIVE")
+    if created_at >= event_at:
+        raise NBAShadowReceiptHold("NBA_SHADOW_NOT_PROSPECTIVE")
+    for field, expected in exact.items():
+        stored = persisted.get(field)
+        if field in TIMESTAMP_BOUND_FIELDS:
+            matches = _instant(stored) == _instant(expected)
+        elif field in NUMERIC_BOUND_FIELDS:
+            try:
+                matches = _p(stored) == _p(expected)
+            except NBAShadowReceiptHold:
+                matches = False
+        else:
+            matches = isinstance(stored, str) and stored == expected
+        if not matches:
+            raise NBAShadowReceiptHold("NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT")
 
 
 def _read(db: Any, identity: Mapping[str, str]) -> Mapping[str, Any] | None:
@@ -200,12 +264,15 @@ def persist_nba_shadow_prediction(
         raise NBAShadowReceiptHold("NBA_SHADOW_WRITE_NOT_PERSISTED")
     if (
         persisted.get("prediction_sha256") != digest
-        or not persisted.get("nba_prediction_id")
         or persisted.get("probability_publishable") is not False
         or persisted.get("rank_eligible") is not False
         or persisted.get("can_execute") is not False
         or persisted.get("terminal_label") != "MODEL_RESEARCH_ONLY_HOLD"
     ):
         raise NBAShadowReceiptHold("NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT")
+    _verify_persisted_receipt(
+        persisted, exact=exact, model_timestamp=timestamp,
+        source_at=source_at, event_at=event_at,
+    )
     return {"status": status, "nba_prediction_id": persisted["nba_prediction_id"],
             "probability_publishable": False, "rank_eligible": False, "can_execute": False}
