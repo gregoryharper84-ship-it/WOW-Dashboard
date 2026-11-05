@@ -343,9 +343,17 @@ def _event_repo_is(side: Any, repo: str) -> bool:
     ref = side.get("repo") if isinstance(side, dict) else None
     if not isinstance(ref, dict):
         return False
-    if ref.get("full_name") == repo:
-        return True
-    return ref.get("url") == f"https://api.github.com/repos/{repo}"
+    # Event origin must be unambiguous. Real GitHub workflow_run payloads may
+    # provide only "url", but if both identity fields are present they must
+    # agree; a forged full_name cannot be rescued by a matching URL (or vice
+    # versa). Absence of both fields is not affirmative provenance.
+    if "full_name" not in ref and "url" not in ref:
+        return False
+    if "full_name" in ref and ref["full_name"] != repo:
+        return False
+    if "url" in ref and ref["url"] != f"https://api.github.com/repos/{repo}":
+        return False
+    return True
 
 
 def targets(repo: str, *, pr: str | None = None,
@@ -400,6 +408,15 @@ def targets(repo: str, *, pr: str | None = None,
                     "disposition": "neutral",
                     "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
                 }
+            # A closed source PR is never a fresh scoring target. Its
+            # historical workflow_run event must still be proven same-origin
+            # before the strict current-SHA fallback can admit it.
+            if live.get("state") == "closed" and not (
+                _event_repo_is(item.get("head"), repo)
+                and _event_repo_is(item.get("base"), repo)
+            ):
+                errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+                continue
             if (
                 live.get("number") != number
                 or head.get("sha") != sha
