@@ -816,7 +816,7 @@ def score_nba_team_event_request(
     req: Any,
     *,
     event_api: Any = None,
-    canonical_hydration_required: bool = False,
+    canonical_hydration_required: bool = True,
 ) -> dict[str, Any]:
     """Score one NBA team/event request through the registered V17 bridge."""
     import v17.team_event_bridge_runtime as bridges
@@ -876,6 +876,18 @@ def score_nba_team_event_request(
             status_code=422,
             extra={"model_invoked": False, "canonical_hydration_required": True},
         )
+
+    # Explicit False is not a waiver. Until server-owned canonical hydration
+    # and pre-lock lineup/feature provenance are implemented, callers may not
+    # supply self-attested VERIFIED/PASS evidence to invoke the fitted model.
+    # Preserve a typed input HOLD rather than emitting an unauthenticated P.
+    raise bridges._model_failure_detail(
+        req,
+        code="MODEL_INPUTS_INSUFFICIENT",
+        blocker="NBA_UNTRUSTED_CALLER_FEATURES_REJECTED",
+        status_code=422,
+        extra={"model_invoked": False, "canonical_hydration_required": False},
+    )
 
     scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
     evidence = getattr(req, "sport_specific_evidence", None)
