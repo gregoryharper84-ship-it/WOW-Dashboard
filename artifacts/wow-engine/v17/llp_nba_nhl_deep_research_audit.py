@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from unicodedata import category
 
 CAN_EXECUTE = False
 SUPPORTED_SPORTS = frozenset({"NBA", "NHL"})
@@ -56,6 +57,7 @@ ALLOWED_FLAGS = {
 
 
 def _instant(value: Any) -> datetime | None:
+    """Parse aware research instants without crashing on UTC overflow."""
     # Even a syntactically valid aware year-0001/year-9999 instant can
     # overflow while converting a non-UTC offset to UTC. Never let a
     # research-only timestamp crash the existing authenticated Daily view.
@@ -69,6 +71,7 @@ def _instant(value: Any) -> datetime | None:
 
 
 def _token(value: Any) -> str:
+    """Normalize display and routing text without granting receipt authority."""
     return str(value or "").strip()
 
 
@@ -80,7 +83,9 @@ def _identifier(value: Any) -> str:
     """
     if not isinstance(value, str):
         return ""
-    if any(ord(char) < 32 for char in value):
+    # Reject controls before strip(): C1 NEXT LINE is whitespace and could
+    # otherwise disappear, making corrupted receipt identifiers match.
+    if any(category(char) == "Cc" for char in value):
         return ""
     token = value.strip()
     if not token or len(token) > 512:

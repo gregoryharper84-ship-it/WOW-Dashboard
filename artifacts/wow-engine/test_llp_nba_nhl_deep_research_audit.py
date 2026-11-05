@@ -370,6 +370,10 @@ def test_equivalent_offset_event_start_does_not_falsely_hold_research():
     )
     assert out["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
 
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" not in (
+        out["events"][0]["source_diagnostics"]["source_reason_codes"]
+    )
+
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("location", ["outer", "nested", "result"])
@@ -830,7 +834,7 @@ def test_identifier_types_do_not_change_valid_string_receipts(sport, field):
 
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
-@pytest.mark.parametrize("malformed", ["\x00bad", "\tbad", "x" * 513])
+@pytest.mark.parametrize("malformed", ["\x00bad", "\tbad", "x" * 513, "\x7fbad", "\x80bad", "\x85bad", "bad\x85", "\x9fbad"])
 def test_control_bytes_or_oversized_research_receipts_fail_closed(sport, malformed):
     """Verify control bytes or oversized research receipts fail closed."""
     context = _context(sport)
@@ -843,3 +847,23 @@ def test_control_bytes_or_oversized_research_receipts_fail_closed(sport, malform
     assert result["status"] == "CONTEXT_INVALID_PROVENANCE"
     assert result["factor_families_documented"] == []
     assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+def test_ledger_matched_research_conflict_holds_winner_independently(sport):
+    """Identity conflict must hold even when an independent ledger matches."""
+    page, ledger = _ledger_case(sport)
+    page["rows"][0]["detail"]["result"]["official_event_id"] = "unrelated-fixture"
+    db = _EventLedger([ledger])
+    out = project_llp_intelligence_page(page, db=db)
+    assert db.queries == 1
+    item = out["events"][0]
+    market = item["markets"][0]
+    assert market["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in market
+    assert item["governed_winner_receipt_id"] is None
+    assert market["upstream_probability_publishable"] is False
+    assert market["upstream_rank_eligible"] is False
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in item["source_diagnostics"]["source_reason_codes"]
+    assert not any(code.startswith("LLP_EVENT_PREDICTION_") for code in market["reason_codes"])
