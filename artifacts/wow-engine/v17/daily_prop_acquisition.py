@@ -156,14 +156,19 @@ def acquire_daily_mlb_prop_snapshots(
         "snapshot_write_succeeded": 0,
         "snapshot_write_failed": 0,
         "explicit_prewrite_exclusions": 0,
+        "discovered_candidates": None,
+        "unattempted_due_to_row_ceiling": None,
         "receipts": [],
         "blockers": [],
         "candidate_source": "MLB_OFFICIAL_PROBABLE_PITCHERS",
         "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
         "stat_types": list(STAT_TYPES),
+        "probability_publishable": False,
         "can_execute": False,
     }
     if max_candidates <= 0:
+        result["status"] = "NOT_ATTEMPTED_ROW_CEILING"
+        result["blockers"] = ["MLB_PROP_ROW_CEILING_EXHAUSTED"]
         return result
     try:
         schedule = _request_schedule(requested_date, http_get=http_get)
@@ -173,6 +178,8 @@ def acquire_daily_mlb_prop_snapshots(
         return result
 
     candidates = _schedule_pitchers(schedule, requested_date=requested_date, requested_timezone=requested_timezone, now=now)
+    result["discovered_candidates"] = len(candidates) * len(STAT_TYPES)
+    result["unattempted_due_to_row_ceiling"] = max(result["discovered_candidates"] - max_candidates, 0)
     stop = False
     for candidate in candidates:
         for stat_type in STAT_TYPES:
@@ -275,10 +282,8 @@ def _sport_leg(sport: str, leg: dict[str, Any]) -> dict[str, Any]:
         "persisted": int(leg.get("persisted") or 0),
         "held": int(leg.get("held") or 0),
         "discovered_candidates": leg.get("discovered_candidates"),
-        "unattempted_due_to_row_ceiling": (
-            None if leg.get("status") == "NOT_ATTEMPTED_ROW_CEILING"
-            else int(leg.get("unattempted_due_to_row_ceiling") or 0)
-        ),
+        "already_captured_candidates": int(leg.get("already_captured_candidates") or 0),
+        "unattempted_due_to_row_ceiling": leg.get("unattempted_due_to_row_ceiling"),
         "blockers": list(leg.get("blockers") or []),
     }
 

@@ -106,10 +106,12 @@ def test_local_slate_date_filter_excludes_other_days(monkeypatch):
     assert r["attempted"] == 0 and r["discovered_candidates"] == 0
 
 
-def test_already_captured_is_explicit_exclusion(monkeypatch):
+def test_already_captured_is_not_charged_to_attempt_budget(monkeypatch):
     _patch(monkeypatch, [_cand("E1", "A", "RUSHING_YARDS")], existing=lambda *_: True)
     r = _run(_DB())
-    assert _balanced(r) and r["receipts"][0]["terminal_reason"] == "NFL_SNAPSHOT_ALREADY_CAPTURED"
+    assert _balanced(r) and r["already_captured_candidates"] == 1
+    assert r["attempted"] == 0 and r["receipts"] == []
+    assert r["unattempted_due_to_row_ceiling"] == 0 and r["can_execute"] is False
 
 
 def test_discovery_outage_is_data_unobtainable(monkeypatch):
@@ -212,3 +214,27 @@ def test_mlb_exhaustion_keeps_nfl_discovery_unknown_in_daily_receipt(monkeypatch
     assert row["unattempted_due_to_row_ceiling"] is None
     assert row["zero_rows_is_not_empty_slate_proof"] is True
     assert row["can_execute"] is False and receipt["can_execute"] is False
+
+
+def test_rerun_preflight_reaches_next_uncaptured_candidate(monkeypatch):
+    """Previously captured row-prefixes cannot starve fresh NFL snapshots."""
+    cands = [_cand("E1", "A", "RUSHING_YARDS"), _cand("E1", "B", "RUSHING_YARDS"),
+             _cand("E1", "C", "RUSHING_YARDS")]
+    _patch(monkeypatch, cands, existing=lambda _db, c: c["player"] in ("A", "B"))
+    r = _run(_DB(), max_candidates=1)
+    assert r["already_captured_candidates"] == 2 and r["discovered_candidates"] == 3
+    assert r["attempted"] == 1 and r["persisted"] == 1 and _balanced(r)
+    assert [receipt["player"] for receipt in r["receipts"]] == ["C"]
+    assert r["unattempted_due_to_row_ceiling"] == 0 and r["can_execute"] is False
+
+
+def test_preflight_error_halts_nfl_writes_and_preserves_unknown_counts(monkeypatch):
+    def broken(_db, _candidate):
+        raise RuntimeError("DB_DOWN")
+    _patch(monkeypatch, [_cand("E1", "A", "RUSHING_YARDS")], existing=broken)
+    db = _DB()
+    r = _run(db, max_candidates=1)
+    assert r["status"] == "DATA_UNOBTAINABLE"
+    assert r["attempted"] == 0 and not db.writes
+    assert r["unattempted_due_to_row_ceiling"] is None
+    assert r["blockers"] == ["NFL_PROP_SNAPSHOT_PREFLIGHT_FAILED:RuntimeError"]

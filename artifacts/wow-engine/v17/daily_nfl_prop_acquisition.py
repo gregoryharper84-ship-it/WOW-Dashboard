@@ -99,6 +99,7 @@ def acquire_daily_nfl_prop_snapshots(
         "snapshot_write_succeeded": 0,
         "snapshot_write_failed": 0,
         "explicit_prewrite_exclusions": 0,
+        "already_captured_candidates": 0,
         "receipts": [],
         "blockers": [],
         "candidate_source": CANDIDATE_SOURCE,
@@ -121,6 +122,8 @@ def acquire_daily_nfl_prop_snapshots(
         discovered = _cp._discover_candidates(requested_date, now=now, http_get=cached_get)
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
+        result["discovered_candidates"] = None
+        result["unattempted_due_to_row_ceiling"] = None
         result["blockers"] = [getattr(exc, "code", None) or f"NFL_PROP_DISCOVERY_FAILED:{type(exc).__name__}"]
         return result
 
@@ -128,21 +131,28 @@ def acquire_daily_nfl_prop_snapshots(
         [c for c in discovered if _local_date_matches(c, requested_date, requested_timezone)]
     )
     result["discovered_candidates"] = len(candidates)
-    result["unattempted_due_to_row_ceiling"] = max(len(candidates) - max_candidates, 0)
+    pending: list[dict[str, Any]] = []
+    for candidate in candidates:
+        try:
+            captured = _cp._existing_snapshot(db, candidate)
+        except Exception as exc:
+            result["status"] = "DATA_UNOBTAINABLE"
+            result["unattempted_due_to_row_ceiling"] = None
+            result["blockers"] = [f"NFL_PROP_SNAPSHOT_PREFLIGHT_FAILED:{type(exc).__name__}"]
+            return result
+        if captured:
+            result["already_captured_candidates"] += 1
+        else:
+            pending.append(candidate)
+    result["unattempted_due_to_row_ceiling"] = max(len(pending) - max_candidates, 0)
 
-    for candidate in candidates[:max_candidates]:
+    for candidate in pending[:max_candidates]:
         stat_type = str(candidate["stat_type"])
         label = f"{candidate['player']}:{stat_type}"
         result["attempted"] += 1
         receipt = _receipt(candidate)
         result["receipts"].append(receipt)
         try:
-            if _cp._existing_snapshot(db, candidate):
-                result["explicit_prewrite_exclusions"] += 1
-                result["held"] += 1
-                receipt["write_status"] = "PREWRITE_EXCLUDED"
-                receipt["terminal_reason"] = "NFL_SNAPSHOT_ALREADY_CAPTURED"
-                continue
             raw = auto_hydrate_prop_evidence(
                 sport=SPORT,
                 player=str(candidate["player"]),
