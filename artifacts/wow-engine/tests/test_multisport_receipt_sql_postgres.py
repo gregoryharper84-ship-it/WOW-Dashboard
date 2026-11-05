@@ -52,6 +52,7 @@ def pg(tmp_path_factory):
                   selected_participant text,source_snapshot_id uuid,
                   source_snapshot_timestamp timestamptz,model_timestamp timestamptz,
                   model_artifact_id uuid,model_version text,model_output_snapshot jsonb,
+                  latest_material_update_timestamp timestamptz,
                   calibration_version text,model_probability_publishable boolean,
                   model_package_valid boolean,provenance_complete boolean,
                   calibration_health_status text,blend_publishable boolean,
@@ -85,6 +86,8 @@ def pg(tmp_path_factory):
                 begin
                   select s.provenance_complete and s.model_package_valid and
                     s.model_probability_publishable and s.event_start_time_utc > clock_timestamp()
+                    and (s.latest_material_update_timestamp is null or
+                         s.model_timestamp >= s.latest_material_update_timestamp)
                     into available from public.wow_nfl_event_predictions s
                     where score_snapshot_id=p_score_snapshot_id;
                   if available is true then
@@ -184,10 +187,20 @@ def test_existing_immutable_receipt_cannot_be_changed_even_by_owner(pg):
 
 
 def test_postscore_model_invalidates_reducer_and_replay(pg):
+    # Material update without a new scorer is a reducer HOLD even when all
+    # static source/model/certification flags remain true. This catches replay
+    # bypasses that return an older immutable receipt without rerunning V17.
     with psycopg.connect(pg,autocommit=True) as db:
-        db.execute("update public.wow_nfl_event_predictions set provenance_complete=false where score_snapshot_id=%s",(SCORE,))
+        receipt_id=db.execute(
+            "select event_prediction_id from public.wow_v17_multisport_event_prediction_receipts"
+        ).fetchone()[0]
+        db.execute(
+            "update public.wow_nfl_event_predictions "
+            "set latest_material_update_timestamp=%s where score_snapshot_id=%s",
+            (datetime.now(timezone.utc),SCORE),
+        )
     second=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
     assert second["status"]=="HOLD"
-    first=call(pg,"wow_v17_verify_multisport_event_receipt",
-               call(pg,"wow_v17_admit_nfl_event_receipt",SCORE).get("event_prediction_id") or SCORE)
+    assert "event_prediction_id" not in second
+    first=call(pg,"wow_v17_verify_multisport_event_receipt",str(receipt_id))
     assert first["status"]=="HOLD"
