@@ -141,7 +141,11 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
         "required_season_start": season_start.isoformat(),
         "latest_persisted_game_date": latest.isoformat() if latest else None,
         "recovery_class": "SOURCE_COVERAGE_REPAIR",
-        "next_action": "REACQUIRE_CANONICAL_2027_SDV_SEASON_AND_VERIFY_PERSISTED_SETTLEMENTS",
+        "required_season_label": season_start_year + 1,
+        "next_action": (
+            f"REACQUIRE_CANONICAL_{season_start_year + 1}_SDV_SEASON_"
+            "AND_VERIFY_PERSISTED_SETTLEMENTS"
+        ),
         "recoverable": True,
         "can_execute": False,
     }
