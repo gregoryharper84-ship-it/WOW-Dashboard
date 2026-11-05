@@ -661,6 +661,71 @@ def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
     )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
 
 
+@pytest.mark.parametrize(("state", "current_head"), [
+    ("open", OLD),   # Real #2426 callback: SHA advanced between event and QA.
+    ("closed", HEAD),
+])
+def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, current_head):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": state, "draft": False, "merged_at": None,
+            "head": {"sha": current_head, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
+    if current_head != HEAD:
+        assert strict["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    neutral = m.targets(
+        REPO, workflow_run_prs=event_pr, neutral_superseded=True, fetch=routes,
+    )
+    assert neutral == {
+        "targets": [], "errors": [], "disposition": "neutral",
+        "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
+    }
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("head.repo", {"full_name": "foreign/WOW-Dashboard"}),
+    ("base.ref", "development"),
+    ("head.sha", "malformed"),
+    ("draft", True),
+])
+def test_qa_superseded_classifier_never_masks_invalid_current_identity(field, value):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
+            "head": {"sha": OLD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    if field == "draft":
+        live["draft"] = value
+    elif field.startswith("head."):
+        live["head"][field.split(".")[1]] = value
+    else:
+        live["base"]["ref"] = value
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert out.get("disposition") != "neutral"
+
+
+def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_step():
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    assert "--neutral-superseded" in steps["Resolve one exact-head QA target"]["run"]
+    assert "QA_SOURCE_PR_HEAD_SUPERSEDED" in steps["Resolve one exact-head QA target"]["run"]
+    for name in (
+        "Select exact-head review policy",
+        "Build immutable QA review-policy receipt",
+        "Upload immutable QA review-policy receipt",
+        "Decide at exact head (read-only)",
+    ):
+        assert steps[name]["if"] == "steps.target.outputs.pr_number != ''"
+    # The original Release classifier already neutralizes a successful QA
+    # job whose terminal outcome upload is deliberately skipped.
+    assert steps["Upload terminal QA outcome"]["if"].startswith(
+        "always() && steps.target.outputs.pr_number != ''"
+    )
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
@@ -846,7 +911,12 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     script = read_only["Resolve authenticated exact-PR release lane"]["run"]
     assert "classify-upstream-qa" in script
     assert "resolve-qa-policy" in script
+    assert "--neutral-if-superseded" in script
     assert script.index("classify-upstream-qa") < script.index("resolve-qa-policy")
+    assert script.index("--neutral-if-superseded") < script.index('bundle=$(python "$tool"')
+    assert "RELEASE_QA_SOURCE_PR_SUPERSEDED" in (
+        ROOT / ".github/scripts/independent_source_review_receipt.py"
+    ).read_text(encoding="utf-8")
     assert "RELEASE_NEUTRAL_BEFORE_PR_LOCK" in script
     assert "RELEASE_POLICY_TARGET_STALE" in script
     assert "applicable=true" in script
@@ -862,6 +932,11 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     assert "resolve-qa-policy" not in script
     assert "check-runs" not in script
     assert "classify-upstream-qa" in script
+    decide_script = _step_script(REL_WF, "Decide at exact head (read-only)")
+    assert "policy_args+=(--neutral-if-superseded)" in decide_script
+    assert "RELEASE_NEUTRAL_AT_DECIDE" in decide_script
+    assert decide_script.index("RELEASE_NEUTRAL_AT_DECIDE") < decide_script.index("gather_args=(gather")
+    assert 'echo "count=0" >> "$GITHUB_OUTPUT"' in decide_script
 
 
 def test_source_qa_release_certifier_dag_has_no_cycle():
@@ -872,8 +947,10 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert release == ["wow-v17-independent-qa-check"]
     assert "wow-v17-release-authority-check" not in qa
     assert "wow-v17-existing-pr-governance-review" not in qa
-    assert certifier["workflow_run"]["workflows"] == ["wow-v17-independent-qa-check"]
-    assert gate["workflow_run"]["workflows"] == ["wow-v17-existing-pr-governance-review"]
+    assert "workflow_run" not in certifier
+    assert "workflow_run" not in gate
+    assert "workflow_dispatch" in certifier
+    assert "workflow_dispatch" in gate
     qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
     assert "wow-v17-trusted-governance-gate" in qa_if
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
@@ -2060,6 +2137,13 @@ def test_publish_failure_is_typed(fake_gh):
 def test_every_phase_c_code_is_registered():
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
+    # Release's authenticated QA-policy resolver is a separate protected
+    # source module. Its typed RELEASE_QA_* dispositions must appear in the
+    # canonical registry, just like codes emitted by the Release workflow.
+    policy_resolver = (
+        ROOT / ".github/scripts/independent_source_review_receipt.py"
+    ).read_text(encoding="utf-8")
+    emitted |= set(re.findall(r'"(RELEASE_QA_[A-Z_]+)"', policy_resolver))
     for wf in (QA_WF, REL_WF):
         text = wf.read_text()
         emitted |= set(re.findall(r"::error::((?:QA|RELEASE)_[A-Z_]+)", text))
