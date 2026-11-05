@@ -74,7 +74,7 @@ def test_no_silent_partial_context_when_changed_source_missing():
 
 
 def test_overlong_source_does_not_enter_reviewer_packet():
-    result = packet(repository_sources={MOD: "x" * 250_001})
+    result = packet(repository_sources={MOD: "x" * 200_001})
     assert result["status"] == "CONTEXT_INCOMPLETE"
     assert result["omitted_oversize_context"] == [MOD]
     assert result["source_context"] == {}
