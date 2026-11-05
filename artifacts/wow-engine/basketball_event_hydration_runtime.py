@@ -597,8 +597,16 @@ def hydrate(
             current_season_label = (
                 clock.year + 1 if sport == "NBA" and clock.month >= 10 else clock.year
             )
+            # The recent-scoreboard supplement is valid only while this
+            # league has a season underway. Offseason gaps are not missing
+            # settlements, and must never become freshness/source holds.
+            in_season = (
+                clock.month in (11, 12, 1, 2, 3, 4, 5, 6)
+                if sport == "NBA" else clock.month in (5, 6, 7, 8, 9, 10)
+            )
             if (
                 provider == "SPORTSDATAVERSE_ESPN"
+                and in_season
                 and year >= current_season_label and latest_before is not None
                 and 2 <= (clock.date() - latest_before).days <= 200
                 and not has_new
