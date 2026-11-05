@@ -215,3 +215,24 @@ def test_non_json_serializable_tamper_is_typed_hold_not_crash():
     p["invalid_injected_field"] = {1, 2}
     claim = {"head_sha": HEAD, "file": MOD, "source_excerpt": "return x + 1"}
     assert preflight_review_finding(p, claim) == "REVIEW_PACKET_DRIFT"
+
+
+def test_unparseable_supplied_dependency_not_silently_marked_full_context():
+    p = packet(repository_sources={
+        MOD: CODE,
+        CALLER: "def broken_dependency(:\n",
+    })
+    assert p["status"] == "CONTEXT_INCOMPLETE"
+    assert p["invalid_python"] == [CALLER]
+    assert p["source_context"] == {}
+    assert p["patches"] == {}
+    assert preflight_review_finding(p, {
+        "head_sha": HEAD, "file": MOD, "source_excerpt": "return x + 1"
+    }) == "REVIEW_CONTEXT_INCOMPLETE"
+
+
+def test_valid_neighbor_source_still_allows_full_review_after_parser_hardening():
+    p = packet(repository_sources={MOD: CODE, CALLER: CALLER_CODE})
+    assert p["status"] == "ADVISORY_REVIEW_REQUIRED"
+    assert p["invalid_python"] == []
+    assert p["referenced_by"][MOD] == [CALLER]
