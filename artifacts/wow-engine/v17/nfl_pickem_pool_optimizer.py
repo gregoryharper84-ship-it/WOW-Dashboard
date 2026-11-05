@@ -18,6 +18,7 @@ from math import isclose, isfinite
 from typing import Any, Iterable, Mapping
 
 from nfl_event_model_contract import CONTROLLING_SPECIALIST
+from v17.nfl_pickem_deep_research_audit import audit_nfl_pickem_deep_research
 from v17.llp_governed_package_scoring import (
     MODEL_INPUTS_INSUFFICIENT,
     MODEL_OUTPUT_INVALID,
@@ -269,6 +270,7 @@ def _blocked(
         "sportsbook_price_used": False,
         "pool_popularity_used": False,
         "source_terminal_upgraded": False,
+        "deep_research_audit": audit_nfl_pickem_deep_research(row),
         "can_execute": False,
     }
 
@@ -455,6 +457,8 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
         "probability_gap": gap,
         "confidence_band": confidence_band(selected_p),
         "selection_volatility_band": selection_volatility_band(gap),
+        "selection_volatility_basis": "PROBABILITY_GAP_PROXY_NOT_UPSET_VARIANCE",
+        "deep_research_audit": audit_nfl_pickem_deep_research(row),
         **review_profile,
         "source_prediction_id": _text(row.get("prediction_id") or row.get("event_prediction_id")),
         "immutable_model_timestamp": _model_timestamp(row),
@@ -503,6 +507,8 @@ def build_pickem_board(
             "high_confidence_hold_count": 0,
             "model_side_fragility_review_count": 0,
             "toss_up_review_count": 0,
+            "deep_research_context_count": 0,
+            "deep_research_model_recheck_count": 0,
             "picks": [],
             "blocked": [],
             "can_execute": False,
@@ -572,6 +578,15 @@ def build_pickem_board(
         "toss_up_review_count": sum(
             1 for pick in picks
             if pick.get("pickem_review_class") == PICKEM_REVIEW_TOSS_UP
+        ),
+        "deep_research_context_count": sum(
+            1 for pick in picks
+            if pick.get("deep_research_audit", {}).get("status")
+            == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+        ),
+        "deep_research_model_recheck_count": sum(
+            1 for pick in picks
+            if pick.get("deep_research_audit", {}).get("model_recheck_required") is True
         ),
         "picks": picks,
         "blocked": blocked,
