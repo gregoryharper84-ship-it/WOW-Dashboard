@@ -39,6 +39,7 @@ from prop_auto_hydration_router import auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
+from v17.user_visibility_projection import project_pick_visibility
 from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 
 # Exact-route registry codes that mean the lookup itself failed (infrastructure),
@@ -1333,6 +1334,7 @@ def install_pick_request_routes(
             "response_mode": batch.response_mode,
             "rows": ([_compact_pick_outcome(outcome) for outcome in outcomes] if batch.response_mode == "COMPACT" else outcomes),
             "detail_retrieval": ({"mode": "IMMUTABLE_RECEIPT_LOOKUP", "operation_id": "lookupWowV17PredictionReceipts"} if batch.response_mode == "COMPACT" else None),
+            "user_visibility": project_pick_visibility(outcomes),
             "probability_objective": "GOVERNED_MODEL_ONLY",
             "can_execute": False,
         }
