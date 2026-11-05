@@ -895,3 +895,71 @@ def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
     assert result["per_season"] == {2026: 0, 2027: 1}
     assert [r["game_date"] for r in stored] == ["2026-10-26"]
     assert result["can_execute"] is False
+
+
+def test_nba_offseason_sdv_has_no_false_recent_espn_gap(monkeypatch):
+    """July 2027 is offseason: an ended 2027 NBA season is not missing games."""
+    prior = date(2027, 6, 18)
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_args: [])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: prior)
+    monkeypatch.setattr(hydration, "_persist_rows", lambda *_args: 0)
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("No recent-ESPN source needed during offseason")
+        ),
+    )
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2027, 7, 23, 17, tzinfo=timezone.utc),
+    )
+    assert result["per_season"] == {2027: 0}
+    assert result["recent_supplement_status"] == {}
+    assert result["can_execute"] is False
+
+
+def test_wnba_offseason_does_not_infer_source_gap(monkeypatch):
+    """WNBA's October season end cannot imply missing November results."""
+    def missing_bdl(*_args):
+        raise hydration.BasketballHydrationError("BALLDONTLIE_AUTH_FAILED")
+
+    monkeypatch.setattr(hydration, "fetch_games", missing_bdl)
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_args: [])
+    monkeypatch.setattr(
+        hydration, "_latest_persisted_game_date", lambda *_args: date(2026, 10, 6),
+    )
+    monkeypatch.setattr(hydration, "_persist_rows", lambda *_args: 0)
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("No recent-ESPN source needed after WNBA season")
+        ),
+    )
+    result = hydration.hydrate(
+        "WNBA", [2026], client=object(),
+        now=datetime(2026, 11, 12, 17, tzinfo=timezone.utc),
+    )
+    assert result["per_season"] == {2026: 0}
+    assert result["recent_supplement_status"] == {}
+    assert result["can_execute"] is False
+
+
+def test_nba_october_preopening_gap_does_not_trigger_recent_scoreboard(monkeypatch):
+    """Preopening October requires no artificial settlement backfill."""
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_args: [])
+    monkeypatch.setattr(
+        hydration, "_latest_persisted_game_date", lambda *_args: date(2026, 6, 13),
+    )
+    monkeypatch.setattr(hydration, "_persist_rows", lambda *_args: 0)
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("No incomplete 14-day scoreboard backfill")
+        ),
+    )
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 10, 7, 17, tzinfo=timezone.utc),
+    )
+    assert result["recent_supplement_status"] == {}
+    assert result["can_execute"] is False
