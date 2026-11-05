@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 import hashlib
 import io
@@ -305,8 +306,13 @@ def normalize_sportsdataverse_game(
     *, source_release_year: int | None = None,
 ) -> dict[str, Any] | None:
     completed = str(raw.get("status_type_completed") or "").strip().lower() in {"1", "true", "yes"}
-    # A textual "postponed" or "postponement" is not a completed result.
-    if not completed:
+    # A completed flag can contradict an explicit postponed/cancelled status.
+    # Never turn a non-settlement into an official training outcome.
+    status_text = " ".join(
+        str(raw.get(field) or "").strip().lower()
+        for field in ("status_type_description", "status_type_name")
+    )
+    if not completed or any(token in status_text for token in ("postpon", "cancel", "no contest")):
         return None
     # SportsDataverse includes preseason and postseason schedules in the same
     # source family. A completed game is not automatically a regular-season
@@ -320,9 +326,16 @@ def normalize_sportsdataverse_game(
     home_id = str(raw.get("home_id") or "").strip()
     away_id = str(raw.get("away_id") or "").strip()
     try:
-        home_score = int(float(str(raw.get("home_score"))))
-        away_score = int(float(str(raw.get("away_score"))))
-    except (TypeError, ValueError):
+        home_decimal = Decimal(str(raw.get("home_score")).strip())
+        away_decimal = Decimal(str(raw.get("away_score")).strip())
+        if any(
+            not score.is_finite() or score < 0 or score != score.to_integral_value()
+            for score in (home_decimal, away_decimal)
+        ):
+            return None
+        home_score = int(home_decimal)
+        away_score = int(away_decimal)
+    except (TypeError, ValueError, OverflowError, InvalidOperation):
         return None
     if not event_id or not date_text or not home_id or not away_id or home_score == away_score:
         return None
@@ -353,17 +366,32 @@ def normalize_sportsdataverse_game(
         year = int(date_text[:4])
     except ValueError:
         return None
-    # The 2026-27 NBA season lives in nba_schedule_2027.csv even though
-    # individual game_date values start in October 2026. Provenance must name
-    # the actual downloaded release, not infer its filename from game_date.
-    release_year = source_release_year if source_release_year is not None else int(float(str(raw.get("season") or year)))
+    # Missing season is different from the game's calendar year: October 2026
+    # belongs to the NBA schedule release ending in 2027. The immutable source
+    # release parameter must be the default whenever the CSV omits a season.
+    try:
+        season_text = str(raw.get("season") or "").strip()
+        season_decimal = Decimal(season_text) if season_text else None
+        if season_decimal is not None and (
+            not season_decimal.is_finite()
+            or season_decimal != season_decimal.to_integral_value()
+        ):
+            return None
+        season = (
+            int(season_decimal) if season_decimal is not None
+            else int(source_release_year) if source_release_year is not None
+            else year
+        )
+        release_year = int(source_release_year) if source_release_year is not None else season
+    except (ValueError, TypeError, OverflowError, InvalidOperation):
+        return None
     source_url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=release_year)
     payload_sha = hashlib.sha256(
         json.dumps({k: v for k, v in raw.items() if k != "_wow_source_observed_at"}, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
     return {
         "game_id": f"espn-{event_id}",
-        "season": int(float(str(raw.get("season") or year))),
+        "season": season,
         "game_date": date_text,
         "status": str(raw.get("status_type_description") or raw.get("status_type_name") or "Final"),
         "home_team_id": f"espn-{home_id}",
