@@ -231,6 +231,19 @@ def test_registered_unknown_selected_participant_never_inherits_home_probabiliti
     assert outcome["can_execute"] is False
 
 
+@pytest.mark.parametrize("field", ["selected_participant", "selected_team", "selection"])
+def test_registered_selection_aliases_cannot_bypass_exact_identity(field):
+    package = _registered_package()
+    del package["selected_participant"]
+    package[field] = "UNRELATED CLUB"
+    outcome = _completed_registered(_row("NHL"), package)
+    assert outcome["terminal_status"] == "HELD"
+    assert outcome["code"] == "MODEL_OUTPUT_INVALID"
+    assert "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID" in outcome["blockers"]
+    assert outcome["probability_publishable"] is False
+    assert outcome["can_execute"] is False
+
+
 @pytest.mark.parametrize("sport", ["NHL", "SOCCER"])
 def test_registered_same_or_missing_opponents_never_promote_home_package(sport):
     for home, away in (("HOME", "HOME"), ("", "AWAY"), ("HOME", "")):
