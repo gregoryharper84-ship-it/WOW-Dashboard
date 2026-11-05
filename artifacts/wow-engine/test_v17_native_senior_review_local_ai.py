@@ -103,8 +103,8 @@ def test_huge_context_holds_not_truncated_to_invent_finding():
 
 
 def test_incomplete_packet_cannot_start_local_model():
-    p = packet()
-    p["status"] = "CONTEXT_INCOMPLETE"
+    p = packet("x = '" + ("z" * 200_001) + "'\n")
+    assert p["status"] == "CONTEXT_INCOMPLETE"
     with pytest.raises(LocalSemanticHold, match="LOCAL_REVIEW_CONTEXT_INCOMPLETE"):
         review_with_local_model(p, model="local",
                                 transport=transport({"findings": []}))
