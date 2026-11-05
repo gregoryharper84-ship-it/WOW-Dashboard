@@ -302,6 +302,13 @@ def normalize_sportsdataverse_game(
     # A textual "postponed" or "postponement" is not a completed result.
     if not completed:
         return None
+    # SportsDataverse includes preseason and postseason schedules in the same
+    # source family. A completed game is not automatically a regular-season
+    # training observation. Preserve older snapshots without this field.
+    season_type = raw.get("season_type")
+    if season_type is not None and str(season_type).strip():
+        if isinstance(season_type, bool) or str(season_type).strip() not in {"2", "2.0"}:
+            return None
     event_id = str(raw.get("game_id") or raw.get("id") or "").strip()
     date_text = str(raw.get("game_date") or raw.get("date") or "")[:10]
     home_id = str(raw.get("home_id") or "").strip()
