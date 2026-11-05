@@ -8,6 +8,7 @@ unless an independent exact-market source is actually present in the saved row.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from os import environ
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 from unicodedata import category
@@ -21,6 +22,7 @@ from v17.daily_response_contract import (
     read_row_detail_page,
 )
 from v17.llp_team_intelligence_bundle import build_llp_team_intelligence_bundle
+from v17.multisport_event_receipt_verifier import verify_multisport_event_receipt
 
 CAN_EXECUTE = False
 ROUTE_PATH = "/v17/llp-team-intelligence/{run_id}/events"
@@ -192,6 +194,13 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         # No canonical producer-side receipt_id is present on legacy Daily
         # discovery rows. Never synthesize it from event/snapshot/run IDs.
         "source_receipt_id": result.get("source_receipt_id"),
+        "score_snapshot_id": result.get("score_snapshot_id"),
+        "reducer_receipt_id": result.get("reducer_receipt_id"),
+        "reducer_receipt_sha256": result.get("reducer_receipt_sha256"),
+        "model_artifact_id": result.get("model_artifact_id"),
+        "model_artifact_sha256": result.get("model_artifact_sha256"),
+        "calibration_artifact_id": result.get("calibration_artifact_id"),
+        "calibration_artifact_sha256": result.get("calibration_artifact_sha256"),
         "probability_publishable": (
             row.get("row_status") == "COMPLETED"
             and detail.get("probability_publishable") is True
@@ -278,6 +287,10 @@ def _verify_governed_event_prediction(
             return "LLP_EVENT_PREDICTION_ID_UNVERIFIED"
     except (ValueError, TypeError, AttributeError):
         return "LLP_EVENT_PREDICTION_ID_UNVERIFIED"
+    # Multisport ledger stays OFF until genuine terminal RPC + admission + migration.
+    # Default path retains existing typed holds and never alters the MLB ledger.
+    if environ.get("WOW_V17_MULTISPORT_RECEIPT_READBACK_ENABLED") == "1":
+        return verify_multisport_event_receipt(db, event=event, winner=winner)
     if db is None:
         return "LLP_EVENT_PREDICTION_LOOKUP_NOT_PERFORMED"
     try:
