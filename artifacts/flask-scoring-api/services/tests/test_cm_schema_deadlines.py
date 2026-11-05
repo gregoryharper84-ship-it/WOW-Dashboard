@@ -209,29 +209,102 @@ def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
             server.cleanup()
 
 
-@pytest.mark.parametrize("stage", ["connect", "lookup"])
-def test_optimizer_propagates_exposure_database_failure_before_building_any_result(stage):
-    """An unavailable exposure store cannot become an empty lookup and PASS."""
-    import copy
-    from contextlib import nullcontext
+class ExposureUnavailable(RuntimeError):
+    """Identify the original synthetic cursor/query failure without wrapping it."""
 
-    class ExposureUnavailable(RuntimeError):
-        pass
+
+class ExposureConnection:
+    """Expose actual helper cursor, query, fetch and partial-read failure paths."""
+
+    def __init__(self, stage=None, rows=()):
+        """Choose a synthetic failure stage and otherwise complete result rows."""
+        self.stage = stage
+        self.rows = rows
+        self.queries = 0
+
+    def __enter__(self):
+        """Enter the isolated connection or cursor context."""
+        return self
+
+    def __exit__(self, *_args):
+        """Preserve failures leaving the simulated database context."""
+        return False
+
+    def cursor(self):
+        """Open the cursor or preserve its original connection failure."""
+        if self.stage == "cursor":
+            raise ExposureUnavailable("exposure database unavailable")
+        return self
+
+    def execute(self, _query, _parameters):
+        """Count actual helper queries and fail the requested read."""
+        self.queries += 1
+        if self.stage == "query" or (self.stage == "partial" and self.queries == 2):
+            raise ExposureUnavailable("exposure database unavailable")
+
+    def fetchall(self):
+        """Return complete rows or raise the original fetch failure."""
+        if self.stage == "fetch":
+            raise ExposureUnavailable("exposure database unavailable")
+        return self.rows
+
+
+def _exposure_namespace():
+    """Load the real exposure helper and key functions without Flask startup."""
+    names = {"_cm_check_daily_exposure", "_cm_exposure_key", "_cm_thesis_key"}
+    functions = [node for node in ast.parse(APP.read_text()).body
+                 if isinstance(node, ast.FunctionDef) and node.name in names]
+    namespace = {}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(APP), "exec"), namespace)
+    return namespace
+
+
+@pytest.mark.parametrize("stage", ["connect", "cursor", "query", "fetch", "partial"])
+def test_optimizer_propagates_exposure_database_failure_before_building_any_result(stage):
+    """Exercise the real helper so missing or partial reads cannot become PASS."""
+    import copy
 
     def fail(*_args, **_kwargs):
         raise ExposureUnavailable("exposure database unavailable")
 
+    # Synthetic eligible fixtures reach the read-only lookup. No fitted model,
+    # production request, persistence, order action or joint scorer is invoked.
+    leg = {"player": "Synthetic fixture", "event": "fixture-event", "prop": "points",
+           "line": 1, "side": "MORE", "test_only_lane": False,
+           "calibrated_lower_bound": 0.5, "exposure_key": "fixture-key"}
+    connection = ExposureConnection(stage, rows=[("fixture-slip", "other-key", "fixture-thesis")])
     tree = ast.parse(APP.read_text())
     function = copy.deepcopy(next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "cm_slip_optimizer"))
     function.decorator_list = []
-    namespace = {
-        "request": SimpleNamespace(get_json=lambda **kw: {"legs": [{"test_only": True}]}),
-        # The fixture is quarantined before model math; no numerical scorer,
-        # order path or database outside this synthetic namespace is invoked.
-        "_cm_enrich_leg": lambda _leg: {"test_only_lane": True},
-        "_cm_db": fail if stage == "connect" else lambda: nullcontext(object()),
-        "_cm_check_daily_exposure": fail,
-    }
+    namespace = _exposure_namespace()
+    namespace.update({
+        "request": SimpleNamespace(get_json=lambda **kw: {"legs": [leg, dict(leg)]}),
+        "_cm_enrich_leg": lambda fixture: fixture,
+        "_cm_db": fail if stage == "connect" else lambda: connection,
+    })
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(APP), "exec"), namespace)
     with pytest.raises(ExposureUnavailable, match="exposure database unavailable"):
         namespace["cm_slip_optimizer"]()
+    if stage in ("query", "fetch", "partial"):
+        assert connection.queries == (2 if stage == "partial" else 1)
+
+
+def test_exposure_default_preserves_first_boot_tolerance():
+    """The existing non-strict caller retains its documented first-boot behavior."""
+    namespace = _exposure_namespace()
+    assert namespace["_cm_check_daily_exposure"]([], "2026-11-05", ExposureConnection("cursor")) == []
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_strict_exposure_lookup_preserves_complete_results(matching):
+    """Complete strict reads distinguish no conflict from the original duplicate."""
+    namespace = _exposure_namespace()
+    leg = {"player": "Synthetic fixture", "event": "fixture-event", "prop": "points"}
+    key = namespace["_cm_exposure_key"](leg)
+    rows = [("fixture-slip", key, "fixture-thesis")] if matching else []
+    connection = ExposureConnection(rows=rows)
+    result = namespace["_cm_check_daily_exposure"]([leg], "2026-11-05", connection, strict=True)
+    assert connection.queries == 1
+    assert result == ([{"leg": "Synthetic fixture", "exposure_key": key,
+                        "conflict_type": "NO_DUPLICATE_THESIS", "existing_slip_id": "fixture-slip"}]
+                      if matching else [])

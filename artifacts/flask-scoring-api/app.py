@@ -15016,9 +15016,10 @@ def _cm_weakest_leg_finalizer(legs, _conn=None):
     }
 
 
-def _cm_check_daily_exposure(legs, board_date, conn):
+def _cm_check_daily_exposure(legs, board_date, conn, *, strict=False):
     """PATCH-016: check cm_daily_exposure for duplicate theses on the same day.
     Returns list of conflict dicts (empty = no conflicts).
+    Strict callers require a complete read; the default retains first-boot tolerance.
     """
     conflicts = []
     try:
@@ -15044,6 +15045,8 @@ def _cm_check_daily_exposure(legs, board_date, conn):
                         "existing_slip_id": row[0],
                     })
     except Exception:
+        if strict:
+            raise
         pass    # non-fatal; exposure table may not exist yet on first boot
     return conflicts
 
@@ -15886,7 +15889,7 @@ def cm_slip_optimizer():
     try:
         with _cm_db() as conn:
             dup_conflicts = _cm_check_daily_exposure(
-                final_candidates, board_date, conn)
+                final_candidates, board_date, conn, strict=True)
     except Exception:
         # Preserve the native database failure. Missing exposure evidence must
         # never become an empty conflict list or an optimizer PASS result.
