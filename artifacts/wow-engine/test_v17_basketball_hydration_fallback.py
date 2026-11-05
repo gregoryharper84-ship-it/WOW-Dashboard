@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import basketball_event_hydration_runtime as hydration
@@ -21,6 +21,7 @@ def _espn_event(*, event_id="401", game_date="2026-09-20", home_score="88", away
 
 def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="88", away_score="81"):
     return {
+        "_wow_source_observed_at": (datetime.fromisoformat(game_date).replace(tzinfo=timezone.utc) + timedelta(days=1, hours=6)).isoformat(),
         "game_id": event_id,
         "game_date": game_date,
         "game_date_time": f"{game_date}T19:00:00",  # SportsDataverse Eastern local time
@@ -1061,3 +1062,94 @@ def test_sdv_missing_tipoff_column_is_typed_schema_drift_not_zero_games(monkeypa
             raise AssertionError("missing game_date_time cannot silently accept zero games")
         except hydration.BasketballHydrationError as exc:
             assert str(exc) == "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT:game_date_time"
+
+
+def test_sdv_cross_midnight_final_snapshot_cannot_be_backdated():
+    for sport in ("NBA", "WNBA"):
+        row = _sportsdataverse_row(game_date="2026-11-05")
+        row["game_date_time"] = "2026-11-05T23:30:00-05:00"
+        row["_wow_source_observed_at"] = "2026-11-06T08:30:00Z"
+        for cutoff in ("2026-11-06T05:01:00Z", "2026-11-06T00:01:00-05:00"):
+            assert hydration.normalize_sportsdataverse_game(row, sport, cutoff) is None
+        assert hydration.normalize_sportsdataverse_game(row, sport, "2026-11-06T09:00:00Z") is not None
+
+
+def test_sdv_observed_same_day_final_is_preserved():
+    row = _sportsdataverse_row(game_date="2026-11-05")
+    row["game_date_time"] = "2026-11-05T18:00:00-05:00"
+    row["_wow_source_observed_at"] = "2026-11-06T02:00:00Z"
+    result = hydration.normalize_sportsdataverse_game(row, "NBA", "2026-11-05T21:01:00-05:00")
+    assert result is not None
+    assert result["source_retrieved_at"] == row["_wow_source_observed_at"]
+
+
+def test_sdv_missing_naive_or_pre_tipoff_final_observation_is_not_evidence():
+    row = _sportsdataverse_row(game_date="2026-11-05")
+    for observed in (None, "", "bad", "2026-11-06T03:00:00", "2026-11-05T22:00:00Z"):
+        row["_wow_source_observed_at"] = observed
+        assert hydration.normalize_sportsdataverse_game(row, "NBA", "2026-11-06T18:00:00Z") is None
+
+
+def test_sdv_duplicate_later_update_does_not_rewrite_earlier_observation():
+    early = _sportsdataverse_row(game_date="2026-11-05")
+    early["_wow_source_observed_at"] = "2026-11-06T03:00:00Z"
+    early["status_type_completed"] = "False"
+    later = dict(early, status_type_completed="True", _wow_source_observed_at="2026-11-06T08:00:00Z")
+    for row in (early, later):
+        assert hydration.normalize_sportsdataverse_game(row, "NBA", "2026-11-06T05:01:00Z") is None
+    assert hydration.normalize_sportsdataverse_game(later, "NBA", "2026-11-06T08:00:00Z") is not None
+
+
+def test_sdv_fetch_stamps_acquisition_and_overwrites_csv_claim(monkeypatch):
+    import csv
+    import io
+    row = _sportsdataverse_row(game_date="2000-01-01")
+    row["_wow_source_observed_at"] = "1900-01-01T00:00:00Z"
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=list(row))
+    writer.writeheader()
+    writer.writerow(row)
+    monkeypatch.setattr(hydration, "source_readiness", lambda *_: SimpleNamespace(ready_for_candidate_training=True))
+    session = SimpleNamespace(get=lambda *_args, **_kwargs: SimpleNamespace(status_code=200, text=out.getvalue()))
+    before = datetime.now(timezone.utc)
+    acquired = hydration.fetch_sportsdataverse_games("NBA", 2027, session=session)[0]
+    after = datetime.now(timezone.utc)
+    assert before <= datetime.fromisoformat(acquired["_wow_source_observed_at"]) <= after
+    assert hydration.normalize_sportsdataverse_game(acquired, "NBA", before.isoformat()) is None
+    result = hydration.normalize_sportsdataverse_game(acquired, "NBA", after.isoformat())
+    assert result is not None
+    # Local acquisition metadata never changes the provider payload digest.
+    again = dict(acquired, _wow_source_observed_at=after.isoformat())
+    assert hydration.normalize_sportsdataverse_game(again, "NBA", after.isoformat())["source_payload_sha256"] == result["source_payload_sha256"]
+
+
+def test_sdv_daylight_saving_offsets_compare_as_instants():
+    row = _sportsdataverse_row(game_date="2026-10-31")
+    row["game_date_time"] = "2026-10-31T23:30:00-04:00"
+    row["_wow_source_observed_at"] = "2026-11-01T01:30:00-05:00"
+    assert hydration.normalize_sportsdataverse_game(row, "NBA", "2026-11-01T01:45:00-04:00") is None
+    assert hydration.normalize_sportsdataverse_game(row, "NBA", "2026-11-01T01:45:00-05:00") is not None
+
+
+def test_live_hydrate_captures_after_fetch_but_replay_cutoff_stays_fixed(monkeypatch):
+    class Clock(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            return cls(2026, 11, 6, 8, 0, cls.calls, tzinfo=timezone.utc)
+
+    row = _sportsdataverse_row(game_date="2026-11-05")
+    row["_wow_source_observed_at"] = "2026-11-06T08:00:02Z"
+    monkeypatch.setattr(hydration, "datetime", Clock)
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [row])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
+    batches = []
+    monkeypatch.setattr(hydration, "_persist_rows", lambda _db, _sport, rows: (batches.append(list(rows)), len(rows))[1])
+    result = hydration.hydrate("NBA", [2027], client=object())
+    assert result["settled_rows"] == 1
+    assert batches[0][0]["source_retrieved_at"] == row["_wow_source_observed_at"]
+    result = hydration.hydrate("NBA", [2027], client=object(), now=Clock(2026, 11, 6, 8, 0, 1, tzinfo=timezone.utc))
+    assert result["settled_rows"] == 0
+    assert batches[-1] == []

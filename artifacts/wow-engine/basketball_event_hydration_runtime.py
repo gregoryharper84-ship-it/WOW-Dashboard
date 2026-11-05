@@ -152,7 +152,12 @@ def fetch_sportsdataverse_games(
         raise BasketballHydrationError(
             "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT:" + ",".join(missing)
         )
-    return [dict(row) for row in reader]
+    # This is the time this exact completed/not-completed snapshot was
+    # acquired, not the event start or a caller-supplied historical cutoff.
+    # Overwrite any same-named CSV column; provider fields cannot supply it.
+    rows = [dict(row) for row in reader]
+    observed_at = datetime.now(timezone.utc).isoformat()
+    return [dict(row, _wow_source_observed_at=observed_at) for row in rows]
 
 
 def fetch_espn_games(sport: str, season: int) -> list[dict[str, Any]]:
@@ -321,30 +326,24 @@ def normalize_sportsdataverse_game(
         return None
     if not event_id or not date_text or not home_id or not away_id or home_score == away_score:
         return None
-    # SportsDataverse's latest completed flag is not a historical status
-    # snapshot. Tip-off alone does not prove completion at an earlier replay
-    # cutoff, so without independently timestamped final-status evidence,
-    # withhold the entire Eastern game day until the following local day.
-    # A one-day hold prevents leakage from in-progress same-day contests.
+    # A final flag proves completion only at the acquisition of that exact
+    # snapshot. Neither a calendar rollover nor elapsed time proves a final.
+    # Missing acquisition evidence must be reacquired, never backdated.
     try:
         game_day = date.fromisoformat(date_text)
         captured = datetime.fromisoformat(str(retrieved_at).replace("Z", "+00:00"))
-        if captured.utcoffset() is None or game_day >= captured.astimezone(
-            ZoneInfo("America/New_York")
-        ).date():
+        observed_text = str(raw.get("_wow_source_observed_at") or "")
+        observed = datetime.fromisoformat(observed_text.replace("Z", "+00:00"))
+        if captured.utcoffset() is None or observed.utcoffset() is None:
             return None
-        # SportsDataverse's ESPN schedule emits game_date_time in Eastern.
-        # A 'completed' source flag from a later release is not evidence that
-        # the fixture was completed at this earlier, immutable capture instant.
         tipoff_text = str(raw.get("game_date_time") or "").strip()
-        if not tipoff_text:
-            return None
         tipoff = datetime.fromisoformat(tipoff_text.replace("Z", "+00:00"))
         if tipoff.utcoffset() is None:
             tipoff = tipoff.replace(tzinfo=ZoneInfo("America/New_York"))
         if (
             tipoff.astimezone(ZoneInfo("America/New_York")).date() != game_day
-            or tipoff.astimezone(timezone.utc) > captured.astimezone(timezone.utc)
+            or not tipoff.astimezone(timezone.utc) < observed.astimezone(timezone.utc)
+            <= captured.astimezone(timezone.utc)
         ):
             return None
     except (TypeError, ValueError, OverflowError):
@@ -360,7 +359,7 @@ def normalize_sportsdataverse_game(
     release_year = source_release_year if source_release_year is not None else int(float(str(raw.get("season") or year)))
     source_url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=release_year)
     payload_sha = hashlib.sha256(
-        json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()
+        json.dumps({k: v for k, v in raw.items() if k != "_wow_source_observed_at"}, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
     return {
         "game_id": f"espn-{event_id}",
@@ -374,10 +373,10 @@ def normalize_sportsdataverse_game(
         "home_win": home_score > away_score,
         "source_provider": "SPORTSDATAVERSE_ESPN",
         "source_endpoint": source_url,
-        "source_retrieved_at": retrieved_at,
+        "source_retrieved_at": observed_text,
         "source_payload_sha256": payload_sha,
         "settled": True,
-        "updated_at": retrieved_at,
+        "updated_at": observed_text,
     }
 
 
@@ -613,6 +612,10 @@ def hydrate(
                 fallback_reasons[year] = str(primary_error)
 
             total_raw += len(raw)
+            # Live acquisition finishes after the cycle starts. An explicit
+            # replay cutoff remains fixed and cannot borrow a later snapshot.
+            if now is None:
+                retrieved_at = datetime.now(timezone.utc).isoformat()
             normalized_rows = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
 
             # Keep ESPN scoreboard evidence separately typed from open-licensed
