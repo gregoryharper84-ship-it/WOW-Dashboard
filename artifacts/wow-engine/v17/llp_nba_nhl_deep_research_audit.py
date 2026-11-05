@@ -80,8 +80,10 @@ def _identifier(value: Any) -> str:
     """
     if not isinstance(value, str):
         return ""
+    if any(ord(char) < 32 for char in value):
+        return ""
     token = value.strip()
-    if not token or len(token) > 512 or any(ord(char) < 32 for char in token):
+    if not token or len(token) > 512:
         return ""
     return token
 
