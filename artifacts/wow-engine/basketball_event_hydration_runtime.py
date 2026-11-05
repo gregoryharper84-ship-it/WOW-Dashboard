@@ -46,6 +46,7 @@ TABLES = {
 SPORTSDATAVERSE_REQUIRED_COLUMNS = {
     "game_id",
     "game_date",
+    "game_date_time",
     "home_id",
     "away_id",
     "home_score",
