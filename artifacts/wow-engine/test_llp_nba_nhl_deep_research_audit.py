@@ -544,6 +544,10 @@ def _ledger_case(sport="NBA"):
         "event_start_time": event["event_start_time_utc"],
         "sport": sport,
         "market_family": "OUTRIGHT_WINNER",
+        "settlement_basis": (
+            "FULL_GAME_MONEYLINE_INCLUDING_OVERTIME_SHOOTOUT"
+            if sport == "NHL" else "FULL_GAME_INCLUDING_OVERTIME"
+        ),
         "home_team": "BOS",
         "away_team": event["away_team"],
         "selected_participant": "BOS",
@@ -586,7 +590,8 @@ def test_genuine_exact_immutable_event_prediction_ledger_receipt_only_visible_po
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("corruption", [
     "nonexistent", "wrong_event", "wrong_version", "wrong_snapshot",
-    "late_lock", "wrong_probability", "not_published", "duplicate",
+    "late_lock", "wrong_probability", "not_published",
+    "wrong_settlement", "duplicate",
 ])
 def test_fabricated_or_mismatched_ledger_never_promotes_daily_winner(sport, corruption):
     page, ledger = _ledger_case(sport)
@@ -608,6 +613,11 @@ def test_fabricated_or_mismatched_ledger_never_promotes_daily_winner(sport, corr
             altered["calibrated_home_probability"] = .88
         elif corruption == "not_published":
             altered["probability_publishable"] = False
+        elif corruption == "wrong_settlement":
+            altered["settlement_basis"] = (
+                "REGULATION_TIME_THREE_WAY"
+                if sport == "NHL" else "REGULATION_ONLY"
+            )
         rows = [altered]
     db = _EventLedger(rows)
     out = project_llp_intelligence_page(page, db=db)
