@@ -74,7 +74,7 @@ def test_no_silent_partial_context_when_changed_source_missing():
 
 
 def test_overlong_source_does_not_enter_reviewer_packet():
-    result = packet(repository_sources={MOD: "x" * 24_001})
+    result = packet(repository_sources={MOD: "x" * 250_001})
     assert result["status"] == "CONTEXT_INCOMPLETE"
     assert result["omitted_oversize_context"] == [MOD]
     assert result["source_context"] == {}
@@ -170,7 +170,7 @@ def test_excessive_source_inventory_rejected():
 
 
 def test_oversize_diff_marks_incomplete_instead_of_silent_partial_review():
-    result = packet(changed_patches={MOD: "x" * 90_001})
+    result = packet(changed_patches={MOD: "x" * 1_000_001})
     assert result["max_payload_exceeded"] is True
     assert result["status"] == "CONTEXT_INCOMPLETE"
     assert result["patches"] == {}
