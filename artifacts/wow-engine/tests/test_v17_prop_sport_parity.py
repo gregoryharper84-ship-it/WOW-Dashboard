@@ -21,7 +21,8 @@ def test_prop_parity_distinguishes_row_hydration_from_autonomous_discovery():
     assert rows["MLB"]["automatic_row_hydration_supported"] is True
     assert rows["MLB"]["daily_autonomous_discovery_supported"] is True
     assert rows["NFL"]["automatic_row_hydration_supported"] is True
-    assert rows["NFL"]["daily_autonomous_discovery_supported"] is False
+    assert rows["NFL"]["daily_autonomous_discovery_supported"] is True
+    assert rows["NFL"]["certified_production_lane_count"] == 4
     assert rows["WNBA"]["automatic_row_hydration_supported"] is True
     assert rows["WNBA"]["daily_autonomous_discovery_supported"] is False
 
@@ -58,7 +59,7 @@ def test_coverage_receipt_reports_every_requested_sport_and_reconciles():
     assert per["NBA"]["scored"] == 0 and per["NBA"]["unscored"] == 1
     assert per["NHL"]["coverage_status"] == "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED"
     assert per["NHL"]["zero_rows_is_not_empty_slate_proof"] is True
-    assert per["NFL"]["autonomous_discovery_status"] == "NOT_IMPLEMENTED"
+    assert per["NFL"]["autonomous_discovery_status"] == "ENABLED"
     assert receipt["total_prop_rows"] == 3 and receipt["all_reconciled"] is True
     assert "moneyline" in receipt["scope_note"]
     assert receipt["can_execute"] is False
@@ -74,3 +75,13 @@ def test_coverage_receipt_keeps_unrequested_sport_rows_visible():
     assert receipt["per_sport"]["MLB"]["coverage_status"] == "NO_ROWS_DISCOVERY_ENABLED"
     assert receipt["all_reconciled"] is True
     assert receipt["silent_sport_omission"] is False
+
+
+def test_nba_nhl_remain_without_autonomous_discovery_or_hydration():
+    rows = prop_sport_parity()
+    for sport in ("NBA", "NHL"):
+        assert rows[sport]["daily_autonomous_discovery_supported"] is False
+        assert rows[sport]["automatic_row_hydration_supported"] is False
+        assert rows[sport]["certified_production_lane_count"] == 0
+    summary = prop_sport_parity_summary()
+    assert {"NBA", "NHL"} <= set(summary["sports_without_daily_autonomous_discovery"])

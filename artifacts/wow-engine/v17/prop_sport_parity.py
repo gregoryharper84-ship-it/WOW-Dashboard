@@ -34,10 +34,14 @@ _AUTOMATIC_ROW_HYDRATION = {
     "WNBA": "WNBA_OFFICIAL_STATS_CDN_INJURY_V1",
 }
 
-# Daily currently owns one truly autonomous candidate producer. Keeping this
+# Daily owns these autonomous candidate producers (NBA/NHL deliberately absent:
+# no governed evidence hydrator or certified specialist exists for them). Keeping this
 # explicit prevents a missing producer from silently looking like an empty slate.
 _DAILY_AUTONOMOUS_DISCOVERY = {
     "MLB": "MLB_OFFICIAL_PROBABLE_PITCHERS",
+    # Discovery only: ESPN pregame scoreboard + QB/RB/WR/TE rosters feed the
+    # governed NFL hydrator. Scoring/publication gates are unchanged.
+    "NFL": "NFL_ESPN_PREGAME_SCOREBOARD_ROSTER",
 }
 
 
