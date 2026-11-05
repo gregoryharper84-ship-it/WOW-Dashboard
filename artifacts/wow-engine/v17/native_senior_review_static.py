@@ -102,6 +102,46 @@ def _python_findings(path: str, src: str, lines_added: set[int]):
         if not (12 <= len(excerpt) <= 500):
             continue
         out.append((rule, severity, node.lineno, why, excerpt))
+    # Architecture invariants are advisory hypotheses, not automatic release holds.
+    # Apply only to newly added code so existing debt is not relabeled as a new bug.
+    for node in ast.walk(tree):
+        rule, severity, why = "", "", ""
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = (node.targets if isinstance(node, ast.Assign) else [node.target])
+            names = {_call_name(t).rsplit(".", 1)[-1] for t in targets}
+            value = node.value
+            if "can_execute" in names and _literal_true(value):
+                rule, severity, why = (
+                    "V17_EXECUTION_ENABLE_ATTEMPT", "P0",
+                    "V17 requires can_execute=false; inspect any proposed enabling assignment")
+            elif ("calibrated_lower_bound" in names and isinstance(value, ast.BinOp)
+                  and isinstance(value.op, ast.Sub)
+                  and isinstance(value.right, ast.Constant)
+                  and type(value.right.value) in (float, int)):
+                rule, severity, why = (
+                    "CALIBRATED_BOUND_FIXED_HAIRCUT", "P1",
+                    "Prove a certified cohort-calibration basis; a universal fixed subtraction is not sufficient")
+        elif isinstance(node, ast.Call):
+            if any(kw.arg == "can_execute" and _literal_true(kw.value) for kw in node.keywords):
+                rule, severity, why = (
+                    "V17_EXECUTION_ENABLE_ATTEMPT", "P0",
+                    "V17 requires can_execute=false; constructor or call enables execution")
+        elif isinstance(node, ast.ExceptHandler):
+            for child in ast.walk(node):
+                if (isinstance(child, ast.Constant) and child.value == "MODEL_UNAVAILABLE"
+                        and child.lineno in lines_added):
+                    out.append((
+                        "MODEL_SCORER_FAILURE_MISCLASSIFICATION", "P1",
+                        child.lineno,
+                        "An exception path returning MODEL_UNAVAILABLE needs proof of genuine "
+                        "capability absence; invocation failures must retain scorer/Action errors",
+                        code_lines[child.lineno - 1].strip(),
+                    ))
+        if not rule or getattr(node, "lineno", -1) not in lines_added:
+            continue
+        excerpt = code_lines[node.lineno - 1].strip()
+        if 12 <= len(excerpt) <= 500:
+            out.append((rule, severity, node.lineno, why, excerpt))
     return out
 
 
