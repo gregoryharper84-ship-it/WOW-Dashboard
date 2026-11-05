@@ -113,6 +113,11 @@ def verify_multisport_event_receipt(
     selected = _text(winner.get("side")).upper()
     if not home or not away or home == away or selected not in (home, away):
         return MATCH_HOLD
+    # Bind the saved official event to the independently supplied event context,
+    # not merely to the winner claim (both could agree on a foreign game).
+    if (not _text(event.get("official_event_id"))
+        or _text(saved.get("official_event_id")) != _text(event.get("official_event_id"))):
+        return MATCH_HOLD
     stamps = [_utc(saved.get(k)) for k in (
         "source_snapshot_timestamp", "model_timestamp", "locked_at",
         "terminal_reduced_at", "created_at", "event_start_time")]
