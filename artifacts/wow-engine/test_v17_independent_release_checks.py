@@ -697,7 +697,9 @@ def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, c
     ("draft", True),
 ])
 def test_qa_superseded_classifier_never_masks_invalid_current_identity(field, value):
-    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    # Reach the intended LIVE PR identity check: the event itself must have
+    # valid provenance, otherwise the new event guard could pass vacuously.
+    event_pr = [_same_origin_event_pr()]
     live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
             "head": {"sha": OLD, "repo": {"full_name": REPO}},
             "base": {"ref": "main", "repo": {"full_name": REPO}}}
@@ -745,6 +747,77 @@ def test_qa_superseded_requires_event_origin_repo_not_only_live_pr(side, repo_va
     assert out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
     assert out.get("disposition") != "neutral"
     assert out["targets"] == []
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize(("field", "foreign"), [
+    ("full_name", "foreign/WOW-Dashboard"),
+    ("url", "https://api.github.com/repos/foreign/WOW-Dashboard"),
+])
+def test_qa_superseded_rejects_conflicting_dual_origin_fields(side, field, foreign):
+    event = _same_origin_event_pr()
+    # An exact URL cannot rescue a foreign full_name and vice versa.
+    event[side]["repo"]["full_name"] = REPO
+    event[side]["repo"]["url"] = "https://api.github.com/repos/" + REPO
+    event[side]["repo"][field] = foreign
+    moved = {
+        "number": 7, "state": "open", "draft": False, "merged_at": None,
+        "head": {"sha": OLD, "ref": "fix/new-head", "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    result = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=True,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, moved)}),
+    )
+    assert result["targets"] == []
+    assert result["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert result.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize("foreign_repo", [
+    None,
+    {"full_name": "foreign/WOW-Dashboard"},
+    {"id": 1, "name": "WOW-Dashboard"},
+])
+def test_closed_pr_matching_event_sha_never_accepts_invalid_event_origin(side, foreign_repo):
+    event = _same_origin_event_pr()
+    if foreign_repo is None:
+        event[side].pop("repo")
+    else:
+        event[side]["repo"] = foreign_repo
+    closed = {
+        "number": 7, "state": "closed", "draft": False, "merged_at": None,
+        "head": {"sha": HEAD, "ref": "fix/closed", "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    result = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=True,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, closed)}),
+    )
+    assert result["targets"] == []
+    assert result["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert result.get("disposition") != "neutral"
+
+
+def test_open_current_head_strict_fallback_remains_backward_compatible():
+    event = _same_origin_event_pr()
+    # Existing strict current-head target behavior is intentionally preserved;
+    # this safety patch narrows invalid CLOSED PR admission only.
+    event["head"].pop("repo")
+    current = {
+        "number": 7, "state": "open", "draft": False, "merged_at": None,
+        "head": {"sha": HEAD, "ref": "fix/current", "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    result = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=True,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, current)}),
+    )
+    assert result["targets"] == [
+        {"pr": 7, "head": HEAD, "head_ref": "fix/current"},
+    ]
+    assert result["errors"] == []
 
 
 def test_qa_superseded_event_origin_check_does_not_affect_manual_or_strict_paths():
