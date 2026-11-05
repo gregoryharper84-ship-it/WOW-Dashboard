@@ -45,6 +45,7 @@ def _install_fake_psycopg2(monkeypatch, *, reject_ddl=False):
 
     driver = types.ModuleType("psycopg2")
     driver.connect = connect
+    driver.OperationalError = type("OperationalError", (Exception,), {})
     monkeypatch.setitem(sys.modules, "psycopg2", driver)
     return observed, conn
 
@@ -83,6 +84,78 @@ def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
     ]
     assert conn.commit_calls == 0
 
+
+
+def test_transient_connect_failure_retries_once_then_completes(monkeypatch):
+    """One no-SQLSTATE connect error can recover with the existing DDL limits."""
+    import time
+
+    observed, conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    attempts = []
+    sleeps = []
+
+    def connect(*args, **kwargs):
+        attempts.append((args, kwargs))
+        if len(attempts) == 1:
+            raise driver.OperationalError("temporary socket unavailable")
+        return conn
+
+    monkeypatch.setattr(driver, "connect", connect)
+    monkeypatch.setattr(time, "sleep", lambda interval: sleeps.append(interval))
+    pg_session_ledger.ensure_table_exists("postgresql://fake/recover")
+
+    assert len(attempts) == 2
+    assert all(call[1] == {"connect_timeout": 5} for call in attempts)
+    assert sleeps == [0.25]
+    assert conn.commit_calls == 1
+
+
+def test_exhausted_transient_connect_retry_stays_failed_closed(monkeypatch):
+    """A second connection failure remains an exception, never a fake warmup PASS."""
+    import time
+
+    _, conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    attempts = []
+    sleeps = []
+
+    def always_fail(*args, **kwargs):
+        attempts.append((args, kwargs))
+        raise driver.OperationalError("connection unavailable")
+
+    monkeypatch.setattr(driver, "connect", always_fail)
+    monkeypatch.setattr(time, "sleep", lambda interval: sleeps.append(interval))
+    with pytest.raises(driver.OperationalError, match="connection unavailable"):
+        pg_session_ledger.ensure_table_exists("postgresql://fake/down")
+    assert len(attempts) == 2
+    assert sleeps == [0.25]
+    assert conn.commit_calls == 0
+
+
+def test_sqlstate_lock_error_is_never_retried(monkeypatch):
+    """DDL lock failures cannot be laundered into connection retry."""
+    import time
+
+    _, conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    attempts = []
+    sleeps = []
+
+    class LockUnavailable(driver.OperationalError):
+        pgcode = "55P03"
+
+    def sqlstate_error(*args, **kwargs):
+        attempts.append((args, kwargs))
+        raise LockUnavailable("lock_timeout")
+
+    monkeypatch.setattr(driver, "connect", sqlstate_error)
+    monkeypatch.setattr(time, "sleep", lambda interval: sleeps.append(interval))
+    with pytest.raises(LockUnavailable):
+        pg_session_ledger.ensure_table_exists("postgresql://fake/lock")
+    assert len(attempts) == 1
+    assert sleeps == []
+    assert conn.commit_calls == 0
 
 
 def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
