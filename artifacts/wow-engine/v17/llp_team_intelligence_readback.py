@@ -74,14 +74,20 @@ def _saved_research_identity_conflict(
     must not appear as valid research for the outer row's event.
     """
     detail = _data(row.get("detail"))
-    sources = ( _data(row.get("identity")), _data(detail.get("identity")),
-                _data(detail.get("result")) )
+    sources = (
+        _data(row.get("identity")),
+        _data(detail.get("identity")),
+        _data(detail.get("result")),
+    )
     for source in sources:
-        for field in ("official_event_id", "sport", "home_team", "away_team"):
+        # 'league' is a supported alias of 'sport' in persisted Daily rows.
+        # A contradictory alias in the *same* source or a nested source must
+        # not launder the research context onto the wrong event.
+        for field in ("official_event_id", "sport", "league", "home_team", "away_team"):
             actual = source.get(field)
             if actual in (None, ""):
                 continue
-            expected = event.get(field)
+            expected = event.get("sport") if field == "league" else event.get(field)
             if field == "official_event_id":
                 if _token(actual) != _token(expected):
                     return True
@@ -242,19 +248,20 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         seen_ids.add(event_id)
         try:
             research = result.get("llp_deep_research_context")
+            # Core saved-event identity safety is independent of the OPTIONAL
+            # research context. A conflicting result cannot publish a winner
+            # with or without research, and a missing/invalid research context
+            # cannot by itself change a valid winner's visibility.
             conflict = (
                 event["sport"] in {"NBA", "NHL"}
-                and research is not None
                 and _saved_research_identity_conflict(row, event)
             )
             winner = _winner_receipt_from_row(row, event)
             if conflict:
-                # Neither a research annotation nor a certified-looking
-                # winner may cross a contradiction in persisted event identity.
-                # Preserve the event on the read-only board, but withhold p.
                 winner["probability_publishable"] = False
                 winner["rank_eligible"] = False
-                research = {"persisted_event_identity_conflict": True}
+                if research is not None:
+                    research = {"persisted_event_identity_conflict": True}
             bundle = build_llp_team_intelligence_bundle(
                 event=event, receipts=[winner],
                 deep_research_context=research,
