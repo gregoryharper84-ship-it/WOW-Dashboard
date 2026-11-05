@@ -867,3 +867,29 @@ def test_ledger_matched_research_conflict_holds_winner_independently(sport):
     assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
     assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in item["source_diagnostics"]["source_reason_codes"]
     assert not any(code.startswith("LLP_EVENT_PREDICTION_") for code in market["reason_codes"])
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("control", ["\u0085", "\t", "\n", "\x7f"])
+def test_ledger_uuid_with_raw_controls_cannot_verify_after_trimming(sport, control):
+    """Malformed raw UUIDs must hold before querying an otherwise matching ledger."""
+    page, ledger = _ledger_case(sport)
+    page["rows"][0]["detail"]["result"]["source_receipt_id"] = control + LEDGER_ID + control
+    db = _EventLedger([ledger])
+    item = project_llp_intelligence_page(page, db=db)["events"][0]
+    assert db.queries == 0
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert "LLP_EVENT_PREDICTION_ID_UNVERIFIED" in item["source_diagnostics"]["source_reason_codes"]
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in item["markets"][0]
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+def test_valid_ledger_uuid_with_ordinary_spaces_keeps_original_contract(sport):
+    """Permitted ordinary surrounding spaces do not invalidate a genuine ledger match."""
+    page, ledger = _ledger_case(sport)
+    page["rows"][0]["detail"]["result"]["source_receipt_id"] = " " + LEDGER_ID + " "
+    db = _EventLedger([ledger])
+    item = project_llp_intelligence_page(page, db=db)["events"][0]
+    assert db.queries == 1
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is True

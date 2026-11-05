@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
+from unicodedata import category
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
@@ -267,7 +268,10 @@ def _verify_governed_event_prediction(
     event prediction ledger by its genuine UUID and compare immutable fields.
     On unavailable/ambiguous/missing/mismatched proof, withhold visibility.
     """
-    receipt_id = _token(winner.get("source_receipt_id"))
+    raw_receipt_id = winner.get("source_receipt_id")
+    if isinstance(raw_receipt_id, str) and any(category(char) == "Cc" for char in raw_receipt_id):
+        return "LLP_EVENT_PREDICTION_ID_UNVERIFIED"
+    receipt_id = _token(raw_receipt_id)
     try:
         canonical_id = str(UUID(receipt_id))
         if canonical_id != receipt_id.lower():
