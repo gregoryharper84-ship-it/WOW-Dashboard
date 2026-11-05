@@ -1153,3 +1153,41 @@ def test_live_hydrate_captures_after_fetch_but_replay_cutoff_stays_fixed(monkeyp
     result = hydration.hydrate("NBA", [2027], client=object(), now=Clock(2026, 11, 6, 8, 0, 1, tzinfo=timezone.utc))
     assert result["settled_rows"] == 0
     assert batches[-1] == []
+
+
+def test_sdv_october_final_with_missing_season_uses_release_2027():
+    row = _sportsdataverse_row(game_date="2026-10-27")
+    row.pop("season")
+    result = hydration.normalize_sportsdataverse_game(
+        row, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
+    )
+    assert result is not None
+    assert result["season"] == 2027
+    assert result["source_endpoint"].endswith("nba_schedule_2027.csv")
+
+
+def test_sdv_contradictory_completed_postponed_status_is_not_settled():
+    for field, bad_status in (
+        ("status_type_description", "Postponed"),
+        ("status_type_name", "STATUS_CANCELLED"),
+    ):
+        row = _sportsdataverse_row(game_date="2026-10-27")
+        row[field] = bad_status
+        assert hydration.normalize_sportsdataverse_game(
+            row, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
+        ) is None
+
+
+def test_sdv_invalid_fractional_and_nonfinite_scores_fail_closed():
+    for score in ("111.5", "-1", "Infinity"):
+        row = _sportsdataverse_row(game_date="2026-10-27")
+        row["home_score"] = score
+        assert hydration.normalize_sportsdataverse_game(
+            row, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
+        ) is None
+
+    good = _sportsdataverse_row(game_date="2026-10-27", home_score="111.0")
+    result = hydration.normalize_sportsdataverse_game(
+        good, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
+    )
+    assert result is not None and result["home_score"] == 111
