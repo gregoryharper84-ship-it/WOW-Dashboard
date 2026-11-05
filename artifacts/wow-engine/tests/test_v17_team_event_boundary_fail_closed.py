@@ -214,6 +214,34 @@ def test_registered_away_selection_publishes_the_away_side_pair():
     assert outcome["can_execute"] is False
 
 
+@pytest.mark.parametrize("selected", ["OTHER CLUB", "DRAW", "TIE", "HOME OR AWAY", "unknown"])
+@pytest.mark.parametrize("sport", ["NHL", "SOCCER"])
+def test_registered_unknown_selected_participant_never_inherits_home_probabilities(sport, selected):
+    # Soccer DRAW is a separate outcome; no fitted draw-specific triple is
+    # present in this home/away package, so it cannot borrow home probability.
+    outcome = _completed_registered(
+        _row(sport), _registered_package(selected_participant=selected)
+    )
+    assert outcome["terminal_status"] == "HELD"
+    assert outcome["code"] == "MODEL_OUTPUT_INVALID"
+    assert "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID" in outcome["blockers"]
+    assert outcome["probability_publishable"] is False
+    assert outcome["rank_eligible"] is False
+    assert outcome["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NHL", "SOCCER"])
+def test_registered_same_or_missing_opponents_never_promote_home_package(sport):
+    for home, away in (("HOME", "HOME"), ("", "AWAY"), ("HOME", "")):
+        row = _row(sport)
+        row.home_team, row.away_team = home, away
+        outcome = _completed_registered(row, _registered_package())
+        assert outcome["terminal_status"] == "HELD"
+        assert "TEAM_EVENT_OPPONENT_IDENTITY_INVALID" in outcome["blockers"]
+        assert outcome["probability_publishable"] is False
+        assert outcome["can_execute"] is False
+
+
 def test_registered_away_selection_without_away_pair_is_never_published():
     held = _completed_registered(
         _row("NHL"), _registered_package(selected_participant="AWAY")
