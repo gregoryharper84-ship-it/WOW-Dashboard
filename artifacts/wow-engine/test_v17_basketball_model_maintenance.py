@@ -291,6 +291,7 @@ def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypat
         return {
             "sport": sport, "settled_rows": 1,
             "fresh_acquisition_new_settled_games": 1,
+            "latest_game_date_after": "2026-10-22",
             "can_execute": False,
         }
     monkeypatch.setattr(maintenance, "hydrate", fake_hydrate)
@@ -455,7 +456,9 @@ def test_nba_current_season_hydration_failure_is_not_successful_replay(monkeypat
 
 def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
     assert maintenance._nba_current_season_data_gap(
-        {"latest_game_date_after": "2026-06-13"},
+        {"latest_game_date_after": "2026-06-13",
+         "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"},
+         "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"}},
         datetime(2026, 10, 17, tzinfo=timezone.utc),
     ) is None
     assert maintenance._nba_current_season_data_gap(
@@ -601,3 +604,115 @@ def test_explicit_clock_never_replays_unbounded_persisted_corpus(monkeypatch, sp
         assert row["hydration_blocker"]["code"] == "SOURCE_HTTP_503"
     else:
         assert row["hydration"]["settled_rows"] == 0
+
+
+@pytest.mark.parametrize("latest", [None, "2026-06-13", "2026-10-24"])
+def test_late_october_requires_current_season_persisted_settlement(latest):
+    """A prior, absent or future corpus cannot pass after the acquired opening."""
+    evidence = {
+        "latest_game_date_after": latest,
+        "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"},
+        "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"},
+    }
+    gap = maintenance._nba_current_season_data_gap(evidence, datetime(2026, 10, 23, tzinfo=timezone.utc))
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert gap["required_season_start"] == "2026-10-01"
+    assert gap["required_season_label"] == 2027
+
+
+@pytest.mark.parametrize("opening", [None, "bad", "2026-10-20T23:30:00", "2027-01-01T00:00:00Z"])
+def test_october_preopening_exception_requires_valid_acquired_calendar(opening):
+    """Unknown, naive or wrong-season opening evidence cannot waive the data hold."""
+    evidence = {
+        "latest_game_date_after": "2026-06-13",
+        "regular_season_start_by_season": {2027: opening},
+        "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"},
+    }
+    gap = maintenance._nba_current_season_data_gap(evidence, datetime(2026, 10, 17, tzinfo=timezone.utc))
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+
+
+def test_late_october_source_failure_keeps_native_error_and_never_replays(monkeypatch):
+    """Missing October acquisition cannot turn a June corpus into a successful refresh."""
+    class OctoberClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            """Freeze the ambient live clock after the actual season opening."""
+            return cls(2026, 10, 23, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(maintenance, "datetime", OctoberClock)
+    def unavailable(*_args, **_kwargs):
+        raise maintenance.BasketballHydrationError("NBA_SOURCE_HTTP_503")
+    replayed = []
+    monkeypatch.setattr(maintenance, "hydrate", unavailable)
+    monkeypatch.setattr(maintenance, "run_training_replay", lambda *a, **kw: replayed.append(True) or {})
+    result = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",))
+    assert replayed == []
+    row = result["rows"][0]
+    assert row["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert row["hydration_blocker"]["upstream_hydration_blocker"]["code"] == "NBA_SOURCE_HTTP_503"
+    assert result["rows_updated"] == 0
+
+
+@pytest.mark.parametrize("clock", ["2026-10-17T12:00:00Z", "2026-10-20T23:29:59Z"])
+def test_verified_acquired_opening_preserves_preseason_shadow_replay(clock):
+    """Before canonical opening, a prior-season corpus remains a valid research input."""
+    evidence = {
+        "latest_game_date_after": "2026-06-13",
+        "regular_season_start_by_season": {"2027": "2026-10-20T23:30:00Z"},
+        "source_by_season": {"2027": "SPORTSDATAVERSE_ESPN"},
+    }
+    assert maintenance._nba_current_season_data_gap(evidence, datetime.fromisoformat(clock.replace("Z", "+00:00"))) is None
+
+
+@pytest.mark.parametrize("change", [{}, {"season": "2026"}, {"game_date_time": "bad"}, {"game_date": "2026-11-01", "game_date_time": "2026-11-01T01:30:00"}])
+def test_opening_calendar_uses_acquired_regular_schedule_and_rejects_ambiguity(change):
+    """Season conflict, malformed start or ambiguous Eastern time cannot waive a hold."""
+    import basketball_event_hydration_runtime as hydration
+    first = {"game_id": "1", "game_date": "2026-10-20", "home_id": "7", "away_id": "8", "season": "2027", "season_type": "2", "game_date_time": "2026-10-20T19:30:00", **change}
+    later = {"game_id": "2", "game_date": "2026-10-21", "home_id": "7", "away_id": "8", "season": "2027", "season_type": "2", "game_date_time": "2026-10-21T19:30:00"}
+    opening = hydration._sportsdataverse_regular_season_start([later, first], 2027)
+    assert opening == (None if change else "2026-10-20T23:30:00+00:00")
+
+
+def test_hydrate_returns_opening_from_canonical_schedule_without_settling_future_game(monkeypatch):
+    """Actual hydration exposes the acquired opening while a future game stays unsettled."""
+    import basketball_event_hydration_runtime as hydration
+    raw = {"game_id": "1", "game_date": "2026-10-20", "home_id": "7", "away_id": "8", "season": "2027", "season_type": "2", "game_date_time": "2026-10-20T19:30:00", "status_type_completed": "false"}
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_args: [raw])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: None)
+    written = []
+    monkeypatch.setattr(hydration, "_persist_rows", lambda _db, _sport, rows: written.extend(rows) or 0)
+    result = hydration.hydrate("NBA", (2027,), object(), now=datetime(2026, 10, 17, tzinfo=timezone.utc))
+    assert result["regular_season_start_by_season"] == {2027: "2026-10-20T23:30:00+00:00"}
+    assert result["source_by_season"] == {2027: "SPORTSDATAVERSE_ESPN"}
+    assert result["settled_rows"] == 0
+    assert written == []
+
+
+@pytest.mark.parametrize("clock", ["2026-10-20T23:30:00Z", "2026-10-21T01:30:00+02:00"])
+def test_opening_instant_already_requires_current_settlement(clock):
+    """Equivalent UTC offsets cannot extend the pre-opening exception through tipoff."""
+    evidence = {"latest_game_date_after": "2026-06-13", "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"}, "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"}}
+    gap = maintenance._nba_current_season_data_gap(evidence, datetime.fromisoformat(clock.replace("Z", "+00:00")))
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+
+
+@pytest.mark.parametrize("provider", ["BALLDONTLIE", "ESPN_SCOREBOARD"])
+def test_unverified_provider_cannot_claim_preopening_exception(provider):
+    """Only the existing canonical acquired schedule can establish opening evidence."""
+    evidence = {"latest_game_date_after": "2026-06-13", "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"}, "source_by_season": {2027: provider}}
+    assert maintenance._nba_current_season_data_gap(evidence, datetime(2026, 10, 17, tzinfo=timezone.utc))["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+
+
+def test_conflicting_same_game_calendar_cannot_prove_preopening():
+    """Contradictory starts for one source ID invalidate its opening evidence."""
+    import basketball_event_hydration_runtime as hydration
+    row = {"game_id": "1", "game_date": "2026-10-20", "home_id": "7", "away_id": "8", "season_type": "2", "game_date_time": "2026-10-20T19:30:00"}
+    assert hydration._sportsdataverse_regular_season_start([row, {**row, "game_date": "2026-10-21", "game_date_time": "2026-10-21T19:30:00"}], 2027) is None
+    assert hydration._sportsdataverse_regular_season_start([{**row, "season_type": "1"}], 2027) is None
+
+
+def test_current_october_settlement_preserves_live_replay_without_calendar_bypass():
+    """Actual persisted current-season evidence passes even without an opening exception."""
+    assert maintenance._nba_current_season_data_gap({"latest_game_date_after": "2026-10-22"}, datetime(2026, 10, 23, tzinfo=timezone.utc)) is None

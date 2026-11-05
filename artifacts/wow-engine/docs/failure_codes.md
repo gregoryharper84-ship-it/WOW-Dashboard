@@ -13,7 +13,13 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 <!-- coderabbit-ai-generated-section:v1:da02db52c5cd11cd3bd00224d82c11f5aebaa6cc445a4a7e54a61abc0af27e72 -->
 
-| `NBA_CURRENT_SEASON_SETTLED_DATA_MISSING` | NBA default scheduled basketball maintenance / fresh-source hydration | For a November–June default NBA refresh, the persisted most-recent settled game is absent/invalid/future dated or predates the current October NBA season. Historical shadow replay cannot be claimed as a successful current-season refresh. Fail closed before replay; `recovery_class=SOURCE_COVERAGE_REPAIR`, bounded `required_season_start` and `latest_persisted_game_date`, next action reacquire the licensed SportsDataverse ESPN ending-year schedule and prove persisted current-season settled rows. Explicit historical research windows and Oct preseason are unaffected. Never promote, publish, or execute. | No |
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:cf64259410f3769b67608b7c70ae5b7109c5ae0f2302439fa87ca05602b5abde -->
+
+| `NBA_CURRENT_SEASON_SETTLED_DATA_MISSING` | NBA default scheduled basketball maintenance / fresh-source hydration | For a current-season refresh in October–June, the persisted most-recent settled game is absent/invalid/future dated or predates the current October NBA season. October may replay prior history only before an aware opening instant from the acquired canonical SportsDataverse schedule; unknown/malformed/conflicting opening evidence does not waive the hold. Jul–Sep offseason and explicit season selection remain separate. Historical shadow replay cannot be claimed as a successful current-season refresh. Fail closed before replay; preserve native acquisition failures, recovery_class=SOURCE_COVERAGE_REPAIR, required_season_start, latest_persisted_game_date and ending-year reacquisition target. Never promote, publish, or execute. | No |
+
+<!-- /coderabbit-ai-generated:v1 -->
 | `BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED` | NBA/WNBA explicit-clock model maintenance / persisted replay | Hydration honors the requested clock but persisted provenance, freshness, feature replay and fitting reads do not yet share that cutoff. Preserve acquisition results and native source failures; do not replay, fit, promote or publish historical shadow evidence. Default live maintenance remains supported. Restore historical fitting only after every persisted read proves cutoff-aware evidence. | No |
 
 <!-- /coderabbit-ai-generated:v1 -->

@@ -122,14 +122,33 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
     """Keep a stale historical NBA replay from masquerading as a live-season refresh.
 
     NBA official seasons begin in autumn and use the ending year for release
-    assets. In Nov-Jun at least one settled game from the *current* season
-    must be persisted; Oct is not gated before tipoff, and Jul-Sep is offseason.
+    assets. October may replay prior history only before a verified opening in
+    the acquired canonical schedule. After opening, or with unknown opening
+    evidence, current-season persistence is mandatory; Jul-Sep is offseason.
     An absent/invalid persisted readback is unverified, never a successful fit.
     This is a source-data guard, not a fitted-model probability threshold.
     """
-    if clock.month in (7, 8, 9, 10):
+    if clock.month in (7, 8, 9):
         return None
-    season_start_year = clock.year if clock.month >= 11 else clock.year - 1
+    season_start_year = clock.year if clock.month >= 10 else clock.year - 1
+    if clock.month == 10 and isinstance(hydration, dict):
+        label = season_start_year + 1
+        starts = hydration.get("regular_season_start_by_season")
+        sources = hydration.get("source_by_season")
+        if isinstance(starts, dict) and isinstance(sources, dict):
+            opening_value = starts.get(label, starts.get(str(label)))
+            provider = sources.get(label, sources.get(str(label)))
+            try:
+                opening = datetime.fromisoformat(str(opening_value).replace("Z", "+00:00"))
+                if (
+                    provider == "SPORTSDATAVERSE_ESPN"
+                    and opening.utcoffset() is not None
+                    and opening.year == season_start_year and opening.month == 10
+                    and clock < opening
+                ):
+                    return None
+            except (ValueError, TypeError, OverflowError):
+                pass
     season_start = date(season_start_year, 10, 1)
     latest_value = hydration.get("latest_game_date_after") if isinstance(hydration, dict) else None
     try:
@@ -202,7 +221,8 @@ def run_basketball_model_maintenance(
         # historical backtest. The old June corpus was repeatedly replayed
         # with a green workflow during the November 2026 season. Fail closed
         # before another stale-corpus refit even when hydration itself succeeded.
-        # Explicit historical seasons remain a separate research-only route.
+        # Explicit season selection remains separate from current-season
+        # refresh; explicit clocks are held below until replay reads honor them.
         if sport == "NBA" and explicit_seasons is None:
             gap = _nba_current_season_data_gap(hydration, clock)
             if gap is not None:

@@ -554,6 +554,42 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
     return len(new_ids)
 
 
+
+def _sportsdataverse_regular_season_start(rows: list[dict[str, Any]], release_year: int) -> str | None:
+    """Read opening time from the acquired schedule, withholding ambiguous calendars."""
+    starts: dict[str, datetime] = {}
+    try:
+        for row in rows:
+            season_type = str(row.get("season_type") or "").strip()
+            if season_type in {"1", "1.0", "3", "3.0"}:
+                continue
+            if season_type not in {"2", "2.0"}:
+                return None
+            season = str(row.get("season") or release_year).strip()
+            if Decimal(season) != release_year:
+                return None
+            event_id = str(row.get("game_id") or "").strip()
+            home = str(row.get("home_id") or "").strip()
+            away = str(row.get("away_id") or "").strip()
+            if not event_id or not home or not away or home == away:
+                return None
+            game_day = date.fromisoformat(str(row.get("game_date") or "")[:10])
+            instant = datetime.fromisoformat(str(row.get("game_date_time") or "").replace("Z", "+00:00"))
+            if instant.utcoffset() is None:
+                instant = instant.replace(tzinfo=ZoneInfo("America/New_York"))
+                if instant.replace(fold=0).utcoffset() != instant.replace(fold=1).utcoffset():
+                    return None
+            if instant.astimezone(ZoneInfo("America/New_York")).date() != game_day:
+                return None
+            instant = instant.astimezone(timezone.utc)
+            if event_id in starts and starts[event_id] != instant:
+                return None
+            starts[event_id] = instant
+    except (ValueError, TypeError, OverflowError, InvalidOperation):
+        return None
+    return min(starts.values()).isoformat() if starts else None
+
+
 def hydrate(
     sport: str, seasons: Iterable[int], client=None, *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -569,6 +605,7 @@ def hydrate(
     total_raw = total_settled = new_settled = 0
     per_season: dict[int, int] = {}
     source_by_season: dict[int, str] = {}
+    regular_season_start_by_season: dict[int, str] = {}
     fallback_reasons: dict[int, str] = {}
     latest_before = _latest_persisted_game_date(client, sport)
     recent_supplement: dict[int, str] = {}
@@ -653,6 +690,10 @@ def hydrate(
                     provider = "ESPN_SCOREBOARD"
                 fallback_reasons[year] = str(primary_error)
 
+            if sport == "NBA" and provider == "SPORTSDATAVERSE_ESPN":
+                opening = _sportsdataverse_regular_season_start(raw, year)
+                if opening is not None:
+                    regular_season_start_by_season[year] = opening
             total_raw += len(raw)
             # Live acquisition finishes after the cycle starts. An explicit
             # replay cutoff remains fixed and cannot borrow a later snapshot.
@@ -779,6 +820,7 @@ def hydrate(
         "settled_rows": total_settled,
         "per_season": per_season,
         "source_by_season": source_by_season,
+        "regular_season_start_by_season": regular_season_start_by_season,
         "fallback_reasons": fallback_reasons,
         "recent_supplement_status": recent_supplement,
         "fresh_acquisition_new_settled_games": new_settled,
