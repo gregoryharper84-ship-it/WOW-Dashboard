@@ -95,6 +95,34 @@ def test_sdv_completed_non_regular_season_games_never_enter_fitted_training():
         ) is not None
 
 
+def test_nba_hydration_does_not_persist_completed_postseason_source_rows(monkeypatch):
+    # Exercise the actual batch ingestion path, not just the normalizer.
+    playoff = _sportsdataverse_row(
+        event_id="nba-postseason", game_date="2026-11-02"
+    )
+    playoff["season"] = "2027"
+    playoff["season_type"] = 3
+    monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [playoff])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("postseason fixture must never be persisted as regular training")
+        ),
+    )
+
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 11, 5, 17, tzinfo=timezone.utc),
+    )
+    assert result["raw_rows"] == 1
+    assert result["per_season"][2027] == 0
+    assert result["settled_rows"] == 0
+    assert result["fresh_acquisition_new_settled_games"] == 0
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["can_execute"] is False
+
+
 def test_fetch_sportsdataverse_fails_closed_when_source_registry_blocks(monkeypatch):
     monkeypatch.setattr(
         hydration,
