@@ -213,7 +213,7 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
 _EVENT_PREDICTION_TABLE = "wow_event_predictions"
 _EVENT_PREDICTION_COLUMNS = ",".join((
     "event_prediction_id", "created_at", "official_event_id",
-    "event_start_time", "sport", "market_family", "home_team", "away_team",
+    "event_start_time", "sport", "market_family", "settlement_basis", "home_team", "away_team",
     "selected_participant", "model_version", "calibration_version",
     "model_timestamp", "source_snapshot_timestamp", "source_snapshot_id",
     "calibrated_home_probability", "calibrated_home_lower_bound",
@@ -295,6 +295,14 @@ def _verify_governed_event_prediction(
     away = _token(event.get("away_team")).upper()
     side = _token(winner.get("side")).upper()
     saved_side = _token(saved.get("selected_participant")).upper()
+    # Match the exact specialist outcome/settlement contract. A regulation-
+    # only NHL three-way prediction must never masquerade as an inclusive
+    # full-game moneyline just because its selected club also appears.
+    required_basis = {
+        "NFL": "FULL_GAME_INCLUDING_OVERTIME",
+        "NBA": "FULL_GAME_INCLUDING_OVERTIME",
+        "NHL": "FULL_GAME_MONEYLINE_INCLUDING_OVERTIME_SHOOTOUT",
+    }.get(_token(event.get("sport")).upper())
     if saved_side == "HOME":
         saved_side = home
     elif saved_side == "AWAY":
@@ -311,6 +319,8 @@ def _verify_governed_event_prediction(
         or _token(saved.get("official_event_id")) != _token(event.get("official_event_id"))
         or _token(saved.get("sport")).upper() != _token(event.get("sport")).upper()
         or _token(saved.get("market_family")).upper() != "OUTRIGHT_WINNER"
+        or not required_basis
+        or _token(saved.get("settlement_basis")).upper() != required_basis
         or _token(saved.get("home_team")).upper() != home
         or _token(saved.get("away_team")).upper() != away
         or saved_side != side or side not in {home, away}
