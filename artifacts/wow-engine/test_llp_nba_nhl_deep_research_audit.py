@@ -351,3 +351,119 @@ def test_equivalent_offset_event_start_does_not_falsely_hold_research():
         "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
     )
     assert out["events"][0]["markets"][0]["calibrated_probability"] == .63
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("location", ["outer", "nested", "result"])
+def test_conflicting_saved_league_alias_fails_closed_independent_of_research(
+    sport, location,
+):
+    event = _event(sport)
+    bad_league = "NHL" if sport == "NBA" else "NBA"
+    saved = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED",
+        "identity": deepcopy(event),
+        "detail": {
+            "identity": deepcopy(event),
+            "probability_publishable": True,
+            "result": {**_winner(sport), "selected_side": "BOS"},
+        },
+    }
+    source = (
+        saved["identity"] if location == "outer"
+        else saved["detail"]["identity"] if location == "nested"
+        else saved["detail"]["result"]
+    )
+    source["league"] = bad_league
+
+    def project(with_research):
+        row = deepcopy(saved)
+        if with_research:
+            row["detail"]["result"]["llp_deep_research_context"] = _context(sport)
+        return project_llp_intelligence_page(
+            {"run_id": "r", "status": "OK", "rows": [row]}
+        )["events"][0]
+
+    plain = project(False)
+    researched = project(True)
+    assert plain["markets"] == researched["markets"]
+    assert plain["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in plain["markets"][0]
+    assert researched["deep_research_audit"]["status"] == (
+        "CONTROLLING_WINNER_RECEIPT_REQUIRED"
+    )
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in (
+        researched["source_diagnostics"]["source_reason_codes"]
+    )
+    assert plain["can_execute"] is False
+    assert researched["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("bad_field,bad_value", [
+    ("official_event_id", "other-game"),
+    ("home_team", "CHI"),
+    ("league", "WRONG_SPORT"),
+])
+def test_optional_research_never_flips_saved_winner_publishability(
+    sport, bad_field, bad_value,
+):
+    event = _event(sport)
+    saved = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED",
+        "identity": deepcopy(event),
+        "detail": {
+            "probability_publishable": True,
+            "result": {**_winner(sport), "selected_side": "BOS"},
+        },
+    }
+    # A producer-side contradiction is a core receipt hold, whether the
+    # optional research sidecar is absent, valid, or malformed.
+    saved["detail"]["result"][bad_field] = bad_value
+
+    def project(research):
+        row = deepcopy(saved)
+        if research is not None:
+            row["detail"]["result"]["llp_deep_research_context"] = research
+        return project_llp_intelligence_page(
+            {"run_id": "r", "status": "OK", "rows": [row]}
+        )["events"][0]
+
+    without = project(None)
+    with_valid = project(_context(sport))
+    with_invalid = project({"malformed_context": True})
+    for item in (with_valid, with_invalid):
+        assert item["markets"] == without["markets"]
+        assert item["governed_winner_receipt_id"] == (
+            without["governed_winner_receipt_id"]
+        )
+        assert item["can_execute"] is False
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+def test_invalid_optional_research_does_not_withhold_unconflicted_winner(sport):
+    event = _event(sport)
+    saved = {
+        "lane": "MONEYLINE", "row_status": "COMPLETED",
+        "identity": deepcopy(event),
+        "detail": {
+            "probability_publishable": True,
+            "result": {**_winner(sport), "selected_side": "BOS"},
+        },
+    }
+    page = {"run_id": "r", "status": "OK", "rows": [saved]}
+    baseline = project_llp_intelligence_page(deepcopy(page))["events"][0]
+    saved["detail"]["result"]["llp_deep_research_context"] = {
+        "sport": "unrelated",
+        "observed_at": START.isoformat(),
+    }
+    researched = project_llp_intelligence_page(page)["events"][0]
+    assert researched["markets"] == baseline["markets"]
+    assert researched["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    assert researched["markets"][0]["calibrated_probability"] == .63
+    assert researched["governed_winner_receipt_id"] == (
+        baseline["governed_winner_receipt_id"]
+    )
+    assert researched["deep_research_audit"]["status"] == (
+        "CONTEXT_INVALID_PROVENANCE"
+    )
