@@ -414,3 +414,23 @@ def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
         {"latest_game_date_after": "2026-06-13"},
         datetime(2027, 1, 3, tzinfo=timezone.utc),
     )["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+
+
+def test_nba_current_season_recovery_target_rotates_with_year():
+    gap_2027 = maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-06-13"},
+        datetime(2026, 11, 5, tzinfo=timezone.utc),
+    )
+    gap_2028 = maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2027-06-18"},
+        datetime(2027, 11, 5, tzinfo=timezone.utc),
+    )
+    assert gap_2027["required_season_label"] == 2027
+    assert gap_2027["next_action"] == (
+        "REACQUIRE_CANONICAL_2027_SDV_SEASON_AND_VERIFY_PERSISTED_SETTLEMENTS"
+    )
+    assert gap_2028["required_season_label"] == 2028
+    assert gap_2028["next_action"] == (
+        "REACQUIRE_CANONICAL_2028_SDV_SEASON_AND_VERIFY_PERSISTED_SETTLEMENTS"
+    )
+    assert gap_2028["can_execute"] is False
