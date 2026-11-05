@@ -77,3 +77,19 @@ def test_ambiguous_city_does_not_contact_official_source():
         )
     assert error.value.code == "NHL_EVENT_PARTICIPANT_IDENTITY_UNRESOLVED"
     assert session.calls == []
+
+
+def test_city_alias_still_rejects_ambiguous_official_fixture_ids():
+    class DuplicateSource(_Session):
+        def json(self):
+            payload = super().json()
+            payload["games"].append({**payload["games"][0], "id": 2026020202})
+            return payload
+
+    with pytest.raises(NHLEventIdentityError) as error:
+        resolve_nhl_current_event_identity(
+            event_start_time="2026-11-06T01:00:00Z",
+            home_team="Winnipeg", away_team="Vancouver",
+            session=DuplicateSource(),
+        )
+    assert error.value.code == "NHL_CANONICAL_EVENT_AMBIGUOUS"
