@@ -29,7 +29,7 @@ def added_lines(patch: str) -> set[int]:
         match = _HUNK.match(line)
         if match:
             current = int(match.group(1))
-        elif current is not None and line.startswith("+") and not line.startswith("+++"):
+        elif current is not None and line.startswith("+"):
             result.add(current)
             current += 1
         elif current is not None and line.startswith(" "):
