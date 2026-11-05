@@ -86,6 +86,7 @@ class GitHubClient:
 def _path(path: str) -> str:
     if (not isinstance(path, str) or len(path) > 400 or not path
             or path.startswith("/") or "\\" in path
+            or any(ord(c) < 32 or ord(c) == 127 or c == "`" for c in path)
             or any(p in {"", ".", ".."} for p in path.split("/"))):
         raise ReviewHold("GITHUB_FILE_PATH_INVALID")
     return path
@@ -129,7 +130,7 @@ def _incident(pr: dict, number: int) -> str:
     body = pr.get("body") or ""
     if not isinstance(body, str):
         return "PR-" + str(number)
-    named = re.findall(r"(?im)^(?:Incident|Parent):\s*#([1-9][0-9]*)\s*$", body)
+    named = re.findall(r"(?im)^(?:Incident|Parent):\s*#([1-9][0-9]*)(?:\s|;|$)", body)
     if len(set(named)) > 1:
         raise ReviewHold("PR_INCIDENT_AMBIGUOUS")
     return named[0] if named else "PR-" + str(number)
@@ -166,14 +167,27 @@ def _related_sources(client, paths: list[str], head: str):
     warnings = []
     selected = set(paths)
     for directory in dirs[:4]:
-        manifest = client.request(f"/contents/{_encoded(directory)}?ref={head}")
+        try:
+            manifest = client.request(f"/contents/{_encoded(directory)}?ref={head}")
+        except ReviewHold:
+            warnings.append("SIBLING_DIRECTORY_READ_FAILED:" + directory)
+            continue
         if not isinstance(manifest, list):
             warnings.append("SIBLING_DIRECTORY_UNAVAILABLE:" + directory)
             continue
+        if len(manifest) >= 1000:
+            warnings.append("SIBLING_DIRECTORY_INVENTORY_MAY_BE_TRUNCATED:" + directory)
         choices = sorted(x.get("path") for x in manifest
                          if isinstance(x, dict) and x.get("type") == "file"
                          and isinstance(x.get("path"), str)
                          and x["path"].endswith(".py") and x["path"] not in selected)
+        # Prefer modules sharing a changed stem; broad repo-wide caller
+        # references remain unknown and are never called fully audited.
+        stems = [p.rsplit("/", 1)[-1].removesuffix(".py").split("_")[0]
+                 for p in paths if p.startswith(directory + "/") and p.endswith(".py")]
+        choices.sort(key=lambda name: (
+            not any(name.rsplit("/", 1)[-1].startswith(stem) for stem in stems),
+            name))
         for path in choices[:_MAX_CONTEXT]:
             if len(related) >= _MAX_CONTEXT:
                 warnings.append("SIBLING_CONTEXT_BUDGET_EXHAUSTED")
@@ -268,10 +282,17 @@ def markdown_summary(result: dict) -> str:
 
 def post_advisory_comment(client, *, number: int, head_sha: str, text: str):
     """One bot-owned comment per PR. Revalidate SHA before each write."""
-    pr = _pr(client, number, head_sha)
-    actor = client.request("/issues/" + str(number) + "/comments?per_page=100&page=1")
-    if not isinstance(actor, list):
-        raise ReviewHold("PR_COMMENT_INVENTORY_INVALID")
+    _pr(client, number, head_sha)
+    actor = []
+    for page in range(1, 6):
+        part = client.request(f"/issues/{number}/comments?per_page=100&page={page}")
+        if not isinstance(part, list):
+            raise ReviewHold("PR_COMMENT_INVENTORY_INVALID")
+        actor.extend(part)
+        if len(part) < 100:
+            break
+    else:
+        raise ReviewHold("PR_COMMENT_INVENTORY_LIMIT_REACHED")
     existing = [c for c in actor
                 if isinstance(c, dict)
                 and isinstance(c.get("body"), str)
