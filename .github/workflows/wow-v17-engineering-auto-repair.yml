@@ -546,6 +546,21 @@ jobs:
           fi
           jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
             "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
+          # Observable admission funnel: count only this invocation's exact source,
+          # never mistake the repository backlog for jobs accepted by the worker.
+          jq -r '
+            "### WOW Engineering admission (this run)",
+            "| Metric | Count |",
+            "| --- | ---: |",
+            "| Ready exact-head sources | " + (if .status == "SOURCE_READY" then "1" else "0" end) + " |",
+            "| No eligible source | " + (if .status == "NO_ELIGIBLE_SOURCE" then "1" else "0" end) + " |",
+            "| Writer jobs admitted | 0 (not yet admitted at preflight) |",
+            "| Writer jobs completed | 0 (not yet completed at preflight) |",
+            "Source status: " + .status,
+            "Source PR: " + ((.pr_number // "none") | tostring),
+            "Source SHA: " + ((.source_sha // "none") | tostring),
+            "Execution permission: false"
+          ' "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
           jq -c '{status, pr_number, source_sha, can_execute}' \
             "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
           echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
