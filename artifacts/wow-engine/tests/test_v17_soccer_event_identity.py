@@ -290,6 +290,66 @@ def test_mixed_scoreboard_keeps_valid_fixture_unresolved(monkeypatch, malformed,
     assert held.raw["canonical_identity_blocker"] == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
 
 
+def test_wrong_day_fixture_is_not_accepted_for_requested_day():
+    # The ±1-day fetch surfaces tomorrow's fixture. Participants match, but the
+    # kickoff does not; identity must stay unresolved rather than borrow a
+    # different day's event.
+    tomorrow = scoreboard_event(date="2026-11-08T12:30:00Z")
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261108"): [tomorrow]}))
+    assert exc.value.code == "SOCCER_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_two_close_fixtures_inside_drift_budget_are_ambiguous():
+    rows = [
+        scoreboard_event("401800010", date="2026-11-07T12:30:00Z"),
+        scoreboard_event("401800011", date="2026-11-07T13:30:00Z"),
+    ]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_CANONICAL_EVENT_AMBIGUOUS"
+
+
+def test_fixture_outside_drift_budget_is_excluded_not_ambiguous():
+    rows = [
+        scoreboard_event("401800012", date="2026-11-07T12:30:00Z"),
+        scoreboard_event("401800013", date="2026-11-07T16:00:00Z"),
+    ]
+    out = _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert out["event_id"] == "SOCCER:401800012"
+    assert out["kickoff_drift_minutes"] == 0.0
+
+
+def test_midnight_crossover_fixture_is_accepted_within_tolerance():
+    out = _resolve(
+        event_start_time="2026-11-08T00:30:00Z",
+        fetcher=fetcher_for(
+            {("eng.1", "20261107"): [scoreboard_event(date="2026-11-07T23:45:00Z")]}
+        ),
+    )
+    assert out["event_id"] == "SOCCER:401878758"
+    assert out["event_start_time"] == "2026-11-07T23:45:00+00:00"
+    assert out["kickoff_drift_minutes"] == 45.0
+    assert out["can_execute"] is False
+
+
+def test_duplicate_same_id_rows_with_different_times_remain_one_event():
+    rows = [
+        scoreboard_event("401800014", date="2026-11-07T12:30:00Z"),
+        scoreboard_event("401800014", date="2026-11-07T12:31:00Z"),
+    ]
+    out = _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert out["event_id"] == "SOCCER:401800014"
+
+
+def test_partial_provider_record_cannot_establish_identity():
+    partial = scoreboard_event("401800015")
+    partial["competitions"][0]["competitors"] = partial["competitions"][0]["competitors"][:1]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [partial]}))
+    assert exc.value.code == "SOCCER_CANONICAL_EVENT_NOT_FOUND"
+
+
 def test_soccer_failure_codes_are_registered():
     registry = (Path(__file__).resolve().parents[1] / "docs/failure_codes.md").read_text()
     source = Path(identity.__file__).read_text()
