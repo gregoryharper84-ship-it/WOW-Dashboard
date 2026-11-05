@@ -29,14 +29,17 @@ _SUPPORTED = frozenset({"NFL", "NBA", "NHL"})
 
 
 def _token(value: Any) -> str:
+    """Normalize string identifiers without accepting other identifier types."""
     return str(value or "").strip()
 
 
 def _data(value: Any) -> Mapping[str, Any]:
+    """Read mappings without coercing malformed source values."""
     return value if isinstance(value, Mapping) else {}
 
 
 def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Extract canonical identity from the persisted detail row."""
     identity = _data(row.get("identity"))
     detail = _data(row.get("detail"))
     original = _data(detail.get("identity"))
@@ -44,6 +47,7 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     # Stored Daily records are heterogeneous: canonical MLB rows use
     # event_start_time, while broad discovery uses commence_time_utc.
     def get(*names: str) -> Any:
+        """Read the first nonempty persisted identity alias."""
         for name in names:
             for source in (identity, original, result):
                 value = source.get(name)
@@ -155,6 +159,7 @@ def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract saved winner claims while preserving source and identity holds."""
     detail = _data(row.get("detail"))
     result = _data(detail.get("result"))
     home = _token(event.get("home_team")).upper()
@@ -225,6 +230,7 @@ _EVENT_PREDICTION_COLUMNS = ",".join((
 
 
 def _utc(value: Any) -> datetime | None:
+    """Parse aware instants into UTC and hold malformed or overflowing values."""
     if not isinstance(value, (str, datetime)):
         return None
     try:
@@ -241,6 +247,7 @@ def _utc(value: Any) -> datetime | None:
 
 
 def _decimal(value: Any) -> Decimal | None:
+    """Parse exact finite receipt numbers while rejecting booleans."""
     if isinstance(value, bool) or value is None:
         return None
     try:
@@ -470,6 +477,7 @@ def project_llp_intelligence_page(
 def read_llp_team_intelligence_page(
     db: Any, *, run_id: str, offset: int = 0, limit: int = DETAIL_PAGE_DEFAULT_LIMIT,
 ) -> dict[str, Any]:
+    """Validate pagination and project a read-only page with independent ledger proof."""
     if not _token(run_id) or len(_token(run_id)) > 128:
         raise ValueError("LLP_DAILY_RUN_ID_INVALID")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -494,6 +502,7 @@ def install_llp_team_intelligence_readback(
     def llp_team_intelligence_events(
         run_id: str, offset: int = 0, limit: int = DETAIL_PAGE_DEFAULT_LIMIT,
     ):
+        """Serve authenticated readback with typed invalid-request responses."""
         try:
             return read_llp_team_intelligence_page(
                 db_client_fn(), run_id=run_id, offset=offset, limit=limit,

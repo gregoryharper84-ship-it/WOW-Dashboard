@@ -20,6 +20,7 @@ EVIDENCE_AT = START - timedelta(minutes=6)
 
 
 def _event(sport: str) -> dict:
+    """Build the canonical pregame event fixture for the selected sport."""
     return {
         "sport": sport,
         "official_event_id": f"{sport.lower()}-test-123",
@@ -30,6 +31,7 @@ def _event(sport: str) -> dict:
 
 
 def _winner(sport: str) -> dict:
+    """Build a saved winner claim independently of ledger verification."""
     return {
         **_event(sport),
         "market_family": "OUTRIGHT_WINNER",
@@ -53,6 +55,7 @@ def _winner(sport: str) -> dict:
 
 
 def _context(sport: str) -> dict:
+    """Build timestamped optional research without granting scoring authority."""
     first = FACTOR_FAMILIES[sport][0]
     return {
         "sport": sport,
@@ -73,6 +76,7 @@ def _context(sport: str) -> dict:
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 def test_missing_context_is_typed_and_does_not_invent_uvi(sport):
+    """Verify missing context is typed and does not invent uvi."""
     out = build_llp_team_intelligence_bundle(
         event=_event(sport), receipts=[_winner(sport)]
     )
@@ -92,6 +96,7 @@ def test_missing_context_is_typed_and_does_not_invent_uvi(sport):
     ("NHL", "STARTING_GOALIE_UNCONFIRMED"),
 ])
 def test_premodel_context_is_analyst_review_only_no_rescore_or_flip(sport, flag):
+    """Verify premodel context is analyst review only no rescore or flip."""
     event = _event(sport)
     winner = _winner(sport)
     ctx = _context(sport)
@@ -119,6 +124,7 @@ def test_premodel_context_is_analyst_review_only_no_rescore_or_flip(sport, flag)
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 def test_newer_personnel_or_goalie_observation_requires_fitted_refresh(sport):
+    """Verify newer personnel or goalie observation requires fitted refresh."""
     ctx = _context(sport)
     ctx["observed_at"] = (MODEL_AT + timedelta(minutes=1)).isoformat()
     audit = build_llp_team_intelligence_bundle(
@@ -140,6 +146,7 @@ def test_newer_personnel_or_goalie_observation_requires_fitted_refresh(sport):
     ("NBA", {"observed_at": "not-a-timestamp"}),
 ])
 def test_mismatched_or_postgame_research_cannot_claim_pregame(sport, corruption):
+    """Verify mismatched or postgame research cannot claim pregame."""
     ctx = _context(sport)
     ctx.update(corruption)
     out = build_llp_team_intelligence_bundle(
@@ -152,6 +159,7 @@ def test_mismatched_or_postgame_research_cannot_claim_pregame(sport, corruption)
 
 
 def test_unreceipted_or_postmodel_factor_is_not_documented():
+    """Verify unreceipted or postmodel factor is not documented."""
     ctx = _context("NBA")
     first = FACTOR_FAMILIES["NBA"][0]
     ctx["factors"][first]["source_receipt_id"] = ""
@@ -168,6 +176,7 @@ def test_unreceipted_or_postmodel_factor_is_not_documented():
 
 
 def test_provisional_winner_is_not_upgraded_by_positive_research_context():
+    """Verify provisional winner is not upgraded by positive research context."""
     winner = _winner("NHL")
     winner["model_class"] = "RESEARCH_ONLY"
     winner["probability_publishable"] = False
@@ -183,6 +192,7 @@ def test_provisional_winner_is_not_upgraded_by_positive_research_context():
 
 
 def test_readback_projects_optional_nba_research_without_changing_market_status():
+    """Verify readback projects optional nba research without changing market status."""
     event = _event("NBA")
     source = _winner("NBA")
     saved = {
@@ -213,6 +223,7 @@ def test_readback_projects_optional_nba_research_without_changing_market_status(
 
 
 def test_nfl_intelligence_view_does_not_gain_competing_research_scoring():
+    """Verify nfl intelligence view does not gain competing research scoring."""
     nfl = _event("NBA")
     nfl["sport"] = "NFL"
     winner = _winner("NBA")
@@ -228,6 +239,7 @@ def test_nfl_intelligence_view_does_not_gain_competing_research_scoring():
     "9999-12-31T23:59:59-01:00",
 ])
 def test_extreme_aware_utc_offsets_fail_closed_not_crash_readback(path, extreme):
+    """Verify extreme aware utc offsets fail closed not crash readback."""
     ctx = _context("NBA")
     winner = _winner("NBA")
     if path == "observed_at":
@@ -263,6 +275,7 @@ def test_extreme_aware_utc_offsets_fail_closed_not_crash_readback(path, extreme)
 def test_conflicting_persisted_event_id_holds_both_research_and_winner(
     sport, conflicting_source,
 ):
+    """Verify conflicting persisted event id holds both research and winner."""
     event = _event(sport)
     saved = {
         "lane": "MONEYLINE", "row_status": "COMPLETED", "row_index": 4,
@@ -304,6 +317,7 @@ def test_conflicting_persisted_event_id_holds_both_research_and_winner(
     {"event_start_time_utc": (START + timedelta(days=1)).isoformat()},
 ])
 def test_research_rejects_persisted_team_or_fixture_time_conflicts(corruption):
+    """Verify research rejects persisted team or fixture time conflicts."""
     event = _event("NBA")
     saved_result = _winner("NBA")
     saved_result.update(corruption)
@@ -328,6 +342,7 @@ def test_research_rejects_persisted_team_or_fixture_time_conflicts(corruption):
 
 
 def test_equivalent_offset_event_start_does_not_falsely_hold_research():
+    """Verify equivalent offset event start does not falsely hold research."""
     event = _event("NBA")
     persisted = deepcopy(event)
     persisted["event_start_time_utc"] = (
@@ -361,6 +376,7 @@ def test_equivalent_offset_event_start_does_not_falsely_hold_research():
 def test_conflicting_saved_league_alias_fails_closed_independent_of_research(
     sport, location,
 ):
+    """Verify conflicting saved league alias fails closed independent of research."""
     event = _event(sport)
     bad_league = "NHL" if sport == "NBA" else "NBA"
     saved = {
@@ -380,6 +396,7 @@ def test_conflicting_saved_league_alias_fails_closed_independent_of_research(
     source["league"] = bad_league
 
     def project(with_research):
+        """Compare winner visibility with and without optional research."""
         row = deepcopy(saved)
         if with_research:
             row["detail"]["result"]["llp_deep_research_context"] = _context(sport)
@@ -411,6 +428,7 @@ def test_conflicting_saved_league_alias_fails_closed_independent_of_research(
 def test_optional_research_never_flips_saved_winner_publishability(
     sport, bad_field, bad_value,
 ):
+    """Verify optional research never flips saved winner publishability."""
     event = _event(sport)
     saved = {
         "lane": "MONEYLINE", "row_status": "COMPLETED",
@@ -425,6 +443,7 @@ def test_optional_research_never_flips_saved_winner_publishability(
     saved["detail"]["result"][bad_field] = bad_value
 
     def project(research):
+        """Compare winner visibility with and without optional research."""
         row = deepcopy(saved)
         if research is not None:
             row["detail"]["result"]["llp_deep_research_context"] = research
@@ -445,6 +464,7 @@ def test_optional_research_never_flips_saved_winner_publishability(
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 def test_invalid_optional_research_does_not_withhold_unconflicted_winner(sport):
+    """Verify invalid optional research does not withhold unconflicted winner."""
     event = _event(sport)
     saved = {
         "lane": "MONEYLINE", "row_status": "COMPLETED",
@@ -483,6 +503,7 @@ SNAPSHOT_ID = "f0e7ac5e-997d-4caf-b584-e7abb56aa910"
 
 class _EventLedger:
     def __init__(self, rows):
+        """Keep separate ledger rows and record the verification query."""
         self.rows = rows
         self.table_name = None
         self.selected = None
@@ -491,23 +512,28 @@ class _EventLedger:
         self.queries = 0
 
     def table(self, name):
+        """Record the immutable ledger table requested by the verifier."""
         self.table_name = name
         return self
 
     def select(self, columns):
+        """Record projected ledger columns for verification assertions."""
         self.selected = columns
         return self
 
     def eq(self, key, value):
+        """Require the prediction ID filter rather than a broad scan."""
         assert key == "event_prediction_id"
         self.prediction_id = value
         return self
 
     def limit(self, count):
+        """Record the ambiguity-detection limit."""
         self.limit_count = count
         return self
 
     def execute(self):
+        """Return only independently supplied rows matching the receipt."""
         from types import SimpleNamespace
         assert self.table_name == "wow_event_predictions"
         assert self.limit_count == 2
@@ -520,6 +546,7 @@ class _EventLedger:
 
 
 def _ledger_case(sport="NBA"):
+    """Pair a saved winner with its separate immutable prediction fixture."""
     event = _event(sport)
     winner = _winner(sport)
     winner["source_receipt_id"] = LEDGER_ID
@@ -576,6 +603,7 @@ def _ledger_case(sport="NBA"):
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 def test_genuine_exact_immutable_event_prediction_ledger_receipt_only_visible_positive(sport):
+    """Verify genuine exact immutable event prediction ledger receipt only visible positive."""
     page, ledger = _ledger_case(sport)
     db = _EventLedger([ledger])
     out = project_llp_intelligence_page(page, db=db)
@@ -596,6 +624,7 @@ def test_genuine_exact_immutable_event_prediction_ledger_receipt_only_visible_po
     (.57, .63, .6), (0, .63, 1),
 ])
 def test_matching_invalid_ledger_bounds_never_verify_receipt(sport, side, lower, point, upper):
+    """Verify matching invalid ledger bounds never verify receipt."""
     page, ledger = _ledger_case(sport)
     source = page["rows"][0]["detail"]["result"]
     source.update(
@@ -621,6 +650,7 @@ def test_matching_invalid_ledger_bounds_never_verify_receipt(sport, side, lower,
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("before", ["model", "creation", "start", "after_start"])
 def test_invalid_terminal_reduction_chronology_never_verifies(sport, before):
+    """Verify invalid terminal reduction chronology never verifies."""
     page, ledger = _ledger_case(sport)
     if before == "creation":
         # Model exists before reduction; only the row-creation order fails.
@@ -640,6 +670,7 @@ def test_invalid_terminal_reduction_chronology_never_verifies(sport, before):
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("side", ["HOME", "AWAY"])
 def test_terminal_reduction_at_input_timestamp_is_valid(sport, side):
+    """Verify terminal reduction at input timestamp is valid."""
     page, ledger = _ledger_case(sport)
     source = page["rows"][0]["detail"]["result"]
     source["selected_side"] = ledger["home_team"] if side == "HOME" else ledger["away_team"]
@@ -657,6 +688,7 @@ def test_terminal_reduction_at_input_timestamp_is_valid(sport, side):
 
 @pytest.mark.parametrize("corruption", [None, "bounds", "chronology"])
 def test_shared_nfl_ledger_obeys_same_integrity_contract(corruption):
+    """Verify shared nfl ledger obeys same integrity contract."""
     page, ledger = _ledger_case()
     page["rows"][0]["identity"]["sport"] = "NFL"
     source = page["rows"][0]["detail"]["result"]
@@ -680,6 +712,7 @@ def test_shared_nfl_ledger_obeys_same_integrity_contract(corruption):
     "wrong_settlement", "duplicate",
 ])
 def test_fabricated_or_mismatched_ledger_never_promotes_daily_winner(sport, corruption):
+    """Verify fabricated or mismatched ledger never promotes daily winner."""
     page, ledger = _ledger_case(sport)
     if corruption == "nonexistent":
         rows = []
@@ -717,9 +750,11 @@ def test_fabricated_or_mismatched_ledger_never_promotes_daily_winner(sport, corr
 
 
 def test_ledger_lookup_failure_holds_without_leaking_provider_text():
+    """Verify ledger lookup failure holds without leaking provider text."""
     page, ledger = _ledger_case()
     class _Down:
         def table(self, name):
+            """Raise a provider error to verify fail-closed readback."""
             raise RuntimeError("secret internal endpoint failure")
     out = project_llp_intelligence_page(page, db=_Down())
     item = out["events"][0]
@@ -764,6 +799,7 @@ def test_nonstring_matching_immutable_research_identifiers_fail_closed(
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("malformed", [{}, [], True, False, 123, 1.5])
 def test_nonstring_factor_receipt_never_counts_as_documented(sport, malformed):
+    """Verify nonstring factor receipt never counts as documented."""
     context = _context(sport)
     first = FACTOR_FAMILIES[sport][0]
     context["factors"][first]["source_receipt_id"] = deepcopy(malformed)
@@ -780,6 +816,7 @@ def test_nonstring_factor_receipt_never_counts_as_documented(sport, malformed):
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("field", ["source_receipt_id", "source_snapshot_id"])
 def test_identifier_types_do_not_change_valid_string_receipts(sport, field):
+    """Verify identifier types do not change valid string receipts."""
     context = _context(sport)
     winner = _winner(sport)
     context[field] = "  " + context[field] + "  "
@@ -795,6 +832,7 @@ def test_identifier_types_do_not_change_valid_string_receipts(sport, field):
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("malformed", ["\x00bad", "\tbad", "x" * 513])
 def test_control_bytes_or_oversized_research_receipts_fail_closed(sport, malformed):
+    """Verify control bytes or oversized research receipts fail closed."""
     context = _context(sport)
     winner = _winner(sport)
     context["source_receipt_id"] = malformed
