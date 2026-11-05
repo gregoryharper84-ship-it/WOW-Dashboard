@@ -155,3 +155,22 @@ def test_source_code_is_not_executed_and_cannot_override_instructions():
     assert "UNTRUSTED EVIDENCE" in result["review_instructions"]
     assert "os.system" in result["source_context"][MOD]
     assert result["can_execute"] is False
+
+
+def test_excessive_untrusted_source_rejected_before_ast_parse():
+    source = "x" * 250_001
+    with pytest.raises(ValueError, match="REVIEW_SOURCE_BOUNDS_EXCEEDED"):
+        packet(repository_sources={MOD: source})
+
+
+def test_excessive_source_inventory_rejected():
+    sources = {f"pkg/file_{i}.py": "" for i in range(1001)}
+    with pytest.raises(ValueError, match="REVIEW_SOURCE_BOUNDS_EXCEEDED"):
+        packet(repository_sources=sources)
+
+
+def test_oversize_diff_marks_incomplete_instead_of_silent_partial_review():
+    result = packet(changed_patches={MOD: "x" * 90_001})
+    assert result["max_payload_exceeded"] is True
+    assert result["status"] == "CONTEXT_INCOMPLETE"
+    assert result["patches"] == {}
