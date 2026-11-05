@@ -467,8 +467,10 @@ def test_invalid_optional_research_does_not_withhold_unconflicted_winner(sport):
     assert researched["governed_winner_receipt_id"] == (
         baseline["governed_winner_receipt_id"]
     )
+    # No verified immutable winner means research cannot claim a controlling
+    # source receipt, regardless of whether the optional context is malformed.
     assert researched["deep_research_audit"]["status"] == (
-        "CONTEXT_INVALID_PROVENANCE"
+        "CONTROLLING_WINNER_RECEIPT_REQUIRED"
     )
 
 
