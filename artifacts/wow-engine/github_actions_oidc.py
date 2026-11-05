@@ -95,6 +95,9 @@ FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF = (
 MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-mlb-1ip-line-expansion-maintenance.yml@{REF}"
 )
+PREGAME_CAPTURE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-pregame-capture.yml@{REF}"
+)
 SPREAD_MARGIN_REPLAY_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-spread-margin-replay.yml@{REF}"
 )
@@ -116,6 +119,9 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
     SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
 })
+# Bounded pregame capture keeps its own exact trust set: it is read-only
+# research acquisition and must never inherit a broader maintenance lane.
+PREGAME_CAPTURE_WORKFLOW_REFS = frozenset({PREGAME_CAPTURE_WORKFLOW_REF})
 # Forward-evidence producers and the bounded priority lifecycle are isolated from
 # the older automation set so their protected-main trust surface is explicit.
 PROP_EVIDENCE_WORKFLOW_REFS = frozenset({
@@ -172,6 +178,7 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
         workflow_ref not in ALLOWED_WORKFLOW_REFS
         and workflow_ref not in PROP_EVIDENCE_WORKFLOW_REFS
         and workflow_ref not in LIVE_CANARY_WORKFLOW_REFS
+        and workflow_ref not in PREGAME_CAPTURE_WORKFLOW_REFS
     ):
         raise GitHubOIDCValidationError("GITHUB_OIDC_WORKFLOW_REF_MISMATCH")
 
@@ -283,6 +290,8 @@ __all__ = [
     "ALLOWED_WORKFLOW_REFS",
     "PROP_EVIDENCE_WORKFLOW_REFS",
     "LIVE_CANARY_WORKFLOW_REFS",
+    "PREGAME_CAPTURE_WORKFLOW_REF",
+    "PREGAME_CAPTURE_WORKFLOW_REFS",
     "POST_DEPLOY_REUSABLE_WORKFLOW_REFS",
     "AUDIENCE",
     "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
