@@ -193,3 +193,94 @@ def test_fork_held_no_reading_untrusted_repo():
     client.request = fork
     with pytest.raises(reviewer.ReviewHold, match="PR_IDENTITY_OR_SHA_CHANGED"):
         reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+
+
+class IncidentGitHub(FakeGitHub):
+    def __init__(self):
+        super().__init__()
+        self.open_incident = True
+        self.incident_comments = []
+        self.incident_writes = []
+
+    def request(self, path, *, method="GET", body=None):
+        if path == "/issues/2136":
+            return {"number": 2136, "state": "open" if self.open_incident else "closed"}
+        if path == "/issues/2136/comments?per_page=100&page=1":
+            return list(self.incident_comments)
+        if path == "/issues/2136/comments?per_page=100&page=2":
+            return []
+        if path == "/issues/2136/comments" and method == "POST":
+            self.incident_writes.append(("POST", body))
+            return {"id": 777}
+        if path == "/issues/comments/777" and method == "PATCH":
+            self.incident_writes.append(("PATCH", body))
+            return {"id": 777}
+        return super().request(path, method=method, body=body)
+
+
+def test_existing_incident_receives_one_advisory_handoff_no_new_issue():
+    client = IncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    outcome = reviewer.post_existing_incident_handoff(client, result=result)
+    assert outcome == "EXISTING_INCIDENT_NOTE_CREATED"
+    assert len(client.incident_writes) == 1
+    method, posted = client.incident_writes[0]
+    assert method == "POST"
+    assert "ADVISORY_PENDING_REPRODUCTION" in posted["body"]
+    assert "not verified P0/P1" in posted["body"]
+    assert "can_execute=false" in posted["body"]
+    assert "AMRT" in posted["body"]
+    assert "eval(user)" not in posted["body"]
+
+
+def test_existing_incident_note_updates_instead_of_duplicate():
+    client = IncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    client.incident_comments = [{
+        "id": 777,
+        "body": "<!-- WOW_NATIVE_SENIOR_AMRT_ADVISORY_PR_900 -->\nold",
+        "user": {"login": "github-actions[bot]"},
+    }]
+    outcome = reviewer.post_existing_incident_handoff(client, result=result)
+    assert outcome == "EXISTING_INCIDENT_NOTE_UPDATED"
+    assert [x[0] for x in client.incident_writes] == ["PATCH"]
+
+
+def test_closed_canonical_incident_refuses_handoff():
+    client = IncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    client.open_incident = False
+    with pytest.raises(reviewer.ReviewHold, match="CANONICAL_INCIDENT_NOT_OPEN_ISSUE"):
+        reviewer.post_existing_incident_handoff(client, result=result)
+    assert not client.incident_writes
+
+
+def test_stale_head_refuses_amrt_handoff():
+    client = IncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    client.moved = True
+    with pytest.raises(reviewer.ReviewHold, match="PR_IDENTITY_OR_SHA_CHANGED"):
+        reviewer.post_existing_incident_handoff(client, result=result)
+    assert not client.incident_writes
+
+
+def test_duplicate_incident_bot_notes_fail_closed():
+    client = IncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    client.incident_comments = [{
+        "id": n,
+        "body": "<!-- WOW_NATIVE_SENIOR_AMRT_ADVISORY_PR_900 -->\nold",
+        "user": {"login": "github-actions[bot]"},
+    } for n in (777, 778)]
+    with pytest.raises(reviewer.ReviewHold, match="INCIDENT_HANDOFF_DUPLICATE_BOT_COMMENTS"):
+        reviewer.post_existing_incident_handoff(client, result=result)
+    assert client.incident_writes == []
+
+
+def test_unlinked_pr_keeps_findings_without_creating_new_incident():
+    client = IncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    result["incident_id"] = "PR-900"
+    outcome = reviewer.post_existing_incident_handoff(client, result=result)
+    assert outcome == "INCIDENT_ID_UNRESOLVED_PR_ADVISORY_ONLY"
+    assert client.incident_writes == []

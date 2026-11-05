@@ -13,31 +13,53 @@ from collections.abc import Mapping
 
 from v17.native_senior_review import preflight_review_finding
 
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
 _KEY = re.compile(r"^[0-9a-f]{40}$")
 _KNOWN_SEVERITIES = {"P0", "P1", "P2"}
 _MAX_FINDINGS = 24
 
 
 def added_lines(patch: str) -> set[int]:
-    """New-side line numbers from verified unified diff; no execution."""
-    if not isinstance(patch, str) or len(patch) > 90_000:
+    """Validate full unified hunks before identifying newly added lines.
+
+    Missing/malformed hunks are not clean reviews: fail closed instead.
+    """
+    if not isinstance(patch, str) or not patch or len(patch) > 90_000:
         raise ValueError("REVIEW_PATCH_INVALID")
     result: set[int] = set()
     current = None
+    old_remaining = new_remaining = 0
+    hunks = 0
     for line in patch.splitlines():
         match = _HUNK.match(line)
         if match:
-            current = int(match.group(1))
-        elif current is not None and line.startswith("+"):
+            if hunks and (old_remaining or new_remaining):
+                raise ValueError("REVIEW_PATCH_FORMAT_INVALID")
+            old_remaining = int(match.group(2) or 1)
+            new_remaining = int(match.group(4) or 1)
+            current = int(match.group(3))
+            hunks += 1
+            continue
+        if current is None:
+            raise ValueError("REVIEW_PATCH_FORMAT_INVALID")
+        if line == r"\ No newline at end of file":
+            continue
+        if line.startswith("+"):
             result.add(current)
             current += 1
-        elif current is not None and line.startswith(" "):
+            new_remaining -= 1
+        elif line.startswith("-"):
+            old_remaining -= 1
+        elif line.startswith(" "):
             current += 1
-        elif line.startswith("\\ No newline at end of file") or line.startswith("-"):
-            continue
-        elif current is not None:
+            old_remaining -= 1
+            new_remaining -= 1
+        else:
             raise ValueError("REVIEW_PATCH_FORMAT_INVALID")
+        if old_remaining < 0 or new_remaining < 0:
+            raise ValueError("REVIEW_PATCH_FORMAT_INVALID")
+    if not hunks or old_remaining or new_remaining:
+        raise ValueError("REVIEW_PATCH_FORMAT_INVALID")
     return result
 
 

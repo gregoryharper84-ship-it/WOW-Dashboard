@@ -336,12 +336,81 @@ def post_advisory_comment(client, *, number: int, head_sha: str, text: str):
         client.request(f"/issues/{number}/comments", method="POST", body={"body": text})
 
 
+
+def post_existing_incident_handoff(client, *, result: dict):
+    """Update one existing AMRT issue; never dispatch repairs or add incidents."""
+    number, head = result["pr"], result["head_sha"]
+    review = result["review"]
+    if review.get("status") == "ADVISORY_STATIC_SCAN_COMPLETE":
+        return "NO_NEW_STATIC_FINDINGS"
+    if review.get("status") != "ADVISORY_FINDINGS_REQUIRE_TRIAGE":
+        raise ReviewHold("INCIDENT_HANDOFF_REVIEW_INCOMPLETE")
+    incident = result["incident_id"]
+    if not isinstance(incident, str) or not re.fullmatch(r"[1-9][0-9]*", incident):
+        return "INCIDENT_ID_UNRESOLVED_PR_ADVISORY_ONLY"
+    _pr(client, number, head)
+    target = client.request(f"/issues/{incident}")
+    if (not isinstance(target, dict) or target.get("number") != int(incident)
+            or target.get("state") != "open" or "pull_request" in target):
+        raise ReviewHold("CANONICAL_INCIDENT_NOT_OPEN_ISSUE")
+    marker = f"<!-- WOW_NATIVE_SENIOR_AMRT_ADVISORY_PR_{number} -->"
+    lines = [
+        marker,
+        "### WOW native senior reviewer — advisory AMRT intake",
+        f"Source: PR #{number}, exact head {head}",
+        f"Existing incident: #{incident}; can_execute=false",
+        f"Review packet: {result['packet_sha256']}",
+        "",
+        "Unconfirmed static patterns; not verified P0/P1 incidents.",
+        "Root Cause Investigator must reproduce a finding before a leased repair.",
+    ]
+    for finding in review["findings"][:20]:
+        lines.append(
+            f"- {finding['finding_id']} ({finding['severity']} candidate): "
+            f"{finding['rule_id']} in {finding['file']}:{finding['line']}. "
+            "Disposition: ADVISORY_PENDING_REPRODUCTION."
+        )
+    lines.append(
+        "No automatic writer dispatch, new issue, release approval, "
+        "probability or terminal change. SIRT and protected QA remain independent."
+    )
+    body = "\n".join(lines)
+    comments = []
+    for page in range(1, 6):
+        portion = client.request(f"/issues/{incident}/comments?per_page=100&page={page}")
+        if not isinstance(portion, list):
+            raise ReviewHold("INCIDENT_COMMENT_INVENTORY_INVALID")
+        comments.extend(portion)
+        if len(portion) < 100:
+            break
+    else:
+        raise ReviewHold("INCIDENT_COMMENT_INVENTORY_LIMIT_REACHED")
+    matching = [
+        c for c in comments if isinstance(c, dict)
+        and isinstance(c.get("body"), str) and c["body"].startswith(marker)
+        and isinstance(c.get("user"), dict)
+        and c["user"].get("login") == "github-actions[bot]"
+    ]
+    if len(matching) > 1:
+        raise ReviewHold("INCIDENT_HANDOFF_DUPLICATE_BOT_COMMENTS")
+    _pr(client, number, head)
+    if matching:
+        comment_id = matching[0].get("id")
+        if type(comment_id) is not int or comment_id <= 0:
+            raise ReviewHold("INCIDENT_HANDOFF_COMMENT_ID_INVALID")
+        client.request(f"/issues/comments/{comment_id}", method="PATCH", body={"body": body})
+        return "EXISTING_INCIDENT_NOTE_UPDATED"
+    client.request(f"/issues/{incident}/comments", method="POST", body={"body": body})
+    return "EXISTING_INCIDENT_NOTE_CREATED"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--post-comment", action="store_true")
+    parser.add_argument("--post-incident-handoff", action="store_true")
     parser.add_argument("--local-model", default=None,
                         help="Explicit opt-in: existing localhost Ollama model only")
     args = parser.parse_args(argv)
@@ -361,6 +430,9 @@ def main(argv=None):
         if args.post_comment:
             post_advisory_comment(client, number=args.pr,
                                   head_sha=args.expected_head, text=summary)
+        if args.post_incident_handoff:
+            outcome = post_existing_incident_handoff(client, result=result)
+            print("AMRT_ADVISORY_HANDOFF:" + outcome)
         # Incomplete reviews are visible but cannot be mistaken for complete.
         return 0 if result["review"]["status"] not in {
             "REVIEW_CONTEXT_INCOMPLETE", "REVIEW_FINDINGS_TRUNCATED"} else 2

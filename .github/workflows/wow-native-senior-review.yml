@@ -77,7 +77,8 @@ jobs:
             --pr "$PR_NUMBER" \
             --expected-head "$EXPECTED_HEAD" \
             --out "$RUNNER_TEMP/wow-native-senior-review.json" \
-            --post-comment
+            --post-comment \
+            --post-incident-handoff
 
       - name: Preserve review evidence artifact
         if: always()

@@ -1,4 +1,5 @@
 """Native static reviewer must not become a self-certifying security reviewer."""
+import pytest
 from v17.native_senior_review import build_review_packet
 from v17.native_senior_review_static import added_lines, run_static_review
 
@@ -15,7 +16,7 @@ def packet(source, patch, path=PATH):
 
 
 def test_diff_parser_line_number_hunks():
-    patch = "@@ -2,2 +2,3 @@\n x\n-a\n+b\n+c\n y\n"
+    patch = "@@ -2,3 +2,4 @@\n x\n-a\n+b\n+c\n y\n"
     assert added_lines(patch) == {3, 4}
 
 
@@ -34,7 +35,7 @@ def test_dynamic_eval_new_code_triggers_advisory_not_review_pass():
 
 def test_old_preexisting_unsafe_line_is_not_reported_as_new():
     src = "def legacy(v):\n    return eval(v)\n\ndef new():\n    return 2\n"
-    diff = "@@ -2,2 +2,4 @@\n     return eval(v)\n+\n+def new():\n+    return 2\n"
+    diff = "@@ -2,1 +2,4 @@\n     return eval(v)\n+\n+def new():\n+    return 2\n"
     assert run_static_review(packet(src, diff))["finding_count"] == 0
 
 
@@ -163,3 +164,24 @@ def test_tampered_no_findings_packet_also_fails_digest():
         assert "REVIEW_PACKET_DRIFT" in str(error)
     else:
         raise AssertionError("tampered packet returned clean review")
+
+
+@pytest.mark.parametrize("bad", [
+    "not a unified diff",
+    "@@ -0,0 +1,2 @@\n+one\n",
+    "@@ -0,0 +1,1 @@\n+one\n+two\n",
+    "@@ -1,1 +1,1 @@\n this\n+extra\n",
+    "@@ -0,0 +1,1 @@\n+one\n@@ -2,1 +2,1 @@\n+two\n",
+])
+def test_malformed_or_truncated_patch_holds_instead_of_empty_success(bad):
+    with pytest.raises(ValueError, match="REVIEW_PATCH_FORMAT_INVALID"):
+        added_lines(bad)
+
+
+def test_actual_source_line_beginning_with_two_pluses_is_counted():
+    assert added_lines("@@ -0,0 +1,1 @@\n+++data\n") == {1}
+
+
+def test_valid_multihunk_new_side_counts():
+    patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -8,1 +9,2 @@\n x\n+y\n"
+    assert added_lines(patch) == {2, 10}
