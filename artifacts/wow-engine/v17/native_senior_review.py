@@ -17,6 +17,9 @@ _MAX_FILES = 50
 _MAX_PAYLOAD_BYTES = 90_000
 _MAX_FILE_BYTES = 24_000
 _MAX_CONTEXT_FILES = 12
+_MAX_SCANNED_SOURCES = 1_000
+_MAX_SCANNED_SOURCE_BYTES = 16_000_000
+_MAX_SINGLE_SOURCE_BYTES = 250_000
 
 REVIEW_LENSES = {
     "V17_MODEL": (
@@ -81,7 +84,7 @@ def _imports(path: str, source: str) -> tuple[set[str], bool]:
         return set(), True
     try:
         tree = ast.parse(source, filename=path)
-    except (SyntaxError, ValueError, TypeError):
+    except (SyntaxError, ValueError, TypeError, RecursionError):
         return set(), False
     module = _module_name(path)
     package = module.rsplit(".", 1)[0] if "." in module else ""
@@ -147,11 +150,16 @@ def build_review_packet(
             or any(not _valid_path(p) or not isinstance(s, str)
                    for p, s in repository_sources.items())):
         raise ValueError("REVIEW_FILE_MANIFEST_INVALID")
+    if (len(repository_sources) > _MAX_SCANNED_SOURCES
+            or any(len(s.encode("utf-8")) > _MAX_SINGLE_SOURCE_BYTES
+                   for s in repository_sources.values())
+            or sum(len(s.encode("utf-8")) for s in repository_sources.values())
+            > _MAX_SCANNED_SOURCE_BYTES):
+        raise ValueError("REVIEW_SOURCE_BOUNDS_EXCEEDED")
     if not all(isinstance(x, str) and 0 < len(x) < 1000 for x in acceptance_criteria):
         raise ValueError("ACCEPTANCE_CRITERIA_INVALID")
 
     changed_paths = sorted(changed_patches)
-    changed_modules = {_module_name(p) for p in changed_paths if _module_name(p)}
     source_context: dict[str, str] = {}
     referenced_by: dict[str, list[str]] = {p: [] for p in changed_paths}
     invalid_python = []
