@@ -830,8 +830,8 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
     )
     monkeypatch.setattr(
         hydration, "_persist_rows",
-        lambda *_: (_ for _ in ()).throw(
-            AssertionError("No partial backfill may advance persisted date")
+        lambda _client, _sport, rows: 0 if not rows else (
+            (_ for _ in ()).throw(AssertionError("Cannot advance persisted date"))
         ),
     )
     monkeypatch.setattr(
@@ -840,14 +840,17 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
             AssertionError("Cannot use 14-day fetch to bridge June-October")
         ),
     )
-    try:
-        hydration.hydrate(
-            "NBA", [2027], client=object(),
-            now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
-        )
-        raise AssertionError("expected a typed backfill failure")
-    except hydration.BasketballHydrationError as exc:
-        assert str(exc) == "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+    )
+    # No canonical October results and no authorized provider crosswalk:
+    # preserve a typed source HOLD, not a false 14-day backfill.
+    assert result["per_season"][2027] == 0
+    assert result["recent_supplement_status"][2027] == (
+        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+    )
+    assert result["can_execute"] is False
 
 
 def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
