@@ -93,3 +93,18 @@ def test_city_alias_still_rejects_ambiguous_official_fixture_ids():
             session=DuplicateSource(),
         )
     assert error.value.code == "NHL_CANONICAL_EVENT_AMBIGUOUS"
+
+
+@pytest.mark.parametrize("home,away", [
+    ("Winnipeg", "Calgary"),       # wrong opponent, same kickoff
+    ("Vancouver", "Winnipeg"),     # home/away swapped, same kickoff
+])
+def test_city_alias_rejects_same_time_wrong_participants(home, away):
+    session = _Session()
+    with pytest.raises(NHLEventIdentityError) as error:
+        resolve_nhl_current_event_identity(
+            event_start_time="2026-11-06T01:00:00Z",
+            home_team=home, away_team=away, session=session,
+        )
+    assert error.value.code == "NHL_CANONICAL_EVENT_NOT_FOUND"
+    assert len(session.calls) == 1  # official source queried, not trusted blindly
