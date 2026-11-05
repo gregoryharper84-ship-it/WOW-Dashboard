@@ -127,10 +127,19 @@ def _verified_receipt(
     # caller's commence_time is not allowed to widen it.
     if recorded is None or lock is None or recorded >= lock:
         return None
+    # Display is float at two decimal places. A Decimal inside the exact domain
+    # can still round to 1.0 (or 0.0) as a float, or land exactly on a 100.00% /
+    # 0.00% boundary once formatted. Either would render a probability the
+    # strict domain excludes, so neither is displayed.
+    displayed = tuple(float(value) for value in (low, point, high))
+    if not all(0.0 < value < 1.0 for value in displayed):
+        return None
+    if round(displayed[1] * 100.0, 2) >= 100.0 or round(displayed[0] * 100.0, 2) <= 0.0:
+        return None
     return {
-        "probability": float(point),
-        "lower": float(low),
-        "upper": float(high),
+        "probability": displayed[1],
+        "lower": displayed[0],
+        "upper": displayed[2],
         "terminal_label": terminal_label,
     }
 

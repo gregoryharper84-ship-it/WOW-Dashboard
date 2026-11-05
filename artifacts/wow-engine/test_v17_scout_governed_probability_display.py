@@ -190,6 +190,47 @@ def test_exact_decimal_comparison_rejects_float_masked_bound_inversion():
     assert result["specialist_status"] == "MODEL_OUTPUT_INVALID"
 
 
+@pytest.mark.parametrize(
+    ("probability", "lower", "upper"),
+    [
+        # float() of this valid Decimal is exactly 1.0.
+        (Decimal("0.9999999999999999999"), Decimal("0.90"), Decimal("0.9999999999999999999")),
+        # float is below 1, but two-decimal display rounds to 100.00%.
+        (Decimal("0.9999999999999999"), Decimal("0.90"), Decimal("0.9999999999999999")),
+        # float() of this valid lower bound is exactly 0.0.
+        (Decimal("0.50"), Decimal("1e-400"), Decimal("0.60")),
+        # Displayable float, but rounds to a 0.00% lower bound.
+        (Decimal("0.50"), Decimal("1e-9"), Decimal("0.60")),
+    ],
+)
+def test_values_rounding_to_a_display_boundary_are_never_displayed(probability, lower, upper):
+    row = _nfl_row(probability=probability, lower=lower, upper=upper)
+    result = lookup_governed_probability(FakeCursor(row), _candidate())
+    assert result["governed_probability"] is None
+    assert result["calibrated_lower_bound"] is None
+    assert result["specialist_status"] == "MODEL_OUTPUT_INVALID"
+    display = _display_row(FakeCursor(row), _candidate())
+    assert display["probability_display"] == "—"
+    assert display["lower_bound_display"] == "—"
+
+
+def test_small_but_displayable_lower_bound_is_still_shown():
+    result = lookup_governed_probability(
+        FakeCursor(
+            _nfl_row(
+                probability=Decimal("0.50"),
+                lower=Decimal("0.0001"),
+                upper=Decimal("0.60"),
+            )
+        ),
+        _candidate(),
+    )
+    assert result["governed_probability"] == 0.5
+    assert _display_row(FakeCursor(_nfl_row(
+        probability=Decimal("0.50"), lower=Decimal("0.0001"), upper=Decimal("0.60")
+    )), _candidate())["lower_bound_display"] == "0.01%"
+
+
 def test_lower_bound_above_point_is_never_displayed():
     result = lookup_governed_probability(
         FakeCursor(_nfl_row(lower=Decimal("0.70"))), _candidate()
