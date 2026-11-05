@@ -29,3 +29,15 @@ def test_wolfram_audit_ledger_accepts_only_governed_provider_verdicts():
     ):
         assert f"'{verdict}'" in sql
     assert "WOLFRAM_AUDIT_LEDGER_WRITE_UNPROVEN" not in sql
+
+
+def test_python_primary_provider_and_verdicts_are_admitted_by_ledger():
+    """Regression: PYTHON_ARITHMETIC_AUDIT_LEDGER_WRITE_UNPROVEN root cause."""
+    import python_arithmetic_auditor as pa
+
+    sql = (Path(__file__).parent / "migrations" / "20261105_python_arithmetic_audit_ledger_provider.sql").read_text()
+    assert f"'{pa.PROVIDER}'" in sql
+    for verdict in (pa.PASS, pa.INPUT_INVALID, pa.OUTPUT_INVALID, pa.CALCULATION_MISMATCH):
+        assert f"'{verdict}'" in sql
+    low = sql.lower()
+    assert "grant " not in low and "disable row level security" not in low
