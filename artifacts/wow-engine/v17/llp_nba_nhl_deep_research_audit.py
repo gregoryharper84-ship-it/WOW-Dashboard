@@ -56,13 +56,16 @@ ALLOWED_FLAGS = {
 
 
 def _instant(value: Any) -> datetime | None:
+    # Even a syntactically valid aware year-0001/year-9999 instant can
+    # overflow while converting a non-UTC offset to UTC. Never let a
+    # research-only timestamp crash the existing authenticated Daily view.
     try:
         dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
-    except (ValueError, TypeError):
+        if dt.tzinfo is None:
+            return None
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError):
         return None
-    if dt.tzinfo is None:
-        return None
-    return dt.astimezone(timezone.utc)
 
 
 def _token(value: Any) -> str:
