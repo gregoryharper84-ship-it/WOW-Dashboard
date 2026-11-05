@@ -7,7 +7,8 @@ and never changes execution semantics.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import math
+from datetime import datetime, timezone
 from typing import Any
 
 CAN_EXECUTE = False
@@ -37,6 +38,63 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
+def _as_utc(value: Any) -> datetime | None:
+    """Parse an aware timestamp; a naive/unparseable value is never a lock time."""
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _verified_receipt(
+    *,
+    selection: Any,
+    probability: Any,
+    lower: Any,
+    publishable: Any,
+    created_at: Any,
+    commence_time: Any,
+    teams: tuple[Any, Any],
+) -> dict[str, float] | None:
+    """Validate a ledger row as a governed receipt before it is displayed.
+
+    A publishable flag alone is not evidence. The displayed number must satisfy
+    the strict calibrated domain `0 < lower <= probability < 1`, name a
+    participant in this exact event, and have been recorded before the event
+    lock. A ledger row that fails any of these is never rendered as a governed
+    probability; the board shows no number instead.
+    """
+    if publishable is not True or not isinstance(selection, str) or not selection.strip():
+        return None
+    event_teams = tuple(str(team) for team in teams if team is not None)
+    if selection not in event_teams:
+        return None
+    numbers: list[float] = []
+    for value in (lower, probability):
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or not 0.0 < number < 1.0:
+            return None
+        numbers.append(number)
+    lower_value, probability_value = numbers
+    if not 0.0 < lower_value <= probability_value < 1.0:
+        return None
+    recorded = _as_utc(created_at)
+    lock = _as_utc(commence_time)
+    if recorded is None or lock is None or recorded >= lock:
+        return None
+    return {"probability": probability_value, "lower": lower_value}
+
+
 def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     event_id = candidate.get("event_id") or candidate.get("canonical_event_id")
     if not event_id:
@@ -52,6 +110,7 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
           and abs(extract(epoch from (event_start_time_utc-%s::timestamptz))) <= 900
           and model_probability_publishable=true
           and can_execute=false
+          and selected_participant in (home_team,away_team)
         order by created_at desc
         limit 1
         """,
@@ -61,12 +120,21 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     if not row:
         return _base()
     selection, probability, lower, publishable, version, created_at = row
-    if publishable is not True or probability is None or lower is None or not selection:
+    verified = _verified_receipt(
+        selection=selection,
+        probability=probability,
+        lower=lower,
+        publishable=publishable,
+        created_at=created_at,
+        commence_time=candidate.get("commence_time"),
+        teams=(candidate.get("home_team"), candidate.get("away_team")),
+    )
+    if verified is None:
         return _base("MODEL_OUTPUT_INVALID")
     return {
         "governed_selection": str(selection),
-        "governed_probability": float(probability),
-        "calibrated_lower_bound": float(lower),
+        "governed_probability": verified["probability"],
+        "calibrated_lower_bound": verified["lower"],
         "probability_publishable": True,
         "specialist_status": "PUBLISHED",
         "probability_source": PROBABILITY_SOURCE,
@@ -102,12 +170,21 @@ def _mlb(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     if not row:
         return _base()
     selection, probability, lower, publishable, specialist, terminal_label, created_at = row
-    if publishable is not True or probability is None or lower is None or not selection:
+    verified = _verified_receipt(
+        selection=selection,
+        probability=probability,
+        lower=lower,
+        publishable=publishable,
+        created_at=created_at,
+        commence_time=candidate.get("commence_time"),
+        teams=(candidate.get("home_team"), candidate.get("away_team")),
+    )
+    if verified is None:
         return _base("MODEL_OUTPUT_INVALID")
     return {
         "governed_selection": str(selection),
-        "governed_probability": float(probability),
-        "calibrated_lower_bound": float(lower),
+        "governed_probability": verified["probability"],
+        "calibrated_lower_bound": verified["lower"],
         "probability_publishable": True,
         "specialist_status": "PUBLISHED",
         "probability_source": PROBABILITY_SOURCE,

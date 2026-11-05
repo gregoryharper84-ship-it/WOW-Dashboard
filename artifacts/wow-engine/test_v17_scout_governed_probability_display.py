@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from v17.scout_board_materializer import _display_row
 from v17.scout_governed_probability_lookup import lookup_governed_probability
 
@@ -99,6 +101,89 @@ def test_unsupported_sport_fails_closed_as_model_unavailable():
     assert result["specialist_status"] == "MODEL_UNAVAILABLE"
     assert result["probability_publishable"] is False
     assert cur.calls == []
+
+
+LOCK = datetime(2026, 9, 15, 0, 15, tzinfo=timezone.utc)
+
+
+def _nfl_row(**overrides):
+    row = {
+        "selection": "Denver Broncos",
+        "probability": 0.5796689600932923,
+        "lower": 0.523750876984715,
+        "publishable": True,
+        "version": "NFL_TEAM_EVENT_V1",
+        "created_at": datetime(2026, 9, 14, 20, 40, tzinfo=timezone.utc),
+    }
+    row.update(overrides)
+    return (
+        row["selection"], row["probability"], row["lower"],
+        row["publishable"], row["version"], row["created_at"],
+    )
+
+
+def _mlb_row(**overrides):
+    row = {
+        "selection": "Kansas City Chiefs",
+        "probability": 0.61,
+        "lower": 0.55,
+        "publishable": True,
+        "specialist": "MLB_MODEL_V1",
+        "terminal_label": "FINAL_APPROVED",
+        "created_at": datetime(2026, 9, 14, 20, 40, tzinfo=timezone.utc),
+    }
+    row.update(overrides)
+    return (
+        row["selection"], row["probability"], row["lower"], row["publishable"],
+        row["specialist"], row["terminal_label"], row["created_at"],
+    )
+
+
+def test_lower_bound_above_point_is_never_displayed():
+    cur = FakeCursor(_nfl_row(lower=0.70))
+    result = _display_row(cur, _candidate())
+    assert result["governed_probability"] is None
+    assert result["calibrated_lower_bound"] is None
+    assert result["probability_display"] == "—"
+    assert result["specialist_status"] == "MODEL_OUTPUT_INVALID"
+    assert result["probability_publishable"] is False
+
+
+@pytest.mark.parametrize("probability", [0.0, 1.0, float("nan"), "not-a-number"])
+def test_probability_outside_strict_domain_is_never_displayed(probability):
+    cur = FakeCursor(_nfl_row(probability=probability, lower=0.4))
+    result = lookup_governed_probability(cur, _candidate())
+    assert result["governed_probability"] is None
+    assert result["specialist_status"] == "MODEL_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("created_at", [LOCK, LOCK.replace(hour=1), None, "naive"])
+def test_receipt_not_recorded_before_the_event_lock_is_never_displayed(created_at):
+    cur = FakeCursor(_nfl_row(created_at=created_at))
+    result = lookup_governed_probability(cur, _candidate())
+    assert result["governed_probability"] is None
+    assert result["calibrated_lower_bound"] is None
+    assert result["specialist_status"] == "MODEL_OUTPUT_INVALID"
+
+
+def test_selection_outside_this_exact_event_is_never_displayed():
+    cur = FakeCursor(_nfl_row(selection="Green Bay Packers"))
+    result = lookup_governed_probability(cur, _candidate())
+    assert result["governed_probability"] is None
+    assert result["specialist_status"] == "MODEL_OUTPUT_INVALID"
+
+
+def test_valid_mlb_receipt_is_displayed_but_invalid_bounds_are_not():
+    candidate = _candidate(sport_key="baseball_mlb")
+    valid = lookup_governed_probability(FakeCursor(_mlb_row()), candidate)
+    assert valid["governed_probability"] == 0.61
+    assert valid["calibrated_lower_bound"] == 0.55
+    assert valid["probability_publishable"] is True
+    assert valid["can_execute"] is False
+
+    inverted = lookup_governed_probability(FakeCursor(_mlb_row(lower=0.90)), candidate)
+    assert inverted["governed_probability"] is None
+    assert inverted["specialist_status"] == "MODEL_OUTPUT_INVALID"
 
 
 def test_malformed_scout_governance_never_displays_probability():

@@ -112,3 +112,30 @@ reachability was **not** verified from this workspace.
    remains a typed research HOLD; do not publish a probability or substitute a qualitative estimate.
 
 `can_execute=false` and `V17_TERMINAL_REDUCER` terminal authority are unchanged by all of the above.
+
+## 6. LLP readback repair in the same working branch (2026-11-05)
+
+PR #2473's branch is still **not** available in this clone (heads `5819fc26…`, `4932567…`,
+`029055a…`, `e8e35277…` are absent objects, no origin ref carries the branch, and the
+authenticated fetch returns only `main`). Its producer→ledger receipt and deep-research provenance
+work therefore remains with its own active writer; no parallel implementation was created.
+
+The **readback** half of the LLP lane does exist on `main`, and it accepted a ledger row on the
+strength of a publishable flag. `v17/scout_governed_probability_lookup.py` (rendered by
+`v17/scout_board_materializer.py`) is now fail-closed against ledger rows that are not genuine
+governed receipts:
+
+- `0 < calibrated_lower_bound <= governed_probability < 1` is required; inverted, zero, one and
+  non-finite numbers are never displayed;
+- the recorded selection must name a participant of this exact event (NFL also enforces
+  `selected_participant in (home_team, away_team)` in its ledger query);
+- `created_at` must be parseable, timezone-aware and strictly before the event lock, so a row
+  written at or after kickoff cannot appear as a pregame governed probability;
+- any failure renders no probability (`MODEL_OUTPUT_INVALID`), never a substitute or market-implied
+  number.
+
+Verified: `test_v17_scout_governed_probability_display.py` (existing cases plus bound, domain,
+lock-ordering, selection and MLB regressions).
+
+This is readback hardening only. It does not create a prediction, certify a model, publish a
+probability, or change the producer.
