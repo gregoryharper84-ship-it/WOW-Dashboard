@@ -2329,3 +2329,18 @@ def test_real_gather_includes_pr_body_for_required_incident_gate():
     routes[f"repos/{REPO}/pulls/7"][1]["body"] = "Parent: #1688"
     bad = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
     assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(bad)
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize("repo_fields", [
+    {"full_name": REPO, "url": "https://api.github.com/repos/foreign/repo"},
+    {"full_name": "foreign/repo", "url": "https://api.github.com/repos/" + REPO},
+])
+def test_event_origin_rejects_conflicting_repository_identifiers(side, repo_fields):
+    """No single matching identity may neutralize a contradictory event origin."""
+    assert m._event_repo_is({"repo": repo_fields}, REPO) is False
+
+
+def test_event_origin_accepts_consistent_github_repository_identifiers():
+    repo_fields = {"full_name": REPO, "url": "https://api.github.com/repos/" + REPO}
+    assert m._event_repo_is({"repo": repo_fields}, REPO) is True

@@ -343,9 +343,14 @@ def _event_repo_is(side: Any, repo: str) -> bool:
     ref = side.get("repo") if isinstance(side, dict) else None
     if not isinstance(ref, dict):
         return False
-    if ref.get("full_name") == repo:
-        return True
-    return ref.get("url") == f"https://api.github.com/repos/{repo}"
+    # All supplied identifiers must agree; a trusted name cannot mask a foreign URL.
+    expected_url = f"https://api.github.com/repos/{repo}"
+    full_name, url = ref.get("full_name"), ref.get("url")
+    if full_name is not None and full_name != repo:
+        return False
+    if url is not None and url != expected_url:
+        return False
+    return full_name == repo or url == expected_url
 
 
 def targets(repo: str, *, pr: str | None = None,
