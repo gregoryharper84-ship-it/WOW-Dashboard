@@ -104,17 +104,23 @@ def test_nba_hydration_does_not_persist_completed_postseason_source_rows(monkeyp
     playoff["season_type"] = 3
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [playoff])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
-    monkeypatch.setattr(
-        hydration, "_persist_rows",
-        lambda *_: (_ for _ in ()).throw(
-            AssertionError("postseason fixture must never be persisted as regular training")
-        ),
-    )
+    # hydrate calls _persist_rows with an empty list; its actual implementation
+    # returns zero without any database IO. Check the normalized batch rather
+    # than misclassifying a no-op helper invocation as a persisted row.
+    persisted_batches = []
+
+    def record_batch(_client, _sport, rows):
+        persisted_batches.append(list(rows))
+        assert rows == []
+        return 0
+
+    monkeypatch.setattr(hydration, "_persist_rows", record_batch)
 
     result = hydration.hydrate(
         "NBA", [2027], client=object(),
         now=datetime(2026, 11, 5, 17, tzinfo=timezone.utc),
     )
+    assert persisted_batches == [[]]
     assert result["raw_rows"] == 1
     assert result["per_season"][2027] == 0
     assert result["settled_rows"] == 0
