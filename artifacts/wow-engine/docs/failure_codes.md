@@ -619,6 +619,8 @@ Malformed matching fixtures prevent proving either absence or uniqueness.
 | `SOCCER_PROVIDER_TEAM_ALIAS_INVALID` | Missing or identical participant aliases | Repair participant identity |
 | `SOCCER_CANONICAL_EVENT_NOT_FOUND` | No matching fixture in the queried competition/date window | Retain unresolved identity; verify source coverage |
 | `SOCCER_CANONICAL_EVENT_AMBIGUOUS` | Multiple distinct fixture IDs match | Resolve ambiguity from official evidence |
+| `SOCCER_CANONICAL_EVENT_ID_MISSING` | Resolved source returned no canonical event identifier | Retain discovery alias and typed hold; repair authoritative source handoff |
+| `SOCCER_CANONICAL_RESOLVER_FAILED` | Unexpected failure outside the Soccer resolver's registered typed errors | Preserve alias and fail closed; diagnose adapter/runtime failure |
 | `SOCCER_OFFICIAL_SOURCE_TRANSPORT_FAILED` | Scoreboard transport failed | Retry after source recovery within existing bounds |
 | `SOCCER_OFFICIAL_SOURCE_RATE_LIMITED` | Scoreboard returned HTTP 429 | Respect provider limits; retain unresolved identity |
 | `SOCCER_OFFICIAL_SOURCE_HTTP_{status}` | Non-200 response, including UNKNOWN status | Diagnose provider response; do not invent a fixture |
