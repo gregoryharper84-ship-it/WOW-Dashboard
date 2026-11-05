@@ -33,6 +33,15 @@ def native_regressions():
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_live_resume_does_not_dispatch_retired_manual_reviewer(self):
+        workflow = (MODULE.parents[3] / ".github/workflows/wow-engineering-24x7.yml"
+                    ).read_text(encoding="utf-8")
+        assert "gh workflow run wow-v17-simple-security-review.yml" not in workflow
+        assert "three Actions App regressions" in workflow
+        assert "Independent QA App" in workflow
+        assert "Release Authority App" in workflow
+        assert "Binding signed REJECT" in workflow
+
     def test_no_check_requires_real_review_evidence(self):
         r = mod.reduce_pr(pr(), [], SHA)
         self.assertEqual(r["decision"], "EVIDENCE_PENDING")
