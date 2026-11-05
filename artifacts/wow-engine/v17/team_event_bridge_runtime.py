@@ -639,10 +639,13 @@ def _register_nba_bridge_if_available() -> bool:
         return False
 
     def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = True) -> dict[str, Any]:
+        # The shared dispatcher's historical default can explicitly forward
+        # False despite this wrapper's True default. No NBA caller-evidence
+        # shortcut is certified; force server hydration on every registered path.
         return score_nba_team_event_request(
             req,
             event_api=event_api,
-            canonical_hydration_required=canonical_hydration_required,
+            canonical_hydration_required=True,
         )
 
     register_team_event_bridge(
