@@ -74,7 +74,7 @@ def test_sdv_completed_non_regular_season_games_never_enter_fitted_training():
     # SportsDataverse season_type=2 identifies the regular season. Missing
     # season_type on older snapshots retains the legacy normalization path.
     for sport in ("NBA", "WNBA"):
-        for value in (1, "1", 3, "3", 4, True, "postseason", "preseason"):
+        for value in (1, "1", 3, "3", 4, True, "postseason", "preseason", "", None, {}):
             row = _sportsdataverse_row()
             row["season_type"] = value
             assert hydration.normalize_sportsdataverse_game(
