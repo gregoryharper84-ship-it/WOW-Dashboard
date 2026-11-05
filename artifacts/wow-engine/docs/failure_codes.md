@@ -6,23 +6,22 @@ This file is the repository source of truth for governed typed failure/status co
 
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ccbca8adf06a73cf62fa8e7d36d0f2cb1e256a02ddcaef152e5d2822fa78dee9 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+<!-- coderabbit-ai-generated-section:v1:da02db52c5cd11cd3bd00224d82c11f5aebaa6cc445a4a7e54a61abc0af27e72 -->
+<!-- coderabbit-ai-generated:v1 -->
+<!-- coderabbit-ai-generated-section:v1:cf64259410f3769b67608b7c70ae5b7109c5ae0f2302439fa87ca05602b5abde -->
+<!-- /coderabbit-ai-generated:v1 -->
+<!-- /coderabbit-ai-generated:v1 -->
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
 | `WNBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED` | WNBA fitted forward-feature hydration / source identity | Official future WNBA event identity is ESPN-prefixed, but persisted settled-game history is BallDontLie, unknown-provider, or not ESPN-prefixed; no verified cross-provider mapping exists. Hold before feature assembly, never reinterpret mismatch as missing games or guess team IDs. Recovery: independently prove a one-to-one identity crosswalk or ingest matched ESPN-keyed history; research-only, no rank/publish/execute. | No |
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:da02db52c5cd11cd3bd00224d82c11f5aebaa6cc445a4a7e54a61abc0af27e72 -->
-
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:cf64259410f3769b67608b7c70ae5b7109c5ae0f2302439fa87ca05602b5abde -->
-
 | `NBA_CURRENT_SEASON_SETTLED_DATA_MISSING` | NBA default scheduled basketball maintenance / fresh-source hydration | For a current-season refresh in October–June, the persisted most-recent settled game is absent/invalid/future dated or predates the current October NBA season. October may replay prior history only before an aware opening instant from the acquired canonical SportsDataverse schedule; unknown/malformed/conflicting opening evidence does not waive the hold. Jul–Sep offseason and explicit season selection remain separate. Historical shadow replay cannot be claimed as a successful current-season refresh. Fail closed before replay; preserve native acquisition failures, recovery_class=SOURCE_COVERAGE_REPAIR, required_season_start, latest_persisted_game_date and ending-year reacquisition target. Never promote, publish, or execute. | No |
-
-<!-- /coderabbit-ai-generated:v1 -->
 | `BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED` | NBA/WNBA explicit-clock model maintenance / persisted replay | Hydration honors the requested clock but persisted provenance, freshness, feature replay and fitting reads do not yet share that cutoff. Preserve acquisition results and native source failures; do not replay, fit, promote or publish historical shadow evidence. Default live maintenance remains supported. Restore historical fitting only after every persisted read proves cutoff-aware evidence. | No |
-
-<!-- /coderabbit-ai-generated:v1 -->
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
@@ -103,7 +102,9 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `DATE_MUST_BE_YYYY_MM_DD` | diagnostic API | Invalid date supplied to a bounded health/discovery diagnostic route. | N/A |
 | `INVALID_PAGINATION` | diagnostic API | Page/page-size request is invalid. | N/A |
 
-## Multisport calibration artifact detail blockers
+
+
+<!-- /coderabbit-ai-generated:v1 -->## Multisport calibration artifact detail blockers
 
 The following detail blockers remain underneath the registered `MODEL_INPUTS_INSUFFICIENT` / `CALIBRATION_ARTIFACT_INVALID_OR_UNAVAILABLE` class and must never be rewritten to `MODEL_UNAVAILABLE`: `CALIBRATION_ARTIFACT_MISSING`, `CALIBRATION_ARTIFACT_SPORT_MISMATCH`, `CALIBRATION_CERTIFICATION_NOT_PASS`, `CALIBRATION_TRAINING_N_INSUFFICIENT`, `CALIBRATION_METHOD_MISSING`, `CALIBRATION_VERSION_MISSING`, `CALIBRATION_SOURCE_DATA_HASH_INVALID`, `CALIBRATION_SPLIT_HASH_INVALID`, `CALIBRATION_FIT_END_INVALID`, `CALIBRATION_BRIER_INVALID`, `CALIBRATION_ERROR_INVALID`, `BINARY_CALIBRATION_ARTIFACT_TYPE_INVALID`, `MULTICLASS_CALIBRATION_ARTIFACT_TYPE_INVALID`, `PLATT_COEFFICIENTS_INVALID`, `CALIBRATION_RESIDUAL_QUANTILE_INVALID`, and the outcome-specific soccer calibration record/coefficient/residual blockers.
 
