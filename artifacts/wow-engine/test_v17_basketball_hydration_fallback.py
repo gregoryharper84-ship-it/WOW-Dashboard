@@ -535,9 +535,10 @@ def _mock_stale_sportsdataverse(monkeypatch):
     )
     persisted = []
     monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: (persisted.extend(rows), len(rows))[1])
-    # The 14-day scoreboard window can close this short gap completely:
-    # Oct 23 EDT => last completed Oct 22, coverage Oct 9-22.
-    latest = iter([date(2026, 10, 8), date(2026, 10, 22)])
+    # These in-season fixtures test the recent supplement: Nov 3 ET =>
+    # last completed Nov 2 and the previous Nov 1 row is inside coverage.
+    # October before opening is deliberately covered by a separate regression.
+    latest = iter([date(2026, 11, 1), date(2026, 11, 2)])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: next(latest))
     return persisted
 
@@ -558,13 +559,13 @@ def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch
         hydration,
         "fetch_recent_espn_settlements",
         lambda sport, *, now: called.append((sport, now.isoformat())) or [
-            _espn_event(event_id="401908002", game_date="2026-10-22"),
+            _espn_event(event_id="401908002", game_date="2026-11-02"),
         ],
     )
     try:
         hydration.hydrate(
             "NBA", [2027], client=object(),
-            now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+            now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
         )
         raise AssertionError("raw ESPN data must never be inserted into the fitted NBA ledger")
     except hydration.BasketballHydrationError as exc:
@@ -586,7 +587,7 @@ def test_recent_source_failure_never_advertises_updated_games(monkeypatch):
         ),
     )
     result = hydration.hydrate(
-        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "NBA", [2027], client=object(), now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
     )
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
     assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"
@@ -602,13 +603,13 @@ def test_duplicated_recent_event_ids_do_not_create_duplicate_training_games(monk
         lambda *_args: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
     )
     persisted = _mock_stale_sportsdataverse(monkeypatch)
-    repeated = _espn_event(event_id="401908002", game_date="2026-10-22")
+    repeated = _espn_event(event_id="401908002", game_date="2026-11-02")
     monkeypatch.setattr(
         hydration, "fetch_recent_espn_settlements",
         lambda *_args, **_kwargs: [repeated, repeated],
     )
     result = hydration.hydrate(
-        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "NBA", [2027], client=object(), now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
     )
     assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_DUPLICATE_GAME_ID"
     assert result["settled_rows"] == 0
@@ -684,7 +685,7 @@ def test_unlicensed_recent_espn_is_not_fetched_or_persisted_during_shadow_refres
         ),
     )
     result = hydration.hydrate(
-        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "NBA", [2027], client=object(), now=datetime(2026, 11, 3, 17, tzinfo=timezone.utc),
     )
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
     assert result["settled_rows"] == 0
