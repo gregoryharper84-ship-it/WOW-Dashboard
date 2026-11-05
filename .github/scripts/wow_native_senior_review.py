@@ -24,6 +24,9 @@ sys.path.insert(0, str(ROOT / "artifacts/wow-engine"))
 
 from v17.native_senior_review import build_review_packet  # noqa: E402
 from v17.native_senior_review_static import run_static_review  # noqa: E402
+from v17.native_senior_review_local_ai import (  # noqa: E402
+    review_with_local_model, LocalSemanticHold,
+)
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 API_ROOT = "https://api.github.com/repos/" + REPO + "/"
@@ -203,7 +206,8 @@ def _related_sources(client, paths: list[str], head: str):
     return related, sorted(set(warnings))
 
 
-def collect_pr_review(client, *, number: int, expected_head: str):
+def collect_pr_review(client, *, number: int, expected_head: str,
+                      local_model: str | None = None):
     if type(number) is not int or number < 1:
         raise ReviewHold("PR_NUMBER_INVALID")
     if not isinstance(expected_head, str) or not SHA_RE.fullmatch(expected_head):
@@ -239,6 +243,15 @@ def collect_pr_review(client, *, number: int, expected_head: str):
         check, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")).hexdigest()
     result = run_static_review(pkt)
+    local = None
+    semantic_status = "NOT_RUN"
+    if local_model is not None:
+        try:
+            local = review_with_local_model(pkt, model=local_model)
+            semantic_status = "LOCAL_HYPOTHESES_ONLY"
+        except LocalSemanticHold as exc:
+            semantic_status = "LOCAL_REVIEW_HELD:" + str(exc)
+    _pr(client, number, expected_head)
     return {"schema": "WOW_NATIVE_REVIEW_RUN_V1",
             "review": result,
             "pr": number, "head_sha": expected_head,
@@ -247,7 +260,8 @@ def collect_pr_review(client, *, number: int, expected_head: str):
             "coverage": pkt["context_coverage"],
             "warnings": warnings, "can_execute": False,
             "release_authority": "NONE_ADVISORY_ONLY",
-            "semantic_review": "NOT_RUN",
+            "semantic_review": semantic_status,
+            "local_semantic_result": local,
             "deployment_verified": False}
 
 
@@ -261,7 +275,7 @@ def markdown_summary(result: dict) -> str:
         f"Canonical incident: \`{result['incident_id']}\`",
         f"Review: \`{report['status']}\`; changed paths: {len(report.get('changed_paths', []))}",
         f"Static hypotheses: {report['finding_count']} (not proven defects)",
-        "AI semantic review: **NOT RUN**; QA/Release: **NOT PERFORMED**",
+        f"AI semantic review: **{result['semantic_review']}**; QA/Release: **NOT PERFORMED**",
         "Source coverage: changed files plus bounded sibling Python imports, **not** whole-repo proof.",
         "",
     ]
@@ -272,6 +286,12 @@ def markdown_summary(result: dict) -> str:
     if report.get("unreported_findings"):
         lines.append(f"- {report['unreported_findings']} additional findings omitted; "
                      "the run is incomplete.")
+    semantic = result.get("local_semantic_result")
+    if isinstance(semantic, dict):
+        for item in semantic.get("findings", [])[:8]:
+            lines.append(f"- **Local AI {item['severity']} hypothesis** in "
+                         f"`{item['file']}`: {item['reason']}. "
+                         "Requires independent reproduction.")
     if result["warnings"]:
         lines.append("- Limited context: " + ", ".join(result["warnings"][:6]))
     lines += ["", f"Packet digest: \`{result['packet_sha256']}\`",
@@ -316,10 +336,13 @@ def main(argv=None):
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--post-comment", action="store_true")
+    parser.add_argument("--local-model", default=None,
+                        help="Explicit opt-in: existing localhost Ollama model only")
     args = parser.parse_args(argv)
     try:
         client = GitHubClient(os.environ.get("GH_TOKEN", ""))
-        result = collect_pr_review(client, number=args.pr, expected_head=args.expected_head)
+        result = collect_pr_review(client, number=args.pr, expected_head=args.expected_head,
+                                   local_model=args.local_model)
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, sort_keys=True, indent=2), encoding="utf-8")
