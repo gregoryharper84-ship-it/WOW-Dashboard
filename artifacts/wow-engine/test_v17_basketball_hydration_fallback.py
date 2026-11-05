@@ -986,11 +986,15 @@ def test_sdv_future_or_unverified_capture_never_enters_settled_history():
                 future, sport, at, source_release_year=2027,
             ) is None, (sport, at)
 
-        # Exact event day in the source's local calendar is not future-dated.
+        # Same-day final status from a later release is NOT as-of proof.
         assert hydration.normalize_sportsdataverse_game(
             future, sport, "2026-11-07T02:00:00Z",
             source_release_year=2027,
-        ) is not None
+        ) is None  # Still November 6 in New York
+        assert hydration.normalize_sportsdataverse_game(
+            future, sport, "2026-11-07T18:00:00Z",
+            source_release_year=2027,
+        ) is not None  # Entire November 6 Eastern day has ended
 
         # A human-readable Final label is not a settled result unless the
         # machine completed flag is authoritative and true.
@@ -1014,7 +1018,11 @@ def test_sdv_same_eastern_day_started_after_capture_is_not_settled():
         assert hydration.normalize_sportsdataverse_game(
             row, sport, "2026-11-06T01:00:00Z",
             source_release_year=2027,
-        ) is not None
+        ) is None  # 8pm ET: could still be in progress
+        assert hydration.normalize_sportsdataverse_game(
+            row, sport, "2026-11-06T18:00:00Z",
+            source_release_year=2027,
+        ) is not None  # A new Eastern calendar day
         row["game_date_time"] = ""
         assert hydration.normalize_sportsdataverse_game(
             row, sport, "2026-11-06T04:00:00Z",
