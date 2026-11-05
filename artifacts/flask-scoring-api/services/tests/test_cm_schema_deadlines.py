@@ -16,6 +16,7 @@ def _bootstrap_namespace(connection):
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_cm_ensure_schema")
     namespace = {
         "_CM_SCHEMA_READY": False,
+        "_CM_SLIP_MIGRATE_READY": False,
         "_CM_SCHEMA_LOCK": threading.Lock(),
         "get_db_conn": lambda: connection,
         "app": SimpleNamespace(logger=logging.getLogger(__name__)),
@@ -92,6 +93,21 @@ def test_cm_success_keeps_readiness_idempotent_and_deadlines_transaction_local()
     assert len(conn.statements) == count
 
 
+def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema():
+    conn = Connection(fail="ALTER TABLE cm_slips")
+    ns = _bootstrap_namespace(conn)
+    ns["_cm_ensure_schema"]()
+    assert ns["_CM_SCHEMA_READY"]
+    assert not ns["_CM_SLIP_MIGRATE_READY"]
+    conn.fail = None
+    ns["_cm_ensure_schema"]()
+    assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
+    assert ns["_CM_SCHEMA_READY"] and ns["_CM_SLIP_MIGRATE_READY"]
+    count = len(conn.statements)
+    ns["_cm_ensure_schema"]()
+    assert len(conn.statements) == count
+
+
 def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
     """Use a disposable cluster, or the existing explicitly isolated CI DB."""
     import psycopg2
@@ -127,10 +143,15 @@ def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
         ns["_CM_SLIP_MIGRATE_DDL"] += "\nSELECT 1/0;"
         ns["_cm_ensure_schema"]()
         assert ns["_CM_SCHEMA_READY"]
+        assert not ns["_CM_SLIP_MIGRATE_READY"]
         with psycopg2.connect(dsn) as check:
             with check.cursor() as cursor:
                 cursor.execute("SELECT to_regclass('cm_boards')")
                 assert cursor.fetchone()[0] == "cm_boards"
+        # Remove the transient error and retry without clearing readiness.
+        ns["_CM_SLIP_MIGRATE_DDL"] = ns["_CM_SLIP_MIGRATE_DDL"].removesuffix("\nSELECT 1/0;")
+        ns["_cm_ensure_schema"]()
+        assert ns["_CM_SLIP_MIGRATE_READY"]
         ns["_CM_SCHEMA_READY"] = False
         locked = psycopg2.connect(dsn)
         with locked.cursor() as cursor:

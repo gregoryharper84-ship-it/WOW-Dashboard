@@ -13731,6 +13731,7 @@ CM_SLIP_JOINT_PROBABILITY_REQUIRED    = True   # PATCH-014: joint model required
 CM_SLIP_POSITIVE_NET_RETURN_PRIMARY   = True   # PATCH-017: positive_net_return is primary metric
 
 _CM_SCHEMA_READY = False
+_CM_SLIP_MIGRATE_READY = False
 _CM_SCHEMA_LOCK  = threading.Lock()
 
 _CM_SCHEMA_DDL = """
@@ -13946,11 +13947,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
 
 def _cm_ensure_schema():
     """Create required CM schema with bounded DDL; isolate optional migrations."""
-    global _CM_SCHEMA_READY
-    if _CM_SCHEMA_READY:
+    global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY
+    if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
         return
     with _CM_SCHEMA_LOCK:
-        if _CM_SCHEMA_READY:
+        if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
             return
         try:
             with get_db_conn() as conn:
@@ -13964,8 +13965,10 @@ def _cm_ensure_schema():
                     # preserve the required schema if one statement fails;
                     # catching an error alone leaves PostgreSQL aborted.
                     cur.execute("SAVEPOINT cm_slip_migration")
+                    slip_ready = False
                     try:
                         cur.execute(_CM_SLIP_MIGRATE_DDL)
+                        slip_ready = True
                     except Exception as mig_err:
                         cur.execute("ROLLBACK TO SAVEPOINT cm_slip_migration")
                         app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
@@ -13981,6 +13984,7 @@ def _cm_ensure_schema():
                         cur.execute("RELEASE SAVEPOINT cm_shadow_migration")
                 conn.commit()
             _CM_SCHEMA_READY = True
+            _CM_SLIP_MIGRATE_READY = slip_ready
             app.logger.info("CM required schema ready (optional migration failures logged separately)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")
