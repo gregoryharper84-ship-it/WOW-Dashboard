@@ -357,7 +357,8 @@ def test_deep_research_pregame_source_flags_trigger_recheck_not_pick_flip():
     assert audit["review_flags"] == [
         "MATERIAL_MARKET_DISAGREEMENT", "QB_AVAILABILITY_UNCERTAIN"
     ]
-    assert audit["model_recheck_required"] is True
+    assert audit["model_recheck_required"] is False
+    assert audit["analyst_review_required"] is True
     assert audit["independently_certified"] is False
     assert audit["upset_volatility_index"] is None
     assert out["pool_pick"] == "BUF"
@@ -392,6 +393,7 @@ def test_new_material_evidence_after_model_requests_rescore_not_manual_flip():
     out = select_pickem_game(row)
     assert out["deep_research_audit"]["status"] == "MATERIAL_CONTEXT_NEWER_THAN_MODEL"
     assert out["deep_research_audit"]["model_recheck_required"] is True
+    assert out["deep_research_audit"]["analyst_review_required"] is True
     assert out["deep_research_audit"]["review_flags"] == [
         "PREGAME_MODEL_REFRESH_REQUIRED"
     ]
@@ -416,7 +418,8 @@ def test_deep_research_board_counts_are_advisory_and_cannot_override_terminal():
     assert board["status"] == PICKEM_BOARD_READY
     assert board["ready_pick_count"] == 2
     assert board["deep_research_context_count"] == 1
-    assert board["deep_research_model_recheck_count"] == 2
+    assert board["deep_research_model_recheck_count"] == 1
+    assert board["deep_research_analyst_review_count"] == 2
     assert board["decision_objective"] == DECISION_OBJECTIVE
     assert board["source_terminals_preserved"] is True
     assert board["can_execute"] is False
