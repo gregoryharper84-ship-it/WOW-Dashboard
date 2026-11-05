@@ -1025,3 +1025,31 @@ def test_sdv_same_eastern_day_started_after_capture_is_not_settled():
             row, sport, "2026-11-06T04:00:00Z",
             source_release_year=2027,
         ) is None
+
+
+def test_sdv_missing_tipoff_column_is_typed_schema_drift_not_zero_games(monkeypatch):
+    """Source schema drift must block acquisition instead of hiding a season."""
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda source_id: SimpleNamespace(
+            ready_for_candidate_training=True, blockers=(),
+        ),
+    )
+    class Response:
+        status_code = 200
+        text = (
+            "game_id,game_date,home_id,away_id,home_score,away_score,status_type_completed\n"
+            "401,2026-11-05,10,20,88,81,True\n"
+        )
+    class Session:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+    for sport in ("NBA", "WNBA"):
+        try:
+            hydration.fetch_sportsdataverse_games(
+                sport, 2027, session=Session(),
+            )
+            raise AssertionError("missing game_date_time cannot silently accept zero games")
+        except hydration.BasketballHydrationError as exc:
+            assert str(exc) == "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT:game_date_time"
