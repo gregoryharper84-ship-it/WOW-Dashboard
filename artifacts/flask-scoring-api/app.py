@@ -13945,7 +13945,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
 """
 
 def _cm_ensure_schema():
-    """Idempotently create all CM tables and run column migrations. Safe to call repeatedly."""
+    """Create required CM schema with bounded DDL; isolate optional migrations."""
     global _CM_SCHEMA_READY
     if _CM_SCHEMA_READY:
         return
@@ -13955,20 +13955,33 @@ def _cm_ensure_schema():
         try:
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
+                    # Match the session-ledger warmup limits. SET LOCAL cannot
+                    # leak deadlines into later pooled application operations.
+                    cur.execute("SET LOCAL lock_timeout = '3000ms'")
+                    cur.execute("SET LOCAL statement_timeout = '10000ms'")
                     cur.execute(_CM_SCHEMA_DDL)
-                    # PATCH-014–020: add new columns to cm_slips (idempotent)
+                    # These migrations are historically optional. Savepoints
+                    # preserve the required schema if one statement fails;
+                    # catching an error alone leaves PostgreSQL aborted.
+                    cur.execute("SAVEPOINT cm_slip_migration")
                     try:
                         cur.execute(_CM_SLIP_MIGRATE_DDL)
                     except Exception as mig_err:
+                        cur.execute("ROLLBACK TO SAVEPOINT cm_slip_migration")
                         app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
-                    # Step 12.5B: add new columns + UNIQUE index to kalshi_wx_shadow_results
+                    finally:
+                        cur.execute("RELEASE SAVEPOINT cm_slip_migration")
+                    cur.execute("SAVEPOINT cm_shadow_migration")
                     try:
                         cur.execute(_CM_SHADOW_RESULT_MIGRATE_DDL)
                     except Exception as mig_err:
+                        cur.execute("ROLLBACK TO SAVEPOINT cm_shadow_migration")
                         app.logger.warning(f"Shadow result migration (non-fatal): {mig_err}")
+                    finally:
+                        cur.execute("RELEASE SAVEPOINT cm_shadow_migration")
                 conn.commit()
             _CM_SCHEMA_READY = True
-            app.logger.info("CM schema ready (PATCH-014–020 + shadow result migrations applied)")
+            app.logger.info("CM required schema ready (optional migration failures logged separately)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")
             raise
