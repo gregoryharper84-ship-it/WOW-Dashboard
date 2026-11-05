@@ -964,3 +964,35 @@ def test_nba_october_preopening_gap_does_not_trigger_recent_scoreboard(monkeypat
     )
     assert result["recent_supplement_status"] == {}
     assert result["can_execute"] is False
+
+
+def test_sdv_future_or_unverified_capture_never_enters_settled_history():
+    """Source-completed alone cannot backdate a game not yet played (NBA/WNBA)."""
+    for sport in ("NBA", "WNBA"):
+        future = _sportsdataverse_row(event_id="future", game_date="2026-11-06")
+        future["season"] = "2027"
+        future["season_type"] = 2
+        for at in (
+            "2026-11-05T18:00:00Z",   # Tomorrow's game
+            "2026-11-06T01:00:00Z",   # Already next UTC date; still Nov 5 ET
+            "2026-11-06T18:00:00",    # Naive timestamp never proves source age
+            "not-an-instant",
+        ):
+            assert hydration.normalize_sportsdataverse_game(
+                future, sport, at, source_release_year=2027,
+            ) is None, (sport, at)
+
+        # Exact event day in the source's local calendar is not future-dated.
+        assert hydration.normalize_sportsdataverse_game(
+            future, sport, "2026-11-06T18:00:00Z",
+            source_release_year=2027,
+        ) is not None
+
+        # A human-readable Final label is not a settled result unless the
+        # machine completed flag is authoritative and true.
+        future["status_type_completed"] = "False"
+        future["status_type_description"] = "Final"
+        assert hydration.normalize_sportsdataverse_game(
+            future, sport, "2026-11-07T18:00:00Z",
+            source_release_year=2027,
+        ) is None
