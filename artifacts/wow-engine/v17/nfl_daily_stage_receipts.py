@@ -157,7 +157,7 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     """Independent cohort and champion certification, never automatic promotion."""
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
-            "artifact_id,active,promoted,probability_publishable"
+            "artifact_id,active,promoted,lifecycle_state"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
             "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
@@ -173,28 +173,128 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     # A different champion's 100 games can never authorize this model.
     if not isinstance(minimum, int) or minimum < 100:
         return False
+    # The shared forward-health table has no model_version column: its PASS
+    # covers every champion together. Never borrow another model's wins or
+    # favorable Brier/ECE/bias scores. Replay the immutable prospective grades
+    # for *this* exact version using the same approved health calculation.
     try:
-        grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
-            .select("official_event_id")
-            .eq("model_version", str(row["model_version"]))
-            .limit(minimum * 2)
-            .execute()
+        from v17.nfl_forward_shadow import ForwardGrade, calibration_health, _safe_log_loss
+
+        # Fetch every exact-version grade in stable event order. A 1001-row
+        # limit is unsafe under PostgREST's common 1000-row response cap:
+        # it can return a truncated but apparently passing partial corpus.
+        # Exact count plus a final short page prove complete bounded readback.
+        PAGE = 250
+        MAX_PAGES = 40
+        columns = (
+            "official_event_id,model_version,event_prediction_id,"
+            "event_start_time_utc,prediction_created_at,selected_participant,"
+            "calibrated_probability,calibrated_lower_bound,"
+            "calibrated_upper_bound,outcome,source_game_id"
         )
-        grades = grade_result.data
-        if not isinstance(grades, list):
+        raw_grades: list[Mapping[str, Any]] = []
+        total: int | None = None
+        complete = False
+        for page in range(MAX_PAGES):
+            begin = page * PAGE
+            result = (
+                db.table("wow_nfl_forward_shadow_grades")
+                .select(columns, count="exact")
+                .eq("model_version", str(row["model_version"]))
+                .order("official_event_id")
+                .range(begin, begin + PAGE - 1)
+                .execute()
+            )
+            batch = result.data
+            count = getattr(result, "count", None)
+            if (
+                not isinstance(batch, list)
+                or type(count) is not int or count < 0
+                or len(batch) > PAGE
+                or any(not isinstance(item, Mapping) for item in batch)
+            ):
+                return False
+            if total is None:
+                total = count
+                if total < minimum or total > PAGE * MAX_PAGES:
+                    return False
+            elif count != total:
+                # New grades appeared mid-pagination; retry on an immutable
+                # frozen cohort rather than mixing two observations.
+                return False
+            raw_grades.extend(batch)
+            if len(raw_grades) > total:
+                return False
+            # Exact PostgREST count proves completeness even when the last
+            # bounded page is full (including the 10,000-grade ceiling).
+            if len(batch) < PAGE or len(raw_grades) == total:
+                complete = True
+                break
+        if not complete or total is None or len(raw_grades) != total:
             return False
-        unique_games = {
-            str(g.get("official_event_id"))
-            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
-        }
+        exact_grades: list[ForwardGrade] = []
+        unique_games: set[str] = set()
+        for raw in raw_grades:
+            if not isinstance(raw, Mapping):
+                return False
+            event = str(raw.get("official_event_id") or "")
+            version = str(raw.get("model_version") or "")
+            y = raw.get("outcome")
+            p = _number(raw.get("calibrated_probability"))
+            lower = _number(raw.get("calibrated_lower_bound"))
+            upper = _number(raw.get("calibrated_upper_bound"))
+            start_at = _instant(raw.get("event_start_time_utc"))
+            predicted_at = _instant(raw.get("prediction_created_at"))
+            if (
+                not event or event in unique_games
+                or version != str(row["model_version"])
+                or type(y) is not int or y not in (0, 1)
+                or p is None or lower is None or upper is None
+                or not 0 < lower <= p <= upper < 1
+                or start_at is None or predicted_at is None
+                or predicted_at >= start_at
+                or not raw.get("event_prediction_id")
+                or not raw.get("source_game_id")
+                or not raw.get("selected_participant")
+            ):
+                return False
+            unique_games.add(event)
+            exact_grades.append(ForwardGrade(
+                event_prediction_id=str(raw["event_prediction_id"]),
+                official_event_id=event,
+                event_start_time_utc=start_at.isoformat(),
+                prediction_created_at=predicted_at.isoformat(),
+                model_version=version,
+                selected_participant=str(raw["selected_participant"]),
+                calibrated_probability=p,
+                calibrated_lower_bound=lower,
+                calibrated_upper_bound=upper,
+                outcome=y,
+                brier=(p - y) ** 2,
+                log_loss=_safe_log_loss(p, y),
+                source_game_id=str(raw["source_game_id"]),
+            ))
+        own_health = calibration_health(exact_grades, min_forward=minimum)
+        exact_model_healthy = (
+            len(exact_grades) >= minimum
+            and own_health.get("graded_n") == len(exact_grades)
+            and own_health.get("status") == "PASS"
+            and own_health.get("certification_recommendation") == "FORWARD_EVIDENCE_PASS"
+            and own_health.get("blockers") == []
+        )
     except Exception:
         return False
+    # The registry can never grant publication itself: its schema requires
+    # probability_publishable = false (wow_nfl_event_fitted_registry_not_probability_publication),
+    # and the promotion path plus the certified-artifact reader both report false.
+    # This row's publication authority is model_probability_publishable, already
+    # enforced by the package readback above. What the registry must contribute
+    # here is the governed champion state, exactly as the terminal reducer uses it.
     return bool(
-        len(unique_games) >= minimum
+        exact_model_healthy
         and model.get("active") is True
         and model.get("promoted") is True
-        and model.get("probability_publishable") is True
+        and model.get("lifecycle_state") == "CHAMPION"
         and isinstance(assessment.get("graded_n"), int)
         and isinstance(assessment.get("minimum_forward_required"), int)
         and assessment["minimum_forward_required"] >= 100
