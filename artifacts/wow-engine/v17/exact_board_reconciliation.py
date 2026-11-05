@@ -90,13 +90,40 @@ def _observed_identity(outcome: dict[str, Any]) -> dict[str, Any]:
     return observed
 
 
-def _mismatches(expected: dict[str, Any], observed: dict[str, Any]) -> list[str]:
+def _verified_event_aliases(response: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    """Return row_key -> (provider alias, canonical id) for PASS NFL identity receipts.
+
+    Only the identity boundary's own PASS receipt counts. A receipt that is not
+    PASS, or lacks either side, provides no equivalence.
+    """
+    resolution = response.get("nfl_event_identity_resolution")
+    receipts = resolution.get("rows") if isinstance(resolution, dict) else None
+    if not isinstance(receipts, dict):
+        return {}
+    aliases: dict[str, tuple[str, str]] = {}
+    for row_key, receipt in receipts.items():
+        if not isinstance(receipt, dict) or receipt.get("status") != "PASS":
+            continue
+        alias = _text(receipt.get("source_event_id_alias"))
+        canonical = _text(receipt.get("canonical_event_id"))
+        if alias and canonical:
+            aliases[str(row_key)] = (alias, canonical)
+    return aliases
+
+
+def _mismatches(
+    expected: dict[str, Any],
+    observed: dict[str, Any],
+    verified_alias: tuple[str, str] | None = None,
+) -> list[str]:
     mismatches: list[str] = []
     for key in ("event_id", "player", "sport", "stat_type", "direction"):
         if key not in observed:
             continue
         left = _stat(expected[key]) if key == "stat_type" else _text(expected[key])
         right = _stat(observed[key]) if key == "stat_type" else _text(observed[key])
+        if key == "event_id" and verified_alias is not None and (left, right) == verified_alias:
+            continue
         if left != right:
             mismatches.append(key)
     if "line" in observed:
@@ -111,6 +138,7 @@ def enforce_exact_board_identity(response: dict[str, Any], source_rows: list[Any
     """Audit source identity and block completion on any observed mismatch."""
     out = dict(response)
     identities = dict(_source_identity(row, index) for index, row in enumerate(source_rows))
+    verified_aliases = _verified_event_aliases(out)
     rows = [row for row in (out.get("rows") or []) if isinstance(row, dict)]
     mismatch_rows: list[dict[str, Any]] = []
     unverifiable_rows: list[str] = []
@@ -124,7 +152,7 @@ def enforce_exact_board_identity(response: dict[str, Any], source_rows: list[Any
         if not observed:
             unverifiable_rows.append(row_key)
             continue
-        mismatches = _mismatches(expected, observed)
+        mismatches = _mismatches(expected, observed, verified_aliases.get(row_key))
         if mismatches:
             mismatch_rows.append({
                 "row_key": row_key,
