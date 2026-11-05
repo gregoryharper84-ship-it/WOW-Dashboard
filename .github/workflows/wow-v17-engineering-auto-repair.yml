@@ -614,6 +614,7 @@ jobs:
           }
 
       - name: Re-propose immutable source through authenticated Engineering App
+        id: propose
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -633,6 +634,9 @@ jobs:
             > "$RUNNER_TEMP/wow-target-writer-recheck.json"
           jq -e '.status == "TARGET_ADMISSION_PASS" and .can_execute == false' \
             "$RUNNER_TEMP/wow-target-writer-recheck.json" >/dev/null
+          # Admission is real only after the guarded worker acquires its lock
+          # and passes the recheck, never when read-only discovery is ready.
+          printf 'admitted\n' > "$RUNNER_TEMP/wow-writer-admitted.marker"
           python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
             --repo "$GITHUB_REPOSITORY" \
             --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
@@ -645,7 +649,76 @@ jobs:
             .independent_source_review_complete == false and
             .required_owner_approval_head == .sha and .can_execute == false' \
             "$RUNNER_TEMP/wow-app-adoption-result.json" >/dev/null
+          # Completion means the exact-head App PR result was verified; it is
+          # NOT an independent review, protected merge, or a deployed repair.
+          printf 'completed\n' > "$RUNNER_TEMP/wow-writer-completed.marker"
           jq -c '{status, bootstrap_status, source_review_status, source_review_head_sha,
             independent_source_review_complete, required_owner_approval_head, pr, sha,
             source_sha, can_execute}' \
             "$RUNNER_TEMP/wow-app-adoption-result.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record actual writer admission and completion
+        id: writer_receipt
+        if: always()
+        shell: bash
+        env:
+          SOURCE_PR: ${{ needs.adoption-readonly-preflight.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.adoption-readonly-preflight.outputs.source_sha }}
+          PROPOSE_OUTCOME: ${{ steps.propose.outcome }}
+        run: |
+          set -euo pipefail
+          admitted=false
+          completed=false
+          [ ! -f "$RUNNER_TEMP/wow-writer-admitted.marker" ] || admitted=true
+          [ ! -f "$RUNNER_TEMP/wow-writer-completed.marker" ] || completed=true
+          # No marker is written on queueing, a skipped writer, or failed
+          # in-lock source recheck. Treat failed integration as NOT completed.
+          proposal=null
+          if [ "$completed" = true ]; then
+            proposal=$(jq -c '{pr, sha}' "$RUNNER_TEMP/wow-app-adoption-result.json")
+          fi
+          jq -n --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg source_pr "$SOURCE_PR" --arg source_sha "$SOURCE_SHA" \
+            --arg step_outcome "$PROPOSE_OUTCOME" \
+            --argjson admitted "$admitted" --argjson completed "$completed" \
+            --argjson proposal "$proposal" \
+            '{
+              schema_version: 1,
+              receipt_type: "WOW_ENGINEERING_APP_SOURCE_ADOPTION",
+              run_id: $run_id, run_attempt: $run_attempt,
+              job: "adopt-reviewed-owner-source",
+              source_pr: (if $source_pr == "" then null else ($source_pr | tonumber) end),
+              source_sha: (if $source_sha == "" then null else $source_sha end),
+              writer_admitted: $admitted,
+              writer_completed: $completed,
+              writer_stage: (if $completed then "APP_PR_VERIFIED"
+                             elif $admitted then "ADMITTED_NOT_COMPLETED"
+                             else "NOT_ADMITTED" end),
+              proposal_step_outcome: $step_outcome,
+              integration_pr: $proposal,
+              independent_approval: false,
+              production_verified: false,
+              can_execute: false
+            }' > "$RUNNER_TEMP/wow-writer-receipt.json"
+          jq -r '
+            "### WOW Engineering actual writer receipt",
+            "| Stage | Count |",
+            "| --- | ---: |",
+            "| In-lock writer admission | " + (if .writer_admitted then "1" else "0" end) + " |",
+            "| Verified App PR integration | " + (if .writer_completed then "1" else "0" end) + " |",
+            "Worker stage: " + .writer_stage,
+            "Proposal step: " + .proposal_step_outcome,
+            "Source PR: " + ((.source_pr // "none") | tostring),
+            "Source SHA: " + (.source_sha // "none"),
+            "Receipt: WOW_ENGINEERING_APP_SOURCE_ADOPTION; can_execute=false"
+          ' "$RUNNER_TEMP/wow-writer-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload actual writer receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-writer-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wow-writer-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
