@@ -284,3 +284,43 @@ def test_unlinked_pr_keeps_findings_without_creating_new_incident():
     outcome = reviewer.post_existing_incident_handoff(client, result=result)
     assert outcome == "INCIDENT_ID_UNRESOLVED_PR_ADVISORY_ONLY"
     assert client.incident_writes == []
+
+
+class BaseDriftGitHub(IncidentGitHub):
+    """A PR's base moves while its head stays anchored."""
+
+    def __init__(self, changed_at=2):
+        super().__init__()
+        self.changed_at = changed_at
+
+    def request(self, path, *, method="GET", body=None):
+        value = super().request(path, method=method, body=body)
+        if path == "/pulls/900" and self.calls.count(("GET", path)) >= self.changed_at:
+            value["base"]["sha"] = "d" * 40
+        return value
+
+
+def test_pr_base_moving_mid_scan_is_typed_hold_not_fake_clean_result():
+    client = BaseDriftGitHub(changed_at=2)
+    with pytest.raises(reviewer.ReviewHold, match="PR_BASE_SHA_CHANGED"):
+        reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert client.posted == []
+    assert client.incident_writes == []
+
+
+def test_pr_base_moving_before_advisory_comment_is_typed_hold():
+    client = BaseDriftGitHub(changed_at=2)
+    with pytest.raises(reviewer.ReviewHold, match="PR_BASE_SHA_CHANGED"):
+        reviewer.post_advisory_comment(
+            client, number=900, head_sha=HEAD, base_sha=BASE,
+            text=reviewer._COMMENT_MARKER + "\nnew"
+        )
+    assert client.posted == []
+
+
+def test_pr_base_moving_before_incident_handoff_is_typed_hold():
+    client = BaseDriftGitHub(changed_at=4)
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    with pytest.raises(reviewer.ReviewHold, match="PR_BASE_SHA_CHANGED"):
+        reviewer.post_existing_incident_handoff(client, result=result)
+    assert client.incident_writes == []
