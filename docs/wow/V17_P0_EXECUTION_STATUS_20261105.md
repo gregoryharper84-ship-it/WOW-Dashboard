@@ -43,7 +43,7 @@ git fetch --no-tags origin 'refs/pull/2472/head:refs/remotes/pr/2472'   # ok
 | NFL terminal-label provenance | `FINAL_APPROVED` was hardcoded because `wow_nfl_event_predictions` has no `terminal_label` column | Label is read from `wow_v17_reduce_nfl_event_terminal_label(score_snapshot_id)`, requiring `status=PASS`, `global_terminal_reducer=V17_TERMINAL_REDUCER`, `can_execute=false`; MLB requires its stored `terminal_label` |
 
 Evidence: new regressions fail against the pre-fix module (**22 failed, 3 passed** with the module
-stashed) and pass with the correction (**25 passed**); the combined affected set is **111 passed**.
+stashed) and pass with the correction (**30 passed**); the combined affected set is **111 passed**.
 Positive controls keep a valid NFL and MLB receipt visible with unchanged display percentages.
 
 ## 3. NBA shadow persistence integrated onto the current #2472 head
@@ -69,7 +69,7 @@ still unproven and must be resolved in #2473's own scope.
 
 ```text
 cd artifacts/wow-engine   # Python 3.12.3 venv from requirements.txt
-python -m pytest -q test_v17_scout_governed_probability_display.py           → 25 passed
+python -m pytest -q test_v17_scout_governed_probability_display.py           → 30 passed
   (same file with the pre-fix module stashed)                                → 22 failed, 3 passed
 python -m pytest -q test_v17_scout_governed_probability_display.py \
   tests/test_v17_nba_event_shadow_prediction_persistence.py \
@@ -95,3 +95,45 @@ reachable, so none is reported as passing.
    authenticated Action→terminal→DB readback.
 
 `can_execute=false` and `V17_TERMINAL_REDUCER` terminal authority are unchanged.
+
+## 7. Presentation boundary regression (Scout)
+
+A Decimal inside the exact `0 < p < 1` domain can still become `1.0` as a float,
+and a value just below 1 formats as `100.00%` at two decimal places. Both would
+display a probability the domain excludes, so the display path now requires the
+float and its rounded percentage to remain strictly inside the boundary.
+
+Evidence: 4 new regressions fail with the pre-guard module (**26 passed, 4 failed**)
+and pass after it (**30 passed**). Positive control: a small but renderable lower
+bound (`0.0001`) still displays `0.01%`.
+
+## 8. P0 — the canonical ledger cannot satisfy the LLP readback contract
+
+PostgreSQL-backed evidence, not inference. A disposable cluster is created with
+bundled binaries, the repository's own DDL from `artifacts/wow-engine/event_schema.sql`
+is applied, and the real `_verify_governed_event_prediction` runs against it through
+a psycopg adapter exposing the governed client's query surface.
+
+| Observation | Result |
+| --- | --- |
+| Enforced guards | `sport = 'MLB'`, `league = 'MLB'`, `controlling_specialist = 'wow.mlb-game-win-probability-expert'`, `settlement_basis = 'FULL_GAME_INCLUDING_EXTRA_INNINGS'` |
+| NFL / NBA / NHL canonical insert | rejected, SQLSTATE `23514`, sport guard; table stays empty |
+| NFL settlement basis on an MLB-sport row | rejected independently by the settlement-basis guard |
+| Genuinely well-formed MLB row | inserts (count = 1) but the verifier returns `LLP_EVENT_PREDICTION_RECEIPT_MISMATCH`, because the basis map has no MLB entry |
+| LLP supported sports | `{NFL, NBA, NHL}` |
+| Base DDL vs verifier select | `terminal_reduced_at` and `source_snapshot_timestamp` are migration additions, absent from the base table DDL |
+
+The stored domain and the verified domain are **disjoint**, so every LLP winner is
+permanently held in this schema. This is a schema/design incompatibility, not a
+Scout guard defect, and no Scout change can repair it.
+
+Prohibited remedies: dropping or widening the MLB constraints, synthesising a
+canonical UUID from a legacy identifier, or creating shadow rows that masquerade as
+certified receipts. The governed remedy is a separately approved multisport receipt
+ledger or an official per-sport receipt adapter, with its own migrations and a
+versioned readback contract.
+
+Lane: `freebuff/ae0ffa56-2473-ledger-schema` at `157769502`, adding
+`tests/test_llp_event_prediction_ledger_schema_postgres.py` (**5 passed**; suite with
+#2473's own research/readback/bundle tests **236 passed**). The new file is a
+characterisation test and must be replaced when the real contract exists.
