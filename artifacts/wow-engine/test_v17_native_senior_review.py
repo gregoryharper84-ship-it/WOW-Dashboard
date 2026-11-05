@@ -174,3 +174,44 @@ def test_oversize_diff_marks_incomplete_instead_of_silent_partial_review():
     assert result["max_payload_exceeded"] is True
     assert result["status"] == "CONTEXT_INCOMPLETE"
     assert result["patches"] == {}
+
+
+def test_acceptance_criteria_rejects_ambiguous_string_instead_of_character_list():
+    with pytest.raises(ValueError, match="ACCEPTANCE_CRITERIA_INVALID"):
+        packet(acceptance_criteria="No regression")
+    with pytest.raises(ValueError, match="ACCEPTANCE_CRITERIA_INVALID"):
+        packet(acceptance_criteria=None)
+
+
+def test_init_module_dependency_imports_package_name():
+    init_path = "artifacts/wow-engine/v17/__init__.py"
+    caller = "artifacts/wow-engine/v17/caller.py"
+    p = packet(
+        changed_patches={init_path: "@@ -0,0 +1,1 @@\n+from .security import check\n"},
+        repository_sources={init_path: "from .security import check\n",
+                            caller: "import v17\n"},
+    )
+    assert p["referenced_by"][init_path] == [caller]
+
+
+def test_evidence_whitespace_only_does_not_count_as_source_grounding():
+    p = packet()
+    claim = {"head_sha": HEAD, "file": MOD, "source_excerpt": "            "}
+    assert preflight_review_finding(p, claim) == "REVIEW_EVIDENCE_INSUFFICIENT"
+
+
+def test_evidence_crossing_patch_source_boundary_is_not_grounded():
+    p = packet(
+        changed_patches={MOD: "@@ -0,0 +1,1 @@\n+tailXYZ"},
+        repository_sources={MOD: "sourceHEAD"},
+    )
+    claim = {"head_sha": HEAD, "file": MOD,
+             "source_excerpt": "tailXYZ\nsourceHEAD"}
+    assert preflight_review_finding(p, claim) == "REVIEW_EVIDENCE_NOT_FOUND"
+
+
+def test_non_json_serializable_tamper_is_typed_hold_not_crash():
+    p = packet()
+    p["invalid_injected_field"] = {1, 2}
+    claim = {"head_sha": HEAD, "file": MOD, "source_excerpt": "return x + 1"}
+    assert preflight_review_finding(p, claim) == "REVIEW_PACKET_DRIFT"
