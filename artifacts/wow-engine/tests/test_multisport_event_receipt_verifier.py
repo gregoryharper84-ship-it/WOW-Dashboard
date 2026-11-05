@@ -219,3 +219,20 @@ def test_original_mlb_ledger_is_never_queried():
     db=DB(row,reducer)
     assert verify(db,event=event,winner=winner) is None
     assert db.table_calls==[TABLE]
+
+
+@pytest.mark.parametrize("requested_id", ["other-official-game", "", None])
+def test_foreign_or_missing_requested_official_event_holds_before_rpc(requested_id):
+    """Ledger and winner may collude on one ID; requested event must also match."""
+    row, event, winner, reducer = fixture()
+    event["official_event_id"] = requested_id
+    db = DB(row, reducer)
+    assert verify(db, event=event, winner=winner) == MATCH_HOLD
+    assert not db.rpc_calls
+
+
+def test_exact_requested_official_event_still_passes_fake_contract():
+    row, event, winner, reducer = fixture()
+    db = DB(row, reducer)
+    assert verify(db, event=event, winner=winner) is None
+    assert len(db.rpc_calls) == 1
