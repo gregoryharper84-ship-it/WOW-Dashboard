@@ -45,10 +45,11 @@ def test_unknown_timezone_falls_back_to_utc_instead_of_raising():
     assert slate_dates(NOW, "Not/AZone", 1) == ["2026-09-12"]
 
 
-def _run_one_pass(monkeypatch, acquire: Any) -> list[str]:
+def _run_one_pass(monkeypatch, acquire: Any, interval_seconds: int = 86400) -> list[str]:
     calls: list[str] = []
 
-    def _acquire(*, db, requested_date, requested_timezone, max_candidates):
+    def _acquire(*, db, requested_date, requested_timezone, max_candidates, rotating_window_slot=None):
+        assert rotating_window_slot == int(NOW.timestamp() // interval_seconds)
         calls.append(requested_date)
         return acquire(requested_date)
 
@@ -61,7 +62,7 @@ def _run_one_pass(monkeypatch, acquire: Any) -> list[str]:
             run_prop_evidence_acquisition_loop(
                 db_client_fn=lambda: object(),
                 logger=logging.getLogger("test.acquisition"),
-                interval_seconds=86400,
+                interval_seconds=interval_seconds,
                 forward_days=2,
                 initial_delay_seconds=0,
                 now_fn=lambda: NOW,
@@ -115,3 +116,13 @@ def test_scheduler_registers_once_when_enabled(monkeypatch):
     _install_prop_evidence_acquisition_scheduler(app, db_client_fn=lambda: object())
 
     assert app.state.wow_prop_evidence_acquisition_scheduler_installed is True
+
+
+def test_configured_two_hour_cadence_advances_rotating_slot(monkeypatch):
+    calls = _run_one_pass(
+        monkeypatch,
+        lambda _date: {"status": "COMPLETED", "persisted": 0},
+        interval_seconds=7200,
+    )
+    assert calls == ["2026-09-11", "2026-09-12"]
+    assert int((NOW.timestamp() + 7200) // 7200) == int(NOW.timestamp() // 7200) + 1

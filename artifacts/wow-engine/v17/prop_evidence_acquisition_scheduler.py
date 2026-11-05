@@ -1,6 +1,6 @@
 """Scheduled V17 prop evidence acquisition for the forward calibration cohort.
 
-``acquire_daily_prop_snapshots`` only ran inside the authenticated
+``acquire_daily_prop_snapshots`` originally ran only inside the authenticated
 ``/v17/daily-snapshot-run`` route, so ``wow_prop_evidence_snapshots`` was
 produced only when someone called that route by hand. The forward cohort loop
 consumes those snapshots every 15 minutes but had no autonomous producer, so a
@@ -8,7 +8,7 @@ live future cohort could not build on its own: evidence capture last ran at
 2026-09-11T17:36Z and the future slate was empty the following day.
 
 This loop gives acquisition its own pass, mirroring the existing forward cohort
-scheduler. It seeds the same immutable snapshots the route already produces --
+scheduler. It seeds the same immutable NFL/MLB snapshots the route already produces --
 no new candidate source, no invented line, no scoring, no publication, and no
 calibrator fit. Off unless explicitly enabled.
 
@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_prop_discovery import acquire_daily_prop_snapshots
 
 CAN_EXECUTE = False
 
@@ -53,12 +53,14 @@ def _acquire_once(
     requested_date: str,
     timezone_name: str,
     max_candidates: int,
+    rotating_window_slot: int | None = None,
 ) -> dict[str, Any]:
     return acquire_daily_prop_snapshots(
         db=db_client_fn(),
         requested_date=requested_date,
         requested_timezone=timezone_name,
         max_candidates=max_candidates,
+        rotating_window_slot=rotating_window_slot,
     )
 
 
@@ -96,6 +98,7 @@ async def run_prop_evidence_acquisition_loop(
                     requested_date=requested_date,
                     timezone_name=timezone_name,
                     max_candidates=max_candidates,
+                    rotating_window_slot=int(now_fn().timestamp() // interval_seconds),
                 )
                 logger.warning(
                     "WOW_PROP_EVIDENCE_ACQUISITION status=%s slate_date=%s attempted=%s hydrated=%s persisted=%s held=%s write_failed=%s blockers=%s can_execute=false",

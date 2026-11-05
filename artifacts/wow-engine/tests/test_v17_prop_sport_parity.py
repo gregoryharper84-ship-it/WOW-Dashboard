@@ -21,7 +21,8 @@ def test_prop_parity_distinguishes_row_hydration_from_autonomous_discovery():
     assert rows["MLB"]["automatic_row_hydration_supported"] is True
     assert rows["MLB"]["daily_autonomous_discovery_supported"] is True
     assert rows["NFL"]["automatic_row_hydration_supported"] is True
-    assert rows["NFL"]["daily_autonomous_discovery_supported"] is False
+    assert rows["NFL"]["daily_autonomous_discovery_supported"] is True
+    assert rows["NFL"]["daily_autonomous_discovery_provider"] == "NFL_ESPN_PREGAME_ROSTER"
     assert rows["WNBA"]["automatic_row_hydration_supported"] is True
     assert rows["WNBA"]["daily_autonomous_discovery_supported"] is False
 

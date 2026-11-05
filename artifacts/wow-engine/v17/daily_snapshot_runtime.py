@@ -25,7 +25,8 @@ from v17 import free_core_source_policy as source_policy
 from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
-from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_prop_discovery import acquire_daily_prop_snapshots
+from v17.daily_line_provenance import line_provenance_for_daily_prop
 from v17.daily_response_contract import (
     ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
     ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
@@ -212,6 +213,79 @@ def _receipt_snapshot_ids(acquisition: dict[str, Any] | None) -> set[str]:
     }
 
 
+def _nfl_fill_response_rows(
+    manifest: list[dict[str, Any]], max_props: int,
+) -> list[dict[str, Any]]:
+    """Reserve at most half the bounded page for newly filled NFL rows.
+
+    This is only used when an existing non-NFL canonical slate invoked the
+    opt-in missing-NFL fill. It leaves the canonical manifest, its ordering,
+    and the ordinary Daily and MLB-only selection paths untouched.
+    """
+    if max_props <= 0:
+        return []
+    nfl_rows = [
+        row for row in manifest if str(row.get("sport") or "").upper() == "NFL"
+    ]
+    if not nfl_rows:
+        return manifest[:max_props]
+    reserved = nfl_rows[:min(len(nfl_rows), max(1, max_props // 2))]
+    # Preserve the already-populated non-NFL family in its canonical order.
+    # Extra NFL rows may use only capacity left after those existing rows.
+    non_nfl = [
+        row for row in manifest if str(row.get("sport") or "").upper() != "NFL"
+    ]
+    additional_nfl = nfl_rows[len(reserved):]
+    return reserved + (non_nfl + additional_nfl)[:max_props - len(reserved)]
+
+
+def _prop_source_unobtainable(acquisition: dict[str, Any] | None) -> bool:
+    """A source-wide failure is distinct from ordinary candidate hydration HOLD."""
+    if not isinstance(acquisition, dict):
+        return False
+    if acquisition.get("status") == "DATA_UNOBTAINABLE":
+        return True
+    return any(
+        isinstance(sport, dict) and sport.get("status") == "DATA_UNOBTAINABLE"
+        for sport in (acquisition.get("per_sport") or [])
+    )
+
+
+def _prop_discovery_accounting(
+    *, acquisition: dict[str, Any] | None, canonical_manifest: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Distinguish genuinely acquired rows from reused canonical snapshots."""
+    canonical_ids = canonical_source_snapshot_ids(canonical_manifest)
+    newly_persisted = _receipt_snapshot_ids(acquisition)
+    acquired_ids = canonical_ids & newly_persisted
+    attempted = int((acquisition or {}).get("attempted") or 0)
+    already_captured = sum(
+        1 for row in ((acquisition or {}).get("receipts") or [])
+        if isinstance(row, dict) and row.get("write_status") == "ALREADY_CAPTURED"
+    )
+    reason = None
+    if not acquired_ids:
+        if acquisition is None:
+            reason = "AUTONOMOUS_DISCOVERY_NOT_ATTEMPTED"
+        elif _prop_source_unobtainable(acquisition):
+            reason = "DISCOVERY_DATA_UNOBTAINABLE"
+        elif attempted == 0:
+            reason = "NO_CANDIDATES_DISCOVERED"
+        elif already_captured == attempted:
+            reason = "ALL_DISCOVERED_CANDIDATES_ALREADY_CAPTURED"
+        elif newly_persisted:
+            reason = "CANONICAL_READBACK_INCOMPLETE"
+        else:
+            reason = "NO_CANDIDATE_COULD_BE_HYDRATED"
+    return {
+        "new_candidates_acquired": len(acquired_ids),
+        "reused_snapshot_rows": max(len(canonical_manifest) - len(acquired_ids), 0),
+        "zero_new_candidates_reason": reason,
+        "acquisition_attempted": acquisition is not None,
+        "can_execute": False,
+    }
+
+
 def _prop_handoff_reconciliation(
     *,
     acquisition: dict[str, Any] | None,
@@ -275,12 +349,14 @@ def _lane_reconciliation(
         expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
         if expected in " ".join(blockers):
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
-        elif lane == "PROPS" and acquisition and acquisition.get("status") == "DATA_UNOBTAINABLE":
-            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif lane == "PROPS" and "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in blockers:
             zero_row_reason = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
         elif lane == "PROPS" and "PROP_SNAPSHOT_INGESTION_EMPTY" in blockers:
             zero_row_reason = "PROP_SNAPSHOT_INGESTION_EMPTY"
+        elif lane == "PROPS" and _prop_source_unobtainable(acquisition):
+            # Only source-wide outages count as discovery unavailable. A
+            # hydrated candidate HOLD retains its typed row reason instead.
+            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif requested_limit == 0:
             # Zero rows caused by the request itself are never evidence that the
             # canonical lane is empty. Reporting NO_CANONICAL_CANDIDATES here
@@ -513,21 +589,37 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         # Acquisition exists to fill an empty canonical lane. A zero-length page
         # caused by max_props is not an empty lane, so it must not trigger a
         # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        # Optional bounded fill of an absent NFL family when MLB snapshots
+        # already exist; existing installations retain the historical path.
+        missing_nfl_fill = (
+            os.getenv("WOW_V17_NFL_DAILY_FILL_MISSING", "0") == "1"
+            and req.max_props > 0
+            and not any(str(row.get("sport") or "").upper() == "NFL" for row in prop_manifest)
+        )
+        nfl_fill_existing_manifest = bool(prop_manifest) and missing_nfl_fill
+        if (not prop_manifest or missing_nfl_fill) and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
                 requested_timezone=req.requested_timezone,
                 max_candidates=max(req.max_props * 3, req.max_props),
+                nfl_only=bool(prop_manifest) and missing_nfl_fill,
             )
             if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
                 blockers.extend(prop_acquisition.get("blockers") or [])
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
                 blockers.extend(prop_acquisition.get("blockers") or [])
+            elif prop_acquisition.get("blockers"):
+                # A partial NFL/MLB outage is not an authenticated empty slate.
+                blockers.extend(prop_acquisition.get("blockers") or [])
             try:
                 prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
-                prop_rows = prop_manifest[:req.max_props]
+                prop_rows = (
+                    _nfl_fill_response_rows(prop_manifest, req.max_props)
+                    if nfl_fill_existing_manifest
+                    else prop_manifest[:req.max_props]
+                )
             except Exception as exc:
                 prop_rows = []
                 prop_manifest = []
@@ -552,14 +644,26 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
             publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
-            rows.append(
-                _terminal_row(
-                    "PROPS",
-                    identity,
-                    {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
-                    _props_row_reduction(outcomes),
-                )
+            line_provenance = line_provenance_for_daily_prop(row, prop_acquisition)
+            # Model sporting probability may be valid for a research threshold.
+            # Never present that threshold as an actual posted bookmaker offer.
+            terminal_row = _terminal_row(
+                "PROPS",
+                identity,
+                {
+                    "outcomes": outcomes,
+                    "probability_publishable": publishable,
+                    "rank_eligible": publishable,
+                    "line_provenance": line_provenance,
+                    "pick_presentation_eligible": False,
+                    "can_execute": False,
+                },
+                _props_row_reduction(outcomes),
             )
+            terminal_row["line_provenance"] = line_provenance
+            terminal_row["pick_presentation_eligible"] = False
+            terminal_row["official_leaderboard_eligible"] = False
+            rows.append(terminal_row)
 
     cross_sport_audit: dict[str, Any] | None = None
     if "MONEYLINE" in requested_lanes:
@@ -697,6 +801,9 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "lane_reconciliation": lane_reconciliation,
         "cross_sport_discovery_audit": cross_sport_audit,
         "prop_acquisition": prop_acquisition,
+        "prop_discovery_accounting": _prop_discovery_accounting(
+            acquisition=prop_acquisition, canonical_manifest=prop_manifest,
+        ) if "PROPS" in requested_lanes else None,
         "row_detail_persistence": detail_persistence,
         "blockers": list(dict.fromkeys(blockers)),
         "can_execute": False,

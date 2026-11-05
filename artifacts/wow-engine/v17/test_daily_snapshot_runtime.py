@@ -140,6 +140,8 @@ def test_props_research_only_normal_return_is_held():
         def score_prop(*_): return {"probability_publishable":False,"governed_publishable":False,"research_only":True,"research_model_output":{"raw_specialist_probability":0.55}}
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["PROPS"]),db=DB(),market_api=ResearchOnlyMarket(),event_api=Event())
     assert result["rows"][0]["row_status"]=="HELD"
+    assert result["rows"][0]["line_provenance"]["presentation_blocker"] == "LINE_PROVENANCE_NOT_RECORDED_ON_SNAPSHOT"
+    assert result["rows"][0]["pick_presentation_eligible"] is False
 
 
 def test_reconciliation_fails_closed_on_unclassified_row():
@@ -202,7 +204,8 @@ def test_empty_prop_snapshot_invokes_server_acquisition_then_requeries(monkeypat
         return {
             "status":"COMPLETED","attempted":1,"hydrated":1,"persisted":1,"held":0,
             "snapshot_write_succeeded":1,"snapshot_write_failed":0,"explicit_prewrite_exclusions":0,
-            "receipts":[{"source_snapshot_id":"new-snap","write_status":"SNAPSHOT_WRITE_SUCCEEDED"}],
+            "line_source":"PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
+            "receipts":[{"source_snapshot_id":"new-snap","write_status":"SNAPSHOT_WRITE_SUCCEEDED","source_type":"AUTONOMOUS_DISCOVERY"}],
             "blockers":[],"can_execute":False,
         }
     monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",acquire)
@@ -215,6 +218,11 @@ def test_empty_prop_snapshot_invokes_server_acquisition_then_requeries(monkeypat
     assert handoff["persisted_to_canonical_balanced"] is True
     assert handoff["canonical_to_scored_balanced"] is True
     assert "NO_CANONICAL_PREGAME_SNAPSHOTS" not in result["blockers"]
+    prop = result["rows"][0]
+    assert prop["line_provenance"]["line_source"] == "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY"
+    assert prop["line_provenance"]["presentation_blocker"] == "RESEARCH_ONLY_LINE_NOT_A_BOOK_OFFER"
+    assert prop["pick_presentation_eligible"] is False
+    assert prop["official_leaderboard_eligible"] is False
 
 
 def test_persisted_rows_with_empty_canonical_readback_are_typed_ingestion_empty(monkeypatch):
@@ -421,3 +429,96 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_partial_nfl_discovery_outage_is_not_mislabeled_as_empty_slate(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+
+    class EmptyDB(DB):
+        def table(self, name):
+            return Query([])
+
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+        lambda **_: {
+            "status": "COMPLETED_WITH_ROW_BLOCKERS",
+            "attempted": 0, "persisted": 0, "hydrated": 0, "held": 0,
+            "snapshot_write_succeeded": 0, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "receipts": [],
+            "blockers": ["NFL_DAILY_DISCOVERY_FAILED:TimeoutError"],
+            "per_sport": [
+                {"sport": "NFL", "status": "DATA_UNOBTAINABLE", "can_execute": False},
+                {"sport": "MLB", "status": "COMPLETED", "can_execute": False},
+            ],
+            "can_execute": False,
+        },
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+            lanes=["PROPS"], response_mode="FULL",
+        ),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert "NFL_DAILY_DISCOVERY_FAILED:TimeoutError" in result["blockers"]
+    assert "NO_CANONICAL_PREGAME_SNAPSHOTS" not in result["blockers"]
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert result["prop_discovery_accounting"]["new_candidates_acquired"] == 0
+    assert result["prop_discovery_accounting"]["zero_new_candidates_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert result["can_execute"] is False
+
+
+
+def test_opt_in_missing_nfl_fill_surfaces_nfl_rows_without_losing_mlb(monkeypatch):
+    """The Daily route must actually score a bounded share of newly filled NFL rows."""
+    monkeypatch.setenv("WOW_V17_NFL_DAILY_FILL_MISSING", "1")
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    def snapshot(sport, index):
+        return {
+            "source_snapshot_id": f"{sport.lower()}-{index}",
+            "event_id": f"{sport}-event",
+            "event_start_time": FUTURE,
+            "sport": sport,
+            "player": f"{sport}-Player-{index}",
+            "stat_type": "RECEIVING_YARDS" if sport == "NFL" else "PITCHER_STRIKEOUTS",
+            "line": 4.5,
+            "hydration_status": "PASS",
+            "blockers": [],
+        }
+    existing = [snapshot("MLB", i) for i in range(8)]
+    completed = existing + [snapshot("NFL", i) for i in range(3)]
+    manifests = iter([existing, completed])
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime._prop_manifest_rows",
+        lambda *_args, **_kwargs: next(manifests),
+    )
+    captured = []
+    def acquire(**kwargs):
+        captured.append(kwargs)
+        return {
+            "status": "COMPLETED", "attempted": 3, "hydrated": 3,
+            "persisted": 3, "held": 0, "already_captured": 0,
+            "snapshot_write_succeeded": 3, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0,
+            "receipts": [
+                {"source_snapshot_id": f"nfl-{i}",
+                 "write_status": "SNAPSHOT_WRITE_SUCCEEDED"}
+                for i in range(3)
+            ],
+            "blockers": [], "can_execute": False,
+        }
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["PROPS"], max_props=6, response_mode="FULL",
+        ),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+    assert len(captured) == 1 and captured[0]["nfl_only"] is True
+    assert len(result["rows"]) == 6
+    sports = [row["identity"]["sport"] for row in result["rows"]]
+    assert sports == ["NFL", "NFL", "NFL", "MLB", "MLB", "MLB"]
+    assert all(row["can_execute"] is False for row in result["rows"])
