@@ -638,7 +638,7 @@ def _register_nba_bridge_if_available() -> bool:
     except Exception:  # noqa: BLE001 - absence is an audit answer, not a crash
         return False
 
-    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
+    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = True) -> dict[str, Any]:
         return score_nba_team_event_request(
             req,
             event_api=event_api,
