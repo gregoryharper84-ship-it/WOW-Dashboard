@@ -434,7 +434,12 @@ def test_partial_provider_record_cannot_establish_identity():
 def test_soccer_failure_codes_are_registered():
     registry = (Path(__file__).resolve().parents[1] / "docs/failure_codes.md").read_text()
     source = Path(identity.__file__).read_text()
-    fixed_codes = set(re.findall(r'"(SOCCER_[A-Z_]+)"', source)) - {identity.SOURCE_PROVIDER}
+    # Failure codes emitted by the discovery parity handoff must also be
+    # registered. Scanning only the source resolver hid missing adapter codes.
+    parity = (
+        Path(__file__).resolve().parents[1] / "v17/team_event_sport_parity.py"
+    ).read_text()
+    fixed_codes = set(re.findall(r'"(SOCCER_[A-Z_]+)"', source + parity)) - {identity.SOURCE_PROVIDER}
     assert fixed_codes
     assert not {code for code in fixed_codes if f"`{code}`" not in registry}
     assert "`SOCCER_OFFICIAL_SOURCE_HTTP_{status}`" in registry
