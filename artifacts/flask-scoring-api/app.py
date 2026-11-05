@@ -13960,7 +13960,8 @@ def _cm_ensure_schema():
                     # leak deadlines into later pooled application operations.
                     cur.execute("SET LOCAL lock_timeout = '3000ms'")
                     cur.execute("SET LOCAL statement_timeout = '10000ms'")
-                    cur.execute(_CM_SCHEMA_DDL)
+                    if not _CM_SCHEMA_READY:
+                        cur.execute(_CM_SCHEMA_DDL)
                     # These migrations are historically optional. Savepoints
                     # preserve the required schema if one statement fails;
                     # catching an error alone leaves PostgreSQL aborted.
@@ -15887,7 +15888,9 @@ def cm_slip_optimizer():
             dup_conflicts = _cm_check_daily_exposure(
                 final_candidates, board_date, conn)
     except Exception:
-        pass
+        # Preserve the native database failure. Missing exposure evidence must
+        # never become an empty conflict list or an optimizer PASS result.
+        raise
 
     dup_blocked  = {c["leg"] for c in dup_conflicts}
     post_dup     = [l for l in final_candidates

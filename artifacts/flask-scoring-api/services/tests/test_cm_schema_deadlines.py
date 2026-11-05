@@ -102,6 +102,7 @@ def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema(
     conn.fail = None
     ns["_cm_ensure_schema"]()
     assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
+    assert conn.statements.count(ns["_CM_SCHEMA_DDL"]) == 1
     assert ns["_CM_SCHEMA_READY"] and ns["_CM_SLIP_MIGRATE_READY"]
     count = len(conn.statements)
     ns["_cm_ensure_schema"]()
@@ -195,3 +196,31 @@ def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
                 cursor.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
         if server is not None:
             server.cleanup()
+
+
+@pytest.mark.parametrize("stage", ["connect", "lookup"])
+def test_optimizer_propagates_exposure_database_failure_before_building_any_result(stage):
+    """An unavailable exposure store cannot become an empty lookup and PASS."""
+    import copy
+    from contextlib import nullcontext
+
+    class ExposureUnavailable(RuntimeError):
+        pass
+
+    def fail(*_args, **_kwargs):
+        raise ExposureUnavailable("exposure database unavailable")
+
+    tree = ast.parse(APP.read_text())
+    function = copy.deepcopy(next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "cm_slip_optimizer"))
+    function.decorator_list = []
+    namespace = {
+        "request": SimpleNamespace(get_json=lambda **kw: {"legs": [{"test_only": True}]}),
+        # The fixture is quarantined before model math; no numerical scorer,
+        # order path or database outside this synthetic namespace is invoked.
+        "_cm_enrich_leg": lambda _leg: {"test_only_lane": True},
+        "_cm_db": fail if stage == "connect" else lambda: nullcontext(object()),
+        "_cm_check_daily_exposure": fail,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(APP), "exec"), namespace)
+    with pytest.raises(ExposureUnavailable, match="exposure database unavailable"):
+        namespace["cm_slip_optimizer"]()
