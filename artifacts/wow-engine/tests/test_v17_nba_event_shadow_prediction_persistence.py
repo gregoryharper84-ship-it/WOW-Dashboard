@@ -93,7 +93,11 @@ class Db:
             if self.fail_insert:
                 raise RuntimeError("transport")
             self.insert_count += 1
-            self.rows.append({**candidate, "nba_prediction_id": "generated-uuid"})
+            self.rows.append({
+                **candidate,
+                "nba_prediction_id": SERVER_UUID,
+                "created_at": NOW.isoformat(),
+            })
             return type("R", (), {"data": []})()
         matches = [
             row for row in self.rows
@@ -107,6 +111,11 @@ def save(db, s=None, event=EVENT):
     if event != EVENT:
         row["event_start_time_utc"] = event
     return persist_nba_shadow_prediction(db, scored=row, now=NOW)
+
+
+# The durable row shape is server-owned: the primary key is database generated
+# and created_at defaults to now(). A receipt readback must prove both.
+SERVER_UUID = "6f1f0d3a-1c2b-4e3f-9a4b-1f2c3d4e5f60"
 
 
 def test_prospective_insert_and_exact_duplicate_readback():
@@ -189,6 +198,54 @@ def test_ambiguous_duplicate_db_rows_fail_closed():
     with pytest.raises(NBAShadowReceiptHold) as caught:
         save(db)
     assert caught.value.code == "NBA_SHADOW_READBACK_INVALID"
+
+
+def test_readback_requires_database_generated_uuid_identity():
+    db = Db()
+    save(db)
+    db.rows[0]["nba_prediction_id"] = "client-supplied-receipt"
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db)
+    assert caught.value.code == "NBA_SHADOW_READBACK_INVALID"
+    assert db.insert_count == 1
+
+
+@pytest.mark.parametrize("field", ["created_at", "model_timestamp"])
+def test_readback_without_server_timestamps_is_unverifiable(field):
+    db = Db()
+    save(db)
+    db.rows[0].pop(field)
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db)
+    assert caught.value.code == "NBA_SHADOW_READBACK_INVALID"
+
+
+def test_readback_recorded_after_tipoff_is_never_prospective():
+    db = Db()
+    save(db)
+    db.rows[0]["created_at"] = (NOW + timedelta(hours=4)).isoformat()
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db)
+    assert caught.value.code == "NBA_SHADOW_NOT_PROSPECTIVE"
+
+
+def test_readback_must_carry_every_bound_column_despite_a_valid_digest():
+    db = Db()
+    save(db)
+    # Same prediction_sha256, but the durable row no longer names this fixture.
+    db.rows[0]["home_team_id"] = "espn-1610612741"
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db)
+    assert caught.value.code == "NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT"
+
+
+def test_readback_must_match_the_scoring_instant():
+    db = Db()
+    save(db)
+    db.rows[0]["model_timestamp"] = (NOW - timedelta(minutes=1)).isoformat()
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db)
+    assert caught.value.code == "NBA_SHADOW_NOT_PROSPECTIVE"
 
 
 def test_sql_contract_restricts_roles_and_fixes_shadow_state():
