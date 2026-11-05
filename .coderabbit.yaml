@@ -2,10 +2,10 @@
 # WOW V17: high-signal, advisory reviews. GitHub/owner release controls remain authoritative.
 language: "en-US"
 early_access: false
-tone_instructions: "Be concise, evidence-first, and specific. Prioritize bugs, security, data integrity, and model correctness over style. Cite exact code paths and propose minimal fixes."
+tone_instructions: "Skeptical senior engineer: challenge architecture, security, concurrency and model/data contracts. For findings cite severity, failure scenario and minimal regression. Separate defects from hypotheses; be concise and constructive."
 
 reviews:
-  profile: "chill"
+  profile: "assertive"
   high_level_summary: true
   high_level_summary_in_walkthrough: true
   collapse_walkthrough: true
@@ -50,6 +50,10 @@ reviews:
         Flag look-ahead leakage, inferred/fabricated inputs, unsupported model
         promotion, missing provenance, or a HOLD silently becoming PASS.
         Preserve permanently disabled live wager/market-order execution.
+        Trace producer-to-scorer-to-calibration-to-reducer-to-persistence
+        contracts across changed code. Challenge race/retry/idempotency paths,
+        pregame timestamp drift, and whether the nearest successful behavior
+        remains intact. Give a reproducible counterexample, not speculation.
 
     - path: "artifacts/wow-engine/**"
       instructions: |
@@ -65,6 +69,9 @@ reviews:
         missing-source handling, decimal arithmetic, and negative paths.
         Flag an unverified payout being treated as verified, or negative EV
         being labeled a positive recommendation.
+        Examine endpoint lifecycle, caller-visible typed errors, payload limits,
+        retry/idempotency behavior, authorization, and persistence/readback
+        consistency. Ask for one failing and one preserved-positive test.
 
     - path: "artifacts/wow-engine/kalshi_weather_v2/**"
       instructions: |
@@ -79,6 +86,10 @@ reviews:
         forged check/receipt identities, SHA/base drift, and bypasses of
         CODEOWNER, independent QA, or release authorization requirements.
         Do not recommend weakening existing protected-branch gates to save time.
+        Challenge exact-head provenance, negative-control handling, recursive
+        triggers, retry storms, stale check reuse, 403 versus 404 classification,
+        and reviewer independence. A bot review is advisory, never a signed
+        independent QA, security, CODEOWNER or Release Authority receipt.
 
     - path: "artifacts/wow-engine/migrations/**"
       instructions: |
