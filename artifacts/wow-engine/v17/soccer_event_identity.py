@@ -130,15 +130,34 @@ def _sides(row: Mapping[str, Any]) -> dict[str, Mapping[str, Any]] | None:
     if not isinstance(competition, Mapping):
         return None
     sides: dict[str, Mapping[str, Any]] = {}
-    for competitor in competition.get("competitors") or []:
+    competitors = competition.get("competitors") or []
+    if not isinstance(competitors, list):
+        return None
+    # A match has exactly one home and one away participant. Never let
+    # last-write-wins overwrite an extra home or away competitor.
+    if len(competitors) > 2:
+        raise SoccerEventIdentityError(
+            "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "too many competitors for one fixture"
+        )
+    for competitor in competitors:
         if not isinstance(competitor, Mapping):
             continue
         side = str(competitor.get("homeAway") or "").strip().lower()
         team = competitor.get("team")
         if side in {"home", "away"} and isinstance(team, Mapping):
+            if side in sides:
+                raise SoccerEventIdentityError(
+                    "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "duplicate home/away role"
+                )
             sides[side] = team
     if "home" not in sides or "away" not in sides:
         return None
+    home_id = str(sides["home"].get("id") or "").strip()
+    away_id = str(sides["away"].get("id") or "").strip()
+    if not home_id or not away_id or home_id == away_id:
+        raise SoccerEventIdentityError(
+            "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "missing or duplicate team id"
+        )
     return sides
 
 
@@ -235,6 +254,7 @@ def resolve_soccer_current_event_identity(
         rows.extend(_scoreboard_rows(slug, date_key, fetcher=fetcher))
 
     matches: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
+    source_signatures: dict[str, tuple[str, str, str]] = {}
     for row in rows:
         event_id = str(row.get("id") or "").strip()
         if not event_id:
@@ -244,6 +264,28 @@ def resolve_soccer_current_event_identity(
             continue
         home_team_row = sides["home"]
         away_team_row = sides["away"]
+        signature = (
+            str(row.get("date") or "").strip(),
+            str(home_team_row.get("id")),
+            str(away_team_row.get("id")),
+        )
+        previous = source_signatures.get(event_id)
+        if previous is not None:
+            # Repeated ESPN rows for one event are allowed only when their
+            # official kickoff and ordered participant IDs agree. Different
+            # time spelling for the same UTC instant remains equivalent.
+            try:
+                same_time = _aware(previous[0]) == _aware(signature[0])
+            except SoccerEventIdentityError as exc:
+                raise SoccerEventIdentityError(
+                    "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "duplicate id timestamp invalid"
+                ) from exc
+            if previous[1:] != signature[1:] or not same_time:
+                raise SoccerEventIdentityError(
+                    "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "conflicting duplicate event id"
+                )
+        else:
+            source_signatures[event_id] = signature
         if home_norm not in _team_tokens(home_team_row):
             continue
         if away_norm not in _team_tokens(away_team_row):
