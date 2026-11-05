@@ -161,6 +161,20 @@ BEGIN
   cal_hash := pg_catalog.encode(extensions.digest(
     pg_catalog.convert_to(pg_catalog.to_jsonb(c)::text, 'UTF8'), 'sha256'
   ), 'hex');
+  -- A duplicate may not bypass a newer material-update/reducer HOLD.
+  -- Recheck the authoritative reducer BEFORE any existing-row admission.
+  lock_time:=pg_catalog.clock_timestamp();
+  reduction:=public.wow_v17_reduce_nfl_event_terminal_label(p_score_snapshot_id);
+  reduced_time:=pg_catalog.clock_timestamp();
+  IF reduction IS NULL OR reduction->>'status'<>'PASS'
+    OR reduction->>'terminal_label'<>'FINAL_APPROVED'
+    OR reduction->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
+    OR reduction->>'can_execute'<>'false'
+    OR reduction->>'probability_publishable'<>'true'
+    OR reduction->>'rank_eligible'<>'true'
+    OR reduced_time >= s.event_start_time_utc THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
+  END IF;
   -- Stable exact-once source score: conflicting duplicate cannot overwrite.
   SELECT * INTO existing FROM public.wow_v17_multisport_event_prediction_receipts
     WHERE score_snapshot_id=p_score_snapshot_id;
@@ -177,19 +191,6 @@ BEGIN
         'reducer_receipt_sha256',existing.reducer_receipt_sha256,
         'can_execute',false);
     END IF;
-    RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
-  END IF;
-  -- The only authority for the terminal verdict is this registered reducer.
-  lock_time:=pg_catalog.clock_timestamp();
-  reduction:=public.wow_v17_reduce_nfl_event_terminal_label(p_score_snapshot_id);
-  reduced_time:=pg_catalog.clock_timestamp();
-  IF reduction IS NULL OR reduction->>'status'<>'PASS'
-    OR reduction->>'terminal_label'<>'FINAL_APPROVED'
-    OR reduction->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
-    OR reduction->>'can_execute'<>'false'
-    OR reduction->>'probability_publishable'<>'true'
-    OR reduction->>'rank_eligible'<>'true'
-    OR reduced_time >= s.event_start_time_utc THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
   END IF;
   reducer_id:=pg_catalog.gen_random_uuid();
@@ -284,6 +285,8 @@ BEGIN
     )::text,'UTF8'),'sha256'),'hex');
   IF r.reducer_receipt_sha256<>hash
      OR r.calibration_artifact_sha256<>cal_hash
+     OR r.calibration_artifact_id<>c.calibrator_id::text
+     OR r.calibration_version<>c.calibration_version
      OR r.model_artifact_id<>a.artifact_id::text
      OR r.model_artifact_sha256<>a.artifact_checksum
      OR a.artifact_checksum<>s.model_output_snapshot->>'artifact_checksum'
@@ -307,7 +310,8 @@ BEGIN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
   END IF;
   present:=public.wow_v17_reduce_nfl_event_terminal_label(r.score_snapshot_id);
-  IF present->>'status'<>'PASS' OR present->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
+  IF r.terminal_reducer_payload IS DISTINCT FROM present
+    OR present->>'status'<>'PASS' OR present->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
     OR present->>'terminal_label'<>'FINAL_APPROVED'
     OR present->>'can_execute'<>'false' OR present->>'probability_publishable'<>'true'
     OR present->>'rank_eligible'<>'true' THEN
