@@ -67,7 +67,8 @@ def _make_prompt(packet: dict) -> str:
 
 def review_with_local_model(packet: dict, *, model: str, transport=None) -> dict:
     """Get optional local semantic *hypotheses*, never automatic verified defects."""
-    if not isinstance(model, str) or not _MODEL.fullmatch(model):
+    if (not isinstance(model, str) or not _MODEL.fullmatch(model)
+            or ".." in model or model.startswith(("/", ".", "-"))):
         raise LocalSemanticHold("LOCAL_REVIEW_MODEL_NAME_INVALID")
     prompt = _make_prompt(packet)
     body = json.dumps({
