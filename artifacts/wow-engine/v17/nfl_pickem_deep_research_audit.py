@@ -61,6 +61,7 @@ def audit_nfl_pickem_deep_research(row: Mapping[str, Any]) -> dict[str, Any]:
         "factor_families_missing": list(RESEARCH_FACTOR_FAMILIES),
         "review_flags": [],
         "model_recheck_required": False,
+        "analyst_review_required": False,
         "independently_certified": False,
         "upset_volatility_index": None,
         "upset_volatility_model_status": "NOT_FITTED_OR_CERTIFIED_HERE",
@@ -107,6 +108,7 @@ def audit_nfl_pickem_deep_research(row: Mapping[str, Any]) -> dict[str, Any]:
             **base,
             "status": "MATERIAL_CONTEXT_NEWER_THAN_MODEL",
             "model_recheck_required": True,
+            "analyst_review_required": True,
             "review_flags": ["PREGAME_MODEL_REFRESH_REQUIRED"],
         }
 
@@ -141,6 +143,7 @@ def audit_nfl_pickem_deep_research(row: Mapping[str, Any]) -> dict[str, Any]:
             family for family in RESEARCH_FACTOR_FAMILIES if family not in documented
         ],
         "review_flags": sorted(flags),
-        "model_recheck_required": bool(flags),
+        "model_recheck_required": False,
+        "analyst_review_required": bool(flags),
         "observed_at": observed_at.isoformat(),
     }
