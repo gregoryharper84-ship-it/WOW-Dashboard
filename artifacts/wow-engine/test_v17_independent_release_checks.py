@@ -820,6 +820,41 @@ def test_open_current_head_strict_fallback_remains_backward_compatible():
     assert result["errors"] == []
 
 
+def test_both_consistent_repository_identity_fields_retain_neutral_path():
+    event = _same_origin_event_pr()
+    for side in ("head", "base"):
+        event[side]["repo"]["full_name"] = REPO
+        event[side]["repo"]["url"] = "https://api.github.com/repos/" + REPO
+    moved = {
+        "number": 7, "state": "open", "draft": False, "merged_at": None,
+        "head": {"sha": OLD, "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    result = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=True,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, moved)}),
+    )
+    assert result["disposition"] == "neutral"
+    assert result["reason"] == "QA_SOURCE_PR_HEAD_SUPERSEDED"
+    assert result["targets"] == []
+
+
+def test_closed_pr_with_missing_event_origin_rejected_without_neutral_mode():
+    event = _same_origin_event_pr()
+    event["base"].pop("repo")
+    closed = {
+        "number": 7, "state": "closed", "draft": False,
+        "head": {"sha": HEAD, "ref": "fix/closed", "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    result = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=False,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, closed)}),
+    )
+    assert result["targets"] == []
+    assert result["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+
+
 def test_qa_superseded_event_origin_check_does_not_affect_manual_or_strict_paths():
     live = {"number": 7, "state": "open", "draft": False, "merged_at": None,
             "head": {"sha": HEAD, "ref": "x", "repo": {"full_name": REPO}},
