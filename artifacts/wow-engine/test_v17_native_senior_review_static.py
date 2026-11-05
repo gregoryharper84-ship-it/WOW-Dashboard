@@ -89,8 +89,13 @@ def test_safe_workflow_not_flagged():
 
 
 def test_partial_context_remains_hold_not_empty_success():
-    pkt = packet("", "@@ -0,0 +1,1 @@\n+hello world\n")
-    pkt["status"] = "CONTEXT_INCOMPLETE"
+    pkt = build_review_packet(
+        incident_id="2136", pr_number=2482,
+        base_sha=BASE, head_sha=HEAD,
+        changed_patches={PATH: "@@ -0,0 +1,1 @@\n+hello world\n"},
+        repository_sources={},
+    )
+    assert pkt["status"] == "CONTEXT_INCOMPLETE"
     assert run_static_review(pkt)["status"] == "REVIEW_CONTEXT_INCOMPLETE"
 
 
