@@ -71,7 +71,10 @@ def validate_nhl_pregame_evidence(
     official_id = evidence.get("official_event_id")
     if not (isinstance(official_id, str) and len(official_id) == 10 and official_id.isascii() and official_id.isdigit()):
         reasons.append("NHL_EVENT_IDENTITY_UNVERIFIED")
-    if evidence.get("settlement_basis") not in ACCEPTED_SETTLEMENT_BASES:
+    settlement_basis = evidence.get("settlement_basis")
+    # Untrusted evidence may be an unhashable list/dict/set. A malformed
+    # settlement must produce a typed hold, never crash at frozenset lookup.
+    if not isinstance(settlement_basis, str) or settlement_basis not in ACCEPTED_SETTLEMENT_BASES:
         reasons.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
     if str(evidence.get("goalie_status", "")).strip().upper() not in VERIFIED_GOALIE_STATUSES:
         reasons.append("NHL_GOALIE_STATUS_UNVERIFIED")
