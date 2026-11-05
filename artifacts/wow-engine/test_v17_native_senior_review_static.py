@@ -140,9 +140,9 @@ def test_fixed_calibrated_lower_bound_haircut_is_reviewed():
 
 
 def test_exception_model_absence_relabel_is_reviewed():
-    src = ('try:\n    score_candidate()\nexcept TimeoutError:\n'
-           '    return "MODEL_UNAVAILABLE"\n')
-    patch = "@@ -0,0 +1,4 @@\n" + "\n".join("+" + x for x in src.splitlines()) + "\n"
+    src = ('def scoring():\n    try:\n        score_candidate()\n'
+           '    except TimeoutError:\n        return "MODEL_UNAVAILABLE"\n')
+    patch = "@@ -0,0 +1,5 @@\n" + "\n".join("+" + x for x in src.splitlines()) + "\n"
     found = run_static_review(packet(src, patch))["findings"]
     assert "MODEL_SCORER_FAILURE_MISCLASSIFICATION" in {f["rule_id"] for f in found}
 
