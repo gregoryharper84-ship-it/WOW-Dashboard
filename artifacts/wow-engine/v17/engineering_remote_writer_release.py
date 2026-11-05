@@ -306,11 +306,12 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         pr_number = proof.get("pr_number")
         expected_head = proof.get("head_sha")
         proof_state = proof.get("pr_state")
-        if (is_failed_launch and (
-                proof_state not in {"open", "closed"}
-                or (proof_state == "closed" and (
-                    not isinstance(old.get("branch"), str) or not old["branch"].strip()))):
+        if is_failed_launch and proof_state not in {"open", "closed"}:
             raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_PROOF_INVALID")
+        if is_failed_launch and proof_state == "closed":
+            branch = old.get("branch")
+            if not isinstance(branch, str) or not branch.strip():
+                raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_PROOF_INVALID")
         if (type(pr_number) is not int or pr_number <= 0
                 or not isinstance(expected_head, str)
                 or len(expected_head) != 40
