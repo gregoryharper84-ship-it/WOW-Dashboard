@@ -93,3 +93,22 @@ can_execute: false
 - No hidden fallback that converts a typed blocker into a pick.
 - No invented sporting probability/calibration evidence.
 - No secrets, auth weakening, destructive mutation, or live execution capability.
+
+## Reproduce-first RED/GREEN protocol
+
+Before changing code, record the exact source revision,
+original error, reproduction command, expected failure,
+actual failure, and exit status.
+
+State a falsifiable root-cause hypothesis and identify
+the responsible boundary.
+
+Add a regression that fails before the fix (RED).
+Implement the smallest repair.
+Rerun the original regression and adjacent tests (GREEN).
+
+Record the exact commands, exit codes, tested SHA,
+remaining limitations, and rollback procedure.
+
+Do not self-approve, bypass writer authorization,
+or claim production verification from local tests.
