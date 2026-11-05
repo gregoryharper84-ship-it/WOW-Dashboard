@@ -99,7 +99,7 @@ def _encoded(path: str) -> str:
     return "/".join(quote(x, safe="") for x in _path(path).split("/"))
 
 
-def _pr(client, number: int, head_sha: str):
+def _pr(client, number: int, head_sha: str, *, expected_base: str | None = None):
     pr = client.request(f"/pulls/{number}")
     if (not isinstance(pr, dict) or pr.get("number") != number
             or pr.get("state") != "open" or pr.get("draft") is True
@@ -111,6 +111,8 @@ def _pr(client, number: int, head_sha: str):
     base = pr.get("base", {}).get("sha")
     if not isinstance(base, str) or not SHA_RE.fullmatch(base) or base == head_sha:
         raise ReviewHold("PR_BASE_SHA_INVALID")
+    if expected_base is not None and base != expected_base:
+        raise ReviewHold("PR_BASE_SHA_CHANGED")
     return pr
 
 
@@ -237,7 +239,7 @@ def collect_pr_review(client, *, number: int, expected_head: str,
         changed_patches=patches, repository_sources=sources,
     )
     # Re-fetch metadata: no report or comment can refer to a displaced PR head.
-    _pr(client, number, expected_head)
+    _pr(client, number, expected_head, expected_base=pr["base"]["sha"])
     pkt["authenticated_head"] = expected_head
     pkt["context_coverage"] = "CHANGED_FILES_PLUS_BOUNDED_SIBLING_PYTHON"
     pkt["context_warnings"] = warnings
@@ -257,7 +259,7 @@ def collect_pr_review(client, *, number: int, expected_head: str,
             semantic_status = "LOCAL_HYPOTHESES_ONLY"
         except LocalSemanticHold as exc:
             semantic_status = "LOCAL_REVIEW_HELD:" + str(exc)
-    _pr(client, number, expected_head)
+    _pr(client, number, expected_head, expected_base=pr["base"]["sha"])
     return {"schema": "WOW_NATIVE_REVIEW_RUN_V1",
             "review": result,
             "pr": number, "head_sha": expected_head,
@@ -306,9 +308,10 @@ def markdown_summary(result: dict) -> str:
     return "\n".join(lines)[:13_000]
 
 
-def post_advisory_comment(client, *, number: int, head_sha: str, text: str):
+def post_advisory_comment(client, *, number: int, head_sha: str, text: str,
+                          base_sha: str | None = None):
     """One bot-owned comment per PR. Revalidate SHA before each write."""
-    _pr(client, number, head_sha)
+    _pr(client, number, head_sha, expected_base=base_sha)
     actor = []
     for page in range(1, 6):
         part = client.request(f"/issues/{number}/comments?per_page=100&page={page}")
@@ -326,7 +329,7 @@ def post_advisory_comment(client, *, number: int, head_sha: str, text: str):
                 and c.get("user", {}).get("login") == "github-actions[bot]"]
     if len(existing) > 1:
         raise ReviewHold("PR_ADVISORY_COMMENT_AMBIGUOUS")
-    _pr(client, number, head_sha)
+    _pr(client, number, head_sha, expected_base=base_sha)
     if existing:
         comment_id = existing[0].get("id")
         if type(comment_id) is not int or comment_id < 1:
@@ -348,7 +351,7 @@ def post_existing_incident_handoff(client, *, result: dict):
     incident = result["incident_id"]
     if not isinstance(incident, str) or not re.fullmatch(r"[1-9][0-9]*", incident):
         return "INCIDENT_ID_UNRESOLVED_PR_ADVISORY_ONLY"
-    _pr(client, number, head)
+    _pr(client, number, head, expected_base=result["base_sha"])
     target = client.request(f"/issues/{incident}")
     if (not isinstance(target, dict) or target.get("number") != int(incident)
             or target.get("state") != "open" or "pull_request" in target):
@@ -393,7 +396,7 @@ def post_existing_incident_handoff(client, *, result: dict):
     ]
     if len(matching) > 1:
         raise ReviewHold("INCIDENT_HANDOFF_DUPLICATE_BOT_COMMENTS")
-    _pr(client, number, head)
+    _pr(client, number, head, expected_base=result["base_sha"])
     if matching:
         comment_id = matching[0].get("id")
         if type(comment_id) is not int or comment_id <= 0:
@@ -429,7 +432,8 @@ def main(argv=None):
                 dest.write(summary + "\n")
         if args.post_comment:
             post_advisory_comment(client, number=args.pr,
-                                  head_sha=args.expected_head, text=summary)
+                                  head_sha=args.expected_head, text=summary,
+                                  base_sha=result["base_sha"])
         if args.post_incident_handoff:
             outcome = post_existing_incident_handoff(client, result=result)
             print("AMRT_ADVISORY_HANDOFF:" + outcome)
