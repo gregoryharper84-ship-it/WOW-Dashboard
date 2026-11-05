@@ -637,10 +637,14 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
     provider_event_id = str(
         raw.get("provider_event_id")
         or raw.get("_wow_secondary_event_id")
+        or getattr(event, "official_event_id", None)
         or ""
     ).strip()
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
 
     from v17.soccer_event_identity import (
+        SoccerEventIdentityError,
         resolve_soccer_current_event_identity,
     )
 
@@ -668,8 +672,11 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
         )
     except Exception as exc:  # noqa: BLE001 - preserve typed canonical hold
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
-        raw["canonical_identity_blocker"] = str(
-            getattr(exc, "code", None) or type(exc).__name__
+        # An unexpected error's class name or untrusted code attribute is
+        # not a registered V17 failure code. Preserve only typed source errors.
+        raw["canonical_identity_blocker"] = (
+            exc.code if isinstance(exc, SoccerEventIdentityError)
+            else "SOCCER_CANONICAL_RESOLVER_FAILED"
         )
         return replace(event, official_event_id=None, raw=raw)
 
@@ -679,8 +686,6 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = "SOCCER_CANONICAL_EVENT_ID_MISSING"
         return replace(event, official_event_id=None, raw=raw)
 
-    if provider_event_id:
-        raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
     raw["canonical_identity_source"] = str(
         resolution.get("identity_provider") or "ESPN_SOCCER_SCOREBOARD"
