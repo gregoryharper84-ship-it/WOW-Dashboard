@@ -371,6 +371,8 @@ def test_duplicate_home_competitor_role_is_schema_drift_not_last_write_wins():
     with pytest.raises(identity.SoccerEventIdentityError) as exc:
         _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [malformed]}))
     assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+    # Generic schema drift can come from earlier guards; assert the precise one.
+    assert exc.value.detail == "duplicate home/away role"
 
 
 def test_missing_or_equal_official_team_ids_fail_closed():
