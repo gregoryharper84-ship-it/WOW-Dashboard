@@ -77,6 +77,7 @@ def _nfl_package(**overrides):
         "calibrated_home_upper_bound": 0.69,
         "calibrated_away_upper_bound": 0.45,
         "probability_publishable": True,
+        "rank_eligible": True,
         "can_execute": False,
     }
     package.update(overrides)
@@ -271,16 +272,15 @@ def test_nfl_explicit_rank_ineligibility_is_preserved():
     assert outcome["can_execute"] is False
 
 
-def test_nfl_absent_rank_eligible_default_is_characterized_not_silently_changed():
-    # Documented current contract: the NFL publication bridge always emits an
-    # explicit rank_eligible (True or False), so this default is only reachable
-    # by bypassing that bridge. It stays True until a governed ranking decision
-    # changes it; this test exists to make any change deliberate.
+def test_nfl_absent_rank_eligible_is_never_promoted_to_ranked_pick():
+    # The upstream publication bridge emits an explicit boolean. If this
+    # evidence is absent, the batch boundary must never infer a True flag.
     package = _nfl_package()
-    package.pop("rank_eligible", None)
+    package.pop("rank_eligible")
     outcome = _completed_nfl(_row("NFL"), package)
-    assert outcome["probability_rank_eligible"] is True
-    assert outcome["objective_rank_eligible"] is True
+    assert outcome["probability_rank_eligible"] is False
+    assert outcome["objective_rank_eligible"] is False
+    assert outcome["can_execute"] is False
 
 
 def test_nfl_out_of_domain_probability_is_output_invalid():
