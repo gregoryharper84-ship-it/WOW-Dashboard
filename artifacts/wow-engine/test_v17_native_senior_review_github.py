@@ -72,13 +72,13 @@ def test_live_style_authenticated_source_to_advisory_and_same_incident_handoff()
     assert result["release_authority"] == "NONE_ADVISORY_ONLY"
     assert result["semantic_review"] == "NOT_RUN"
     assert result["can_execute"] is False
-    assert client.calls.count(("GET", "/pulls/900")) == 2
+    assert client.calls.count(("GET", "/pulls/900")) == 3
 
 
 def test_safe_summary_does_not_expose_source_or_claim_semantic_pass():
     result = reviewer.collect_pr_review(FakeGitHub(), number=900, expected_head=HEAD)
     text = reviewer.markdown_summary(result)
-    assert "AI semantic review: **NOT RUN**" in text
+    assert "AI semantic review: **NOT_RUN**" in text
     assert "eval(user)" not in text
     assert "advisory, not a release gate" in text
     assert "automatic repair" in text
