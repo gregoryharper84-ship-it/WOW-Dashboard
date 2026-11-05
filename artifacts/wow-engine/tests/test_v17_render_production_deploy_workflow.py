@@ -36,7 +36,7 @@ def test_render_deploy_gate_waits_for_protected_main_required_checks():
 def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     text = _workflow_text()
 
-    assert 'RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}' in text
+    assert "RENDER_API_KEY" not in text
     assert 'WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"' in text
     assert "WOW_ACTION_API_KEY" not in text
     assert "SUPABASE_SERVICE_ROLE_KEY" not in text
@@ -44,10 +44,27 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert '"can_execute":False' in text or '"can_execute": False' in text
-    assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
-    assert "return render_json(\"POST\", path, payload)" in text
-    assert 'journal_preflight["payload"]' in text
-    assert '"commitId": commit_sha' in text
+    assert 'raise RuntimeError("RENDER_API_DEPLOY_WRITER_RETIRED")' in text
+    assert '"RENDER_HOOK_PROVIDER_SCOPE_AND_READBACK_UNATTESTED"' in text
+
+
+def test_release_holds_before_render_access_without_provider_attestation():
+    text = _workflow_text()
+    hold = text.index('"RENDER_HOOK_PROVIDER_SCOPE_AND_READBACK_UNATTESTED"')
+    provider_requests = [
+        index
+        for token in ('def render_json(', 'def list_deploys(', 'render_json("GET"')
+        if (index := text.find(token)) >= 0
+    ]
+
+    assert provider_requests
+    assert hold < min(provider_requests)
+    assert '"RENDER_HOOK_ENVIRONMENT_AND_SERVICE_BINDING_UNVERIFIED"' in text
+    assert '"RENDER_PRODUCTION_WRITER_INVENTORY_UNVERIFIED"' in text
+    assert '"RENDER_READ_ONLY_EXACT_SHA_OBSERVER_UNAVAILABLE"' in text
+    assert "WOW_RENDER_DEPLOY_HOOK" not in text
+    assert '"PRODUCTION_RELEASE_HOLD"' in text
+    assert "RENDER_API_DEPLOY_WRITER_RETIRED" in text
 
 
 def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
@@ -132,6 +149,7 @@ def test_repeated_attempts_remain_inside_the_protected_single_writer_fence():
     assert "journal_preflight = plan_release_admission(" in text
     assert "journal.release_lock(render_service_id, target_sha)" in text
     assert "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED" in text
+    assert "RENDER_API_KEY" not in text
     assert "dispatch-protected-deploy:" not in verify
     assert "gh workflow run wow-v17-render-production-deploy.yml" not in verify
 
