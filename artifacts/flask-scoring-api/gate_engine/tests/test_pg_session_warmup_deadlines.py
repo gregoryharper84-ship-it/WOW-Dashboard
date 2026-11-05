@@ -101,12 +101,15 @@ def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
     if not url:
         pytest.skip("CI-local DATABASE_URL is unavailable")
     psycopg2 = pytest.importorskip("psycopg2")
+    # psycopg2 does not expose sql as a package attribute until imported.
+    # Explicit import makes this isolated CI integration test order-independent.
+    from psycopg2 import sql
     parsed = psycopg2.extensions.parse_dsn(url)
     if parsed.get("host") not in ("localhost", "127.0.0.1") or parsed.get("dbname") != "wow_test":
         pytest.skip("refuse any database that is not the isolated CI PostgreSQL service")
 
     schema = "wow_v17_warmup_" + uuid.uuid4().hex[:16]
-    identifier = psycopg2.sql.Identifier(schema)
+    identifier = sql.Identifier(schema)
     # For this test only, every warmup operation resolves unqualified DDL to
     # a disposable schema, never to the CI main or any real production table.
     schema_dsn = psycopg2.extensions.make_dsn(
@@ -114,7 +117,7 @@ def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
     )
     with psycopg2.connect(url, connect_timeout=5) as setup:
         with setup.cursor() as cur:
-            cur.execute(psycopg2.sql.SQL("CREATE SCHEMA {}").format(identifier))
+            cur.execute(sql.SQL("CREATE SCHEMA {}").format(identifier))
 
     locked = None
     try:
@@ -167,4 +170,4 @@ def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
             locked.close()
         with psycopg2.connect(url, connect_timeout=5) as cleanup:
             with cleanup.cursor() as cur:
-                cur.execute(psycopg2.sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(identifier))
+                cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(identifier))
