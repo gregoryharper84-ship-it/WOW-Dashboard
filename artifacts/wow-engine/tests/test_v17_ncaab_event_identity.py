@@ -261,3 +261,15 @@ def test_invalid_matching_time_from_custom_fetcher_cannot_prove_identity(valid_m
     with pytest.raises(identity.NCAABEventIdentityError) as exc:
         _resolve(fetcher=fetcher_for({"20261104": rows}))
     assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("bad_id", ["", "not-an-id", "1" * 21])
+@pytest.mark.parametrize("has_valid_match", [False, True])
+def test_matching_fixture_with_invalid_id_holds_even_if_valid_fixture_exists(bad_id, has_valid_match):
+    """A matching malformed fixture cannot silently disappear from uniqueness proof."""
+    rows = [scoreboard_event(bad_id)]
+    if has_valid_match:
+        rows.append(scoreboard_event("401800022"))
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({"20261104": rows}))
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
