@@ -70,6 +70,31 @@ def test_normalize_sportsdataverse_game_creates_provenance_complete_settled_row(
     assert row["settled"] is True
 
 
+def test_sdv_completed_non_regular_season_games_never_enter_fitted_training():
+    # SportsDataverse season_type=2 identifies the regular season. Missing
+    # season_type on older snapshots retains the legacy normalization path.
+    for sport in ("NBA", "WNBA"):
+        for value in (1, "1", 3, "3", 4, True, "postseason", "preseason"):
+            row = _sportsdataverse_row()
+            row["season_type"] = value
+            assert hydration.normalize_sportsdataverse_game(
+                row, sport, "2026-09-22T19:00:00+00:00"
+            ) is None, (sport, repr(value))
+        for value in (2, "2", 2.0, "2.0"):
+            row = _sportsdataverse_row()
+            row["season_type"] = value
+            normalized = hydration.normalize_sportsdataverse_game(
+                row, sport, "2026-09-22T19:00:00+00:00"
+            )
+            assert normalized is not None, (sport, repr(value))
+            assert normalized["settled"] is True
+        legacy = _sportsdataverse_row()
+        assert "season_type" not in legacy
+        assert hydration.normalize_sportsdataverse_game(
+            legacy, sport, "2026-09-22T19:00:00+00:00"
+        ) is not None
+
+
 def test_fetch_sportsdataverse_fails_closed_when_source_registry_blocks(monkeypatch):
     monkeypatch.setattr(
         hydration,
