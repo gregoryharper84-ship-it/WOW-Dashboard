@@ -311,7 +311,8 @@ def _verify_governed_event_prediction(
         start is None or model_at is None or snapshot_at is None
         or locked_at is None or created_at is None or reduced_at is None
         or not (snapshot_at <= model_at <= locked_at < start)
-        or not (created_at <= locked_at and reduced_at < start)
+        or not (created_at <= locked_at and created_at <= reduced_at < start)
+        or model_at > reduced_at
         or _utc(saved.get("event_start_time")) != start
         or _utc(saved.get("model_timestamp")) != model_at
         or _utc(saved.get("source_snapshot_timestamp")) != snapshot_at
@@ -334,6 +335,7 @@ def _verify_governed_event_prediction(
     ):
         return "LLP_EVENT_PREDICTION_RECEIPT_MISMATCH"
     prefix = "home" if side == home else "away"
+    probabilities: list[Decimal] = []
     for saved_field, winner_field in (
         (f"calibrated_{prefix}_probability", "calibrated_probability"),
         (f"calibrated_{prefix}_lower_bound", "calibrated_probability_lower_bound"),
@@ -343,6 +345,12 @@ def _verify_governed_event_prediction(
         right = _decimal(winner.get(winner_field))
         if left is None or right is None or left != right:
             return "LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH"
+        probabilities.append(left)
+    point, lower, upper = probabilities
+    # Match the bundle's existing strictly interior calibrated-bound contract.
+    # Equality with a corrupted immutable row cannot make invalid numbers proof.
+    if not Decimal(0) < lower <= point <= upper < Decimal(1):
+        return "LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH"
     return None
 
 

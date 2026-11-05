@@ -590,6 +590,83 @@ def test_genuine_exact_immutable_event_prediction_ledger_receipt_only_visible_po
 
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("side", ["HOME", "AWAY"])
+@pytest.mark.parametrize("lower,point,upper", [
+    (1.1, 1.2, 1.3), (-.1, .1, .3), (.7, .63, .8),
+    (.57, .63, .6), (0, .63, 1),
+])
+def test_matching_invalid_ledger_bounds_never_verify_receipt(sport, side, lower, point, upper):
+    page, ledger = _ledger_case(sport)
+    source = page["rows"][0]["detail"]["result"]
+    source.update(
+        selected_side=ledger["home_team"] if side == "HOME" else ledger["away_team"],
+        calibrated_probability=point,
+        calibrated_probability_lower_bound=lower,
+        calibrated_probability_upper_bound=upper,
+    )
+    prefix = side.lower()
+    ledger.update({
+        "selected_participant": side,
+        f"calibrated_{prefix}_probability": point,
+        f"calibrated_{prefix}_lower_bound": lower,
+        f"calibrated_{prefix}_upper_bound": upper,
+    })
+    item = project_llp_intelligence_page(page, db=_EventLedger([ledger]))["events"][0]
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in item["markets"][0]
+    assert "LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH" in item["markets"][0]["reason_codes"]
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("before", ["model", "creation"])
+def test_terminal_reduction_before_immutable_inputs_never_verifies(sport, before):
+    page, ledger = _ledger_case(sport)
+    stamp = MODEL_AT if before == "model" else SOURCE_AT
+    ledger["terminal_reduced_at"] = (stamp - timedelta(seconds=1)).isoformat()
+    item = project_llp_intelligence_page(page, db=_EventLedger([ledger]))["events"][0]
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "LLP_EVENT_PREDICTION_RECEIPT_MISMATCH" in item["markets"][0]["reason_codes"]
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+@pytest.mark.parametrize("side", ["HOME", "AWAY"])
+def test_terminal_reduction_at_input_timestamp_is_valid(sport, side):
+    page, ledger = _ledger_case(sport)
+    source = page["rows"][0]["detail"]["result"]
+    source["selected_side"] = ledger["home_team"] if side == "HOME" else ledger["away_team"]
+    if side == "AWAY":
+        source.update(calibrated_probability=.37,
+                      calibrated_probability_lower_bound=.31,
+                      calibrated_probability_upper_bound=.43)
+    ledger["selected_participant"] = side
+    ledger["created_at"] = MODEL_AT.isoformat()
+    ledger["terminal_reduced_at"] = MODEL_AT.isoformat()
+    item = project_llp_intelligence_page(page, db=_EventLedger([ledger]))["events"][0]
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is True
+    assert item["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
+
+
+@pytest.mark.parametrize("corruption", [None, "bounds", "chronology"])
+def test_shared_nfl_ledger_obeys_same_integrity_contract(corruption):
+    page, ledger = _ledger_case()
+    page["rows"][0]["identity"]["sport"] = "NFL"
+    source = page["rows"][0]["detail"]["result"]
+    source["sport"] = ledger["sport"] = "NFL"
+    source.pop("llp_deep_research_context")
+    if corruption == "bounds":
+        source["calibrated_probability_upper_bound"] = ledger["calibrated_home_upper_bound"] = .6
+    elif corruption == "chronology":
+        ledger["terminal_reduced_at"] = (MODEL_AT - timedelta(seconds=1)).isoformat()
+    item = project_llp_intelligence_page(page, db=_EventLedger([ledger]))["events"][0]
+    assert item["source_diagnostics"]["event_prediction_receipt_verified"] is (corruption is None)
+    assert item["markets"][0]["status"] == (
+        "GOVERNED_RECEIPT_VISIBLE" if corruption is None else "HELD_EVIDENCE_ONLY"
+    )
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
 @pytest.mark.parametrize("corruption", [
     "nonexistent", "wrong_event", "wrong_version", "wrong_snapshot",
     "late_lock", "wrong_probability", "not_published",
