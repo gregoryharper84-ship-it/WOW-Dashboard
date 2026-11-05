@@ -34,7 +34,7 @@ Existing GitHub/Engineering infrastructure should supply:
 - Reviewer version, prompt/checklist version, source hash, model/provider version if used, token/cost receipt only if actually reported.
 - Explicit final classification: advisory finding, tested-confirmed, tested-rejected, incomplete context, stale source or independent verification needed.
 
-build_review_packet(...) returns a hash-pinned packet and **never asserts GitHub authenticity**. Callers must authenticate refs in the trusted intake. Missing changed content, oversized material or invalid Python yields CONTEXT_INCOMPLETE, no partial-source model invocation. preflight_review_finding(...) rejects stale SHA, invented file/excerpt and packet tampering, while deliberately stopping at EVIDENCE_LOCATED_NOT_SEMANTICALLY_VERIFIED.
+build_review_packet(...) returns a hash-pinned packet and **never asserts GitHub authenticity**. Callers must authenticate refs in the trusted intake. Missing changed content, oversized material or invalid Python yields CONTEXT_INCOMPLETE, no partial-source model invocation. preflight_review_finding(...) rejects stale SHA, invented file/excerpt and packet changes that no longer match the embedded checksum, while deliberately stopping at EVIDENCE_LOCATED_NOT_SEMANTICALLY_VERIFIED. The checksum detects in-process drift, **not** malicious modification followed by recomputation: authenticated GitHub source intake and trusted producer identity remain mandatory. Invalid Python in any supplied dependency context is incomplete, not a clean dependency graph.
 
 ## Integration into the existing engineering organization
 
