@@ -434,3 +434,86 @@ def test_nba_current_season_recovery_target_rotates_with_year():
         "REACQUIRE_CANONICAL_2028_SDV_SEASON_AND_VERIFY_PERSISTED_SETTLEMENTS"
     )
     assert gap_2028["can_execute"] is False
+
+
+def test_failed_calibration_builder_persists_typed_nonpromotable_shadow(monkeypatch):
+    """A non-promotable Platt fit must not disappear before review receipts."""
+    from dataclasses import dataclass
+    import basketball_specialist_pipeline as pipeline
+    from v17.basketball_team_event_calibration_artifact import BasketballCalibrationArtifactError
+
+    @dataclass
+    class FakeArtifact:
+        artifact_checksum: str = "a" * 64
+        training_row_count: int = 300
+        train_start_date: str = "2024-01-01"
+        train_end_date: str = "2025-01-01"
+        holdout_row_count: int = 80
+        holdout_brier: float = 0.23
+        holdout_log_loss: float = 0.65
+        holdout_accuracy: float = 0.60
+
+    @dataclass
+    class FakeDecision:
+        capability_status: str = "CERTIFIED"
+        reason_code: str = "OK"
+
+    writes = {}
+    class FakeTable:
+        def __init__(self, name):
+            self.name = name
+        def insert(self, row):
+            writes[self.name] = row
+            return self
+        def upsert(self, row, **_kwargs):
+            writes[self.name] = row
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    class FakeDb:
+        def table(self, name):
+            return FakeTable(name)
+
+    artifact = FakeArtifact()
+    calibration = SimpleNamespace(
+        result=None,
+        coefficients=SimpleNamespace(a=0.1, b=0.9),
+        metrics=SimpleNamespace(brier=0.24, log_loss=0.65, ece=0.05, calibration_bias=0.01),
+    )
+    monkeypatch.setattr(pipeline, "load_games", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "build_pregame_features", lambda *_args: [object()])
+    monkeypatch.setattr(pipeline, "train_specialist", lambda *_args, **_kw: artifact)
+    monkeypatch.setattr(pipeline, "disjoint_calibration_and_holdout",
+                        lambda *_args: ([object()], [object()]))
+    monkeypatch.setattr(pipeline, "_walk_forward_raw",
+                        lambda *_args: ([0.4]*240, [0, 1]*120, [i//40 for i in range(240)],
+                                        ["2025-01-01T00:00:00+00:00"]*240))
+    monkeypatch.setattr(pipeline, "phase_b_platt", lambda *_args: calibration)
+    monkeypatch.setattr(pipeline, "evaluate_untouched_calibrated_holdout",
+                        lambda *_args: {"holdout_rows": 80, "publication_authorized": False})
+    monkeypatch.setattr(pipeline, "certification_decision", lambda *_args, **_kw: FakeDecision())
+    def reject_calibration_artifact(**_kw):
+        raise BasketballCalibrationArtifactError("BASKETBALL_PLATT_CALIBRATION_NOT_PROMOTABLE")
+    monkeypatch.setattr(pipeline, "build_shadow_binary_calibration_artifact",
+                        reject_calibration_artifact)
+
+    result = pipeline.fit_and_persist("NBA", client=FakeDb(), provenance_complete=True)
+    assert result["persisted_status"] == "SHADOW"
+    assert result["calibration_artifact_sha256"] is None
+    assert result["calibration_artifact_certification_status"] is None
+    assert result["calibration_artifact_block"] == "BASKETBALL_PLATT_CALIBRATION_NOT_PROMOTABLE"
+    model = writes["wow_basketball_team_event_model_artifacts"]
+    calibrator = writes["wow_basketball_team_event_calibrators"]
+    certification = writes["wow_basketball_team_event_certification"]
+    assert model["active"] is calibrator["active"] is False
+    assert model["promoted"] is calibrator["promoted"] is False
+    assert calibrator["calibration_artifact_payload"] is None
+    assert calibrator["calibration_artifact_sha256"] is None
+    assert certification["capability_status"] == "SHADOW"
+    assert certification["reason_code"] == "BASKETBALL_CALIBRATION_ARTIFACT_BLOCKED"
+    assert certification["certification_notes"]["calibration_artifact_block"] == (
+        "BASKETBALL_PLATT_CALIBRATION_NOT_PROMOTABLE"
+    )
+    assert certification["certification_notes"]["promotion_attempted"] is False
+    assert result["can_execute"] is False
