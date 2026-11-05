@@ -80,6 +80,20 @@ def test_regulation_three_way_and_unrecognized_settlement_bases_stay_rejected():
         assert result["probability_publishable"] is False
 
 
+def test_unhashable_and_nonstring_settlement_bases_hold_without_crash():
+    # Inputs can come from untrusted JSON. Invalid types must never trigger
+    # TypeError during membership of the accepted frozenset.
+    for basis in ([], {}, set(), [SETTLEMENT_CONTRACT], {"basis": SETTLEMENT_CONTRACT}, 0, True, None):
+        row = valid()
+        row["settlement_basis"] = basis
+        result = verify(row, as_of_utc=NOW)
+        assert result["status"] == "HELD", repr(basis)
+        assert "NHL_SETTLEMENT_BASIS_UNVERIFIED" in result["blockers"], repr(basis)
+        assert result["probability_publishable"] is False
+        assert result["rank_eligible"] is False
+        assert result["can_execute"] is False
+
+
 def test_complete_input_is_not_certification():
     r = verify(valid(), as_of_utc=NOW)
     assert r["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION"
