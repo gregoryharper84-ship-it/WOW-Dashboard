@@ -30,7 +30,10 @@ from basketball_team_event_specialist import (
     _sigmoid,
 )
 from calibration import phase_b_platt
-from v17.basketball_team_event_calibration_artifact import build_shadow_binary_calibration_artifact
+from v17.basketball_team_event_calibration_artifact import (
+    BasketballCalibrationArtifactError,
+    build_shadow_binary_calibration_artifact,
+)
 
 can_execute: bool = False
 
@@ -242,17 +245,26 @@ def fit_and_persist(
     calibrator_version = f"{sport}_TEAM_EVENT_PLATT_V1_{version_stamp}"
     # The artifact is fitted only to calibration_train; the untouched holdout
     # above remains strictly out-of-time for calibration quality evaluation.
-    calibration_artifact, calibration_artifact_sha256 = build_shadow_binary_calibration_artifact(
-        sport=sport,
-        model_family=MODEL_FAMILY,
-        model_version=model_version,
-        calibration_version=calibrator_version,
-        raw_probabilities=raw,
-        outcomes=outcomes,
-        fold_assignments=folds,
-        timestamps=timestamps,
-        fit=calibration,
-    )
+    # An unsuccessful calibrated fold must still leave inspectable SHADOW
+    # evidence. Never fabricate an artifact or turn builder rejection into a
+    # certified status; keep the precise typed blocker in durable notes.
+    calibration_artifact_block = None
+    try:
+        calibration_artifact, calibration_artifact_sha256 = build_shadow_binary_calibration_artifact(
+            sport=sport,
+            model_family=MODEL_FAMILY,
+            model_version=model_version,
+            calibration_version=calibrator_version,
+            raw_probabilities=raw,
+            outcomes=outcomes,
+            fold_assignments=folds,
+            timestamps=timestamps,
+            fit=calibration,
+        )
+    except BasketballCalibrationArtifactError as exc:
+        calibration_artifact = None
+        calibration_artifact_sha256 = None
+        calibration_artifact_block = str(exc)
 
     artifact_payload = asdict(artifact)
     client.table("wow_basketball_team_event_model_artifacts").insert({
@@ -289,6 +301,9 @@ def fit_and_persist(
 
     persisted_status = "SHADOW" if decision.capability_status == "CERTIFIED" else decision.capability_status
     persisted_reason = "CERTIFICATION_REPLAY_REQUIRED" if decision.capability_status == "CERTIFIED" else decision.reason_code
+    if calibration_artifact_block is not None:
+        persisted_status = "SHADOW"
+        persisted_reason = "BASKETBALL_CALIBRATION_ARTIFACT_BLOCKED"
     client.table("wow_basketball_team_event_certification").upsert({
         "sport": sport, "capability_status": persisted_status,
         "reason_code": persisted_reason,
@@ -298,6 +313,7 @@ def fit_and_persist(
         "certification_notes": {
             "fit_decision": asdict(decision),
             "calibration_status": calibration_status,
+            "calibration_artifact_block": calibration_artifact_block,
             "calibration_training_cutoff": artifact.train_end_date,
             "calibration_training_rows": len(calibration_train),
             "calibration_holdout_overlap_rows": 0,
@@ -315,7 +331,11 @@ def fit_and_persist(
         "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
         "calibration_status": calibration_status, "fit_decision": asdict(decision),
         "calibration_artifact_sha256": calibration_artifact_sha256,
-        "calibration_artifact_certification_status": calibration_artifact["certification_status"],
+        "calibration_artifact_certification_status": (
+            calibration_artifact["certification_status"]
+            if calibration_artifact is not None else None
+        ),
+        "calibration_artifact_block": calibration_artifact_block,
         "calibration_training_cutoff": artifact.train_end_date,
         "calibration_training_rows": len(calibration_train),
         "calibration_holdout_overlap_rows": 0,
