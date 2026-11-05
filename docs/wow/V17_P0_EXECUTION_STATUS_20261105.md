@@ -68,6 +68,15 @@ Environment: Python 3.12.3, project `requirements.txt` dependencies installed in
 No PostgreSQL-backed test, GitHub Actions run, Render revision, Supabase project or live Custom GPT
 Action was reachable from this workspace, so none of those are reported as passing.
 
+### Source-level mount (verified in source, not at runtime)
+
+`render.yaml` starts the web service as `uvicorn api_ncaaf_acceptance:app`. That module calls
+`initialize_observability()` at import, which calls `install_team_event_bridge_runtime()`, whose
+`_register_nba_bridge_if_available()` registers the NBA bridge (`WOW_V17_NBA_TEAM_EVENT_BRIDGE`,
+default on). The repaired persistence library remains deliberately unregistered as a public route
+and has no automatic scorer hook; only the authenticated server may call it. Deployed runtime
+reachability was **not** verified from this workspace.
+
 ## 4. Prerequisites blocked in this workspace (not repaired, not claimed)
 
 | Blocker | Evidence | Consequence |
