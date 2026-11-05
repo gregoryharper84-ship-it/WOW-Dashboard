@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -32,7 +33,18 @@ with patch('threading.Thread.start', lambda thread: started.append(thread.name))
         "ANTHROPIC_API_KEY": "wow-ci-placeholder-not-live",
         "SESSION_SECRET": "wow-ci-attestation-secret-not-live",
     })
+    # The test runner may be invoked from the repo root or another checkout
+    # directory. The child must import this Flask app, not a globally installed
+    # app module or an unrelated package from the caller's current directory.
+    app_root = Path(__file__).resolve().parents[2]
+    assert (app_root / "app.py").is_file()
+    inherited_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(app_root) if not inherited_path
+        else str(app_root) + os.pathsep + inherited_path
+    )
     result = subprocess.run(
-        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30
+        [sys.executable, "-c", script], cwd=str(app_root), env=env,
+        capture_output=True, text=True, timeout=30
     )
     assert result.returncode == 0, result.stdout + result.stderr
