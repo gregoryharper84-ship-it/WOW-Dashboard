@@ -241,8 +241,15 @@ def test_extreme_aware_utc_offsets_fail_closed_not_crash_readback(path, extreme)
     assert audit["can_execute"] is False
     assert audit["upset_volatility_index"] is None
     assert audit["forecast_fragility"] is None
-    if path != "factor_time":
+    if path == "observed_at":
         assert audit["status"] == "CONTEXT_INVALID_PROVENANCE"
+    elif path == "model_timestamp":
+        # Invalid model-time evidence properly prevents the upstream winner
+        # receipt from being governed-visible. The research audit therefore
+        # has no controlling winner to attach itself to.
+        assert audit["status"] == "CONTROLLING_WINNER_RECEIPT_REQUIRED"
+        assert out["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+        assert "calibrated_probability" not in out["markets"][0]
     else:
         assert audit["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
         assert audit["factor_families_documented"] == []
