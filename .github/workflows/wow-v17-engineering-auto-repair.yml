@@ -557,11 +557,12 @@ jobs:
             "| Writer jobs admitted | 0 (not yet admitted at preflight) |",
             "| Writer jobs completed | 0 (not yet completed at preflight) |",
             "Source status: " + .status,
+            "Selection detail: " + (.detail // "none"),
             "Source PR: " + ((.pr_number // "none") | tostring),
             "Source SHA: " + ((.source_sha // "none") | tostring),
             "Execution permission: false"
           ' "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
-          jq -c '{status, pr_number, source_sha, can_execute}' \
+          jq -c '{status, detail, pr_number, source_sha, can_execute}' \
             "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
           echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
           echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
