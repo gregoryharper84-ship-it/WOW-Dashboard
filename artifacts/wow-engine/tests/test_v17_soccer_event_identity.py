@@ -333,13 +333,56 @@ def test_midnight_crossover_fixture_is_accepted_within_tolerance():
     assert out["can_execute"] is False
 
 
-def test_duplicate_same_id_rows_with_different_times_remain_one_event():
+def test_conflicting_same_id_kickoff_never_proves_canonical_identity():
     rows = [
         scoreboard_event("401800014", date="2026-11-07T12:30:00Z"),
         scoreboard_event("401800014", date="2026-11-07T12:31:00Z"),
     ]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_duplicate_same_id_with_equivalent_timezone_spelling_is_allowed():
+    rows = [
+        scoreboard_event("401800014", date="2026-11-07T12:30:00Z"),
+        scoreboard_event("401800014", date="2026-11-07T07:30:00-05:00"),
+    ]
     out = _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
     assert out["event_id"] == "SOCCER:401800014"
+    assert out["can_execute"] is False
+
+
+def test_conflicting_same_id_team_identity_never_borrows_first_fixture():
+    rows = [
+        scoreboard_event("401800016"),
+        scoreboard_event("401800016", home=("999", "Another Club", "Other")),
+    ]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_duplicate_home_competitor_role_is_schema_drift_not_last_write_wins():
+    malformed = scoreboard_event("401800017")
+    malformed["competitions"][0]["competitors"].append({
+        "homeAway": "home",
+        "team": {"id": "999", "displayName": "Another Club"},
+    })
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [malformed]}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_missing_or_equal_official_team_ids_fail_closed():
+    for home_id, away_id in (("", "367"), ("357", ""), ("357", "357")):
+        malformed = scoreboard_event(
+            home=(home_id, "Leeds United", "Leeds"),
+            away=(away_id, "Tottenham Hotspur", "Spurs"),
+        )
+        with pytest.raises(identity.SoccerEventIdentityError) as exc:
+            _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [malformed]}))
+        assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
 
 
 def test_partial_provider_record_cannot_establish_identity():
