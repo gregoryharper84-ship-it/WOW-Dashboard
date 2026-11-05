@@ -180,15 +180,20 @@ def _content_type_class(response: httpx.Response) -> str:
 
 def _non_json_response(response: httpx.Response, *, provider_alias: str) -> JSONResponse:
     """Return only closed, nonsecret diagnostics for a non-JSON upstream body."""
+    body = {
+        "ok": False,
+        "code": "ODDS_API_UPSTREAM_NON_JSON",
+        "upstream_status": int(response.status_code),
+        "content_type_class": _content_type_class(response),
+        "provider_alias": provider_alias,
+        "can_execute": False,
+    }
+    if response.status_code == 401:
+        body["failure_class"] = "PROVIDER_CREDENTIAL_INVALID"
+    elif response.status_code == 403:
+        body["failure_class"] = "PROVIDER_ENTITLEMENT_DENIED"
     return JSONResponse(
-        content={
-            "ok": False,
-            "code": "ODDS_API_UPSTREAM_NON_JSON",
-            "upstream_status": int(response.status_code),
-            "content_type_class": _content_type_class(response),
-            "provider_alias": provider_alias,
-            "can_execute": False,
-        },
+        content=body,
         status_code=502,
         headers=_quota_headers(response),
     )

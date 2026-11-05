@@ -60,7 +60,8 @@ def test_coverage_receipt_reports_every_requested_sport_and_reconciles():
     assert per["NHL"]["coverage_status"] == "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED"
     assert per["NHL"]["zero_rows_is_not_empty_slate_proof"] is True
     assert per["NFL"]["autonomous_discovery_status"] == "ENABLED"
-    assert receipt["total_prop_rows"] == 3 and receipt["all_reconciled"] is True
+    assert receipt["total_prop_rows"] == 3 and receipt["all_reconciled"] is False
+    assert per["NFL"]["reconciled"] is None
     assert "moneyline" in receipt["scope_note"]
     assert receipt["can_execute"] is False
     assert all(v["can_execute"] is False for v in per.values())
@@ -73,7 +74,7 @@ def test_coverage_receipt_keeps_unrequested_sport_rows_visible():
     receipt = prop_sport_coverage_receipt(requested_sports=["MLB"], rows=[_row("WNBA", False)])
     assert receipt["per_sport"]["WNBA"]["requested"] is False
     assert receipt["per_sport"]["MLB"]["coverage_status"] == "NO_ROWS_DISCOVERY_ENABLED"
-    assert receipt["all_reconciled"] is True
+    assert receipt["all_reconciled"] is False
     assert receipt["silent_sport_omission"] is False
 
 
@@ -95,3 +96,34 @@ def test_default_full_board_receipt_does_not_claim_explicit_sport_selection():
     assert len(receipt["per_sport"]) == 13
     assert all(v["requested"] and v["explicitly_requested"] is False for v in receipt["per_sport"].values())
     assert receipt["can_execute"] is False
+
+
+def test_coverage_reconciliation_compares_independent_attempted_receipts():
+    from v17.prop_sport_parity import prop_sport_coverage_receipt
+
+    acquisition = {
+        "sport_coverage": [{"sport": "NFL", "status": "COMPLETED", "attempted": 2}],
+        "receipts": [
+            {"sport": "NFL", "write_status": "SNAPSHOT_WRITE_SUCCEEDED"},
+            {"sport": "NFL", "write_status": "PREWRITE_EXCLUDED"},
+        ],
+    }
+    r = prop_sport_coverage_receipt(requested_sports=["NFL"], rows=[_row("NFL", True)], acquisition=acquisition)
+    assert r["per_sport"]["NFL"]["reconciled"] is True
+    assert r["all_reconciled"] is True
+    assert r["canonical_persistence_readback_proven_here"] is False
+    acquisition["sport_coverage"][0]["attempted"] = 3
+    bad = prop_sport_coverage_receipt(requested_sports=["NFL"], rows=[_row("NFL", True)], acquisition=acquisition)
+    assert bad["per_sport"]["NFL"]["reconciled"] is False
+    assert bad["all_reconciled"] is False
+
+
+def test_coverage_receipt_names_data_outage_instead_of_empty_slate():
+    from v17.prop_sport_parity import prop_sport_coverage_receipt
+
+    acquisition = {"sport_coverage": [{"sport": "NFL", "status": "DATA_UNOBTAINABLE", "attempted": 0}],
+                   "receipts": []}
+    r = prop_sport_coverage_receipt(requested_sports=["NFL"], rows=[], acquisition=acquisition)
+    assert r["per_sport"]["NFL"]["coverage_status"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert r["per_sport"]["NFL"]["zero_rows_is_not_empty_slate_proof"] is True
+    assert r["can_execute"] is False

@@ -153,6 +153,7 @@ def prop_sport_coverage_receipt(
     sports = list(dict.fromkeys(requested))
     seen = {_norm_sport((r.get("identity") or {}).get("sport")) for r in prop_rows}
     seen |= {_norm_sport(r.get("sport")) for r in receipts if r.get("sport")}
+    seen |= set(sport_legs)
     sports += sorted(s for s in seen if s and s not in sports)
     per_sport: dict[str, Any] = {}
     for sport in sports:
@@ -161,6 +162,9 @@ def prop_sport_coverage_receipt(
         mine_receipts = [r for r in receipts if _norm_sport(r.get("sport")) == sport]
         excluded = [r for r in mine_receipts if r.get("write_status") not in (None, "SNAPSHOT_WRITE_SUCCEEDED")]
         sport_leg = sport_legs.get(sport) or {}
+        attempted = sport_leg.get("attempted")
+        # Independent acquisition counter versus sport-attributed receipt population.
+        receipt_reconciled = attempted == len(mine_receipts) if type(attempted) is int and attempted >= 0 else None
         ceiling_skipped = sport_leg.get("status") == "NOT_ATTEMPTED_ROW_CEILING"
         cap = parity.get(sport)
         discovery = bool(cap and cap["daily_autonomous_discovery_supported"])
@@ -175,16 +179,19 @@ def prop_sport_coverage_receipt(
             "certified_production_lane_count": cap["certified_production_lane_count"] if cap else 0,
             "discovered_current_run": len(mine_receipts),
             "excluded": len(excluded),
+            "already_captured_candidates": sport_leg.get("already_captured_candidates"),
             "discovery_attempt_status": sport_leg.get("status"),
             "unattempted_due_to_row_ceiling": sport_leg.get("unattempted_due_to_row_ceiling"),
             "canonical_rows": len(mine),
             "scored": len(executed),
             "unscored": unscored,
-            "reconciled": len(mine) == len(executed) + unscored,
+            "reconciled": receipt_reconciled,
+            "reconciliation_scope": "ACQUISITION_ATTEMPTS_VS_ATTRIBUTED_RECEIPTS_ONLY",
             "coverage_status": (
                 "ROWS_PRESENT" if mine else
                 ("NOT_ATTEMPTED_ROW_CEILING" if ceiling_skipped else
-                 ("NO_ROWS_DISCOVERY_ENABLED" if discovery else "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED"))
+                 ("DISCOVERY_DATA_UNOBTAINABLE" if sport_leg.get("status") == "DATA_UNOBTAINABLE" else
+                  ("NO_ROWS_DISCOVERY_ENABLED" if discovery else "NO_ROWS_DISCOVERY_NOT_IMPLEMENTED")))
             ),
             "zero_rows_is_not_empty_slate_proof": True,
             "can_execute": False,
@@ -201,8 +208,12 @@ def prop_sport_coverage_receipt(
         "per_sport": per_sport,
         "unattributed_acquisition_receipts": len(unattributed),
         "total_prop_rows": len(prop_rows),
-        "all_reconciled": all(v["reconciled"] for v in per_sport.values())
+        "all_reconciled": bool(sport_legs)
+        and not unattributed
+        and all(per_sport[sport]["reconciled"] is True for sport in sport_legs)
         and sum(v["canonical_rows"] for v in per_sport.values()) == len(prop_rows),
+        "reconciliation_scope": "ACQUISITION_ATTEMPTS_VS_ATTRIBUTED_RECEIPTS_AND_ROW_SPORT_TOTALS",
+        "canonical_persistence_readback_proven_here": False,
         "silent_sport_omission": False,
         "can_execute": False,
     }

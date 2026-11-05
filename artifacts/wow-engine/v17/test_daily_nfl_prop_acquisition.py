@@ -238,3 +238,44 @@ def test_preflight_error_halts_nfl_writes_and_preserves_unknown_counts(monkeypat
     assert r["attempted"] == 0 and not db.writes
     assert r["unattempted_due_to_row_ceiling"] is None
     assert r["blockers"] == ["NFL_PROP_SNAPSHOT_PREFLIGHT_FAILED:RuntimeError"]
+
+
+def test_mlb_zero_budget_is_unattempted_not_an_empty_slate(monkeypatch):
+    monkeypatch.setattr(daily, "_request_schedule",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("schedule must not run")))
+    r = daily.acquire_daily_mlb_prop_snapshots(
+        db=None, requested_date=DATE, requested_timezone="UTC", max_candidates=0, now=NOW,
+    )
+    assert r["status"] == "NOT_ATTEMPTED_ROW_CEILING"
+    assert r["discovered_candidates"] is None and r["unattempted_due_to_row_ceiling"] is None
+    assert r["blockers"] == ["MLB_PROP_ROW_CEILING_EXHAUSTED"]
+    assert r["attempted"] == 0 and r["can_execute"] is False
+
+
+def test_mlb_schedule_count_controls_unattempted_ceiling(monkeypatch):
+    monkeypatch.setattr(daily, "_request_schedule", lambda *_a, **_kw: {})
+    monkeypatch.setattr(daily, "_schedule_pitchers", lambda *_a, **_kw: [
+        {"event_id": "MLB:1", "event_start_time": DATE, "player": x, "opponent": "B"}
+        for x in ("A", "B")
+    ])
+    def unhydrated(**_kwargs):
+        raise PropAutoHydrationError("INSUFFICIENT_PRIOR_GAMES", "no usable log")
+    monkeypatch.setattr(daily, "auto_hydrate_prop_evidence", unhydrated)
+    r = daily.acquire_daily_mlb_prop_snapshots(
+        db=None, requested_date=DATE, requested_timezone="UTC", max_candidates=1, now=NOW,
+    )
+    assert r["discovered_candidates"] == 2 * len(daily.STAT_TYPES)
+    assert r["unattempted_due_to_row_ceiling"] == 2 * len(daily.STAT_TYPES) - 1
+    assert r["attempted"] == 1 and r["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
+    assert r["probability_publishable"] is False and r["can_execute"] is False
+
+
+def test_mlb_schedule_failure_preserves_unknown_counts(monkeypatch):
+    monkeypatch.setattr(daily, "_request_schedule",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("503")))
+    r = daily.acquire_daily_mlb_prop_snapshots(
+        db=None, requested_date=DATE, requested_timezone="UTC", max_candidates=1, now=NOW,
+    )
+    assert r["status"] == "DATA_UNOBTAINABLE"
+    assert r["discovered_candidates"] is None and r["unattempted_due_to_row_ceiling"] is None
+    assert r["can_execute"] is False
