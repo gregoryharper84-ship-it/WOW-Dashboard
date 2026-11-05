@@ -619,11 +619,18 @@ def test_matching_invalid_ledger_bounds_never_verify_receipt(sport, side, lower,
 
 
 @pytest.mark.parametrize("sport", ["NBA", "NHL"])
-@pytest.mark.parametrize("before", ["model", "creation"])
-def test_terminal_reduction_before_immutable_inputs_never_verifies(sport, before):
+@pytest.mark.parametrize("before", ["model", "creation", "start", "after_start"])
+def test_invalid_terminal_reduction_chronology_never_verifies(sport, before):
     page, ledger = _ledger_case(sport)
-    stamp = MODEL_AT if before == "model" else SOURCE_AT
-    ledger["terminal_reduced_at"] = (stamp - timedelta(seconds=1)).isoformat()
+    if before == "creation":
+        # Model exists before reduction; only the row-creation order fails.
+        ledger["created_at"] = (MODEL_AT + timedelta(seconds=30)).isoformat()
+        reduced = MODEL_AT + timedelta(seconds=29)
+    elif before == "model":
+        reduced = MODEL_AT - timedelta(seconds=1)
+    else:
+        reduced = START if before == "start" else START + timedelta(seconds=1)
+    ledger["terminal_reduced_at"] = reduced.isoformat()
     item = project_llp_intelligence_page(page, db=_EventLedger([ledger]))["events"][0]
     assert item["source_diagnostics"]["event_prediction_receipt_verified"] is False
     assert item["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
