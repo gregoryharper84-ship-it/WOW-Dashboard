@@ -102,13 +102,17 @@ jobs:
               jq -e --arg sha "$INPUT_HEAD_SHA" '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || { echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1; }
             fi
           elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
+            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS" --neutral-superseded)
           else
             # The job if above skips a workflow_run whose pull_requests array is
             # empty. Reaching this branch means the guard was bypassed; still
             # refuse to guess a PR or publish a check.
             echo "::error::QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing"
             exit 1
+          fi
+          if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<<"$resolved")" = "neutral" ]; then
+            echo "::notice::QA_SOURCE_PR_HEAD_SUPERSEDED: no QA check published for obsolete source."
+            exit 0
           fi
           if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
             echo "::error::QA_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
@@ -134,6 +138,7 @@ jobs:
 
       - name: Select exact-head review policy
         id: policy
+        if: steps.target.outputs.pr_number != ''
         shell: bash
         env:
           REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
@@ -187,6 +192,7 @@ jobs:
 
       - name: Build immutable QA review-policy receipt
         id: policy_receipt
+        if: steps.target.outputs.pr_number != ''
         shell: bash
         env:
           MODE: ${{ steps.policy.outputs.mode }}
@@ -213,6 +219,7 @@ jobs:
 
       - name: Upload immutable QA review-policy receipt
         id: policy_artifact
+        if: steps.target.outputs.pr_number != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}
@@ -342,6 +349,7 @@ jobs:
 
       - name: Decide at exact head (read-only)
         id: decide
+        if: steps.target.outputs.pr_number != ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
