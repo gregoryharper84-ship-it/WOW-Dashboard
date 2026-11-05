@@ -334,7 +334,8 @@ MAX_TARGETS = 20
 
 
 def targets(repo: str, *, pr: str | None = None,
-            workflow_run_prs: list[dict] | None = None, fetch: Fetch = gh_fetch) -> dict[str, Any]:
+            workflow_run_prs: list[dict] | None = None,
+            neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
     """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input."""
     errors: list[str] = []
     out: list[dict] = []
@@ -354,6 +355,34 @@ def targets(repo: str, *, pr: str | None = None,
             if status != 200 or not isinstance(live, dict):
                 errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
                 continue
+            # A source PR can move between the workflow_run event and QA.
+            # A single proved same-origin moved/closed source is no longer a
+            # target; never publish QA for its old SHA, and do not fail a
+            # main-scoped optional run. Ambiguous/foreign/malformed remains
+            # strict. Manual dispatch never enables this classification.
+            current_sha = head.get("sha")
+            head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+            base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+            same_origin = (
+                live.get("number") == number
+                and head_repo.get("full_name") == repo
+                and base.get("ref") == "main"
+                and base_repo.get("full_name") == repo
+                and SHA_RE.match(str(current_sha or "")) is not None
+            )
+            if (
+                neutral_superseded and len(workflow_run_prs) == 1
+                and same_origin and (
+                    live.get("state") == "closed"
+                    or (live.get("state") == "open" and live.get("draft") is False
+                        and not live.get("merged_at") and current_sha != sha)
+                )
+            ):
+                return {
+                    "targets": [], "errors": [],
+                    "disposition": "neutral",
+                    "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
+                }
             if (
                 live.get("number") != number
                 or head.get("sha") != sha
@@ -483,6 +512,16 @@ def classify_upstream_qa(
         return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
     if job_conclusion not in {"success", "failure"}:
         raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    steps = named[0].get("steps")
+    # A failed run/job remains applicable even when its terminal artifact step
+    # was skipped: it must never be mistaken for a deliberate QA deferral.
+    if conclusion == "success" and job_conclusion == "success" and isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and step.get("name") == "Upload terminal QA outcome"
+        and step.get("conclusion") == "skipped"
+        for step in steps
+    ):
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
     return {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
 
 
@@ -707,8 +746,8 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
     trust_root_change = any(is_trust_root(str(f), governance_files) for f in files)
-    if review_active is False and not trust_root_change and (policy or {}).get("mode") != "zero_credit":
-        expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
+    # V4: retired trusted-governance check is not a QA admission prerequisite.
+    # All active regression, change-impact, review-policy and owner checks remain.
     for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
         if run is None:
@@ -716,14 +755,12 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         elif run.get("conclusion") != "success":
             findings.append(f"QA_EVIDENCE_FAILED:{name}")
     if trust_root_change:
-        # Trust roots: .github/, .agents/ and every file a governance workflow executes
-        # or reads (including this module). Never autonomous: the sole owner's approval
-        # of this exact head is required, and an owner-authored PR can never be
-        # self-approved. Receipt minting for this class is the trust-root bootstrap
-        # path; this QA decision stays independent of that receipt.
-        if pr.get("author") == ev.get("owner_login"):
-            findings.append("QA_TRUST_ROOT_OWNER_AUTHORED")
-        elif not _owner_approved_at_head(ev, head):
+        # V3 single-owner policy: the authenticated repository owner can author a
+        # protected change. GitHub's required CI and the subsequent authorized
+        # merge are still separate gates; QA does NOT claim independent review.
+        # Non-owner-authored changes still require the owner's exact-head
+        # APPROVED review, preserving an attributable human authorization.
+        if pr.get("author") != ev.get("owner_login") and not _owner_approved_at_head(ev, head):
             findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
     return sorted(set(findings))
 
@@ -783,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--repo", required=True)
     t.add_argument("--pr")
     t.add_argument("--workflow-run-prs", help="JSON array from github.event.workflow_run.pull_requests")
+    t.add_argument("--neutral-superseded", action="store_true")
     g = sub.add_parser("gather")
     g.add_argument("--repo", required=True)
     g.add_argument("--pr", required=True, type=int)
@@ -802,6 +840,7 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--run-id", required=True, type=int)
     policy.add_argument("--run-attempt", required=True, type=int)
     policy.add_argument("--pr", type=int)
+    policy.add_argument("--neutral-if-superseded", action="store_true")
     classify = sub.add_parser("classify-upstream-qa")
     classify.add_argument("--repo", required=True)
     classify.add_argument("--run-id", required=True, type=int)
@@ -817,7 +856,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "targets":
         prs = json.loads(args.workflow_run_prs) if args.workflow_run_prs else None
-        print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs)))
+        print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs,
+                                 neutral_superseded=args.neutral_superseded)))
         return 0
     if args.cmd == "resolve-qa-policy":
         try:
@@ -827,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_attempt=args.run_attempt,
                 expected_pr_number=args.pr,
                 token=os.environ.get("GH_TOKEN", ""),
+                allow_superseded_target=args.neutral_if_superseded,
             )
         except _source_review_module.SourceReviewError as exc:
             raise SystemExit(str(exc)) from exc

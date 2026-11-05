@@ -61,6 +61,16 @@ SOURCES: dict[str, SourceEntitlement] = {
         license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
         attribution_required=True,
     ),
+    "SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS": SourceEntitlement(
+        "SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS",
+        ("NCAAF",),
+        "TRAINING_OPEN_LICENSED",
+        fitted_training_allowed_when_ready=True,
+        certification_source_review_required=True,
+        license_id="CC-BY-4.0",
+        license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
+        attribution_required=True,
+    ),
     "SPORTSDATAVERSE_WNBA_STATS": SourceEntitlement(
         "SPORTSDATAVERSE_WNBA_STATS",
         ("WNBA",),

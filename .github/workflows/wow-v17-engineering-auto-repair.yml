@@ -14,6 +14,12 @@ name: wow-v17-engineering-auto-repair
 # mutations use the wow-engineering App token. can_execute=false; never merges.
 
 on:
+  # Resume one eligible owner-source adoption as soon as an authenticated
+  # Engineering App integration leaves the bounded review queue. This event
+  # only wakes protected-main read-only discovery; it does not approve/merge.
+  pull_request_target:
+    types: [closed]
+    branches: [main]
   workflow_run:
     # Source-CI completion wakes the existing adoption lane directly. This
     # breaks QA<->source-adoption bootstrap deadlock if cron is delayed/dropped.
@@ -49,10 +55,11 @@ jobs:
     # Workflow-run HEAD is protected main. Resolve failed independent-App checks
     # against open wow-engineering[bot] PR heads, bounded by upstream run time.
     if: >-
-      github.event_name != 'workflow_run' ||
+      github.event_name != 'pull_request_target' &&
+      (github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
        (startsWith(github.event.workflow_run.name, 'wow-v17-independent-qa-check') ||
-        startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check')))
+        startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check'))))
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
@@ -458,6 +465,11 @@ jobs:
     # implementation writer lock. Provider leases and code authority untouched.
     if: >-
       github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      (github.event_name != 'pull_request_target' ||
+       (github.event.pull_request.user.login == 'wow-engineering[bot]' &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'wow-engineering/exact-replay-'))) &&
       (github.event_name != 'workflow_run' ||
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.head_repository.full_name == github.repository &&
@@ -547,8 +559,11 @@ jobs:
     needs: adoption-readonly-preflight
     if: needs.adoption-readonly-preflight.outputs.status == 'SOURCE_READY'
     concurrency:
+      # Same global writer mutex. queue: max is GitHub's native pending cap
+      # (100), not a second controller or a per-sport writer lane.
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
+      queue: max
     environment: wow-engineering
     runs-on: ubuntu-latest
     timeout-minutes: 15

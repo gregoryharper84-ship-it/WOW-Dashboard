@@ -181,7 +181,8 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '--arg workflow_name "wow-v17-chatgpt-engineering-worker"' in worker
     assert '--arg workflow_name "wow-v17-claude-engineering-worker"' in claude_worker
 
-    assert "pull_request_target:" in gate
+    assert "on:\n  workflow_dispatch:" in gate
+    assert "on:\n  pull_request_target:" not in gate
     assert "ref: main" in gate
     artifact_step = gate.split("- name: Resolve trusted exact-head governance artifact", 1)[1].split(
         "- name: Verify trusted workflow identity and completion", 1
@@ -220,15 +221,13 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "WORKFLOW_NAME:" not in identity_step
     assert "WORKFLOW_NAME: ${{ steps.workflow.outputs.name }}" in receipt_step
 
-    assert "Verify trusted exact-head governance receipt" in morning_green
-    assert 'protected_main_source=false' in morning_green
-    assert '[ "$head_repo" != "$GITHUB_REPOSITORY" ]' in morning_green
-    assert "wow-v17-chatgpt-engineering-worker.yml" in morning_green
-    assert "wow-v17-claude-engineering-worker.yml" in morning_green
-    assert "wow-v17-existing-pr-governance-review.yml" in morning_green
-    assert "pull_request_target" in morning_green
-    assert "verify_existing_pr_governance_receipt.py" in morning_green
-    assert '--workflow-name "$name"' in morning_green
+    assert "Verify V4 exact-head QA and Release checks" in morning_green
+    assert "Verify Morning-Green diff scope" in morning_green
+    assert "V4_CHECK_NOT_VALID" in morning_green
+    assert "V4_FINAL_HEAD_CHANGED" in morning_green
+    assert "WOW Independent QA exact-head|5245832" in morning_green
+    assert "WOW Release Authority exact-head|5245853" in morning_green
+    assert "verify_existing_pr_governance_receipt.py" not in morning_green
     assert "steps.governance.outputs.approved == 'true'" in morning_green
     assert "GOVERNANCE_REWORK" in morning_green
 
@@ -578,7 +577,7 @@ def test_trusted_gate_skips_failed_certifier_runs_and_gates_downstream_steps():
     workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     job = workflow["jobs"]["trusted-governance"]
 
-    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    assert job["if"] == "${{ false }}"
     for step in job["steps"][2:]:
         assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
 
@@ -664,7 +663,7 @@ def test_stale_pr_head_aborts_early_without_accepting_existing_artifact(tmp_path
     assert "head_sha=" not in output
 
 
-def test_release_verification_requires_trusted_exact_head_governance_and_exact_merge_sha():
+def test_v4_postmerge_release_verifies_five_pinned_checks_and_exact_main_lineage():
     text = RELEASE.read_text(encoding="utf-8")
     assert "startsWith(github.event.pull_request.head.ref" not in text
     assert "Resolve exact merged identity" in text
@@ -672,25 +671,24 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert "Verify required exact-head CI" in text
     assert '"wow-verify|.github/workflows/wow-verify.yml"' in text
     assert '"wow-engine-verify|.github/workflows/wow-engine-verify.yml"' in text
-    assert "Trusted exact-head engineering governance" in text
     assert "/actions/runs?head_sha=${HEAD_SHA}&per_page=100" in text
-    assert "Resolve trusted exact-head governance artifact" in text
-    assert 'artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"' in text
-    assert "Verify governance-producing workflow provenance" in text
-    assert 'protected_main_source=false' in text
-    assert '[ "$head_repo" = "$GITHUB_REPOSITORY" ]' in text
-    assert "wow-v17-existing-pr-governance-review.yml" in text
-    assert "pull_request_target" in text
-    assert "Download and verify trusted governance receipt" in text
-    assert "RELEASE_GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in text
-    assert "verify_engineering_governance_receipt.py" in text
-    assert "verify_existing_pr_governance_receipt.py" in text
-    assert '--head-sha "$HEAD_SHA"' in text
-    assert '--head-ref "$HEAD_REF"' in text
-    assert '--workflow-run-id "$RUN_ID"' in text
-    assert '--workflow-name "$WORKFLOW_NAME"' in text
-    assert "trusted_handoff_receipt: VERIFIED" in text
-
+    for exact_name, app_id in (
+        ("WOW required-three regression", 15368),
+        ("WOW governed probability backend", 15368),
+        ("WOW additional required regression", 15368),
+        ("WOW Independent QA exact-head", 5245832),
+        ("WOW Release Authority exact-head", 5245853),
+    ):
+        assert f'"{exact_name}|{app_id}"' in text
+    assert 'select(.name == $name and .head_sha == $sha)' in text
+    assert '$check.app.id == $app' in text
+    assert '$check.status == "completed"' in text
+    assert '$check.conclusion == "success"' in text
+    assert "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED" in text
+    assert "Resolve trusted exact-head governance artifact" not in text
+    assert "RELEASE_GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" not in text
+    assert "trusted_handoff_receipt: VERIFIED" not in text
+    assert "v4_exact_head_qa_release_checks: VERIFIED" in text
 
 
 def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
@@ -707,7 +705,7 @@ def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     assert "format('pr-{0}', github.event.pull_request.number)" in text
     assert "format('run-{0}', github.event.workflow_run.id)" in text
     assert "github.event.pull_request.head.sha) }}" not in text.split("concurrency:")[1].split("jobs:")[0]
-    assert "for _ in $(seq 1 18); do" in text
+    assert "for _ in $(seq 1 90); do" in text
     assert 'gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"' in text
     assert 'if [ "$current_head" != "$head_sha" ]; then' in text
     assert "GOVERNANCE_STALE_HEAD_DEFERRED" in text

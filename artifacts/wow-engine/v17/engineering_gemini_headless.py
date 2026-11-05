@@ -1,7 +1,9 @@
 """Opt-in headless Gemini AMRT admission and typed results; no betting or repo writes."""
 from __future__ import annotations
 
+import datetime as dt
 import argparse
+import os
 import json
 import re
 import subprocess
@@ -46,6 +48,318 @@ def admit(enabled: str, spend_confirmed: str, auto_enabled: str, mode: str) -> d
         code = "ADMITTED"
     return {"status": "ADMITTED" if code == "ADMITTED" else "HELD", "code": code,
             "provider": "gemini", "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+
+
+
+def recheck_auto_worker_provider(runs: Any, comparison: Any, current_sha: str,
+                                 *, now: dt.datetime | None = None) -> dict[str, Any]:
+    """Recheck provider-wide Gemini recovery *inside* the existing writer mutex.
+
+    Dispatchers may accept distinct sport leases simultaneously, but a queued
+    Gemini worker is not allowed to spend a second canary/cooldown grant.
+    The protected worker fetches the latest completed Gemini run at admission,
+    after the previous writer finished. Unknown history is always a HOLD.
+    """
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False,
+                "terminal_authority": MODEL_AUTHORITY}
+
+    if not isinstance(current_sha, str) or not _SHA.fullmatch(current_sha):
+        return held("GEMINI_WORKER_CURRENT_SHA_INVALID")
+    if not isinstance(runs, list) or len(runs) > 1:
+        return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+    if not runs:
+        return {"status": "ADMITTED", "code": "GEMINI_WORKER_FIRST_AUTO_ATTEMPT",
+                "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+    last = runs[0]
+    if not isinstance(last, dict) or last.get("status") != "completed":
+        return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+    if last.get("conclusion") == "failure":
+        # Preserve the existing immutable-SHA one-shot runtime-fix rule.
+        return admit_one_shot_recovery(runs, comparison, current_sha)
+    if last.get("conclusion") != "success":
+        return held("GEMINI_WORKER_PREVIOUS_OUTCOME_UNVERIFIED")
+    timestamp = last.get("updatedAt")
+    if not isinstance(timestamp, str):
+        return held("GEMINI_WORKER_SUCCESS_TIME_UNVERIFIED")
+    try:
+        finished = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        observed = now if now is not None else dt.datetime.now(dt.timezone.utc)
+        if finished.tzinfo is None or observed.tzinfo is None:
+            return held("GEMINI_WORKER_SUCCESS_TIME_UNVERIFIED")
+        age = observed - finished
+    except (ValueError, OverflowError, TypeError):
+        return held("GEMINI_WORKER_SUCCESS_TIME_UNVERIFIED")
+    if age < dt.timedelta(hours=24):
+        return held("GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+    return {"status": "ADMITTED", "code": "GEMINI_WORKER_COOLDOWN_EXPIRED",
+            "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+
+
+
+def latest_actual_provider_attempt(
+    runs: Any, lookup_jobs: Any, *, current_run_id: int | None = None,
+    current_run_attempt: int | None = None,
+) -> dict[str, Any]:
+    """Select the latest *actual* Gemini CLI invocation by immutable attempt.
+
+    GitHub reruns preserve run ID, but increase run_attempt. Examine every
+    completed earlier attempt, including earlier attempts of this same run.
+    An otherwise failed/skipped cooldown run never erases a past CLI attempt.
+    Job timestamps, not latest run.updatedAt, govern global chronological order.
+    A capped/unknown inventory cannot grant a new provider call.
+    """
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False}
+
+    if not isinstance(runs, list) or len(runs) > 5000:
+        return held("GEMINI_PROVIDER_HISTORY_UNVERIFIED")
+    if current_run_id is not None and (
+        type(current_run_id) is not int or current_run_id <= 0
+        or type(current_run_attempt) is not int or current_run_attempt <= 0
+    ):
+        return held("GEMINI_PROVIDER_CURRENT_ATTEMPT_INVALID")
+    seen: set[int] = set()
+    actual: list[tuple[dt.datetime, int, int, dict[str, Any]]] = []
+    for run in runs:
+        if not isinstance(run, dict):
+            return held("GEMINI_PROVIDER_HISTORY_UNVERIFIED")
+        ident, attempt = run.get("databaseId"), run.get("attempt")
+        if (type(ident) is not int or ident <= 0 or ident in seen
+                or type(attempt) is not int or not 1 <= attempt <= 10):
+            return held("GEMINI_PROVIDER_RUN_OR_ATTEMPT_INVALID")
+        seen.add(ident)
+        status = run.get("status")
+        is_self = ident == current_run_id
+        if is_self:
+            if status not in ("queued", "pending", "in_progress") or (
+                attempt != current_run_attempt
+            ):
+                return held("GEMINI_PROVIDER_SELF_ATTEMPT_UNVERIFIED")
+        elif status in ("in_progress", "waiting", "requested"):
+            return held("GEMINI_PROVIDER_PREDECESSOR_NOT_TERMINAL")
+        elif status not in ("completed", "queued", "pending"):
+            return held("GEMINI_PROVIDER_RUN_STATUS_UNVERIFIED")
+        # Never count the currently running attempt as a finished spend; do
+        # inspect ALL previous attempts of this same Actions run ID.
+        max_finished_attempt = attempt - 1 if is_self else (
+            attempt if status == "completed" else attempt - 1
+        )
+        for number in range(max_finished_attempt, 0, -1):
+            try:
+                payload = lookup_jobs(ident, number)
+            except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+                return held("GEMINI_PROVIDER_JOB_RECEIPT_UNAVAILABLE")
+            if not isinstance(payload, dict) or type(payload.get("total_count")) is not int:
+                return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+            jobs = payload.get("jobs")
+            if payload["total_count"] != 1 or not isinstance(jobs, list) or len(jobs) != 1:
+                return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+            job = jobs[0]
+            if not isinstance(job, dict) or (
+                job.get("run_id") != ident
+                or job.get("name") != "Gemini AMRT isolated repair candidate (never a release actor)"
+                or job.get("status") != "completed"
+            ):
+                return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+            # GitHub-native whole-job skip (e.g. protected-main admission
+            # rejects a non-main dispatch) definitively cannot spend Gemini.
+            # Do not let a skipped branch dispatch permanently poison routing.
+            if job.get("conclusion") == "skipped":
+                continue
+            steps = job.get("steps")
+            if not isinstance(steps, list):
+                return held("GEMINI_PROVIDER_STEP_RECEIPT_UNVERIFIED")
+            cli_steps = [
+                step for step in steps if isinstance(step, dict)
+                and step.get("name") == "Execute one bounded headless Gemini CLI candidate session"
+            ]
+            if len(cli_steps) != 1:
+                return held("GEMINI_PROVIDER_STEP_RECEIPT_UNVERIFIED")
+            outcome = cli_steps[0].get("conclusion")
+            if outcome == "skipped":
+                continue  # Authenticated no-spend receipt; do not reset cooldown.
+            if outcome not in ("success", "failure"):
+                return held("GEMINI_PROVIDER_STEP_OUTCOME_UNVERIFIED")
+            job_outcome = job.get("conclusion")
+            if job_outcome not in ("success", "failure", "cancelled", "timed_out"):
+                return held("GEMINI_PROVIDER_JOB_OUTCOME_UNVERIFIED")
+            # CLI transport success is not proof of a healthy canary: the
+            # candidate inspection, tests or security fence may fail later.
+            # Retain provider-spend timestamp, but classify a failed job as
+            # FAILED, requiring a reviewed runtime change before another try.
+            effective_outcome = (
+                "success" if outcome == "success" and job_outcome == "success"
+                else "failure"
+            )
+            completed_at = cli_steps[0].get("completed_at") or job.get("completed_at")
+            if not isinstance(completed_at, str):
+                return held("GEMINI_PROVIDER_ATTEMPT_TIME_UNVERIFIED")
+            try:
+                when = dt.datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    raise ValueError("naive timestamp")
+            except (ValueError, OverflowError):
+                return held("GEMINI_PROVIDER_ATTEMPT_TIME_UNVERIFIED")
+            source_sha = run.get("headSha")
+            if not isinstance(source_sha, str) or not _SHA.fullmatch(source_sha):
+                return held("GEMINI_PROVIDER_ATTEMPT_SHA_UNVERIFIED")
+            actual.append((when, ident, number, {
+                "databaseId": ident, "run_attempt": number, "headSha": source_sha,
+                "status": "completed", "conclusion": effective_outcome,
+                "updatedAt": completed_at,
+            }))
+    if current_run_id is not None and current_run_id not in seen:
+        return held("GEMINI_WORKER_CURRENT_RUN_MISSING")
+    latest = max(actual, key=lambda v: (v[0], v[1], v[2]))[3] if actual else None
+    return {"status": "VERIFIED_PROVIDER_HISTORY", "run": latest,
+            "can_execute": False}
+
+
+
+def complete_gemini_run_inventory(read: Any, repo: str, *,
+                                  max_pages: int = 50) -> list[dict[str, Any]]:
+    """Fetch *all* GitHub Actions runs, not the latest 100.
+
+    GitHub's authenticated total_count and page boundaries certify pagination.
+    No short page, missing field, API error, duplicate or cap can imply an
+    unspent provider. A bounded 50-page ceiling remains a typed HOLD, not a
+    false green. This is read-only and returns no capability token.
+    """
+    if not 1 <= max_pages <= 50:
+        raise ValueError("GEMINI_INVENTORY_PAGE_LIMIT_INVALID")
+    result: list[dict[str, Any]] = []
+    expected_total: int | None = None
+    for page in range(1, max_pages + 1):
+        payload = json.loads(read([
+            "gh", "api",
+            f"repos/{repo}/actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?per_page=100&page={page}",
+        ]))
+        if not isinstance(payload, dict) or type(payload.get("total_count")) is not int:
+            raise ValueError("GEMINI_INVENTORY_TOTAL_UNVERIFIED")
+        total, rows = payload["total_count"], payload.get("workflow_runs")
+        if total < 0 or not isinstance(rows, list) or len(rows) > 100:
+            raise ValueError("GEMINI_INVENTORY_PAGE_INVALID")
+        if expected_total is None:
+            expected_total = total
+        if total != expected_total or len(rows) != min(100, total - len(result)):
+            raise ValueError("GEMINI_INVENTORY_DRIFT_OR_GAP")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("GEMINI_INVENTORY_ROW_INVALID")
+            result.append({
+                "databaseId": row.get("id"),
+                "attempt": row.get("run_attempt"),
+                "headSha": row.get("head_sha"),
+                "status": row.get("status"),
+                "conclusion": row.get("conclusion"),
+                "updatedAt": row.get("updated_at"),
+            })
+        if len(result) == total:
+            identities = [row["databaseId"] for row in result]
+            if len(identities) != len(set(identities)):
+                raise ValueError("GEMINI_INVENTORY_DUPLICATED_RUN")
+            return result
+    raise ValueError("GEMINI_INVENTORY_PAGE_CAP_UNVERIFIED")
+
+
+def read_provider_history_github() -> dict[str, Any]:
+    """The canonical dispatcher uses the same authenticated attempt selector."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if repo != "gregoryharper84-ship-it/WOW-Dashboard" or not os.environ.get("GH_TOKEN"):
+        return {"status": "HELD", "code": "GEMINI_PROVIDER_IDENTITY_UNVERIFIED",
+                "can_execute": False}
+
+    def read(args: list[str]) -> str:
+        result = subprocess.run(args, capture_output=True, text=True,
+                                check=False, timeout=20)
+        if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError("GEMINI_PROVIDER_API_UNVERIFIED")
+        return result.stdout.strip()
+
+    try:
+        runs = complete_gemini_run_inventory(read, repo)
+        return latest_actual_provider_attempt(
+            runs, lambda ident, attempt: json.loads(read([
+                "gh", "api",
+                f"repos/{repo}/actions/runs/{ident}/attempts/{attempt}/jobs?per_page=100",
+            ])),
+        )
+    except (OSError, TypeError, ValueError, subprocess.TimeoutExpired,
+            json.JSONDecodeError):
+        return {"status": "HELD", "code": "GEMINI_PROVIDER_HISTORY_UNAVAILABLE",
+                "can_execute": False}
+
+
+def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, Any]:
+    """Canonical provider recheck after acquiring the shared Actions writer lock.
+
+    The workflow is the only owner of this invocation. Never trust an earlier
+    dispatcher route/canary, or classify unreadable GitHub history as healthy.
+    No GitHub write operations and no provider credentials are used here.
+    """
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False,
+                "terminal_authority": MODEL_AUTHORITY}
+
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    if os.environ.get("GITHUB_REF") != "refs/heads/main":
+        return held("GEMINI_WORKER_UNPROTECTED_DISPATCH_REF")
+    if repo != "gregoryharper84-ship-it/WOW-Dashboard":
+        return held("GEMINI_WORKER_REPOSITORY_UNTRUSTED")
+    if (not run_id.isdecimal() or int(run_id) <= 0
+            or not run_attempt.isdecimal() or not 1 <= int(run_attempt) <= 10
+            or not os.environ.get("GH_TOKEN")):
+        return held("GEMINI_WORKER_IDENTITY_UNVERIFIED")
+
+    def read_command(args: list[str]) -> str:
+        result = subprocess.run(args, check=False, capture_output=True,
+                                text=True, timeout=20)
+        if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError("GEMINI_WORKER_GITHUB_EVIDENCE_UNVERIFIED")
+        return result.stdout.strip()
+
+    try:
+        current_sha = read_command(["git", "rev-parse", "HEAD"])
+        # The workflow pins checkout to github.sha; compare both independently.
+        # A queued invocation is never allowed to claim a different revision.
+        dispatch_sha = os.environ.get("GITHUB_SHA", "")
+        if not _SHA.fullmatch(current_sha) or not _SHA.fullmatch(dispatch_sha):
+            return held("GEMINI_WORKER_CURRENT_SHA_INVALID")
+        if current_sha != dispatch_sha:
+            return held("GEMINI_WORKER_CHECKOUT_SHA_DRIFT")
+        runs = complete_gemini_run_inventory(read_command, repo)
+        history = latest_actual_provider_attempt(
+            runs,
+            lambda candidate_id, attempt: json.loads(read_command([
+                "gh", "api",
+                f"repos/{repo}/actions/runs/{candidate_id}/attempts/{attempt}/jobs?per_page=100",
+            ])),
+            current_run_id=int(run_id),
+            current_run_attempt=int(run_attempt),
+        )
+        if history["status"] != "VERIFIED_PROVIDER_HISTORY":
+            return held(history["code"])
+        last_actual = history["run"]
+        selected = [last_actual] if last_actual is not None else []
+        comparison: dict[str, Any] = {}
+        if selected and selected[0].get("conclusion") == "failure":
+            failed_sha = selected[0].get("headSha")
+            if not isinstance(failed_sha, str) or not _SHA.fullmatch(failed_sha):
+                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+            if failed_sha != current_sha:
+                comparison = json.loads(read_command([
+                    "gh", "api", f"repos/{repo}/compare/{failed_sha}...{current_sha}",
+                ]))
+        decision = recheck_auto_worker_provider(selected, comparison, current_sha, now=now)
+        # Durable typed result saved by workflow in an exact-run Actions artifact.
+        # The provider itself remains inaccessible to the recheck job.
+        return dict(decision, run_id=int(run_id), head_sha=current_sha)
+    except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return held("GEMINI_WORKER_GITHUB_EVIDENCE_UNVERIFIED")
+
 
 
 def select_incident(
@@ -332,6 +646,12 @@ def main(argv: list[str] | None = None) -> int:
     recovery.add_argument("--runs-file", required=True)
     recovery.add_argument("--comparison-file", required=True)
     recovery.add_argument("--current-sha", required=True)
+    worker_recheck = sub.add_parser("worker-auto-admit")
+    worker_recheck.add_argument("--runs-file", required=True)
+    worker_recheck.add_argument("--comparison-file", required=True)
+    worker_recheck.add_argument("--current-sha", required=True)
+    sub.add_parser("worker-auto-admit-github")
+    sub.add_parser("provider-history-github")
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
     verify = sub.add_parser("verify-candidate")
@@ -365,6 +685,16 @@ def main(argv: list[str] | None = None) -> int:
                 json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
                 args.current_sha,
             )
+        elif args.action == "worker-auto-admit":
+            result = recheck_auto_worker_provider(
+                json.loads(Path(args.runs_file).read_text(encoding="utf-8")),
+                json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
+                args.current_sha,
+            )
+        elif args.action == "worker-auto-admit-github":
+            result = recheck_auto_worker_github()
+        elif args.action == "provider-history-github":
+            result = read_provider_history_github()
         elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
         elif args.action == "validate-workspace":
@@ -380,7 +710,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
         "SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TRUSTED",
-        "TESTED_CANDIDATE", "RECOVERY_ADMITTED",
+        "TESTED_CANDIDATE", "RECOVERY_ADMITTED", "VERIFIED_PROVIDER_HISTORY",
     } else 2
 
 

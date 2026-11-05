@@ -26,6 +26,27 @@ WORKFLOW_NAME = "wow-v17-existing-pr-governance-review"
 CERTIFICATION_MODE = "EXISTING_PR_REVIEW_EVIDENCE"
 BOOTSTRAP_MODE = "TRUST_ROOT_BOOTSTRAP"
 ORDINARY_MODE = "ORDINARY_ENGINEERING"
+DETERMINISTIC_MODE = "CLASS_A_DETERMINISTIC"
+DETERMINISTIC_ASSURANCE = "ZERO_CREDIT_DETERMINISTIC_ONLY_NO_SEMANTIC_REVIEW"
+DETERMINISTIC_CHECKS = {
+    "WOW Independent QA exact-head": 5245832,
+    "WOW Release Authority exact-head": 5245853,
+}
+# Exact initial canary inventory, not a recursive directory allowlist.
+# New paths require a separately reviewed policy update. This cannot approve
+# arbitrary source inserted underneath the training directory.
+CLASS_A_EXACT_PATHS = frozenset({
+    "artifacts/wow-engine/learning/AGENT_TRAINING.md",
+    "artifacts/wow-engine/learning/README.md",
+    "artifacts/wow-engine/learning/challenges/reference.py",
+    "artifacts/wow-engine/learning/challenges/run_challenge_tests.py",
+    "artifacts/wow-engine/learning/challenges/starter.py",
+    "artifacts/wow-engine/learning/challenges/test_contracts.py",
+    "artifacts/wow-engine/learning/data/cases.json",
+    "artifacts/wow-engine/learning/evaluate.py",
+    "artifacts/wow-engine/learning/tests/test_evaluate.py",
+    "artifacts/wow-engine/test_v17_triple_d_learning_smoke.py",
+})
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_ID = 285088163
@@ -306,6 +327,29 @@ def _protected_paths(repo_root: Path) -> set[str]:
     return set(roots) | set(declared) | set(PROTECTED_PATHS)
 
 
+def _validate_class_a_files(files: Sequence[Mapping[str, Any]], *, repo_root: Path) -> None:
+    """Fail closed unless every changed and former path is preapproved, non-governance training source."""
+    _require(bool(files), "CLASS_A_DIFF_EMPTY")
+    _validate_protected_diff(files, repo_root=repo_root)
+    for file in files:
+        _require(file.get("status") in {"added", "modified", "changed"},
+                 "CLASS_A_CHANGE_TYPE_NOT_ALLOWED")
+        _require(file.get("previous_filename") is None, "CLASS_A_RENAME_OR_COPY_NOT_ALLOWED")
+        path = file["filename"]
+        _require(path in CLASS_A_EXACT_PATHS,
+                 "CLASS_A_PATH_NOT_ALLOWLISTED")
+
+
+def _deterministic_check(record: Mapping[str, Any], *, name: str) -> None:
+    summary = (record.get("output") or {}).get("summary")
+    _require(isinstance(summary, str) and summary.startswith(
+        "ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source review performed."
+    ), f"CLASS_A_ASSURANCE_LABEL_MISSING:{name}")
+    started = _timestamp(record.get("started_at"), "CLASS_A_CHECK_STARTED_AT")
+    completed = _timestamp(record.get("completed_at"), "CLASS_A_CHECK_COMPLETED_AT")
+    _require(completed >= started, f"CLASS_A_CHECK_TIME_INVALID:{name}")
+
+
 def _validate_automated_review(
     artifact: object,
     run: Mapping[str, Any] | None,
@@ -360,11 +404,12 @@ def build_receipt(
     automated_review: object | None = None,
     source_review_run: Mapping[str, Any] | None = None,
     source_review_artifact_id: int | None = None,
+    deterministic_class_a: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
-    if automated_review is None:
+    if automated_review is None and not deterministic_class_a:
         _require(
             clock.astimezone(timezone.utc) < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
             "TEMPORARY_FALLBACK_PROVIDER_SUNSET",
@@ -412,7 +457,14 @@ def build_receipt(
     _require(isinstance(reviews, list), "REVIEW_INVENTORY_INVALID")
     _require(isinstance(check_runs, list), "CHECK_INVENTORY_INVALID")
     _require(isinstance(workflow_runs, list), "WORKFLOW_INVENTORY_INVALID")
-    if automated_review is None:
+    if deterministic_class_a:
+        _require(automated_review is None and trusted_reviewers is None,
+                 "CLASS_A_CANNOT_IMPERSONATE_INDEPENDENT_REVIEW")
+        _validate_class_a_files(changed_files, repo_root=Path.cwd())
+        review = None
+        allowlist = []
+        receipt_schema_version = 4
+    elif automated_review is None:
         allowlist = _reviewer_allowlist(trusted_reviewers)
         review = _independent_approval(
             reviews,
@@ -469,12 +521,15 @@ def build_receipt(
         verified_workflows.append({"name": name, "path": path, "run_id": _positive_int(run.get("id"), "WORKFLOW_RUN_ID"),
                                    "head_sha": expected_head_sha, "status": "completed", "conclusion": "success"})
 
+    required_checks = {**REQUIRED_CHECKS, **DETERMINISTIC_CHECKS} if deterministic_class_a else REQUIRED_CHECKS
     verified_checks = {}
-    for name, app_id in REQUIRED_CHECKS.items():
+    for name, app_id in required_checks.items():
         check = _latest(check_runs, name=name, expected_sha=expected_head_sha, app_id=app_id)
         _require(check is not None, f"REQUIRED_CHECK_MISSING:{name}")
         _require(check.get("status") == "completed" and check.get("conclusion") == "success",
                  f"REQUIRED_CHECK_NOT_GREEN:{name}")
+        if name in DETERMINISTIC_CHECKS:
+            _deterministic_check(check, name=name)
         verified_checks[name] = {
             "id": _positive_int(check.get("id"), "CHECK_ID"),
             "app_id": app_id,
@@ -483,14 +538,14 @@ def build_receipt(
             "conclusion": "success",
         }
 
-    return {
+    receipt = {
         "receipt_schema_version": receipt_schema_version,
         "workflow_name": WORKFLOW_NAME,
         "repository": expected_repository,
         "workflow_run_id": str(expected_workflow_run_id),
         "workflow_run_attempt": expected_workflow_run_attempt,
         "created_at_utc": clock.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "certification_mode": CERTIFICATION_MODE,
+        "certification_mode": DETERMINISTIC_MODE if deterministic_class_a else CERTIFICATION_MODE,
         "fallback_expires_utc": (
             clock.astimezone(timezone.utc) + REVIEW_RECEIPT_MAX_AGE
         ).isoformat().replace("+00:00", "Z"),
@@ -508,10 +563,13 @@ def build_receipt(
         "independent_review": review,
         "required_workflows": verified_workflows,
         "required_checks": verified_checks,
-        "evidence_state": "REVIEW_EVIDENCE_VERIFIED",
+        "evidence_state": "CLASS_A_DETERMINISTIC_VERIFIED" if deterministic_class_a else "REVIEW_EVIDENCE_VERIFIED",
         "terminal_authority": TERMINAL_AUTHORITY,
         "can_execute": False,
     }
+    if deterministic_class_a:
+        receipt["assurance"] = DETERMINISTIC_ASSURANCE
+    return receipt
 
 
 def verify_receipt(
@@ -525,6 +583,7 @@ def verify_receipt(
     expected_pr_number: int,
     live_reviews: Sequence[Mapping[str, Any]],
     source_review_run: Mapping[str, Any] | None = None,
+    live_checks: Sequence[Mapping[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> None:
     keys = {
@@ -534,12 +593,15 @@ def verify_receipt(
         "independent_review", "required_workflows", "required_checks", "evidence_state",
         "terminal_authority", "can_execute",
     }
-    _exact_keys(receipt, keys, "RECEIPT")
     schema_version = receipt.get("receipt_schema_version")
-    _require(schema_version in {2, 3}, "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
+    _require(schema_version in {2, 3, 4}, "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
+    if schema_version == 4:
+        keys.add("assurance")
+    _exact_keys(receipt, keys, "RECEIPT")
     _require(expected_workflow_name == WORKFLOW_NAME and receipt.get("workflow_name") == WORKFLOW_NAME,
              "RECEIPT_WORKFLOW_IDENTITY_MISMATCH")
-    _require(receipt.get("certification_mode") == CERTIFICATION_MODE, "CERTIFICATION_MODE_MISMATCH")
+    _require(receipt.get("certification_mode") == (DETERMINISTIC_MODE if schema_version == 4 else CERTIFICATION_MODE),
+             "CERTIFICATION_MODE_MISMATCH")
     _require(receipt.get("repository") == expected_repository == CANONICAL_REPOSITORY,
              "REPOSITORY_IDENTITY_MISMATCH")
     _require(
@@ -588,7 +650,13 @@ def verify_receipt(
     _validate_protected_diff(files, repo_root=Path.cwd())
 
     review = receipt.get("independent_review")
-    if schema_version == 2:
+    if schema_version == 4:
+        _require(receipt.get("assurance") == DETERMINISTIC_ASSURANCE,
+                 "CLASS_A_ASSURANCE_IDENTITY_MISMATCH")
+        _validate_class_a_files(files, repo_root=Path.cwd())
+        _require(review is None and receipt.get("trusted_reviewers") == [],
+                 "CLASS_A_MUST_NOT_CLAIM_INDEPENDENT_REVIEW")
+    elif schema_version == 2:
         allowlist = _reviewer_allowlist(receipt.get("trusted_reviewers"))
         review = _exact_keys(
             review,
@@ -615,7 +683,7 @@ def verify_receipt(
         )
         _positive_int(review.get("review_id"), "REVIEW_ID")
         _timestamp(review.get("submitted_at"), "REVIEW_SUBMITTED_AT")
-    else:
+    elif schema_version == 3:
         _require(receipt.get("trusted_reviewers") == [], "AUTOMATED_REVIEW_MUST_NOT_CARRY_HUMAN_ALLOWLIST")
         review = _exact_keys(
             review,
@@ -685,8 +753,12 @@ def verify_receipt(
     _require(set(workflow_by_name) == set(REQUIRED_WORKFLOWS), "REQUIRED_WORKFLOW_INVENTORY_INCOMPLETE")
 
     checks = receipt.get("required_checks")
-    _exact_keys(checks, set(REQUIRED_CHECKS), "REQUIRED_CHECKS")
-    for name, app_id in REQUIRED_CHECKS.items():
+    required_checks = {**REQUIRED_CHECKS, **DETERMINISTIC_CHECKS} if schema_version == 4 else REQUIRED_CHECKS
+    _exact_keys(checks, set(required_checks), "REQUIRED_CHECKS")
+    if schema_version == 4:
+        _require(isinstance(live_checks, Sequence) and not isinstance(live_checks, (str, bytes)),
+                 "CLASS_A_LIVE_CHECKS_MISSING")
+    for name, app_id in required_checks.items():
         check = _exact_keys(checks.get(name), {"id", "app_id", "head_sha", "status", "conclusion"},
                             "REQUIRED_CHECK")
         _positive_int(check.get("id"), "CHECK_ID")
@@ -694,7 +766,15 @@ def verify_receipt(
         _require(check.get("head_sha") == expected_head_sha, f"REQUIRED_CHECK_HEAD_MISMATCH:{name}")
         _require(check.get("status") == "completed" and check.get("conclusion") == "success",
                  f"REQUIRED_CHECK_NOT_GREEN:{name}")
-    _require(receipt.get("evidence_state") == "REVIEW_EVIDENCE_VERIFIED",
+        if schema_version == 4:
+            live = _latest(live_checks, name=name, expected_sha=expected_head_sha, app_id=app_id)
+            _require(live is not None, f"CLASS_A_LIVE_CHECK_MISSING_OR_FOREIGN:{name}")
+            _require(live.get("status") == "completed" and live.get("conclusion") == "success",
+                     f"CLASS_A_LIVE_CHECK_NOT_GREEN:{name}")
+            _require(check.get("id") == live.get("id"), f"CLASS_A_LIVE_CHECK_REPLACED:{name}")
+            if name in DETERMINISTIC_CHECKS:
+                _deterministic_check(live, name=name)
+    _require(receipt.get("evidence_state") == ("CLASS_A_DETERMINISTIC_VERIFIED" if schema_version == 4 else "REVIEW_EVIDENCE_VERIFIED"),
              "REVIEW_EVIDENCE_NOT_VERIFIED")
     _require(receipt.get("terminal_authority") == TERMINAL_AUTHORITY, "TERMINAL_AUTHORITY_MISMATCH")
     _require(receipt.get("can_execute") is False, "CAN_EXECUTE_INVARIANT_VIOLATED")
@@ -712,7 +792,16 @@ def classify_changed_files(files: object, *, repo_root: Path, expected_count: ob
         for path in (item["filename"], item.get("previous_filename")):
             if path is not None and _path_is_trust_root(path, protected):
                 trust = True
-    return BOOTSTRAP_MODE if trust else ORDINARY_MODE
+    if trust:
+        return BOOTSTRAP_MODE
+    if normalized and all(
+        item["filename"] in CLASS_A_EXACT_PATHS
+        and item["previous_filename"] is None
+        and item["status"] in {"added", "modified", "changed"}
+        for item in normalized
+    ):
+        return DETERMINISTIC_MODE
+    return ORDINARY_MODE
 
 
 def _owner_approval(reviews: Sequence[Mapping[str, Any]], *, head_sha: str) -> dict[str, Any]:
@@ -978,6 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workflow-run-attempt", type=int)
     parser.add_argument("--classify", action="store_true")
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--deterministic-class-a", action="store_true")
     args = parser.parse_args(argv)
 
     def load_json(path: Path) -> Any:
@@ -996,6 +1086,8 @@ def main(argv: list[str] | None = None) -> int:
                 expected_count=pr.get("changed_files"),
             ))
             return 0
+        _require(not (args.bootstrap and args.deterministic_class_a),
+                 "CLASS_A_BOOTSTRAP_MODE_CONFLICT")
         if args.bootstrap and args.evidence is None:
             raise ExistingPrGovernanceReceiptError("BOOTSTRAP_REQUIRES_EVIDENCE")
         if args.evidence:
@@ -1032,7 +1124,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 verified_status = "TRUST_ROOT_BOOTSTRAP_VERIFIED"
             else:
-                if args.source_review_json is not None:
+                if args.deterministic_class_a:
+                    _require(args.trusted_reviewers_json is None and args.source_review_json is None
+                             and args.source_review_run_json is None and args.source_review_artifact_id is None,
+                             "CLASS_A_REVIEW_MODE_CONFLICT")
+                    receipt = build_receipt(
+                        payload,
+                        expected_repository=args.repository,
+                        expected_head_sha=args.head_sha,
+                        expected_head_ref=args.head_ref,
+                        expected_pr_number=args.pr_number,
+                        expected_incident_id=args.incident_id,
+                        expected_workflow_run_id=args.workflow_run_id,
+                        expected_workflow_run_attempt=args.workflow_run_attempt,
+                        deterministic_class_a=True,
+                    )
+                elif args.source_review_json is not None:
                     _require(args.trusted_reviewers_json is None,
                              "SOURCE_REVIEW_AND_HUMAN_ALLOWLIST_CONFLICT")
                     _require(args.source_review_run_json is not None,
@@ -1089,8 +1196,9 @@ def main(argv: list[str] | None = None) -> int:
                         load_json(args.source_review_run_json)
                         if args.source_review_run_json is not None else None
                     ),
+                    live_checks=payload["check_runs"] if args.deterministic_class_a else None,
                 )
-                verified_status = "REVIEW_EVIDENCE_VERIFIED"
+                verified_status = "CLASS_A_DETERMINISTIC_VERIFIED" if args.deterministic_class_a else "REVIEW_EVIDENCE_VERIFIED"
             args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         else:
             receipt = load_json(args.receipt)
@@ -1139,8 +1247,10 @@ def main(argv: list[str] | None = None) -> int:
                     expected_pr_number=args.pr_number,
                     live_reviews=live_reviews,
                     source_review_run=source_run,
+                    live_checks=(load_json(args.live_checks_json) if args.live_checks_json is not None else None),
                 )
-                verified_status = "REVIEW_EVIDENCE_VERIFIED"
+                verified_status = ("CLASS_A_DETERMINISTIC_VERIFIED" if receipt.get("receipt_schema_version") == 4
+                                   else "REVIEW_EVIDENCE_VERIFIED")
     except ExistingPrGovernanceReceiptError as exc:
         print(json.dumps({"status": "HOLD", "reason": str(exc)}, sort_keys=True))
         return 1

@@ -515,6 +515,7 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
         expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
         scorer=lambda *args, **kwargs: raw,
         calibrator=lambda *args, **kwargs: calibrated,
+        clock=lambda: KICKOFF - timedelta(minutes=29),
         **_score_context(snapshot),
     )
     assert result["static_calibration_lower_diagnostic"] == 0.41
@@ -541,6 +542,7 @@ def test_invoked_scorer_failure_is_not_collapsed_to_model_unavailable():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=fail,
+            clock=lambda: KICKOFF - timedelta(minutes=29),
             **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_SCORER_FAILED"
@@ -564,6 +566,7 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=invalid_output,
+            clock=lambda: KICKOFF - timedelta(minutes=29),
             **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"

@@ -28,20 +28,27 @@ permissions:
   pull-requests: read
 
 concurrency:
+  # Same global writer mutex. queue: max is GitHub's native pending cap
+  # (100), not a second controller or a per-sport writer lane.
   group: wow-v17-engineering-implementation-single-writer
   cancel-in-progress: false
+  queue: max
 
 jobs:
   gemini-headless:
     name: Gemini AMRT isolated repair candidate (never a release actor)
+    # A workflow_dispatch aimed at a feature branch/tag must never execute
+    # unmerged admission/fencing code with workflow credentials.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: wow-engineering
     steps:
-      - name: Checkout protected main (no persisted credential)
+      - name: Checkout exact dispatch SHA (no persisted credential)
         uses: actions/checkout@v6
         with:
-          ref: main
+          # Never silently execute a different runtime when main advances in queue.
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -71,6 +78,18 @@ jobs:
             --auto-enabled "$AUTO_ENABLED" --mode "$INVOCATION_MODE" \
             > "$RUNNER_TEMP/wow-gemini/admission.json"
           echo "admitted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck provider cooldown in serialized worker
+        if: steps.admission.outputs.admitted == 'true' && inputs.invocation_mode == 'auto'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Save the exact run/SHA typed no-spend receipt even when held.
+          # This step never invokes Gemini or acquires additional authority.
+          python artifacts/wow-engine/v17/engineering_gemini_headless.py worker-auto-admit-github \
+            > "$RUNNER_TEMP/wow-gemini/provider-recheck.json"
 
       - name: Fence unresolved remote writers
         if: steps.admission.outputs.admitted == 'true'
@@ -256,6 +275,7 @@ jobs:
           retention-days: 7
           path: |
             ${{ runner.temp }}/wow-gemini/admission.json
+            ${{ runner.temp }}/wow-gemini/provider-recheck.json
             ${{ runner.temp }}/wow-gemini/selection.json
             ${{ runner.temp }}/wow-gemini/workspace.json
             ${{ runner.temp }}/wow-gemini/model-receipt.json

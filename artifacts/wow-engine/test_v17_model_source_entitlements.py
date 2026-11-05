@@ -155,3 +155,14 @@ def test_all_four_unbuilt_fitted_sports_have_typed_source_contracts(monkeypatch)
         assert sport_sources
         assert all(source.probability_source is False and source.can_execute is False
                    for source in sport_sources.values())
+
+def test_ncaaf_sdv_open_release_candidate_not_certified_without_identity_replay():
+    source = SOURCES["SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS"]
+    readiness = source_readiness(source.source_id)
+    assert readiness.ready_for_candidate_training is True
+    assert source.sports == ("NCAAF",)
+    assert source.use == "TRAINING_OPEN_LICENSED"
+    assert source.license_id == "CC-BY-4.0"
+    assert source.attribution_required is True
+    assert source.certification_source_review_required is True
+    assert source.probability_source is False and source.can_execute is False

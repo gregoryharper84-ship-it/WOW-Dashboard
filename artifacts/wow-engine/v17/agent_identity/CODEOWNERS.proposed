@@ -15,6 +15,7 @@
 /artifacts/wow-engine/v17/engineering_incident_identity.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_effectiveness.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_provider_worker_admission.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_gemini_headless.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_authorized_adoption.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py @gregoryharper84-ship-it

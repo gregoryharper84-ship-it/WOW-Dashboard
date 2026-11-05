@@ -20,6 +20,11 @@ jobs:
     env:
       WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
       WOW_SPORTSDATAIO_API_KEY: ${{ secrets.WOW_SPORTSDATAIO_API_KEY }}
+      # Optional public-web enrichment. Off unless explicitly configured.
+      WOW_FIRECRAWL_ENABLED: ${{ vars.WOW_FIRECRAWL_ENABLED || 'false' }}
+      WOW_FIRECRAWL_API_KEY: ${{ secrets.WOW_FIRECRAWL_API_KEY }}
+      WOW_FIRECRAWL_ALLOWED_DOMAINS: ${{ vars.WOW_FIRECRAWL_ALLOWED_DOMAINS }}
+      WOW_FIRECRAWL_TARGETS_JSON: ${{ vars.WOW_FIRECRAWL_TARGETS_JSON || '[]' }}
       WOW_CAN_EXECUTE: "false"
     steps:
       - uses: actions/checkout@v4

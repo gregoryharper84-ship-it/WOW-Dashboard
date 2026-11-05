@@ -18,6 +18,12 @@ on:
       - 'artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py'
       - 'artifacts/wow-engine/v17/render_deployment_pointer.py'
       - 'artifacts/wow-engine/v17/test_render_deployment_pointer.py'
+      - 'artifacts/wow-engine/v17/engineering_fenced_writer.py'
+      - 'artifacts/wow-engine/v17/engineering_fenced_mutation_cli.py'
+      - 'artifacts/wow-engine/migrations/20261027_writer_mutation_fence_REVIEW_ONLY.sql'
+      - 'artifacts/wow-engine/tests/test_v17_engineering_fenced_writer.py'
+      - 'artifacts/wow-engine/tests/test_v17_fenced_mutation_cli.py'
+      - 'artifacts/wow-engine/tests/test_v17_writer_epoch_postgres.py'
 permissions:
   contents: read
   id-token: write # OIDC only for signed *test-evidence* provenance
@@ -53,6 +59,9 @@ jobs:
       PGPASSWORD: local-ci-test-only
       WOW_RELEASE_ISOLATED_TEST_DSN: postgresql://postgres:local-ci-test-only@127.0.0.1:5432/wow_release_fence_test
       WOW_RELEASE_ISOLATED_TEST_ATTESTATION: NONPRODUCTION_EPHEMERAL_ONLY
+      WOW_WRITER_ISOLATED_TEST_DSN: postgresql://postgres:local-ci-test-only@127.0.0.1:5432/wow_release_fence_test
+      WOW_WRITER_ISOLATED_TEST_ATTESTATION: NONPRODUCTION_EPHEMERAL_ONLY
+      PYTHONPATH: artifacts/wow-engine
     steps:
       - name: Checkout exact same-repo pull-request head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -118,6 +127,9 @@ jobs:
             artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
             artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
             artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
+            artifacts/wow-engine/tests/test_v17_engineering_fenced_writer.py \
+            artifacts/wow-engine/tests/test_v17_fenced_mutation_cli.py \
+            artifacts/wow-engine/tests/test_v17_writer_epoch_postgres.py \
             --junitxml=release-evidence/junit.xml \
             2>&1 | tee release-evidence/pytest.log
       - name: Persist hashed non-secret evidence
@@ -140,6 +152,12 @@ jobs:
             artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
             artifacts/wow-engine/v17/render_deployment_pointer.py \
             artifacts/wow-engine/v17/test_render_deployment_pointer.py \
+            artifacts/wow-engine/v17/engineering_fenced_writer.py \
+            artifacts/wow-engine/v17/engineering_fenced_mutation_cli.py \
+            artifacts/wow-engine/migrations/20261027_writer_mutation_fence_REVIEW_ONLY.sql \
+            artifacts/wow-engine/tests/test_v17_engineering_fenced_writer.py \
+            artifacts/wow-engine/tests/test_v17_fenced_mutation_cli.py \
+            artifacts/wow-engine/tests/test_v17_writer_epoch_postgres.py \
             > release-evidence/source-hashes.txt
           (cd release-evidence && sha256sum source-identity.txt source-hashes.txt junit.xml pytest.log 2>/dev/null || true) \
             > release-evidence/evidence-hashes.txt
