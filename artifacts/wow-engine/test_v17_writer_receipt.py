@@ -104,3 +104,19 @@ def test_writer_receipt_counts_only_observed_markers(
     assert receipt["independent_approval"] is False
     assert receipt["production_verified"] is False
     assert "actual writer receipt" in summary.read_text()
+
+
+def test_preflight_exposes_review_capacity_reason_without_claiming_admission():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    source = next(
+        step for step in workflow["jobs"]["adoption-readonly-preflight"]["steps"]
+        if step.get("id") == "source"
+    )
+    script = source["run"]
+    assert "Selection detail: " in script
+    assert '{status, detail, pr_number, source_sha, can_execute}' in script
+    assert "Writer jobs admitted | 0 (not yet admitted at preflight)" in script
+    assert "Writer jobs completed | 0 (not yet completed at preflight)" in script
+    assert subprocess.run(
+        ["bash", "-n"], input=script, text=True, capture_output=True, check=False,
+    ).returncode == 0
