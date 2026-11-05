@@ -114,3 +114,21 @@ def test_safe_upstream_message_redacts_every_configured_alias(monkeypatch):
     assert message == "[REDACTED] [REDACTED] rejected"
     assert "paid-secret" not in message
     assert "free-secret" not in message
+
+
+def test_exhausted_invalid_keys_are_typed_credential_failure_without_secrets(monkeypatch):
+    for name in api.ODDS_API_KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "first-secret")
+    monkeypatch.setenv("ODDS_API_FREE_KEY", "second-secret")
+
+    monkeypatch.setattr(api, "_http_get", lambda url, params: _response(401, {"error_code": "INVALID_KEY"}))
+    result = api._proxy_get("/sports", {"all": "true"})
+    body = json.loads(result.body)
+
+    assert result.status_code == 401
+    assert body["failure_class"] == "PROVIDER_CREDENTIAL_INVALID"
+    assert body["code"] == "ODDS_API_UPSTREAM_ERROR"
+    assert body["can_execute"] is False
+    assert "first-secret" not in result.body.decode()
+    assert "second-secret" not in result.body.decode()

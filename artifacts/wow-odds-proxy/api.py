@@ -217,6 +217,12 @@ def _upstream_error_response(response: httpx.Response, code: str = "ODDS_API_UPS
         "upstream_status": response.status_code,
         "can_execute": False,
     }
+    # Additive typed classification: an upstream 401/403 after the key ladder is
+    # exhausted is a provider-credential/entitlement failure, never "no market".
+    if response.status_code == 401:
+        body["failure_class"] = "PROVIDER_CREDENTIAL_INVALID"
+    elif response.status_code == 403:
+        body["failure_class"] = "PROVIDER_ENTITLEMENT_DENIED"
     message = _safe_upstream_message(response)
     if message:
         body["message"] = message
