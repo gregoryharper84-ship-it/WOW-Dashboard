@@ -132,3 +132,13 @@ def test_exhausted_invalid_keys_are_typed_credential_failure_without_secrets(mon
     assert body["can_execute"] is False
     assert "first-secret" not in result.body.decode()
     assert "second-secret" not in result.body.decode()
+
+
+def test_typed_upstream_auth_failures_are_in_the_canonical_registry():
+    """Keep odds-proxy typed classifications aligned with V17 failure taxonomy."""
+    from pathlib import Path
+
+    registry = (Path(__file__).resolve().parents[1] / "wow-engine" / "docs" /
+                "failure_codes.md").read_text()
+    for code in ("PROVIDER_CREDENTIAL_INVALID", "PROVIDER_ENTITLEMENT_DENIED"):
+        assert f"| `{code}` |" in registry

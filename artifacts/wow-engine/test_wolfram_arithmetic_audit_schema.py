@@ -66,3 +66,11 @@ def test_arithmetic_ledger_verdict_check_is_bound_to_matching_provider():
     # Fail-closed migration only changes CHECKs; do not weaken ACLs or immutability.
     assert "grant " not in sql.lower()
     assert "disable row level security" not in sql.lower()
+
+
+def test_python_audit_ledger_unproven_failure_code_is_registered():
+    """A ledger-persistence failure must retain its distinct typed identity."""
+    import python_arithmetic_auditor as pa
+
+    registry = (Path(__file__).parent / "docs" / "failure_codes.md").read_text()
+    assert f"| `{pa.LEDGER_WRITE_UNPROVEN}` |" in registry
