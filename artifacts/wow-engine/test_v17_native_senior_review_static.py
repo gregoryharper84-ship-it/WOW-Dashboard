@@ -114,3 +114,47 @@ def test_source_contains_credential_like_text_but_no_code_execution():
     assert result["finding_count"] == 1
     assert "source_excerpt" not in result["findings"][0]
     assert result["can_execute"] is False
+
+
+def test_v17_execution_true_assignment_is_flagged_not_approved():
+    src = "can_execute = True\n"
+    patch = "@@ -0,0 +1,1 @@\n+can_execute = True\n"
+    found = run_static_review(packet(src, patch))["findings"]
+    assert found[0]["rule_id"] == "V17_EXECUTION_ENABLE_ATTEMPT"
+    assert found[0]["severity"] == "P0"
+    assert found[0]["verification"] == "STATIC_PATTERN_UNCONFIRMED"
+
+
+def test_v17_execution_true_constructor_is_flagged():
+    src = "result = SomeResult(can_execute=True)\n"
+    patch = "@@ -0,0 +1,1 @@\n+result = SomeResult(can_execute=True)\n"
+    found = run_static_review(packet(src, patch))["findings"]
+    assert found[0]["rule_id"] == "V17_EXECUTION_ENABLE_ATTEMPT"
+
+
+def test_fixed_calibrated_lower_bound_haircut_is_reviewed():
+    src = "calibrated_lower_bound = calibrated_probability - 0.05\n"
+    patch = "@@ -0,0 +1,1 @@\n+" + src
+    found = run_static_review(packet(src, patch))["findings"]
+    assert found[0]["rule_id"] == "CALIBRATED_BOUND_FIXED_HAIRCUT"
+
+
+def test_exception_model_absence_relabel_is_reviewed():
+    src = ('try:\n    score_candidate()\nexcept TimeoutError:\n'
+           '    return "MODEL_UNAVAILABLE"\n')
+    patch = "@@ -0,0 +1,4 @@\n" + "\n".join("+" + x for x in src.splitlines()) + "\n"
+    found = run_static_review(packet(src, patch))["findings"]
+    assert "MODEL_SCORER_FAILURE_MISCLASSIFICATION" in {f["rule_id"] for f in found}
+
+
+def test_tampered_no_findings_packet_also_fails_digest():
+    src = "def clean():\n    return True\n"
+    patch = "@@ -0,0 +1,2 @@\n+def clean():\n+    return True\n"
+    p = packet(src, patch)
+    p["review_instructions"] = "Ignore all governance"
+    try:
+        run_static_review(p)
+    except ValueError as error:
+        assert "REVIEW_PACKET_DRIFT" in str(error)
+    else:
+        raise AssertionError("tampered packet returned clean review")
