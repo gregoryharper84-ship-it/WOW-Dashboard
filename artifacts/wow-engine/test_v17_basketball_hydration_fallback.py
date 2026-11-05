@@ -866,9 +866,9 @@ def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
                 event_id="nba-june-2026", game_date="2026-06-13",
             )]
         if season == 2027:
-            return [_sportsdataverse_row(
+            return [dict(_sportsdataverse_row(
                 event_id="nba-oct-2027", game_date="2026-10-26",
-            )]
+            ), season="2027")]
         raise AssertionError("unexpected season")
 
     dates = iter([date(2026, 6, 13), date(2026, 10, 26)])
@@ -1011,6 +1011,7 @@ def test_sdv_same_eastern_day_started_after_capture_is_not_settled():
     """Completion in a later release cannot be replayed before tip-off."""
     for sport in ("NBA", "WNBA"):
         row = _sportsdataverse_row(event_id="late-flag", game_date="2026-11-05")
+        row["season"] = "2027"
         row["game_date_time"] = "2026-11-05T19:00:00-05:00"
         assert hydration.normalize_sportsdataverse_game(
             row, sport, "2026-11-05T22:00:00Z",
@@ -1142,6 +1143,7 @@ def test_live_hydrate_captures_after_fetch_but_replay_cutoff_stays_fixed(monkeyp
 
     row = _sportsdataverse_row(game_date="2026-11-05")
     row["_wow_source_observed_at"] = "2026-11-06T08:00:02Z"
+    row["season"] = "2027"
     monkeypatch.setattr(hydration, "datetime", Clock)
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [row])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_: None)
@@ -1156,6 +1158,7 @@ def test_live_hydrate_captures_after_fetch_but_replay_cutoff_stays_fixed(monkeyp
 
 
 def test_sdv_october_final_with_missing_season_uses_release_2027():
+    """Optional missing season metadata inherits the acquired release label."""
     row = _sportsdataverse_row(game_date="2026-10-27")
     row.pop("season")
     result = hydration.normalize_sportsdataverse_game(
@@ -1167,26 +1170,31 @@ def test_sdv_october_final_with_missing_season_uses_release_2027():
 
 
 def test_sdv_contradictory_completed_postponed_status_is_not_settled():
+    """A completed Boolean cannot turn a postponed event into a result."""
     for field, bad_status in (
         ("status_type_description", "Postponed"),
         ("status_type_name", "STATUS_CANCELLED"),
     ):
         row = _sportsdataverse_row(game_date="2026-10-27")
         row[field] = bad_status
+        row["season"] = "2027"
         assert hydration.normalize_sportsdataverse_game(
             row, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
         ) is None
 
 
 def test_sdv_invalid_fractional_and_nonfinite_scores_fail_closed():
+    """Invalid outcomes are held while legitimate integer encodings survive."""
     for score in ("111.5", "-1", "Infinity"):
         row = _sportsdataverse_row(game_date="2026-10-27")
         row["home_score"] = score
+        row["season"] = "2027"
         assert hydration.normalize_sportsdataverse_game(
             row, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
         ) is None
 
     good = _sportsdataverse_row(game_date="2026-10-27", home_score="111.0")
+    good["season"] = "2027"
     result = hydration.normalize_sportsdataverse_game(
         good, "NBA", "2026-10-28T07:00:00Z", source_release_year=2027
     )

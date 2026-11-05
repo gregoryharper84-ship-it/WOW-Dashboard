@@ -305,6 +305,7 @@ def normalize_sportsdataverse_game(
     retrieved_at: str,
     *, source_release_year: int | None = None,
 ) -> dict[str, Any] | None:
+    """Admit observed settled outcomes only when source identity is consistent."""
     completed = str(raw.get("status_type_completed") or "").strip().lower() in {"1", "true", "yes"}
     # A completed flag can contradict an explicit postponed/cancelled status.
     # Never turn a non-settlement into an official training outcome.
@@ -313,6 +314,17 @@ def normalize_sportsdataverse_game(
         for field in ("status_type_description", "status_type_name")
     ).replace("_", " ").replace("-", " ")
     if not completed or any(token in status_text for token in ("postpon", "cancel", "no contest")):
+        return None
+    # Optional status fields on older snapshots may be absent, but explicit
+    # active/scheduled evidence must never be overridden by a completed flag.
+    state = str(raw.get("status_type_state") or "").strip().lower()
+    name = str(raw.get("status_type_name") or "").strip().upper()
+    description = str(raw.get("status_type_description") or "").strip().lower()
+    if (
+        (state and state != "post")
+        or (name and name != "STATUS_FINAL" and not name.startswith("STATUS_FINAL_"))
+        or (description and description.split("/", 1)[0] != "final")
+    ):
         return None
     # SportsDataverse includes preseason and postseason schedules in the same
     # source family. A completed game is not automatically a regular-season
@@ -383,6 +395,8 @@ def normalize_sportsdataverse_game(
             else year
         )
         release_year = int(source_release_year) if source_release_year is not None else season
+        if season != release_year:
+            return None
     except (ValueError, TypeError, OverflowError, InvalidOperation):
         return None
     source_url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=release_year)
