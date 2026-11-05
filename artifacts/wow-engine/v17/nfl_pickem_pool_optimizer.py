@@ -509,6 +509,7 @@ def build_pickem_board(
             "toss_up_review_count": 0,
             "deep_research_context_count": 0,
             "deep_research_model_recheck_count": 0,
+            "deep_research_analyst_review_count": 0,
             "picks": [],
             "blocked": [],
             "can_execute": False,
@@ -587,6 +588,10 @@ def build_pickem_board(
         "deep_research_model_recheck_count": sum(
             1 for pick in picks
             if pick.get("deep_research_audit", {}).get("model_recheck_required") is True
+        ),
+        "deep_research_analyst_review_count": sum(
+            1 for pick in picks
+            if pick.get("deep_research_audit", {}).get("analyst_review_required") is True
         ),
         "picks": picks,
         "blocked": blocked,
