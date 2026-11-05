@@ -324,3 +324,24 @@ def test_pr_base_moving_before_incident_handoff_is_typed_hold():
     with pytest.raises(reviewer.ReviewHold, match="PR_BASE_SHA_CHANGED"):
         reviewer.post_existing_incident_handoff(client, result=result)
     assert client.incident_writes == []
+
+
+def test_high_comment_volume_incident_finds_no_duplicate_without_early_hold():
+    class CrowdedIncident(IncidentGitHub):
+        def request(self, path, *, method="GET", body=None):
+            if path.startswith("/issues/2136/comments?per_page=100&page="):
+                page = int(path.rsplit("=", 1)[-1])
+                if page <= 5:
+                    return [{"id": 9000 + i + 100 * page,
+                             "body": "unrelated issue history",
+                             "user": {"login": "other"}} for i in range(100)]
+                return []
+            return super().request(path, method=method, body=body)
+
+    client = CrowdedIncident()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert reviewer.post_existing_incident_handoff(client, result=result) == (
+        "EXISTING_INCIDENT_NOTE_CREATED"
+    )
+    assert len(client.incident_writes) == 1
+    assert client.incident_writes[0][0] == "POST"
