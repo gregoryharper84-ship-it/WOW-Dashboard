@@ -333,6 +333,43 @@ def test_midnight_crossover_fixture_is_accepted_within_tolerance():
     assert out["can_execute"] is False
 
 
+@pytest.mark.parametrize("invalid_id", [None, "", "not-an-id", "401878758-abc", "9" * 21, "٤٠١٨٧٨٧٥٨"])
+@pytest.mark.parametrize("with_valid_match", [False, True])
+@pytest.mark.parametrize("bad_first", [False, True])
+def test_matching_malformed_soccer_id_blocks_uniqueness_instead_of_disappearing(
+    invalid_id, with_valid_match, bad_first
+):
+    # Even if a good second fixture is present, a matching malformed ESPN ID
+    # makes unique event identity unprovable. Do not publish SOCCER:<bad-id>.
+    malformed = scoreboard_event(invalid_id)
+    valid = scoreboard_event("401800099")
+    rows = ([malformed, valid] if bad_first else [valid, malformed]) if with_valid_match else [malformed]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+    assert exc.value.detail == "matching event id invalid"
+
+
+def test_nonmatching_malformed_soccer_id_does_not_pollute_valid_identity():
+    # A bad ID attached to different participants is not the requested
+    # fixture and cannot erase the single fully verified matching event.
+    unrelated = scoreboard_event(
+        None, home=("999", "Unrelated Club", "Other"),
+    )
+    valid = scoreboard_event("401800098")
+    out = _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [unrelated, valid]}))
+    assert out["event_id"] == "SOCCER:401800098"
+    assert out["can_execute"] is False
+
+
+def test_outside_kickoff_window_bad_id_is_not_a_matching_candidate():
+    tomorrow = scoreboard_event(None, date="2026-11-08T12:30:00Z")
+    valid = scoreboard_event("401800097")
+    out = _resolve(fetcher=fetcher_for({("eng.1", "20261107"): [tomorrow, valid]}))
+    assert out["event_id"] == "SOCCER:401800097"
+    assert out["can_execute"] is False
+
+
 def test_conflicting_same_id_kickoff_never_proves_canonical_identity():
     rows = [
         scoreboard_event("401800014", date="2026-11-07T12:30:00Z"),
