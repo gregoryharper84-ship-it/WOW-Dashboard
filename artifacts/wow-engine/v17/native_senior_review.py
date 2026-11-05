@@ -171,7 +171,9 @@ def build_review_packet(
     invalid_python = []
     for path, source in sorted(repository_sources.items()):
         imports, parsed = _imports(path, source)
-        if not parsed and path in changed_patches:
+        if not parsed:
+            # Every supplied Python context file participates in the claimed
+            # dependency scan. An unparseable caller cannot be silently omitted.
             invalid_python.append(path)
         if path not in changed_patches:
             for changed_path in changed_paths:
