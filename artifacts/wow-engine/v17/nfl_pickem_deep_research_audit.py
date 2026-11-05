@@ -41,11 +41,11 @@ ALLOWED_RECHECK_FLAGS = frozenset({
 def _instant(value: Any) -> datetime | None:
     try:
         result = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
-    except (TypeError, ValueError):
+        if result.tzinfo is None:
+            return None
+        return result.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
         return None
-    if result.tzinfo is None:
-        return None
-    return result.astimezone(timezone.utc)
 
 
 def audit_nfl_pickem_deep_research(row: Mapping[str, Any]) -> dict[str, Any]:

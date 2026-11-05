@@ -427,6 +427,42 @@ def test_new_material_evidence_after_model_requests_rescore_not_manual_flip():
     assert out["selected_probability"] == 0.58
 
 
+@pytest.mark.parametrize("field", ["kickoff", "model", "observation"])
+@pytest.mark.parametrize("extreme", [
+    "0001-01-01T00:00:00+01:00",
+    "9999-12-31T23:59:59-01:00",
+])
+@pytest.mark.parametrize("failed", [False, True])
+def test_research_timestamp_overflow_is_typed_without_changing_pick_or_failure(field, extreme, failed):
+    row = _row("evt-time-overflow", "NE", "BUF", 0.72)
+    row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T19:00:00+00:00"
+    row["pickem_deep_research_context"] = _research_context(row)
+    if failed:
+        row["code"] = "MODEL_SCORER_FAILED"
+        row["blockers"] = ["MODEL_SCORER_FAILED"]
+    if field == "kickoff":
+        row["candidate_envelope"]["event_start_time_utc"] = extreme
+    elif field == "model":
+        row["model_timestamp"] = extreme
+    else:
+        row["pickem_deep_research_context"]["observed_at"] = extreme
+
+    baseline = deepcopy(row)
+    baseline.pop("pickem_deep_research_context")
+    expected = select_pickem_game(baseline)
+    out = select_pickem_game(row)
+    assert out["deep_research_audit"]["status"] == "CONTEXT_INVALID_PROVENANCE"
+    assert out["deep_research_audit"]["can_execute"] is False
+    assert {k: v for k, v in out.items() if k != "deep_research_audit"} == {
+        k: v for k, v in expected.items() if k != "deep_research_audit"
+    }
+    if failed:
+        assert out["source_model_status"] == "MODEL_SCORER_FAILED"
+    else:
+        assert out["pool_pick"] == "BUF" and out["selected_probability"] == 0.72
+    assert out["can_execute"] is False
+
+
 def test_deep_research_board_counts_are_advisory_and_cannot_override_terminal():
     documented = _row("evt-documented", "NE", "BUF", 0.72)
     documented["candidate_envelope"]["event_start_time_utc"] = (
