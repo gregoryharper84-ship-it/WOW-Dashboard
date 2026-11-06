@@ -28,3 +28,20 @@ def test_admission_must_not_hash_its_own_reducer_receipt_as_authority():
         "P0: admission locally constructs reducer_receipt_sha256; require "
         "trusted reducer-origin receipt/hash with independent verification"
     )
+
+
+def test_admission_requires_reducer_origin_identity_before_persistence():
+    """Reducer PASS alone cannot authorize a locally minted receipt identity."""
+    source = SQL.read_text(encoding="utf-8")
+    admission = source.split(
+        "CREATE OR REPLACE FUNCTION public.wow_v17_admit_nfl_event_receipt", 1
+    )[1].split("END $f$;", 1)[0]
+    # These fields must be read from the authenticated reducer result itself.
+    # A future implementation may use a separately authenticated reducer RPC,
+    # but must not merely check the reducer's terminal PASS label.
+    assert re.search(r"reduction\s*->>\s*'reducer_receipt_id'", admission, re.I), (
+        "P0: no reducer-origin receipt identifier is consumed by admission"
+    )
+    assert re.search(r"reduction\s*->>\s*'reducer_receipt_sha256'", admission, re.I), (
+        "P0: no reducer-origin receipt digest is consumed by admission"
+    )
