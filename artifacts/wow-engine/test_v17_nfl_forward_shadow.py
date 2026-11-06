@@ -469,3 +469,70 @@ def test_forward_grade_excludes_score_winner_flag_conflict(home_score, away_scor
         "home_win": home_win,
         "tie": False,
     }]) == []
+
+
+def test_p0_verification_view_sql_and_adversarial_history_run_in_nfl_workflow():
+    """The dedicated NFL workflow selects this file; run the actual new SQL tests.
+
+    Keeping the native workflow selection unchanged avoids a second P0 CI lane
+    while ensuring migration predicates and synthetic conflict cases execute.
+    """
+    import test_v17_nfl_forward_verified_grade_migration as safety
+
+    safety.test_verified_grade_view_reconciles_original_prediction_and_current_outcome()
+    safety.test_reconciliation_preserves_immutable_grade_ledger_and_private_rls()
+    safety.test_sql_view_excludes_actual_corrupt_historical_grade_shapes()
+
+
+def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
+    """A legacy grade can stay immutable without authorizing a 100th outcome."""
+    from types import SimpleNamespace
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = list(rows)
+
+        def select(self, *_a):
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def order(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=self.rows)
+
+    class Db:
+        def __init__(self, verified, health_version="NFL_FORWARD_CALIBRATION_HEALTH_V2"):
+            self.verified = verified
+            self.health_version = health_version
+
+        def table(self, name):
+            if name == "wow_nfl_event_fitted_model_artifacts":
+                return Query([{"active": True, "promoted": True, "probability_publishable": True}])
+            if name == "wow_nfl_forward_calibration_health":
+                return Query([{
+                    "schema_version": self.health_version,
+                    "graded_n": 100,
+                    "minimum_forward_required": 100,
+                    "status": "PASS",
+                    "certification_recommendation": "FORWARD_EVIDENCE_PASS",
+                    "blockers": [],
+                }])
+            if name == "wow_nfl_forward_verified_grades":
+                if self.verified is None:
+                    raise RuntimeError("migration not applied")
+                return Query([{"official_event_id": f"event-{i}"} for i in range(self.verified)])
+            raise AssertionError(name)
+
+    row = {"model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test"}
+    assert not _forward_certification_proven(Db(99), row)
+    assert not _forward_certification_proven(Db(100, "NFL_FORWARD_CALIBRATION_HEALTH_V1"), row)
+    assert not _forward_certification_proven(Db(None), row)
+    assert _forward_certification_proven(Db(100), row)
