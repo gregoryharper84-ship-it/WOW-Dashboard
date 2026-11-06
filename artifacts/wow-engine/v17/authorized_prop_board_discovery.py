@@ -105,7 +105,7 @@ def normalize_projection(row: Any, *, league: str, now: datetime) -> list[dict[s
     observed = _utc(row.get("observed_at"))
     if start <= now:
         raise PropFeedHold("EVENT_ALREADY_STARTED")
-    if observed > now.replace(microsecond=now.microsecond) and (observed - now).total_seconds() > 120:
+    if (observed - now).total_seconds() > 120:
         raise PropFeedHold("PROP_FEED_CLOCK_SKEW")
     if (now - observed).total_seconds() > MAX_AGE_SECONDS:
         raise PropFeedHold("PROP_FEED_ROW_STALE")
