@@ -1,0 +1,6 @@
+# Optional isolated research/challenger environment only.
+# Install AFTER requirements-research.txt in a dedicated virtual environment.
+# NEVER add to artifacts/wow-engine/requirements.txt or Render serving build.
+catboost>=1.2,<2
+autogluon.tabular>=1.4,<2
+# PyMC is NOT included until a dedicated sport/stat distribution challenger exists.
