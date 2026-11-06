@@ -340,12 +340,25 @@ def _cross_sport_stage_status(row: dict[str, Any]) -> str:
     return "COMPLETED" if completed and row.get("rank_eligible") is True else "HELD"
 
 
+# Keep the full-slate catalog, but spend the bounded discovery window on the
+# user's active NFL/basketball/hockey/college-football lanes first. This is
+# acquisition order only: fitted-model eligibility and terminal governance are
+# unchanged, and all remaining cataloged sports still receive typed receipts.
+ACTIVE_DAILY_DISCOVERY_SPORTS = ("NBA", "NFL", "NHL", "NCAAF")
+
+
+def _daily_discovery_sports() -> tuple[str, ...]:
+    catalog = tuple(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    primary = tuple(sport for sport in ACTIVE_DAILY_DISCOVERY_SPORTS if sport in catalog)
+    return primary + tuple(sport for sport in catalog if sport not in primary)
+
+
 def _cross_sport_moneyline_rows(
     req: DailySnapshotRequest,
     *,
     run_id: str,
     event_api: Any,
-    covered_event_ids: set[str],
+    covered_event_ids: set[tuple[str, str]],
     fetch_sport_events: Any = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """Discover the full cross-sport winner slate, then ask the registry per row.
@@ -370,7 +383,7 @@ def _cross_sport_moneyline_rows(
         return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
     def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
-        if str(event.official_event_id or "") in covered_event_ids:
+        if (event.sport, str(event.official_event_id or "")) in covered_event_ids:
             return {
                 "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
                 "probability_publishable": False,
@@ -434,6 +447,7 @@ def _cross_sport_moneyline_rows(
         # (and analogous NFL/NBA/MLB variants) and could make the slate appear
         # MLB-only even though the provider registry contained those events.
         include_regime_variants=True,
+        supported_sports=_daily_discovery_sports(),
     )
     rows = [
         _terminal_row(
@@ -448,7 +462,7 @@ def _cross_sport_moneyline_rows(
             ),
         )
         for row in scan["rows"]
-        if str(row.get("official_event_id") or "") not in covered_event_ids
+        if (str(row.get("sport") or ""), str(row.get("official_event_id") or "")) not in covered_event_ids
     ]
     return rows, scan
 
@@ -583,7 +597,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
 
         # Broad discovery runs after — never instead of — the certified MLB
         # canonical lane, and never filtered by which sports have a model.
-        covered = {str(event.get("official_event_id") or "") for event in event_rows}
+        covered = {("MLB", str(event.get("official_event_id") or "")) for event in event_rows}
         try:
             produced = _cross_sport_moneyline_rows(
                 req, run_id=run_id, event_api=event_api, covered_event_ids=covered
