@@ -127,3 +127,20 @@ def test_coverage_receipt_names_data_outage_instead_of_empty_slate():
     assert r["per_sport"]["NFL"]["coverage_status"] == "DISCOVERY_DATA_UNOBTAINABLE"
     assert r["per_sport"]["NFL"]["zero_rows_is_not_empty_slate_proof"] is True
     assert r["can_execute"] is False
+
+
+def test_coverage_receipt_missing_sport_leg_fails_reconciliation():
+    """An NFL receipt cannot borrow an MLB zero-attempt reconciliation."""
+    from v17.prop_sport_parity import prop_sport_coverage_receipt
+
+    acquisition = {
+        "sport_coverage": [{"sport": "MLB", "status": "COMPLETED", "attempted": 0}],
+        "receipts": [{"sport": "NFL", "write_status": "SNAPSHOT_WRITE_SUCCEEDED"}],
+    }
+    result = prop_sport_coverage_receipt(
+        requested_sports=["MLB", "NFL"], rows=[], acquisition=acquisition,
+    )
+    assert result["per_sport"]["MLB"]["reconciled"] is True
+    assert result["per_sport"]["NFL"]["reconciled"] is None
+    assert result["all_reconciled"] is False
+    assert result["can_execute"] is False
