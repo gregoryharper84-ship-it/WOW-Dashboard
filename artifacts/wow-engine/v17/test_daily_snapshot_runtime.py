@@ -529,8 +529,10 @@ def test_daily_real_discovery_budget_attempts_active_sports_before_mlb(monkeypat
     audit = {row["family"]: row for row in scan["discovery"]["acquisition_audit"]}
     assert all(audit[family]["request_status"] == discovery.NO_EVENTS_RETURNED
                for family in attempted)
-    assert audit["MLB"]["request_status"] == discovery.DISCOVERY_BUDGET_EXHAUSTED
-    assert audit["MLB"]["provider_sport_ids_attempted"] == []
+    assert set(audit) == set(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    for family in set(discovery.SUPPORTED_DISCOVERY_SPORTS) - set(attempted):
+        assert audit[family]["request_status"] == discovery.DISCOVERY_BUDGET_EXHAUSTED
+        assert audit[family]["provider_sport_ids_attempted"] == []
     assert scan["reconciliation"]["row_reconciliation"] == "PASS"
     assert scan["can_execute"] is False
 
@@ -573,6 +575,8 @@ def test_daily_scoring_callback_keeps_cross_sport_event_id_collision(monkeypatch
     monkeypatch.setattr(runtime, "score_team_event_request", held_score)
     monkeypatch.setitem(TEAM_EVENT_BRIDGES, "NFL",
                         SimpleNamespace(supported_regimes=("REGULAR_SEASON",)))
+    monkeypatch.setitem(TEAM_EVENT_BRIDGES, "MLB",
+                        SimpleNamespace(supported_regimes=("REGULAR_SEASON",)))
 
     rows, scan = runtime._cross_sport_moneyline_rows(
         DailySnapshotRequest(
@@ -589,5 +593,8 @@ def test_daily_scoring_callback_keeps_cross_sport_event_id_collision(monkeypatch
     assert rows[0]["result"]["model_status"] == "MODEL_INPUTS_INSUFFICIENT"
     assert rows[0]["row_status"] == "HELD"
     assert rows[0]["can_execute"] is False
+    assert [row["model_status"] for row in scan["rows"] if row["sport"] == "MLB"] == [
+        "ALREADY_SCORED_IN_CANONICAL_LANE"
+    ]
     assert scan["reconciliation"]["events_discovered"] == 2
     assert scan["reconciliation"]["row_reconciliation"] == "PASS"
