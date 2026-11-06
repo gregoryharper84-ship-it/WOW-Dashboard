@@ -382,6 +382,16 @@ def _cross_sport_moneyline_rows(
         return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
     def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
+        if req.max_team_events == 0:
+            # Full-board discovery still records every event, but a zero model
+            # budget cannot invoke a fitted specialist or grant publication.
+            return {
+                "code": "REQUESTED_ROW_LIMIT_ZERO",
+                "model_invoked": False,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
         if str(event.official_event_id or "") in covered_event_ids:
             return {
                 "code": "ALREADY_SCORED_IN_CANONICAL_LANE",

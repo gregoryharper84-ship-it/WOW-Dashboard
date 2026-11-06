@@ -167,6 +167,17 @@ def acquire_daily_prop_snapshots(
         return result
     try:
         schedule = _request_schedule(requested_date, http_get=http_get)
+        # A successful HTTP response without a complete MLB schedule envelope
+        # is unknown upstream data, not proof of zero eligible events.
+        dates = schedule.get("dates")
+        total_games = schedule.get("totalGames")
+        if (
+            not isinstance(dates, list)
+            or type(total_games) is not int
+            or total_games < 0
+            or (total_games > 0 and not dates)
+        ):
+            raise ValueError("MLB_PROP_SCHEDULE_INCOMPLETE")
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
         result["blockers"] = [f"MLB_PROP_SCHEDULE_ACQUISITION_FAILED:{type(exc).__name__}"]

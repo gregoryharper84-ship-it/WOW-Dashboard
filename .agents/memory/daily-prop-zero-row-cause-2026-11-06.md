@@ -8,6 +8,7 @@
 - prevention_artifact: `artifacts/wow-engine/v17/test_daily_snapshot_runtime.py` — five regression tests covering MLB no-event, requested-zero props, requested-zero moneyline, invalid timezone and mixed-lane zero-props/positive-moneyline. Review found two additional mechanisms: `_schedule_pitchers` swallows an invalid IANA timezone as an empty candidate list, and a mixed request with no moneyline rows could drop the empty-run blocker. Both were removed by explicit input and mixed-lane guards.
 - link: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2496
 - verification: 54 affected tests passed at `c30dd7fca76a2094809a9c51d3db7e03dfdfa031`. Red test-first SHA `c61925a2` was superseded before CI completed; do not count as an executed red run. Production route/Supabase/live SHA are not yet verified.
+- reviewer_follow_up: 2026-11-06 CodeRabbit found invalid timezones, mixed-lane fallback, incomplete official schedule envelopes, and full-slate model invocations under a zero team-event budget. All are now explicit tests and small fail-closed guards. No certification/probability change.
 - status: MOVING — protected exact-head independent review and production acceptance remain required.
 
 ## Promotion

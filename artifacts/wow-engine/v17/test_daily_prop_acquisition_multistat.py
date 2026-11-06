@@ -63,7 +63,7 @@ def _raw(stat_type: str):
 
 
 def _install_common(monkeypatch: pytest.MonkeyPatch, players=None):
-    monkeypatch.setattr(subject, "_request_schedule", lambda *_a, **_k: {"dates": []})
+    monkeypatch.setattr(subject, "_request_schedule", lambda *_a, **_k: {"dates": [], "totalGames": 0})
     monkeypatch.setattr(
         subject,
         "_schedule_pitchers",
@@ -180,3 +180,30 @@ def test_receipts_are_route_distinct_even_when_lines_match():
     assert strikeout["stat_type"] != outs["stat_type"]
     assert strikeout["can_execute"] is False
     assert outs["can_execute"] is False
+
+
+def test_incomplete_official_schedule_is_data_unobtainable_not_no_events(monkeypatch):
+    """Missing completeness fields may never prove an empty MLB slate."""
+    monkeypatch.setattr(subject, "_request_schedule", lambda *_a, **_k: {"totalGames": 0})
+    result = subject.acquire_daily_prop_snapshots(
+        db=_DB(), requested_date="2026-09-28",
+        requested_timezone="America/Chicago", max_candidates=4, now=NOW,
+        http_get=lambda *_a, **_k: None,
+    )
+    assert result["status"] == "DATA_UNOBTAINABLE"
+    assert result["attempted"] == 0
+    assert result["blockers"] == ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:ValueError"]
+    assert result["can_execute"] is False
+
+
+def test_positive_game_count_without_dates_is_not_empty_slate(monkeypatch):
+    """A contradictory nonzero count with no dates must not be called empty."""
+    monkeypatch.setattr(subject, "_request_schedule", lambda *_a, **_k: {"totalGames": 2, "dates": []})
+    result = subject.acquire_daily_prop_snapshots(
+        db=_DB(), requested_date="2026-09-28",
+        requested_timezone="America/Chicago", max_candidates=4, now=NOW,
+        http_get=lambda *_a, **_k: None,
+    )
+    assert result["status"] == "DATA_UNOBTAINABLE"
+    assert result["attempted"] == 0
+    assert result["blockers"] == ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:ValueError"]
