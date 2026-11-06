@@ -103,3 +103,20 @@ def test_espn_player_box_remains_research_not_canonical_cfbd_source():
     assert espn["pregame_model_feature_eligible"] is False
     assert espn["model_probability"] is None
     assert espn["can_execute"] is False
+
+
+def test_independent_prizepicks_board_source_is_discovery_only():
+    for sport in ("NBA", "NFL", "NHL", "NCAAF", "NCAAB"):
+        rows = compile_free_source_plan(sport, "DISCOVERY")["sources"]
+        source = next(s for s in rows if s["source_id"] == "PRIZEPICKSAPI_INDEPENDENT")
+        assert source["integration"] == "OPT_IN_AUTHORIZED_RESEARCH"
+        assert source["provider_is_official_prizepicks"] is False
+        assert source["operator_account_authorization_required"] is True
+        assert source["live_route_enabled_by_catalog"] is False
+        assert source["current_exact_offer_verified"] is False
+        assert source["source_rights_independently_attested"] is False
+        assert source["model_training_entitlement"] is False
+        assert source["model_probability"] is None
+        assert source["calibrated_lower_bound"] is None
+        assert source["probability_publishable"] is False
+        assert source["can_execute"] is False
