@@ -87,7 +87,10 @@ def test_reducer_receipt_origin_is_external_and_mandatory():
 def test_caller_cannot_submit_probability_or_terminal_approval():
     _, _, issuer, _ = parts()
     assert issuer.strip().startswith("p_score_snapshot_id uuid)")
-    assert "pg_catalog.gen_random_uuid()" in issuer
+    # The issuer may have its own event ID via the table default, but it
+    # must never mint the *terminal reducer's* receipt identity.
+    assert "pg_catalog.gen_random_uuid()" not in issuer
+    assert "reduction->>'reducer_receipt_id'" in issuer
     assert "FOR SHARE" in issuer
     assert "pg_catalog.pg_advisory_xact_lock" in issuer
 
