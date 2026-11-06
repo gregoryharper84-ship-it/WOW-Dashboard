@@ -421,6 +421,8 @@ def test_scheduled_nba_replay_allowed_when_current_season_is_persisted(monkeypat
             return cls(2026, 11, 4, 12, tzinfo=timezone.utc)
 
     monkeypatch.setattr(maintenance, "datetime", LiveClock)
+    monkeypatch.setattr(maintenance, "_nba_verified_current_season_date",
+                        lambda _db, _clock: "2026-11-03")
     called = []
     monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
         "sport": "NBA", "settled_rows": 0,
@@ -510,7 +512,8 @@ def test_nba_current_season_gap_preserves_wnba_and_offseason(monkeypatch):
         datetime(2026, 10, 17, tzinfo=timezone.utc),
     ) is None
     assert maintenance._nba_current_season_data_gap(
-        {"latest_game_date_after": "2026-12-31"},
+        {"latest_game_date_after": "2026-12-31",
+         "latest_current_season_game_date_after": "2026-12-31"},
         datetime(2027, 1, 3, tzinfo=timezone.utc),
     ) is None
     assert maintenance._nba_current_season_data_gap(
@@ -767,7 +770,11 @@ def test_conflicting_same_game_calendar_cannot_prove_preopening():
 
 def test_current_october_settlement_preserves_live_replay_without_calendar_bypass():
     """Actual persisted current-season evidence passes even without an opening exception."""
-    assert maintenance._nba_current_season_data_gap({"latest_game_date_after": "2026-10-22"}, datetime(2026, 10, 23, tzinfo=timezone.utc)) is None
+    assert maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-10-22",
+         "latest_current_season_game_date_after": "2026-10-22"},
+        datetime(2026, 10, 23, tzinfo=timezone.utc),
+    ) is None
 
 
 @pytest.mark.parametrize("latest", ["not-a-date", "2026-10-18", ""])
@@ -783,3 +790,109 @@ def test_preopening_preserves_absent_or_valid_prior_corpus_contract(latest):
     """The pre-opening exception remains available only for absent or valid past evidence."""
     evidence = {"latest_game_date_after": latest, "regular_season_start_by_season": {2027: "2026-10-20T23:30:00Z"}, "source_by_season": {2027: "SPORTSDATAVERSE_ESPN"}}
     assert maintenance._nba_current_season_data_gap(evidence, datetime(2026, 10, 17, tzinfo=timezone.utc)) is None
+
+
+def test_fresh_nba_calendar_date_without_same_season_persisted_proof_holds():
+    """A cross-season October row cannot qualify a stale NBA model corpus."""
+    gap = maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-10-22"},
+        datetime(2026, 10, 23, tzinfo=timezone.utc),
+    )
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert gap["current_season_readback_code"] == "NBA_CURRENT_SEASON_PERSISTED_PROOF_MISSING"
+
+
+def test_verified_nba_season_readback_enforces_exact_label_and_canonical_source():
+    """The DB result must match the season filter, ESPN ID, and SDV provenance."""
+    class Query:
+        def __init__(self, row):
+            self.row = row
+            self.filters = []
+        def select(self, fields):
+            assert fields == "game_date,season,game_id,source_provider"
+            return self
+        def eq(self, name, value):
+            self.filters.append((name, value))
+            return self
+        def order(self, key, *, desc):
+            assert (key, desc) == ("game_date", True)
+            return self
+        def limit(self, count):
+            assert count == 1
+            return self
+        def execute(self):
+            assert ("season", 2027) in self.filters
+            assert ("settled", True) in self.filters
+            return SimpleNamespace(data=[] if self.row is None else [self.row])
+    class DB:
+        def __init__(self, row):
+            self.query = Query(row)
+        def table(self, table_name):
+            assert table_name == "wow_nba_training_games"
+            return self.query
+    clock = datetime(2026, 11, 6, tzinfo=timezone.utc)
+    good = {"game_date": "2026-11-05", "season": 2027,
+            "game_id": "espn-401809999", "source_provider": "SPORTSDATAVERSE_ESPN"}
+    assert maintenance._nba_verified_current_season_date(DB(good), clock) == "2026-11-05"
+    assert maintenance._nba_verified_current_season_date(DB(None), clock) is None
+    for bad in ({**good, "season": 2026},
+                {**good, "game_id": "401809999"},
+                {**good, "source_provider": "ESPN_SCOREBOARD"}):
+        with pytest.raises(maintenance.BasketballHydrationError):
+            maintenance._nba_verified_current_season_date(DB(bad), clock)
+
+
+def test_scheduled_nba_replay_refuses_wrong_season_or_untrusted_hydration_proof(monkeypatch):
+    """A recent but wrongly labeled stored row cannot unlock shadow fitting."""
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 6, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(maintenance, "datetime", Clock)
+    monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
+        "sport": "NBA", "latest_game_date_after": "2026-11-05",
+        "latest_current_season_game_date_after": "2026-11-05",
+        "fresh_acquisition_new_settled_games": 1,
+    })
+    monkeypatch.setattr(maintenance, "_nba_verified_current_season_date", lambda *_: None)
+    monkeypatch.setattr(maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a wrong-season corpus must never replay")
+        ))
+    result = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",))
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    assert result["rows"][0]["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert result["rows"][0]["hydration_blocker"]["current_season_readback_code"] == (
+        "NBA_CURRENT_SEASON_PERSISTED_PROOF_MISSING"
+    )
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_scheduled_nba_readback_transport_failure_holds_without_secret_leak(monkeypatch):
+    """Readback errors must never become SHADOW_EVIDENCE_UPDATED."""
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 6, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(maintenance, "datetime", Clock)
+    monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: {
+        "sport": "NBA", "latest_game_date_after": "2026-11-05",
+        "fresh_acquisition_new_settled_games": 1,
+    })
+    def fail(*_):
+        raise RuntimeError("postgres://secret-provider-host")
+    monkeypatch.setattr(maintenance, "_nba_verified_current_season_date", fail)
+    monkeypatch.setattr(maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("never replay unverified season")
+        ))
+    outcome = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",))
+    hold = outcome["rows"][0]
+    assert hold["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert hold["hydration_blocker"]["current_season_readback_code"] == (
+        "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
+    )
+    assert "secret-provider-host" not in str(hold)
+    assert outcome["can_execute"] is False

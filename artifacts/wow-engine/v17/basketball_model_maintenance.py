@@ -121,7 +121,54 @@ def _fresh_acquisition_status(
     return "FRESH_ACQUISITION_NOT_VERIFIED"
 
 
-def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: datetime) -> dict[str, Any] | None:
+def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
+    """Read back the season-identified, canonical NBA settlement from storage.
+
+    A recent game date alone never proves that the persisted row belongs to
+    the current NBA ending-year corpus. This separate DB query is authoritative
+    over source-return and caller-provided hydration metadata.
+    """
+    season_start_year = clock.year if clock.month >= 10 else clock.year - 1
+    label = season_start_year + 1
+    response = (
+        db.table("wow_nba_training_games")
+        .select("game_date,season,game_id,source_provider")
+        .eq("settled", True)
+        .eq("season", label)
+        .order("game_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(response, "data", None)
+    if not isinstance(rows, list) or len(rows) > 1:
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
+    if not rows:
+        return None
+    row = rows[0]
+    if not isinstance(row, dict) or type(row.get("season")) is not int:
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
+    event = row.get("game_id")
+    if (
+        row["season"] != label
+        or row.get("source_provider") != "SPORTSDATAVERSE_ESPN"
+        or not isinstance(event, str)
+        or not event.startswith("espn-")
+        or not event[5:].isdigit()
+    ):
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
+    raw_date = row.get("game_date")
+    if not isinstance(raw_date, str):
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
+    try:
+        return date.fromisoformat(raw_date).isoformat()
+    except ValueError as exc:
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID") from exc
+
+
+def _nba_current_season_data_gap(
+    hydration: dict[str, Any] | None, clock: datetime, *,
+    require_verified_current_season: bool = True,
+) -> dict[str, Any] | None:
     """Keep a stale historical NBA replay from masquerading as a live-season refresh.
 
     NBA official seasons begin in autumn and use the ending year for release
@@ -159,12 +206,33 @@ def _nba_current_season_data_gap(hydration: dict[str, Any] | None, clock: dateti
             except (ValueError, TypeError, OverflowError):
                 pass
     season_start = date(season_start_year, 10, 1)
-    if latest is not None and latest >= season_start and latest <= clock.date():
+    candidate_current = latest is not None and season_start <= latest <= clock.date()
+    verified_value = (
+        hydration.get("latest_current_season_game_date_after")
+        if isinstance(hydration, dict) else None
+    )
+    try:
+        verified = date.fromisoformat(verified_value) if isinstance(verified_value, str) else None
+    except ValueError:
+        verified = None
+    if candidate_current and (
+        not require_verified_current_season
+        or (verified is not None and season_start <= verified <= clock.date()
+            and verified <= latest)
+    ):
         return None
     return {
         "status": "BLOCKED",
         "stage": "FRESH_SOURCE_HYDRATION",
         "code": "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING",
+        "current_season_readback_code": (
+            hydration.get("current_season_readback_code")
+            if isinstance(hydration, dict) else None
+        ) or ("NBA_CURRENT_SEASON_PERSISTED_PROOF_MISSING"
+              if candidate_current and require_verified_current_season else None),
+        "latest_verified_current_season_game_date": (
+            verified.isoformat() if verified else None
+        ),
         "required_season_start": season_start.isoformat(),
         "latest_persisted_game_date": latest.isoformat() if latest else None,
         "recovery_class": "SOURCE_COVERAGE_REPAIR",
@@ -229,7 +297,38 @@ def run_basketball_model_maintenance(
         # Explicit season selection remains separate from current-season
         # refresh; explicit clocks are held below until replay reads honor them.
         if sport == "NBA" and explicit_seasons is None:
-            gap = _nba_current_season_data_gap(hydration, clock)
+            # The live candidate must be proven by a separate season-filtered
+            # readback; do not trust a hydration-supplied verification flag.
+            # Explicit-clock replay is separately held before fitting.
+            if isinstance(hydration, dict):
+                hydration = {
+                    k: v for k, v in hydration.items()
+                    if k not in {
+                        "latest_current_season_game_date_after",
+                        "current_season_readback_code",
+                    }
+                }
+                raw_latest = hydration.get("latest_game_date_after")
+                try:
+                    latest_date = date.fromisoformat(str(raw_latest)[:10]) if raw_latest else None
+                except ValueError:
+                    latest_date = None
+                start_year = clock.year if clock.month >= 10 else clock.year - 1
+                if (
+                    now is None and latest_date is not None
+                    and date(start_year, 10, 1) <= latest_date <= clock.date()
+                ):
+                    try:
+                        hydration["latest_current_season_game_date_after"] = (
+                            _nba_verified_current_season_date(db, clock)
+                        )
+                    except Exception:  # noqa BLE001 - no unsafe replay after DB failure
+                        hydration["current_season_readback_code"] = (
+                            "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
+                        )
+            gap = _nba_current_season_data_gap(
+                hydration, clock, require_verified_current_season=now is None,
+            )
             if gap is not None:
                 # Preserve the original acquisition failure underneath the
                 # current-season data gap; callers must not mistake HTTP 503
