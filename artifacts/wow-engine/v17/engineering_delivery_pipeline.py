@@ -152,7 +152,7 @@ def _five_check_continuation(checks: list, by_name: dict, number: int,
         if name not in expected_apps:
             continue
         if ((check.get("app") or {}).get("id") != expected_apps[name]
-                or check.get("head_sha", expected_sha) != expected_sha):
+                or check.get("head_sha") != expected_sha):
             return _result("PROTECTED_CHECK_IDENTITY_INVALID",
                            "REPAIR_PINNED_CHECK_PRODUCER",
                            "VALID_EXACT_HEAD_PINNED_CHECK", pr=number, sha=expected_sha)
@@ -239,32 +239,10 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
         return _result("INDEPENDENT_QA_NOT_ACCEPTED", "DIAGNOSE_SIGNED_REVIEW_RECEIPT",
                        "NEW_VALID_QA_APP_EVIDENCE", pr=number, sha=expected_sha)
 
-    # Semantic security, exact-head independent QA, and Release Authority
-    # are THREE distinct protected checks. One cannot substitute for another.
-    native_qa = by_name.get(INDEPENDENT_QA_CHECK)
-    if native_qa is None:
-        return _result("QA_GATE_PENDING", "FOLLOW_EXISTING_QA_CHECK",
-                       "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
-    if ((native_qa.get("app") or {}).get("id") != QA_APP_ID
-            or native_qa.get("status") != "completed"
-            or native_qa.get("conclusion") != "success"):
-        return _result("QA_GATE_NOT_ACCEPTED", "REPAIR_INDEPENDENT_QA_GATE",
-                       "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
-    release = by_name.get(RELEASE_CHECK)
-    if release is None:
-        return _result("RELEASE_EVIDENCE_PENDING", "FOLLOW_EXISTING_RELEASE_CHECK",
-                       "RELEASE_APP_CHECK_AT_EXACT_SHA", pr=number, sha=expected_sha)
-    if ((release.get("app") or {}).get("id") != RELEASE_APP_ID
-            or release.get("status") != "completed"
-            or release.get("conclusion") != "success"):
-        return _result("RELEASE_NOT_ACCEPTED", "REPAIR_RELEASE_FAILURE",
-                       "VALID_RELEASE_APP_PASS", pr=number, sha=expected_sha)
-    # A legacy-only check cohort cannot meet the native three-regression
-    # acceptance contract, even if its retired semantic review was PASS.
-    return _result("NATIVE_REGRESSION_PENDING", "FOLLOW_REQUIRED_REGRESSION",
-                   "EXACT_HEAD_NATIVE_REGRESSIONS_COMPLETE", pr=number,
-                   sha=expected_sha)
-
+    # No pinned contexts were present, so legacy-only evidence can diagnose
+    # the old review but cannot satisfy the current exact-head release policy.
+    return _result("QA_GATE_PENDING", "FOLLOW_EXISTING_QA_CHECK",
+                   "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
 
 def reduce_completion(*, merge_sha: str | None, live_sha: str | None,
                       verified_sha: str | None, healthy_route: bool,
