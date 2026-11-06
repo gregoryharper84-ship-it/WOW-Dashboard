@@ -69,6 +69,21 @@ def test_mlb_existing_ledger_not_weakened_and_acl_fails_closed():
     assert "trg_v17_multisport_receipt_immutable" in source
 
 
+def test_reducer_receipt_origin_is_external_and_mandatory():
+    source, _, issuer, reader = parts()
+    assert "reduction->>'reducer_receipt_id'" in issuer
+    assert "reduction->>'reducer_receipt_sha256'" in issuer
+    assert "reducer_id:=pg_catalog.gen_random_uuid()" not in source
+    assert "reducer_hash:=pg_catalog.encode(" not in source
+    assert "LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE" in issuer
+    assert "to_regprocedure(" in issuer
+    assert "to_regprocedure(" in reader
+    assert "wow_terminal_reducer.verify_nfl_reducer_receipt" in issuer
+    assert "wow_terminal_reducer.verify_nfl_reducer_receipt" in reader
+    assert "CREATE FUNCTION wow_terminal_reducer.verify_nfl_reducer_receipt" not in source
+    assert "CREATE TABLE wow_terminal_reducer.origin_receipts" not in source
+
+
 def test_caller_cannot_submit_probability_or_terminal_approval():
     _, _, issuer, _ = parts()
     assert issuer.strip().startswith("p_score_snapshot_id uuid)")
@@ -80,6 +95,8 @@ def test_caller_cannot_submit_probability_or_terminal_approval():
 def test_null_provenance_fields_are_rejected_not_sql_unknown():
     _, _, issuer, reader = parts()
     assert "reduction->>'status' IS DISTINCT FROM 'PASS'" in issuer
-    assert "r.reducer_receipt_sha256 IS DISTINCT FROM hash" in reader
+    assert "r.terminal_reducer_payload->>'reducer_receipt_sha256'" in reader
+    assert "wow_terminal_reducer.verify_nfl_reducer_receipt" in reader
+    assert "wow_terminal_reducer.verify_nfl_reducer_receipt" in issuer
     assert "r.terminal_reducer_payload IS DISTINCT FROM present" in reader
     assert "r.model_artifact_sha256 IS DISTINCT FROM a.artifact_checksum" in reader
