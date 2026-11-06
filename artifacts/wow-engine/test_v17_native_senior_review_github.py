@@ -345,3 +345,54 @@ def test_high_comment_volume_incident_finds_no_duplicate_without_early_hold():
     )
     assert len(client.incident_writes) == 1
     assert client.incident_writes[0][0] == "POST"
+
+
+class CleanIncidentGitHub(IncidentGitHub):
+    """Source and patch agree: the new code has no native static pattern."""
+
+    def request(self, path, *, method="GET", body=None):
+        if path == "/pulls/900/files?per_page=100&page=1":
+            return [{
+                "filename": PATH,
+                "status": "added",
+                "patch": "@@ -0,0 +1,2 @@\n+def safe(user):\n+    return str(user)\n",
+            }]
+        if path == f"/contents/{PATH}?ref={HEAD}":
+            return {
+                "type": "file", "encoding": "base64",
+                "content": base64.b64encode(
+                    b"def safe(user):\n    return str(user)\n"
+                ).decode(),
+            }
+        return super().request(path, method=method, body=body)
+
+
+def test_clean_recheck_without_old_note_does_not_spam_canonical_incident():
+    client = CleanIncidentGitHub()
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert result["review"]["status"] == "ADVISORY_STATIC_SCAN_COMPLETE"
+    assert reviewer.post_existing_incident_handoff(client, result=result) == (
+        "NO_NEW_STATIC_FINDINGS"
+    )
+    assert client.incident_writes == []
+
+
+def test_clean_recheck_supersedes_old_advisory_without_false_resolution():
+    client = CleanIncidentGitHub()
+    client.incident_comments = [{
+        "id": 777,
+        "body": "<!-- WOW_NATIVE_SENIOR_AMRT_ADVISORY_PR_900 -->\n"
+                "old unconfirmed finding at previous head",
+        "user": {"login": "github-actions[bot]"},
+    }]
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert reviewer.post_existing_incident_handoff(client, result=result) == (
+        "EXISTING_INCIDENT_NOTE_UPDATED"
+    )
+    assert len(client.incident_writes) == 1
+    verb, payload = client.incident_writes[0]
+    assert verb == "PATCH"
+    assert "NO NEW PATTERNS DETECTED" in payload["body"]
+    assert "NOT proven false or independently resolved" in payload["body"]
+    assert "old unconfirmed finding" not in payload["body"]
+    assert "can_execute=false" in payload["body"]
