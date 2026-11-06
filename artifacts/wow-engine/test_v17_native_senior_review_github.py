@@ -396,3 +396,45 @@ def test_clean_recheck_supersedes_old_advisory_without_false_resolution():
     assert "NOT proven false or independently resolved" in payload["body"]
     assert "old unconfirmed finding" not in payload["body"]
     assert "can_execute=false" in payload["body"]
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    ("removed", "PR_DELETION_BASE_REVIEW_UNAVAILABLE"),
+    ("renamed", "PR_RENAME_BASE_REVIEW_UNAVAILABLE"),
+    ("copied", "PR_COPY_PROVENANCE_UNAVAILABLE"),
+])
+def test_head_only_reviewer_holds_unassessed_file_lifecycle(status, expected):
+    """A removal/rename/copy must not return an advisory clean scan."""
+    client = IncidentGitHub()
+    original = client.request
+
+    def lifecycle(path, *, method="GET", body=None):
+        if path == "/pulls/900/files?per_page=100&page=1":
+            return [{
+                "filename": PATH,
+                "previous_filename": "artifacts/wow-engine/v17/prior_case.py",
+                "status": status,
+                "patch": PATCH,
+            }]
+        return original(path, method=method, body=body)
+
+    client.request = lifecycle
+    with pytest.raises(reviewer.ReviewHold, match=expected):
+        reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert client.posted == []
+    assert client.incident_writes == []
+
+
+def test_changed_file_still_qualifies_for_review_when_source_is_present():
+    client = FakeGitHub()
+    original = client.request
+
+    def changed(path, *, method="GET", body=None):
+        if path == "/pulls/900/files?per_page=100&page=1":
+            return [{"filename": PATH, "status": "changed", "patch": PATCH}]
+        return original(path, method=method, body=body)
+
+    client.request = changed
+    result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert result["review"]["finding_count"] == 1
+    assert result["can_execute"] is False
