@@ -626,6 +626,28 @@ def test_untrusted_api_roles_cannot_execute_admission_or_terminal_readback(pg,ro
             db.execute("select public.wow_v17_verify_multisport_event_receipt(%s::uuid)",(SCORE,))
 
 
+@pytest.mark.parametrize("role", ["anon","authenticated","service_role"])
+def test_test_only_reducer_attestor_is_inaccessible_to_api_roles(pg,role):
+    # This disposable attestor is a stand-in for independent reducer ownership.
+    # Neither user-facing roles nor service_role can forge reducer-origin rows
+    # or directly call the trusted verifier.
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute(f"set role {role}")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute(
+              "select wow_terminal_reducer.verify_nfl_reducer_receipt("
+              "%s::uuid,%s::uuid,%s::text)",
+              (SCORE,REDUCER_ID,REDUCER_HASH)
+            )
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute(
+              "insert into wow_terminal_reducer.origin_receipts "
+              "(score_snapshot_id,reducer_receipt_id,reducer_receipt_sha256) "
+              "values (%s::uuid,%s::uuid,%s::text)",
+              (SCORE,str(uuid4()),REDUCER_HASH)
+            )
+
+
 def test_service_role_has_no_direct_insert_update_delete_on_ledger(pg):
     with psycopg.connect(pg,autocommit=True) as db:
         db.execute("set role service_role")
