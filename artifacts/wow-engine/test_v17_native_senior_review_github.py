@@ -438,3 +438,44 @@ def test_changed_file_still_qualifies_for_review_when_source_is_present():
     result = reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
     assert result["review"]["finding_count"] == 1
     assert result["can_execute"] is False
+
+
+def test_typed_intake_hold_produces_durable_non_authoritative_json(tmp_path, monkeypatch):
+    import json
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    output = tmp_path / "review-hold.json"
+    result = reviewer.main([
+        "--pr", "900",
+        "--expected-head", HEAD,
+        "--out", str(output),
+        "--post-comment",
+        "--post-incident-handoff",
+    ])
+    assert result == 2
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["schema"] == "WOW_NATIVE_REVIEW_RUN_V1"
+    assert payload["status"] == "BLOCKED"
+    assert payload["blocker"] == "GITHUB_TOKEN_MISSING"
+    assert payload["head_sha"] == HEAD
+    assert payload["can_execute"] is False
+    assert payload["independent_qa"] == "NOT_PERFORMED"
+    assert payload["semantic_review"] == "NOT_RUN"
+    assert payload["release_authority"] == "NONE_ADVISORY_ONLY"
+    assert "source_context" not in payload
+
+
+def test_invalid_head_hold_never_echoes_user_supplied_data(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("GH_TOKEN", "fake-not-a-real-token")
+    output = tmp_path / "review-hold.json"
+    result = reviewer.main([
+        "--pr", "900",
+        "--expected-head", "unexpected-bad-sha",
+        "--out", str(output),
+    ])
+    assert result == 2
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "BLOCKED"
+    assert payload["blocker"] == "EXPECTED_HEAD_INVALID"
+    assert payload["head_sha"] is None
+    assert "unexpected-bad-sha" not in output.read_text(encoding="utf-8")
