@@ -463,8 +463,27 @@ def main(argv=None):
         return 0 if result["review"]["status"] not in {
             "REVIEW_CONTEXT_INCOMPLETE", "REVIEW_FINDINGS_TRUNCATED"} else 2
     except (ReviewHold, ValueError) as exc:
-        # Catch only typed review/input faults. No credential or response logging.
-        print("WOW_NATIVE_REVIEW_HOLD:" + str(exc), file=sys.stderr)
+        # Preserve a durable negative result even when intake fails before the
+        # regular advisory report exists. Never leak tokens, source or PR text.
+        raw_code = str(exc)
+        code = (raw_code if re.fullmatch(r"[A-Z0-9_:-]{1,120}", raw_code)
+                else "REVIEW_UNCLASSIFIED_FAILURE")
+        hold = {
+            "schema": "WOW_NATIVE_REVIEW_RUN_V1",
+            "status": "BLOCKED",
+            "blocker": code,
+            "pr": args.pr,
+            "head_sha": args.expected_head if SHA_RE.fullmatch(args.expected_head) else None,
+            "review": "NOT_COMPLETED",
+            "independent_qa": "NOT_PERFORMED",
+            "semantic_review": "NOT_RUN",
+            "release_authority": "NONE_ADVISORY_ONLY",
+            "can_execute": False,
+        }
+        output = Path(args.out)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(hold, sort_keys=True, indent=2), encoding="utf-8")
+        print("WOW_NATIVE_REVIEW_HOLD:" + code, file=sys.stderr)
         return 2
 
 
