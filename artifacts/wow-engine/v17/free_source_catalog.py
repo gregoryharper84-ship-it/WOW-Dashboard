@@ -78,6 +78,11 @@ SOURCES = (
                ("HISTORICAL_RESEARCH", "DISCOVERY"), "EXISTING_OFFLINE_RESEARCH",
                "v17/propsmadness_nfl_account_view_adapter.py",
                "AUTHENTICATED_REUSE_AND_STORAGE_GRANT_UNVERIFIED"),
+    FreeSource("PRIZEPICKSAPI_INDEPENDENT",
+               ("NFL", "NBA", "NCAAF", "NCAAB", "MLB", "NHL", "WNBA", "SOCCER", "TENNIS"),
+               ("DISCOVERY",), "OPT_IN_AUTHORIZED_RESEARCH",
+               "v17/authorized_prop_board_discovery.py",
+               "THIRD_PARTY_ACCOUNT_RIGHTS_QUOTA_AND_LIVE_FEED_UNVERIFIED"),
     FreeSource("THE_ODDS_API", ("NFL", "NBA", "NCAAF", "NCAAB", "MLB",
                               "NHL", "WNBA", "SOCCER"),
                ("MARKET", "DISCOVERY"), "EXISTING_QUOTA_LIMITED",
@@ -133,6 +138,12 @@ def compile_free_source_plan(sport: str, purpose: str) -> dict:
             "probability_publishable": False,
             "can_execute": False,
         })
+        if source.source_id == "PRIZEPICKSAPI_INDEPENDENT":
+            row["provider_is_official_prizepicks"] = False
+            row["operator_account_authorization_required"] = True
+            row["live_route_enabled_by_catalog"] = False
+            row["current_exact_offer_verified"] = False
+            row["model_training_entitlement"] = False
         if source.source_id == "PROPSMADNESS_ACCOUNT_VIEW":
             row["historical_chart_threshold_is_closing_line"] = False
             row["account_view_validation"] = (
