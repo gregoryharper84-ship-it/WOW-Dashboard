@@ -797,6 +797,11 @@ def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_clien
     install_v17_detailed_evidence(app, auth_dependency=auth_dependency, market_api=market_api)
     install_prop_forward_cohort_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn, market_api=market_api)
     _install_prop_evidence_acquisition_scheduler(app, db_client_fn=db_client_fn)
+    # Opt-in third-party board discovery is read-only and does not mutate Daily
+    # candidates, certify any model, or weaken existing terminal requirements.
+    if os.getenv("WOW_V17_AUTHORIZED_PROP_BOARD_ROUTE_ENABLED", "0") == "1":
+        from v17.authorized_prop_board_route import install_authorized_prop_board_route
+        install_authorized_prop_board_route(app, auth_dependency=auth_dependency)
     # Additive LLP read-only readback is OFF unless explicitly enabled. It
     # consumes durable Daily row details; it never calls the NFL Pick'em runtime,
     # changes the existing /rows contract, or performs any scoring.
