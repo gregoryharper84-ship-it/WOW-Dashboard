@@ -37,6 +37,9 @@ receipts and independent acceptance exist.
   server-side official identity resolution and current exact-offer refresh as
   explicit trusted dependencies. Missing either blocks rows; it only produces
   future `/score-pick-request` proposals and **does not invoke scoring**.
+  Proposal provenance separately retains projection ID, official player/event
+  crosswalk IDs, exact period/stat/line/direction, offer tier and timestamps;
+  these must never be silently flattened out of the Action schema.
 
 ## Source and licensing boundaries
 
