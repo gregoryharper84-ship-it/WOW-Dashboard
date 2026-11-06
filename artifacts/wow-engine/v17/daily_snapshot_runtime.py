@@ -193,6 +193,16 @@ def _team_rows(db: Any, requested_date: str, limit: int) -> list[dict[str, Any]]
     raise last_exc or RuntimeError("TEAM_EVENT_SNAPSHOT_QUERY_FAILED")
 
 
+def _mlb_acquisition_found_no_candidates(acquisition: dict[str, Any] | None) -> bool:
+    """Only a successful, identified MLB producer proves no eligible MLB candidates."""
+    return bool(
+        acquisition
+        and acquisition.get("status") == "COMPLETED"
+        and acquisition.get("candidate_source") == "MLB_OFFICIAL_PROBABLE_PITCHERS"
+        and int(acquisition.get("attempted") or 0) == 0
+    )
+
+
 def _acquisition_counts(acquisition: dict[str, Any] | None) -> dict[str, int]:
     acquisition = acquisition or {}
     return {
@@ -286,6 +296,8 @@ def _lane_reconciliation(
             # canonical lane is empty. Reporting NO_CANONICAL_CANDIDATES here
             # misattributes a client-requested bound to missing upstream data.
             zero_row_reason = "REQUESTED_ROW_LIMIT_ZERO"
+        elif lane == "PROPS" and _mlb_acquisition_found_no_candidates(acquisition):
+            zero_row_reason = "PROP_ACQUISITION_NO_ELIGIBLE_EVENTS:MLB"
         else:
             zero_row_reason = "NO_CANONICAL_CANDIDATES"
     result = {
@@ -513,7 +525,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         # Acquisition exists to fill an empty canonical lane. A zero-length page
         # caused by max_props is not an empty lane, so it must not trigger a
         # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        if req.max_props > 0 and not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
@@ -647,6 +659,8 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     prop_counts = _acquisition_counts(prop_acquisition)
     true_zero_upstream = (
         "PROPS" in requested_lanes
+        and req.max_props > 0
+        and prop_acquisition is not None
         and not prop_manifest
         and prop_counts["lane_discovered_raw"] == 0
         and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
@@ -655,8 +669,12 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     )
     if not rows and not blockers:
         if true_zero_upstream:
-            blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
-        elif "PROPS" not in requested_lanes:
+            blockers.append(
+                "PROP_ACQUISITION_NO_ELIGIBLE_EVENTS:MLB"
+                if _mlb_acquisition_found_no_candidates(prop_acquisition)
+                else "NO_CANONICAL_PREGAME_SNAPSHOTS"
+            )
+        elif "PROPS" not in requested_lanes and req.max_team_events > 0:
             blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
 
     requested_limits = {"PROPS": req.max_props, "MONEYLINE": req.max_team_events}
