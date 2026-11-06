@@ -58,6 +58,17 @@ def _fixture_now():
 def pg(tmp_path_factory):
     start, snap_at, model_at = _fixture_now()
     ci_dsn = os.environ.get("WOW_V17_POSTGRES_TEST_DSN")
+    if not ci_dsn and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Exact same local PostgreSQL 16 service used by the already-gated
+        # multisport receipt acceptance fixture. If it is unavailable on a
+        # required regression-shards job, fail rather than use a mock/shim.
+        service_dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+        try:
+            with psycopg.connect(service_dsn, connect_timeout=2):
+                ci_dsn = service_dsn
+        except psycopg.OperationalError:
+            if REQUIRE_POSTGRES:
+                pytest.fail("REQUIRED_LOCAL_POSTGRES_SERVICE_UNAVAILABLE")
     created_db = None
     if ci_dsn:
         original = urlsplit(ci_dsn)
