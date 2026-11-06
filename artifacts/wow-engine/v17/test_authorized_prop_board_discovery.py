@@ -148,5 +148,24 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
         self.assertEqual(p["blocked_source_rows"][0]["typed_blocker"], "PROP_FEED_DIRECTION_UNRESOLVED")
 
 
+    def test_readonly_route_idempotent_and_blocked_without_authorization(self):
+        from unittest.mock import patch
+        from fastapi import Depends, FastAPI
+        from v17.authorized_prop_board_route import install_authorized_prop_board_route
+
+        app = FastAPI()
+        dependency = Depends(lambda: None)
+        install_authorized_prop_board_route(app, auth_dependency=dependency)
+        install_authorized_prop_board_route(app, auth_dependency=dependency)
+        matches = [route for route in app.router.routes
+                   if getattr(route, "path", "") == "/v17/prop-board/authorized-discovery"]
+        self.assertEqual(len(matches), 1)
+        with patch.dict("os.environ", {"WOW_V17_PROP_FEED_ACCOUNT_USE_AUTHORIZED": "0"}):
+            blocked = matches[0].endpoint(sport="NBA", max_pages=1)
+        self.assertEqual(blocked["typed_blocker"], "PROP_FEED_ACCOUNT_USE_NOT_AUTHORIZED")
+        self.assertFalse(blocked["probability_publishable"])
+        self.assertFalse(blocked["can_execute"])
+
+
 if __name__ == "__main__":
     unittest.main()
