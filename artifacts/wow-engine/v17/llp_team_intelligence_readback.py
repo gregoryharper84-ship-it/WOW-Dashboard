@@ -97,12 +97,18 @@ def _saved_research_identity_conflict(
             if actual in (None, ""):
                 continue
             expected = event.get("sport") if field == "league" else event.get(field)
-            if field == "league" and _token(event.get("sport")).upper() == "NFL":
-                # NFL feed league labels can be descriptive provider strings,
-                # not just the canonical sport token. Only an explicit
-                # conflicting supported sport means an identity conflict.
+            if field == "league":
+                # Explicit source-family aliases, not an arbitrary wildcard:
+                # reject conflicting NBA/NHL/NFL labels and unsupported
+                # WNBA/other leagues rather than laundering another fixture.
+                aliases = {
+                    "NFL": {"NFL", "NATIONAL FOOTBALL LEAGUE", "AMERICANFOOTBALL_NFL"},
+                    "NBA": {"NBA", "NATIONAL BASKETBALL ASSOCIATION", "BASKETBALL_NBA"},
+                    "NHL": {"NHL", "NATIONAL HOCKEY LEAGUE", "ICEHOCKEY_NHL"},
+                }
                 league_token = _token(actual).upper()
-                if league_token in _SUPPORTED and league_token != "NFL":
+                sport_token = _token(event.get("sport")).upper()
+                if league_token not in aliases.get(sport_token, {sport_token}):
                     return True
                 continue
             if field == "official_event_id":
