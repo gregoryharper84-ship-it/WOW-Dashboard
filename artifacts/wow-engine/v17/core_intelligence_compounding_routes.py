@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from v17.core_intelligence import AUTHORITY, CAN_EXECUTE
 from v17.core_intelligence_compounding_runtime import run_full_intelligence_cycle
 from v17.continuous_intelligence_cycle import run_continuous_intelligence_cycle
+from github_actions_oidc import (
+    GitHubOIDCValidationError,
+    authorize_continuous_intelligence_oidc,
+)
 
 DEFAULT_SUMMARY_LIMIT = 100
 
@@ -136,6 +140,36 @@ def install_compounding_intelligence_routes_read_only(
             max_observations=max_observations,
             min_samples=min_samples,
         )
+
+    def _authorize_internal_continuous_learning(
+        authorization: str | None = Header(default=None),
+    ) -> None:
+        try:
+            authorize_continuous_intelligence_oidc(authorization)
+        except GitHubOIDCValidationError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "LEARNING_AUTOMATION_AUTH_INVALID", "can_execute": False},
+            ) from exc
+
+    @app.post(
+        "/internal/v17/continuous-intelligence",
+        operation_id="runWowV17InternalContinuousIntelligence",
+        dependencies=[Depends(_authorize_internal_continuous_learning)],
+        include_in_schema=False,
+    )
+    def internal_continuous_cycle(
+        max_outcomes: int = Query(default=1000, ge=1, le=5000),
+        max_observations: int = Query(default=5000, ge=1, le=20000),
+        min_samples: int = Query(default=30, ge=10, le=1000),
+    ):
+        result = run_continuous_intelligence_cycle(
+            get_client_fn(),
+            max_outcomes=max_outcomes,
+            max_observations=max_observations,
+            min_samples=min_samples,
+        )
+        return {**result, "automation_auth": "GITHUB_ACTIONS_OIDC"}
 
     @app.get(
         "/v17/intelligence/compounding-summary",

@@ -4,12 +4,27 @@ on:
   schedule:
     - cron: "41 10 * * *"
   workflow_dispatch:
+    inputs:
+      max_outcomes:
+        description: "Settled outcomes per lane: daily or bounded historical backfill"
+        type: choice
+        required: true
+        default: "1000"
+        options:
+          - "1000"
+          - "5000"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-continuous-intelligence.yml"
       - "artifacts/wow-engine/v17/continuous_intelligence_cycle.py"
+      - "artifacts/wow-engine/v17/core_intelligence.py"
+      - "artifacts/wow-engine/v17/core_intelligence_runtime.py"
+      - "artifacts/wow-engine/v17/core_intelligence_event_runtime.py"
+      - "artifacts/wow-engine/v17/independent_event_accuracy.py"
       - "artifacts/wow-engine/v17/core_intelligence_compounding_routes.py"
+      - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
 permissions:
   contents: read
 concurrency:
@@ -32,41 +47,66 @@ jobs:
       - name: Test learning contracts
         env:
           PYTHONPATH: artifacts/wow-engine
-        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+        run: >-
+          python -m pytest -q
+          artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+          artifacts/wow-engine/test_v17_github_oidc.py
+          artifacts/wow-engine/tests/test_v17_core_intelligence_compounding_routes.py
   learn:
     name: Refresh settled forecasts and advisory hypotheses
     needs: verify
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    permissions:
+      contents: read
+      id-token: write
     env:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
-      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      WOW_LEARNING_MAX_OUTCOMES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_outcomes || '1000' }}
     steps:
       - name: Run authenticated research cycle and inspect safe receipt
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, urllib.request, urllib.error
+          import json, os, urllib.request, urllib.error, urllib.parse
           from pathlib import Path
 
-          token = os.environ.get("WOW_ACTION_API_KEY", "")
-          if not token:
-              raise SystemExit("LEARNING_CREDENTIAL_NOT_CONFIGURED")
-          if os.environ["WOW_CAN_EXECUTE"] != "false" or os.environ["WOW_DRY_RUN_ONLY"] != "true":
-              raise SystemExit("LEARNING_SAFETY_ENV_INVALID")
-          url = (os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
-                 + "/v17/intelligence/continuous-cycle"
-                 + "?max_outcomes=1000&min_samples=30&max_observations=5000")
-          request = urllib.request.Request(
-              url, data=b"", method="POST",
-              headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+          request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+          request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+          if not request_url or not request_token:
+              raise SystemExit("LEARNING_OIDC_RUNNER_CONTEXT_MISSING")
+          endpoint = request_url + ("&" if "?" in request_url else "?") + urllib.parse.urlencode(
+              {"audience": "wow-v17-multiscout"}
+          )
+          oidc_req = urllib.request.Request(
+              endpoint, headers={"Authorization": "Bearer " + request_token}
           )
           try:
-              with urllib.request.urlopen(request, timeout=90) as response:
+              with urllib.request.urlopen(oidc_req, timeout=20) as oidc_response:
+                  oidc_token = json.load(oidc_response).get("value")
+          except Exception as err:
+              raise SystemExit(f"LEARNING_OIDC_MINT_{type(err).__name__}") from None
+          if not isinstance(oidc_token, str) or not oidc_token:
+              raise SystemExit("LEARNING_OIDC_TOKEN_INVALID")
+          if os.environ["WOW_CAN_EXECUTE"] != "false" or os.environ["WOW_DRY_RUN_ONLY"] != "true":
+              raise SystemExit("LEARNING_SAFETY_ENV_INVALID")
+          max_outcomes = os.environ["WOW_LEARNING_MAX_OUTCOMES"]
+          if max_outcomes not in ("1000", "5000"):
+              raise SystemExit("LEARNING_OUTCOME_BOUND_INVALID")
+          max_observations = "10000" if max_outcomes == "5000" else "5000"
+          url = (os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+                 + "/internal/v17/continuous-intelligence"
+                 + f"?max_outcomes={max_outcomes}&min_samples=30&max_observations={max_observations}")
+          request = urllib.request.Request(
+              url, data=b"", method="POST",
+              headers={"Authorization": "Bearer " + oidc_token, "Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=180) as response:
                   result = json.load(response)
           except urllib.error.HTTPError as err:
               raise SystemExit(f"LEARNING_BACKEND_HTTP_{err.code}") from None
@@ -83,6 +123,7 @@ jobs:
               and result.get("model_parameters_changed") is False
               and result.get("terminal_authority") == "V17_TERMINAL_REDUCER"
               and result.get("authority") == "ADVISORY_ONLY"
+              and result.get("automation_auth") == "GITHUB_ACTIONS_OIDC"
               and result.get("completed_stages") == result.get("total_stages") == 4
               and [r.get("stage") for r in stages] == stage_names
               and all(r.get("status") == "PASS" and r.get("can_execute") is False for r in stages)
@@ -92,7 +133,7 @@ jobs:
               "stages": [
                   {key: stage.get(key) for key in (
                       "stage", "status", "candidate_n", "observation_n",
-                      "cohort_n", "hypothesis_n", "challenger_proposal_n", "error_type"
+                      "cohort_n", "hypothesis_n", "challenger_proposal_n", "error_type", "error_boundary"
                   )} for stage in stages
               ],
               "can_execute": False,
@@ -108,6 +149,7 @@ jobs:
           if not valid:
               raise SystemExit("LEARNING_STAGE_RECEIPT_FAILED")
           print("LEARNING_CYCLE_VERIFIED")
+          PY
       - name: Upload aggregate research receipt
         if: always()
         uses: actions/upload-artifact@v4
