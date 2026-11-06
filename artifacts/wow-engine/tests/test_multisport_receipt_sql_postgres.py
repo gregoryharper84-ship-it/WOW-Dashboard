@@ -181,6 +181,13 @@ def reset_postgresql_contract_state(pg):
             "set provenance_complete=true, latest_material_update_timestamp=null "
             "where score_snapshot_id=%s",(SCORE,)
         )
+        db.execute("""
+            update public.wow_nfl_forward_calibration_health
+            set graded_n=80,status='INSUFFICIENT_FORWARD_EVIDENCE',
+                certification_recommendation='DO_NOT_CERTIFY_YET',
+                blockers='["FORWARD_SAMPLE_INSUFFICIENT"]'::jsonb
+        """)
+
 
 
 def call(uri, function, uuid):
@@ -188,29 +195,43 @@ def call(uri, function, uuid):
         return db.execute(f"select public.{function}(%s::uuid)",(uuid,)).fetchone()[0]
 
 
-def test_real_db_admits_only_registered_score_after_real_reducer_interface(pg):
+def test_no_independent_certification_never_mints_receipt(pg):
+    # The local reducer may say PASS, but that is not SIRT certification.
+    local=call(pg,"wow_v17_reduce_nfl_event_terminal_label",SCORE)
+    assert local["status"]=="PASS"
     issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
-    assert issued["status"]=="PERSISTED"
+    assert issued["status"]=="HOLD"
+    assert issued["code"]=="LLP_EVENT_PREDICTION_RECEIPT_MISMATCH"
     assert issued["can_execute"] is False
-    assert issued["score_snapshot_id"]==SCORE
-    assert issued["event_prediction_id"] != SCORE
-    check=call(pg,"wow_v17_verify_multisport_event_receipt",issued["event_prediction_id"])
-    assert check["status"]=="PASS"
-    assert check["terminal_authority"]=="V17_TERMINAL_REDUCER"
-    assert check["reducer_receipt_id"]==issued["reducer_receipt_id"]
+    assert "event_prediction_id" not in issued
     with psycopg.connect(pg,autocommit=True) as db:
-        assert db.execute("select count(*) from public.wow_v17_multisport_event_prediction_receipts").fetchone()[0] == 1
+        assert db.execute(
+            "select count(*) from public.wow_v17_multisport_event_prediction_receipts"
+        ).fetchone()[0] == 0
 
 
-def test_identical_duplicate_is_idempotent_and_keeps_server_uuid(pg):
+def test_repeat_cannot_mint_uncertified_receipt(pg):
     first=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
     second=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
-    assert second["status"]=="ALREADY_PERSISTED"
-    assert first["event_prediction_id"]==second["event_prediction_id"]
-    assert first["reducer_receipt_id"]==second["reducer_receipt_id"]
+    assert first["status"]=="HOLD"
+    assert second["status"]=="HOLD"
+    assert "event_prediction_id" not in first
+    assert "event_prediction_id" not in second
 
+def test_forward_sample_100_alone_never_replaces_independent_certification(pg):
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute("""
+            update public.wow_nfl_forward_calibration_health
+            set graded_n=100,status='PASS',
+                certification_recommendation='FORWARD_EVIDENCE_PASS',
+                blockers='[]'::jsonb
+        """)
+    issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert issued["status"]=="HOLD"
+    assert "event_prediction_id" not in issued
 
 @pytest.mark.parametrize("role", ["anon","authenticated"])
+
 def test_untrusted_api_roles_cannot_execute_admission_or_terminal_readback(pg,role):
     with psycopg.connect(pg,autocommit=True) as db:
         db.execute(f"set role {role}")
@@ -227,31 +248,26 @@ def test_service_role_has_no_direct_insert_update_delete_on_ledger(pg):
             db.execute("delete from public.wow_v17_multisport_event_prediction_receipts")
 
 
-def test_existing_immutable_receipt_cannot_be_changed_even_by_owner(pg):
-    assert call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)["status"]=="PERSISTED"
+def test_immutable_triggers_exist_before_any_publication(pg):
     with psycopg.connect(pg,autocommit=True) as db:
-        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
-            db.execute("update public.wow_v17_multisport_event_prediction_receipts set home_team='OTHER'")
-        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
-            db.execute("delete from public.wow_v17_multisport_event_prediction_receipts")
+        names={row[0] for row in db.execute(
+          "select tgname from pg_trigger where tgrelid="
+          "'public.wow_v17_multisport_event_prediction_receipts'::regclass"
+        ).fetchall()}
+    assert "trg_v17_multisport_receipt_identity" in names
+    assert "trg_v17_multisport_receipt_immutable" in names
 
 
-def test_postscore_model_invalidates_reducer_and_replay(pg):
-    assert call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)["status"]=="PERSISTED"
-    # Material update without a new scorer is a reducer HOLD even when all
-    # static source/model/certification flags remain true. This catches replay
-    # bypasses that return an older immutable receipt without rerunning V17.
+def test_postscore_material_update_is_a_reducer_hold_not_publishable(pg):
     with psycopg.connect(pg,autocommit=True) as db:
-        receipt_id=db.execute(
-            "select event_prediction_id from public.wow_v17_multisport_event_prediction_receipts"
-        ).fetchone()[0]
         db.execute(
             "update public.wow_nfl_event_predictions "
             "set latest_material_update_timestamp=%s where score_snapshot_id=%s",
             (datetime.now(timezone.utc),SCORE),
         )
-    second=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
-    assert second["status"]=="HOLD"
-    assert "event_prediction_id" not in second
-    first=call(pg,"wow_v17_verify_multisport_event_receipt",str(receipt_id))
-    assert first["status"]=="HOLD"
+    local=call(pg,"wow_v17_reduce_nfl_event_terminal_label",SCORE)
+    assert local["status"]=="HOLD"
+    issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert issued["status"]=="HOLD"
+    assert "event_prediction_id" not in issued
+    assert issued["can_execute"] is False
