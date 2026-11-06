@@ -1,8 +1,10 @@
 -- NBA team-event pregame shadow receipt only. Apply only after protected review.
 -- Do not write NBA into the MLB-constrained wow_event_predictions table.
+-- created_at is server-owned; callers must not be able to backdate a receipt.
+-- now() is transaction-start time, so the trigger uses clock_timestamp().
 create table if not exists public.wow_nba_event_shadow_predictions (
   nba_prediction_id uuid primary key default gen_random_uuid(),
-  created_at timestamptz not null default now(),
+  created_at timestamptz not null,
   official_event_id text not null,
   event_start_time_utc timestamptz not null,
   home_team_id text not null,
@@ -54,6 +56,29 @@ create table if not exists public.wow_nba_event_shadow_predictions (
     and calibrated_home_upper_bound < 1
   )
 );
+
+alter table public.wow_nba_event_shadow_predictions
+  alter column created_at drop default;
+
+create or replace function public.wow_nba_event_shadow_predictions_server_created_at()
+returns trigger
+language plpgsql
+set search_path to ''
+as $function$
+begin
+  -- A caller-supplied value, including an old transaction timestamp, is not
+  -- authoritative. The insert's server wall clock owns this receipt field.
+  new.created_at := pg_catalog.clock_timestamp();
+  return new;
+end;
+$function$;
+
+drop trigger if exists trg_wow_nba_event_shadow_predictions_server_created_at
+  on public.wow_nba_event_shadow_predictions;
+create trigger trg_wow_nba_event_shadow_predictions_server_created_at
+  before insert on public.wow_nba_event_shadow_predictions
+  for each row execute function public.wow_nba_event_shadow_predictions_server_created_at();
+
 alter table public.wow_nba_event_shadow_predictions enable row level security;
 revoke all on table public.wow_nba_event_shadow_predictions from public, anon, authenticated;
 revoke update, delete, truncate, references, trigger

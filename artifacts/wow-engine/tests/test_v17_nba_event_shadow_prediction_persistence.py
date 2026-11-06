@@ -202,6 +202,12 @@ def test_sql_contract_restricts_roles_and_fixes_shadow_state():
     assert "probability_publishable = false" in sql
     assert "rank_eligible = false" in sql and "can_execute = false" in sql
     assert "created_at < event_start_time_utc" in sql
+    assert "created_at timestamptz not null default now()" not in sql
+    assert "created_at timestamptz not null," in sql
+    assert "alter column created_at drop default" in sql
+    assert "new.created_at := pg_catalog.clock_timestamp()" in sql
+    assert "before insert on public.wow_nba_event_shadow_predictions" in sql
+    assert "set search_path to ''" in sql
     assert "unique (" in sql
     assert "home_team_id text not null" in sql
     assert "away_team_id text not null" in sql
