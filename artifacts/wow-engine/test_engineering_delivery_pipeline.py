@@ -20,7 +20,7 @@ def pr(**overrides):
 
 
 def check(name, app, status="completed", conclusion="success"):
-    row = {"name": name, "app": {"id": app},
+    row = {"name": name, "app": {"id": app}, "head_sha": SHA,
            "status": status, "conclusion": conclusion}
     if name == mod.QA_CHECK and conclusion == "success":
         row["output"] = {"title": "PASS — independent semantic source review"}
@@ -166,6 +166,33 @@ class DeliveryTests(unittest.TestCase):
         checks[1]["head_sha"] = "b" * 40
         x = mod.reduce_pr(pr(), checks, SHA)
         self.assertEqual(x["decision"], "PROTECTED_CHECK_IDENTITY_INVALID")
+
+    def test_missing_pinned_check_head_sha_denied(self):
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        checks[0].pop("head_sha")
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "PROTECTED_CHECK_IDENTITY_INVALID")
+        self.assertFalse(x["merge_authorized"])
+
+    def test_independent_qa_missing_failed_or_in_progress_denied(self):
+        cases = (
+            (None, "QA_GATE_PENDING"),
+            (check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID,
+                   conclusion="failure"), "QA_GATE_NOT_ACCEPTED"),
+            (check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID,
+                   status="in_progress", conclusion=None), "QA_GATE_NOT_ACCEPTED"),
+        )
+        for qa, expected in cases:
+            with self.subTest(expected=expected):
+                checks = [*native_regressions(),
+                          check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+                if qa is not None:
+                    checks.append(qa)
+                x = mod.reduce_pr(pr(), checks, SHA)
+                self.assertEqual(x["decision"], expected)
+                self.assertFalse(x["merge_authorized"])
 
     def test_historical_only_pass_does_not_replace_required_native_regressions(self):
         checks = [check(mod.QA_CHECK, mod.QA_APP_ID),
