@@ -16,6 +16,7 @@ on:
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_settlement_refresh.py"
+      - "artifacts/wow-engine/tests/test_v17_nfl_forward_reconciliation.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_basketball_training_freshness.py"
   pull_request:
@@ -28,6 +29,7 @@ on:
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_settlement_refresh.py"
+      - "artifacts/wow-engine/tests/test_v17_nfl_forward_reconciliation.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_basketball_training_freshness.py"
 
@@ -60,6 +62,7 @@ jobs:
           python -m pytest -q
           test_v17_nfl_forward_shadow.py
           test_v17_nfl_forward_settlement_refresh.py
+          tests/test_v17_nfl_forward_reconciliation.py
           test_v17_github_oidc.py
           test_basketball_training_freshness.py
 
@@ -134,9 +137,9 @@ jobs:
               "settlement_refresh_status": refresh.get("status"),
               "settled_games_materialized": refresh.get("completed_games_materialized"),
               "latest_settled_gameday": refresh.get("latest_gameday"),
-              "canonical_events": payload.get("canonical_events"),
-              "graded_events": payload.get("graded_events"),
-              "new_grades_persisted": payload.get("new_grades_persisted"),
+              "canonical_events": payload.get("canonical_events"),                  "graded_events": payload.get("graded_events"),
+                  "new_grades_persisted": payload.get("new_grades_persisted"),
+                  "cohort_reconciliation": payload.get("cohort_reconciliation") or {},
               "forward_health": health.get("status"),
               "certification_recommendation": health.get("certification_recommendation"),
               "can_execute": False,
