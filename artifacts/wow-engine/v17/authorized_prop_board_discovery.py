@@ -25,7 +25,6 @@ BASE_URL = "https://prizepicksapi.com/api/v1/projections"
 SUPPORTED_LEAGUES = {
     "NBA": "NBA", "NFL": "NFL", "NHL": "NHL", "NCAAF": "CFB",
     "WNBA": "WNBA", "SOCCER": "SOCCER", "TENNIS": "TENNIS",
-    "NCAAB": "NCAAB", "MLB": "MLB",
 }
 SCHEMA = "WOW_V17_AUTHORIZED_PROP_DISCOVERY_V1"
 CAN_EXECUTE = False
