@@ -14,9 +14,10 @@ receipts and independent acceptance exist.
 - Code: `v17/authorized_prop_board_discovery.py`, `v17/authorized_prop_board_route.py`.
 - Server route: `GET /v17/prop-board/authorized-discovery?sport=NBA&max_pages=4`,
   installed from `install_daily_snapshot_route` only when enabled.
-- Supported research routing: NBA, NFL, NHL, NCAAF (vendor `CFB`), NCAAB,
-  WNBA, MLB, Soccer, Tennis. These are vendor-query mappings, **not** claims of
-  verified live sport coverage or model capability.
+- Documented provider query mappings: NBA, NFL, NHL, NCAAF (vendor `CFB`),
+  WNBA, Soccer, Tennis. MLB and NCAAB **are not documented by this provider**
+  and must use independently authorized alternative feeds. These mappings are
+  **not** verified live sport coverage or model capability.
 - Auth: inherits the existing FastAPI V17 dependency. No provider credential is
   exposed through route responses.
 - Access prerequisites on the backend:
