@@ -22,7 +22,11 @@ def test_forward_grades_and_independent_artifact_certificate_required():
     for required in (
         "wow_nfl_forward_calibration_health",
         "h.graded_n", "FORWARD_EVIDENCE_PASS",
-        "pg_catalog.greatest(h.minimum_forward_required,100)",
+        "GREATEST(h.minimum_forward_required,100)",
+        "h.graded_n IS DISTINCT FROM matching_forward_grades",
+        "p.model_artifact_id=a.artifact_id",
+        "p.calibration_version=s.calibration_version",
+        "g.model_version=s.model_version",
         "wow_team_event_specialist_certifications",
         "independent_verification_status='PASS'",
         "certification_status='CERTIFIED'",
