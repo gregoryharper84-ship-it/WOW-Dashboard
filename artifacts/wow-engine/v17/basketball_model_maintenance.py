@@ -23,6 +23,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from basketball_event_hydration_runtime import (
     BasketballHydrationError,
@@ -346,9 +347,25 @@ def install_basketball_model_maintenance_route(
         dependencies=[scout_route_auth_dependency(auth_dependency)],
         operation_id="runWowV17BasketballModelMaintenance",
     )
-    def run_maintenance() -> dict[str, Any]:
+    def run_maintenance() -> Any:
         """Run authenticated maintenance using the configured database client."""
-        return run_basketball_model_maintenance(db_client_fn())
+        try:
+            return run_basketball_model_maintenance(db_client_fn())
+        except Exception:  # noqa: BLE001 - sanitize the authenticated HTTP boundary
+            # Never expose database, provider, or stack-trace detail to the
+            # caller. A fixed typed hold keeps the route fail-closed.
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "BLOCKED",
+                    "stage": "BASKETBALL_MODEL_MAINTENANCE",
+                    "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED",
+                    "automatic_certification": False,
+                    "automatic_promotion": False,
+                    "probability_publishable": False,
+                    "can_execute": False,
+                },
+            )
 
 
 __all__ = [

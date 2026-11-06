@@ -211,6 +211,35 @@ def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
     assert sum(route.path == "/internal/v17/basketball-model-maintenance" for route in app.routes) == 1
 
 
+def test_maintenance_route_sanitizes_unhandled_exception(monkeypatch):
+    """Verify maintenance failures do not expose exception or provider detail."""
+    app = FastAPI()
+    monkeypatch.setattr(maintenance, "scout_route_auth_dependency", lambda dep: dep)
+
+    def broken_client():
+        raise RuntimeError("postgres://secret-provider-detail")
+
+    maintenance.install_basketball_model_maintenance_route(
+        app,
+        auth_dependency=Depends(lambda: None),
+        db_client_fn=broken_client,
+    )
+
+    response = TestClient(app).post("/internal/v17/basketball-model-maintenance")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": "BLOCKED",
+        "stage": "BASKETBALL_MODEL_MAINTENANCE",
+        "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED",
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+    assert "postgres://secret-provider-detail" not in response.text
+    assert "RuntimeError" not in response.text
+
 
 def test_live_basketball_maintenance_never_runs_on_push():
     """Verify live basketball maintenance never runs on push."""
