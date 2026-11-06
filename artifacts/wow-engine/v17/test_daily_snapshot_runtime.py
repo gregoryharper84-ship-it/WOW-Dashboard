@@ -421,3 +421,55 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+
+def test_mlb_offseason_zero_candidates_has_specific_lane_and_run_cause(monkeypatch):
+    class EmptyDB(DB):
+        def table(self, name): return Query([])
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", lambda **_: {
+        "status": "COMPLETED", "candidate_source": "MLB_OFFICIAL_PROBABLE_PITCHERS",
+        "attempted": 0, "hydrated": 0, "persisted": 0, "held": 0,
+        "snapshot_write_succeeded": 0, "snapshot_write_failed": 0,
+        "explicit_prewrite_exclusions": 0, "receipts": [], "blockers": [],
+        "can_execute": False,
+    })
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["PROPS"]),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    code = "PROP_ACQUISITION_NO_ELIGIBLE_EVENTS:MLB"
+    assert result["blockers"] == [code]
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == code
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert result["can_execute"] is False
+
+
+def test_zero_prop_limit_does_not_call_producer_or_claim_missing_snapshots(monkeypatch):
+    class EmptyDB(DB):
+        def table(self, name): return Query([])
+    def forbidden_acquisition(**_):
+        raise AssertionError("zero requested rows must not trigger acquisition")
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", forbidden_acquisition)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["PROPS"], max_props=0),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["prop_acquisition"] is None
+    assert result["blockers"] == []
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "REQUESTED_ROW_LIMIT_ZERO"
+    assert result["run_status"] == "COMPLETED"
+    assert result["can_execute"] is False
+
+
+def test_zero_moneyline_limit_does_not_claim_missing_snapshots(monkeypatch):
+    class EmptyDB(DB):
+        def table(self, name): return Query([])
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["MONEYLINE"], max_team_events=0),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["blockers"] == []
+    assert result["lane_reconciliation"]["MONEYLINE"]["zero_row_reason"] == "REQUESTED_ROW_LIMIT_ZERO"
+    assert result["run_status"] == "COMPLETED"
