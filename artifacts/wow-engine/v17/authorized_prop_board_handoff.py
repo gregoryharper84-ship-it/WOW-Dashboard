@@ -145,6 +145,7 @@ def compile_authorized_prop_handoff(
         raise ValueError("PROP_HANDOFF_CANDIDATES_INVALID")
 
     ready: list[dict[str, Any]] = []
+    proposal_provenance: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
     duplicate: list[dict[str, Any]] = []
     accepted_keys: set[tuple[str, ...]] = set()
@@ -205,6 +206,26 @@ def compile_authorized_prop_handoff(
             continue
         accepted_keys.add(key)
         token = sha256("|".join(key).encode("utf-8")).hexdigest()[:20]
+        proposal_provenance.append({
+            "row_key": "authorized-prop:" + token,
+            "source_provider": PROVIDER,
+            "source_projection_id": row.get("source_projection_id"),
+            "source_player_alias": row.get("source_player_alias"),
+            "source_event_alias": row.get("source_event_alias"),
+            "official_event_id": official["official_event_id"],
+            "official_player_id": official["official_player_id"],
+            "official_source": official["official_source"],
+            "official_verified_at": official["verified_at"],
+            "source_market_stat_display": row.get("market_stat_display"),
+            "exact_display_line": row["exact_display_line"],
+            "period": row.get("period_display"),
+            "direction": row["direction"],
+            "offer_type": row["offer_type"],
+            "source_observed_at": latest["source_observed_at"],
+            "payout_terms_verified": False,
+            "official_prizepicks_offer_independently_verified": False,
+            "can_execute": False,
+        })
         ready.append({
             "row_key": "authorized-prop:" + token,
             "event_id": official["official_event_id"],
@@ -225,6 +246,7 @@ def compile_authorized_prop_handoff(
         "status": "INPUT_PROPOSALS_READY" if ready and reconciled else "BLOCKED_OR_EMPTY",
         "source_provenance": PROVIDER, "received_directional_candidates": len(candidates),
         "scoring_input_proposals": ready, "batches_for_future_action": batches,
+        "proposal_provenance": proposal_provenance,
         "blocked_rows": blocked, "duplicate_rows": duplicate,
         "reconciliation_valid": reconciled,
         "source_full_board_coverage_established": False,
