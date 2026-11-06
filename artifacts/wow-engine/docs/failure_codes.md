@@ -613,3 +613,5 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+- `LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE` — NFL receipt admission could not authenticate a reducer-owned receipt UUID/digest against the separately deployed `wow_terminal_reducer.verify_nfl_reducer_receipt(uuid,uuid,text)` attestation contract. The existing V17 reducer currently returns terminal status only, so this is the expected P0 fail-closed blocker until reducer ownership installs and SIRT independently validates the provenance ledger, auth, replay and binds. Do not treat a PASS label, locally calculated SHA, fake certificate, or source-only SQL candidate as receipt authority. Never downgrade to MODEL_UNAVAILABLE and never enable publication while missing. `can_execute=false`.
