@@ -79,7 +79,7 @@ SOURCES = (
                "v17/propsmadness_nfl_account_view_adapter.py",
                "AUTHENTICATED_REUSE_AND_STORAGE_GRANT_UNVERIFIED"),
     FreeSource("PRIZEPICKSAPI_INDEPENDENT",
-               ("NFL", "NBA", "NCAAF", "NCAAB", "MLB", "NHL", "WNBA", "SOCCER", "TENNIS"),
+               ("NFL", "NBA", "NCAAF", "NHL", "WNBA", "SOCCER", "TENNIS"),
                ("DISCOVERY",), "OPT_IN_AUTHORIZED_RESEARCH",
                "v17/authorized_prop_board_discovery.py",
                "THIRD_PARTY_ACCOUNT_RIGHTS_QUOTA_AND_LIVE_FEED_UNVERIFIED"),
