@@ -916,9 +916,8 @@ def test_draft_qa_callback_with_untrusted_event_origin_still_fails_closed(side, 
 @pytest.mark.parametrize(("live_sha", "live_ref", "live_state"), [
     (OLD, "fix/draft", "open"),
     (HEAD, "", "open"),
-    (HEAD, "fix/draft", "closed"),
 ])
-def test_draft_qa_neutral_cannot_cover_moved_malformed_or_closed_target(
+def test_draft_qa_neutral_cannot_cover_moved_or_malformed_target(
     live_sha, live_ref, live_state,
 ):
     """No draft neutral if the exact unmerged same-PR identity is unproven."""

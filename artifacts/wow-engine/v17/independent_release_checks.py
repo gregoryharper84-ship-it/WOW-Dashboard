@@ -395,6 +395,31 @@ def targets(repo: str, *, pr: str | None = None,
                 and base_repo.get("full_name") == repo
                 and SHA_RE.match(str(current_sha or "")) is not None
             )
+            # #1021: workflow_run can report a same-repo PR that is still
+            # draft when its upstream QA run completes. A draft is not a
+            # reviewable release target. Do not issue a valid QA policy for it:
+            # Release would correctly fail and poison the unrelated main SHA.
+            # Neutral is allowed ONLY for one authenticated same-origin,
+            # exact-current-head, OPEN draft; every other identity fails closed.
+            # Manual workflow_dispatch never enables this neutral admission.
+            if live.get("state") == "open" and live.get("draft") is True:
+                draft_exact = (
+                    neutral_superseded
+                    and len(workflow_run_prs) == 1
+                    and same_origin
+                    and not live.get("merged_at")
+                    and current_sha == sha
+                    and isinstance(head.get("ref"), str)
+                    and bool(head["ref"].strip())
+                )
+                if draft_exact:
+                    return {
+                        "targets": [], "errors": [],
+                        "disposition": "neutral",
+                        "reason": "QA_SOURCE_PR_DRAFT_INELIGIBLE",
+                    }
+                errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+                continue
             if (
                 neutral_superseded and len(workflow_run_prs) == 1
                 and same_origin and (
