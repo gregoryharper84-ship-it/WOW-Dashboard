@@ -75,6 +75,25 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
                 normalize_projection(sample(**value), league="NBA", now=NOW)
             self.assertEqual(cm.exception.code, code)
 
+    def test_source_provenance_conflict_is_typed_not_silent(self):
+        receipt = normalize_page(
+            page([sample(source="unknown-source")]), league="NBA", now=NOW
+        )
+        self.assertEqual(receipt["directional_candidates"], [])
+        self.assertEqual(receipt["blocked_source_rows"][0]["typed_blocker"],
+                         "PROP_FEED_SOURCE_PROVENANCE_CONFLICT")
+
+    def test_zero_provider_rows_is_not_mistaken_for_an_empty_slate(self):
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=lambda **kw: page([]),
+        )
+        self.assertEqual(receipt["source_rows_received"], 0)
+        self.assertFalse(receipt["source_coverage_complete_for_requested_sport"])
+        self.assertFalse(receipt["zero_provider_rows_proves_no_pregame_slate"])
+        self.assertFalse(receipt["full_prizepicks_board_coverage_verified"])
+        self.assertEqual(receipt["blockers"], ["PROP_FEED_ZERO_ROWS_NOT_NO_SLATE_PROOF"])
+
     def test_unhealthy_page_not_trusted(self):
         with self.assertRaises(PropFeedHold) as cm:
             normalize_page(page([sample()], health="stale"), league="NBA", now=NOW)
