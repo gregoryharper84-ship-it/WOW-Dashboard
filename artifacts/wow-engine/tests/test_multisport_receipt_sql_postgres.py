@@ -50,6 +50,8 @@ START = datetime.now(timezone.utc) + timedelta(days=2)
 SNAP_AT = datetime.now(timezone.utc) - timedelta(hours=2)
 MODEL_AT = datetime.now(timezone.utc) - timedelta(hours=1)
 HASH = "a" * 64
+REDUCER_ID = str(uuid4())
+REDUCER_HASH = "b" * 64
 
 
 @pytest.fixture(scope="module")
@@ -176,13 +178,55 @@ def pg(tmp_path_factory):
                       'INSUFFICIENT_FORWARD_EVIDENCE','DO_NOT_CERTIFY_YET',
                       '["FORWARD_SAMPLE_INSUFFICIENT"]'::jsonb,false)
             """)
+            # Separate trust-root mock, scoped to this disposable database.
+            # Production MUST supply its own independently authorized reducer
+            # attestor and immutable origin ledger; the SQL candidate does not.
+            db.execute("create schema wow_terminal_reducer")
+            db.execute("""
+              create table wow_terminal_reducer.origin_receipts (
+                score_snapshot_id uuid primary key,
+                reducer_receipt_id uuid unique not null,
+                reducer_receipt_sha256 text not null
+              )
+            """)
+            db.execute("""
+              create function wow_terminal_reducer.verify_nfl_reducer_receipt(
+                p_score_snapshot_id uuid,p_reducer_receipt_id uuid,p_sha text
+              ) returns boolean language sql security invoker set search_path='' as $verify$
+                select exists(
+                  select 1 from wow_terminal_reducer.origin_receipts o
+                  where o.score_snapshot_id=p_score_snapshot_id
+                    and o.reducer_receipt_id=p_reducer_receipt_id
+                    and o.reducer_receipt_sha256=p_sha
+                )
+              $verify$
+            """)
+            db.execute(
+              "revoke all on schema wow_terminal_reducer from public,anon,authenticated,service_role"
+            )
+            db.execute(
+              "revoke execute on function "
+              "wow_terminal_reducer.verify_nfl_reducer_receipt(uuid,uuid,text) "
+              "from public,anon,authenticated,service_role"
+            )
             # Deliberately external official reducer interface; the real V17
             # implementation must be used for separate integration acceptance.
             db.execute("""
                 create function public.wow_v17_reduce_nfl_event_terminal_label(p_score_snapshot_id uuid)
                 returns jsonb language plpgsql set search_path='' as $fn$
-                declare available boolean;
+                declare
+                  available boolean;
+                  origin_id uuid;
+                  origin_sha text;
                 begin
+                  select o.reducer_receipt_id,o.reducer_receipt_sha256
+                    into origin_id,origin_sha
+                    from wow_terminal_reducer.origin_receipts o
+                    where o.score_snapshot_id=p_score_snapshot_id;
+                  if pg_catalog.current_setting('wow_test.reducer_spoof_origin',true)='on'
+                  then origin_id:=pg_catalog.gen_random_uuid(); end if;
+                  if pg_catalog.current_setting('wow_test.reducer_spoof_sha',true)='on'
+                  then origin_sha:=repeat('c',64); end if;
                   select s.provenance_complete and s.model_package_valid and
                     s.model_probability_publishable and s.event_start_time_utc > clock_timestamp()
                     and (s.latest_material_update_timestamp is null or
@@ -196,6 +240,8 @@ def pg(tmp_path_factory):
                     return jsonb_build_object('status','PASS',
                       'terminal_label','FINAL_APPROVED','global_terminal_reducer','V17_TERMINAL_REDUCER',
                       'probability_publishable',true,'rank_eligible',true,'can_execute',false,
+                      'reducer_receipt_id',origin_id::text,
+                      'reducer_receipt_sha256',origin_sha,
                       'blockers',jsonb_build_array());
                   end if;
                   return jsonb_build_object('status','HOLD',
@@ -229,6 +275,11 @@ def pg(tmp_path_factory):
                         jsonb_build_object('artifact_checksum',%s::text),'CAL_VERSION',
                         true,true,true,'PASS',false,false,.61,.55,.65,.39,.35,.45)
             """,(SCORE,START,SNAP,SNAP_AT,MODEL_AT,MODEL,HASH))
+            db.execute(
+              "insert into wow_terminal_reducer.origin_receipts "
+              "(score_snapshot_id,reducer_receipt_id,reducer_receipt_sha256) "
+              "values (%s,%s,%s)",(SCORE,REDUCER_ID,REDUCER_HASH)
+            )
             db.execute(SQL.read_text())
         yield uri
     finally:
@@ -248,6 +299,12 @@ def reset_postgresql_contract_state(pg):
     # make a subsequent case accidentally green or red by order.
     with psycopg.connect(pg,autocommit=True) as db:
         db.execute("truncate public.wow_v17_multisport_event_prediction_receipts")
+        db.execute("delete from wow_terminal_reducer.origin_receipts")
+        db.execute(
+          "insert into wow_terminal_reducer.origin_receipts "
+          "(score_snapshot_id,reducer_receipt_id,reducer_receipt_sha256) "
+          "values (%s,%s,%s)",(SCORE,REDUCER_ID,REDUCER_HASH)
+        )
         db.execute("delete from public.wow_nfl_forward_shadow_grades where official_event_id like 'foreign-fixture-%' or official_event_id like 'qualifying-fixture-%'")
         db.execute("delete from public.wow_nfl_event_predictions where official_event_id like 'foreign-fixture-%' or official_event_id like 'qualifying-fixture-%'")
         db.execute("delete from public.wow_team_event_specialist_certifications where verification_receipt ? 'test_fixture_only'")
@@ -479,6 +536,72 @@ def test_foreign_model_forward_grades_cannot_unlock_another_champion(
     issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
     assert issued["status"] == "HOLD"
     assert "event_prediction_id" not in issued
+
+
+@pytest.mark.parametrize("spoof_key", [
+    "wow_test.reducer_spoof_origin",
+    "wow_test.reducer_spoof_sha",
+])
+def test_test_only_forged_reducer_origin_is_a_hold_not_published(pg,spoof_key):
+    stage_test_only_qualifying_forward_cohort(pg)
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute("select pg_catalog.set_config(%s,'on',false)",(spoof_key,))
+        spoofed=db.execute(
+            "select public.wow_v17_admit_nfl_event_receipt(%s::uuid)",(SCORE,)
+        ).fetchone()[0]
+        assert spoofed["status"]=="HOLD"
+        assert spoofed["code"]=="LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE"
+        assert spoofed["can_execute"] is False
+        assert db.execute(
+            "select count(*) from public.wow_v17_multisport_event_prediction_receipts"
+        ).fetchone()[0]==0
+
+
+def test_test_only_reducer_origin_missing_even_on_pass_is_hold(pg):
+    stage_test_only_qualifying_forward_cohort(pg)
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute(
+          "delete from wow_terminal_reducer.origin_receipts where score_snapshot_id=%s",
+          (SCORE,)
+        )
+    held=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert held["status"]=="HOLD"
+    assert held["code"]=="LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE"
+    with psycopg.connect(pg,autocommit=True) as db:
+        assert db.execute(
+            "select count(*) from public.wow_v17_multisport_event_prediction_receipts"
+        ).fetchone()[0]==0
+
+
+def test_test_only_attestor_rpc_missing_is_hold(pg):
+    stage_test_only_qualifying_forward_cohort(pg)
+    with psycopg.connect(pg) as db:
+        db.execute(
+          "drop function wow_terminal_reducer.verify_nfl_reducer_receipt(uuid,uuid,text)"
+        )
+        held=db.execute(
+          "select public.wow_v17_admit_nfl_event_receipt(%s::uuid)",(SCORE,)
+        ).fetchone()[0]
+        assert held["status"]=="HOLD"
+        assert held["code"]=="LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE"
+        db.rollback()  # Restore the test-only attestor for later cases.
+
+
+def test_test_only_origin_reversal_revokes_readback(pg):
+    stage_test_only_qualifying_forward_cohort(pg)
+    issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert issued["status"]=="PERSISTED"
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute(
+          "delete from wow_terminal_reducer.origin_receipts where score_snapshot_id=%s",
+          (SCORE,)
+        )
+    verified=call(
+        pg,"wow_v17_verify_multisport_event_receipt",issued["event_prediction_id"]
+    )
+    assert verified["status"]=="HOLD"
+    assert verified["can_execute"] is False
+
 
 def test_forward_sample_100_alone_never_replaces_independent_certification(pg):
     with psycopg.connect(pg,autocommit=True) as db:
