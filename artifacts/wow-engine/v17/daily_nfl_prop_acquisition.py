@@ -17,7 +17,7 @@ can_execute=false.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -43,6 +43,20 @@ def _local_date_matches(candidate: dict[str, Any], requested_date: str, requeste
         return start.astimezone(ZoneInfo(requested_timezone)).date().isoformat() == requested_date
     except Exception:
         return False
+
+
+def _scoreboard_partition_dates(requested_date: str, requested_timezone: str) -> list[str]:
+    """Cover the requested local calendar day across ESPN's Eastern-date index."""
+    slate_date = date.fromisoformat(requested_date)
+    local = ZoneInfo(requested_timezone)
+    eastern = ZoneInfo("America/New_York")
+    first = datetime.combine(slate_date, time.min, tzinfo=local).astimezone(eastern).date()
+    last = (
+        datetime.combine(slate_date + timedelta(days=1), time.min, tzinfo=local)
+        - timedelta(microseconds=1)
+    ).astimezone(eastern).date()
+    return [(first + timedelta(days=offset)).isoformat()
+            for offset in range((last - first).days + 1)]
 
 
 def _interleave_by_event(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -119,7 +133,23 @@ def acquire_daily_nfl_prop_snapshots(
         return result
     cached_get = _cp._cached_http_get(http_get)
     try:
-        discovered = _cp._discover_candidates(requested_date, now=now, http_get=cached_get)
+        discovered: list[dict[str, Any]] = []
+        seen_candidates: set[tuple[str, str, str]] = set()
+        for partition in _scoreboard_partition_dates(requested_date, requested_timezone):
+            for candidate in _cp._discover_candidates(partition, now=now, http_get=cached_get):
+                # ESPN's Eastern partition can overlap two local dates. Retain
+                # exact requested-day membership and dedupe official identities.
+                if not _local_date_matches(candidate, requested_date, requested_timezone):
+                    continue
+                identity = (
+                    str(candidate["canonical_event_id"]),
+                    str(candidate.get("player_id") or candidate["player"]),
+                    str(candidate["stat_type"]),
+                )
+                if identity in seen_candidates:
+                    continue
+                seen_candidates.add(identity)
+                discovered.append(candidate)
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
         result["discovered_candidates"] = None
@@ -127,9 +157,7 @@ def acquire_daily_nfl_prop_snapshots(
         result["blockers"] = [getattr(exc, "code", None) or f"NFL_PROP_DISCOVERY_FAILED:{type(exc).__name__}"]
         return result
 
-    candidates = _interleave_by_event(
-        [c for c in discovered if _local_date_matches(c, requested_date, requested_timezone)]
-    )
+    candidates = _interleave_by_event(discovered)
     result["discovered_candidates"] = len(candidates)
     pending: list[dict[str, Any]] = []
     for candidate in candidates:
