@@ -349,3 +349,36 @@ def test_published_action_contract_declares_the_paged_retrieval_route():
     assert daily_request["properties"]["response_mode"]["enum"] == ["COMPACT", "FULL"]
     # extra="forbid" on the model means an undocumented field would be rejected.
     assert daily_request["additionalProperties"] is False
+
+
+def test_mixed_sport_discovery_outage_is_a_daily_run_blocker(monkeypatch):
+    """A healthy NFL row never makes an MLB acquisition outage disappear."""
+    import v17.daily_snapshot_runtime as runtime
+
+    row = {**_prop_snapshot(0), "event_id": "NFL:example",
+           "sport": "NFL", "stat_type": "PASSING_YARDS"}
+    pages = iter(([], [row]))
+    monkeypatch.setattr(runtime, "_prop_manifest_rows", lambda *_args, **_kwargs: next(pages))
+    monkeypatch.setattr(
+        runtime, "acquire_daily_prop_snapshots",
+        lambda **_kwargs: {
+            "status": "COMPLETED_WITH_ROW_BLOCKERS",
+            "sport_coverage": [
+                {"sport": "MLB", "status": "DATA_UNOBTAINABLE", "attempted": 0,
+                 "blockers": ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:HTTP_503"]},
+                {"sport": "NFL", "status": "COMPLETED", "attempted": 1,
+                 "persisted": 1, "blockers": []},
+            ],
+            "blockers": ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:HTTP_503"],
+            "persisted": 1, "snapshot_write_succeeded": 1,
+            "attempted": 1, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "can_execute": False,
+        },
+    )
+    result = _run(_DB([]), _RejectingMarket(), max_props=2, response_mode="FULL")
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["identity"]["sport"] == "NFL"
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert "DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE" in result["blockers"]
+    assert "MLB_PROP_SCHEDULE_ACQUISITION_FAILED:HTTP_503" in result["blockers"]
+    assert result["can_execute"] is False
