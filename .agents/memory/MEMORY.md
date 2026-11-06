@@ -127,3 +127,4 @@
 - [NFL Daily shared-ceiling unknown counts](nfl-daily-row-ceiling-unknown.md) — when MLB consumes the row budget, NFL discovery never ran; label NOT_ATTEMPTED_ROW_CEILING with null unknown counts, never zero/empty slate. Regression: v17/test_daily_nfl_prop_acquisition.py. PR #2485.
 
 - [Arithmetic provider/verdict pairing](arithmetic-ledger-provider-verdict-pairing.md) — widening allowed providers and verdicts independently creates invalid cross-provider combinations; keep one paired CHECK plus negative regression in PR #2485.
+- [Daily PROPS mixed-sport discovery outage](daily-mixed-sport-discovery-outage.md) — a successful sport must not hide another sport's DATA_UNOBTAINABLE at the outer Daily run boundary; preserve per-leg blockers and fail closed.
