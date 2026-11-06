@@ -479,3 +479,50 @@ def test_invalid_head_hold_never_echoes_user_supplied_data(tmp_path, monkeypatch
     assert payload["blocker"] == "EXPECTED_HEAD_INVALID"
     assert payload["head_sha"] is None
     assert "unexpected-bad-sha" not in output.read_text(encoding="utf-8")
+
+
+def test_deleted_head_repository_is_typed_identity_hold():
+    client = FakeGitHub()
+    original = client.request
+
+    def gone(path, *, method="GET", body=None):
+        result = original(path, method=method, body=body)
+        if path == "/pulls/900":
+            result["head"]["repo"] = None
+        return result
+
+    client.request = gone
+    with pytest.raises(reviewer.ReviewHold, match="PR_IDENTITY_OR_SHA_CHANGED"):
+        reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert client.posted == []
+
+
+def test_missing_base_metadata_is_typed_identity_hold():
+    client = FakeGitHub()
+    original = client.request
+
+    def gone(path, *, method="GET", body=None):
+        result = original(path, method=method, body=body)
+        if path == "/pulls/900":
+            result["base"] = None
+        return result
+
+    client.request = gone
+    with pytest.raises(reviewer.ReviewHold, match="PR_IDENTITY_OR_SHA_CHANGED"):
+        reviewer.collect_pr_review(client, number=900, expected_head=HEAD)
+    assert client.posted == []
+
+
+def test_deleted_comment_author_does_not_block_own_advisory_comment():
+    client = FakeGitHub()
+    client.comments = [{
+        "id": 555, "body": reviewer._COMMENT_MARKER + "\nformer bot",
+        "user": None,
+    }]
+    reviewer.post_advisory_comment(
+        client, number=900, head_sha=HEAD, base_sha=BASE,
+        text=reviewer._COMMENT_MARKER + "\ncurrent"
+    )
+    assert client.posted == [
+        ("POST", {"body": reviewer._COMMENT_MARKER + "\ncurrent"})
+    ]
