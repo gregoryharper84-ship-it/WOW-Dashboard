@@ -98,6 +98,13 @@ def test_exact_verified_input_proposals_do_not_claim_model_probability():
     assert out["scoring_input_proposals"][0]["event_id"] == "NBA:official-game-1"
     assert out["scoring_input_proposals"][0]["line"] == 22.5
     assert out["scoring_input_proposals"][0]["stat_type"] == "POINTS"
+    assert out["proposal_provenance"][0]["offer_type"] == "standard"
+    assert out["proposal_provenance"][0]["exact_display_line"] == "22.5"
+    assert out["proposal_provenance"][0]["official_event_id"] == "NBA:official-game-1"
+    assert out["proposal_provenance"][0]["official_player_id"] == "NBA:official-player-1"
+    assert out["proposal_provenance"][0]["source_projection_id"] == "pp_12"
+    assert out["proposal_provenance"][0]["official_prizepicks_offer_independently_verified"] is False
+    assert len(out["proposal_provenance"]) == 2
     assert out["scoring_attempted"] is False
     assert out["action_receipts"] == []
     assert out["model_probability"] is None
