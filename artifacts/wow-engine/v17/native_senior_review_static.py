@@ -80,6 +80,15 @@ def _literal_false(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is False
 
 
+def _node_touches_added(node: ast.AST, lines_added: set[int]) -> bool:
+    """Check a whole expression so added keyword arguments aren't missed."""
+    start = getattr(node, "lineno", -1)
+    end = getattr(node, "end_lineno", start)
+    return isinstance(start, int) and isinstance(end, int) and any(
+        start <= line <= end for line in lines_added
+    )
+
+
 def _python_findings(path: str, src: str, lines_added: set[int]):
     try:
         tree = ast.parse(src, filename=path)
@@ -88,7 +97,7 @@ def _python_findings(path: str, src: str, lines_added: set[int]):
     out = []
     code_lines = src.splitlines()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or node.lineno not in lines_added:
+        if not isinstance(node, ast.Call) or not _node_touches_added(node, lines_added):
             continue
         target = _call_name(node.func)
         kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
@@ -159,7 +168,7 @@ def _python_findings(path: str, src: str, lines_added: set[int]):
                         "capability absence; invocation failures must retain scorer/Action errors",
                         code_lines[child.lineno - 1].strip(),
                     ))
-        if not rule or getattr(node, "lineno", -1) not in lines_added:
+        if not rule or not _node_touches_added(node, lines_added):
             continue
         excerpt = code_lines[node.lineno - 1].strip()
         if 12 <= len(excerpt) <= 500:
