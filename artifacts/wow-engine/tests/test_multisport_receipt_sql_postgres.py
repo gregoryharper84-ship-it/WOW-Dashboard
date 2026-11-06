@@ -12,10 +12,16 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
+import os
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-pgserver = pytest.importorskip("pgserver")
+# A skipped environment cannot satisfy an explicit P0 PostgreSQL acceptance.
+if os.environ.get("WOW_V17_REQUIRE_POSTGRES_RECEIPT_TESTS") == "1":
+    import psycopg
+    import pgserver
+else:
+    psycopg = pytest.importorskip("psycopg")
+    pgserver = pytest.importorskip("pgserver")
 
 SQL = (
     Path(__file__).resolve().parents[1] / "v17" / "sql_candidates"
@@ -134,6 +140,19 @@ def pg(tmp_path_factory):
         if callable(cleanup): cleanup()
 
 
+@pytest.fixture(autouse=True)
+def reset_postgresql_contract_state(pg):
+    # Tests are independent: an immutable receipt from a prior case must not
+    # make a subsequent case accidentally green or red by order.
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute("truncate public.wow_v17_multisport_event_prediction_receipts")
+        db.execute(
+            "update public.wow_nfl_event_predictions "
+            "set provenance_complete=true, latest_material_update_timestamp=null "
+            "where score_snapshot_id=%s",(SCORE,)
+        )
+
+
 def call(uri, function, uuid):
     with psycopg.connect(uri,autocommit=True) as db:
         return db.execute(f"select public.{function}(%s::uuid)",(uuid,)).fetchone()[0]
@@ -179,6 +198,7 @@ def test_service_role_has_no_direct_insert_update_delete_on_ledger(pg):
 
 
 def test_existing_immutable_receipt_cannot_be_changed_even_by_owner(pg):
+    assert call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)["status"]=="PERSISTED"
     with psycopg.connect(pg,autocommit=True) as db:
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
             db.execute("update public.wow_v17_multisport_event_prediction_receipts set home_team='OTHER'")
@@ -187,6 +207,7 @@ def test_existing_immutable_receipt_cannot_be_changed_even_by_owner(pg):
 
 
 def test_postscore_model_invalidates_reducer_and_replay(pg):
+    assert call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)["status"]=="PERSISTED"
     # Material update without a new scorer is a reducer HOLD even when all
     # static source/model/certification flags remain true. This catches replay
     # bypasses that return an older immutable receipt without rerunning V17.
