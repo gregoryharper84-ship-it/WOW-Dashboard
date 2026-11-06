@@ -16,7 +16,7 @@ OFFICIAL_IMAGE = "postgres:16"
 def test_all_required_postgres_services_use_verified_official_image():
     expected = {
         ".github/workflows/wow-verify.yml": 3,
-        ".github/workflows/wow-engine-verify.yml": 3,
+        ".github/workflows/wow-engine-verify.yml": 4,
     }
     for relative, required in expected.items():
         workflow = yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
@@ -30,7 +30,8 @@ def test_all_required_postgres_services_use_verified_official_image():
             # The NBA calibrator job is an *additional mandatory* isolated DB
             # proof, never a replacement for Agent Runtime or backend shards.
             assert {"regression-shards", "agent-runtime-integration",
-                    "nba-calibrator-db-contract"}.issubset(jobs)
+                    "nba-calibrator-db-contract",
+                    "nba-shadow-receipt-db-contract"}.issubset(jobs)
             nba = jobs["nba-calibrator-db-contract"]
             assert nba["services"]["postgres"]["image"] == OFFICIAL_IMAGE
             assert "nba-calibrator-db-contract" in jobs["governed-probability-backend"]["needs"]
@@ -39,6 +40,16 @@ def test_all_required_postgres_services_use_verified_official_image():
             assert any("NBA_CALIBRATOR_DB_CONTRACT_VERIFIED" in step for step in run_steps)
             assert any("if total < 19 or skipped or failures or errors" in step
                        for step in run_steps)
+            # The NBA shadow-receipt contract is also mandatory. Keep the
+            # zero-skip real PostgreSQL proof and aggregate dependency.
+            shadow = jobs["nba-shadow-receipt-db-contract"]
+            assert shadow["services"]["postgres"]["image"] == OFFICIAL_IMAGE
+            assert "nba-shadow-receipt-db-contract" in jobs["governed-probability-backend"]["needs"]
+            shadow_steps = [str(step.get("run") or "") for step in shadow["steps"]
+                            if isinstance(step, dict)]
+            assert any("NBA_SHADOW_DB_CONTRACT_VERIFIED" in step for step in shadow_steps)
+            assert any("if total < 5 or skipped or failures or errors" in step
+                       for step in shadow_steps)
         for job in service_jobs:
             service = job["services"]["postgres"]
             assert service["image"] == OFFICIAL_IMAGE
