@@ -256,9 +256,9 @@ def resolve_soccer_current_event_identity(
     matches: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
     source_signatures: dict[str, tuple[str, str, str]] = {}
     for row in rows:
+        # Do not discard an official fixture merely because its identifier is
+        # missing. A matching row without a valid ID makes uniqueness unprovable.
         event_id = str(row.get("id") or "").strip()
-        if not event_id:
-            continue
         sides = _sides(row)
         if sides is None:
             continue
@@ -269,23 +269,24 @@ def resolve_soccer_current_event_identity(
             str(home_team_row.get("id")),
             str(away_team_row.get("id")),
         )
-        previous = source_signatures.get(event_id)
-        if previous is not None:
-            # Repeated ESPN rows for one event are allowed only when their
-            # official kickoff and ordered participant IDs agree. Different
-            # time spelling for the same UTC instant remains equivalent.
-            try:
-                same_time = _aware(previous[0]) == _aware(signature[0])
-            except SoccerEventIdentityError as exc:
-                raise SoccerEventIdentityError(
-                    "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "duplicate id timestamp invalid"
-                ) from exc
-            if previous[1:] != signature[1:] or not same_time:
-                raise SoccerEventIdentityError(
-                    "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "conflicting duplicate event id"
-                )
-        else:
-            source_signatures[event_id] = signature
+        if event_id:
+            previous = source_signatures.get(event_id)
+            if previous is not None:
+                # Repeated ESPN rows for one event are allowed only when their
+                # official kickoff and ordered participant IDs agree. Different
+                # time spelling for the same UTC instant remains equivalent.
+                try:
+                    same_time = _aware(previous[0]) == _aware(signature[0])
+                except SoccerEventIdentityError as exc:
+                    raise SoccerEventIdentityError(
+                        "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "duplicate id timestamp invalid"
+                    ) from exc
+                if previous[1:] != signature[1:] or not same_time:
+                    raise SoccerEventIdentityError(
+                        "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "conflicting duplicate event id"
+                    )
+            else:
+                source_signatures[event_id] = signature
         if home_norm not in _team_tokens(home_team_row):
             continue
         if away_norm not in _team_tokens(away_team_row):
@@ -303,6 +304,13 @@ def resolve_soccer_current_event_identity(
         # requested kickoff inside the declared drift budget before accepting.
         if abs((start - event_time).total_seconds()) / 60.0 > MAX_KICKOFF_DRIFT_MINUTES:
             continue
+        # A participant + kickoff match is an identity candidate even when the
+        # source ID is empty, overlong, non-ASCII or not ASCII decimal. Such a
+        # row cannot silently disappear and make another match look unique.
+        if not (1 <= len(event_id) <= 20 and event_id.isascii() and event_id.isdecimal()):
+            raise SoccerEventIdentityError(
+                "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "matching fixture id invalid"
+            )
         # The ±1 day window can surface the same fixture twice; a repeated
         # source row is still one event, not an ambiguity.
         matches.setdefault(event_id, (start, row))

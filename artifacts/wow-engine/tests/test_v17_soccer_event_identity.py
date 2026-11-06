@@ -401,3 +401,45 @@ def test_soccer_failure_codes_are_registered():
     assert not {code for code in fixed_codes if f"`{code}`" not in registry}
     assert "`SOCCER_OFFICIAL_SOURCE_HTTP_{status}`" in registry
 
+
+
+@pytest.mark.parametrize("invalid_id", [
+    "", None, "not-an-id", "123456789012345678901",
+    "١٢٣", "9 99", "123e4",
+])
+@pytest.mark.parametrize("with_valid_match", [False, True])
+@pytest.mark.parametrize("malformed_first", [False, True])
+def test_matching_invalid_official_event_id_blocks_uniqueness(
+    invalid_id, with_valid_match, malformed_first,
+):
+    """A source fixture matching teams and kickoff needs a valid ASCII ESPN ID."""
+    malformed = scoreboard_event(invalid_id)
+    rows = [scoreboard_event("401800049")] if with_valid_match else []
+    if malformed_first:
+        rows.insert(0, malformed)
+    else:
+        rows.append(malformed)
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_unrelated_bad_event_id_does_not_poison_verified_matching_fixture():
+    """Irrelevant clubs cannot falsify the known league fixture identity."""
+    other = scoreboard_event("", home=("7", "Another Club", "Other"),
+                             away=("8", "Unrelated Club", "Else"))
+    result = _resolve(fetcher=fetcher_for({
+        ("eng.1", "20261107"): [other, scoreboard_event("401800050")],
+    }))
+    assert result["event_id"] == "SOCCER:401800050"
+    assert result["can_execute"] is False
+
+
+def test_matching_clubs_wrong_date_with_bad_id_do_not_supplant_official_fixture():
+    """Adjacent-day discovery is not a second candidate for this kickoff."""
+    tomorrow = scoreboard_event("", date="2026-11-08T12:30:00Z")
+    result = _resolve(fetcher=fetcher_for({
+        ("eng.1", "20261107"): [scoreboard_event("401800051")],
+        ("eng.1", "20261108"): [tomorrow],
+    }))
+    assert result["event_id"] == "SOCCER:401800051"
