@@ -48,6 +48,17 @@ TABLES = [
 @pytest.fixture(scope="module")
 def pg(tmp_path_factory):
     ci_dsn = os.environ.get("WOW_V17_POSTGRES_TEST_DSN")
+    if not ci_dsn and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Hosted regression-shards provisions PostgreSQL 16 on localhost.
+        # Mirror the established multisport admission fixture: never turn
+        # required hosted DB acceptance into a skip or a fake pgserver pass.
+        service_dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+        try:
+            with psycopg.connect(service_dsn, connect_timeout=2):
+                ci_dsn = service_dsn
+        except psycopg.OperationalError:
+            if REQUIRE_POSTGRES:
+                pytest.fail("REQUIRED_LOCAL_POSTGRES_SERVICE_UNAVAILABLE")
     we_created_db = False
     test_db = None
     if ci_dsn:
