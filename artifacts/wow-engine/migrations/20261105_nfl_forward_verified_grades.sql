@@ -41,9 +41,11 @@ where g.schema_version = 'NFL_FORWARD_SHADOW_GRADE_V1'
   and abs(g.calibrated_lower_bound - p.calibrated_selection_lower_bound::double precision) <= 0.0000000001
   and abs(g.calibrated_upper_bound - p.calibrated_selection_upper_bound::double precision) <= 0.0000000001
   and abs(g.brier - power(g.calibrated_probability - g.outcome, 2.0::double precision)) <= 0.000000001
+  -- Match the original grade producer's 1e-12 log-loss clipping exactly.
+  -- Without clipping, valid extreme probabilities would be false quarantines.
   and abs(g.log_loss - case
-    when g.outcome = 1 then -ln(g.calibrated_probability)
-    else -ln(1.0 - g.calibrated_probability)
+    when g.outcome = 1 then -ln(greatest(least(g.calibrated_probability, 1.0 - 0.000000000001), 0.000000000001))
+    else -ln(1.0 - greatest(least(g.calibrated_probability, 1.0 - 0.000000000001), 0.000000000001))
   end) <= 0.000000001;
 
 -- RLS on all three source tables stays effective for invoker callers.
