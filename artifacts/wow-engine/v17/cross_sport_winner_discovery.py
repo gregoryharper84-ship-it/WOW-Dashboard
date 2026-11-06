@@ -1272,12 +1272,30 @@ def route_discovered_slate(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
         )
         if purge is not None:
+            detail = {"reason": purge, "model_invoked": False}
+            # The NHL canonicalizer already stores an owned typed source failure
+            # in raw. Keep its bounded diagnostic origin on the held row rather
+            # than persisting only EVENT_IDENTITY_UNRESOLVED. Untrusted strings
+            # can never upgrade identity or reach model invocation.
+            if (
+                purge == IDENTITY_UNRESOLVED
+                and event.sport == "NHL"
+                and isinstance(event.raw, Mapping)
+                and event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+            ):
+                code = event.raw.get("canonical_identity_blocker")
+                if (
+                    type(code) is str and 5 <= len(code) <= 80
+                    and code.startswith("NHL_")
+                    and all(ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in code[4:])
+                ):
+                    detail["originating_identity_blocker"] = code
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
                     bucket=purge,
                     model_status=None,
-                    detail={"reason": purge, "model_invoked": False},
+                    detail=detail,
                 )
             )
             continue
