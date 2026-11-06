@@ -112,6 +112,19 @@ _set_spread_forward_warm_state(
 )
 _original_market_score_prop = base.market_api.score_prop
 V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
+# The v17 package can first import while api_prod_market is still partially
+# initialized; its initial compose pass then cannot attach the MLB bridge.
+# Once the production market app exists, register only the deferred startup
+# hook. The helper is idempotent and still installs the governed bridge during
+# FastAPI startup, never during module import.
+if V17_ACTIVE and not getattr(app.state, "v17_mlb_event_bridge_deferred", False):
+    from v17 import _defer_mlb_event_bridge_install
+    from v17 import team_event_request_runtime as _v17_team_event_runtime
+
+    _defer_mlb_event_bridge_install(
+        market_api=base.market_api,
+        team_runtime=_v17_team_event_runtime,
+    )
 V17_CORE_INTELLIGENCE_ACTIVE = os.getenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "0") == "1"
 KALSHI_WEATHER_V2_ACTIVE = os.getenv("WOW_KALSHI_WEATHER_V2_ACTIVE", "0") == "1"
 

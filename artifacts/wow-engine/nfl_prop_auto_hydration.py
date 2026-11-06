@@ -497,7 +497,9 @@ def hydrate_nfl_prop_evidence(
         "game_log": game_log,
         "box_score_log": box_score_log,
         "role_status": {
-            "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+            # ESPN athlete/team identity is verified; game-day participation
+            # is NOT. An IR player can remain in a published ESPN roster.
+            "status": "ROSTER_IDENTITY_VERIFIED_AVAILABILITY_UNVERIFIED",
             "player": official_name,
             "espn_athlete_id": athlete_id,
             "nflverse_player_id": nflverse_player_id,
