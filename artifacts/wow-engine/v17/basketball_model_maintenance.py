@@ -218,7 +218,7 @@ def _nba_current_season_data_gap(
     if candidate_current and (
         not require_verified_current_season
         or (verified is not None and season_start <= verified <= clock.date()
-            and verified <= latest)
+            and verified == latest)
     ):
         return None
     return {

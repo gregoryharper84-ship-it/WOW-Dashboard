@@ -896,3 +896,15 @@ def test_scheduled_nba_readback_transport_failure_holds_without_secret_leak(monk
     )
     assert "secret-provider-host" not in str(hold)
     assert outcome["can_execute"] is False
+
+
+def test_nba_latest_settled_row_must_itself_be_current_season():
+    """An older valid season row cannot excuse a newer wrongly labeled row."""
+    gap = maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-11-05",
+         "latest_current_season_game_date_after": "2026-10-22"},
+        datetime(2026, 11, 6, tzinfo=timezone.utc),
+    )
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert gap["latest_verified_current_season_game_date"] == "2026-10-22"
+    assert gap["can_execute"] is False
