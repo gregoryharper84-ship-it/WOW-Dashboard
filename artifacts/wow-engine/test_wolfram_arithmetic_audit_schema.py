@@ -68,6 +68,20 @@ def test_arithmetic_ledger_verdict_check_is_bound_to_matching_provider():
     assert "disable row level security" not in sql.lower()
 
 
+def test_python_audit_checks_are_replaced_in_one_atomic_statement():
+    """A per-statement-autocommit runner must never expose an unguarded ledger."""
+    sql = (Path(__file__).parent / "migrations" /
+           "20261105_python_arithmetic_audit_ledger_provider.sql").read_text()
+    executable = "\n".join(line for line in sql.splitlines()
+                           if not line.lstrip().startswith("--"))
+    statements = [part.strip() for part in executable.split(";") if part.strip()]
+    assert len(statements) == 1
+    normalized = statements[0].lower()
+    assert normalized.count("alter table public.wow_wolfram_arithmetic_audits") == 1
+    assert normalized.count("drop constraint if exists") == 2
+    assert normalized.count("add constraint wow_wolfram_arithmetic_audits_") == 2
+
+
 def test_python_audit_ledger_unproven_failure_code_is_registered():
     """A ledger-persistence failure must retain its distinct typed identity."""
     import python_arithmetic_auditor as pa
