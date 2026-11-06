@@ -101,6 +101,15 @@ def _python_findings(path: str, src: str, lines_added: set[int]):
             continue
         target = _call_name(node.func)
         kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+        # Preserve precision: an old shell=True/verify=False call does not
+        # become a new defect when an unrelated keyword is added below it.
+        # Newly added call sites still qualify even if arguments span lines.
+        def newly_touched_keyword(key: str) -> bool:
+            return node.lineno in lines_added or any(
+                kw.arg == key and _node_touches_added(kw, lines_added)
+                for kw in node.keywords
+            )
+
         rule, severity, why = "", "", ""
         if target in {"eval", "exec", "builtins.eval", "builtins.exec"}:
             rule, severity, why = ("DYNAMIC_CODE_EXECUTION", "P1",
@@ -108,7 +117,8 @@ def _python_findings(path: str, src: str, lines_added: set[int]):
         elif target in {"os.system", "subprocess.getoutput", "subprocess.getstatusoutput"}:
             rule, severity, why = ("SHELL_EXECUTION", "P1",
                                    "Review command injection, argument provenance and privilege boundary")
-        elif target.startswith("subprocess.") and _literal_true(kwargs.get("shell")):
+        elif (target.startswith("subprocess.") and _literal_true(kwargs.get("shell"))
+              and newly_touched_keyword("shell")):
             rule, severity, why = ("SUBPROCESS_SHELL_TRUE", "P1",
                                    "Shell invocation needs bounded trusted command and injection proof")
         elif target == "yaml.load" and "Loader" not in kwargs:
@@ -117,8 +127,8 @@ def _python_findings(path: str, src: str, lines_added: set[int]):
         elif target in {"pickle.loads", "pickle.load"}:
             rule, severity, why = ("PICKLE_DESERIALIZATION", "P1",
                                    "Prove deserialization input is trusted before allowing pickle")
-        elif _literal_false(kwargs.get("verify")) and target.startswith(
-                ("requests.", "httpx.", "session.")):
+        elif (newly_touched_keyword("verify") and _literal_false(kwargs.get("verify"))
+              and target.startswith(("requests.", "httpx.", "session."))):
             rule, severity, why = ("TLS_VERIFICATION_DISABLED", "P1",
                                    "Turning off TLS certificate verification may enable interception")
         elif target in {"requests.get", "requests.post", "requests.put",
