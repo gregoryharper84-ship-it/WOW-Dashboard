@@ -3,6 +3,7 @@
 Historical example: 2026_05_NYG_WAS 27-27. This is a synthetic
 fixture testing the real grader, not a new production grade.
 """
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from v17.nfl_forward_shadow import ForwardPrediction, grade_forward_predictions, calibration_health
@@ -60,3 +61,42 @@ def test_tie_excluded_regardless_of_selected_side_or_home_win_boolean():
             assert grade_forward_predictions(
                 [_prediction(select_home=select_home)], [outcome]
             ) == []
+
+
+def test_tie_does_not_count_as_hundredth_grade():
+    """Mixed real grader input: 99 legitimate binaries + one tied final."""
+    valid = [
+        replace(
+            _prediction(),
+            event_prediction_id=f"synthetic-valid-{i}",
+            official_event_id=f"synthetic-valid-{i}",
+        )
+        for i in range(99)
+    ]
+    outcomes = [
+        {
+            "game_id": p.official_event_id,
+            "home_score": 27,
+            "away_score": 17,
+            "home_win": True,
+            "tie": False,
+        }
+        for p in valid
+    ]
+    tied = {
+        "game_id": "2026_05_NYG_WAS",
+        "home_score": 27,
+        "away_score": 27,
+        "home_win": False,
+        "tie": True,
+    }
+    grades = grade_forward_predictions([*valid, _prediction()], [*outcomes, tied])
+    assert len(grades) == 99
+    assert {g.official_event_id for g in grades} == {
+        p.official_event_id for p in valid
+    }
+    health = calibration_health(grades, min_forward=100)
+    assert health["graded_n"] == 99
+    assert health["status"] == "INSUFFICIENT_FORWARD_EVIDENCE"
+    assert health["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert health["can_execute"] is False
