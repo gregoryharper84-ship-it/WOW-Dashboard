@@ -421,3 +421,62 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+
+def test_daily_active_sports_get_first_discovery_budget(monkeypatch):
+    """An 8-second deadline must not spend MLB time before active sports."""
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+
+    captured = {}
+
+    def fake_scan(**kwargs):
+        captured["order"] = kwargs.get("supported_sports")
+        return {"rows": [], "discovery": {}, "reconciliation": {}}
+
+    monkeypatch.setattr(runtime.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(discovery, "run_cross_sport_winner_scan", fake_scan)
+    rows, _audit = runtime._cross_sport_moneyline_rows(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+                             lanes=["MONEYLINE"]),
+        run_id="priority-test", event_api=Event, covered_event_ids=set(),
+        fetch_sport_events=lambda *args, **kwargs: [],
+    )
+    assert rows == []
+    assert captured["order"][:4] == ("NBA", "NFL", "NHL", "NCAAF")
+    assert set(captured["order"]) == set(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    assert len(captured["order"]) == len(set(captured["order"]))
+
+
+def test_mlb_event_id_collision_never_hides_active_sports(monkeypatch):
+    """League-owned event identifiers are not globally unique."""
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+
+    sports = ("MLB", "NBA", "NFL", "NHL", "NCAAF")
+
+    def fake_scan(**_kwargs):
+        return {
+            "rows": [
+                {"sport": sport, "official_event_id": "shared-identity",
+                 "home_team": "Home", "away_team": "Away",
+                 "bucket": discovery.MODEL_UNAVAILABLE,
+                 "rank_eligible": False, "probability_publishable": False,
+                 "can_execute": False}
+                for sport in sports
+            ],
+            "discovery": {}, "reconciliation": {},
+        }
+
+    monkeypatch.setattr(runtime.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(discovery, "run_cross_sport_winner_scan", fake_scan)
+    rows, _audit = runtime._cross_sport_moneyline_rows(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+                             lanes=["MONEYLINE"]),
+        run_id="identity-test", event_api=Event,
+        covered_event_ids={("MLB", "shared-identity")},
+        fetch_sport_events=lambda *args, **kwargs: [],
+    )
+    assert {row["identity"]["sport"] for row in rows} == {"NBA", "NFL", "NHL", "NCAAF"}
+    assert all(row["row_status"] == "HELD" and row["can_execute"] is False for row in rows)
