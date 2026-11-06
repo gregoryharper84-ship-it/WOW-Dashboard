@@ -97,6 +97,14 @@ def _saved_research_identity_conflict(
             if actual in (None, ""):
                 continue
             expected = event.get("sport") if field == "league" else event.get(field)
+            if field == "league" and _token(event.get("sport")).upper() == "NFL":
+                # NFL feed league labels can be descriptive provider strings,
+                # not just the canonical sport token. Only an explicit
+                # conflicting supported sport means an identity conflict.
+                league_token = _token(actual).upper()
+                if league_token in _SUPPORTED and league_token != "NFL":
+                    return True
+                continue
             if field == "official_event_id":
                 if _token(actual) != _token(expected):
                     return True
@@ -427,7 +435,7 @@ def project_llp_intelligence_page(
             # with or without research, and a missing/invalid research context
             # cannot by itself change a valid winner's visibility.
             conflict = (
-                event["sport"] in {"NBA", "NHL"}
+                event["sport"] in {"NFL", "NBA", "NHL"}
                 and _saved_research_identity_conflict(row, event)
             )
             winner = _winner_receipt_from_row(row, event)
