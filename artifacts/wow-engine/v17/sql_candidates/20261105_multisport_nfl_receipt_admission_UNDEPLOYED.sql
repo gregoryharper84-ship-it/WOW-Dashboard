@@ -236,12 +236,12 @@ BEGIN
   lock_time:=pg_catalog.clock_timestamp();
   reduction:=public.wow_v17_reduce_nfl_event_terminal_label(p_score_snapshot_id);
   reduced_time:=pg_catalog.clock_timestamp();
-  IF reduction IS NULL OR reduction->>'status'<>'PASS'
-    OR reduction->>'terminal_label'<>'FINAL_APPROVED'
-    OR reduction->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
-    OR reduction->>'can_execute'<>'false'
-    OR reduction->>'probability_publishable'<>'true'
-    OR reduction->>'rank_eligible'<>'true'
+  IF reduction IS NULL OR reduction->>'status' IS DISTINCT FROM 'PASS'
+    OR reduction->>'terminal_label' IS DISTINCT FROM 'FINAL_APPROVED'
+    OR reduction->>'global_terminal_reducer' IS DISTINCT FROM 'V17_TERMINAL_REDUCER'
+    OR reduction->>'can_execute' IS DISTINCT FROM 'false'
+    OR reduction->>'probability_publishable' IS DISTINCT FROM 'true'
+    OR reduction->>'rank_eligible' IS DISTINCT FROM 'true'
     OR reduced_time >= s.event_start_time_utc THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
   END IF;
@@ -356,38 +356,38 @@ BEGIN
       'locked_at',r.locked_at,'terminal_reduced_at',r.terminal_reduced_at,
       'reducer',r.terminal_reducer_payload
     )::text,'UTF8'),'sha256'),'hex');
-  IF r.reducer_receipt_sha256<>hash
-     OR r.calibration_artifact_sha256<>cal_hash
-     OR r.calibration_artifact_id<>c.calibrator_id::text
-     OR r.calibration_version<>c.calibration_version
-     OR r.model_artifact_id<>a.artifact_id::text
-     OR r.model_artifact_sha256<>a.artifact_checksum
-     OR a.artifact_checksum<>s.model_output_snapshot->>'artifact_checksum'
-     OR r.official_event_id<>s.official_event_id
-     OR r.event_start_time<>s.event_start_time_utc
-     OR r.selected_participant<>s.selected_participant
-     OR r.home_team<>s.home_team OR r.away_team<>s.away_team
-     OR r.model_timestamp<>s.model_timestamp
-     OR r.source_snapshot_timestamp<>s.source_snapshot_timestamp
-     OR r.source_snapshot_id<>s.source_snapshot_id::text
-     OR r.model_version<>s.model_version OR r.calibration_version<>s.calibration_version
-     OR r.calibrated_home_probability<>s.calibrated_home_probability
-     OR r.calibrated_away_probability<>s.calibrated_away_probability
-     OR r.calibrated_home_lower_bound<>s.calibrated_home_lower_bound
-     OR r.calibrated_home_upper_bound<>s.calibrated_home_upper_bound
-     OR r.calibrated_away_lower_bound<>s.calibrated_away_lower_bound
-     OR r.calibrated_away_upper_bound<>s.calibrated_away_upper_bound
-     OR r.terminal_reducer_payload->>'status'<>'PASS'
-     OR r.terminal_reducer_payload->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
-     OR r.terminal_reducer_payload->>'terminal_label'<>'FINAL_APPROVED' THEN
+  IF r.reducer_receipt_sha256 IS DISTINCT FROM hash
+     OR r.calibration_artifact_sha256 IS DISTINCT FROM cal_hash
+     OR r.calibration_artifact_id IS DISTINCT FROM c.calibrator_id::text
+     OR r.calibration_version IS DISTINCT FROM c.calibration_version
+     OR r.model_artifact_id IS DISTINCT FROM a.artifact_id::text
+     OR r.model_artifact_sha256 IS DISTINCT FROM a.artifact_checksum
+     OR a.artifact_checksum IS DISTINCT FROM s.model_output_snapshot->>'artifact_checksum'
+     OR r.official_event_id IS DISTINCT FROM s.official_event_id
+     OR r.event_start_time IS DISTINCT FROM s.event_start_time_utc
+     OR r.selected_participant IS DISTINCT FROM s.selected_participant
+     OR r.home_team IS DISTINCT FROM s.home_team OR r.away_team IS DISTINCT FROM s.away_team
+     OR r.model_timestamp IS DISTINCT FROM s.model_timestamp
+     OR r.source_snapshot_timestamp IS DISTINCT FROM s.source_snapshot_timestamp
+     OR r.source_snapshot_id IS DISTINCT FROM s.source_snapshot_id::text
+     OR r.model_version IS DISTINCT FROM s.model_version OR r.calibration_version IS DISTINCT FROM s.calibration_version
+     OR r.calibrated_home_probability IS DISTINCT FROM s.calibrated_home_probability
+     OR r.calibrated_away_probability IS DISTINCT FROM s.calibrated_away_probability
+     OR r.calibrated_home_lower_bound IS DISTINCT FROM s.calibrated_home_lower_bound
+     OR r.calibrated_home_upper_bound IS DISTINCT FROM s.calibrated_home_upper_bound
+     OR r.calibrated_away_lower_bound IS DISTINCT FROM s.calibrated_away_lower_bound
+     OR r.calibrated_away_upper_bound IS DISTINCT FROM s.calibrated_away_upper_bound
+     OR r.terminal_reducer_payload->>'status' IS DISTINCT FROM 'PASS'
+     OR r.terminal_reducer_payload->>'global_terminal_reducer' IS DISTINCT FROM 'V17_TERMINAL_REDUCER'
+     OR r.terminal_reducer_payload->>'terminal_label' IS DISTINCT FROM 'FINAL_APPROVED' THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
   END IF;
   present:=public.wow_v17_reduce_nfl_event_terminal_label(r.score_snapshot_id);
   IF r.terminal_reducer_payload IS DISTINCT FROM present
-    OR present->>'status'<>'PASS' OR present->>'global_terminal_reducer'<>'V17_TERMINAL_REDUCER'
-    OR present->>'terminal_label'<>'FINAL_APPROVED'
-    OR present->>'can_execute'<>'false' OR present->>'probability_publishable'<>'true'
-    OR present->>'rank_eligible'<>'true' THEN
+    OR present->>'status' IS DISTINCT FROM 'PASS' OR present->>'global_terminal_reducer' IS DISTINCT FROM 'V17_TERMINAL_REDUCER'
+    OR present->>'terminal_label' IS DISTINCT FROM 'FINAL_APPROVED'
+    OR present->>'can_execute' IS DISTINCT FROM 'false' OR present->>'probability_publishable' IS DISTINCT FROM 'true'
+    OR present->>'rank_eligible' IS DISTINCT FROM 'true' THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
   END IF;
   RETURN pg_catalog.jsonb_build_object(
