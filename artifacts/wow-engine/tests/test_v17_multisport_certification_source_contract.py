@@ -32,9 +32,18 @@ def test_forward_grades_and_independent_artifact_certificate_required():
         "certification_status='CERTIFIED'",
         "cert.artifact_sha256=a.artifact_checksum",
         "cert.calibration_sha256=cal_sha",
-        "a.probability_publishable IS DISTINCT FROM true",
+        "a.probability_publishable IS DISTINCT FROM false",
     ):
         assert required in helper, required
+
+
+def test_registry_is_not_its_own_probability_publisher():
+    source, helper, issuer, _ = parts()
+    assert "a.probability_publishable IS DISTINCT FROM false" in helper
+    assert "a.probability_publishable IS DISTINCT FROM false" in issuer
+    assert "a.probability_publishable IS DISTINCT FROM true" not in source
+    assert "cert.probability_publishable=true" in helper
+    assert "s.model_probability_publishable IS DISTINCT FROM true" in issuer
 
 
 def test_issuer_and_readback_both_recheck_independent_certification():
