@@ -12,7 +12,7 @@ receipts and independent acceptance exist.
 - Source: independently operated `prizepicksapi.com` documented
   `GET /api/v1/projections` (not an official PrizePicks API).
 - Code: `v17/authorized_prop_board_discovery.py`, `v17/authorized_prop_board_route.py`.
-- Server route: `GET /v17/prop-board/authorized-discovery?sport=NBA&max_pages=4`,
+- Server route: `GET /v17/prop-board/authorized-discovery?sport=NBA&max_pages=4&max_credits=6`,
   installed from `install_daily_snapshot_route` only when enabled.
 - Documented provider query mappings: NBA, NFL, NHL, NCAAF (vendor `CFB`),
   WNBA, Soccer, Tennis. MLB and NCAAB **are not documented by this provider**
@@ -27,6 +27,16 @@ receipts and independent acceptance exist.
   - `WOW_V17_PROP_FEED_API_KEY` as a backend secret, never a Custom GPT prompt.
 - All three prerequisites are absent/off by default. No scheduler or training
   corpus is activated by this change.
+- The full JSON fetch reserves 6 credits per requested 200-row page. The
+  default *per-run* credit budget is 6; additional pages require a higher
+  explicit budget (6–100) and may return a typed credit-budget hold.
+  This is a conservative request estimate; remaining provider monthly credits
+  are not known. Vendor Free is 100 monthly credits, so unrestricted all-sport
+  daily extraction would be unsustainable. No automatic payment or overage.
+- A second offline compiler `v17/authorized_prop_board_handoff.py` accepts
+  server-side official identity resolution and current exact-offer refresh as
+  explicit trusted dependencies. Missing either blocks rows; it only produces
+  future `/score-pick-request` proposals and **does not invoke scoring**.
 
 ## Source and licensing boundaries
 
