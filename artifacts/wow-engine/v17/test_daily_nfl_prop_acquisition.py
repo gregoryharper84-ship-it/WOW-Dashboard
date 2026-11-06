@@ -279,3 +279,58 @@ def test_mlb_schedule_failure_preserves_unknown_counts(monkeypatch):
     assert r["status"] == "DATA_UNOBTAINABLE"
     assert r["discovered_candidates"] is None and r["unattempted_due_to_row_ceiling"] is None
     assert r["can_execute"] is False
+
+
+def test_composite_failed_mlb_snapshot_writes_cannot_be_masked_by_nfl_success(monkeypatch):
+    """A per-sport write-integrity failure must remain run-invalid after aggregation."""
+    monkeypatch.setattr(
+        daily, "acquire_daily_mlb_prop_snapshots",
+        lambda **kwargs: _leg(
+            "MLB", status="RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE",
+            attempted=1, persisted=0, snapshot_write_failed=1,
+            held=1, blockers=["MLB:PROP_SNAPSHOT_WRITE_FAILED"],
+        ),
+    )
+    monkeypatch.setattr(
+        nfl_mod, "acquire_daily_nfl_prop_snapshots",
+        lambda **kwargs: _leg("NFL", attempted=1, persisted=1),
+    )
+    result = _composite()
+    assert result["snapshot_write_failed"] == 1
+    assert result["snapshot_write_succeeded"] == 1
+    assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    assert result["can_execute"] is False
+
+
+def test_utc_nfl_slate_queries_prior_eastern_scoreboard_date(monkeypatch):
+    """ESPN's prior Eastern-date partition can contain a game on today's UTC slate."""
+    candidate = _cand("E-OVERLAP", "UTC Player", "RUSHING_YARDS",
+                      start="2026-12-04T01:00:00+00:00")
+    _patch(monkeypatch, [])
+    seen_dates = []
+
+    def discover(date, **kwargs):
+        seen_dates.append(date)
+        return [candidate] if date == "2026-12-03" else []
+
+    monkeypatch.setattr(nfl_mod._cp, "_discover_candidates", discover)
+    result = nfl_mod.acquire_daily_nfl_prop_snapshots(
+        db=_DB(), requested_date="2026-12-04", requested_timezone="UTC",
+        max_candidates=2, now=datetime(2026, 12, 3, 12, tzinfo=timezone.utc),
+        http_get=lambda *a, **k: None,
+    )
+    assert seen_dates == ["2026-12-03", "2026-12-04"]
+    assert result["persisted"] == 1
+    assert result["discovered_candidates"] == 1
+    assert result["can_execute"] is False
+
+
+def test_overlapping_nfl_scoreboard_partitions_do_not_duplicate_attempts(monkeypatch):
+    """Identical canonical player/stat identities seen twice count once."""
+    candidate = _cand("E-DOUBLE", "Overlap Player", "RUSHING_YARDS")
+    _patch(monkeypatch, [candidate])
+    result = _run(_DB())
+    assert result["discovered_candidates"] == 1
+    assert result["attempted"] == 1
+    assert len(result["receipts"]) == 1
+    assert _balanced(result)
