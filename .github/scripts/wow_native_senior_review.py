@@ -157,9 +157,19 @@ def _files(client, number: int, count: int) -> list[dict]:
         if name in names:
             raise ReviewHold("PR_FILE_DUPLICATED")
         names.add(name)
-        if item.get("status") not in {
-                "added", "modified", "removed", "renamed", "copied", "changed"}:
+        status = item.get("status")
+        if status not in {"added", "modified", "removed",
+                          "renamed", "copied", "changed"}:
             raise ReviewHold("PR_FILE_STATUS_UNSUPPORTED")
+        # Deleted and renamed paths cannot be inspected through a head-only
+        # source lookup. Holding is safer than certifying a false-clean diff.
+        # Base-side compatibility review requires a separately accepted adapter.
+        if status == "removed":
+            raise ReviewHold("PR_DELETION_BASE_REVIEW_UNAVAILABLE")
+        if status == "renamed":
+            raise ReviewHold("PR_RENAME_BASE_REVIEW_UNAVAILABLE")
+        if status == "copied":
+            raise ReviewHold("PR_COPY_PROVENANCE_UNAVAILABLE")
         if not isinstance(item.get("patch"), str) or not item["patch"]:
             raise ReviewHold("PR_PATCH_UNAVAILABLE")
     return raw
