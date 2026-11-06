@@ -34,6 +34,8 @@ def test_verified_grade_view_reconciles_original_prediction_and_current_outcome(
         "and g.outcome = case",
         "g.brier - power(",
         "g.log_loss - case",
+        # Match _safe_log_loss() so true extreme pregame probabilities remain eligible.
+        "greatest(least(g.calibrated_probability, 1.0 - 0.000000000001), 0.000000000001)",
     ):
         assert guard in SQL, guard
 
