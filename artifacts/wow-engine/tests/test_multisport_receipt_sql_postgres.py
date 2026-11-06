@@ -189,7 +189,10 @@ def pg(tmp_path_factory):
                          s.model_timestamp >= s.latest_material_update_timestamp)
                     into available from public.wow_nfl_event_predictions s
                     where score_snapshot_id=p_score_snapshot_id;
-                  if available is true then
+                  -- Disposable test-only counterfactual. Never included in
+                  -- an actual V17 producer or terminal reducer.
+                  if available is true or
+                     pg_catalog.current_setting('wow_test.reducer_force_pass', true) = 'on' then
                     return jsonb_build_object('status','PASS',
                       'terminal_label','FINAL_APPROVED','global_terminal_reducer','V17_TERMINAL_REDUCER',
                       'probability_publishable',true,'rank_eligible',true,'can_execute',false,
@@ -391,14 +394,31 @@ def test_test_only_certificate_does_not_override_reducer_material_update_hold(pg
     assert call(pg,"wow_v17_reduce_nfl_event_terminal_label",SCORE)["status"]=="HOLD"
     held=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
     assert held["status"]=="HOLD"
+    assert held["code"]=="LLP_EVENT_PREDICTION_RECEIPT_MISMATCH"
     assert "event_prediction_id" not in held
     with psycopg.connect(pg,autocommit=True) as db:
         assert db.execute(
             "select count(*) from public.wow_v17_multisport_event_prediction_receipts"
         ).fetchone()[0]==0
+        # Same persisted inputs and test-only certificate; changing just
+        # the isolated mock reducer outcome must reach issuer PASS. This
+        # proves the preceding HOLD came from the reducer recheck, not an
+        # earlier common HOLD reason. No production reducer is modified.
+        db.execute("select pg_catalog.set_config('wow_test.reducer_force_pass','on',false)")
+        control=db.execute(
+            "select public.wow_v17_admit_nfl_event_receipt(%s::uuid)",(SCORE,)
+        ).fetchone()[0]
+        assert control["status"]=="PERSISTED"
+        assert control["can_execute"] is False
 
 
-def test_foreign_model_forward_grades_cannot_unlock_another_champion(pg):
+@pytest.mark.parametrize("artifact_matches, grade_version", [
+    (False, "NFL_VERSION"),
+    (True, "OTHER_VERSION"),
+])
+def test_foreign_model_forward_grades_cannot_unlock_another_champion(
+    pg, artifact_matches, grade_version,
+):
     """Test-only forged PASS health and certificate must not substitute exact grades.
 
     These records are synthetic adversarial fixtures, never production
@@ -437,7 +457,7 @@ def test_foreign_model_forward_grades_cannot_unlock_another_champion(pg):
               )
               select gen_random_uuid(),'foreign-fixture-'||g::text,
                      %s::timestamptz,%s::timestamptz,%s::timestamptz,
-                     %s::uuid,'OTHER_VERSION','CAL_VERSION'
+                     %s::uuid,%s::text,'CAL_VERSION'
               from generate_series(1,100) g
               returning event_prediction_id,official_event_id,
                         event_start_time_utc,created_at,model_version
@@ -448,7 +468,8 @@ def test_foreign_model_forward_grades_cannot_unlock_another_champion(pg):
             )
             select official_event_id,event_prediction_id,event_start_time_utc,
                    created_at,model_version from foreign_predictions
-        """,(START,MODEL_AT,MODEL_AT,MODEL))
+        """,(START,MODEL_AT,MODEL_AT,
+            MODEL if artifact_matches else str(uuid4()),grade_version))
         # Even a test-only certificate and 100 rows from a different
         # model must not make the target NFL score certifiable.
         count=db.execute("select count(*) from public.wow_nfl_forward_shadow_grades").fetchone()[0]
