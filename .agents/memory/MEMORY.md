@@ -1,3 +1,4 @@
+- [Daily props zero-row causal separation](daily-prop-zero-row-cause-2026-11-06.md) — A zero prop request is not missing data; MLB schedule produced no candidates does not mean cross-sport slate empty; preserve typed producer provenance and keep a regression test.
 - [LLP multi-agent sync](llp-multiagent-sync.md) — user runs a 3-agent workflow (Replit Claude + external ChatGPT + external Claude) that reason blind against app.py; verify before building, keep ground-truth doc current.
 - [GitHub push format](github-push-format.md) — bare-token URL (https://$TOKEN@github.com/…) stops working periodically; use username-prefixed insteadOf config instead.
 - [Flask scoring gunicorn workers](flask-scoring-gunicorn-workers.md) — flask-scoring-api runs 2 gunicorn workers in prod; in-process crons run twice → guard shared-DB writes with pg_try_advisory_lock.
