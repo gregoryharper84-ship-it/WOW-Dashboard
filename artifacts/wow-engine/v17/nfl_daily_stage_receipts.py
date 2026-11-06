@@ -160,7 +160,7 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
             "artifact_id,active,promoted,probability_publishable"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
-            "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
+            "schema_version,graded_n,minimum_forward_required,status,certification_recommendation,blockers"
         ).order("generated_at", desc=True).limit(1).execute().data
     except Exception:
         return False
@@ -171,11 +171,13 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     # Health is a global snapshot. Verify that its cohort actually contains
     # enough unique prospective grades for this prediction's exact model version.
     # A different champion's 100 games can never authorize this model.
+    # Legacy V1 health predates historical-grade revalidation. Require a
+    # newly computed V2 PASS after the private verified-grade view is deployed.
     if not isinstance(minimum, int) or minimum < 100:
         return False
     try:
         grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
+            db.table("wow_nfl_forward_verified_grades")
             .select("official_event_id")
             .eq("model_version", str(row["model_version"]))
             .limit(minimum * 2)
@@ -192,6 +194,7 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         return False
     return bool(
         len(unique_games) >= minimum
+        and assessment.get("schema_version") == "NFL_FORWARD_CALIBRATION_HEALTH_V2"
         and model.get("active") is True
         and model.get("promoted") is True
         and model.get("probability_publishable") is True
