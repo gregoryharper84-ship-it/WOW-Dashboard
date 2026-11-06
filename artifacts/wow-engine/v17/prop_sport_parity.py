@@ -210,6 +210,7 @@ def prop_sport_coverage_receipt(
         "total_prop_rows": len(prop_rows),
         "all_reconciled": bool(sport_legs)
         and not unattributed
+        and all(_norm_sport(r.get("sport")) in sport_legs for r in receipts)
         and all(per_sport[sport]["reconciled"] is True for sport in sport_legs)
         and sum(v["canonical_rows"] for v in per_sport.values()) == len(prop_rows),
         "reconciliation_scope": "ACQUISITION_ATTEMPTS_VS_ATTRIBUTED_RECEIPTS_AND_ROW_SPORT_TOTALS",
