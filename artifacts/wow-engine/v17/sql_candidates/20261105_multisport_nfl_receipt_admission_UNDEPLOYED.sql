@@ -99,7 +99,11 @@ ALTER TABLE public.wow_v17_multisport_event_prediction_receipts ENABLE ROW LEVEL
 ALTER TABLE public.wow_v17_multisport_event_prediction_receipts FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON public.wow_v17_multisport_event_prediction_receipts FROM PUBLIC;
 
--- P0 HARD CERTIFICATION FENCE. Local NFL reducer PASS alone cannot
+-- P0 HARD CERTIFICATION FENCE. Fitted artifact registry is intentionally
+-- never itself a probability publication channel (constraint requires false).
+-- Publishability is authorized separately by score, independent specialist
+-- certificate, calibration health and global terminal reducer.
+-- Local NFL reducer PASS alone cannot
 -- publish an event winner. Require genuine forward grade acceptance AND an
 -- independently verified, exact-artifact specialist certification.
 CREATE OR REPLACE FUNCTION public.wow_v17_nfl_receipt_certified(p_score_snapshot_id uuid)
@@ -119,7 +123,7 @@ BEGIN
     WHERE artifact_id=s.model_artifact_id;
   IF NOT FOUND OR a.active IS DISTINCT FROM true OR a.promoted IS DISTINCT FROM true
     OR a.lifecycle_state IS DISTINCT FROM 'CHAMPION'
-    OR a.probability_publishable IS DISTINCT FROM true
+    OR a.probability_publishable IS DISTINCT FROM false
     OR a.can_execute IS DISTINCT FROM false
     OR a.model_artifact_version IS DISTINCT FROM s.model_version
     OR a.artifact_checksum !~ '^[0-9a-f]{64}$'
@@ -231,7 +235,7 @@ BEGIN
     WHERE artifact_id=s.model_artifact_id;
   IF NOT FOUND OR a.active IS DISTINCT FROM true OR a.promoted IS DISTINCT FROM true
      OR a.lifecycle_state <> 'CHAMPION' OR a.can_execute IS DISTINCT FROM false
-     OR a.probability_publishable IS DISTINCT FROM true
+     OR a.probability_publishable IS DISTINCT FROM false
      OR a.model_artifact_version<>s.model_version
      OR a.artifact_checksum !~ '^[0-9a-f]{64}$'
      OR a.artifact_checksum<>s.model_output_snapshot->>'artifact_checksum' THEN
