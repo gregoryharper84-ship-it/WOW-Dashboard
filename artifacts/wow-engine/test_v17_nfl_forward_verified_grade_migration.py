@@ -8,11 +8,12 @@ native wow-engine verification without a live Supabase connection.
 from pathlib import Path
 
 
-SQL = (
+SQL_RAW = (
     Path(__file__).parent
     / "migrations"
     / "20261105_nfl_forward_verified_grades.sql"
-).read_text(encoding="utf-8").lower()
+).read_text(encoding="utf-8")
+SQL = SQL_RAW.lower()
 
 
 def test_verified_grade_view_reconciles_original_prediction_and_current_outcome():
@@ -123,7 +124,7 @@ def test_sql_view_excludes_actual_corrupt_historical_grade_shapes():
 
     # Only remove the PostgreSQL-specific cast; test the SQL view's actual
     # SELECT predicates rather than a second reimplementation of those rules.
-    selected = "select" + SQL.split("as\nselect", 1)[1].split(";\n\n--", 1)[0]
+    selected = "select" + SQL_RAW.split("as\nselect", 1)[1].split(";\n\n--", 1)[0]
     selected = selected.replace("::double precision", "")
     rows = db.execute(selected).fetchall()
     assert {row[0] for row in rows} == {"valid", "valid_extreme_probability"}
