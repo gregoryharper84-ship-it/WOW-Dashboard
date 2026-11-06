@@ -45,3 +45,17 @@ def test_admission_requires_reducer_origin_identity_before_persistence():
     assert re.search(r"reduction\s*->>\s*'reducer_receipt_sha256'", admission, re.I), (
         "P0: no reducer-origin receipt digest is consumed by admission"
     )
+
+
+def test_missing_snapshot_artifact_checksum_is_fail_closed():
+    """SQL NULL comparison must not permit an irreversible bad receipt."""
+    source = SQL.read_text(encoding="utf-8")
+    admission = source.split(
+        "CREATE OR REPLACE FUNCTION public.wow_v17_admit_nfl_event_receipt", 1
+    )[1].split("END $f$;", 1)[0]
+    assert re.search(
+        r"a\.artifact_checksum\s+IS\s+DISTINCT\s+FROM\s+"
+        r"s\.model_output_snapshot\s*->>\s*'artifact_checksum'",
+        admission,
+        re.I,
+    ), "A missing snapshot checksum must return HOLD before immutable admission"
