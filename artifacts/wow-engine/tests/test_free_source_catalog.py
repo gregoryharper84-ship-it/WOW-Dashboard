@@ -106,7 +106,7 @@ def test_espn_player_box_remains_research_not_canonical_cfbd_source():
 
 
 def test_independent_prizepicks_board_source_is_discovery_only():
-    for sport in ("NBA", "NFL", "NHL", "NCAAF", "NCAAB"):
+    for sport in ("NBA", "NFL", "NHL", "NCAAF", "WNBA", "SOCCER", "TENNIS"):
         rows = compile_free_source_plan(sport, "DISCOVERY")["sources"]
         source = next(s for s in rows if s["source_id"] == "PRIZEPICKSAPI_INDEPENDENT")
         assert source["integration"] == "OPT_IN_AUTHORIZED_RESEARCH"
