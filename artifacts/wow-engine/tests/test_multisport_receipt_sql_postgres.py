@@ -47,9 +47,17 @@ HASH = "a" * 64
 def pg(tmp_path_factory):
     ci_dsn = os.environ.get("WOW_V17_POSTGRES_TEST_DSN")
     if not ci_dsn and os.environ.get("GITHUB_ACTIONS") == "true":
-        # Public, ephemeral credentials from wow-engine-verify.yml's service.
-        # Never use production, validation, or ambient SUPABASE_URL bindings.
-        ci_dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+        # Only wow-engine-verify.yml provisions the local PostgreSQL service.
+        # Other GitHub workflows (e.g. rapid-repair) have none; detect that
+        # concrete capability rather than equating GITHUB_ACTIONS with Postgres.
+        # Never fall back to production/validation Supabase credentials.
+        service_dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+        try:
+            with psycopg.connect(service_dsn, connect_timeout=2):
+                ci_dsn = service_dsn
+        except psycopg.OperationalError:
+            if REQUIRE_POSTGRES:
+                pytest.fail("REQUIRED_LOCAL_POSTGRES_SERVICE_UNAVAILABLE")
     server = None
     test_db = None
     if ci_dsn:
