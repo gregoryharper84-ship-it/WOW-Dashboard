@@ -48,7 +48,7 @@ def test_all_required_postgres_services_use_verified_official_image():
             shadow_steps = [str(step.get("run") or "") for step in shadow["steps"]
                             if isinstance(step, dict)]
             assert any("NBA_SHADOW_DB_CONTRACT_VERIFIED" in step for step in shadow_steps)
-            assert any("if total < 5 or skipped or failures or errors" in step
+            assert any("if total < 7 or skipped or failures or errors" in step
                        for step in shadow_steps)
         for job in service_jobs:
             service = job["services"]["postgres"]

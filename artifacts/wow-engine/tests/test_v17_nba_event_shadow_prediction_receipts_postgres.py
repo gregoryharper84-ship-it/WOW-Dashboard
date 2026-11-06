@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
@@ -32,11 +31,21 @@ def _dsn() -> str:
             "WOW_TEST_POSTGRES_UNAVAILABLE: set WOW_TEST_POSTGRES_DSN to an "
             "authorized disposable PostgreSQL database"
         )
-    parsed = urlparse(dsn)
-    # pgserver supplies a local Unix-socket DSN with no hostname. That is still
-    # a local disposable cluster; reject only an explicit non-local network host.
-    if parsed.hostname not in {None, "localhost", "127.0.0.1", "::1"}:
-        pytest.skip("WOW_TEST_POSTGRES_DSN must target a local disposable database")
+    # Both CI and local pgserver must explicitly opt in to disposable DB use.
+    # Never use a hostless URI as proof of locality: libpq can take the target
+    # from PGHOST, PGHOSTADDR or a service definition.
+    if os.environ.get("WOW_TEST_POSTGRES_DISPOSABLE") != "1":
+        pytest.fail("WOW_TEST_POSTGRES_DISPOSABLE_REQUIRED", pytrace=False)
+    params = psycopg.conninfo.conninfo_to_dict(dsn)
+    host = params.get("host") or os.environ.get("PGHOST")
+    hostaddr = params.get("hostaddr") or os.environ.get("PGHOSTADDR")
+    service = params.get("service") or os.environ.get("PGSERVICE")
+    if (
+        hostaddr or service
+        or (host and host not in {"localhost", "127.0.0.1", "::1"}
+            and not host.startswith("/"))
+    ):
+        pytest.fail("WOW_TEST_POSTGRES_REMOTE_TARGET_FORBIDDEN", pytrace=False)
     return dsn
 
 
@@ -46,9 +55,20 @@ def _connect(*, autocommit: bool = True):
     )
 
 
+def _assert_no_existing_shadow_table(conn) -> None:
+    """Refuse to migrate or delete a previously existing shadow receipt table."""
+    existing = conn.execute(
+        "select to_regclass('public.wow_nba_event_shadow_predictions') as present"
+    ).fetchone()
+    if existing is None or existing["present"] is not None:
+        pytest.fail("WOW_TEST_POSTGRES_EXISTING_SHADOW_TABLE_REFUSED", pytrace=False)
+
+
 @pytest.fixture(scope="module")
 def db():
     with _connect() as conn:
+        # This must happen before role creation, DDL or any test cleanup.
+        _assert_no_existing_shadow_table(conn)
         conn.execute(
             """
             do $$
@@ -117,6 +137,23 @@ def _insert(conn, *, created_at: datetime, event_start: datetime):
     ).fetchone()
     assert row is not None
     return row
+
+
+def test_hostless_uri_with_remote_pghost_is_refused(monkeypatch):
+    """Environment-provided remote targets must fail before connecting."""
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DISPOSABLE", "1")
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DSN", "postgresql:///test_db")
+    monkeypatch.setenv("PGHOST", "example.remote.invalid")
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="WOW_TEST_POSTGRES_REMOTE_TARGET_FORBIDDEN"):
+        _dsn()
+
+
+def test_existing_shadow_table_is_never_used_as_test_scratch(db):
+    """A test against a pre-existing receipt table would destroy real data."""
+    with pytest.raises(pytest.fail.Exception, match="WOW_TEST_POSTGRES_EXISTING_SHADOW_TABLE_REFUSED"):
+        _assert_no_existing_shadow_table(db)
 
 
 def test_created_at_default_is_removed_and_trigger_is_before_insert(db):
