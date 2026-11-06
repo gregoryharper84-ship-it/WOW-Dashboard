@@ -204,7 +204,7 @@ def pg(tmp_path_factory):
                  calibrated_home_probability,calibrated_home_lower_bound,calibrated_home_upper_bound,
                  calibrated_away_probability,calibrated_away_lower_bound,calibrated_away_upper_bound)
                 values (%s,'official-fixture',%s,'H','A','H',%s,%s,%s,%s,'NFL_VERSION',
-                        jsonb_build_object('artifact_checksum',%s),'CAL_VERSION',
+                        jsonb_build_object('artifact_checksum',%s::text),'CAL_VERSION',
                         true,true,true,'PASS',false,false,.61,.55,.65,.39,.35,.45)
             """,(SCORE,START,SNAP,SNAP_AT,MODEL_AT,MODEL,HASH))
             db.execute(SQL.read_text())
