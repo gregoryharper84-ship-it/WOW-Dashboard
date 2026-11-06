@@ -47,7 +47,9 @@ def refresh_feature_rows(
     games, summaries = history_loader(db)
     rows = [row for row in builder(games, summaries) if int(row.get("season") or 0) in wanted]
     written = upsert(db, FEATURE_TABLE, rows, "game_id") if rows else 0
-    labeled = sum(1 for row in rows if row.get("target_outcome") in ("HOME_WIN", "AWAY_WIN"))
+    labeled_rows = [row for row in rows if row.get("target_outcome") in ("HOME_WIN", "AWAY_WIN")]
+    labeled = len(labeled_rows)
+    latest_labeled_gameday = max((str(row.get("gameday") or "") for row in labeled_rows), default=None)
     return {
         "status": "COMPLETED",
         "seasons": wanted,
@@ -57,6 +59,7 @@ def refresh_feature_rows(
         ],
         "feature_rows_built": len(rows),
         "feature_rows_labeled": labeled,
+        "latest_labeled_gameday": latest_labeled_gameday,
         "feature_rows_upserted": int(written or 0),
         "probability_publishable": False,
         "can_execute": False,
