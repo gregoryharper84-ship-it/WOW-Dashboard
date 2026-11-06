@@ -273,7 +273,9 @@ def _lane_reconciliation(
     zero_row_reason = None
     if not lane_rows:
         expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
-        if expected in " ".join(blockers):
+        if expected in " ".join(blockers) or (
+            lane == "PROPS" and "DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE" in blockers
+        ):
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif lane == "PROPS" and acquisition and acquisition.get("status") == "DATA_UNOBTAINABLE":
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
@@ -524,15 +526,17 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 leg for leg in prop_acquisition.get("sport_coverage") or []
                 if isinstance(leg, dict) and leg.get("status") == "DATA_UNOBTAINABLE"
             ]
+            # Independent failure classes: a discovery outage cannot suppress a
+            # snapshot-write integrity failure, or vice versa.
+            if prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
+                blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
+                blockers.extend(prop_acquisition.get("blockers") or [])
             if prop_acquisition.get("status") == "DATA_UNOBTAINABLE" or sport_outages:
                 # A surviving NFL row does not prove that MLB discovery succeeded.
                 blockers.append("DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE")
                 blockers.extend(
                     blocker for leg in sport_outages for blocker in leg.get("blockers") or []
                 )
-                blockers.extend(prop_acquisition.get("blockers") or [])
-            elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
-                blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
                 blockers.extend(prop_acquisition.get("blockers") or [])
             try:
                 prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
