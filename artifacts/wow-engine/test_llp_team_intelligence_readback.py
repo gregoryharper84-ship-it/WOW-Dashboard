@@ -63,6 +63,44 @@ def test_all_three_sports_get_read_only_winner_context(sport):
     assert value["source_mutated"] is False and value["nfl_pickem_mutated"] is False
 
 
+
+@pytest.mark.parametrize("conflict", [
+    {"official_event_id": "different-nfl-fixture"},
+    {"home_team": "GB"},
+    {"away_team": "PHI"},
+    {"sport": "NHL"},
+    {"event_start_time_utc": (START + timedelta(days=1)).isoformat()},
+])
+def test_nfl_conflicting_saved_result_identity_is_diagnosed(conflict):
+    row = _row(sport="NFL", certified=True)
+    row["detail"]["result"].update(conflict)
+    projected = llp.project_llp_intelligence_page(_page([row]))
+    assert len(projected["events"]) == 1
+    event = projected["events"][0]
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert event["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+
+
+@pytest.mark.parametrize("provider_label", [
+    "NFL", "National Football League", "americanfootball_nfl",
+])
+def test_nfl_provider_league_alias_is_not_an_identity_conflict(provider_label):
+    row = _row(sport="NFL", certified=True)
+    row["detail"]["result"]["league"] = provider_label
+    projected = llp.project_llp_intelligence_page(_page([row]))
+    assert len(projected["events"]) == 1
+    event = projected["events"][0]
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" not in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+    # No independent DB receipt is supplied: valid identity alone is not
+    # permission to expose a fitted probability.
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+
+
 def test_research_candidate_keeps_numeric_probability_hidden():
     view = llp.project_llp_intelligence_page(_page([_row(certified=False)]))
     result = view["events"][0]["markets"][0]
