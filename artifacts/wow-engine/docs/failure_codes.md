@@ -12,7 +12,7 @@
 | `LLP_EVENT_PREDICTION_LOOKUP_NOT_PERFORMED` | LLP authenticated readback | No authenticated ledger client was supplied; Daily claims cannot verify themselves. | No |
 | `LLP_EVENT_PREDICTION_LOOKUP_UNAVAILABLE` | LLP authenticated readback | Authenticated ledger lookup failed or returned malformed data; provider text is not exposed. | No |
 | `LLP_EVENT_PREDICTION_NOT_EXACTLY_ONE` | LLP authenticated readback | Immutable event-prediction lookup did not return exactly one matching row. | No |
-| `LLP_EVENT_PREDICTION_RECEIPT_MISMATCH` | LLP authenticated readback | Identity, specialist, snapshot, settlement, authority flags or chronological proof disagree. Model and row creation must precede or equal terminal reduction, all before event start. | No |
+| `LLP_EVENT_PREDICTION_RECEIPT_MISMATCH` | LLP authenticated readback | Identity, specialist, snapshot, settlement, authority flags or chronological proof disagree. Legacy ledger: model and row creation must precede or equal terminal reduction, all before start. New multisport admission ledger: source snapshot <= model <= lock <= terminal reduction <= receipt creation < event start. Both variants fail closed on contradictions. | No |
 | `LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH` | LLP authenticated readback | Selected-side numbers disagree with the ledger, are nonfinite, or violate the existing strictly interior ordered calibrated-bound contract. | No |
 | `LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT` | LLP authenticated readback | Persisted Daily identity aliases conflict; optional research cannot make the winner eligible. | No |
 
