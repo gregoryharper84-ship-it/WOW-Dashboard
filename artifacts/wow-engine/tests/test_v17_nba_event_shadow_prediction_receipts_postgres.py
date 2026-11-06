@@ -25,6 +25,7 @@ TABLE = "public.wow_nba_event_shadow_predictions"
 
 
 def _dsn() -> str:
+    """Return an explicitly authorized local disposable PostgreSQL target."""
     dsn = os.environ.get("WOW_TEST_POSTGRES_DSN")
     if not dsn:
         pytest.skip(
@@ -57,6 +58,7 @@ def _dsn() -> str:
 
 
 def _connect(*, autocommit: bool = True):
+    """Connect only to the vetted test database with dictionary rows."""
     return psycopg.connect(
         _dsn(), autocommit=autocommit, row_factory=dict_row
     )
@@ -73,6 +75,7 @@ def _assert_no_existing_shadow_table(conn) -> None:
 
 @pytest.fixture(scope="module")
 def db():
+    """Apply and clean up migration only after pre-existing-table refusal."""
     with _connect() as conn:
         # This must happen before role creation, DDL or any test cleanup.
         _assert_no_existing_shadow_table(conn)
@@ -104,6 +107,7 @@ def db():
 
 
 def _insert(conn, *, created_at: datetime, event_start: datetime):
+    """Insert one otherwise-valid shadow receipt to challenge chronology."""
     now = datetime.now(timezone.utc)
     source_snapshot_id = "sha256:" + uuid4().hex * 2
     row = conn.execute(
@@ -187,6 +191,7 @@ def test_existing_shadow_table_is_never_used_as_test_scratch(db):
 
 
 def test_created_at_default_is_removed_and_trigger_is_before_insert(db):
+    """Require server authority, not a caller-selectable timestamp default."""
     column = db.execute(
         """
         select column_default
@@ -212,6 +217,7 @@ def test_created_at_default_is_removed_and_trigger_is_before_insert(db):
 
 
 def test_backdated_created_at_is_replaced_with_server_clock(db):
+    """Verify the stored receipt time falls inside server wall-clock bounds."""
     supplied = datetime(2000, 1, 1, tzinfo=timezone.utc)
     event_start = datetime.now(timezone.utc) + timedelta(hours=3)
     before = db.execute("select pg_catalog.clock_timestamp() as t").fetchone()["t"]
@@ -222,6 +228,7 @@ def test_backdated_created_at_is_replaced_with_server_clock(db):
 
 
 def test_transaction_start_is_not_used_as_the_receipt_time():
+    """Reject the stale transaction-start timestamp in a delayed insert."""
     with _connect(autocommit=False) as tx:
         transaction_start = tx.execute("select now() as t").fetchone()["t"]
         tx.execute("select pg_sleep(0.25)")
@@ -235,6 +242,7 @@ def test_transaction_start_is_not_used_as_the_receipt_time():
 
 
 def test_receipt_across_kickoff_is_rejected_even_with_an_old_created_at(db):
+    """Fail closed on post-kickoff insertion even with supplied old time."""
     before = db.execute(
         "select count(*) as n from public.wow_nba_event_shadow_predictions"
     ).fetchone()["n"]
@@ -251,6 +259,7 @@ def test_receipt_across_kickoff_is_rejected_even_with_an_old_created_at(db):
 
 
 def test_replay_is_idempotent_and_service_role_cannot_rewrite_receipts(db):
+    """Require one trigger and prohibit service-role receipt mutation."""
     trigger_count = db.execute(
         """
         select count(*) as n
