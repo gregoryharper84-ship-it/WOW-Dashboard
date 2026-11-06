@@ -155,7 +155,7 @@ BEGIN
   IF NOT FOUND OR h.status IS DISTINCT FROM 'PASS'
     OR h.certification_recommendation IS DISTINCT FROM 'FORWARD_EVIDENCE_PASS'
     OR h.graded_n IS NULL OR h.minimum_forward_required IS NULL
-    OR h.graded_n < pg_catalog.greatest(h.minimum_forward_required,100)
+    OR h.graded_n < GREATEST(h.minimum_forward_required,100)
     OR h.graded_n IS DISTINCT FROM matching_forward_grades
     OR h.can_execute IS DISTINCT FROM false
     OR h.blockers IS DISTINCT FROM '[]'::jsonb
