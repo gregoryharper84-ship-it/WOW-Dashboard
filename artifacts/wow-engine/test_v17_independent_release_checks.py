@@ -870,6 +870,73 @@ def test_qa_superseded_event_origin_check_does_not_affect_manual_or_strict_paths
     assert cur.get("disposition") != "neutral"
 
 
+def test_draft_exact_head_qa_callback_is_neutral_and_never_issues_policy():
+    """Reproduce #1021/#2487: QA workflow_run must not issue a draft PR policy."""
+    event = _same_origin_event_pr()
+    live = {
+        "number": 7, "state": "open", "draft": True, "merged_at": None,
+        "head": {"sha": HEAD, "ref": "fix/draft", "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    fetch = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    observed = m.targets(REPO, workflow_run_prs=[event], neutral_superseded=True, fetch=fetch)
+    assert observed == {
+        "targets": [], "errors": [], "disposition": "neutral",
+        "reason": "QA_SOURCE_PR_DRAFT_INELIGIBLE",
+    }
+    # Manual explicit PR is not neutralized: QA's separate draft gate still holds.
+    strict = m.targets(REPO, pr="7", fetch=fetch)
+    assert strict["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "fix/draft"}]
+    assert strict.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize("origin", ["missing", "foreign"])
+def test_draft_qa_callback_with_untrusted_event_origin_still_fails_closed(side, origin):
+    """Draft neutral is allowed only for an authenticated exact-origin event."""
+    event = _same_origin_event_pr()
+    if origin == "missing":
+        event[side].pop("repo")
+    else:
+        event[side]["repo"] = {"url": "https://api.github.com/repos/fork/WOW-Dashboard"}
+    live = {
+        "number": 7, "state": "open", "draft": True, "merged_at": None,
+        "head": {"sha": HEAD, "ref": "fix/draft", "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    observed = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=True,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}),
+    )
+    assert observed["targets"] == []
+    assert observed["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert observed.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize(("live_sha", "live_ref", "live_state"), [
+    (OLD, "fix/draft", "open"),
+    (HEAD, "", "open"),
+    (HEAD, "fix/draft", "closed"),
+])
+def test_draft_qa_neutral_cannot_cover_moved_malformed_or_closed_target(
+    live_sha, live_ref, live_state,
+):
+    """No draft neutral if the exact unmerged same-PR identity is unproven."""
+    event = _same_origin_event_pr()
+    live = {
+        "number": 7, "state": live_state, "draft": True, "merged_at": None,
+        "head": {"sha": live_sha, "ref": live_ref, "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    observed = m.targets(
+        REPO, workflow_run_prs=[event], neutral_superseded=True,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}),
+    )
+    assert observed.get("disposition") != "neutral"
+    assert observed["targets"] == []
+    assert observed["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+
+
 def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_step():
     workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
