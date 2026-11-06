@@ -159,7 +159,8 @@ def _index(rows: Iterable[Mapping[str, Any]], *, season: int, provider: str
 
 def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
               espn_rows: Iterable[Mapping[str, Any]], *,
-              season: int, ncaa_sha256: str, espn_sha256: str) -> dict[str, Any]:
+              season: int, ncaa_sha256: str, espn_sha256: str,
+              full_candidate_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     espn_release_url(season)
     if any(not re.fullmatch("[a-f0-9]{64}", h)
            for h in (ncaa_sha256, espn_sha256)):
@@ -225,6 +226,14 @@ def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
         sample.extend(eligible[:4])
     sample.sort(key=lambda r: (r["event_id"], r["athlete_id"], r["stat_type"]))
     sample_bytes = json.dumps(sample, sort_keys=True, separators=(",", ":")).encode()
+    # Include one and only one independently agreed value per event/ESPN
+    # athlete/stat key. Outcome-only public research: never a pregame feature.
+    full_rows = sorted(candidate_stat_values.values(), key=lambda r: (
+        r["event_id"], r["athlete_id"], r["stat_type"]))
+    if full_candidate_rows is not None:
+        full_candidate_rows.extend(full_rows)
+    full_sha = sha256(json.dumps(full_rows, sort_keys=True,
+                                separators=(",", ":")).encode()).hexdigest()
     return {
         "schema": SCHEMA, "status": "NCAAF_NCAA_ESPN_SOURCE_CROSSWALK_RESEARCH_ONLY",
         "season": season,
@@ -243,6 +252,10 @@ def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
         "cfbd_exact_match_sample_sha256": sha256(sample_bytes).hexdigest(),
         "cfbd_exact_match_sample_size": len(sample),
         "cfbd_exact_match_sample_verified": False,
+        "full_candidate_stat_cells": len(full_rows),
+        "full_candidate_stat_rows_sha256": full_sha,
+        "full_candidate_export_for_model": False,
+        "full_candidate_team_id_verified": False,
         "hold_reason_counts": dict(sorted((ncaa_holds + espn_holds + Counter({
             k: v for k, v in results.items() if k not in
             ("CANDIDATE_EXACT_STATS", "ADDITIONAL_CATEGORY_FOR_SAME_ATHLETE")
@@ -304,8 +317,17 @@ def audit_release(*, ncaa_parquet: str, season: int, output_dir: str) -> dict[st
         espn_sha = _download_espn_release(season, espn_file)
         ncaa_table = pq.read_table(ncaa_file, columns=list(NCAA_COLUMNS))
         espn_table = pq.read_table(espn_file, columns=list(ESPN_COLUMNS))
+        full_rows: list[dict[str, Any]] = []
         report = reconcile(ncaa_table.to_pylist(), espn_table.to_pylist(),
-                           season=season, ncaa_sha256=ncaa_sha, espn_sha256=espn_sha)
+                           season=season, ncaa_sha256=ncaa_sha, espn_sha256=espn_sha,
+                           full_candidate_rows=full_rows)
+        if not full_rows or len(full_rows) != report["full_candidate_stat_cells"]:
+            raise CrosswalkHold("NCAAF_CROSSWALK_FULL_COHORT_EMPTY_OR_COUNT_MISMATCH")
+        full_bytes = json.dumps(full_rows, sort_keys=True,
+                                separators=(",", ":")).encode()
+        if sha256(full_bytes).hexdigest() != report["full_candidate_stat_rows_sha256"]:
+            raise CrosswalkHold("NCAAF_CROSSWALK_FULL_COHORT_HASH_MISMATCH")
+        (out / "ncaaf_public_full_candidate_stats_2024.json").write_bytes(full_bytes)
         (out / "ncaaf_national_espn_crosswalk_manifest.json").write_text(
             json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         return report

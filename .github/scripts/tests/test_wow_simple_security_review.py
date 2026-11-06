@@ -10,6 +10,17 @@ spec.loader.exec_module(m)
 
 
 class SimpleSecurityReviewTests(unittest.TestCase):
+    def setUp(self):
+        # Legacy tests isolate verdict parsing. Discovery has separate
+        # negative tests; avoid adding catalog calls to existing fixtures.
+        self._models_patch = patch.object(
+            m, "review_models",
+            side_effect=lambda provider, key, strict=False:
+            ["gemini-3.8-flash"] if provider == "gemini-generative-api"
+            else ["claude-sonnet-4-6"])
+        self._models_patch.start()
+        self.addCleanup(self._models_patch.stop)
+
     def test_exact_event_target(self):
         self.assertEqual(m.event_target({"pull_request": {"number": 2247, "head": {"sha": "a" * 40}}},
                                         "pull_request_target"), (2247, "a" * 40))
@@ -66,11 +77,107 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
         self.assertFalse(items["additionalProperties"])
+        # The enforced bounds are also handed to the model, so a reviewer is
+        # never held for a limit it was not told about.
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
+        for key in ("file", "detail", "evidence"):
+            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+            self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
         self.assertIn("critical or high", prompt)
         self.assertIn("medium/low", prompt)
         self.assertIn("blocks regardless of severity", prompt)
+        self.assertIn("at most 12", prompt)
+        self.assertIn("at most 500 characters", prompt)
+        self.assertIn("exactly these five keys and no others", prompt)
+        self.assertIn("Never return whitespace-only", prompt)
+        self.assertIn("cross-cutting concern", prompt)
+        self.assertIn("100-200 characters in detail", prompt)
+        self.assertIn("30-150 in evidence", prompt)
+        self.assertIn("preserve every material risk", prompt)
+
+    def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
+        good = self._passing()
+        at_limit = self._finding("medium")
+        at_limit["evidence"] = "e" * m.MAX_FINDING_TEXT
+        self.assertEqual(m.parse_verdict({**good, "findings": [at_limit]})[0], "PASS")
+        over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
+        with self.assertRaises(m.Hold) as err:
+            m.parse_verdict({**good, "findings": [over]})
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_finding_text_failures_are_field_specific_and_fail_closed(self):
+        good = self._passing()
+        for key in ("file", "detail", "evidence"):
+            for suffix, bad in (
+                ("TYPE", 123),
+                ("EMPTY", "  "),
+                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+            ):
+                with self.subTest(field=key, error=suffix):
+                    malformed = {**self._finding("low"), key: bad}
+                    with self.assertRaises(m.Hold) as hold:
+                        m.parse_verdict({**good, "findings": [malformed]})
+                    self.assertEqual(
+                        str(hold.exception),
+                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
+                    )
+        # The new codes are diagnostics, not permission to retry malformed
+        # model output or to discard genuine risk-category findings.
+        decision, _ = m.parse_verdict({
+            **good, "findings": [self._finding("low", category="security")]
+        })
+        self.assertEqual(decision, "REJECT")
+
+    def test_finding_rejections_have_allowlisted_typed_reasons(self):
+        good = self._passing()
+        finding = self._finding("low")
+        samples = (
+            ("NOT_LIST", "invalid"),
+            ("TOO_MANY", [finding] * (m.MAX_FINDINGS + 1)),
+            ("NOT_OBJECT", ["legacy free text"]),
+            ("FIELD_SET", [{**finding, "extra": True}]),
+            ("SEVERITY", [{**finding, "severity": "unknown"}]),
+            ("CATEGORY", [{**finding, "category": "unknown"}]),
+            ("TEXT_EVIDENCE_EMPTY", [{**finding, "evidence": " " * 3}]),
+        )
+        for suffix, malformed in samples:
+            with self.subTest(reason=suffix):
+                with self.assertRaises(m.Hold) as error:
+                    m.parse_verdict({**good, "findings": malformed})
+                self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:" + suffix)
+        # The schema's upper bound is also enforced at the parser boundary.
+        with self.assertRaises(m.Hold) as too_long:
+            m.parse_verdict({**good, "findings": [{**finding,
+                "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
+        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
+        target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        event = {"pull_request": {"number": 2320, "head": {"sha": target["head_sha"]}}}
+        env = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+               "GITHUB_EVENT_PATH": "/mock/event.json", "GITHUB_EVENT_NAME": "pull_request_target",
+               "GH_READ_TOKEN": "fake-read-token", "GITHUB_RUN_ID": "33",
+               "GITHUB_RUN_ATTEMPT": "1", "QA_APP_TOKEN": "fake-check-token"}
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target), \
+             patch.object(m, "prior_semantic_reject", side_effect=m.Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")), \
+             patch.object(m, "semantic_review") as forbidden_review, \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+        self.assertEqual(exiting.exception.code, 1)
+        forbidden_review.assert_not_called()
+        saved = m.json.loads(save.call_args.args[1])
+        self.assertEqual(saved["decision"], "HOLD")
+        self.assertEqual(saved["reason"], "PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        self.assertEqual(saved["attempts"], [])
+        self.assertNotIn("recovery_class", saved)
+        publish.assert_called_once()
 
     def test_category_prevents_severity_downgrade_of_real_risks(self):
         good = self._passing()
@@ -91,7 +198,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         good = self._passing()
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": ["legacy string finding"]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
         called = []
         def malformed(provider, key, prompt):
             called.append(provider)
@@ -100,7 +207,10 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "safe"},
                               {p: "key" for p in m.PROVIDERS}, malformed)
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"}])
         self.assertEqual(called, ["anthropic-claude-api"])
 
     def test_receipt_schema_is_versioned_without_rewriting_prior_verdicts(self):
@@ -130,6 +240,74 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                           return_value=tool({**good, "findings": [self._finding("critical")]})):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
 
+    def test_claude_non_tool_stop_reason_is_attributed_without_exposure_or_fallback(self):
+        import contextlib
+        import io
+        for raw, expected in (
+            ("max_tokens", "max_tokens"),
+            ("end_turn", "end_turn"),
+            ("secret-redirect?key=SENSITIVE_TOKEN", "UNCLASSIFIED"),
+            (None, "UNCLASSIFIED"),
+            (["max_tokens"], "UNCLASSIFIED"),
+            ({"stop": "max_tokens"}, "UNCLASSIFIED"),
+        ):
+            with self.subTest(raw=raw):
+                stderr = io.StringIO()
+                provider_payload = {"stop_reason": raw, "content": [
+                    {"type": "text", "text": "PRIVATE_RESPONSE_BODY"}]}
+                with patch.object(m, "request_json", return_value=provider_payload) as request:
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(m.Hold) as error:
+                            m.call_provider("anthropic-claude-api", "TEST_SECRET_KEY", "review")
+                # Even a truncated untrusted diff is never re-sent just
+                # to obtain a more favorable security decision.
+                self.assertEqual(str(error.exception),
+                                 "CLAUDE_REVIEW_TRUNCATED" if raw == "max_tokens"
+                                 else "CLAUDE_REVIEW_INCOMPLETE")
+                self.assertEqual(request.call_count, 1)
+                self.assertIn("REVIEW_CLAUDE_STOP_REASON:" + expected, stderr.getvalue())
+                for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
+                    self.assertNotIn(forbidden, stderr.getvalue())
+
+    def test_successful_malformed_http_200_never_triggers_model_failover(self):
+        # Regression for independent P1 security finding at PR #2373:
+        # JSON 'null' must never be read as an exhausted list of models.
+        # Malformed 200 responses are not availability errors.
+        candidates = {
+            "anthropic-claude-api": ["claude-sonnet-4-6", "claude-sonnet-4-5"],
+            "gemini-generative-api": ["gemini-3.8-flash", "gemini-3.6-flash"],
+        }
+        for provider, models in candidates.items():
+            for malformed in (None, False, [], "", 0):
+                with self.subTest(provider=provider, malformed=malformed), \
+                     patch.object(m, "review_models", return_value=models), \
+                     patch.object(m, "request_json", return_value=malformed) as req:
+                    with self.assertRaises(m.Hold) as caught:
+                        m.call_provider(provider, "scoped-key", "untrusted diff")
+                    self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+                    self.assertEqual(str(caught.exception),
+                                     "CLAUDE_RESPONSE_INVALID" if provider == "anthropic-claude-api"
+                                     else "GEMINI_RESPONSE_INVALID")
+                    self.assertEqual(req.call_count, 1,
+                                     "No second model may see a malformed first response")
+
+    def test_malformed_success_does_not_fall_through_to_other_provider(self):
+        target = {"pr": 2373, "head_sha": "a" * 40,
+                  "diff_sha256": "b" * 64, "diff": "untrusted"}
+        creds = {p: "scoped-key" for p in m.PROVIDERS}
+        with patch.object(m, "prompt_for", return_value="untrusted diff"), \
+             patch.object(m, "review_models", return_value=["claude-sonnet-4-6"]), \
+             patch.object(m, "request_json", return_value=None) as request:
+            with self.assertRaises(m.Hold) as caught:
+                m.semantic_review(target, creds)
+            self.assertEqual(str(caught.exception), "CLAUDE_RESPONSE_INVALID")
+            self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+            self.assertEqual(caught.exception.attempts, [
+                {"provider": "anthropic-claude-api", "result": "CLAUDE_RESPONSE_INVALID"}
+            ])
+            self.assertEqual(request.call_count, 1,
+                             "Malformed Claude response cannot be laundered into Gemini PASS")
+
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
@@ -156,6 +334,64 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(called, ["anthropic-claude-api"])
         with self.assertRaises(m.Hold):
             m.semantic_review(target, {})
+
+    def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        called = []
+        def unusable(provider, key, prompt):
+            called.append(provider)
+            raise m.Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
+        with self.assertRaises(m.Hold) as err:
+            m.semantic_review(target, {p: "key" for p in m.PROVIDERS}, unusable)
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:TEXT"}])
+        self.assertEqual(called, ["anthropic-claude-api"])
+        # Exercise the HOLD path in main(): searching its source text would
+        # also match the owner-fallback handler and miss lost attribution.
+        target_with_base = {**target, "base_sha": "c" * 40}
+        event = {"pull_request": {"number": target["pr"], "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_PATH": "/mock/event.json",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GH_READ_TOKEN": "fake-read-token",
+            "GITHUB_RUN_ID": "33",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake-claude-token",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
+            "QA_APP_TOKEN": "fake-check-token",
+        }
+        original_semantic_review = m.semantic_review
+
+        def review_with_unusable_verdict(captured, credentials):
+            return original_semantic_review(captured, credentials, unusable)
+
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target_with_base) as capture, \
+             patch.object(m, "prior_semantic_reject", return_value=False), \
+             patch.object(m, "semantic_review", side_effect=review_with_unusable_verdict), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+
+        self.assertEqual(exiting.exception.code, 1)
+        capture.assert_called_once_with(target["pr"], target["head_sha"], "fake-read-token")
+        save.assert_called_once()
+        self.assertEqual(str(save.call_args.args[0]), "wow-independent-security-decision.json")
+        receipt = m.json.loads(save.call_args.args[1])
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(receipt["reviewer_identity"], "none")
+        self.assertEqual(receipt["attempts"], err.exception.attempts)
+        self.assertEqual(receipt["recovery_class"], "EVIDENCE_PENDING")
+        self.assertEqual(receipt["next_action"], "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD")
+        self.assertEqual(called, ["anthropic-claude-api", "anthropic-claude-api"])
+        publish.assert_called_once_with(target["head_sha"], receipt, "fake-check-token")
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -205,16 +441,55 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
     def test_unknown_provider_models_are_denied_before_network(self):
-        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": "unapproved-model"}):
-            with self.assertRaises(m.Hold) as cm:
-                m.call_provider("anthropic-claude-api", "key", "review")
-            self.assertEqual(str(cm.exception), "CLAUDE_MODEL_UNAPPROVED")
-        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-unapproved"}):
-            with self.assertRaises(m.Hold) as cm:
-                m.call_provider("gemini-generative-api", "key", "review")
-            self.assertEqual(str(cm.exception), "GEMINI_MODEL_INVALID")
+        self._models_patch.stop()
+        for provider, setting, model, reason in (
+            ("anthropic-claude-api", "WOW_QA_CLAUDE_MODEL", "unapproved-model",
+             "CLAUDE_MODEL_UNAPPROVED"),
+            ("gemini-generative-api", "WOW_QA_GEMINI_MODEL", "gemini-unapproved",
+             "GEMINI_MODEL_INVALID"),
+        ):
+            with self.subTest(provider=provider), patch.dict(m.os.environ, {setting: model}):
+                with patch.object(m, "request_json") as request:
+                    with self.assertRaisesRegex(m.Hold, reason):
+                        m.call_provider(provider, "fake", "review")
+                    request.assert_not_called()
 
+    def test_gemini_fallback_pins_stable_free_tier_candidate_and_keeps_fail_closed_parser(self):
+        import json
+        verdict = self._passing()
+        candidate = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}
+        with patch.object(m, "request_json", return_value=candidate) as req:
+            decision, payload = m.call_provider(
+                "gemini-generative-api", "TEST_KEY", "untrusted diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        self.assertEqual(req.call_args.args[0],
+                         "https://generativelanguage.googleapis.com/v1beta/models/"
+                         "gemini-3.8-flash:generateContent")
+        self.assertEqual(req.call_args.kwargs["data"]["generationConfig"],
+                         {"responseMimeType": "application/json"})
 
+    def test_gemini_fallback_invalid_responses_hold_without_retry(self):
+        import json
+        good = self._passing()
+        cases = (
+            ("malformed_json", "STOP", "{not valid json}", "SEMANTIC_RESPONSE_NOT_JSON"),
+            ("invalid_verdict", "STOP", json.dumps({**good, "security_review": "NOT_PASS"}),
+             "SEMANTIC_VERDICT_INVALID"),
+            ("non_stop", "MAX_TOKENS", json.dumps(good), "GEMINI_REVIEW_INCOMPLETE"),
+        )
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            for name, reason, body, expected in cases:
+                with self.subTest(name=name):
+                    result = {"candidates": [{"finishReason": reason, "content": {
+                        "parts": [{"text": body}]}}]}
+                    with patch.object(m, "request_json", return_value=result) as request:
+                        with self.assertRaises(m.Hold) as caught:
+                            m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                        self.assertEqual(str(caught.exception), expected)
+                        self.assertEqual(request.call_count, 1)
 
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -392,6 +667,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
 
 
+    def test_bounded_timeout_only_for_gemini_generatecontent(self):
+        # PR #2374 run 41453642828/2: Gemini model catalog succeeded,
+        # but full-source generation hit the former 60s transport timeout.
+        # Longer one-shot inference must never relax other endpoint budgets
+        # or turn a timeout into a positive security verdict.
+        cases = (
+            ("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+             {"data": {"contents": []}}, 180, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+             {}, 60, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://api.anthropic.com/v1/messages",
+             {"data": {"messages": []}}, 60, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://api.github.com/repos/" + m.REPO + "/pulls/2374",
+             {}, 60, m.Hold, "GITHUB_TRANSPORT"),
+        )
+        for url, request_kwargs, timeout, failure_type, typed_reason in cases:
+            with self.subTest(url=url), \
+                 patch.object(m.HTTP_CLIENT, "open", side_effect=TimeoutError()) as opener:
+                with self.assertRaises(failure_type) as err:
+                    m.request_json(url, **request_kwargs)
+                self.assertEqual(str(err.exception), typed_reason)
+                self.assertEqual(opener.call_args.kwargs["timeout"], timeout)
+                self.assertEqual(opener.call_count, 1, "No hidden HTTP retry permitted")
+
     def test_typed_provider_error_retry_mapping(self):
         import io
         import json
@@ -440,6 +739,73 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 {"type": "tool_use", "name": "submit_review",
                  "input": {**verdict, "security_review": "FAIL"}}]}):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
+
+    def test_claude_high_budget_uses_one_strict_tool_request(self):
+        verdict = self._passing()
+        successful = {"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        with patch.object(m, "request_json", return_value=successful) as req:
+            decision, payload = m.call_provider("anthropic-claude-api", "private", "source diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        sent = req.call_args.kwargs["data"]
+        self.assertEqual(sent["max_tokens"], 6144)
+        self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
+        self.assertEqual(sent["tool_choice"]["name"], "submit_review")
+        self.assertEqual(sent["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+
+    def test_claude_truncation_holds_without_resending_untrusted_diff(self):
+        truncated = {"stop_reason": "max_tokens", "content": [
+            {"type": "text", "text": "partial output, untrusted"}]}
+        with patch.object(m, "request_json", return_value=truncated) as req:
+            with self.assertRaises(m.Hold) as err:
+                m.call_provider("anthropic-claude-api", "private", "source diff")
+        self.assertEqual(str(err.exception), "CLAUDE_REVIEW_TRUNCATED")
+        self.assertNotIsInstance(err.exception, m.ProviderUnavailable)
+        self.assertEqual(req.call_count, 1)
+
+    def test_claude_refusal_and_nontruncation_do_not_retry(self):
+        for reason, expected in (
+            ("refusal", "CLAUDE_REVIEW_REFUSED"),
+            ("end_turn", "CLAUDE_REVIEW_INCOMPLETE"),
+            ("pause_turn", "CLAUDE_REVIEW_INCOMPLETE"),
+            ("not-a-provider-stop", "CLAUDE_REVIEW_INCOMPLETE"),
+        ):
+            with self.subTest(reason=reason):
+                with patch.object(m, "request_json", return_value={
+                    "stop_reason": reason, "content": [{"type": "text", "text": "refuse"}]
+                }) as req:
+                    with self.assertRaises(m.Hold) as err:
+                        m.call_provider("anthropic-claude-api", "private", "source diff")
+                self.assertEqual(str(err.exception), expected)
+                self.assertEqual(req.call_count, 1)
+
+    def test_claude_security_reject_and_malformed_tool_never_retry(self):
+        real_reject = {**self._passing(), "security_review": "FAIL"}
+        for result, expected in (
+            ({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review", "input": real_reject}]}, None),
+            ({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review",
+                 "input": {**self._passing(), "findings": ["unsafe"]}}]},
+             "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"),
+            ({"stop_reason": "tool_use", "content": []},
+             "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
+            ({"stop_reason": "tool_use", "content": [{"type": "text", "text": "PASS"}]},
+             "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
+            ({"stop_reason": "tool_use", "content": "invalid"},
+             "CLAUDE_RESPONSE_INVALID"),
+        ):
+            with self.subTest(result=result):
+                with patch.object(m, "request_json", return_value=result) as req:
+                    if expected is None:
+                        self.assertEqual(m.call_provider("anthropic-claude-api", "private", "diff")[0], "REJECT")
+                    else:
+                        with self.assertRaises(m.Hold) as err:
+                            m.call_provider("anthropic-claude-api", "private", "diff")
+                        self.assertEqual(str(err.exception), expected)
+                self.assertEqual(req.call_count, 1)
 
     def test_sticky_reject_exact_sha_and_app_only(self):
         qa_reject = {"name": m.CHECK_NAME, "conclusion": "failure",
@@ -502,7 +868,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         prompt = m.prompt_for(target)
         self.assertIn("BEGIN_UNTRUSTED_DIFF", prompt)
         self.assertIn("END_UNTRUSTED_DIFF", prompt)
-        self.assertTrue(prompt.endswith("Return review findings for the exact identified PR and SHA only."))
+        self.assertIn("CRITICAL FORMAT REQUIREMENT", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("500 characters or fewer", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("if uncertain, FAIL", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
 
     def test_capture_rejects_head_change_during_diff_pagination(self):
         initial = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -523,6 +891,229 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn('PROTECTED_BASE_MOVED_BEFORE_PUBLICATION', source)
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
+
+
+
+    def _pref_env(self, **changes):
+        base = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_ACTOR": m.OWNER_LOGIN,
+                "WOW_QA_REVIEW_GEMINI_API_KEY": "secret-do-not-log",
+                "WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}
+        base.update(changes)
+        return base
+
+    def test_preflight_catalog_read_only_no_inference(self):
+        env = self._pref_env()
+        env["WOW_QA_REVIEW_ANTHROPIC_API_KEY"] = ""
+        self._models_patch.stop()
+        data = {"models": [{"name": "models/gemini-3.8-flash",
+                            "supportedGenerationMethods": ["generateContent"]}]}
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m, "request_json", return_value=data) as request, \
+             patch.object(m, "publish_check") as publish, \
+             patch("builtins.print") as print_output:
+            m.reviewer_preflight()
+        request.assert_called_once_with(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            headers={"x-goog-api-key": "secret-do-not-log"})
+        publish.assert_not_called()
+        self.assertTrue(any("PROVIDER_READY:gemini-generative-api:gemini-3.8-flash:READ_ONLY"
+                            in str(x) for x in print_output.call_args_list))
+        self.assertNotIn("secret-do-not-log", str(print_output.call_args_list))
+
+    def test_preflight_rejects_untrusted_caller_before_http(self):
+        self._models_patch.stop()
+        for changes in ({"GITHUB_ACTOR": "foreign-bot"},
+                        {"GITHUB_REF": "refs/heads/test"},
+                        {"GITHUB_REPOSITORY": "attacker/fork"},
+                        {"GITHUB_EVENT_NAME": "pull_request_target"}):
+            with self.subTest(changes=changes), \
+                 patch.dict(m.os.environ, self._pref_env(**changes), clear=True), \
+                 patch.object(m, "request_json") as request:
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED"):
+                    m.reviewer_preflight()
+                request.assert_not_called()
+
+    def test_preflight_explicit_invalid_model_never_calls_provider(self):
+        self._models_patch.stop()
+        for model in ("gemini-4-argon", " gemini-3.8-flash", "gemini-3.8-flash\\n", "other"):
+            with self.subTest(model=model), \
+                 patch.dict(m.os.environ, self._pref_env(WOW_QA_GEMINI_MODEL=model,
+                     WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+                 patch.object(m, "request_json") as request:
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                    m.reviewer_preflight()
+                request.assert_not_called()
+
+    def test_preflight_missing_credential_fails_closed(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ,
+                        self._pref_env(WOW_QA_REVIEW_GEMINI_API_KEY="",
+                                       WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+             patch.object(m, "request_json") as request:
+            with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                m.reviewer_preflight()
+            request.assert_not_called()
+
+    def test_preflight_missing_capability_and_empty_catalog_are_unavailable(self):
+        self._models_patch.stop()
+        for data in (None, [], {}, {"models": [{"name": "models/gemini-3.8-flash"}]},
+                     {"models": [{"name": "models/gemini-4-argon",
+                                   "supportedGenerationMethods": ["generateContent"]}]},
+                     {"models": [{"name": "models/gemini-3.8-flash",
+                                   "supportedGenerationMethods": ["embedContent"]}]}):
+            with self.subTest(data=data), \
+                 patch.dict(m.os.environ, self._pref_env(
+                     WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+                 patch.object(m, "request_json", return_value=data):
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                    m.reviewer_preflight()
+
+    def test_preflight_http_404_is_never_security_pass(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, self._pref_env(
+             WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+             patch.object(m, "request_json", side_effect=m.Hold("HTTP_404")), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                m.reviewer_preflight()
+            publish.assert_not_called()
+
+    def test_review_model_list_allowlist_and_order(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.1-pro", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-4-argon", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.9-flash-preview", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.9-flash\\n/path", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.9-flash", "supportedGenerationMethods": ["embedContent"]},
+        ]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=catalog):
+            self.assertEqual(m.review_models("gemini-generative-api", "key"),
+                             ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-pro"])
+
+    def test_review_model_configured_preferred_only_when_listed(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.6-flash"}), \
+             patch.object(m, "request_json", return_value=catalog):
+            self.assertEqual(m.review_models("gemini-generative-api", "key"),
+                             ["gemini-3.6-flash", "gemini-3.8-flash"])
+
+    def test_review_model_catalog_invalid_is_hold_not_static_fallback(self):
+        self._models_patch.stop()
+        for data in ({}, {"models": "not a list"},
+                     {"nextPageToken": "next", "models": []},
+                     {"models": [None]}):
+            with self.subTest(data=data), patch.object(m, "request_json", return_value=data):
+                with self.assertRaises(m.Hold):
+                    m.review_models("gemini-generative-api", "key")
+
+    def test_complete_empty_model_catalog_never_uses_static_models(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", return_value={"models": []}) as request:
+            with self.assertRaisesRegex(m.ProviderUnavailable,
+                                        "PROVIDER_MODEL_UNAVAILABLE"):
+                m.review_models("gemini-generative-api", "key")
+        self.assertEqual(request.call_count, 1)
+
+    def test_nontransient_catalog_401_does_not_spend_generation_tokens(self):
+        self._models_patch.stop()
+        for status in ("HTTP_401", "HTTP_403", "HTTP_404"):
+            with self.subTest(status=status), \
+                 patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+                 patch.object(m, "request_json", side_effect=m.Hold(status)) as request:
+                with self.assertRaisesRegex(m.Hold, status):
+                    m.call_provider("gemini-generative-api", "key", "untrusted diff")
+                self.assertEqual(request.call_count, 1)
+
+    def test_review_model_listing_http_error_uses_short_static_fallback(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=m.Hold("HTTP_503")):
+            self.assertEqual(m.review_models("gemini-generative-api", "key"),
+                             ["gemini-3.8-flash", "gemini-3.6-flash"])
+
+    def test_review_model_only_typed_unavailable_moves_to_next_model(self):
+        self._models_patch.stop()
+        import json
+        verdict = self._passing()
+        good = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        def request(url, **kwargs):
+            if "pageSize" in url: return catalog
+            if "3.8-flash:generateContent" in url:
+                raise m.ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
+            return good
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request) as req:
+            self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "PASS")
+            self.assertEqual(req.call_count, 3)
+
+    def test_review_model_semantic_rejection_never_switches_model(self):
+        self._models_patch.stop()
+        import json
+        rejected = {**self._passing(), "security_review": "FAIL"}
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        calls = []
+        def request(url, **kwargs):
+            calls.append(url)
+            if "pageSize" in url: return catalog
+            return {"candidates": [{"finishReason": "STOP", "content": {
+                "parts": [{"text": json.dumps(rejected)}]}}]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "REJECT")
+        self.assertEqual(len(calls), 2)
+
+    def test_model_catalog_endpoints_are_bounded_and_attributed(self):
+        self._models_patch.stop()
+        models = {"data": [{"id": "claude-sonnet-4-6"}], "has_more": False}
+        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=models) as req:
+            self.assertEqual(m.review_models("anthropic-claude-api", "key"),
+                             ["claude-sonnet-4-6"])
+            self.assertEqual(req.call_args.args[0],
+                             "https://api.anthropic.com/v1/models?limit=1000")
+        self.assertEqual(m.safe_label(req.call_args.args[0], False),
+                         "ANTHROPIC_API:GET:MODEL_CATALOG")
+        self.assertEqual(m.safe_label(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            False), "GEMINI_API:GET:MODEL_CATALOG")
+
+    def test_review_model_claude_candidates_are_limited_to_sonnet(self):
+        self._models_patch.stop()
+        catalog = {"data": [{"id": "claude-sonnet-4-6"},
+                            {"id": "claude-sonnet-4-5"},
+                            {"id": "claude-sonnet-5"},
+                            {"id": "claude-sonnet-5-2"},
+                            {"id": "claude-opus-4-6"},
+                            {"id": "claude-sonnet-5-3-preview"}], "has_more": False}
+        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=catalog):
+            self.assertEqual(m.review_models("anthropic-claude-api", "key"),
+                             ["claude-sonnet-5-2", "claude-sonnet-5", "claude-sonnet-4-6"])
+
+    def test_workflow_preflight_never_mints_qa_token_or_reviews_diff(self):
+        workflow = (PATH.parents[1] / "workflows" / "wow-v17-simple-security-review.yml").read_text()
+        self.assertIn("preflight_only:", workflow)
+        self.assertIn("run: python .github/scripts/wow_simple_security_review.py --preflight", workflow)
+        self.assertIn("if: inputs.preflight_only == true", workflow)
+        self.assertIn("if: inputs.preflight_only != true", workflow)
+        self.assertIn("environment: wow-qa", workflow)
+        self.assertIn("ref: main", workflow)
 
 
 def load_tests(loader, tests, pattern):
