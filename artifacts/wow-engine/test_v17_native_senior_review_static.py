@@ -185,3 +185,27 @@ def test_actual_source_line_beginning_with_two_pluses_is_counted():
 def test_valid_multihunk_new_side_counts():
     patch = "@@ -1,1 +1,2 @@\n a\n+b\n@@ -8,1 +9,2 @@\n x\n+y\n"
     assert added_lines(patch) == {2, 10}
+
+
+def test_multiline_call_added_shell_true_is_seen_across_ast_expression():
+    src = "import subprocess\nsubprocess.run(\n    'hello',\n    shell=True,\n)\n"
+    patch = ("@@ -1,4 +1,5 @@\n"
+             " import subprocess\n"
+             " subprocess.run(\n"
+             "     'hello',\n"
+             "+    shell=True,\n"
+             " )\n")
+    findings = run_static_review(packet(src, patch))["findings"]
+    assert any(f["rule_id"] == "SUBPROCESS_SHELL_TRUE" for f in findings)
+
+
+def test_old_multiline_shell_true_not_reissued_on_unrelated_new_statement():
+    src = "import subprocess\nsubprocess.run(\n    'hello', shell=True,\n)\nnew = 1\n"
+    patch = ("@@ -1,4 +1,5 @@\n"
+             " import subprocess\n"
+             " subprocess.run(\n"
+             "     'hello', shell=True,\n"
+             " )\n"
+             "+new = 1\n")
+    findings = run_static_review(packet(src, patch))["findings"]
+    assert not any(f["rule_id"] == "SUBPROCESS_SHELL_TRUE" for f in findings)
