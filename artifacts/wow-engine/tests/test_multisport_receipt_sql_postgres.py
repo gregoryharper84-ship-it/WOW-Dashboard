@@ -19,7 +19,16 @@ import pytest
 # Prefer the already-running real PostgreSQL 16 service in hosted CI; using
 # pgserver is a local fallback, not a prerequisite for the protected CI lane.
 # Explicit no-skip acceptance requires a real working database, never a mock.
-REQUIRE_POSTGRES = os.environ.get("WOW_V17_REQUIRE_POSTGRES_RECEIPT_TESTS") == "1"
+# GitHub's regression-shards job (wow-engine-verify.yml) provisions
+# PostgreSQL 16. It must never turn an absent/broken service into a skip.
+# Other GitHub jobs (rapid-repair) do not provision PostgreSQL.
+REQUIRE_POSTGRES = (
+    os.environ.get("WOW_V17_REQUIRE_POSTGRES_RECEIPT_TESTS") == "1"
+    or (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("GITHUB_JOB") == "regression-shards"
+    )
+)
 if REQUIRE_POSTGRES:
     import psycopg
 else:
