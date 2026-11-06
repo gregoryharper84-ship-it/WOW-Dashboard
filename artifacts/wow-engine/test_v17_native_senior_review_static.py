@@ -209,3 +209,31 @@ def test_old_multiline_shell_true_not_reissued_on_unrelated_new_statement():
              "+new = 1\n")
     findings = run_static_review(packet(src, patch))["findings"]
     assert not any(f["rule_id"] == "SUBPROCESS_SHELL_TRUE" for f in findings)
+
+
+def test_unrelated_new_keyword_does_not_reflag_old_shell_true():
+    src = ("import subprocess\nsubprocess.run(\n    'hello',\n"
+           "    shell=True,\n    cwd='/tmp',\n)\n")
+    patch = ("@@ -1,5 +1,6 @@\n import subprocess\n subprocess.run(\n"
+             "     'hello',\n     shell=True,\n+    cwd='/tmp',\n )\n")
+    findings = run_static_review(packet(src, patch))["findings"]
+    assert not any(f["rule_id"] == "SUBPROCESS_SHELL_TRUE" for f in findings)
+
+
+def test_unrelated_new_keyword_does_not_reflag_old_disabled_tls():
+    src = ("import requests\nrequests.get(\n    'https://example.test',\n"
+           "    verify=False,\n    headers={},\n)\n")
+    patch = ("@@ -1,5 +1,6 @@\n import requests\n requests.get(\n"
+             "     'https://example.test',\n     verify=False,\n"
+             "+    headers={},\n )\n")
+    findings = run_static_review(packet(src, patch))["findings"]
+    assert not any(f["rule_id"] == "TLS_VERIFICATION_DISABLED" for f in findings)
+
+
+def test_new_disabled_tls_keyword_still_flagged_on_old_call():
+    src = ("import requests\nrequests.get(\n    'https://example.test',\n"
+           "    verify=False,\n)\n")
+    patch = ("@@ -1,4 +1,5 @@\n import requests\n requests.get(\n"
+             "     'https://example.test',\n+    verify=False,\n )\n")
+    findings = run_static_review(packet(src, patch))["findings"]
+    assert "TLS_VERIFICATION_DISABLED" in {f["rule_id"] for f in findings}
