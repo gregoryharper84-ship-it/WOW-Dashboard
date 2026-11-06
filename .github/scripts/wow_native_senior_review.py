@@ -101,14 +101,22 @@ def _encoded(path: str) -> str:
 
 def _pr(client, number: int, head_sha: str, *, expected_base: str | None = None):
     pr = client.request(f"/pulls/{number}")
-    if (not isinstance(pr, dict) or pr.get("number") != number
-            or pr.get("state") != "open" or pr.get("draft") is True
-            or pr.get("head", {}).get("sha") != head_sha
-            or pr.get("head", {}).get("repo", {}).get("full_name") != REPO
-            or pr.get("base", {}).get("ref") != "main"
-            or pr.get("base", {}).get("repo", {}).get("full_name") != REPO):
+    if not isinstance(pr, dict):
         raise ReviewHold("PR_IDENTITY_OR_SHA_CHANGED")
-    base = pr.get("base", {}).get("sha")
+    head, base_info = pr.get("head"), pr.get("base")
+    if not isinstance(head, dict) or not isinstance(base_info, dict):
+        raise ReviewHold("PR_IDENTITY_OR_SHA_CHANGED")
+    head_repo, base_repo = head.get("repo"), base_info.get("repo")
+    if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
+        raise ReviewHold("PR_IDENTITY_OR_SHA_CHANGED")
+    if (pr.get("number") != number or pr.get("state") != "open"
+            or pr.get("draft") is True
+            or head.get("sha") != head_sha
+            or head_repo.get("full_name") != REPO
+            or base_info.get("ref") != "main"
+            or base_repo.get("full_name") != REPO):
+        raise ReviewHold("PR_IDENTITY_OR_SHA_CHANGED")
+    base = base_info.get("sha")
     if not isinstance(base, str) or not SHA_RE.fullmatch(base) or base == head_sha:
         raise ReviewHold("PR_BASE_SHA_INVALID")
     if expected_base is not None and base != expected_base:
@@ -336,7 +344,8 @@ def post_advisory_comment(client, *, number: int, head_sha: str, text: str,
                 if isinstance(c, dict)
                 and isinstance(c.get("body"), str)
                 and c["body"].startswith(_COMMENT_MARKER)
-                and c.get("user", {}).get("login") == "github-actions[bot]"]
+                and isinstance(c.get("user"), dict)
+                and c["user"].get("login") == "github-actions[bot]"]
     if len(existing) > 1:
         raise ReviewHold("PR_ADVISORY_COMMENT_AMBIGUOUS")
     _pr(client, number, head_sha, expected_base=base_sha)
