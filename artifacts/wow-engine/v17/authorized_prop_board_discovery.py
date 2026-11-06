@@ -85,6 +85,8 @@ def normalize_projection(row: Any, *, league: str, now: datetime) -> list[dict[s
     """Return each actually available side, or one typed blocked record."""
     if not isinstance(row, dict):
         raise PropFeedHold("PROP_FEED_ROW_SCHEMA_INVALID")
+    if _text(row.get("source")).lower() != "prizepicks":
+        raise PropFeedHold("PROP_FEED_SOURCE_PROVENANCE_CONFLICT")
     if row.get("is_demo") is not False:
         raise PropFeedHold("PROP_FEED_DEMO_OR_PROVENANCE_UNVERIFIED")
     if row.get("status") != "active":
@@ -281,6 +283,8 @@ def discover_authorized_prop_board(
         cursor = next_cursor
     if cursor is not None and not blockers:
         blockers.append("PROP_FEED_PAGE_BUDGET_EXHAUSTED")
+    if source_rows == 0 and not blockers:
+        blockers.append("PROP_FEED_ZERO_ROWS_NOT_NO_SLATE_PROOF")
     # Source rows must be individually accounted for: sides expand afterward.
     # A duplicate page is a coverage failure, not a successful terminal scan.
     page_reconciled = source_rows == len(blocked) + len({
@@ -298,6 +302,8 @@ def discover_authorized_prop_board(
         "directional_candidates": candidates,
         "blocked_rows": blocked, "blockers": blockers,
         "source_coverage_complete_for_requested_sport": complete,
+        "full_prizepicks_board_coverage_verified": False,
+        "zero_provider_rows_proves_no_pregame_slate": False,
         "status": "RESEARCH_DISCOVERY_ONLY" if complete else "INCOMPLETE_OR_BLOCKED",
         "automated_score_attempts": 0, "governed_predictions": 0,
         "source_license_independently_verified": False,
