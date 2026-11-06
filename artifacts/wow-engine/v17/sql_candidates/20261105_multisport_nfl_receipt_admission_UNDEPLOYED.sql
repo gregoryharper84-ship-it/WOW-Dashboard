@@ -201,6 +201,7 @@ DECLARE
   reduced_time timestamptz;
   reducer_id uuid;
   reducer_hash text;
+  reducer_origin_verified boolean;
   cal_hash text;
   existing public.wow_v17_multisport_event_prediction_receipts%ROWTYPE;
   issued public.wow_v17_multisport_event_prediction_receipts%ROWTYPE;
@@ -267,6 +268,39 @@ BEGIN
     OR reduced_time >= s.event_start_time_utc THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
   END IF;
+  -- P0 reducer-origin trust root: the admission function is never authorized
+  -- to invent a reducer receipt UUID/digest from a PASS label. The native
+  -- V17_TERMINAL_REDUCER must return them and an independently deployed,
+  -- reducer-owned attestor in a private schema must bind the exact
+  -- (source score, receipt UUID, digest) against its immutable origin ledger.
+  -- This source deliberately DOES NOT install that attestor or grant its
+  -- writer privileges. Without the upstream owner, always HOLD.
+  IF reduction->>'reducer_receipt_id' IS NULL
+     OR reduction->>'reducer_receipt_id' !~
+       '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     OR reduction->>'reducer_receipt_sha256' IS NULL
+     OR reduction->>'reducer_receipt_sha256' !~ '^[0-9a-f]{64}$'
+     OR pg_catalog.to_regprocedure(
+       'wow_terminal_reducer.verify_nfl_reducer_receipt(uuid,uuid,text)'
+     ) IS NULL THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD',
+      'code','LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE','can_execute',false);
+  END IF;
+  reducer_id := (reduction->>'reducer_receipt_id')::uuid;
+  reducer_hash := reduction->>'reducer_receipt_sha256';
+  BEGIN
+    EXECUTE
+      'SELECT wow_terminal_reducer.verify_nfl_reducer_receipt($1,$2,$3)'
+      INTO reducer_origin_verified
+      USING p_score_snapshot_id,reducer_id,reducer_hash;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD',
+      'code','LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE','can_execute',false);
+  END;
+  IF reducer_origin_verified IS DISTINCT FROM true THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD',
+      'code','LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE','can_execute',false);
+  END IF;
   -- Stable exact-once source score: conflicting duplicate cannot overwrite.
   SELECT * INTO existing FROM public.wow_v17_multisport_event_prediction_receipts
     WHERE score_snapshot_id=p_score_snapshot_id;
@@ -285,14 +319,8 @@ BEGIN
     END IF;
     RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
   END IF;
-  reducer_id:=pg_catalog.gen_random_uuid();
-  reducer_hash:=pg_catalog.encode(extensions.digest(
-    pg_catalog.convert_to(pg_catalog.jsonb_build_object(
-      'score_snapshot_id',s.score_snapshot_id,
-      'reducer_receipt_id',reducer_id,
-      'locked_at',lock_time,'terminal_reduced_at',reduced_time,
-      'reducer',reduction
-    )::text,'UTF8'),'sha256'), 'hex');
+  -- Both identity and digest were emitted by V17_TERMINAL_REDUCER and
+  -- separately attested; the issuer never constructs reducer authority.
   INSERT INTO public.wow_v17_multisport_event_prediction_receipts (
     sport,official_event_id,event_start_time,home_team,away_team,
     selected_participant,market_family,settlement_basis,
@@ -336,7 +364,7 @@ DECLARE
   c public.wow_calibrators%ROWTYPE;
   present jsonb;
   cal_hash text;
-  hash text;
+  reducer_origin_verified boolean;
 BEGIN
   SELECT * INTO r FROM public.wow_v17_multisport_event_prediction_receipts
     WHERE event_prediction_id=p_event_prediction_id;
@@ -371,14 +399,12 @@ BEGIN
   END IF;
   cal_hash:=pg_catalog.encode(extensions.digest(
     pg_catalog.convert_to(pg_catalog.to_jsonb(c)::text,'UTF8'),'sha256'),'hex');
-  hash:=pg_catalog.encode(extensions.digest(
-    pg_catalog.convert_to(pg_catalog.jsonb_build_object(
-      'score_snapshot_id',r.score_snapshot_id,
-      'reducer_receipt_id',r.reducer_receipt_id,
-      'locked_at',r.locked_at,'terminal_reduced_at',r.terminal_reduced_at,
-      'reducer',r.terminal_reducer_payload
-    )::text,'UTF8'),'sha256'),'hex');
-  IF r.reducer_receipt_sha256 IS DISTINCT FROM hash
+  -- A locally recomputed SHA of the saved row is NOT a provenance
+  -- signature; verify against the independently owned terminal origin.
+  IF r.terminal_reducer_payload->>'reducer_receipt_id'
+       IS DISTINCT FROM r.reducer_receipt_id::text
+     OR r.terminal_reducer_payload->>'reducer_receipt_sha256'
+       IS DISTINCT FROM r.reducer_receipt_sha256
      OR r.calibration_artifact_sha256 IS DISTINCT FROM cal_hash
      OR r.calibration_artifact_id IS DISTINCT FROM c.calibrator_id::text
      OR r.calibration_version IS DISTINCT FROM c.calibration_version
@@ -402,6 +428,22 @@ BEGIN
      OR r.terminal_reducer_payload->>'status' IS DISTINCT FROM 'PASS'
      OR r.terminal_reducer_payload->>'global_terminal_reducer' IS DISTINCT FROM 'V17_TERMINAL_REDUCER'
      OR r.terminal_reducer_payload->>'terminal_label' IS DISTINCT FROM 'FINAL_APPROVED' THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
+  END IF;
+  IF pg_catalog.to_regprocedure(
+      'wow_terminal_reducer.verify_nfl_reducer_receipt(uuid,uuid,text)'
+     ) IS NULL THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
+  END IF;
+  BEGIN
+    EXECUTE
+      'SELECT wow_terminal_reducer.verify_nfl_reducer_receipt($1,$2,$3)'
+      INTO reducer_origin_verified
+      USING r.score_snapshot_id,r.reducer_receipt_id,r.reducer_receipt_sha256;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
+  END;
+  IF reducer_origin_verified IS DISTINCT FROM true THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','can_execute',false);
   END IF;
   present:=public.wow_v17_reduce_nfl_event_terminal_label(r.score_snapshot_id);
