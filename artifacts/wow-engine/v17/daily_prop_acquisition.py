@@ -330,7 +330,10 @@ def acquire_daily_prop_snapshots(
     statuses = [leg.get("status") for _s, leg in legs]
     if all(s == "DATA_UNOBTAINABLE" for s in statuses):
         combined["status"] = "DATA_UNOBTAINABLE"
-    elif combined["snapshot_write_failed"] > 0 and combined["snapshot_write_succeeded"] == 0:
+    elif any(s == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" for s in statuses) or (
+        combined["snapshot_write_failed"] > 0 and combined["snapshot_write_succeeded"] == 0
+    ):
+        # A healthy sport cannot mask another sport's wholly failed snapshot writes.
         combined["status"] = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
     elif combined["held"] > 0 or any(s not in ("COMPLETED",) for s in statuses):
         combined["status"] = "COMPLETED_WITH_ROW_BLOCKERS"
