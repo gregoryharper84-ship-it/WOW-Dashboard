@@ -344,9 +344,8 @@ def post_existing_incident_handoff(client, *, result: dict):
     """Update one existing AMRT issue; never dispatch repairs or add incidents."""
     number, head = result["pr"], result["head_sha"]
     review = result["review"]
-    if review.get("status") == "ADVISORY_STATIC_SCAN_COMPLETE":
-        return "NO_NEW_STATIC_FINDINGS"
-    if review.get("status") != "ADVISORY_FINDINGS_REQUIRE_TRIAGE":
+    clean = review.get("status") == "ADVISORY_STATIC_SCAN_COMPLETE"
+    if not clean and review.get("status") != "ADVISORY_FINDINGS_REQUIRE_TRIAGE":
         raise ReviewHold("INCIDENT_HANDOFF_REVIEW_INCOMPLETE")
     incident = result["incident_id"]
     if not isinstance(incident, str) or not re.fullmatch(r"[1-9][0-9]*", incident):
@@ -364,9 +363,18 @@ def post_existing_incident_handoff(client, *, result: dict):
         f"Existing incident: #{incident}; can_execute=false",
         f"Review packet: {result['packet_sha256']}",
         "",
-        "Unconfirmed static patterns; not verified P0/P1 incidents.",
-        "Root Cause Investigator must reproduce a finding before a leased repair.",
     ]
+    if clean:
+        lines.extend((
+            "Latest exact-head native static scan: NO NEW PATTERNS DETECTED.",
+            "Prior static hypotheses from this PR are superseded as current-head "
+            "advisories, NOT proven false or independently resolved.",
+        ))
+    else:
+        lines.extend((
+            "Unconfirmed static patterns; not verified P0/P1 incidents.",
+            "Root Cause Investigator must reproduce a finding before a leased repair.",
+        ))
     for finding in review["findings"][:20]:
         lines.append(
             f"- {finding['finding_id']} ({finding['severity']} candidate): "
@@ -399,6 +407,8 @@ def post_existing_incident_handoff(client, *, result: dict):
     if len(matching) > 1:
         raise ReviewHold("INCIDENT_HANDOFF_DUPLICATE_BOT_COMMENTS")
     _pr(client, number, head, expected_base=result["base_sha"])
+    if clean and not matching:
+        return "NO_NEW_STATIC_FINDINGS"
     if matching:
         comment_id = matching[0].get("id")
         if type(comment_id) is not int or comment_id <= 0:
