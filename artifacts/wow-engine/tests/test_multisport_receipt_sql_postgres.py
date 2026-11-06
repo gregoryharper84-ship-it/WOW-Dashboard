@@ -71,7 +71,7 @@ def pg(tmp_path_factory):
             db.execute("""
                 create table public.wow_nfl_event_fitted_model_artifacts (
                   artifact_id uuid primary key,model_artifact_version text,
-                  artifact_checksum text,calibrator_id uuid,lifecycle_state text,
+                  artifact_checksum text,calibrator_id uuid,model_family text,lifecycle_state text,
                   active boolean,promoted boolean,can_execute boolean,
                   probability_publishable boolean
                 )
@@ -82,6 +82,36 @@ def pg(tmp_path_factory):
                   active boolean,promoted boolean,validation_status text,
                   health_status text,sport text,market_family text
                 )
+            """)
+            # These tables are needed to compile the real certification guard.
+            # No test may manufacture an independently verified certificate.
+            db.execute("""
+              create table public.wow_nfl_forward_calibration_health (
+                generated_at timestamptz, created_at timestamptz,
+                graded_n integer, minimum_forward_required integer,
+                status text, certification_recommendation text,
+                blockers jsonb, can_execute boolean
+              )
+            """)
+            db.execute("""
+              create table public.wow_team_event_specialist_certifications (
+                certification_id uuid primary key, sport text,league_scope text,
+                model_family text,model_version text,
+                artifact_id text,artifact_sha256 text,
+                calibration_artifact_id text,calibration_sha256 text,
+                independent_verification_status text,certification_status text,
+                probability_publishable boolean,can_execute boolean,
+                certified_at timestamptz,verification_receipt jsonb,
+                supersedes_certification_id uuid
+              )
+            """)
+            db.execute("""
+              insert into public.wow_nfl_forward_calibration_health
+              (generated_at,created_at,graded_n,minimum_forward_required,
+               status,certification_recommendation,blockers,can_execute)
+              values (clock_timestamp(),clock_timestamp(),80,100,
+                      'INSUFFICIENT_FORWARD_EVIDENCE','DO_NOT_CERTIFY_YET',
+                      '["FORWARD_SAMPLE_INSUFFICIENT"]'::jsonb,false)
             """)
             # Deliberately external official reducer interface; the real V17
             # implementation must be used for separate integration acceptance.
@@ -111,8 +141,8 @@ def pg(tmp_path_factory):
             db.execute("""
                 insert into public.wow_nfl_event_fitted_model_artifacts
                 (artifact_id,model_artifact_version,artifact_checksum,calibrator_id,
-                 lifecycle_state,active,promoted,can_execute,probability_publishable)
-                values (%s,'NFL_VERSION',%s,%s,'CHAMPION',true,true,false,true)
+                 model_family,lifecycle_state,active,promoted,can_execute,probability_publishable)
+                values (%s,'NFL_VERSION',%s,%s,'NFL_OUTRIGHT_WIN_LOGREG_V1','CHAMPION',true,true,false,true)
             """,(MODEL,HASH,CAL))
             db.execute("""
                 insert into public.wow_calibrators
