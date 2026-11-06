@@ -10,18 +10,24 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import os
 import pytest
 
-# A skipped environment cannot satisfy an explicit P0 PostgreSQL acceptance.
-if os.environ.get("WOW_V17_REQUIRE_POSTGRES_RECEIPT_TESTS") == "1":
+# Prefer the already-running real PostgreSQL 16 service in hosted CI; using
+# pgserver is a local fallback, not a prerequisite for the protected CI lane.
+# Explicit no-skip acceptance requires a real working database, never a mock.
+REQUIRE_POSTGRES = os.environ.get("WOW_V17_REQUIRE_POSTGRES_RECEIPT_TESTS") == "1"
+if REQUIRE_POSTGRES:
     import psycopg
-    import pgserver
 else:
     psycopg = pytest.importorskip("psycopg")
-    pgserver = pytest.importorskip("pgserver")
+try:
+    import pgserver
+except ImportError:
+    pgserver = None
 
 SQL = (
     Path(__file__).resolve().parents[1] / "v17" / "sql_candidates"
@@ -39,15 +45,43 @@ HASH = "a" * 64
 
 @pytest.fixture(scope="module")
 def pg(tmp_path_factory):
-    server = pgserver.get_server(str(tmp_path_factory.mktemp("multisport-admission")))
-    try:
+    ci_dsn = os.environ.get("WOW_V17_POSTGRES_TEST_DSN")
+    if not ci_dsn and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Public, ephemeral credentials from wow-engine-verify.yml's service.
+        # Never use production, validation, or ambient SUPABASE_URL bindings.
+        ci_dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    server = None
+    test_db = None
+    if ci_dsn:
+        original = urlsplit(ci_dsn)
+        if original.scheme not in {"postgres", "postgresql"} or not original.hostname:
+            pytest.fail("POSTGRES_CI_DSN_INVALID")
+        test_db = "wow_v17_receipt_" + uuid4().hex[:16]
+        with psycopg.connect(ci_dsn, autocommit=True) as admin:
+            admin.execute("CREATE DATABASE " + test_db)
+        uri = urlunsplit((original.scheme, original.netloc, "/" + test_db, "", ""))
+    elif pgserver is not None:
+        server = pgserver.get_server(str(tmp_path_factory.mktemp("multisport-admission")))
         uri = server.get_uri()
+    elif REQUIRE_POSTGRES:
+        pytest.fail("POSTGRES_TEST_SERVER_UNAVAILABLE")
+    else:
+        pytest.skip("No test PostgreSQL available: use hosted service or local pgserver")
+    try:
         with psycopg.connect(uri, autocommit=True) as db:
             db.execute("create schema if not exists extensions")
             db.execute("create extension if not exists pgcrypto with schema extensions")
-            db.execute("create role service_role nologin")
-            db.execute("create role anon nologin")
-            db.execute("create role authenticated nologin")
+            db.execute("""
+                do $roles$
+                begin
+                  if not exists (select 1 from pg_roles where rolname='service_role')
+                  then create role service_role nologin; end if;
+                  if not exists (select 1 from pg_roles where rolname='anon')
+                  then create role anon nologin; end if;
+                  if not exists (select 1 from pg_roles where rolname='authenticated')
+                  then create role authenticated nologin; end if;
+                end $roles$
+            """)
             db.execute("grant usage on schema public to service_role, anon, authenticated")
             # Minimal typed specialist tables matching the actual production
             # column names; this fixture is NOT an independently fitted scorer.
@@ -176,8 +210,14 @@ def pg(tmp_path_factory):
             db.execute(SQL.read_text())
         yield uri
     finally:
-        cleanup=getattr(server,"cleanup",None)
-        if callable(cleanup): cleanup()
+        if test_db is not None:
+            # The full suite shares the CI PostgreSQL service; never leave
+            # test-only certification fixtures or roles in its main database.
+            with psycopg.connect(ci_dsn, autocommit=True) as admin:
+                admin.execute("DROP DATABASE " + test_db + " WITH (FORCE)")
+        elif server is not None:
+            cleanup=getattr(server,"cleanup",None)
+            if callable(cleanup): cleanup()
 
 
 @pytest.fixture(autouse=True)
