@@ -29,9 +29,10 @@ def install_authorized_prop_board_route(app: FastAPI, *, auth_dependency: Any) -
     def authorized_prop_discovery(
         sport: str = Query(min_length=2, max_length=12),
         max_pages: int = Query(default=4, ge=1, le=8),
+        max_credits: int = Query(default=6, ge=6, le=100),
     ) -> dict[str, Any]:
         try:
-            return discover_authorized_prop_board(sport=sport, max_pages=max_pages)
+            return discover_authorized_prop_board(sport=sport, max_pages=max_pages, max_credits=max_credits)
         except PropFeedHold as exc:
             return {
                 "schema": SCHEMA,
