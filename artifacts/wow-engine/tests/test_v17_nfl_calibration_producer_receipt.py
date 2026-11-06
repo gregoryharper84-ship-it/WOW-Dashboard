@@ -197,18 +197,21 @@ class _Query:
 
 
 class _CertifiedDb:
-    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None):
+    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None, *, verified_games=None, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V2", view_present=True):
         self.model = {
             "active": True, "promoted": True,
             "probability_publishable": approved,
         }
         self.health = {
+            "schema_version": health_schema,
             "graded_n": graded, "minimum_forward_required": 100,
             "status": status,
             "certification_recommendation": "FORWARD_EVIDENCE_PASS",
             "blockers": [],
         }
         count = graded if unique_games is None else unique_games
+        self.view_present = view_present
+        self.verified_games = verified_games
         self.grades = [
             {
                 "official_event_id": f"nfl-game-{i}",
@@ -222,8 +225,10 @@ class _CertifiedDb:
             return _Query([self.model])
         if name == "wow_nfl_forward_calibration_health":
             return _Query([self.health])
-        if name == "wow_nfl_forward_shadow_grades":
-            return _Query(self.grades, filter_field="model_version")
+        if name == "wow_nfl_forward_verified_grades":
+            if not self.view_present:
+                raise RuntimeError("private reconciliation view not yet installed")
+            return _Query(self.grades if self.verified_games is None else self.grades[:self.verified_games], filter_field="model_version")
         raise AssertionError(name)
 
 
@@ -237,6 +242,13 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     assert _forward_certification_proven(_CertifiedDb(False, 100), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100, "FAIL"), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100), row) is True
+    # Previously immutable but inconsistent rows must not inflate the cohort:
+    # the source ledger may contain 100, while the verified private view returns 99.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, verified_games=99), row) is False
+    # A historical PASS predating reconciliation cannot authorize admission.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V1"), row) is False
+    # Missing/unapplied view or absent SELECT privilege must fail closed.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, view_present=False), row) is False
     # Never borrow a global PASS from another fitted model's settled events.
     assert _forward_certification_proven(
         _CertifiedDb(True, 100, grade_version="NFL_OTHER_MODEL_VERSION"), row
