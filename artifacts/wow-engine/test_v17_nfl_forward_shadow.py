@@ -389,3 +389,56 @@ def test_over_limit_corpus_never_persists_grades_or_forward_health(monkeypatch):
             db, settlement_refresh_fn=lambda _: {"status": "COMPLETED", "can_execute": False}
         )
     assert writes == []
+
+
+def test_forward_insert_dedupes_grade_on_second_page():
+    """An already-graded event on page 2 must not be inserted again."""
+    from v17.nfl_forward_shadow import persist_new_grades
+
+    class ReadWriteQuery(_ForwardPagedQuery):
+        def __init__(self, db, name):
+            super().__init__(db, name)
+            self.inserted = None
+
+        def insert(self, payload):
+            self.inserted = list(payload)
+            self.db.writes.extend(self.inserted)
+            return self
+
+        def execute(self):
+            if self.inserted is not None:
+                return SimpleNamespace(data=self.inserted)
+            return super().execute()
+
+    class ReadWriteDB(_ForwardPagedDB):
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.writes = []
+
+        def table(self, name):
+            return ReadWriteQuery(self, name)
+
+    table = "wow_nfl_forward_shadow_grades"
+    existing = [
+        {"grade_id": f"grade-{i:04d}", "official_event_id": f"event-{i:04d}"}
+        for i in reversed(range(1002))
+    ]
+    db = ReadWriteDB({table: existing})
+    predictions = [
+        _prediction(event_id="event-1001", p=0.63, lower=0.54, upper=0.71, index=1),
+        _prediction(event_id="event-new", p=0.63, lower=0.54, upper=0.71, index=2),
+    ]
+    outcomes = [
+        {"game_id": p.official_event_id, "home_score": 24, "away_score": 17,
+         "home_win": True, "tie": False}
+        for p in predictions
+    ]
+    grades = grade_forward_predictions(predictions, outcomes)
+    inserted = persist_new_grades(db, grades)
+
+    assert inserted == 1
+    assert [row["official_event_id"] for row in db.writes] == ["event-new"]
+    assert len(db.orders) == 2
+    assert db.orders == [(table, "grade_id"), (table, "grade_id")]
+    assert all("grade_id" in projection and "official_event_id" in projection
+               for name, projection in db.selections if name == table)
