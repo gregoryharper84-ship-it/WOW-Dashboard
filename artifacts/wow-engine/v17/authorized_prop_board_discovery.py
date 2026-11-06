@@ -31,6 +31,10 @@ CAN_EXECUTE = False
 MAX_RESPONSE_BYTES = 2_000_000
 MAX_AGE_SECONDS = 20 * 60
 MAX_PAGES = 8
+# Full JSON projections cost 3 credits per requested 100-row block.
+# 200-row requests reserve 6 credits. This is conservative, not actual debit.
+MAX_RESERVED_CREDITS_PER_PAGE = 6
+DEFAULT_CREDIT_BUDGET = 6
 
 
 class PropFeedHold(ValueError):
@@ -215,7 +219,8 @@ def _http_page(*, key: str, league: str, cursor: str | None) -> dict[str, Any]:
 
 
 def discover_authorized_prop_board(
-    *, sport: str, max_pages: int = 4, now: datetime | None = None,
+    *, sport: str, max_pages: int = 4, max_credits: int = DEFAULT_CREDIT_BUDGET,
+    now: datetime | None = None,
     authorized: bool | None = None, api_key: str | None = None,
     fetch_page: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -229,6 +234,8 @@ def discover_authorized_prop_board(
         raise PropFeedHold("PROP_FEED_SPORT_NOT_SUPPORTED")
     if not isinstance(max_pages, int) or isinstance(max_pages, bool) or not 1 <= max_pages <= MAX_PAGES:
         raise PropFeedHold("PROP_FEED_PAGE_BUDGET_INVALID")
+    if not isinstance(max_credits, int) or isinstance(max_credits, bool) or not 6 <= max_credits <= 100:
+        raise PropFeedHold("PROP_FEED_CREDIT_BUDGET_INVALID")
     if authorized is None:
         authorized = os.getenv("WOW_V17_PROP_FEED_ACCOUNT_USE_AUTHORIZED") == "1"
     if not authorized:
@@ -249,6 +256,9 @@ def discover_authorized_prop_board(
     previous_ids = set()
     blockers = []
     while pages < max_pages:
+        if (pages + 1) * MAX_RESERVED_CREDITS_PER_PAGE > max_credits:
+            blockers.append("PROP_FEED_CREDIT_BUDGET_EXHAUSTED")
+            break
         try:
             payload = get_page(key=key, league=league, cursor=cursor)
             page = normalize_page(payload, league=league, now=current)
@@ -296,6 +306,9 @@ def discover_authorized_prop_board(
     return {
         "schema": SCHEMA, "source_provider": PROVIDER, "sport": sport,
         "source_pages_read": pages, "source_rows_received": source_rows,
+        "per_run_requested_credit_reservation": pages * MAX_RESERVED_CREDITS_PER_PAGE,
+        "monthly_provider_credits_remaining": None,
+        "credit_budget_limit": max_credits,
         "unique_base_props": len({r["source_projection_id"] for r in candidates}),
         "directional_candidates_count": len(candidates),
         "source_rows_blocked": len(blocked),
