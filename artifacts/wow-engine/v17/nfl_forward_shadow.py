@@ -25,6 +25,7 @@ MIN_FORWARD_GRADED = 100
 # health snapshots cannot authorize the forward certification admission gate.
 HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V2"
 GRADE_SCHEMA_VERSION = "NFL_FORWARD_SHADOW_GRADE_V1"
+RECONCILIATION_SCHEMA_VERSION = "NFL_FORWARD_COHORT_RECONCILIATION_V1"
 
 PREDICTION_TABLE = "wow_nfl_event_predictions"
 OUTCOME_TABLE = "wow_nfl_training_games"
@@ -102,6 +103,35 @@ def _safe_log_loss(probability: float, outcome: int) -> float:
     return float(-(y * math.log(p) + (1 - y) * math.log(1.0 - p)))
 
 
+def _settlement_disposition(outcome: Mapping[str, Any] | None) -> str:
+    """Classify a raw settlement without weakening binary grade eligibility.
+
+    A present-but-missing or contradictory settlement is not the same as an
+    outcome that has not been ingested. A tie is recognized only when the
+    scores are equal, the tie flag is true, and the winner flag is false.
+    """
+    if outcome is None:
+        return "ABSENT"
+    home_score = outcome.get("home_score")
+    away_score = outcome.get("away_score")
+    if (
+        type(home_score) is not int
+        or type(away_score) is not int
+        or home_score < 0
+        or away_score < 0
+    ):
+        return "INCOMPLETE"
+    home_win = outcome.get("home_win")
+    tie = outcome.get("tie")
+    if home_score == away_score:
+        return "TIE" if tie is True and home_win is False else "INCOMPLETE"
+    if tie is not False or type(home_win) is not bool:
+        return "INCOMPLETE"
+    if home_win != (home_score > away_score):
+        return "INCOMPLETE"
+    return "BINARY"
+
+
 def _to_prediction(row: Mapping[str, Any]) -> ForwardPrediction:
     selected = str(row.get("selected_participant") or "").strip()
     home = str(row.get("home_team") or "").strip()
@@ -172,8 +202,9 @@ def _outcome_index(rows: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, 
         game_id = str(row.get("game_id") or "").strip()
         if not game_id:
             continue
-        if row.get("home_score") is None or row.get("away_score") is None:
-            continue
+        # Keep present-but-incomplete rows. Reconciliation must distinguish a
+        # missing score from a genuinely un-ingested outcome; grading validates
+        # score usability separately.
         if game_id in out:
             raise NFLForwardShadowError(f"DUPLICATE_SETTLED_OUTCOME:{game_id}")
         out[game_id] = row
@@ -190,24 +221,12 @@ def grade_forward_predictions(
         outcome = outcomes.get(prediction.official_event_id)
         if outcome is None:
             continue
-        # Never infer a binary result from a conflicting or incomplete
-        # settlement. In particular, equal scores are a tie even when a
-        # persisted tie flag is missing or corrupt. The source producer emits
-        # integer scores and a real boolean home_win; require both to agree.
-        # This prevents a malformed settlement from inflating the forward
-        # cohort or changing Brier/log-loss and calibration certification.
-        home_score = outcome.get("home_score")
-        away_score = outcome.get("away_score")
-        home_win = outcome.get("home_win")
-        if (
-            type(home_score) is not int or type(away_score) is not int
-            or home_score < 0 or away_score < 0
-            or home_score == away_score
-            or outcome.get("tie") is not False
-            or type(home_win) is not bool
-            or home_win != (home_score > away_score)
-        ):
+        # Use the same disposition helper as reconciliation so a malformed
+        # score, contradictory tie flag, or winner-flag mismatch can never
+        # enter the binary cohort or be mislabeled as a validated tie.
+        if _settlement_disposition(outcome) != "BINARY":
             continue
+        home_win = outcome["home_win"]
         selected_home = prediction.selected_participant == prediction.home_team
         won = home_win if selected_home else not home_win
         y = int(won)
@@ -230,6 +249,124 @@ def grade_forward_predictions(
             )
         )
     return grades
+
+
+def reconcile_forward_cohort(
+    predictions: Sequence[ForwardPrediction],
+    outcome_rows: Sequence[Mapping[str, Any]],
+    grades: Sequence[ForwardGrade],
+) -> dict[str, Any]:
+    """Account for every canonical forward event exactly once.
+
+    This is an audit receipt, not a grading input. It never admits a tied or
+    unsettled event into the binary cohort and never changes a probability.
+    Each canonical event lands in exactly one bucket:
+
+    * ``GRADED`` -- a verified binary grade matches the canonical prediction;
+    * ``OUTCOME_TIE`` -- a validated settled tie, excluded from binary scoring;
+    * ``OUTCOME_PENDING`` -- no outcome row has been ingested yet;
+    * ``OUTCOME_INCOMPLETE`` -- an outcome row exists but its scores or flags
+      are missing or contradictory.
+
+    A grade is accepted only when its event, prediction UUID, model version,
+    and selected participant match the canonical prediction. Any duplicate,
+    orphan, non-binary, or otherwise unaccounted combination fails closed.
+    """
+    outcomes = _outcome_index(outcome_rows)
+    prediction_by_event: dict[str, ForwardPrediction] = {}
+    for prediction in predictions:
+        event_id = prediction.official_event_id
+        if event_id in prediction_by_event:
+            raise NFLForwardShadowError("RECONCILIATION_DUPLICATE_EVENT")
+        prediction_by_event[event_id] = prediction
+
+    # Detect duplicate and orphan grades before validating settlement state so
+    # the failure code identifies the structural defect first.
+    grade_events = [grade.official_event_id for grade in grades]
+    if len(set(grade_events)) != len(grade_events):
+        raise NFLForwardShadowError("RECONCILIATION_DUPLICATE_GRADE")
+    for grade in grades:
+        if grade.official_event_id not in prediction_by_event:
+            raise NFLForwardShadowError(
+                "RECONCILIATION_GRADE_WITHOUT_PREDICTION:"
+                + grade.official_event_id
+            )
+
+    grade_by_event: dict[str, ForwardGrade] = {}
+    for grade in grades:
+        event_id = grade.official_event_id
+        prediction = prediction_by_event[event_id]
+        if grade.event_prediction_id != prediction.event_prediction_id:
+            raise NFLForwardShadowError(
+                f"RECONCILIATION_GRADE_PREDICTION_MISMATCH:{event_id}"
+            )
+        if grade.model_version != prediction.model_version:
+            raise NFLForwardShadowError(
+                f"RECONCILIATION_GRADE_MODEL_MISMATCH:{event_id}"
+            )
+        if grade.selected_participant != prediction.selected_participant:
+            raise NFLForwardShadowError(
+                f"RECONCILIATION_GRADE_SELECTION_MISMATCH:{event_id}"
+            )
+        if _settlement_disposition(outcomes.get(event_id)) != "BINARY":
+            raise NFLForwardShadowError(
+                f"RECONCILIATION_GRADE_OUTCOME_MISMATCH:{event_id}"
+            )
+        grade_by_event[event_id] = grade
+
+    buckets: dict[str, list[str]] = {
+        "GRADED": [],
+        "OUTCOME_TIE": [],
+        "OUTCOME_PENDING": [],
+        "OUTCOME_INCOMPLETE": [],
+    }
+    for event_id in prediction_by_event:
+        disposition = _settlement_disposition(outcomes.get(event_id))
+        if disposition == "ABSENT":
+            buckets["OUTCOME_PENDING"].append(event_id)
+        elif disposition == "TIE":
+            buckets["OUTCOME_TIE"].append(event_id)
+        elif disposition == "INCOMPLETE":
+            buckets["OUTCOME_INCOMPLETE"].append(event_id)
+        elif disposition == "BINARY" and event_id in grade_by_event:
+            buckets["GRADED"].append(event_id)
+        else:
+            raise NFLForwardShadowError(
+                f"RECONCILIATION_UNACCOUNTED_EVENT:{event_id}"
+            )
+
+    unaccounted_grades = set(grade_by_event) - set(prediction_by_event)
+    if unaccounted_grades:
+        raise NFLForwardShadowError(
+            "RECONCILIATION_GRADE_WITHOUT_PREDICTION:"
+            + ",".join(sorted(unaccounted_grades))
+        )
+    if len(buckets["GRADED"]) != len(grade_by_event):
+        raise NFLForwardShadowError("RECONCILIATION_GRADE_COUNT_MISMATCH")
+
+    total = sum(len(events) for events in buckets.values())
+    if total != len(prediction_by_event):
+        raise NFLForwardShadowError("RECONCILIATION_NOT_BALANCED")
+
+    return {
+        "schema_version": RECONCILIATION_SCHEMA_VERSION,
+        "canonical_events": len(prediction_by_event),
+        "graded": len(buckets["GRADED"]),
+        "outcome_tie_excluded": len(buckets["OUTCOME_TIE"]),
+        "outcome_pending": len(buckets["OUTCOME_PENDING"]),
+        "outcome_incomplete": len(buckets["OUTCOME_INCOMPLETE"]),
+        "ungraded_events": [
+            {"official_event_id": event_id, "reason": reason}
+            for reason in (
+                "OUTCOME_TIE",
+                "OUTCOME_PENDING",
+                "OUTCOME_INCOMPLETE",
+            )
+            for event_id in buckets[reason]
+        ],
+        "balanced": True,
+        "can_execute": False,
+    }
 
 
 def _ece(grades: Sequence[ForwardGrade], bins: int = 10) -> float:
@@ -487,9 +624,17 @@ def run_forward_shadow(
     settlement_refresh = settlement_refresh_fn(db)
     prediction_rows = load_prediction_rows(db)
     canonical = select_canonical_forward_predictions(prediction_rows)
-    grades = grade_forward_predictions(canonical, load_outcome_rows(db))
+    outcome_rows = load_outcome_rows(db)
+    grades = grade_forward_predictions(canonical, outcome_rows)
+    reconciliation = reconcile_forward_cohort(canonical, outcome_rows, grades)
+    if reconciliation["graded"] != len(grades):
+        raise NFLForwardShadowError("RECONCILIATION_GRADE_COUNT_MISMATCH")
     inserted = persist_new_grades(db, grades)
     health = calibration_health(grades, min_forward=min_forward)
+    # The production health contract always reports graded_n; only assert the
+    # denominator when a test double has not replaced that mapping wholesale.
+    if "graded_n" in health and health["graded_n"] != reconciliation["graded"]:
+        raise NFLForwardShadowError("RECONCILIATION_HEALTH_COUNT_MISMATCH")
     persist_health(db, health)
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
@@ -500,6 +645,7 @@ def run_forward_shadow(
         "canonical_events": len(canonical),
         "graded_events": len(grades),
         "new_grades_persisted": inserted,
+        "cohort_reconciliation": reconciliation,
         "calibration_health": health,
         "automatic_certification": False,
         "automatic_promotion": False,
