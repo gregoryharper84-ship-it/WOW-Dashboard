@@ -88,6 +88,14 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
             discover_authorized_prop_board(sport="NBA", authorized=True, api_key="", now=NOW)
         self.assertEqual(cm.exception.code, "PROP_FEED_CREDENTIAL_MISSING")
 
+    def test_vendor_undocumented_sports_do_not_claim_live_feed_coverage(self):
+        for sport in ("MLB", "NCAAB"):
+            with self.subTest(sport=sport), self.assertRaises(PropFeedHold) as cm:
+                discover_authorized_prop_board(
+                    sport=sport, authorized=True, api_key="test", now=NOW,
+                )
+            self.assertEqual(cm.exception.code, "PROP_FEED_SPORT_NOT_SUPPORTED")
+
     def test_complete_pagination_with_exact_once_reconciliation(self):
         calls = []
         def fetch(*, key, league, cursor):
