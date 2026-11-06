@@ -908,3 +908,18 @@ def test_nba_latest_settled_row_must_itself_be_current_season():
     assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
     assert gap["latest_verified_current_season_game_date"] == "2026-10-22"
     assert gap["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "verified",
+    ["2026-09-30", "2026-11-06", "2026-11-07", "not-a-date", "", None],
+)
+def test_nba_verified_season_date_must_match_latest_settlement(verified):
+    """Malformed, pre-season, later-than-latest or future verified dates HOLD."""
+    gap = maintenance._nba_current_season_data_gap(
+        {"latest_game_date_after": "2026-11-05",
+         "latest_current_season_game_date_after": verified},
+        datetime(2026, 11, 6, tzinfo=timezone.utc),
+    )
+    assert gap["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert gap["can_execute"] is False
