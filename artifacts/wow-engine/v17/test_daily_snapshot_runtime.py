@@ -391,7 +391,10 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
         + repr([(r["identity"].get("sport"), r["result"].get("bucket"), r["result"].get("model_status")) for r in moneyline_rows])
     )
     # Every supported sport was *queried*, not just the ones with a model.
-    assert audit["discovery"]["sports_queried"] == list(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    queried = audit["discovery"]["sports_queried"]
+    assert queried[:4] == ["NBA", "NFL", "NHL", "NCAAF"]
+    assert set(queried) == set(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    assert len(queried) == len(discovery.SUPPORTED_DISCOVERY_SPORTS)
     assert audit["discovery"]["discovery_independent_of_model_registry"] is True
 
     for row in moneyline_rows:
