@@ -1284,10 +1284,14 @@ def route_discovered_slate(
                 "probability_publishable": False,
                 "can_execute": False,
             }
-            for key in ("canonical_identity_status", "canonical_identity_blocker", "identity_provider"):
+            for key in (
+                "canonical_identity_status",
+                "canonical_identity_blocker",
+                "identity_provider",
+            ):
                 value = raw.get(key)
                 if isinstance(value, str) and value.strip():
-                    detail[key] = typed_blocker_code(value) if key != "identity_provider" else typed_blocker_code(value)
+                    detail[key] = typed_blocker_code(value)
             if purge == IDENTITY_UNRESOLVED:
                 alias = raw.get("provider_event_id")
                 if isinstance(alias, (str, int)) and not isinstance(alias, bool):
@@ -1479,7 +1483,9 @@ def reconcile(inventory: DiscoveryInventory, rows: list[RoutedRow]) -> dict[str,
         counts[row.bucket] = counts.get(row.bucket, 0) + 1
         detail = row.detail if isinstance(row.detail, Mapping) else {}
         if row.bucket != MODEL_COMPLETED:
-            reason = typed_blocker_code(detail.get("code") or detail.get("reason") or row.model_status or row.bucket)
+            reason = typed_blocker_code(
+                detail.get("code") or detail.get("reason") or row.model_status or row.bucket
+            )
             if reason:
                 held_reason_counts[reason] = held_reason_counts.get(reason, 0) + 1
         for field, histogram in (
