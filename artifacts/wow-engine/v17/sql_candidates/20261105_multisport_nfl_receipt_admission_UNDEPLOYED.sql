@@ -110,6 +110,7 @@ DECLARE
   c public.wow_calibrators%ROWTYPE;
   h public.wow_nfl_forward_calibration_health%ROWTYPE;
   cal_sha text;
+  matching_forward_grades integer;
 BEGIN
   SELECT * INTO s FROM public.wow_nfl_event_predictions
     WHERE score_snapshot_id=p_score_snapshot_id;
@@ -133,12 +134,29 @@ BEGIN
   THEN RETURN false; END IF;
   cal_sha:=pg_catalog.encode(extensions.digest(
     pg_catalog.convert_to(pg_catalog.to_jsonb(c)::text,'UTF8'),'sha256'),'hex');
+  -- The global health row's statistics are trustworthy for this scorer only
+  -- when its entire graded denominator belongs to this exact active artifact
+  -- and calibrator version. Historical grades from other fitted specialists
+  -- may not unlock a newly promoted champion.
+  SELECT pg_catalog.count(DISTINCT g.official_event_id) INTO matching_forward_grades
+    FROM public.wow_nfl_forward_shadow_grades g
+    JOIN public.wow_nfl_event_predictions p
+      ON p.event_prediction_id=g.event_prediction_id
+     AND p.official_event_id=g.official_event_id
+     AND p.event_start_time_utc=g.event_start_time_utc
+    WHERE p.model_artifact_id=a.artifact_id
+      AND p.model_version=s.model_version
+      AND g.model_version=s.model_version
+      AND p.calibration_version=s.calibration_version
+      AND p.created_at< p.event_start_time_utc
+      AND g.prediction_created_at<g.event_start_time_utc;
   SELECT * INTO h FROM public.wow_nfl_forward_calibration_health
     ORDER BY generated_at DESC,created_at DESC LIMIT 1;
   IF NOT FOUND OR h.status IS DISTINCT FROM 'PASS'
     OR h.certification_recommendation IS DISTINCT FROM 'FORWARD_EVIDENCE_PASS'
     OR h.graded_n IS NULL OR h.minimum_forward_required IS NULL
     OR h.graded_n < pg_catalog.greatest(h.minimum_forward_required,100)
+    OR h.graded_n IS DISTINCT FROM matching_forward_grades
     OR h.can_execute IS DISTINCT FROM false
     OR h.blockers IS DISTINCT FROM '[]'::jsonb
   THEN RETURN false; END IF;
