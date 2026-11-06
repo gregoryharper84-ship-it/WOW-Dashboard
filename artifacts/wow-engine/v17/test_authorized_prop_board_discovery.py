@@ -126,10 +126,11 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
             ])])
         receipt = discover_authorized_prop_board(
             sport="NBA", authorized=True, api_key="secret",
-            fetch_page=fetch, now=NOW, max_pages=2,
+            fetch_page=fetch, now=NOW, max_pages=2, max_credits=12,
         )
         self.assertEqual(calls, [("NBA", None), ("NBA", "next")])
         self.assertEqual(receipt["source_rows_received"], 2)
+        self.assertEqual(receipt["per_run_requested_credit_reservation"], 12)
         self.assertEqual(receipt["unique_base_props"], 2)
         self.assertEqual(receipt["directional_candidates_count"], 3)
         self.assertTrue(receipt["source_coverage_complete_for_requested_sport"])
@@ -168,6 +169,20 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
         self.assertIsNone(receipt["directional_candidates"][0]["official_player_id"])
         self.assertFalse(receipt["source_license_independently_verified"])
 
+    def test_budget_fails_closed_before_second_paid_page(self):
+        calls = []
+        def fetch(*, key, league, cursor):
+            calls.append(cursor)
+            return page([sample()], cursor="next")
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="secret",
+            fetch_page=fetch, now=NOW, max_pages=4, max_credits=6,
+        )
+        self.assertEqual(calls, [None])
+        self.assertEqual(receipt["blockers"], ["PROP_FEED_CREDIT_BUDGET_EXHAUSTED"])
+        self.assertFalse(receipt["source_coverage_complete_for_requested_sport"])
+        self.assertEqual(receipt["monthly_provider_credits_remaining"], None)
+
     def test_invalid_direction_cannot_default_to_more(self):
         row = sample(selections=[{"side": "over", "available": True, "tier": "standard"}])
         p = normalize_page(page([row]), league="NBA", now=NOW)
@@ -188,7 +203,7 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
                    if getattr(route, "path", "") == "/v17/prop-board/authorized-discovery"]
         self.assertEqual(len(matches), 1)
         with patch.dict("os.environ", {"WOW_V17_PROP_FEED_ACCOUNT_USE_AUTHORIZED": "0"}):
-            blocked = matches[0].endpoint(sport="NBA", max_pages=1)
+            blocked = matches[0].endpoint(sport="NBA", max_pages=1, max_credits=6)
         self.assertEqual(blocked["typed_blocker"], "PROP_FEED_ACCOUNT_USE_NOT_AUTHORIZED")
         self.assertFalse(blocked["probability_publishable"])
         self.assertFalse(blocked["can_execute"])
