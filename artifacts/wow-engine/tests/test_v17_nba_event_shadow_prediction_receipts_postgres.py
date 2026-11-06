@@ -40,10 +40,17 @@ def _dsn() -> str:
     host = params.get("host") or os.environ.get("PGHOST")
     hostaddr = params.get("hostaddr") or os.environ.get("PGHOSTADDR")
     service = params.get("service") or os.environ.get("PGSERVICE")
+    # Libpq supports comma-delimited failover hosts. Every entry must be
+    # local; a local first entry must not authorize a remote fallback.
+    hosts = host.split(",") if host else []
     if (
         hostaddr or service
-        or (host and host not in {"localhost", "127.0.0.1", "::1"}
-            and not host.startswith("/"))
+        or any(
+            not entry
+            or (entry not in {"localhost", "127.0.0.1", "::1"}
+                and not entry.startswith("/"))
+            for entry in hosts
+        )
     ):
         pytest.fail("WOW_TEST_POSTGRES_REMOTE_TARGET_FORBIDDEN", pytrace=False)
     return dsn
@@ -148,6 +155,29 @@ def test_hostless_uri_with_remote_pghost_is_refused(monkeypatch):
     monkeypatch.delenv("PGSERVICE", raising=False)
     with pytest.raises(pytest.fail.Exception, match="WOW_TEST_POSTGRES_REMOTE_TARGET_FORBIDDEN"):
         _dsn()
+
+
+def test_mixed_local_remote_hosts_cannot_fall_back_to_remote(monkeypatch):
+    """Each libpq failover destination must be explicitly local."""
+    dsn = "host=/tmp,remote.example dbname=shadow_test"
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DSN", dsn)
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DISPOSABLE", "1")
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="WOW_TEST_POSTGRES_REMOTE_TARGET_FORBIDDEN"):
+        _dsn()
+
+
+def test_all_local_failover_hosts_are_allowed(monkeypatch):
+    """A Unix socket and loopback host remain eligible for local tests."""
+    dsn = "host=/tmp,localhost dbname=shadow_test"
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DSN", dsn)
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DISPOSABLE", "1")
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    assert _dsn() == dsn
 
 
 def test_existing_shadow_table_is_never_used_as_test_scratch(db):
