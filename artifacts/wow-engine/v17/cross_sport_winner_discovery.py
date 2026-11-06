@@ -1272,12 +1272,35 @@ def route_discovered_slate(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
         )
         if purge is not None:
+            # Do not erase sport-owned canonicalization failures when the
+            # terminal purge assigns the row's single disposition bucket.
+            # Only copy bounded identity evidence; never promote provider
+            # aliases into canonical identifiers or sporting authority.
+            raw = event.raw if isinstance(event.raw, Mapping) else {}
+            detail = {
+                "reason": purge,
+                "model_invoked": False,
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+            for key in ("canonical_identity_status", "canonical_identity_blocker", "identity_provider"):
+                value = raw.get(key)
+                if isinstance(value, str) and value.strip():
+                    detail[key] = typed_blocker_code(value) if key != "identity_provider" else typed_blocker_code(value)
+            if purge == IDENTITY_UNRESOLVED:
+                alias = raw.get("provider_event_id")
+                if isinstance(alias, (str, int)) and not isinstance(alias, bool):
+                    alias_text = str(alias).strip()
+                    if 0 < len(alias_text) <= 128:
+                        detail["provider_event_id"] = alias_text
+                        detail["provider_event_id_type"] = "ALIAS_ONLY_NOT_CANONICAL"
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
                     bucket=purge,
                     model_status=None,
-                    detail={"reason": purge, "model_invoked": False},
+                    detail=detail,
                 )
             )
             continue
@@ -1449,8 +1472,23 @@ def route_discovered_slate(
 def reconcile(inventory: DiscoveryInventory, rows: list[RoutedRow]) -> dict[str, Any]:
     """Cross-sport discovery audit. Every discovered row lands in one bucket."""
     counts = {bucket: 0 for bucket in ALL_BUCKETS}
+    held_reason_counts: dict[str, int] = {}
+    identity_blocker_counts: dict[str, int] = {}
+    identity_status_counts: dict[str, int] = {}
     for row in rows:
         counts[row.bucket] = counts.get(row.bucket, 0) + 1
+        detail = row.detail if isinstance(row.detail, Mapping) else {}
+        if row.bucket != MODEL_COMPLETED:
+            reason = typed_blocker_code(detail.get("code") or detail.get("reason") or row.model_status or row.bucket)
+            if reason:
+                held_reason_counts[reason] = held_reason_counts.get(reason, 0) + 1
+        for field, histogram in (
+            ("canonical_identity_blocker", identity_blocker_counts),
+            ("canonical_identity_status", identity_status_counts),
+        ):
+            code = typed_blocker_code(detail.get(field))
+            if code:
+                histogram[code] = histogram.get(code, 0) + 1
     discovered = len(inventory.events)
     accounted = sum(counts.values())
     model_supported = counts[MODEL_COMPLETED]
@@ -1463,6 +1501,9 @@ def reconcile(inventory: DiscoveryInventory, rows: list[RoutedRow]) -> dict[str,
         "events_discovered": discovered,
         "events_accounted": accounted,
         "buckets": counts,
+        "held_reason_counts": held_reason_counts,
+        "identity_blocker_counts": identity_blocker_counts,
+        "identity_status_counts": identity_status_counts,
         "model_supported_rows": model_supported,
         "retained_unsupported_rows": counts[MODEL_UNAVAILABLE],
         "row_reconciliation": "PASS" if accounted == discovered else "FAIL",
