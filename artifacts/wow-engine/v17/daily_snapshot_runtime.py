@@ -520,7 +520,16 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 requested_timezone=req.requested_timezone,
                 max_candidates=max(req.max_props * 3, req.max_props),
             )
-            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
+            sport_outages = [
+                leg for leg in prop_acquisition.get("sport_coverage") or []
+                if isinstance(leg, dict) and leg.get("status") == "DATA_UNOBTAINABLE"
+            ]
+            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE" or sport_outages:
+                # A surviving NFL row does not prove that MLB discovery succeeded.
+                blockers.append("DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE")
+                blockers.extend(
+                    blocker for leg in sport_outages for blocker in leg.get("blockers") or []
+                )
                 blockers.extend(prop_acquisition.get("blockers") or [])
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
