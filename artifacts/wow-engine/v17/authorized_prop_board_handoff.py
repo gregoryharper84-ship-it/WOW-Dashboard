@@ -10,7 +10,7 @@ freshness, and V17_TERMINAL_REDUCER gates remain authoritative.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any, Callable, Mapping
@@ -19,7 +19,7 @@ from v17.authorized_prop_board_discovery import PROVIDER, SCHEMA as DISCOVERY_SC
 
 CAN_EXECUTE = False
 HANDOFF_SCHEMA = "WOW_V17_AUTHORIZED_PROP_HANDOFF_V1"
-MAX_RECEIVED_CANDIDATES = 1600
+MAX_RECEIVED_CANDIDATES = 3200
 ACTION_BATCH_SIZE = 50
 
 
@@ -90,7 +90,7 @@ def _validate_official(row: Mapping[str, Any], resolved: Any, now: datetime) -> 
         return "PROP_IDENTITY_EVENT_START_CONFLICT"
     if event_start <= now:
         return "EVENT_ALREADY_STARTED"
-    if checked is None or checked > now or checked < now - __import__("datetime").timedelta(hours=4):
+    if checked is None or checked > now or checked < now - timedelta(hours=4):
         return "PROP_IDENTITY_OFFICIAL_EVIDENCE_STALE"
     return None
 
