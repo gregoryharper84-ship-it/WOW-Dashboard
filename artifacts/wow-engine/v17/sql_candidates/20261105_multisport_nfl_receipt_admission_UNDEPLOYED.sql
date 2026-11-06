@@ -239,7 +239,7 @@ BEGIN
      OR a.probability_publishable IS DISTINCT FROM false
      OR a.model_artifact_version<>s.model_version
      OR a.artifact_checksum !~ '^[0-9a-f]{64}$'
-     OR a.artifact_checksum<>s.model_output_snapshot->>'artifact_checksum' THEN
+     OR a.artifact_checksum IS DISTINCT FROM s.model_output_snapshot->>'artifact_checksum' THEN
     RETURN pg_catalog.jsonb_build_object('status','HOLD','code','LLP_EVENT_PREDICTION_RECEIPT_MISMATCH','can_execute',false);
   END IF;
   SELECT * INTO c FROM public.wow_calibrators WHERE calibrator_id=a.calibrator_id;
