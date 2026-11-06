@@ -2,7 +2,7 @@
 
 This adapter forwards only a persisted specialist score UUID to the server-owned
 admission RPC. The database owns source, fitted model, certified calibrator,
-V17_TERMINAL_REDUCER, receipt identity, and immutability. No caller probability,
+V17_TERMINAL_REDUCER, trusted reducer-origin identity, and immutability. No caller probability,
 side, model artifact, price, or self-asserted PASS enters the admission request.
 Unsupported sports have no implicit fallback into the NFL route.
 """
@@ -22,6 +22,7 @@ _NOT_PERFORMED = "LLP_EVENT_PREDICTION_LOOKUP_NOT_PERFORMED"
 _ALLOWED_HOLDS = frozenset({
     _UNAVAILABLE, _MISMATCH, _MISSING_ID, _NOT_PERFORMED,
     "LLP_EVENT_PREDICTION_NOT_EXACTLY_ONE",
+    "LLP_REDUCER_ORIGIN_RECEIPT_UNAVAILABLE",
 })
 _DIGEST = re.compile("^[0-9a-f]{64}$")
 
