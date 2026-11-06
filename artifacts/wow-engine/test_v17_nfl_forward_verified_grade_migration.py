@@ -62,6 +62,8 @@ def test_sql_view_excludes_actual_corrupt_historical_grade_shapes():
     db = sqlite3.connect(":memory:")
     db.create_function("ln", 1, math.log)
     db.create_function("power", 2, math.pow)
+    db.create_function("greatest", -1, max)
+    db.create_function("least", -1, min)
     db.execute("attach database ':memory:' as public")
     db.execute("""
         create table public.wow_nfl_forward_shadow_grades (
