@@ -101,6 +101,43 @@ def test_nfl_provider_league_alias_is_not_an_identity_conflict(provider_label):
     assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
 
 
+
+@pytest.mark.parametrize("sport, valid_label", [
+    ("NFL", "National Football League"),
+    ("NFL", "americanfootball_nfl"),
+    ("NBA", "National Basketball Association"),
+    ("NBA", "basketball_nba"),
+    ("NHL", "National Hockey League"),
+    ("NHL", "icehockey_nhl"),
+])
+def test_known_provider_league_labels_do_not_create_false_conflicts(sport, valid_label):
+    row = _row(sport=sport, certified=True)
+    row["detail"]["result"]["league"] = valid_label
+    event = llp.project_llp_intelligence_page(_page([row]))["events"][0]
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" not in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+    # Independent ledger verification is still missing; no probability leaks.
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+
+
+@pytest.mark.parametrize("sport, wrong_label", [
+    ("NFL", "National Hockey League"),
+    ("NBA", "National Football League"),
+    ("NBA", "WNBA"),
+    ("NHL", "NBA"),
+    ("NHL", "unknown-league"),
+])
+def test_cross_sport_and_unknown_provider_leagues_are_rejected(sport, wrong_label):
+    row = _row(sport=sport, certified=True)
+    row["detail"]["result"]["league"] = wrong_label
+    event = llp.project_llp_intelligence_page(_page([row]))["events"][0]
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+
+
 def test_research_candidate_keeps_numeric_probability_hidden():
     view = llp.project_llp_intelligence_page(_page([_row(certified=False)]))
     result = view["events"][0]["markets"][0]
