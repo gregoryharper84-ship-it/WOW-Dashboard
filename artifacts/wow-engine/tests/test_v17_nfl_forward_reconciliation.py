@@ -2,7 +2,9 @@
 
 These tests pin the distinction the restoration audit depends on: a settled
 tie and an unsettled game are *accounted for* events, not missing eligible
-grades. Reconciliation is diagnostic only; it cannot create a grade.
+grades. A contradictory or incomplete settlement is never treated as a tie,
+and a present outcome with missing scores is not treated as un-ingested.
+Reconciliation is diagnostic only; it cannot create a grade.
 """
 from __future__ import annotations
 
@@ -64,6 +66,32 @@ def _outcome(event_id: str, *, home_win: bool | None, tie: bool = False) -> dict
     }
 
 
+def _grade(
+    prediction: ForwardPrediction,
+    *,
+    outcome: int = 1,
+    event_prediction_id: str | None = None,
+    model_version: str | None = None,
+    selected_participant: str | None = None,
+) -> ForwardGrade:
+    p = prediction.calibrated_probability
+    return ForwardGrade(
+        event_prediction_id=event_prediction_id or prediction.event_prediction_id,
+        official_event_id=prediction.official_event_id,
+        event_start_time_utc=prediction.event_start_time_utc.isoformat(),
+        prediction_created_at=prediction.prediction_created_at.isoformat(),
+        model_version=model_version or prediction.model_version,
+        selected_participant=selected_participant or prediction.selected_participant,
+        calibrated_probability=p,
+        calibrated_lower_bound=prediction.calibrated_lower_bound,
+        calibrated_upper_bound=prediction.calibrated_upper_bound,
+        outcome=outcome,
+        brier=(p - outcome) ** 2,
+        log_loss=-math.log(p) if outcome == 1 else -math.log(1.0 - p),
+        source_game_id=prediction.official_event_id,
+    )
+
+
 def test_tie_and_pending_events_are_accounted_for_without_becoming_grades():
     graded_event = _prediction("2026_06_AAA_BBB", index=0)
     tied_event = _prediction("2026_05_NYG_WAS", index=1)
@@ -108,6 +136,135 @@ def test_outcome_without_usable_winner_is_incomplete_not_graded():
     assert receipt["ungraded_events"] == [
         {"official_event_id": "2026_06_AAA_BBB", "reason": "OUTCOME_INCOMPLETE"}
     ]
+
+
+@pytest.mark.parametrize(
+    ("home_score", "away_score", "home_win", "tie"),
+    [
+        pytest.param(24, 17, True, True, id="contradictory-tie-flag"),
+        pytest.param(24, 17, False, False, id="winner-flag-contradicts-score"),
+        pytest.param(27, 27, False, False, id="equal-score-tie-flag-false"),
+        pytest.param(27, 27, True, True, id="equal-score-winner-flag-true"),
+        pytest.param(None, 17, None, False, id="missing-score"),
+    ],
+)
+def test_inconsistent_settlement_is_incomplete_not_tie_or_pending(
+    home_score, away_score, home_win, tie
+):
+    prediction = _prediction("2026_06_AAA_BBB")
+    outcome = {
+        "game_id": prediction.official_event_id,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_win": home_win,
+        "tie": tie,
+    }
+
+    assert grade_forward_predictions([prediction], [outcome]) == []
+    receipt = reconcile_forward_cohort([prediction], [outcome], [])
+    assert receipt["outcome_tie_excluded"] == 0
+    assert receipt["outcome_pending"] == 0
+    assert receipt["outcome_incomplete"] == 1
+    assert receipt["ungraded_events"] == [
+        {
+            "official_event_id": prediction.official_event_id,
+            "reason": "OUTCOME_INCOMPLETE",
+        }
+    ]
+
+
+def test_reversed_binary_outcomes_grade_the_selected_side_correctly():
+    predictions = [
+        _prediction("2026_06_home_wins", index=0),
+        _prediction("2026_06_away_wins", index=1),
+        replace(
+            _prediction("2026_06_away_selected_home_wins", index=2),
+            selected_participant="AAA",
+        ),
+        replace(
+            _prediction("2026_06_away_selected_away_wins", index=3),
+            selected_participant="AAA",
+        ),
+    ]
+    outcomes = [
+        _outcome("2026_06_home_wins", home_win=True),
+        _outcome("2026_06_away_wins", home_win=False),
+        _outcome("2026_06_away_selected_home_wins", home_win=True),
+        _outcome("2026_06_away_selected_away_wins", home_win=False),
+    ]
+
+    grades = grade_forward_predictions(predictions, outcomes)
+    assert [(grade.official_event_id, grade.outcome) for grade in grades] == [
+        ("2026_06_home_wins", 1),
+        ("2026_06_away_wins", 0),
+        ("2026_06_away_selected_home_wins", 0),
+        ("2026_06_away_selected_away_wins", 1),
+    ]
+
+
+def test_grade_for_validated_tie_fails_closed():
+    prediction = _prediction("2026_05_NYG_WAS")
+    outcome = _outcome(prediction.official_event_id, home_win=False, tie=True)
+    grade = _grade(prediction, outcome=0)
+    with pytest.raises(
+        NFLForwardShadowError, match="RECONCILIATION_GRADE_OUTCOME_MISMATCH"
+    ):
+        reconcile_forward_cohort([prediction], [outcome], [grade])
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        (
+            "event_prediction_id",
+            "00000000-0000-0000-0000-999999999999",
+            "RECONCILIATION_GRADE_PREDICTION_MISMATCH",
+        ),
+        ("model_version", "OTHER_MODEL", "RECONCILIATION_GRADE_MODEL_MISMATCH"),
+        ("selected_participant", "AAA", "RECONCILIATION_GRADE_SELECTION_MISMATCH"),
+    ],
+)
+def test_grade_identity_mismatch_fails_closed(field, value, error):
+    prediction = _prediction("2026_06_AAA_BBB")
+    outcome = _outcome(prediction.official_event_id, home_win=True)
+    grade = _grade(prediction, **{field: value})
+    with pytest.raises(NFLForwardShadowError, match=error):
+        reconcile_forward_cohort([prediction], [outcome], [grade])
+
+
+def test_disposition_buckets_sum_to_canonical_events():
+    predictions = [
+        _prediction("2026_06_graded", index=0),
+        _prediction("2026_05_tie", index=1),
+        _prediction("2026_09_pending", index=2),
+        _prediction("2026_09_incomplete", index=3),
+    ]
+    outcomes = [
+        _outcome("2026_06_graded", home_win=True),
+        _outcome("2026_05_tie", home_win=False, tie=True),
+        {
+            "game_id": "2026_09_incomplete",
+            "home_score": None,
+            "away_score": 17,
+            "home_win": None,
+            "tie": False,
+        },
+    ]
+
+    grades = grade_forward_predictions(predictions, outcomes)
+    receipt = reconcile_forward_cohort(predictions, outcomes, grades)
+    assert receipt["canonical_events"] == 4
+    assert receipt["graded"] == 1
+    assert receipt["outcome_tie_excluded"] == 1
+    assert receipt["outcome_pending"] == 1
+    assert receipt["outcome_incomplete"] == 1
+    assert receipt["balanced"] is True
+    assert (
+        receipt["graded"]
+        + receipt["outcome_tie_excluded"]
+        + receipt["outcome_pending"]
+        + receipt["outcome_incomplete"]
+    ) == receipt["canonical_events"]
 
 
 def test_reconciliation_does_not_change_health_denominator():
