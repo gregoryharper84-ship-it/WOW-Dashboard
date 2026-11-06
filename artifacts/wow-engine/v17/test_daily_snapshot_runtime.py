@@ -473,3 +473,40 @@ def test_zero_moneyline_limit_does_not_claim_missing_snapshots(monkeypatch):
     assert result["blockers"] == []
     assert result["lane_reconciliation"]["MONEYLINE"]["zero_row_reason"] == "REQUESTED_ROW_LIMIT_ZERO"
     assert result["run_status"] == "COMPLETED"
+
+
+def test_invalid_timezone_rejected_before_mlb_no_event_classification(monkeypatch):
+    class EmptyDB(DB):
+        def table(self, name): return Query([])
+    def forbidden_acquisition(**_):
+        raise AssertionError("invalid timezone must not query an upstream slate")
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", forbidden_acquisition)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="Not/A_Real_Timezone", lanes=["PROPS"]),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["run_status"] == "RUN_INVALID_REQUEST"
+    assert result["blockers"] == ["REQUESTED_TIMEZONE_INVALID"]
+    assert result["rows"] == []
+    assert result["can_execute"] is False
+
+
+def test_mixed_zero_props_and_missing_moneyline_keeps_missing_snapshot_blocker(monkeypatch):
+    class EmptyDB(DB):
+        def table(self, name): return Query([])
+    def forbidden_acquisition(**_):
+        raise AssertionError("zero prop bound must not call acquisition")
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", forbidden_acquisition)
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+            lanes=["PROPS", "MONEYLINE"], max_props=0, max_team_events=6,
+        ),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["blockers"] == ["NO_CANONICAL_PREGAME_SNAPSHOTS"]
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "REQUESTED_ROW_LIMIT_ZERO"
+    assert result["lane_reconciliation"]["MONEYLINE"]["zero_row_reason"] == "NO_CANONICAL_CANDIDATES"
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert result["can_execute"] is False

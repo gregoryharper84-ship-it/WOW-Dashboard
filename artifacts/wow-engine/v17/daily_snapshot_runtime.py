@@ -15,7 +15,7 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -492,6 +492,10 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         date.fromisoformat(req.requested_slate_date)
     except ValueError:
         return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_SLATE_DATE_INVALID"], "can_execute": False}
+    try:
+        ZoneInfo(req.requested_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_TIMEZONE_INVALID"], "can_execute": False}
 
     run_id = f"v17-daily-{uuid4()}"
     # Server-generated, non-secret provenance; never trust a client-supplied identity.
@@ -674,7 +678,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 if _mlb_acquisition_found_no_candidates(prop_acquisition)
                 else "NO_CANONICAL_PREGAME_SNAPSHOTS"
             )
-        elif "PROPS" not in requested_lanes and req.max_team_events > 0:
+        elif "MONEYLINE" in requested_lanes and req.max_team_events > 0 and ("PROPS" not in requested_lanes or req.max_props == 0):
             blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
 
     requested_limits = {"PROPS": req.max_props, "MONEYLINE": req.max_team_events}

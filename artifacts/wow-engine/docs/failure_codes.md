@@ -8,6 +8,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `REQUESTED_TIMEZONE_INVALID` | V17 Daily request validation | The supplied IANA timezone is not resolvable, so slate-local event matching cannot be trusted. Reject before any official-schedule acquisition or empty-slate inference. **Recovery class:** `INVALID_REQUEST`; retry only after the caller corrects the timezone. | No |
 | `PROP_ACQUISITION_NO_ELIGIBLE_EVENTS:MLB` | V17 Daily MLB prop acquisition / zero-row reconciliation | The identified MLB official-probable-pitchers producer completed with zero candidate attempts for the requested slate. This means no eligible **MLB pitcher** discovery candidates, not no cross-sport events or no fitted models. **Recovery class:** `NO_ELIGIBLE_EVENTS`; other sports remain governed by their own acquisition and certification. | No |
 | `NFL_FORWARD_PAGINATION_INVALID` | NFL prospective forward grading and calibration health | PostgREST page reads lacked stable primary-key order or contained missing/duplicate prediction, settled-game or existing-grade identities. Fail the entire shadow-grading run before appending misleading calibration results; not a fitted-model capability error. | No |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
