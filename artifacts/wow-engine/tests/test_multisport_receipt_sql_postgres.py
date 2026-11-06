@@ -118,7 +118,9 @@ def pg(tmp_path_factory):
                   artifact_id uuid primary key,model_artifact_version text,
                   artifact_checksum text,calibrator_id uuid,model_family text,lifecycle_state text,
                   active boolean,promoted boolean,can_execute boolean,
-                  probability_publishable boolean
+                  probability_publishable boolean not null default false
+                    constraint wow_nfl_event_fitted_registry_not_probability_publication
+                    check (probability_publishable=false)
                 )
             """)
             db.execute("""
@@ -194,7 +196,7 @@ def pg(tmp_path_factory):
                 insert into public.wow_nfl_event_fitted_model_artifacts
                 (artifact_id,model_artifact_version,artifact_checksum,calibrator_id,
                  model_family,lifecycle_state,active,promoted,can_execute,probability_publishable)
-                values (%s,'NFL_VERSION',%s,%s,'NFL_OUTRIGHT_WIN_LOGREG_V1','CHAMPION',true,true,false,true)
+                values (%s,'NFL_VERSION',%s,%s,'NFL_OUTRIGHT_WIN_LOGREG_V1','CHAMPION',true,true,false,false)
             """,(MODEL,HASH,CAL))
             db.execute("""
                 insert into public.wow_calibrators
@@ -254,6 +256,24 @@ def reset_postgresql_contract_state(pg):
 def call(uri, function, uuid):
     with psycopg.connect(uri,autocommit=True) as db:
         return db.execute(f"select public.{function}(%s::uuid)",(uuid,)).fetchone()[0]
+
+
+def test_fitted_artifact_registry_cannot_claim_publication(pg):
+    # Mirror the real immutable artifact registry: publishability belongs to
+    # the independently certified score/receipt, never to fitted artifact rows.
+    with psycopg.connect(pg, autocommit=True) as db:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            db.execute(
+                "update public.wow_nfl_event_fitted_model_artifacts "
+                "set probability_publishable=true where artifact_id=%s",
+                (MODEL,),
+            )
+        value = db.execute(
+            "select probability_publishable from "
+            "public.wow_nfl_event_fitted_model_artifacts where artifact_id=%s",
+            (MODEL,),
+        ).fetchone()[0]
+    assert value is False
 
 
 def test_no_independent_certification_never_mints_receipt(pg):
