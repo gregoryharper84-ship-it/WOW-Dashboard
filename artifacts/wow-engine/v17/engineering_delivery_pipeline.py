@@ -38,15 +38,19 @@ def _result(code: str, next_action: str, trigger: str, *, pr: int | None = None,
 
 
 def _valid_pr(pr: dict, expected_sha: str) -> bool:
-    head, base = pr.get("head") or {}, pr.get("base") or {}
+    head, base = pr.get("head"), pr.get("base")
     if (type(pr.get("number")) is not int or pr["number"] <= 0
-            or pr.get("state") != "open" or pr.get("draft") is True
-            or not isinstance(expected_sha, str) or not SHA.fullmatch(expected_sha)):
+            or pr.get("state") != "open" or pr.get("draft") is not False
+            or not isinstance(expected_sha, str) or not SHA.fullmatch(expected_sha)
+            or not isinstance(head, dict) or not isinstance(base, dict)):
+        return False
+    head_repo, base_repo = head.get("repo"), base.get("repo")
+    if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
         return False
     return (head.get("sha") == expected_sha
-            and (head.get("repo") or {}).get("full_name") == REPO
+            and head_repo.get("full_name") == REPO
             and base.get("ref") == "main"
-            and (base.get("repo") or {}).get("full_name") == REPO)
+            and base_repo.get("full_name") == REPO)
 
 
 def _latest(checks: list[dict]) -> dict[str, dict]:
