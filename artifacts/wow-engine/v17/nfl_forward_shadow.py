@@ -21,7 +21,9 @@ from v17.nfl_forward_settlement_refresh import refresh_recent_settled_outcomes
 
 CAN_EXECUTE = False
 MIN_FORWARD_GRADED = 100
-HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V1"
+# V2 is required after the private verified-grade view migration; stale V1
+# health snapshots cannot authorize the forward certification admission gate.
+HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V2"
 GRADE_SCHEMA_VERSION = "NFL_FORWARD_SHADOW_GRADE_V1"
 
 PREDICTION_TABLE = "wow_nfl_event_predictions"
