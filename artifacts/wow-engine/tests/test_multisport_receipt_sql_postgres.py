@@ -53,7 +53,10 @@ def pg(tmp_path_factory):
             # column names; this fixture is NOT an independently fitted scorer.
             db.execute("""
                 create table public.wow_nfl_event_predictions (
-                  score_snapshot_id uuid primary key, official_event_id text,
+                  score_snapshot_id uuid primary key,
+                  event_prediction_id uuid unique default gen_random_uuid(),
+                  created_at timestamptz default clock_timestamp(),
+                  official_event_id text,
                   event_start_time_utc timestamptz,home_team text,away_team text,
                   selected_participant text,source_snapshot_id uuid,
                   source_snapshot_timestamp timestamptz,model_timestamp timestamptz,
@@ -82,6 +85,13 @@ def pg(tmp_path_factory):
                   active boolean,promoted boolean,validation_status text,
                   health_status text,sport text,market_family text
                 )
+            """)
+            db.execute("""
+              create table public.wow_nfl_forward_shadow_grades (
+                official_event_id text, event_prediction_id uuid,
+                event_start_time_utc timestamptz,
+                prediction_created_at timestamptz, model_version text
+              )
             """)
             # These tables are needed to compile the real certification guard.
             # No test may manufacture an independently verified certificate.
@@ -176,6 +186,9 @@ def reset_postgresql_contract_state(pg):
     # make a subsequent case accidentally green or red by order.
     with psycopg.connect(pg,autocommit=True) as db:
         db.execute("truncate public.wow_v17_multisport_event_prediction_receipts")
+        db.execute("delete from public.wow_nfl_forward_shadow_grades where official_event_id like 'foreign-fixture-%'")
+        db.execute("delete from public.wow_nfl_event_predictions where official_event_id like 'foreign-fixture-%'")
+        db.execute("delete from public.wow_team_event_specialist_certifications where verification_receipt ? 'test_fixture_only'")
         db.execute(
             "update public.wow_nfl_event_predictions "
             "set provenance_complete=true, latest_material_update_timestamp=null "
@@ -217,6 +230,68 @@ def test_repeat_cannot_mint_uncertified_receipt(pg):
     assert second["status"]=="HOLD"
     assert "event_prediction_id" not in first
     assert "event_prediction_id" not in second
+
+
+def test_foreign_model_forward_grades_cannot_unlock_another_champion(pg):
+    """Test-only forged PASS health and certificate must not substitute exact grades.
+
+    These records are synthetic adversarial fixtures, never production
+    certification, model forecasts, or independent SIRT evidence.
+    """
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute("""
+            update public.wow_nfl_forward_calibration_health
+            set graded_n=100, status='PASS',
+                certification_recommendation='FORWARD_EVIDENCE_PASS',
+                blockers='[]'::jsonb
+        """)
+        db.execute("""
+            insert into public.wow_team_event_specialist_certifications (
+              certification_id,sport,league_scope,model_family,model_version,
+              artifact_id,artifact_sha256,calibration_artifact_id,
+              calibration_sha256,independent_verification_status,
+              certification_status,probability_publishable,can_execute,
+              certified_at,verification_receipt)
+            select %s::uuid,'NFL','NFL',a.model_family,a.model_artifact_version,
+                   a.artifact_id::text,a.artifact_checksum,
+                   c.calibrator_id::text,
+                   encode(extensions.digest(convert_to(to_jsonb(c)::text,'UTF8'),'sha256'),'hex'),
+                   'PASS','CERTIFIED',true,false,clock_timestamp(),
+                   '{"test_fixture_only":true}'::jsonb
+            from public.wow_nfl_event_fitted_model_artifacts a
+            join public.wow_calibrators c on c.calibrator_id=a.calibrator_id
+            where a.artifact_id=%s::uuid
+        """,(str(uuid4()),MODEL))
+        db.execute("""
+            with foreign_predictions as (
+              insert into public.wow_nfl_event_predictions (
+                score_snapshot_id,official_event_id,event_start_time_utc,
+                created_at,model_timestamp,model_artifact_id,model_version,
+                calibration_version
+              )
+              select gen_random_uuid(),'foreign-fixture-'||g::text,
+                     %s::timestamptz,%s::timestamptz,%s::timestamptz,
+                     %s::uuid,'OTHER_VERSION','CAL_VERSION'
+              from generate_series(1,100) g
+              returning event_prediction_id,official_event_id,
+                        event_start_time_utc,created_at,model_version
+            )
+            insert into public.wow_nfl_forward_shadow_grades (
+              official_event_id,event_prediction_id,event_start_time_utc,
+              prediction_created_at,model_version
+            )
+            select official_event_id,event_prediction_id,event_start_time_utc,
+                   created_at,model_version from foreign_predictions
+        """,(START,MODEL_AT,MODEL_AT,MODEL))
+        # Even a test-only certificate and 100 rows from a different
+        # model must not make the target NFL score certifiable.
+        count=db.execute("select count(*) from public.wow_nfl_forward_shadow_grades").fetchone()[0]
+        assert count == 100
+    eligible=call(pg,"wow_v17_nfl_receipt_certified",SCORE)
+    assert eligible is False
+    issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert issued["status"] == "HOLD"
+    assert "event_prediction_id" not in issued
 
 def test_forward_sample_100_alone_never_replaces_independent_certification(pg):
     with psycopg.connect(pg,autocommit=True) as db:
