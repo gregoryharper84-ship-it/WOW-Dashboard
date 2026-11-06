@@ -218,6 +218,32 @@ class DeliveryTests(unittest.TestCase):
     def test_draft_pr_rejected(self):
         self.assertEqual(mod.reduce_pr(pr(draft=True), [], SHA)["decision"], "SOURCE_HEAD_UNSTABLE")
 
+    def test_missing_or_nonstrict_draft_flag_denied(self):
+        """Only an authenticated literal false draft flag is eligible."""
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        candidates = [pr(draft=None), pr(draft=0), pr(draft="false"),
+                      pr(draft=[])]
+        absent = pr()
+        absent.pop("draft")
+        candidates.append(absent)
+        for candidate in candidates:
+            with self.subTest(draft=candidate.get("draft", "ABSENT")):
+                decision = mod.reduce_pr(candidate, checks, SHA)
+                self.assertEqual(decision["decision"], "SOURCE_HEAD_UNSTABLE")
+                self.assertFalse(decision["merge_authorized"])
+
+    def test_malformed_pr_head_base_metadata_fails_closed(self):
+        """Untrusted, truncated PR JSON must emit a typed hold, not crash."""
+        for key in ("head", "base"):
+            for malformed in ("malformed", [], 12, {"repo": "wrong-type"}):
+                with self.subTest(key=key, malformed=malformed):
+                    candidate = pr(**{key: malformed})
+                    decision = mod.reduce_pr(candidate, [], SHA)
+                    self.assertEqual(decision["decision"], "SOURCE_HEAD_UNSTABLE")
+                    self.assertFalse(decision["merge_authorized"])
+
     def test_bad_inventory_rejected(self):
         with self.assertRaises(ValueError):
             mod.reduce_pr(pr(), [{}] * 1001, SHA)
