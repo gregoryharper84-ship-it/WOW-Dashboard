@@ -203,19 +203,25 @@ def test_weekly_nfl_capture_requires_real_pregame_prediction_receipts():
     assert '"probability_values_logged": False' in workflow
 
 
-@pytest.mark.parametrize("persisted_receipts,expected_error", [
-    (5, None),
-    (4, "NFL_FUTURE_PROSPECTIVE_CAPTURE_INSUFFICIENT"),
+@pytest.mark.parametrize("persisted_receipts,scenario,expected_error", [
+    (5, "PASS", None),
+    (4, "FOUR", "NFL_FUTURE_PROSPECTIVE_CAPTURE_INSUFFICIENT"),
+    (5, "STARTED", "NFL_FUTURE_PREGAME_IDENTITY_INVALID"),
+    (5, "NAIVE", "NFL_FUTURE_PREGAME_IDENTITY_INVALID"),
+    (5, "WRONG_DATE", "NFL_FUTURE_PREGAME_IDENTITY_INVALID"),
+    (5, "DUPLICATE", "NFL_FUTURE_DUPLICATE_EVENT_ID"),
+    (5, "EXECUTION", "NFL_FUTURE_CAPTURE_EXECUTION_INVARIANT"),
+    (0, "TODAY", None),
 ])
 def test_weekly_nfl_script_requires_persisted_not_merely_discovered(
-    monkeypatch, capsys, persisted_receipts, expected_error,
+    monkeypatch, capsys, persisted_receipts, scenario, expected_error,
 ):
     """Execute the actual workflow Python with mocked OIDC/HTTPS, no network."""
     import io
     import json
     import textwrap
     import urllib.request
-    from datetime import datetime, time, timezone
+    from datetime import datetime, time, timedelta, timezone
     from pathlib import Path
     from zoneinfo import ZoneInfo
 
@@ -232,7 +238,7 @@ def test_weekly_nfl_script_requires_persisted_not_merely_discovered(
     compiled = compile(script, "wow-v17-daily-snapshot:inline", "exec")
 
     for key, value in {
-        "GITHUB_EVENT_NAME": "schedule",
+        "GITHUB_EVENT_NAME": "workflow_dispatch" if scenario == "TODAY" else "schedule",
         "WOW_NFL_NEXT_SUNDAY_CAPTURE": "true",
         "WOW_USER_TIMEZONE": "America/Chicago",
         "WOW_ACTION_ORIGIN": "https://test.example",
@@ -251,7 +257,7 @@ def test_weekly_nfl_script_requires_persisted_not_merely_discovered(
         body = json.loads(request.data.decode())
         called.append(body)
         assert body["max_team_events"] == 24
-        assert body["response_mode"] == "FULL"
+        assert body["response_mode"] == ("COMPACT" if scenario == "TODAY" else "FULL")
         assert body["lanes"] == ["MONEYLINE"]
         assert body["requested_timezone"] == "America/Chicago"
         sunday = datetime.fromisoformat(body["requested_slate_date"]).date()
@@ -275,6 +281,21 @@ def test_weekly_nfl_script_requires_persisted_not_merely_discovered(
             }
             for i in range(5)
         ]
+        if scenario == "STARTED":
+            rows[4]["identity"]["commence_time_utc"] = "2026-01-01T00:00:00+00:00"
+        elif scenario == "NAIVE":
+            rows[4]["identity"]["commence_time_utc"] = "2026-11-09T00:00:00"
+        elif scenario == "WRONG_DATE":
+            rows[4]["identity"]["commence_time_utc"] = (
+                datetime.combine(
+                    sunday - timedelta(days=1),
+                    time(23, 59, tzinfo=ZoneInfo("America/Chicago")),
+                ).astimezone(timezone.utc).isoformat()
+            )
+        elif scenario == "DUPLICATE":
+            rows[4]["identity"]["official_event_id"] = rows[0]["identity"]["official_event_id"]
+        elif scenario == "EXECUTION":
+            rows[4]["can_execute"] = True
         output = {
             "run_id": "fixture-daily",
             "run_status": "COMPLETED",
@@ -305,8 +326,8 @@ def test_weekly_nfl_script_requires_persisted_not_merely_discovered(
     else:
         exec(compiled, {"__name__": "__main__"})
         receipt = json.loads(capsys.readouterr().out.strip())
-        assert receipt["capture_mode"] == "NFL_NEXT_SUNDAY"
-        assert receipt["nfl_future_prediction_receipts"] == 5
+        assert receipt["capture_mode"] == ("TODAY" if scenario == "TODAY" else "NFL_NEXT_SUNDAY")
+        assert receipt["nfl_future_prediction_receipts"] == (0 if scenario == "TODAY" else 5)
         assert receipt["model_terminal_certification"] == "NOT_PROVEN_BY_PROSPECTIVE_CAPTURE"
         assert receipt["probability_values_logged"] is False
         assert receipt["can_execute"] is False
