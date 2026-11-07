@@ -204,6 +204,7 @@ def run_nhl_source_reingest(
             [start_year],
             teams=tuple(teams) if teams is not None else None,
             session=session or requests,
+            strict=True,
         )
     except NHLCandidateError as exc:
         return _blocked(

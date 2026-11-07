@@ -125,7 +125,11 @@ def test_duplicate_official_game_must_reconcile_exactly(monkeypatch):
     first = game(1, "BOS", "NYR")
     conflicting = nhl.NHLGame(**{**first.__dict__, "home_score": first.home_score + 1})
     calls = {"BOS": [first], "NYR": [conflicting]}
-    monkeypatch.setattr(nhl, "fetch_team_season_games", lambda team, year, session=None: calls[team])
+    monkeypatch.setattr(
+        nhl,
+        "fetch_team_season_games",
+        lambda team, year, session=None, strict=False: calls[team],
+    )
     with pytest.raises(nhl.NHLCandidateError) as caught:
         nhl.fetch_historical_games([2021], teams=("BOS", "NYR"), session=object())
     assert caught.value.code == "NHL_DUPLICATE_GAME_CONFLICT"

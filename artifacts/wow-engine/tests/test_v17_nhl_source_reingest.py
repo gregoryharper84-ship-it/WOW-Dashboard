@@ -522,6 +522,44 @@ def test_reingest_rejects_invalid_neutral_site_evidence():
     assert caught.value.code == "NHL_SOURCE_NEUTRAL_SITE_UNVERIFIED"
 
 
+@pytest.mark.parametrize(
+    ("field", "expected_code"),
+    [("score", "NHL_SOURCE_SCORE_INVALID"), ("id", "NHL_SOURCE_EVENT_INVALID")],
+)
+def test_reingest_blocks_when_an_eligible_game_fails_normalization(
+    field, expected_code
+):
+    fixture = _fixture()
+    game = next(
+        raw for raw in fixture["games"]
+        if raw["homeTeam"]["abbrev"] in {"BOS", "PIT"}
+        or raw["awayTeam"]["abbrev"] in {"BOS", "PIT"}
+    )
+    if field == "score":
+        game["homeTeam"]["score"] = None
+    else:
+        game["id"] = ""
+
+    result = _run(session=_Session(_by_team(fixture)), teams=("BOS", "PIT"))
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == expected_code
+
+
+def test_strict_normalization_still_excludes_unsettled_and_non_regular_games():
+    raw = json.loads(json.dumps(_fixture()["games"][0]))
+    raw["gameType"] = 3
+    assert pipeline.normalize_game(
+        raw, source_uri="u", retrieved_at="2026-11-07T00:00:00+00:00", strict=True
+    ) is None
+
+    raw = json.loads(json.dumps(_fixture()["games"][0]))
+    raw["gameState"] = "FUT"
+    assert pipeline.normalize_game(
+        raw, source_uri="u", retrieved_at="2026-11-07T00:00:00+00:00", strict=True
+    ) is None
+
+
 @pytest.mark.parametrize("raw_neutral", ["__missing__", None, "false", 0, 1])
 def test_reingest_rejects_coerced_raw_neutral_site_evidence(raw_neutral):
     raw = json.loads(json.dumps(_fixture()["games"][0]))

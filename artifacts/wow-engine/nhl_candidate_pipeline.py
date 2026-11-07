@@ -139,17 +139,42 @@ def teams_for_start_year(start_year: int) -> tuple[str, ...]:
     return tuple(sorted(teams))
 
 
-def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str) -> NHLGame | None:
-    game_type = int(raw.get("gameType") or 0)
-    game_state = str(raw.get("gameState") or "").upper()
+def normalize_game(
+    raw: Mapping[str, Any],
+    *,
+    source_uri: str,
+    retrieved_at: str,
+    strict: bool = False,
+) -> NHLGame | None:
+    """Normalize one official game.
+
+    Non-strict mode preserves the training acquisition behavior of dropping
+    malformed rows. Strict mode is used by append-only re-ingest so an eligible
+    game cannot disappear before reconciliation.
+    """
+    def _drop(code: str, detail: str = "") -> None:
+        if strict:
+            raise NHLCandidateError(code, detail)
+        return None
+
+    raw_game_type = raw.get("gameType")
+    if raw_game_type in (None, ""):
+        return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
+    try:
+        game_type = int(raw_game_type)
+    except (TypeError, ValueError):
+        return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
+    game_state = str(raw.get("gameState") or "").strip().upper()
     if game_type != 2:
         return None
+    if not game_state:
+        return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", "gameState")
     if game_state not in {"FINAL", "OFF"}:
         return None
     home = raw.get("homeTeam")
     away = raw.get("awayTeam")
     if not isinstance(home, Mapping) or not isinstance(away, Mapping):
-        return None
+        return _drop("NHL_SOURCE_TEAM_IDENTITY_INVALID", "team")
     game_id = str(raw.get("id") or "").strip()
     start = str(raw.get("startTimeUTC") or "").strip()
     home_abbrev = str(home.get("abbrev") or "").strip().upper()
@@ -157,16 +182,24 @@ def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str
     hs = home.get("score")
     aws = away.get("score")
     raw_season = raw.get("season")
-    if not game_id or not start or not home_abbrev or not away_abbrev or hs is None or aws is None or raw_season is None:
-        return None
+    if not game_id or not start or not home_abbrev or not away_abbrev or raw_season is None:
+        return _drop("NHL_SOURCE_EVENT_INVALID", "identity")
+    if hs is None or aws is None:
+        return _drop("NHL_SOURCE_SCORE_INVALID", "score")
+    try:
+        start_utc = _aware(start)
+    except NHLCandidateError:
+        return _drop("NHL_SOURCE_EVENT_TIME_INVALID", "startTimeUTC")
     try:
         home_score, away_score = int(hs), int(aws)
+    except (TypeError, ValueError):
+        return _drop("NHL_SOURCE_SCORE_INVALID", "score")
+    try:
         parsed_season = int(raw_season)
-        start_utc = _aware(start)
-    except (TypeError, ValueError, NHLCandidateError):
-        return None
+    except (TypeError, ValueError):
+        return _drop("NHL_SOURCE_SEASON_IDENTITY_INVALID", "season")
     if home_score == away_score:
-        return None
+        return _drop("NHL_SOURCE_SCORE_INVALID", "tie")
     return NHLGame(
         game_id=game_id,
         season_id=parsed_season,
@@ -191,6 +224,7 @@ def fetch_team_season_games(
     *,
     session: Any = requests,
     timeout: int = 20,
+    strict: bool = False,
 ) -> list[NHLGame]:
     readiness = source_readiness(SOURCE_ID)
     if not readiness.ready_for_candidate_training:
@@ -218,12 +252,20 @@ def fetch_team_season_games(
     if not isinstance(games, list):
         raise NHLCandidateError("NHL_SOURCE_SCHEMA_DRIFT", "games array missing")
     retrieved_at = _utcnow().isoformat()
-    normalized = [
-        game
-        for raw in games
-        if isinstance(raw, Mapping)
-        if (game := normalize_game(raw, source_uri=url, retrieved_at=retrieved_at)) is not None
-    ]
+    normalized: list[NHLGame] = []
+    for raw in games:
+        if not isinstance(raw, Mapping):
+            if strict:
+                raise NHLCandidateError("NHL_SOURCE_EVENT_INVALID", "non-object game")
+            continue
+        game = normalize_game(
+            raw,
+            source_uri=url,
+            retrieved_at=retrieved_at,
+            strict=strict,
+        )
+        if game is not None:
+            normalized.append(game)
     expected_sid = season_id(start_year)
     mismatched = [game.game_id for game in normalized if game.season_id != expected_sid]
     if mismatched:
@@ -236,13 +278,16 @@ def fetch_historical_games(
     *,
     teams: Sequence[str] | None = None,
     session: Any = requests,
+    strict: bool = False,
 ) -> list[NHLGame]:
     by_id: dict[str, NHLGame] = {}
     explicit_teams = tuple(teams) if teams is not None else None
     for year in sorted({int(v) for v in start_years}):
         season_teams = explicit_teams or teams_for_start_year(year)
         for team in season_teams:
-            for game in fetch_team_season_games(team, year, session=session):
+            for game in fetch_team_season_games(
+                team, year, session=session, strict=strict
+            ):
                 current = by_id.get(game.game_id)
                 if current is not None:
                     identity = (
