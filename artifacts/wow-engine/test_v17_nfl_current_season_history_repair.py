@@ -359,3 +359,27 @@ def test_nfl_missing_champion_publication_flag_fails_closed(monkeypatch):
     assert result["probability_publishable"] is False
     assert db.predictions.rows[0]["model_probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def test_reused_immutable_nfl_prediction_never_becomes_publishable_retroactively(monkeypatch):
+    """Promoting a champion later cannot attest a held historical row."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    db = _DB()
+    _patch_model(monkeypatch, publishable=False)
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    assert first["model_probability_publishable"] is False
+    assert first["probability_publishable"] is False
+    assert db.predictions.rows[0]["model_probability_publishable"] is False
+
+    # Simulate a separate, properly governed later lifecycle change. This test
+    # does not promote any real model, write a production DB row or change P.
+    _patch_model(monkeypatch, publishable=True)
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+    assert reused["prediction_reused"] is True
+    assert reused["event_prediction_id"] == first["event_prediction_id"]
+    assert reused["model_probability_publishable"] is False
+    assert reused["probability_publishable"] is False
+    assert reused["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+    assert db.predictions.rows[0]["model_probability_publishable"] is False
+    assert len(db.predictions.rows) == 1
+    assert reused["can_execute"] is False
