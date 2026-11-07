@@ -490,3 +490,38 @@ def test_soccer_failure_codes_are_registered():
     assert not {code for code in fixed_codes if f"`{code}`" not in registry}
     assert "`SOCCER_OFFICIAL_SOURCE_HTTP_{status}`" in registry
 
+
+
+@pytest.mark.parametrize("role", ["", "neutral", "unknown"])
+@pytest.mark.parametrize("partial_first", [False, True])
+def test_matching_missing_role_cannot_make_other_fixture_unique(role, partial_first):
+    partial = scoreboard_event("401800030")
+    partial["competitions"][0]["competitors"][0]["homeAway"] = role
+    good = scoreboard_event("401800031")
+    rows = [partial, good] if partial_first else [good, partial]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+    assert exc.value.detail == "partial matching fixture"
+
+
+def test_unrelated_missing_role_does_not_suppress_verified_fixture():
+    partial = scoreboard_event(
+        "401800032", home=("999", "Unrelated Club", "Unrelated"),
+        away=("998", "Other Club", "Other"),
+    )
+    partial["competitions"][0]["competitors"][0]["homeAway"] = ""
+    out = _resolve(fetcher=fetcher_for({
+        ("eng.1", "20261107"): [partial, scoreboard_event("401800033")],
+    }))
+    assert out["event_id"] == "SOCCER:401800033"
+
+
+def test_distant_missing_role_does_not_suppress_verified_fixture():
+    partial = scoreboard_event("401800034", date="2026-11-08T12:30:00Z")
+    partial["competitions"][0]["competitors"][0]["homeAway"] = ""
+    out = _resolve(fetcher=fetcher_for({
+        ("eng.1", "20261108"): [partial],
+        ("eng.1", "20261107"): [scoreboard_event("401800035")],
+    }))
+    assert out["event_id"] == "SOCCER:401800035"
