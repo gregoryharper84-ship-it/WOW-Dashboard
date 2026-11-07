@@ -3,7 +3,10 @@
 Existing ``wow_d1_source_events`` rows deliberately are not updated or deleted.
 This module appends settled regular-season games with an explicit V2 provenance
 block (game type, neutral site, settled state, ingest code SHA). Re-running is
-idempotent through the shared unique source identity.
+idempotent through the shared unique source identity. Before any write the lane
+re-reads the persisted season and fails closed when a planned event would append
+a second V2 identity: rows are immutable, so that state could never be repaired
+by retrying.
 
 Only first-party official NHL results are accepted. The module cannot train,
 certify, promote, publish a probability, rank an event, or execute a wager.
@@ -68,12 +71,22 @@ def _season_start_year(value: Any) -> int:
     return start_year
 
 
+def _exact_season_id(value: Any) -> int | None:
+    """Return an exact season id; floats and booleans are never coerced."""
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def _blocked(code: str, *, stage: str, detail: Any = None) -> dict[str, Any]:
     return {
         "status": "BLOCKED",
         "code": code,
         "blocked_stage": stage,
         "detail": detail,
+        "provenance_complete": False,
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": False,
@@ -168,6 +181,46 @@ def build_reingest_rows(
     return [by_id[key] for key in sorted(by_id, key=lambda item: (by_id[item]["event_start_time"], item))]
 
 
+def _persisted_v2_identities(
+    db: Any, *, season: int, expected: Iterable[str]
+) -> dict[str, set[str]]:
+    """Read persisted V2 envelope identities for the events about to be written.
+
+    Existing rows are never mutated, so appending a second identity for one
+    official event would leave the season unusable for fitted replay with no
+    retry path. This read-only preflight lets the lane fail closed instead.
+    """
+    wanted = set(expected)
+    identities: dict[str, set[str]] = {}
+    for row in load_nhl_season_events(db, season=season):
+        event_id = str(row.get("official_event_id") or "").strip()
+        if event_id not in wanted:
+            continue
+        outcome = row.get("outcome_json")
+        if not isinstance(outcome, dict):
+            continue
+        if outcome.get("provenance_version") != SOURCE_PROVENANCE_VERSION:
+            continue
+        identities.setdefault(event_id, set()).add(
+            str(row.get("source_payload_sha256") or "").strip().lower()
+        )
+    return identities
+
+
+def _identity_conflicts(
+    rows: Iterable[dict[str, Any]], persisted: dict[str, set[str]]
+) -> list[str]:
+    """Return planned events whose persisted V2 identity would not converge."""
+    conflicted: list[str] = []
+    for row in rows:
+        event_id = str(row.get("official_event_id") or "").strip()
+        observed = persisted.get(event_id) or set()
+        planned = str(row.get("source_payload_sha256") or "").strip().lower()
+        if len(observed) > 1 or (observed and planned not in observed):
+            conflicted.append(event_id)
+    return sorted(conflicted)
+
+
 def run_nhl_source_reingest(
     db: Any,
     *,
@@ -186,7 +239,15 @@ def run_nhl_source_reingest(
     from nhl_candidate_pipeline import NHLCandidateError, fetch_historical_games
 
     try:
-        effective_season = int(season) if season is not None else default_season_id()
+        if season is None:
+            effective_season = default_season_id()
+        else:
+            exact_season = _exact_season_id(season)
+            if exact_season is None:
+                raise NHLSourceReingestError(
+                    "NHL_SEASON_ID_INVALID", type(season).__name__
+                )
+            effective_season = exact_season
         start_year = _season_start_year(effective_season)
     except (TypeError, ValueError, NHLSourceReingestError) as exc:
         return _blocked(
@@ -243,6 +304,28 @@ def run_nhl_source_reingest(
         )
 
     expected_events = {row["official_event_id"] for row in rows}
+    try:
+        persisted = _persisted_v2_identities(
+            db, season=effective_season, expected=expected_events
+        )
+    except NHLFittedSpecialistError as exc:
+        return _blocked(
+            "NHL_SOURCE_IDENTITY_UNVERIFIABLE",
+            stage="SOURCE_IDENTITY",
+            detail={"blockers": list(exc.blockers)},
+        )
+    conflicted = _identity_conflicts(rows, persisted)
+    if conflicted:
+        return _blocked(
+            "NHL_SOURCE_IDENTITY_CONFLICT",
+            stage="SOURCE_IDENTITY",
+            detail={
+                "conflicting_event_n": len(conflicted),
+                "conflicting_event_ids": conflicted[:20],
+                "retryable": False,
+                "requires_append_only_correction_protocol": True,
+            },
+        )
     if dry_run:
         return {
             "status": "NHL_SOURCE_REINGEST_DRY_RUN_READY",

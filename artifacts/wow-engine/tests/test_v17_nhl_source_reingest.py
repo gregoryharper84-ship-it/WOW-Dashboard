@@ -287,7 +287,8 @@ def test_reingest_dry_run_does_not_write():
     assert result["status"] == "NHL_SOURCE_REINGEST_DRY_RUN_READY"
     assert result["source_event_n"] == 32
     assert db.rows.get("wow_d1_source_events", []) == []
-    assert db.operations == []
+    assert all(mode == "select" for _, mode, _ in db.operations)
+    assert db.upsert_attempts == 0
 
 
 def test_reingest_treats_final_and_off_as_one_settled_identity():
@@ -744,4 +745,87 @@ def test_internal_reingest_route_rejects_anonymous_requests():
             "/internal/v17/nhl-source-reingest", params={"dry_run": "true"}
         )
     assert response.status_code == 401
+    assert db.rows == {}
+
+
+def _install_corrected_acquisition(monkeypatch, games, **changes):
+    corrected = [
+        replace(game, **changes) if game.game_id == games[0].game_id else game
+        for game in games
+    ]
+    monkeypatch.setattr(
+        pipeline, "fetch_historical_games", lambda *args, **kwargs: corrected
+    )
+
+
+def test_reingest_blocks_a_corrected_identity_instead_of_appending_a_second_row(
+    monkeypatch,
+):
+    games = _normalized_games(_fixture())
+    db = _FakeDB()
+    assert _run(db)["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    persisted = [dict(row) for row in db.rows["wow_d1_source_events"]]
+
+    # A later official read reports a corrected score for a settled game. The
+    # corrected envelope is a new unique key, so appending it would leave two
+    # immutable identities that the reader must reject for the whole season.
+    _install_corrected_acquisition(monkeypatch, games, home_score=games[0].home_score + 1)
+    result = _run(db)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_IDENTITY_CONFLICT"
+    assert result["provenance_complete"] is False
+    assert result["detail"]["conflicting_event_ids"] == [games[0].game_id]
+    assert result["detail"]["retryable"] is False
+    assert result["can_execute"] is False
+    assert db.rows["wow_d1_source_events"] == persisted
+
+
+def test_reingest_dry_run_reports_the_identity_conflict_without_writing(monkeypatch):
+    games = _normalized_games(_fixture())
+    db = _FakeDB()
+    assert _run(db)["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    persisted = [dict(row) for row in db.rows["wow_d1_source_events"]]
+
+    _install_corrected_acquisition(monkeypatch, games, home_score=games[0].home_score + 1)
+    result = _run(db, dry_run=True)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_IDENTITY_CONFLICT"
+    assert db.rows["wow_d1_source_events"] == persisted
+
+
+def test_reingest_never_reports_complete_for_an_already_conflicted_season():
+    games = _normalized_games(_fixture())
+    db = _FakeDB()
+    assert _run(db)["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    rows = db.rows["wow_d1_source_events"]
+    target = games[0].game_id
+
+    forged = dict(next(row for row in rows if row["official_event_id"] == target))
+    forged["source_event_id"] = "source-forged-conflict"
+    forged["source_payload_sha256"] = "f" * 64
+    rows.append(forged)
+
+    result = _run(db)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_IDENTITY_CONFLICT"
+    assert result["detail"]["conflicting_event_ids"] == [target]
+    assert len(rows) == 33
+
+
+@pytest.mark.parametrize("season", [20262027.5, True, "20262027.0", "2026-2027"])
+def test_reingest_rejects_inexact_season_evidence(season):
+    db = _FakeDB()
+    result = reingest.run_nhl_source_reingest(
+        db,
+        season=season,
+        teams=("BOS", "PIT"),
+        session=_Session(_by_team(_fixture())),
+        ingest_code_sha=INGEST_SHA,
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SEASON_ID_INVALID"
+    assert result["provenance_complete"] is False
     assert db.rows == {}

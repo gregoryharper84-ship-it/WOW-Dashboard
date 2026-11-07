@@ -224,7 +224,7 @@ Typed holds preserved:
   tests/test_*team_event*.py tests/test_*candidate*.py \
   test_v17_nhl_model_maintenance.py test_v17_d1_candidate_registry.py \
   test_v17_model_source_entitlements.py
-654 passed  (29 files)
+662 passed  (29 files)
 ```
 
 The new suite proves: the real registry artifact checksum is reproduced; a
@@ -246,7 +246,13 @@ commitment is retained; an exact synthetic collision fails closed without an
 overwrite; a partial batch write retries to one row per event; concurrent
 attempts converge; tampered scores or identities are rejected by envelope
 recomputation; invalid neutral-site evidence is rejected; and the internal
-route rejects anonymous requests without touching the database. The persisted
+route rejects anonymous requests without touching the database. A later official
+read that reports a corrected score or start time is blocked before any write
+(dry-run included) with `NHL_SOURCE_IDENTITY_CONFLICT` and
+`provenance_complete=false` rather than appending a second immutable identity
+that the reader would reject for the whole season; an already-conflicted season
+can never be reported complete, and inexact season evidence is rejected instead
+of truncated. The persisted
 genuine timeline replays target `2026020257` (PIT 2 – BOS 6) with exact
 training-pipeline feature parity (15 home / 16 away prior games), then scores
 with the governed artifact while remaining non-publishable.
