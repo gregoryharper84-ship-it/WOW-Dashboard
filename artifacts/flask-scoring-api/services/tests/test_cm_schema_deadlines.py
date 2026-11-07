@@ -15,10 +15,16 @@ def _bootstrap_namespace(connection):
     """Load the actual bootstrap function with an isolated connection and readiness state."""
     tree = ast.parse(APP.read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_cm_ensure_schema")
+    clock = [0.0]
     namespace = {
         "_CM_SCHEMA_READY": False,
         "_CM_SLIP_MIGRATE_READY": False,
+        "_CM_SHADOW_MIGRATE_READY": False,
+        "_CM_OPTIONAL_LAST_FAILED_AT": None,
+        "_CM_OPTIONAL_RETRY_SECONDS": 30,
         "_CM_SCHEMA_LOCK": threading.Lock(),
+        "_boot_t": SimpleNamespace(monotonic=lambda: clock[0]),
+        "_cm_test_clock": clock,
         "get_db_conn": lambda: connection,
         "app": SimpleNamespace(logger=logging.getLogger(__name__)),
     }
@@ -111,6 +117,7 @@ def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema(
     assert ns["_CM_SCHEMA_READY"]
     assert not ns["_CM_SLIP_MIGRATE_READY"]
     conn.fail = None
+    ns["_cm_test_clock"][0] += 31
     ns["_cm_ensure_schema"]()
     assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
     assert conn.statements.count(ns["_CM_SCHEMA_DDL"]) == 1
@@ -162,6 +169,7 @@ def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
                 assert cursor.fetchone()[0] == "cm_boards"
         # Remove the transient error and retry without clearing readiness.
         ns["_CM_SLIP_MIGRATE_DDL"] = ns["_CM_SLIP_MIGRATE_DDL"].removesuffix("\nSELECT 1/0;")
+        ns["_cm_test_clock"][0] += 31
         ns["_cm_ensure_schema"]()
         assert ns["_CM_SLIP_MIGRATE_READY"]
         ns["_CM_SCHEMA_READY"] = False
@@ -308,3 +316,40 @@ def test_strict_exposure_lookup_preserves_complete_results(matching):
     assert result == ([{"leg": "Synthetic fixture", "exposure_key": key,
                         "conflict_type": "NO_DUPLICATE_THESIS", "existing_slip_id": "fixture-slip"}]
                       if matching else [])
+
+
+def test_cm_repeated_failed_optional_migration_is_throttled_and_shadow_not_replayed():
+    """One locked optional table must not impose a 3-second wait on every request."""
+    conn = Connection(fail="ALTER TABLE cm_slips")
+    ns = _bootstrap_namespace(conn)
+    ns["_cm_ensure_schema"]()
+    assert ns["_CM_SCHEMA_READY"] is True
+    assert ns["_CM_SHADOW_MIGRATE_READY"] is True
+    assert ns["_CM_SLIP_MIGRATE_READY"] is False
+    for _ in range(5):
+        ns["_cm_ensure_schema"]()
+    assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 1
+    assert conn.statements.count(ns["_CM_SHADOW_RESULT_MIGRATE_DDL"]) == 1
+    conn.fail = None
+    ns["_cm_test_clock"][0] += 31
+    ns["_cm_ensure_schema"]()
+    assert ns["_CM_SLIP_MIGRATE_READY"] and ns["_CM_SHADOW_MIGRATE_READY"]
+    assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
+    assert conn.statements.count(ns["_CM_SHADOW_RESULT_MIGRATE_DDL"]) == 1
+
+
+def test_cm_only_failed_shadow_migration_retries_after_cooldown():
+    """A recovered shadow migration never reruns a committed slip migration."""
+    conn = Connection(fail="ALTER TABLE kalshi_wx_shadow_results")
+    ns = _bootstrap_namespace(conn)
+    ns["_cm_ensure_schema"]()
+    assert ns["_CM_SLIP_MIGRATE_READY"] and not ns["_CM_SHADOW_MIGRATE_READY"]
+    for _ in range(3):
+        ns["_cm_ensure_schema"]()
+    assert conn.statements.count(ns["_CM_SHADOW_RESULT_MIGRATE_DDL"]) == 1
+    conn.fail = None
+    ns["_cm_test_clock"][0] += 31
+    ns["_cm_ensure_schema"]()
+    assert ns["_CM_SLIP_MIGRATE_READY"] and ns["_CM_SHADOW_MIGRATE_READY"]
+    assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 1
+    assert conn.statements.count(ns["_CM_SHADOW_RESULT_MIGRATE_DDL"]) == 2

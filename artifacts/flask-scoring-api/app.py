@@ -13732,6 +13732,9 @@ CM_SLIP_POSITIVE_NET_RETURN_PRIMARY   = True   # PATCH-017: positive_net_return 
 
 _CM_SCHEMA_READY = False
 _CM_SLIP_MIGRATE_READY = False
+_CM_SHADOW_MIGRATE_READY = False
+_CM_OPTIONAL_LAST_FAILED_AT = None
+_CM_OPTIONAL_RETRY_SECONDS = 30
 _CM_SCHEMA_LOCK  = threading.Lock()
 
 _CM_SCHEMA_DDL = """
@@ -13946,46 +13949,61 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
 """
 
 def _cm_ensure_schema():
-    """Create required CM schema with bounded DDL; isolate optional migrations."""
+    """Create required schema; bound retries of failed optional migrations."""
     global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY
-    if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
+    global _CM_SHADOW_MIGRATE_READY, _CM_OPTIONAL_LAST_FAILED_AT
+    if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY and _CM_SHADOW_MIGRATE_READY:
+        return
+    # A repeatedly lock-blocked optional ALTER cannot serialize every request
+    # behind _CM_SCHEMA_LOCK. Retry only after a bounded cooldown; calls that
+    # require optional columns still receive database errors if they are absent.
+    if (_CM_SCHEMA_READY and _CM_OPTIONAL_LAST_FAILED_AT is not None
+            and _boot_t.monotonic() - _CM_OPTIONAL_LAST_FAILED_AT < _CM_OPTIONAL_RETRY_SECONDS):
         return
     with _CM_SCHEMA_LOCK:
-        if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
+        if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY and _CM_SHADOW_MIGRATE_READY:
+            return
+        if (_CM_SCHEMA_READY and _CM_OPTIONAL_LAST_FAILED_AT is not None
+                and _boot_t.monotonic() - _CM_OPTIONAL_LAST_FAILED_AT < _CM_OPTIONAL_RETRY_SECONDS):
             return
         try:
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
-                    # Match the session-ledger warmup limits. SET LOCAL cannot
-                    # leak deadlines into later pooled application operations.
+                    # Transaction-local deadline cannot escape into later pooled
+                    # request operations, even when optional DDL is rolled back.
                     cur.execute("SET LOCAL lock_timeout = '3000ms'")
                     cur.execute("SET LOCAL statement_timeout = '10000ms'")
                     if not _CM_SCHEMA_READY:
                         cur.execute(_CM_SCHEMA_DDL)
-                    # These migrations are historically optional. Savepoints
-                    # preserve the required schema if one statement fails;
-                    # catching an error alone leaves PostgreSQL aborted.
-                    cur.execute("SAVEPOINT cm_slip_migration")
-                    slip_ready = False
-                    try:
-                        cur.execute(_CM_SLIP_MIGRATE_DDL)
-                        slip_ready = True
-                    except Exception as mig_err:
-                        cur.execute("ROLLBACK TO SAVEPOINT cm_slip_migration")
-                        app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
-                    finally:
-                        cur.execute("RELEASE SAVEPOINT cm_slip_migration")
-                    cur.execute("SAVEPOINT cm_shadow_migration")
-                    try:
-                        cur.execute(_CM_SHADOW_RESULT_MIGRATE_DDL)
-                    except Exception as mig_err:
-                        cur.execute("ROLLBACK TO SAVEPOINT cm_shadow_migration")
-                        app.logger.warning(f"Shadow result migration (non-fatal): {mig_err}")
-                    finally:
-                        cur.execute("RELEASE SAVEPOINT cm_shadow_migration")
+                    slip_ready = _CM_SLIP_MIGRATE_READY
+                    if not slip_ready:
+                        cur.execute("SAVEPOINT cm_slip_migration")
+                        try:
+                            cur.execute(_CM_SLIP_MIGRATE_DDL)
+                            slip_ready = True
+                        except Exception as mig_err:
+                            cur.execute("ROLLBACK TO SAVEPOINT cm_slip_migration")
+                            app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
+                        finally:
+                            cur.execute("RELEASE SAVEPOINT cm_slip_migration")
+                    shadow_ready = _CM_SHADOW_MIGRATE_READY
+                    if not shadow_ready:
+                        cur.execute("SAVEPOINT cm_shadow_migration")
+                        try:
+                            cur.execute(_CM_SHADOW_RESULT_MIGRATE_DDL)
+                            shadow_ready = True
+                        except Exception as mig_err:
+                            cur.execute("ROLLBACK TO SAVEPOINT cm_shadow_migration")
+                            app.logger.warning(f"Shadow result migration (non-fatal): {mig_err}")
+                        finally:
+                            cur.execute("RELEASE SAVEPOINT cm_shadow_migration")
                 conn.commit()
             _CM_SCHEMA_READY = True
             _CM_SLIP_MIGRATE_READY = slip_ready
+            _CM_SHADOW_MIGRATE_READY = shadow_ready
+            _CM_OPTIONAL_LAST_FAILED_AT = (
+                None if slip_ready and shadow_ready else _boot_t.monotonic()
+            )
             app.logger.info("CM required schema ready (optional migration failures logged separately)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")

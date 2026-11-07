@@ -620,5 +620,5 @@ These pre-existing detail failures remain in the NBA hydration / calibrated-spec
 
 | Canonical detail code | Owning lane/stage | Exact condition | Recovery class | Rank eligible? |
 |---|---|---|---|---|
-| `ESPN_RECENT_WINDOW_GAP_NOT_COVERED` | NBA current-season SportsDataverse/ESPN hydration | For the **current NBA ending-year season only**, the permitted 14-day ESPN supplement cannot cover the complete gap from the persisted canonical corpus. A completed preceding season must never trigger this code. | DATA_SOURCE_COVERAGE | No |
+| `ESPN_RECENT_WINDOW_GAP_NOT_COVERED` | WNBA current-season SportsDataverse/ESPN hydration | During an active WNBA season, the eligible ESPN scoreboard supplement's 14-day covered window cannot bridge the full gap after the last persisted canonical settlement; reject without advancing the corpus date fence. NBA instead holds with `NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED` before any ESPN supplement fetch. | DATA_SOURCE_COVERAGE | No |
 | `NBA_CERTIFIED_CALIBRATOR_INVALID` | NBA fitted specialist certified-calibrator RPC | RPC row missing nested mapping `artifact_payload` or containing a legacy flat outer `artifact_type` that would bypass digest verification; reject even if declared digest/ID appear to match certification. | CODE_REPAIR | No |
