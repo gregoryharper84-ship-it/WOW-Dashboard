@@ -40,3 +40,12 @@ jobs:
         run: |
           npm install --ignore-scripts --no-audit --no-fund --package-lock=false
           npm run typecheck
+      - name: Prepare reproducible lockfile artifact for review
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Retain lockfile for future pinned CI
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-trigger-pilot-lockfile-${{ github.sha }}
+          path: integrations/trigger-dev-pilot/package-lock.json
+          if-no-files-found: error
+          retention-days: 7

@@ -119,3 +119,16 @@ test("synthetic retry task is DEV-only and has no external side effects", () => 
   assert.match(source, /concurrency:\s*\{\s*total:\s*1\s*\}/);
   assert.doesNotMatch(source, /fetch\s*\(|https?:\/\/|POST|supabase|cron\s*\(|schedules\.task/i);
 });
+
+test("timeout is classified distinctly from other transport errors", async () => {
+  await assert.rejects(
+    observeWowHealth({ env:safe, fetchImpl: async () => { const e = new Error("timed out"); e.name = "TimeoutError"; throw e; } }),
+    e => e instanceof ProbeError && e.code === "HEALTH_TIMEOUT" && e.retryable === true,
+  );
+});
+
+test("task validates probe ID separately from remote health errors", () => {
+  const source = readFileSync(new URL("../src/trigger/read-only-health.ts", import.meta.url), "utf8");
+  assert.match(source, /idempotencyKeyFor\(payload\?\.probeId\);[\s\S]*?throw new AbortTaskRunError\("INVALID_PROBE_ID"\)/);
+  assert.doesNotMatch(source, /error instanceof TypeError/);
+});

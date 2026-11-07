@@ -42,7 +42,12 @@ export async function observeWowHealth({
       redirect: "error",
       signal: AbortSignal.timeout(8000),
     });
-  } catch {
+  } catch (error) {
+    if (error && typeof error === "object" && error.name === "TimeoutError") {
+      throw new ProbeError("HEALTH_TIMEOUT", true);
+    }
+    // A redirect refusal and a network transport error are not always
+    // distinguishable in fetch. Failures never turn into successful receipts.
     throw new ProbeError("HEALTH_TRANSPORT_UNAVAILABLE", true);
   }
   if (!response || typeof response.status !== "number") {
