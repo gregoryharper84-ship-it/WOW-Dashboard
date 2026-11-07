@@ -309,3 +309,32 @@ def test_soccer_scoreboard_missing_fixture_id_holds_mixed_page(monkeypatch, miss
     with pytest.raises(identity.SoccerEventIdentityError) as exc:
         identity._fetch_scoreboard("eng.1", "20261107")
     assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("bad_id", [
+    {"value": "401878758"}, ["401878758"], True, 401878758.0,
+    "401 878758", "401878758.0", "٤٠١٨٧٨٧٥٨",
+])
+def test_soccer_scoreboard_non_scalar_or_non_decimal_id_holds_page(monkeypatch, bad_id):
+    malformed = scoreboard_event()
+    malformed["id"] = bad_id
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200,
+            json=lambda: {"events": [malformed, scoreboard_event("401800090")]},
+        ),
+    )
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        identity._fetch_scoreboard("eng.1", "20261107")
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_soccer_scoreboard_integer_provider_id_is_valid(monkeypatch):
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200, json=lambda: {"events": [scoreboard_event(401800091)]},
+        ),
+    )
+    assert len(identity._fetch_scoreboard("eng.1", "20261107")) == 1
