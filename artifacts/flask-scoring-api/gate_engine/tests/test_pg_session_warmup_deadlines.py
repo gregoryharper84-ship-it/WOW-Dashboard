@@ -99,23 +99,31 @@ def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
         pytest.skip("real DB lock test is CI-local only")
     url = os.environ.get("DATABASE_URL")
     if not url:
-        pytest.skip("CI-local DATABASE_URL is unavailable")
-    psycopg2 = pytest.importorskip("psycopg2")
+        pytest.fail("CI-local DATABASE_URL is required for the real lock test")
+    try:
+        import psycopg2
+    except ImportError:
+        pytest.fail("psycopg2 is required for the CI PostgreSQL lock test")
     # psycopg2 does not expose sql as a package attribute until imported.
     # Explicit import makes this isolated CI integration test order-independent.
     from psycopg2 import sql
     parsed = psycopg2.extensions.parse_dsn(url)
     if parsed.get("host") not in ("localhost", "127.0.0.1") or parsed.get("dbname") != "wow_test":
-        pytest.skip("refuse any database that is not the isolated CI PostgreSQL service")
+        pytest.fail("CI PostgreSQL lock test must target loopback wow_test")
+    # Explicit hostaddr wins over URL and PGHOSTADDR environment routing. All
+    # schema create/use/drop connections remain on the local CI service.
+    local_dsn = psycopg2.extensions.make_dsn(
+        url, host="127.0.0.1", hostaddr="127.0.0.1", dbname="wow_test"
+    )
 
     schema = "wow_v17_warmup_" + uuid.uuid4().hex[:16]
     identifier = sql.Identifier(schema)
     # For this test only, every warmup operation resolves unqualified DDL to
     # a disposable schema, never to the CI main or any real production table.
     schema_dsn = psycopg2.extensions.make_dsn(
-        url, options=f"-csearch_path={schema}"
+        local_dsn, options=f"-csearch_path={schema}"
     )
-    with psycopg2.connect(url, connect_timeout=5) as setup:
+    with psycopg2.connect(local_dsn, connect_timeout=5) as setup:
         with setup.cursor() as cur:
             cur.execute(sql.SQL("CREATE SCHEMA {}").format(identifier))
 
@@ -168,6 +176,6 @@ def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
         if locked is not None:
             locked.rollback()
             locked.close()
-        with psycopg2.connect(url, connect_timeout=5) as cleanup:
+        with psycopg2.connect(local_dsn, connect_timeout=5) as cleanup:
             with cleanup.cursor() as cur:
                 cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(identifier))
