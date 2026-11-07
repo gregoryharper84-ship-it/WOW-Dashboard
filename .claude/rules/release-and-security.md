@@ -2,6 +2,8 @@
 paths:
   - ".github/workflows/**"
   - ".github/scripts/**"
+  - ".github/actions/**"
+  - "artifacts/wow-engine/v17/agent_identity_policy.py"
   - "supabase/**"
   - "artifacts/wow-engine/**/migrations/**"
 ---
