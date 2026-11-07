@@ -1,0 +1,20 @@
+{
+  "name": "@wow/trigger-readonly-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "dev": "trigger dev",
+    "deploy": "trigger deploy"
+  },
+  "dependencies": {
+    "@trigger.dev/sdk": "^4.8.3"
+  },
+  "devDependencies": {
+    "trigger.dev": "^4.8.3",
+    "typescript": "~5.9.2",
+    "@types/node": "^22.16.0"
+  }
+}
