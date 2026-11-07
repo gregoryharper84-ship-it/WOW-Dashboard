@@ -90,11 +90,8 @@ def test_unattested_competition_stays_alias_only_without_a_source_call(monkeypat
 def test_identity_failure_keeps_the_row_held(monkeypatch):
     import v17.soccer_event_identity as identity
 
-    class IdentityFailure(RuntimeError):
-        code = "SOCCER_CANONICAL_EVENT_NOT_FOUND"
-
     def fail(**_kwargs):
-        raise IdentityFailure("no fixture")
+        raise identity.SoccerEventIdentityError("SOCCER_CANONICAL_EVENT_NOT_FOUND")
 
     monkeypatch.setattr(identity, "resolve_soccer_current_event_identity", fail)
     out = canonicalize_soccer_discovery_identity(soccer_alias_event())
