@@ -99,6 +99,31 @@ def test_receipt_aggregator_fail_closed_behavior(
     assert completed.returncode == expected
 
 
+@pytest.mark.parametrize(("readback", "expected"), [("success", 0), ("failure", 1), ("skipped", 1)])
+def test_repeat_acceptance_skip_requires_successful_fresh_readback(tmp_path, readback, expected):
+    env = {
+        **os.environ,
+        "WOW_CAN_EXECUTE": "false",
+        "WOW_DRY_RUN_ONLY": "true",
+        "SPREAD_FORWARD": "skipped",
+        "SPREAD_CERTIFICATION": "skipped",
+        "PRIORITY_PROPS": "skipped",
+        "GOLDEN_FULL_SLATE": "skipped",
+        "DEPLOYMENT_READBACK": readback,
+        "ALREADY_ACCEPTED": "true",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+    completed = subprocess.run(["bash", "-c", _receipt_script()], cwd=ROOT, env=env,
+                               text=True, capture_output=True, check=False)
+    assert completed.returncode == expected
+
+
+def test_expensive_lanes_are_gated_on_not_already_accepted():
+    jobs = _load()["jobs"]
+    for name in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
+        assert "already_accepted != 'true'" in jobs[name]["if"]
+
+
 def test_post_deploy_native_trigger_and_all_lane_admission_require_direct_readback():
     workflow = _load()
     assert workflow["on"]["workflow_run"]["workflows"] == ["wow-v17-lean-production-readback"]

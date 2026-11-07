@@ -1,5 +1,6 @@
 import express, { type Express, type ErrorRequestHandler } from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
@@ -42,11 +43,18 @@ const rawBase = process.env.BASE_PATH ?? "/final-lock/";
 if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(rawBase)) {
   throw new Error("BASE_PATH must be / or an absolute path ending in /.");
 }
+// Bound file-serving cost per client; the static build is public but not free.
+const staticLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
 const base = rawBase === "/" ? "" : rawBase.slice(0, -1);
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../final-lock/dist/public");
-app.use(base || "/", express.static(publicDir));
-app.get(`${base}/*splat`, (_req, res) => { res.sendFile(path.join(publicDir, "index.html")); });
-app.get(base || "/", (_req, res) => { res.sendFile(path.join(publicDir, "index.html")); });
+app.use(base || "/", staticLimiter, express.static(publicDir));
+app.get(`${base}/*splat`, staticLimiter, (_req, res) => { res.sendFile(path.join(publicDir, "index.html")); });
+app.get(base || "/", staticLimiter, (_req, res) => { res.sendFile(path.join(publicDir, "index.html")); });
 
 const apiError: ErrorRequestHandler = (error, req, res, next) => {
   if (!req.path.startsWith("/api/")) return next(error);

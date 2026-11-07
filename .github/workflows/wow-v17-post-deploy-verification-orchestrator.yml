@@ -33,6 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     environment: wow-release
+    outputs:
+      already_accepted: ${{ steps.dedupe.outputs.already_accepted }}
     env:
       GH_TOKEN: ${{ github.token }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -63,6 +65,22 @@ jobs:
         # fresh GET-only service/deploy/current-main evidence gates these lanes.
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
+      - name: Skip repeat acceptance for an SHA that already passed
+        id: dedupe
+        # The hourly observer re-triggers this workflow on unchanged
+        # deployments. The fresh readback above still ran (drift fails the job);
+        # only the expensive lanes are skipped, and only when a prior run of
+        # this orchestrator fully succeeded on this exact SHA. Manual dispatch
+        # always runs everything.
+        run: |
+          already=false
+          if [ "$SOURCE_EVENT" = "workflow_run" ]; then
+            prior=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-post-deploy-verification-orchestrator.yml/runs?head_sha=${EXPECTED_SHA}&status=completed&per_page=50" \
+              --jq "[.workflow_runs[] | select(.conclusion==\"success\" and .id != ${GITHUB_RUN_ID})] | length")
+            [ "${prior:-0}" -gt 0 ] && already=true
+          fi
+          echo "already_accepted=${already}" >> "$GITHUB_OUTPUT"
+
       - name: Preserve readback receipt (observation, never SIRT approval)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -75,7 +93,9 @@ jobs:
   spread-forward:
     name: Run spread-forward production canaries
     needs: deployment-readback
-    if: needs.deployment-readback.result == 'success'
+    if: >-
+      needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.already_accepted != 'true'
     uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml
     secrets: inherit
 
@@ -85,6 +105,7 @@ jobs:
     if: >-
       always() &&
       needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.already_accepted != 'true' &&
       needs.spread-forward.result == 'success'
     uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
     secrets: inherit
@@ -94,7 +115,8 @@ jobs:
     needs: [deployment-readback, spread-forward, spread-certification]
     if: >-
       always() &&
-      needs.deployment-readback.result == 'success'
+      needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.already_accepted != 'true'
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
     with:
       post_deploy_smoke: true
@@ -105,7 +127,8 @@ jobs:
     needs: [deployment-readback, priority-props]
     if: >-
       always() &&
-      needs.deployment-readback.result == 'success'
+      needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.already_accepted != 'true'
     uses: ./.github/workflows/wow-v17-daily-snapshot.yml
     with:
       post_deploy_acceptance: true
@@ -133,6 +156,7 @@ jobs:
         shell: bash
         env:
           DEPLOYMENT_READBACK: ${{ needs.deployment-readback.result }}
+          ALREADY_ACCEPTED: ${{ needs.deployment-readback.outputs.already_accepted }}
           SPREAD_FORWARD: ${{ needs.spread-forward.result }}
           SPREAD_CERTIFICATION: ${{ needs.spread-certification.result }}
           PRIORITY_PROPS: ${{ needs.priority-props.result }}
@@ -157,6 +181,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           failed=0
+
+          # Unchanged SHA already fully accepted: lanes were intentionally not
+          # repeated. Only a verified-success readback may take this path.
+          if [ "${ALREADY_ACCEPTED:-}" = "true" ]; then
+            [ "$DEPLOYMENT_READBACK" = "success" ] || failed=1
+            echo "Lanes skipped: this SHA already passed all acceptance lanes." >> "$GITHUB_STEP_SUMMARY"
+            exit "$failed"
+          fi
 
           # Manual and observer-triggered acceptance require every lane.
           # A skipped readback or full-slate lane is missing evidence.

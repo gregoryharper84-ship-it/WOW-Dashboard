@@ -219,6 +219,20 @@ def test_absent_current_season_can_use_verified_previous_season():
     assert {row["season"] for row in result["box_score_log"]} == {2025}
 
 
+def test_missing_middle_season_fails_closed_instead_of_skipping_gap():
+    rows26, events26 = _regular(2026, range(1, 3))
+    rows24, events24 = _regular(2024, range(1, 19))
+    source = _Sources(_event(2026, 3, "2026-09-15T17:00:00Z", completed=False),
+                      {2026: rows26, 2024: rows24},
+                      {(2026, 2): events26, (2024, 2): events24}, statuses={2025: 404})
+
+    with pytest.raises(nfl.NFLPropHydrationError) as caught:
+        _hydrate(source, "2026-09-15T17:00:00Z")
+
+    assert caught.value.code == "NFL_PROP_HISTORY_CHRONOLOGY_UNVERIFIED"
+    assert caught.value.detail["missing_seasons"] == [2025]
+
+
 @pytest.mark.parametrize("status", [401, 429, 500])
 def test_stats_source_errors_cannot_be_replaced_by_previous_season(status):
     rows, events = _regular(2025, range(1, 19))

@@ -85,6 +85,7 @@ _PUBLIC_REASON_PREFIXES = (
     "BASKETBALL_", "BALLDONTLIE_", "SPORTSDATAVERSE_",
     "ESPN_", "NBA_", "WNBA_", "SOURCE_", "MODEL_", "CALIBRATION_",
 )
+_PUBLIC_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 _LEGACY_PUBLIC_REASONS = frozenset({
     "BALLDONTLIE_API_KEY unavailable",
     "SUPABASE service credential unavailable",
@@ -101,14 +102,18 @@ def _public_failure_code(exc: Exception, fallback: str) -> str:
     if not isinstance(exc, (BasketballHydrationError, RuntimeError)):
         return fallback
     raw = str(exc).strip()
-    if raw in _LEGACY_PUBLIC_REASONS:
-        return raw
+    for legacy in _LEGACY_PUBLIC_REASONS:
+        if raw == legacy:
+            # Return the trusted constant, not the exception-derived string.
+            return legacy
     token = re.split(r"[:\s]", raw, maxsplit=1)[0]
     if (
         token.startswith(_PUBLIC_REASON_PREFIXES)
         and re.fullmatch(r"[A-Z][A-Z0-9_]{3,119}", token, flags=re.ASCII)
     ):
-        return token
+        # Rebuild the code character by character from a constant alphabet so
+        # no exception-derived string object reaches the HTTP response.
+        return "".join(_PUBLIC_CODE_ALPHABET[_PUBLIC_CODE_ALPHABET.index(ch)] for ch in token)
     return fallback
 
 
