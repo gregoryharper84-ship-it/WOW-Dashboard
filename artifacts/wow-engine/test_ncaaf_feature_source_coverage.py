@@ -40,7 +40,16 @@ def test_seed_parser_accepts_a_reformatted_row_and_rejects_bad_seeds():
         "CFBD_SCHEDULE_GEOMETRY_V1": frozenset({"REST_TRAVEL"}),
     }
     mismatched = formatted.replace("'REST_TRAVEL'", "'TEAM_POWER'")
-    assert parse_evidence_source_seeds(mismatched) != APPROVED_PROVIDER_KINDS
+    assert parse_evidence_source_seeds(mismatched) == {
+        "CFBD_SCHEDULE_GEOMETRY_V1": frozenset({"TEAM_POWER"}),
+    }
+    commented = "\n".join(
+        "-- " + line for line in formatted.splitlines()
+    )
+    assert parse_evidence_source_seeds(commented) == {}
+    assert parse_evidence_source_seeds(
+        formatted + "\n-- ('DISABLED_PROVIDER', 'RESEARCH_SOURCE', 'B', array['REST_TRAVEL'])"
+    ) == {"CFBD_SCHEDULE_GEOMETRY_V1": frozenset({"REST_TRAVEL"})}
     duplicate = formatted + "\n" + formatted
     with pytest.raises(ValueError, match="NCAAF_EVIDENCE_SOURCE_DUPLICATE:CFBD_SCHEDULE_GEOMETRY_V1"):
         parse_evidence_source_seeds(duplicate)
