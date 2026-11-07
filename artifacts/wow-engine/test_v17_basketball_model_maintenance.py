@@ -15,7 +15,7 @@ def test_default_seasons_are_four_year_window():
 def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
     seen = []
 
-    def fake_hydrate(sport, seasons, client=None):
+    def fake_hydrate(sport, seasons, client=None, *, now=None):
         seen.append(("hydrate", sport, tuple(seasons), client))
         return {"sport": sport, "settled_rows": 100, "can_execute": False}
 

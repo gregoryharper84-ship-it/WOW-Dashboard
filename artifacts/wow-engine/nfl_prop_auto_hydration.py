@@ -10,7 +10,9 @@ or executes a probability/wager.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 import math
 import re
 import threading
@@ -26,6 +28,7 @@ EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 ESPN_SEARCH_URL = "https://site.api.espn.com/apis/search/v2"
 ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+ESPN_TEAM_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/schedule"
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 HTTP_TIMEOUT_SECONDS = 12.0
 HTTP_ATTEMPTS = 2
@@ -68,6 +71,7 @@ ESPN_TO_NFLVERSE_TEAM = {
 
 _CACHE_LOCK = threading.RLock()
 _CSV_CACHE: dict[int, tuple[float, list[dict[str, str]], str]] = {}
+_SCHEDULE_CACHE: dict[tuple[int, str, str], tuple[float, list[dict[str, Any]], str]] = {}
 
 
 class NFLPropHydrationError(RuntimeError):
@@ -102,6 +106,7 @@ def _request(
     json_expected: bool = True,
 ) -> Any:
     errors: list[str] = []
+    http_statuses: list[int] = []
     for attempt in range(1, HTTP_ATTEMPTS + 1):
         try:
             response = http_get(
@@ -112,6 +117,7 @@ def _request(
                 follow_redirects=True,
             )
             status = int(getattr(response, "status_code", 200))
+            http_statuses.append(status)
             if status >= 400:
                 raise RuntimeError(f"HTTP_{status}")
             if json_expected:
@@ -133,7 +139,7 @@ def _request(
     raise NFLPropHydrationError(
         "NFL_PROP_SOURCE_UNAVAILABLE",
         "required NFL evidence source could not be retrieved",
-        detail={"url": url, "errors": errors[-4:]},
+        detail={"url": url, "errors": errors[-4:], "http_statuses": http_statuses},
     )
 
 
@@ -220,9 +226,13 @@ def _canonical_event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(week_payload, Mapping):
         week_payload = competition.get("week") if isinstance(competition, Mapping) else None
     try:
-        season = int((season_payload or {}).get("year"))
-        week = int((week_payload or {}).get("number"))
-    except (TypeError, ValueError, AttributeError) as exc:
+        raw_season = (season_payload or {}).get("year")
+        raw_week = (week_payload or {}).get("number")
+        season = int(raw_season)
+        week = int(raw_week)
+        if any(isinstance(value, bool) or float(value) != number for value, number in ((raw_season, season), (raw_week, week))):
+            raise ValueError("nonintegral season/week")
+    except (TypeError, ValueError, OverflowError, AttributeError) as exc:
         raise NFLPropHydrationError(
             "PROP_EVENT_IDENTITY_CONFLICT",
             "ESPN target NFL event lacked season/week metadata needed for canonical identity",
@@ -340,6 +350,7 @@ def _target_event(
         )
     return {
         "event_id": str(event.get("id") or ""),
+        "provider_event_start_time": _aware(event["date"]).isoformat(),
         "team": team,
         "opponent": other,
         **canonical_metadata,
@@ -387,6 +398,193 @@ def _num(row: Mapping[str, Any], key: str) -> float:
     return value if math.isfinite(value) else 0.0
 
 
+def _history_unverified(message: str, **detail: Any) -> NFLPropHydrationError:
+    return NFLPropHydrationError("NFL_PROP_HISTORY_CHRONOLOGY_UNVERIFIED", message, detail=detail)
+
+
+def _cached_team_schedule(
+    season: int,
+    team: str,
+    season_type: str,
+    *,
+    http_get: Callable[..., Any],
+    now_ts: float,
+) -> tuple[list[dict[str, Any]], str]:
+    """Use per-event ESPN metadata; the schedule's root season can be current."""
+    key = (season, team, season_type)
+    provider_type = {"REG": 2, "POST": 3}[season_type]
+    url = ESPN_TEAM_SCHEDULE_URL.format(team=team)
+
+    def load() -> tuple[list[dict[str, Any]], str]:
+        payload = _request(url, params={"season": season, "seasontype": provider_type}, http_get=http_get)
+        events = payload.get("events")
+        if not isinstance(events, list) or any(not isinstance(event, Mapping) for event in events):
+            raise _history_unverified("ESPN NFL team schedule lacked an event array", url=url, season=season)
+        try:
+            source_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise _history_unverified("ESPN NFL schedule payload could not be hashed", url=url) from exc
+        # Hash the complete source, then retain only identity/chronology fields.
+        # ESPN repeats large team-logo/link payloads for every scheduled game.
+        compact = []
+        for event in events:
+            item = {k: event[k] for k in ("id", "date", "season", "seasonType", "week", "status") if k in event}
+            competitions = event.get("competitions")
+            if isinstance(competitions, list):
+                compact_competitions = []
+                for competition in competitions:
+                    if not isinstance(competition, Mapping):
+                        raise _history_unverified("ESPN NFL schedule competition was malformed", url=url)
+                    entry = {k: competition[k] for k in ("season", "week", "status") if k in competition}
+                    competitors = competition.get("competitors")
+                    if isinstance(competitors, list):
+                        entry["competitors"] = [
+                            {"homeAway": c.get("homeAway"), "team": {"abbreviation": (c.get("team") or {}).get("abbreviation")}}
+                            for c in competitors if isinstance(c, Mapping) and isinstance(c.get("team"), Mapping)
+                        ]
+                    compact_competitions.append(entry)
+                item["competitions"] = compact_competitions
+            compact.append(item)
+        return compact, hashlib.sha256(source_bytes).hexdigest()
+
+    if http_get is not httpx.get:
+        return load()
+    # Keep the live single-flight boundary and a bounded, short-lived cache.
+    with _CACHE_LOCK:
+        for cached_key, cached in list(_SCHEDULE_CACHE.items()):
+            if now_ts - cached[0] >= CACHE_TTL_SECONDS:
+                _SCHEDULE_CACHE.pop(cached_key, None)
+        cached = _SCHEDULE_CACHE.get(key)
+        if cached:
+            return cached[1], cached[2]
+        events, digest = load()
+        if len(_SCHEDULE_CACHE) >= 128:
+            _SCHEDULE_CACHE.pop(next(iter(_SCHEDULE_CACHE)))
+        _SCHEDULE_CACHE[key] = (now_ts, events, digest)
+        return events, digest
+
+
+def _historical_game(
+    row: Mapping[str, Any],
+    *,
+    season: int,
+    schedules: dict[tuple[str, str], tuple[list[dict[str, Any]], str]],
+    http_get: Callable[..., Any],
+    now_ts: float,
+) -> dict[str, Any]:
+    """Bind a stats row to one official game, with no week-to-date inference.
+
+    nflverse postseason weeks and ESPN round numbers are separate namespaces.
+    A postseason team pair must resolve to exactly one official event in that
+    season/type; both week values are retained instead of guessing an offset.
+    """
+    week_number = _num(row, "week")
+    row_season = _num(row, "season")
+    season_type = str(row.get("season_type") or "").strip().upper()
+    team = _nflverse_team_code(row.get("team"))
+    opponent = _nflverse_team_code(row.get("opponent_team"))
+    if (row_season != season or week_number <= 0 or not week_number.is_integer()
+            or season_type not in {"REG", "POST"} or not team or not opponent or team == opponent):
+        raise _history_unverified("nflverse history lacked exact season/type/week/team identity", season=season)
+    week = int(week_number)
+    # ESPN accepts the current provider abbreviation in its team schedule path.
+    provider_team = {"LA": "LAR", "WAS": "WSH"}.get(team, team)
+    key = (provider_team, season_type)
+    if key not in schedules:
+        schedules[key] = _cached_team_schedule(
+            season, provider_team, season_type, http_get=http_get, now_ts=now_ts,
+        )
+    events, digest = schedules[key]
+    candidates: dict[str, dict[str, Any]] = {}
+    official_aliases: dict[str, dict[str, Any]] = {}
+    for event in events:
+        try:
+            identity = _canonical_event_metadata(event)
+        except NFLPropHydrationError as exc:
+            raise _history_unverified("ESPN historical event identity was incomplete", season=season) from exc
+        season_payload = event.get("season") or {}
+        type_payload = event.get("seasonType") or {}
+        if not isinstance(season_payload, Mapping) or not isinstance(type_payload, Mapping):
+            raise _history_unverified("ESPN historical event season type was malformed", season=season)
+        raw_type = season_payload.get("type", type_payload.get("type"))
+        try:
+            provider_type = int(raw_type)
+            if isinstance(raw_type, bool) or float(raw_type) != provider_type:
+                raise ValueError("nonintegral season type")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _history_unverified("ESPN historical event season type was not an exact integer", season=season) from exc
+        if "type" in type_payload and "type" in season_payload and type_payload["type"] != season_payload["type"]:
+            raise _history_unverified("ESPN historical event season types conflicted", season=season)
+        provider_id = str(event.get("id") or "").strip()
+        if not provider_id:
+            raise _history_unverified("ESPN historical event id was missing", season=season, week=week)
+        try:
+            kickoff = _aware(event.get("date"))
+        except NFLPropHydrationError as exc:
+            raise _history_unverified("ESPN historical game date was not verifiable", event_id=provider_id) from exc
+        competitions = event["competitions"]
+        status_payloads = [event["status"]] if "status" in event else []
+        status_payloads.extend(c["status"] for c in competitions if "status" in c)
+        status_types = []
+        for status in status_payloads:
+            status_type = status.get("type") if isinstance(status, Mapping) else None
+            if (not isinstance(status_type, Mapping) or not isinstance(status_type.get("completed"), bool)
+                    or status_type.get("state") not in {"pre", "in", "post"}):
+                raise _history_unverified("ESPN historical game completion status was not verifiable", event_id=provider_id)
+            status_types.append((status_type["state"], status_type["completed"]))
+        if not status_types:
+            raise _history_unverified("ESPN historical game completion status was not verifiable", event_id=provider_id)
+        if len(set(status_types)) != 1:
+            raise _history_unverified("ESPN historical game completion statuses conflicted", event_id=provider_id)
+        status_type = {"state": status_types[0][0], "completed": status_types[0][1]}
+        # Validate aliases across the complete requested source before applying
+        # stats-row filters. A changed week/team/type cannot hide a conflicting
+        # second identity for the same provider event id.
+        alias = {
+            **identity,
+            "provider_season_type": provider_type,
+            "date": kickoff.isoformat(),
+            "state": status_type["state"],
+            "completed": status_type["completed"],
+        }
+        if provider_id in official_aliases and official_aliases[provider_id] != alias:
+            raise _history_unverified("ESPN historical aliases conflicted", event_id=provider_id)
+        official_aliases[provider_id] = alias
+        if identity["provider_season"] != season or provider_type != {"REG": 2, "POST": 3}[season_type]:
+            continue
+        if {identity["canonical_home_team"], identity["canonical_away_team"]} != {team, opponent}:
+            continue
+        if season_type == "REG" and identity["provider_week"] != week:
+            continue
+        canonical_game_id = f"{season}_{week:02d}_{identity['canonical_away_team']}_{identity['canonical_home_team']}"
+        source_game_id = str(row.get("game_id") or "").strip()
+        if source_game_id and source_game_id != canonical_game_id:
+            raise _history_unverified("nflverse history game id conflicted with official teams/week", game_id=source_game_id)
+        candidate = {
+            "date": kickoff.isoformat(),
+            "season": season,
+            "season_type": season_type,
+            "week": week,
+            "game_id": source_game_id or canonical_game_id,
+            "provider_event_id": provider_id,
+            "provider_season": identity["provider_season"],
+            "provider_season_type": provider_type,
+            "provider_week": identity["provider_week"],
+            "completed": status_type["completed"] is True and status_type["state"] == "post",
+            "schedule_source_url": ESPN_TEAM_SCHEDULE_URL.format(team=provider_team),
+            "schedule_source_sha256": digest,
+        }
+        if provider_id in candidates and candidates[provider_id] != candidate:
+            raise _history_unverified("ESPN historical aliases conflicted", event_id=provider_id)
+        candidates[provider_id] = candidate
+    if len(candidates) != 1:
+        raise _history_unverified(
+            "nflverse history did not resolve to exactly one official game",
+            season=season, season_type=season_type, week=week, team=team, opponent=opponent, match_n=len(candidates),
+        )
+    return next(iter(candidates.values()))
+
+
 def _history(
     *,
     player: str,
@@ -394,19 +592,29 @@ def _history(
     event_start: datetime,
     http_get: Callable[..., Any],
     now_ts: float,
+    provider_season: Optional[int] = None,
 ) -> tuple[list[float], list[dict[str, Any]], dict[str, str], str]:
+    if not isinstance(provider_season, int) or isinstance(provider_season, bool) or provider_season < 2020:
+        raise _history_unverified("verified target provider season is required for NFL history")
     target_col, opp_col = STAT_CONFIG[canonical_stat]
     collected: list[dict[str, Any]] = []
+    seen_games: set[str] = set()
     hashes: dict[str, str] = {}
-    # Current season first, then prior seasons until ten relevant games exist.
-    for season in range(event_start.year, max(event_start.year - 4, 2019), -1):
-        rows, digest = _cached_nflverse_rows(season, http_get=http_get, now_ts=now_ts)
+    # NFL's January/February calendar dates still belong to the official season
+    # obtained from the target event. Never try a guessed calendar-year file.
+    for season in range(provider_season, max(provider_season - 4, 2019), -1):
+        try:
+            rows, digest = _cached_nflverse_rows(season, http_get=http_get, now_ts=now_ts)
+        except NFLPropHydrationError as exc:
+            statuses = exc.detail.get("http_statuses") or []
+            if (exc.code == "NFL_PROP_SOURCE_UNAVAILABLE" and statuses
+                    and len(statuses) == len(exc.detail.get("errors") or []) and all(s == 404 for s in statuses)):
+                continue
+            raise
         hashes[str(season)] = digest
+        schedules: dict[tuple[str, str], tuple[list[dict[str, Any]], str]] = {}
         for row in rows:
             if _name_key(row.get("player_display_name") or row.get("player_name")) != _name_key(player):
-                continue
-            week = int(_num(row, "week"))
-            if week <= 0:
                 continue
             carries = _num(row, "carries")
             targets = _num(row, "targets")
@@ -418,19 +626,26 @@ def _history(
                 opportunity = _num(row, opp_col)
             if opportunity <= 0:
                 continue
+            game = _historical_game(row, season=season, schedules=schedules, http_get=http_get, now_ts=now_ts)
+            if not game["completed"] or _aware(game["date"]) >= event_start:
+                continue
+            if game["provider_event_id"] in seen_games:
+                raise _history_unverified("duplicate nflverse player-game history", event_id=game["provider_event_id"])
+            seen_games.add(game["provider_event_id"])
             collected.append({
-                "season": int(_num(row, "season") or season),
-                "week": week,
-                "game_id": str(row.get("game_id") or ""),
+                **game,
+                "stats_source_sha256": digest,
                 "team": str(row.get("team") or "").upper(),
                 "opponent": str(row.get("opponent_team") or "").upper(),
                 "position": str(row.get("position") or "").upper(),
                 "value": value,
                 "opportunity": opportunity,
             })
+        for (team, season_type), (_events, schedule_digest) in schedules.items():
+            hashes[f"ESPN_NFL_TEAM_SCHEDULE:{season}:{team}:{season_type}"] = schedule_digest
         if len(collected) >= MIN_PRIOR_GAMES:
             break
-    collected.sort(key=lambda r: (r["season"], r["week"], r["game_id"]))
+    collected.sort(key=lambda r: (r["date"], r["provider_event_id"]))
     recent = collected[-MIN_PRIOR_GAMES:]
     if len(recent) < MIN_PRIOR_GAMES:
         raise NFLPropHydrationError(
@@ -441,10 +656,19 @@ def _history(
     game_log = [float(r["value"]) for r in recent]
     box = [
         {
-            "date": f"{r['season']}-W{r['week']:02d}",
+            "date": r["date"],
             "season": r["season"],
+            "season_type": r["season_type"],
             "week": r["week"],
             "game_id": r["game_id"],
+            "provider_event_id": r["provider_event_id"],
+            "provider_season": r["provider_season"],
+            "provider_season_type": r["provider_season_type"],
+            "provider_week": r["provider_week"],
+            "completed": r["completed"],
+            "stats_source_sha256": r["stats_source_sha256"],
+            "schedule_source_url": r["schedule_source_url"],
+            "schedule_source_sha256": r["schedule_source_sha256"],
             "team": r["team"],
             "opponent": r["opponent"],
             "position": r["position"],
@@ -480,10 +704,14 @@ def hydrate_nfl_prop_evidence(
     athlete_id, official_name = _resolve_espn_athlete(player, http_get=http_get)
     team = _athlete_team(athlete_id, http_get=http_get)
     target = _target_event(event_start=event_start, team=team, opponent=opponent, http_get=http_get)
+    official_start = _aware(target["provider_event_start_time"])
+    if captured >= official_start:
+        raise NFLPropHydrationError("EVENT_ALREADY_STARTED", "NFL prop capture must precede the official kickoff")
     game_log, box_score_log, source_hashes, nflverse_player_id = _history(
         player=official_name,
         canonical_stat=canonical,
-        event_start=event_start,
+        event_start=official_start,
+        provider_season=target["provider_season"],
         http_get=http_get,
         now_ts=captured.timestamp(),
     )
@@ -505,6 +733,7 @@ def hydrate_nfl_prop_evidence(
             "opponent": target["opponent"],
             "event_id": target["event_id"],
             "provider_season": target["provider_season"],
+            "provider_event_start_time": target["provider_event_start_time"],
             "provider_week": target["provider_week"],
             "provider_home_team": target["provider_home_team"],
             "provider_away_team": target["provider_away_team"],
@@ -523,11 +752,15 @@ def hydrate_nfl_prop_evidence(
         "source_timestamps": {
             "ESPN_NFL_IDENTITY_SCOREBOARD": captured.isoformat(),
             "NFLVERSE_WEEKLY_PLAYER_STATS": captured.isoformat(),
+            "ESPN_NFL_TEAM_SCHEDULE": captured.isoformat(),
         },
         "evidence_version": EVIDENCE_VERSION,
         "rate_provenance": (
             f"{PROVIDER_ID};source_label={source_label};nflverse_sha256="
-            + ",".join(f"{season}:{digest}" for season, digest in sorted(source_hashes.items()))
+            + ",".join(f"{season}:{digest}" for season, digest in sorted(source_hashes.items()) if season.isdigit())
+            + ";espn_schedule_canonical_json_sha256="
+            + ",".join(f"{key.removeprefix('ESPN_NFL_TEAM_SCHEDULE:')}:{digest}"
+                       for key, digest in sorted(source_hashes.items()) if key.startswith("ESPN_NFL_TEAM_SCHEDULE:"))
         ),
         "opponent_context": None,
         "hydration_provider": PROVIDER_ID,

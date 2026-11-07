@@ -127,7 +127,6 @@ def test_lane_capability_does_not_treat_global_prop_availability_as_nfl_stat_aut
 
 def test_provider_alias_conflict_is_typed_identity_unresolved(monkeypatch):
     monkeypatch.setattr(subject.nfl, "_aware", lambda value: SimpleNamespace(isoformat=lambda: value))
-    monkeypatch.setattr(subject.nfl, "_resolve_espn_athlete", lambda *_args, **_kwargs: ("42", "Bryce Young"))
     monkeypatch.setattr(subject.nfl, "_athlete_team", lambda *_args, **_kwargs: "CAR")
     monkeypatch.setattr(
         subject.nfl,
@@ -143,6 +142,25 @@ def test_provider_alias_conflict_is_typed_identity_unresolved(monkeypatch):
         },
     )
 
+    def espn_search(url, **kwargs):
+        # Startup may install the event-aware resolver before this test runs.
+        # Both resolver paths must use the same offline provider boundary.
+        assert url == subject.nfl.ESPN_SEARCH_URL
+        assert kwargs["params"] == {"query": "Bryce Young", "limit": 10, "type": "player"}
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "results": [{
+                    "type": "player",
+                    "contents": [{
+                        "uid": "s:20~l:28~a:42",
+                        "displayName": "Bryce Young",
+                        "description": "NFL | Carolina Panthers",
+                    }],
+                }],
+            },
+        )
+
     with pytest.raises(PropAutoHydrationError) as raised:
         subject.resolve_nfl_event_identity(
             player="Bryce Young",
@@ -150,6 +168,7 @@ def test_provider_alias_conflict_is_typed_identity_unresolved(monkeypatch):
             opponent="CLE",
             provider_event_id="401WRONG",
             current_event_id="display-uuid",
+            http_get=espn_search,
         )
 
     assert raised.value.code == "PROP_EVENT_IDENTITY_UNRESOLVED"
