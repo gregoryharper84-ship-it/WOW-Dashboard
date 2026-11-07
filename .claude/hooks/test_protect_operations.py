@@ -171,6 +171,23 @@ class GuardTests(unittest.TestCase):
                 with self.subTest(tool=tool, path=path):
                     self.assertIsNone(guard.evaluate({"tool_name": tool, "tool_input": {"file_path": path}}))
 
+    def test_failed_branch_detection_blocks_mutating_git(self):
+        with mock.patch.object(guard.subprocess, "run", side_effect=OSError("git unavailable")):
+            self.assertEqual(guard.current_branch("."), guard.UNKNOWN_BRANCH)
+        with mock.patch.object(guard.subprocess, "run", return_value=mock.Mock(
+            returncode=128, stdout="", stderr="fatal",
+        )):
+            self.assertEqual(guard.current_branch("."), guard.UNKNOWN_BRANCH)
+        with mock.patch.object(guard, "current_branch", return_value=guard.UNKNOWN_BRANCH):
+            payload = {"tool_name": "Bash", "tool_input": {"command": "git commit -m test"}, "cwd": "."}
+            self.assertIsNotNone(guard.evaluate(payload))
+        # A verified detached HEAD has no protected working branch but keeps
+        # all destination-ref and destructive-command guards in effect.
+        with mock.patch.object(guard.subprocess, "run", return_value=mock.Mock(
+            returncode=0, stdout="", stderr="",
+        )):
+            self.assertEqual(guard.current_branch("."), "")
+
     def test_input_fail_closed(self):
         for payload in (None, [1, 2], {"tool_name": "Bash", "tool_input": "bad"}):
             with self.subTest(payload=payload):
