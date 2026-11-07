@@ -84,8 +84,13 @@ def audit_nfl_pickem_deep_research(row: Mapping[str, Any]) -> dict[str, Any]:
         or row.get("official_event_id")
         or ""
     ).strip()
+    acquisition = row.get("canonical_acquisition")
+    acquisition = acquisition if isinstance(acquisition, Mapping) else {}
+    # Mirror the governed Pick'em selector's snapshot resolution. A valid
+    # immutable acquisition receipt must not be rejected as missing context.
     snapshot = str(
-        row.get("source_snapshot_id") or envelope.get("source_snapshot_id") or ""
+        row.get("source_snapshot_id") or envelope.get("source_snapshot_id")
+        or acquisition.get("source_snapshot_id") or ""
     ).strip()
     version = str(row.get("model_version") or row.get("model_artifact_version") or "").strip()
     kickoff = _instant(
