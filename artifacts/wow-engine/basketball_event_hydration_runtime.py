@@ -621,32 +621,42 @@ def hydrate(
                     )
                     first_covered_et = last_completed_et - timedelta(days=13)
                     if latest_before < first_covered_et - timedelta(days=1):
-                        # Never silently omit a requested season from the
-                        # acquisition result. Emit a typed hydration blocker
-                        # and do not advance the persisted date fence.
-                        raise BasketballHydrationError(
-                            "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+                        # Preserve the canonical SDV result and separately
+                        # report that a 14-day supplement cannot bridge this gap.
+                        # No partial ESPN history may move the persisted fence.
+                        recent_supplement[year] = (
+                            "SOURCE_BLOCKED:ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
                         )
-                    try:
-                        recent = fetch_recent_espn_settlements(sport, now=clock)
-                        supplemental_rows = [
-                            row for raw_event in recent
-                            if (row := normalize_espn_game(raw_event, sport, retrieved_at)) is not None
-                            and date.fromisoformat(row["game_date"]) > latest_before
-                        ]
-                        seen_recent: set[str] = set()
-                        for row in supplemental_rows:
-                            if row["game_id"] in seen_recent:
-                                raise BasketballHydrationError("ESPN_RECENT_DUPLICATE_GAME_ID")
-                            seen_recent.add(row["game_id"])
-                        if supplemental_rows:
-                            normalized_rows = supplemental_rows
-                            provider = "ESPN_SCOREBOARD"
-                            recent_supplement[year] = "SETTLED_SOURCE_UPDATED"
-                        else:
-                            recent_supplement[year] = "NO_NEW_SETTLEMENT"
-                    except BasketballHydrationError as exc:
-                        recent_supplement[year] = "SOURCE_BLOCKED:" + str(exc)
+                    else:
+                        try:
+                            recent = fetch_recent_espn_settlements(sport, now=clock)
+                            supplemental_rows = [
+                                row for raw_event in recent
+                                if (row := normalize_espn_game(raw_event, sport, retrieved_at)) is not None
+                                and date.fromisoformat(row["game_date"]) > latest_before
+                            ]
+                            seen_recent: set[str] = set()
+                            for row in supplemental_rows:
+                                if row["game_id"] in seen_recent:
+                                    raise BasketballHydrationError("ESPN_RECENT_DUPLICATE_GAME_ID")
+                                seen_recent.add(row["game_id"])
+                            if supplemental_rows:
+                                if sport == "NBA":
+                                    # The supplement's team ID crosswalk is not
+                                    # certified for the fitted NBA training set.
+                                    # Keep SDV rows and record a typed source hold
+                                    # without aborting the valid canonical result.
+                                    recent_supplement[year] = (
+                                        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+                                    )
+                                else:
+                                    normalized_rows = supplemental_rows
+                                    provider = "ESPN_SCOREBOARD"
+                                    recent_supplement[year] = "SETTLED_SOURCE_UPDATED"
+                            else:
+                                recent_supplement[year] = "NO_NEW_SETTLEMENT"
+                        except BasketballHydrationError as exc:
+                            recent_supplement[year] = "SOURCE_BLOCKED:" + str(exc)
 
             if provider != "BALLDONTLIE" and latest_before is not None:
                 # Provider IDs are not globally comparable. Restrict fallback writes
