@@ -600,7 +600,6 @@ def _history(
     collected: list[dict[str, Any]] = []
     seen_games: set[str] = set()
     hashes: dict[str, str] = {}
-    missing_seasons: list[int] = []
     # NFL's January/February calendar dates still belong to the official season
     # obtained from the target event. Never try a guessed calendar-year file.
     for season in range(provider_season, max(provider_season - 4, 2019), -1):
@@ -610,18 +609,16 @@ def _history(
             statuses = exc.detail.get("http_statuses") or []
             if (exc.code == "NFL_PROP_SOURCE_UNAVAILABLE" and statuses
                     and len(statuses) == len(exc.detail.get("errors") or []) and all(s == 404 for s in statuses)):
-                # Only the target season (not yet published) or the trailing
-                # end of the window may be absent. A missing season that is
-                # followed by an older loaded season is a history gap.
+                # Only the verified current provider season can be unpublished.
+                # Never silently cross a missing prior season, even if no older
+                # CSV has yet loaded; the fit window must be contiguous.
                 if season != provider_season:
-                    missing_seasons.append(season)
+                    raise _history_unverified(
+                        "nflverse history had a missing prior season",
+                        missing_seasons=[season],
+                    ) from exc
                 continue
             raise
-        if missing_seasons:
-            raise _history_unverified(
-                "nflverse history had a missing season between loaded seasons",
-                missing_seasons=sorted(missing_seasons), loaded_season=season,
-            )
         hashes[str(season)] = digest
         schedules: dict[tuple[str, str], tuple[list[dict[str, Any]], str]] = {}
         for row in rows:
