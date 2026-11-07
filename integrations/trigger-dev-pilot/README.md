@@ -11,7 +11,7 @@ Prove bounded durable retries, stable trigger idempotency options, and read-only
 - Existing authority: GitHub Actions OWNS existing scheduled data collection, grading, and prop lifecycle; Render/Supabase remain canonical.
 - Pilot: a manual-only Trigger task, `wow-v17-readonly-health-pilot`; no `schedules.task`, cron, trigger webhook, or GitHub Action dispatcher.
 - Fixed external GET only, no user-controlled hostname or route, no secrets sent to Render.
-- `concurrency.total = 1`, `maxAttempts = 3`, 1–5s bounded backoff, 30s max duration, 8s request timeout. HTTP 429/5xx and transport failures retry; HTTP 4xx (other than 429) and disabled safety guards abort without retry.
+- `concurrency.total = 1`, `maxAttempts = 3`, 1–5s bounded backoff, 30s max duration, 8s request timeout. `retries.enabledInDev = true` explicitly enables retry testing in development (Trigger.dev defaults to retries disabled there). HTTP 429/5xx and transport failures retry; HTTP 4xx (other than 429) and disabled safety guards abort without retry.
 - Invocation uses 24h idempotency key and 10m enqueue TTL; local tests verify stable options but **only an actual Trigger.dev run can prove remote deduplication**.
 - Fail-closed `WOW_TRIGGER_PILOT_ENABLED=true`, `WOW_TRIGGER_PILOT_ENV=dev`, `WOW_CAN_EXECUTE=false`, `WOW_DRY_RUN_ONLY=true`; caller refuses non-dev Trigger secret keys.
 - Free tier: zero schedules; manual probes only. Monitor usage; do not authorize plan upgrades.
@@ -31,7 +31,7 @@ Run `node --test` from this directory. The tests use stubbed fetch calls and do 
 
 ## Acceptance criteria
 
-1. `node --test` succeeds on the exact PR head.
+1. `node --test` succeeds on the exact PR head; Trigger.dev DEV retries are explicitly enabled.
 2. Exactly one GET is observed per probe attempt; forbidden mutation API paths absent.
 3. Duplicate DEV invocations with the same key return the same run ID with one execution during the dedupe window (must be verified live, not inferred from tests).
 4. 429/5xx fail transiently; 4xx permanent failures and missing governance flags abort without retry.

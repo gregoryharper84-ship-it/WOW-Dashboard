@@ -100,3 +100,10 @@ test("task contains no schedule, no POST calls, and bounded retries/concurrency"
   assert.match(source,/maxAttempts:\s*3/);
   assert.doesNotMatch(source,/\bschedules\b|cron\s*\(|POST|supabase\.from|fetch\s*\(/i);
 });
+
+test("actual Trigger DEV config enables retries and stays isolated", () => {
+  const config = readFileSync(new URL("../trigger.config.ts", import.meta.url), "utf8");
+  assert.match(config, /retries:\\s*\\{\\s*enabledInDev:\\s*true\\s*\\}/);
+  assert.match(config, /dirs:\\s*\\["\\.\\/src\\/trigger"\\]/);
+  assert.doesNotMatch(config, /schedules\\.task|cron\\s*\\(|deploy\\s*\\(/i);
+});

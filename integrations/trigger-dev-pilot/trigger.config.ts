@@ -13,4 +13,7 @@ export default defineConfig({
   dirs: ["./src/trigger"],
   runtime: "node-22",
   maxDuration: 30,
+  // Trigger.dev defaults to no automatic retries in local development.
+  // Enable them explicitly so the DEV pilot verifies real retry semantics.
+  retries: { enabledInDev: true },
 });
