@@ -122,6 +122,15 @@ def _fetch_scoreboard(date_key: str) -> list[Mapping[str, Any]]:
     events = payload.get("events") if isinstance(payload, Mapping) else None
     if not isinstance(events, list) or any(not isinstance(event, Mapping) for event in events):
         raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT")
+    # A malformed member invalidates the whole source snapshot; do not quietly
+    # skip a broken row while promoting another candidate from that page.
+    for event in events:
+        try:
+            _aware(event.get("date"))
+        except NCAABEventIdentityError as exc:
+            raise NCAABEventIdentityError(
+                "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+            ) from exc
     total = payload.get("total") if isinstance(payload, Mapping) else None
     if total is not None:
         try:
@@ -200,15 +209,19 @@ def resolve_ncaab_current_event_identity(
 
     matches: list[tuple[str, datetime]] = []
     for row in rows:
+        if not isinstance(row, Mapping):
+            raise NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT")
+        try:
+            start = _aware(row.get("date"))
+        except NCAABEventIdentityError as exc:
+            raise NCAABEventIdentityError(
+                "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+            ) from exc
         event_id = str(row.get("id") or "").strip()
         if not event_id:
             continue
         sides = _competitors(row)
         if sides is None or sides != (home_id, away_id):
-            continue
-        try:
-            start = _aware(row.get("date"))
-        except NCAABEventIdentityError:
             continue
         if abs((start - event_time).total_seconds()) > START_TOLERANCE_SECONDS:
             continue
