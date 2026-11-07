@@ -16,7 +16,14 @@ REQUIRED = (
     "home_elo", "away_elo", "home_goalie_sv_pct", "away_goalie_sv_pct",
     "home_pp_pct", "away_pk_pct", "calibration_artifact",
 )
+# Outcome-space label used by the NHL fitted model. It is not a settlement
+# contract name and must not be compared as one.
 FULL_GAME_SETTLEMENT = "HOME_AWAY_INCLUDING_OT_SO"
+# Externally settled market contract for the same full-game home/away winner
+# including overtime and shootout. Kept deliberately distinct from the outcome
+# label; both are accepted here and no other basis is.
+SETTLEMENT_CONTRACT = "FULL_GAME_MONEYLINE_INCLUDING_OVERTIME_SHOOTOUT"
+ACCEPTED_SETTLEMENT_BASES = frozenset({FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT})
 VERIFIED_GOALIE_STATUSES = frozenset({"CONFIRMED"})
 STRUCTURED_EVIDENCE = frozenset({"injury_report", "rest_travel", "calibration_artifact"})
 
@@ -64,7 +71,7 @@ def validate_nhl_pregame_evidence(
     official_id = evidence.get("official_event_id")
     if not (isinstance(official_id, str) and len(official_id) == 10 and official_id.isascii() and official_id.isdigit()):
         reasons.append("NHL_EVENT_IDENTITY_UNVERIFIED")
-    if evidence.get("settlement_basis") != FULL_GAME_SETTLEMENT:
+    if evidence.get("settlement_basis") not in ACCEPTED_SETTLEMENT_BASES:
         reasons.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
     if str(evidence.get("goalie_status", "")).strip().upper() not in VERIFIED_GOALIE_STATUSES:
         reasons.append("NHL_GOALIE_STATUS_UNVERIFIED")
