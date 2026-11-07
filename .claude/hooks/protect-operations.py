@@ -14,7 +14,7 @@ from pathlib import Path
 
 PROTECTED = {"main", "master"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-SENSITIVE_VAR = re.compile(r"\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|AUTH)(?:\})?\b", re.I)
+SENSITIVE_VAR = re.compile(r"\$\{?(?:[A-Za-z_][A-Za-z0-9_]*?)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|AUTH)(?:_[A-Za-z0-9_]*)?\}?(?![A-Za-z0-9_])", re.I)
 UNSAFE_SHELL = re.compile(r"`|\$\(|<<")
 SECRET_FILE = re.compile(r"(?:^|[/\\])\.env(?:\.(?!example(?:$|[\s/\\]))[^/\\\s]*)?$|\.pem$|\.key$", re.I)
 PROTECTED_API = re.compile(r"(?:/merges(?:$|[/?])|/pulls/\d+/merge(?:$|[/?])|/git/refs/(?:heads/)?(?:main|master)(?:$|[/?])|/branches/(?:main|master)/protection(?:$|[/?]))", re.I)
@@ -80,7 +80,7 @@ def push_violation(args, branch):
             return "force refspec blocked"
     deletion = any(x in {"--delete", "-d"} for x in args)
     positionals = [a for a in args if not a.startswith("-")]
-    if any(is_protected_ref(a) and a in PROTECTED.union({"refs/heads/main", "refs/heads/master"}) for a in positionals):
+    if any(is_protected_ref(a) for a in positionals):
         return "protected destination branch push blocked"
     for a in args:
         if ":" in a and not a.startswith("--"):
@@ -96,6 +96,32 @@ def push_violation(args, branch):
     return None
 
 
+def separate_shell_parentheses(command):
+    """Expose unquoted subshell boundaries without altering quoted refnames."""
+    output = []
+    quote = None
+    escaped = False
+    for char in command:
+        if escaped:
+            output.append(char)
+            escaped = False
+        elif char == "\\" and quote != "'":
+            output.append(char)
+            escaped = True
+        elif char in ("'", '"'):
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+            output.append(char)
+        elif char in "()" and quote is None:
+            # A semicolon boundary keeps git/gh parsing from seeing 'main)'.
+            output.append(" ; ")
+        else:
+            output.append(char)
+    return "".join(output)
+
+
 def command_violation(command, branch, depth=0):
     if depth > 4:
         return "nested shell depth unsupported"
@@ -107,7 +133,7 @@ def command_violation(command, branch, depth=0):
     if SENSITIVE_VAR.search(command):
         return "secret-like variable expansion blocked"
     try:
-        parser = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        parser = shlex.shlex(separate_shell_parentheses(command), posix=True, punctuation_chars=";&|")
         parser.whitespace_split = True
         parser.commenters = ""
         tokens = list(parser)
@@ -120,7 +146,20 @@ def command_violation(command, branch, depth=0):
         return next((j for j in range(start, len(tokens)) if tokens[j] in delimiters), len(tokens))
     for idx, tok in enumerate(tokens):
         clean = tok.strip(";&|()")
-        if clean in {"eval", "printenv", "env"} or clean in {"export", "set"} and idx + 1 < len(tokens) and tokens[idx + 1] in {"-p", "+o"}:
+        # Only commands, not ordinary arguments named "env"/"eval", are
+        # environment-dumping or arbitrary-evaluation operations.
+        segment_start = max((j + 1 for j in range(idx) if tokens[j] in delimiters), default=0)
+        prefix = tokens[segment_start:idx]
+        command_position = not prefix or all(
+            part in {"sudo", "command", "builtin", "exec", "nohup"} for part in prefix
+        )
+        if command_position and (
+            clean in {"eval", "printenv", "env"}
+            or (
+                clean in {"export", "set"} and idx + 1 < len(tokens)
+                and tokens[idx + 1] in {"-p", "+o"}
+            )
+        ):
             return "unbounded environment or evaluation command blocked"
         if clean in {"cat", "head", "tail", "sed", "awk", "grep", "less", "more", "nl", "cp", "dd", "base64"}:
             # Path checks below also catch redirects, piping and options.
@@ -154,19 +193,27 @@ def command_violation(command, branch, depth=0):
                     return "protected local branch deletion blocked"
             if op == "update-ref" and any(is_protected_ref(a) for a in args):
                 return "direct protected ref update blocked"
-        if clean == "gh" and idx + 1 < len(tokens):
+        if clean == "gh":
             gh_args = tokens[idx + 1:command_end(idx)]
+            if not gh_args:
+                continue
             if gh_args[0] == "pr" and len(gh_args) > 1:
                 if gh_args[1] == "merge":
                     return "gh pr merge blocked; use authorized release"
-                if gh_args[1] == "review" and "--approve" in gh_args:
+                if gh_args[1] == "review" and any(flag in gh_args[2:] for flag in ("--approve", "-a")):
                     return "self-approval blocked"
             if gh_args[0] == "api":
                 options = gh_args[1:]
-                has_write = any(a in MUTATION_OPTIONS or a.startswith(("--field=", "--raw-field=", "--input=")) for a in options)
+                has_write = any(
+                    a in MUTATION_OPTIONS
+                    or a.startswith(("-f", "-F", "--field=", "--raw-field=", "--input="))
+                    for a in options
+                )
                 for j, option in enumerate(options):
                     if option in {"-X", "--method"} and j + 1 < len(options):
                         has_write |= options[j + 1].upper() in {"POST", "PATCH", "PUT", "DELETE"}
+                    if option.startswith("-X") and len(option) > 2:
+                        has_write |= option[2:].upper() in {"POST", "PATCH", "PUT", "DELETE"}
                     if option.startswith("--method="):
                         has_write |= option.split("=", 1)[1].upper() in {"POST", "PATCH", "PUT", "DELETE"}
                 if has_write and any(PROTECTED_API.search(a) for a in options):
@@ -196,7 +243,10 @@ def main():
         payload = json.load(sys.stdin)
     except (OSError, ValueError):
         reject("invalid hook JSON")
-    reason = evaluate(payload)
+    try:
+        reason = evaluate(payload)
+    except Exception:
+        reject("internal guard error; failing closed")
     if reason:
         reject(reason)
 
