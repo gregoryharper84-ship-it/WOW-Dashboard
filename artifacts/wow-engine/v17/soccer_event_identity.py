@@ -174,7 +174,14 @@ def _fetch_scoreboard(competition: str, date_key: str) -> list[Mapping[str, Any]
             "SOCCER_OFFICIAL_SOURCE_TRANSPORT_FAILED", type(exc).__name__
         ) from exc
 
-    status = int(getattr(response, "status_code", 0) or 0)
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise SoccerEventIdentityError("SOCCER_OFFICIAL_SOURCE_RESPONSE_INVALID") from exc
+    if not 100 <= status <= 599:
+        # Missing/unparseable status is not an attested HTTP response; avoid
+        # generating unregistered HTTP_UNKNOWN or HTTP_0 source codes.
+        raise SoccerEventIdentityError("SOCCER_OFFICIAL_SOURCE_RESPONSE_INVALID")
     if status == 429:
         raise SoccerEventIdentityError("SOCCER_OFFICIAL_SOURCE_RATE_LIMITED")
     if status != 200:
