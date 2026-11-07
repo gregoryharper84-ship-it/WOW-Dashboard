@@ -605,7 +605,13 @@ def hydrate(
                 and not has_new
             ):
                 entitlement = source_readiness("ESPN_SCOREBOARD")
-                if not entitlement.ready_for_candidate_training:
+                # NBA's ESPN team crosswalk is unverified for fitted history.
+                # Report the hold before any optional ESPN network request.
+                if sport == "NBA":
+                    recent_supplement[year] = (
+                        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+                    )
+                elif not entitlement.ready_for_candidate_training:
                     recent_supplement[year] = (
                         "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
                         + ",".join(entitlement.blockers)
