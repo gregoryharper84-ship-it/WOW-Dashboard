@@ -926,3 +926,104 @@ def test_protected_main_cli_passes_real_checked_out_sha_to_discovery(monkeypatch
     assert result["main_binding"] == live
     assert result["can_execute"] is False
     assert observed == [("git", "rev-parse", "refs/remotes/origin/main")]
+
+
+def test_adoption_api_quota_failover_is_get_only_and_separately_authenticated(monkeypatch):
+    """Only a typed GitHub installation-rate 403 may switch GET transport."""
+    import subprocess
+
+    monkeypatch.setenv("GH_TOKEN", "limited-read")
+    monkeypatch.setenv("APP_TOKEN", "distinct-engineering-app")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        assert argv == ["gh", "api", "/repos/" + REPO + "/pulls/2251"]
+        assert kwargs["capture_output"] is True
+        assert kwargs["check"] is False
+        assert kwargs["timeout"] == 45
+        identity = kwargs["env"]["GH_TOKEN"]
+        seen.append(identity)
+        if identity == "limited-read":
+            return subprocess.CompletedProcess(
+                argv, 1, "", "gh: API rate limit exceeded for installation (HTTP 403)"
+            )
+        return subprocess.CompletedProcess(argv, 0, '{"number":2251}', "")
+
+    monkeypatch.setattr(adoption.subprocess, "run", fake_run)
+    assert adoption.api("pulls/2251") == {"number": 2251}
+    assert seen == ["limited-read", "distinct-engineering-app"]
+
+
+@pytest.mark.parametrize("stderr", [
+    "HTTP 403 Resource not accessible by integration",
+    "HTTP 403 Permission denied by policy",
+    "gh: API rate limit exceeded for installation (HTTP 429)",
+    "HTTP 401 Invalid credentials",
+])
+def test_adoption_api_never_fails_over_on_untyped_permission_denial(monkeypatch, stderr):
+    import subprocess
+
+    monkeypatch.setenv("GH_TOKEN", "read-token")
+    monkeypatch.setenv("APP_TOKEN", "write-token")
+    used = []
+
+    def fake_run(argv, **kwargs):
+        used.append(kwargs["env"]["GH_TOKEN"])
+        return subprocess.CompletedProcess(argv, 1, "", stderr)
+
+    monkeypatch.setattr(adoption.subprocess, "run", fake_run)
+    with pytest.raises(adoption.AdoptionHold, match="GITHUB_EVIDENCE_READ_DENIED_OR_UNAVAILABLE_HOLD"):
+        adoption.api("pulls/2251")
+    assert used == ["read-token"]
+
+
+@pytest.mark.parametrize("secondary,expected", [
+    (None, "GITHUB_INSTALLATION_QUOTA_DEFERRED_HOLD"),
+    ("read-token", "GITHUB_INSTALLATION_QUOTA_DEFERRED_HOLD"),
+    ("write-token", "GITHUB_ALTERNATE_READ_UNAVAILABLE_HOLD"),
+])
+def test_adoption_api_dual_quota_or_missing_backup_holds(monkeypatch, secondary, expected):
+    import subprocess
+
+    monkeypatch.setenv("GH_TOKEN", "read-token")
+    if secondary is None:
+        monkeypatch.delenv("APP_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("APP_TOKEN", secondary)
+    identities = []
+
+    def fake_run(argv, **kwargs):
+        identities.append(kwargs["env"]["GH_TOKEN"])
+        return subprocess.CompletedProcess(
+            argv, 1, "", "API rate limit exceeded for installation (HTTP 403)"
+        )
+
+    monkeypatch.setattr(adoption.subprocess, "run", fake_run)
+    with pytest.raises(adoption.AdoptionHold, match=expected):
+        adoption.api("pulls/2251")
+    assert identities == (["read-token", "write-token"] if secondary == "write-token"
+                          else ["read-token"])
+
+
+@pytest.mark.parametrize("body", ["<html>error</html>", "null", "true", '"string"'])
+def test_adoption_api_malformed_or_unexpected_json_holds(monkeypatch, body):
+    import subprocess
+
+    monkeypatch.setenv("GH_TOKEN", "read-token")
+    monkeypatch.setattr(
+        adoption.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, body, "")
+    )
+    with pytest.raises(adoption.AdoptionHold, match="GITHUB_EVIDENCE_RESPONSE_"):
+        adoption.api("pulls/2251")
+
+
+def test_adoption_api_rejects_unsafe_endpoint_without_any_request(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "read-token")
+    monkeypatch.setattr(
+        adoption.subprocess, "run",
+        lambda *args, **kw: pytest.fail("unsafe endpoint made network request")
+    )
+    for endpoint in ("/pulls", "../pulls", "pulls/../approve", "pulls//2251", ""):
+        with pytest.raises(adoption.AdoptionHold, match="GITHUB_EVIDENCE_ENDPOINT_INVALID_HOLD"):
+            adoption.api(endpoint)
