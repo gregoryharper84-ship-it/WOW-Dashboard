@@ -197,7 +197,7 @@ def test_weekly_nfl_capture_requires_real_pregame_prediction_receipts():
     assert 'NFL_FUTURE_PREGAME_IDENTITY_INVALID' in workflow
     assert 'detail.get("prediction_id")' in workflow
     assert 'len(future_nfl_predictions) < 5' in workflow
-    assert 'event_time <= now_utc' in workflow
+    assert 'event_time <= receipt_checked_at_utc' in workflow
     assert '"nfl_future_prediction_receipts"' in workflow
     assert '"model_terminal_certification": "NOT_PROVEN_BY_PROSPECTIVE_CAPTURE"' in workflow
     assert '"probability_values_logged": False' in workflow
