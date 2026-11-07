@@ -71,6 +71,40 @@ def _acquire(games=None, venues=None, schedule_at=SCHEDULE_AT, venue_at=VENUE_AT
     )
 
 
+def test_neutral_venue_requires_home_and_away_travel_receipts():
+    """Do not treat the nominal HOME team as stationary at a neutral site."""
+    games = _slate()
+    games[-1] = _game(
+        "target", KICKOFF, "Texas", "Oklahoma", "fort-worth",
+        completed=False, neutral_site=True,
+    )
+    complete = _acquire(games=games)
+    scoped = {
+        row["scope"]: row for row in complete["evidence_rows"]
+        if row["official_event_id"] == "target"
+    }
+    assert set(scoped) == {"HOME", "AWAY"}
+    assert scoped["HOME"]["payload"]["travel_distance_miles"] == 168.962
+    assert scoped["AWAY"]["payload"]["travel_distance_miles"] == 0.0
+    feature = schedule_geometry_feature_row(complete, "target")
+    assert feature["status"] == "REDUCED_ROW_HELD"
+    assert tuple(feature["model_features"]) == REDUCED_MODEL_FEATURES
+    assert feature["model_features"]["neutral_site"] is True
+    assert feature["neutral_home_travel_distance_miles"] == 168.962
+    assert feature["can_execute"] is False
+
+    # An absent venue snapshot can no longer provide a fully evidenced HOME
+    # slot for a neutral-site game.
+    missing_venues = _acquire(games=games, venues=[])
+    assert not any(
+        row["official_event_id"] == "target"
+        for row in missing_venues["evidence_rows"]
+    )
+    assert schedule_geometry_feature_row(
+        missing_venues, "target"
+    )["code"] == "NCAAF_SCHEDULE_GEOMETRY_INCOMPLETE"
+
+
 def test_one_event_gets_both_rest_slots_and_v1_stays_incomplete():
     receipt = _acquire()
     assert receipt["schedule_geometry_complete_rows"] == 1
