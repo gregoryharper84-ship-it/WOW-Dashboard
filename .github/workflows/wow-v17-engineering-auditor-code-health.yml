@@ -94,6 +94,7 @@ jobs:
       - name: Read protected main Release Truth classifier
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         continue-on-error: true
+        id: protected_main
         uses: actions/checkout@v6
         with:
           ref: main
@@ -102,7 +103,7 @@ jobs:
           persist-credentials: false
 
       - name: Report live release truth without gating this PR
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.protected_main.outcome == 'success' }}
         continue-on-error: true
         shell: bash
         env:
