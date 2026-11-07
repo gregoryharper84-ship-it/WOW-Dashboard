@@ -138,3 +138,16 @@ def test_training_pagination_rejects_missing_or_malformed_identity(bad_row):
         _paged(db, "wow_ncaaf_training_games", "*", page_size=2)
     assert exc.value.code == "NCAAF_TRAINING_PAGINATION_INVALID"
     assert not db.writes
+
+
+def test_training_feature_with_missing_parent_fails_closed_without_writes():
+    # The game and feature tables are fetched in separate queries. A concurrent
+    # insert after the game read can make an otherwise valid feature parentless
+    # in this training snapshot, even when the database FK is intact.
+    dataset = data(300)
+    dataset["wow_ncaaf_training_features"][-1]["training_game_id"] = "g-not-in-game-read"
+    db = DB(dataset)
+    with pytest.raises(NCAAFTrainingRunnerUnavailable) as exc:
+        load_training_rows(db)
+    assert exc.value.code == "NCAAF_TRAINING_DATA_INVALID"
+    assert not db.writes
