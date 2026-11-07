@@ -30,5 +30,6 @@ def test_staging_retains_research_only_security():
     assert "constraint wow_ncaaf_source_never_execute check (can_execute = false)" in sql
     assert "grant all on table public.wow_ncaaf_source_snapshots to service_role" in sql
     for route in ("/games", "/games/players", "/ratings/core", "/ratings/sp",
-                  "/ratings/srs", "/ratings/elo", "/ratings/fpi"):
+                  "/ratings/srs", "/ratings/elo", "/ratings/fpi", "/venues"):
         assert "'" + route + "'" in sql
+    assert sql.count("'/venues'") == 2

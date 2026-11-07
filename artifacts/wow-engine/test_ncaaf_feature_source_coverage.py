@@ -1,27 +1,49 @@
-import re
 from pathlib import Path
+
+import pytest
 
 from ncaaf_feature_compiler import REQUIRED_SCOPED_KEYS
 from ncaaf_feature_source_coverage import (
     APPROVED_PROVIDER_KINDS,
     build_feature_source_matrix,
+    parse_evidence_source_seeds,
 )
 
 
-def test_approved_provider_seed_matches_the_reviewed_sql():
+def _seed_sql():
     root = Path(__file__).parent
-    sql = "\n".join(
+    return "\n".join(
         path.read_text()
         for path in (
             root / "ncaaf_verified_availability_sources.sql",
             root / "ncaaf_schedule_geometry_source.sql",
         )
     )
-    for provider, kinds in APPROVED_PROVIDER_KINDS.items():
-        match = re.search(rf"'{provider}'.+?array\[([^\]]+)\]", sql)
-        assert match is not None, provider
-        found = {part.strip().strip("'") for part in match.group(1).split(",")}
-        assert found == set(kinds)
+
+
+def test_approved_provider_seed_matches_the_reviewed_sql():
+    parsed = parse_evidence_source_seeds(_seed_sql())
+    assert parsed == APPROVED_PROVIDER_KINDS
+
+
+def test_seed_parser_accepts_a_reformatted_row_and_rejects_bad_seeds():
+    formatted = """
+    ('CFBD_SCHEDULE_GEOMETRY_V1',
+     'RESEARCH_SOURCE',
+     'B',
+     array[
+       'REST_TRAVEL'
+     ],
+     true)
+    """
+    assert parse_evidence_source_seeds(formatted) == {
+        "CFBD_SCHEDULE_GEOMETRY_V1": frozenset({"REST_TRAVEL"}),
+    }
+    mismatched = formatted.replace("'REST_TRAVEL'", "'TEAM_POWER'")
+    assert parse_evidence_source_seeds(mismatched) != APPROVED_PROVIDER_KINDS
+    duplicate = formatted + "\n" + formatted
+    with pytest.raises(ValueError, match="NCAAF_EVIDENCE_SOURCE_DUPLICATE:CFBD_SCHEDULE_GEOMETRY_V1"):
+        parse_evidence_source_seeds(duplicate)
 
 
 def test_compiler_slots_and_only_six_have_an_approved_source():

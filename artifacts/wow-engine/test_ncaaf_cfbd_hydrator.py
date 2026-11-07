@@ -6,6 +6,7 @@ from ncaaf_cfbd_client import CFBDResponse
 from ncaaf_cfbd_hydrator import (
     hydrate_cfbd_player_stats_season,
     hydrate_cfbd_season,
+    hydrate_cfbd_venues,
     profile_cfbd_player_stats,
 )
 
@@ -64,6 +65,9 @@ class FakeCFBD:
             rows=[PLAYER_GAME],
         )
 
+    def venues(self):
+        return CFBDResponse(endpoint="/venues", params={}, rows=[{"id": 3806, "latitude": 37.354, "longitude": -79.177}])
+
     def ratings(self, family, *, year, week=None):
         endpoint = {"elo": "/ratings/elo", "sp": "/ratings/sp"}[family]
         return CFBDResponse(endpoint=endpoint, params={"year": year, **({"week": week} if week is not None else {})}, rows=[{"team": "A", "rating": 1.0}])
@@ -119,6 +123,18 @@ def test_full_season_rating_is_explicitly_blocked_from_pregame_feature_use():
     season_rating = next(row for row in rows if row.endpoint == "/ratings/sp")
     assert season_rating.week is None
     assert "RETROSPECTIVE_RATING_NOT_PREGAME_FEATURE" in season_rating.blocker_codes
+
+
+def test_venue_catalog_is_staged_without_becoming_a_feature():
+    snapshot = hydrate_cfbd_venues(FakeCFBD(), season=2026)
+    assert snapshot.endpoint == "/venues"
+    assert snapshot.season == 2026
+    assert snapshot.week is None
+    assert snapshot.can_execute is False
+    assert len(snapshot.payload_sha256) == 64
+    assert snapshot.response_rows[0]["id"] == 3806
+    with pytest.raises(ValueError):
+        hydrate_cfbd_venues(FakeCFBD(), season=1999)
 
 
 def test_invalid_week_contract_fails_closed():

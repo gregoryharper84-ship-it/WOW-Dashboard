@@ -126,6 +126,18 @@ def hydrate_cfbd_season(
     return snapshots
 
 
+def hydrate_cfbd_venues(client: CFBDClient, *, season: int) -> SourceSnapshot:
+    """Stage one immutable /venues catalog snapshot.
+
+    ``season`` is only the staging identity bucket. The catalog itself is not a
+    game-season statistic, and this function does not turn coordinates into a
+    feature row.
+    """
+    if int(season) < 2000 or int(season) > 2100:
+        raise ValueError("year is outside supported research bounds")
+    return _snapshot(client.venues(), season=int(season), week=None, requested_at=_utc_now())
+
+
 def hydrate_cfbd_player_stats_season(
     client: CFBDClient,
     *,

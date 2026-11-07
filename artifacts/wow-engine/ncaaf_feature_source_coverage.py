@@ -6,9 +6,15 @@ reports, Elo, box scores, and market prices are not substitutes for a missing sl
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable, Mapping
 
 from ncaaf_feature_compiler import REQUIRED_SCOPED_KEYS
+
+_SEED_ROW = re.compile(
+    r"\('(?P<provider>[A-Z0-9_]+)'\s*,\s*'[A-Z_]+'\s*,\s*'[ABC]'\s*,\s*array\[(?P<kinds>[^\]]*)\]",
+    re.IGNORECASE,
+)
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -49,6 +55,22 @@ FITTED_FEATURE_SLOTS: dict[str, tuple[str, ...]] = {
     "weather_precip_probability": ("WEATHER:EVENT",),
     "neutral_site": (),
 }
+
+
+def parse_evidence_source_seeds(sql: str) -> dict[str, frozenset[str]]:
+    """Parse provider allow-lists without depending on one-line SQL layout."""
+    found: dict[str, frozenset[str]] = {}
+    for match in _SEED_ROW.finditer(sql):
+        provider = match.group("provider")
+        if provider in found:
+            raise ValueError(f"NCAAF_EVIDENCE_SOURCE_DUPLICATE:{provider}")
+        kinds = frozenset(
+            part.strip().strip("'\"")
+            for part in match.group("kinds").split(",")
+            if part.strip()
+        )
+        found[provider] = kinds
+    return found
 
 
 def _providers_for(kind: str, registry: Mapping[str, Iterable[str]]) -> tuple[str, ...]:
@@ -118,4 +140,5 @@ __all__ = [
     "CAN_EXECUTE",
     "PROBABILITY_PUBLISHABLE",
     "build_feature_source_matrix",
+    "parse_evidence_source_seeds",
 ]
