@@ -39,6 +39,17 @@ The repository's existing `artifacts/wow-engine/v17/production_release_admission
 
 A GitHub main merge is not a Render deployment. A live Render deploy is not an Action model receipt. A healthy API is not evidence of calibrated probability. The application project's identity does not establish authority to sign release decisions or edit protected settings.
 
+### Post-merge readback: specific migration and Action receipt ledger (same audit date)
+
+A second read-only check of the connected application database found:
+- `supabase_migrations.schema_migrations`: **281** records; the expected #2502 `20261107064224` migration version is **not recorded** in this ledger. This **does not prove** the DDL has never been applied through another authorized mechanism; validate schema and migration provenance before any attempted application.
+- `public.wow_action_invocation_receipts`: **4,078** historical records; latest `occurred_at` was **2026-11-06 01:12:10 UTC**, and **zero** new invocation receipts were recorded after #2502's `2026-11-07 13:51:47 UTC` main merge.
+- `public.wow_prop_action_canary_receipts`: **zero** records.
+- `public.wow_event_scoring_evidence`: **4,508** historical records, latest `2026-10-28 21:32:42 UTC`.
+- The checked invocation and canary receipt rows showed **zero** `can_execute IS NOT FALSE` values. This is a database snapshot check, **not** an end-to-end terminal verification.
+
+These tables do **not** by themselves enumerate every possible V17 receipt system. Nonetheless, they provide no proof of a scored Action acceptance run after the merge, so `AUTHENTIC_SCORING_RECEIPT_UNVERIFIED` remains a hold.
+
 ## 3. Database security inventory — read only, not a penetration test
 
 Read-only SQL metadata in the connected Supabase project returned:
