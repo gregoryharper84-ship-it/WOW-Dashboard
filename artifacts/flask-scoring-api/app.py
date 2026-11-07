@@ -145,7 +145,11 @@ from gate_engine.daily_run_lifecycle import (
     start_manifest_reaper,
 )
 ensure_manifest_ready()
-start_manifest_reaper()
+# CI owns the test database lifecycle and mutates the process environment.
+# Do not leave a recurring database worker running alongside those tests.
+_CI_MODE = os.environ.get("WOW_CI", "").strip().lower() in {"1", "true", "yes"}
+if not _CI_MODE:
+    start_manifest_reaper()
 _bt("flask app created — registering routes")
 
 BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"
@@ -13727,6 +13731,7 @@ CM_SLIP_JOINT_PROBABILITY_REQUIRED    = True   # PATCH-014: joint model required
 CM_SLIP_POSITIVE_NET_RETURN_PRIMARY   = True   # PATCH-017: positive_net_return is primary metric
 
 _CM_SCHEMA_READY = False
+_CM_SLIP_MIGRATE_READY = False
 _CM_SCHEMA_LOCK  = threading.Lock()
 
 _CM_SCHEMA_DDL = """
@@ -13941,30 +13946,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
 """
 
 def _cm_ensure_schema():
-    """Idempotently create all CM tables and run column migrations. Safe to call repeatedly."""
-    global _CM_SCHEMA_READY
-    if _CM_SCHEMA_READY:
+    """Create required CM schema with bounded DDL; isolate optional migrations."""
+    global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY
+    if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
         return
     with _CM_SCHEMA_LOCK:
-        if _CM_SCHEMA_READY:
+        if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
             return
         try:
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(_CM_SCHEMA_DDL)
-                    # PATCH-014–020: add new columns to cm_slips (idempotent)
+                    # Match the session-ledger warmup limits. SET LOCAL cannot
+                    # leak deadlines into later pooled application operations.
+                    cur.execute("SET LOCAL lock_timeout = '3000ms'")
+                    cur.execute("SET LOCAL statement_timeout = '10000ms'")
+                    if not _CM_SCHEMA_READY:
+                        cur.execute(_CM_SCHEMA_DDL)
+                    # These migrations are historically optional. Savepoints
+                    # preserve the required schema if one statement fails;
+                    # catching an error alone leaves PostgreSQL aborted.
+                    cur.execute("SAVEPOINT cm_slip_migration")
+                    slip_ready = False
                     try:
                         cur.execute(_CM_SLIP_MIGRATE_DDL)
+                        slip_ready = True
                     except Exception as mig_err:
+                        cur.execute("ROLLBACK TO SAVEPOINT cm_slip_migration")
                         app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
-                    # Step 12.5B: add new columns + UNIQUE index to kalshi_wx_shadow_results
+                    finally:
+                        cur.execute("RELEASE SAVEPOINT cm_slip_migration")
+                    cur.execute("SAVEPOINT cm_shadow_migration")
                     try:
                         cur.execute(_CM_SHADOW_RESULT_MIGRATE_DDL)
                     except Exception as mig_err:
+                        cur.execute("ROLLBACK TO SAVEPOINT cm_shadow_migration")
                         app.logger.warning(f"Shadow result migration (non-fatal): {mig_err}")
+                    finally:
+                        cur.execute("RELEASE SAVEPOINT cm_shadow_migration")
                 conn.commit()
             _CM_SCHEMA_READY = True
-            app.logger.info("CM schema ready (PATCH-014–020 + shadow result migrations applied)")
+            _CM_SLIP_MIGRATE_READY = slip_ready
+            app.logger.info("CM required schema ready (optional migration failures logged separately)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")
             raise
@@ -14994,9 +15016,10 @@ def _cm_weakest_leg_finalizer(legs, _conn=None):
     }
 
 
-def _cm_check_daily_exposure(legs, board_date, conn):
+def _cm_check_daily_exposure(legs, board_date, conn, *, strict=False):
     """PATCH-016: check cm_daily_exposure for duplicate theses on the same day.
     Returns list of conflict dicts (empty = no conflicts).
+    Strict callers require a complete read; the default retains first-boot tolerance.
     """
     conflicts = []
     try:
@@ -15022,6 +15045,8 @@ def _cm_check_daily_exposure(legs, board_date, conn):
                         "existing_slip_id": row[0],
                     })
     except Exception:
+        if strict:
+            raise
         pass    # non-fatal; exposure table may not exist yet on first boot
     return conflicts
 
@@ -15864,9 +15889,11 @@ def cm_slip_optimizer():
     try:
         with _cm_db() as conn:
             dup_conflicts = _cm_check_daily_exposure(
-                final_candidates, board_date, conn)
+                final_candidates, board_date, conn, strict=True)
     except Exception:
-        pass
+        # Preserve the native database failure. Missing exposure evidence must
+        # never become an empty conflict list or an optimizer PASS result.
+        raise
 
     dup_blocked  = {c["leg"] for c in dup_conflicts}
     post_dup     = [l for l in final_candidates
@@ -22198,8 +22225,13 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
-_bt("startup daemon spawned — app fully ready")
+if _CI_MODE:
+    # Finish database initialization before tests can patch the environment or
+    # reset the schema; libpq may read environment variables during connect.
+    _run_startup_warmup()
+else:
+    _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+_bt("startup warmup initialized — app fully ready")
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
