@@ -109,7 +109,7 @@ This document is a source-of-truth **inventory of evidence**, not a promotion fl
 
 ## 5. Safe next actions
 
-1. Finish authorized production deployment of merged PR #2502 and independently verify *both* Render deploy SHAs at its actual merge SHA. Keep model certification separate from deploy health.
+1. Deploy the authorized **current protected `main` SHA containing merged PR #2502**, not #2502's historical merge SHA if `main` has advanced. Independently verify that this exact accepted `main` SHA matches **both** Render web and worker LIVE deploy SHAs and that no conflicting deploy is in flight. Keep model certification separate from deploy health.
 2. Acquire **web-side** read-only database identity/readback evidence from the running service; confirm it really reaches the same Supabase project as the worker. Do not echo the effective `SUPABASE_SERVICE_KEY`.
 3. Run a genuine authenticated end-to-end governed scoring request and compare its immutable receipt with the authoritative DB ledger. Do not promote held probabilities, replay started games as live, or infer result from health checks.
 4. Have independent SIRT assess review/provenance and release-control gaps. Do not mint SIRT approval from a coding agent or accept a green deterministic check as semantic acceptance.
