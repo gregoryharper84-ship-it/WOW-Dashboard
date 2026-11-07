@@ -182,7 +182,7 @@ def test_soccer_unresolved_competition_blocker_survives_routing():
     assert routed.identity["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     payload = routed.as_dict()
     assert payload["can_execute"] is False
-    assert payload["identity"]["canonical_identity_blocker"] == "SOCCER_COMPETITION_UNSUPPORTED"
+    assert payload["canonical_identity_blocker"] == "SOCCER_COMPETITION_UNSUPPORTED"
 
 
 def test_soccer_identity_never_publishes_a_probability_or_a_draw_shortcut():
