@@ -114,3 +114,55 @@ def test_safe_upstream_message_redacts_every_configured_alias(monkeypatch):
     assert message == "[REDACTED] [REDACTED] rejected"
     assert "paid-secret" not in message
     assert "free-secret" not in message
+
+
+def test_exhausted_invalid_keys_are_typed_credential_failure_without_secrets(monkeypatch):
+    for name in api.ODDS_API_KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "first-secret")
+    monkeypatch.setenv("ODDS_API_FREE_KEY", "second-secret")
+
+    monkeypatch.setattr(api, "_http_get", lambda url, params: _response(401, {"error_code": "INVALID_KEY"}))
+    result = api._proxy_get("/sports", {"all": "true"})
+    body = json.loads(result.body)
+
+    assert result.status_code == 401
+    assert body["failure_class"] == "PROVIDER_CREDENTIAL_INVALID"
+    assert body["code"] == "ODDS_API_UPSTREAM_ERROR"
+    assert body["can_execute"] is False
+    assert "first-secret" not in result.body.decode()
+    assert "second-secret" not in result.body.decode()
+
+
+def test_typed_upstream_auth_failures_are_in_the_canonical_registry():
+    """Keep odds-proxy typed classifications aligned with V17 failure taxonomy."""
+    from pathlib import Path
+
+    registry = (Path(__file__).resolve().parents[1] / "wow-engine" / "docs" /
+                "failure_codes.md").read_text()
+    for code in ("PROVIDER_CREDENTIAL_INVALID", "PROVIDER_ENTITLEMENT_DENIED"):
+        assert f"| `{code}` |" in registry
+
+
+def test_non_json_auth_failures_are_typed_without_changing_http_envelope(monkeypatch):
+    """Malformed vendor HTML remains 502 with typed 401/403 upstream provenance."""
+    for name in api.ODDS_API_KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "secret-key")
+    for status, failure_class in ((401, "PROVIDER_CREDENTIAL_INVALID"),
+                                  (403, "PROVIDER_ENTITLEMENT_DENIED")):
+        response = httpx.Response(
+            status,
+            content=b"<html>secret-key upstream failure</html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", api.ODDS_API_BASE + "/sports"),
+        )
+        monkeypatch.setattr(api, "_http_get", lambda *_a, **_kw: response)
+        r = api._proxy_get("/sports", {"all": "true"})
+        body = json.loads(r.body)
+        assert r.status_code == 502
+        assert body["code"] == "ODDS_API_UPSTREAM_NON_JSON"
+        assert body["upstream_status"] == status
+        assert body["failure_class"] == failure_class
+        assert body["can_execute"] is False
+        assert "secret-key" not in r.body.decode()

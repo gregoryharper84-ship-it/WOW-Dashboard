@@ -349,3 +349,88 @@ def test_published_action_contract_declares_the_paged_retrieval_route():
     assert daily_request["properties"]["response_mode"]["enum"] == ["COMPACT", "FULL"]
     # extra="forbid" on the model means an undocumented field would be rejected.
     assert daily_request["additionalProperties"] is False
+
+
+def test_mixed_sport_discovery_outage_is_a_daily_run_blocker(monkeypatch):
+    """A healthy NFL row never makes an MLB acquisition outage disappear."""
+    import v17.daily_snapshot_runtime as runtime
+
+    row = {**_prop_snapshot(0), "event_id": "NFL:example",
+           "sport": "NFL", "stat_type": "PASSING_YARDS"}
+    pages = iter(([], [row]))
+    monkeypatch.setattr(runtime, "_prop_manifest_rows", lambda *_args, **_kwargs: next(pages))
+    monkeypatch.setattr(
+        runtime, "acquire_daily_prop_snapshots",
+        lambda **_kwargs: {
+            "status": "COMPLETED_WITH_ROW_BLOCKERS",
+            "sport_coverage": [
+                {"sport": "MLB", "status": "DATA_UNOBTAINABLE", "attempted": 0,
+                 "blockers": ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:HTTP_503"]},
+                {"sport": "NFL", "status": "COMPLETED", "attempted": 1,
+                 "persisted": 1, "blockers": []},
+            ],
+            "blockers": ["MLB_PROP_SCHEDULE_ACQUISITION_FAILED:HTTP_503"],
+            "persisted": 1, "snapshot_write_succeeded": 1,
+            "attempted": 1, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "can_execute": False,
+        },
+    )
+    result = _run(_DB([]), _RejectingMarket(), max_props=2, response_mode="FULL")
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["identity"]["sport"] == "NFL"
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert "DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE" in result["blockers"]
+    assert "MLB_PROP_SCHEDULE_ACQUISITION_FAILED:HTTP_503" in result["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_mixed_outage_without_rows_is_unobtainable_not_empty_slate(monkeypatch):
+    """No rows with one failed sport cannot prove zero candidates."""
+    import v17.daily_snapshot_runtime as runtime
+    monkeypatch.setattr(runtime, "_prop_manifest_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        runtime, "acquire_daily_prop_snapshots",
+        lambda **_kwargs: {
+            "status": "COMPLETED_WITH_ROW_BLOCKERS",
+            "sport_coverage": [
+                {"sport": "MLB", "status": "DATA_UNOBTAINABLE", "blockers": []},
+                {"sport": "NFL", "status": "COMPLETED", "attempted": 0, "blockers": []},
+            ],
+            "receipts": [], "blockers": [], "persisted": 0, "attempted": 0,
+            "snapshot_write_succeeded": 0, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "can_execute": False,
+        },
+    )
+    result = _run(_DB([]), _RejectingMarket(), max_props=2, response_mode="FULL")
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert "DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE" in result["blockers"]
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert result["can_execute"] is False
+
+
+def test_invalid_snapshot_write_dominates_concurrent_sport_discovery_outage(monkeypatch):
+    """Independent invalid-write and source-outage blockers both survive."""
+    import v17.daily_snapshot_runtime as runtime
+    monkeypatch.setattr(runtime, "_prop_manifest_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        runtime, "acquire_daily_prop_snapshots",
+        lambda **_kwargs: {
+            "status": "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE",
+            "sport_coverage": [
+                {"sport": "MLB", "status": "DATA_UNOBTAINABLE", "blockers": ["MLB_SOURCE_FAILED"]},
+                {"sport": "NFL", "status": "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE",
+                 "attempted": 1, "blockers": ["NFL_SNAPSHOT_WRITE_FAILED"]},
+            ],
+            "receipts": [], "blockers": ["MLB_SOURCE_FAILED", "NFL_SNAPSHOT_WRITE_FAILED"],
+            "persisted": 0, "attempted": 1, "snapshot_write_failed": 1,
+            "snapshot_write_succeeded": 0, "explicit_prewrite_exclusions": 0,
+            "can_execute": False,
+        },
+    )
+    result = _run(_DB([]), _RejectingMarket(), max_props=2, response_mode="FULL")
+    assert result["run_status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    assert "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in result["blockers"]
+    assert "DAILY_PROP_SPORT_DISCOVERY_UNOBTAINABLE" in result["blockers"]
+    assert "MLB_SOURCE_FAILED" in result["blockers"]
+    assert "NFL_SNAPSHOT_WRITE_FAILED" in result["blockers"]
+    assert result["can_execute"] is False
