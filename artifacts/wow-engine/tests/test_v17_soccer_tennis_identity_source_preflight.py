@@ -19,7 +19,7 @@ TENNIS_XWALK = {"start_time_utc": AT, "tour": "ATP", "tournament_id": 21357, "pl
 SOCCER = {"resultSet": {"count": 1}, "matches": [
     {"id": 10023, "utcDate": AT, "status": "TIMED", "competition": {"id": 2021}, "homeTeam": {"id": 64}, "awayTeam": {"id": 65}}
 ]}
-TENNIS = {"data": [{"matchId": 100123, "startTime": AT, "status": "SCHEDULED", "tournament": {"id": 21357}, "player1": {"id": 22807}, "player2": {"id": 67535}}], "hasNextPage": False, "pageNo": 1}
+TENNIS = {"data": [{"matchId": 100123, "startTime": AT, "status": "SCHEDULED", "tournament": {"id": 21357, "tour": "ATP"}, "player1": {"id": 22807}, "player2": {"id": 67535}}], "hasNextPage": False, "pageNo": 1}
 
 
 def run(sport, payload, crosswalk):
@@ -120,3 +120,39 @@ def test_actual_source_start_already_passed_even_if_alias_start_is_future():
 def test_tennis_second_page_alone_is_not_a_complete_fixture_corpus():
     tennis = {**TENNIS, "pageNo": 2}
     assert run("TENNIS", tennis, TENNIS_XWALK)["code"] == "SOURCE_FIXTURE_PARTIAL"
+
+
+def test_unsupported_sport_rejected_even_without_source_id():
+    outcome = module.preflight_fixture_source(
+        sport="UNSUPPORTED", source_id=None, source_payload=TENNIS,
+        crosswalk=TENNIS_XWALK, as_of_utc="2026-11-04T20:00:00Z",
+    )
+    assert outcome["status"] == "HOLD"
+    assert outcome["code"] == "SOURCE_EVIDENCE_UNVERIFIED"
+    assert outcome["candidate_source_match_id"] is None
+
+
+def test_malformed_soccer_ids_fail_closed_even_with_another_valid_fixture():
+    for field in ("competition", "homeTeam", "awayTeam"):
+        payload = copy.deepcopy(SOCCER)
+        invalid = copy.deepcopy(payload["matches"][0])
+        invalid["id"] = 10024
+        invalid[field]["id"] = None
+        payload["matches"].append(invalid)
+        payload["resultSet"]["count"] = 2
+        result = run("SOCCER", payload, SOCCER_XWALK)
+        assert result["code"] == "SOURCE_FIXTURE_SCHEMA_INVALID", field
+        assert result["status"] == "HOLD"
+
+
+def test_tennis_matching_fixture_requires_verified_matching_tour():
+    for fixture_tour in ("WTA", None):
+        payload = copy.deepcopy(TENNIS)
+        if fixture_tour is None:
+            payload["data"][0]["tournament"].pop("tour")
+        else:
+            payload["data"][0]["tournament"]["tour"] = fixture_tour
+        outcome = run("TENNIS", payload, TENNIS_XWALK)
+        assert outcome["code"] == "SOURCE_EVIDENCE_UNVERIFIED"
+        assert outcome["status"] == "HOLD"
+        assert outcome["candidate_source_match_id"] is None
