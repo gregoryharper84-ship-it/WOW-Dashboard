@@ -1,0 +1,68 @@
+name: TestDriver.ai Manual E2E Trial
+
+# Cloud browser time is metered and the trial can convert to paid on exhaustion.
+# This workflow is always manual, informational, and never a merge requirement.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_usage:
+        description: "I verified remaining free-trial minutes and no-charge status and approve this one bounded run"
+        type: boolean
+        required: true
+        default: false
+
+jobs:
+  testdriver-e2e:
+    # A manual owner-confirmed dispatch is the only entrypoint. The account
+    # has a 360-minute trial but auto-converts at exhaustion/expiry.
+    # Also require an explicit repository no-charge verification flag. Never
+    # convert this workflow to a PR/push/scheduled trigger.
+    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' }}
+    runs-on: ubuntu-latest
+    # Covers the 240s sandbox + 45s startup + 660s test/hooks budget, plus setup.
+    timeout-minutes: 20
+    concurrency:
+      group: testdriver-trial-e2e
+      cancel-in-progress: true
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      WOW_TESTDRIVER_LOCAL_UI: "true"
+      WOW_TESTDRIVER_SOURCE_SHA: ${{ github.sha }}
+      WOW_TESTDRIVER_STAGING_URL: ${{ vars.WOW_TESTDRIVER_STAGING_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Authenticate to TestDriver
+        uses: testdriverai/action@stable
+        with:
+          channel: stable
+          api-key: ${{ secrets.TD_API_KEY }}
+
+      - name: Run sandboxed React dashboard E2E and optional staging API smoke
+        run: pnpm exec vitest run
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testdriver-manual-e2e-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
