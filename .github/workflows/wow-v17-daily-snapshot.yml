@@ -121,7 +121,7 @@ jobs:
               "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
               "lanes": ["MONEYLINE"],
               "max_props": 0,
-              "max_team_events": 32 if next_sunday_capture else 24,
+              "max_team_events": 24,
               "response_mode": "FULL" if next_sunday_capture else "COMPACT",
           }
           body = json.dumps(payload).encode("utf-8")
