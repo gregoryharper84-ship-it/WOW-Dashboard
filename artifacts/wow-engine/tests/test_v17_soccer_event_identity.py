@@ -443,3 +443,13 @@ def test_matching_clubs_wrong_date_with_bad_id_do_not_supplant_official_fixture(
         ("eng.1", "20261108"): [tomorrow],
     }))
     assert result["event_id"] == "SOCCER:401800051"
+
+
+@pytest.mark.parametrize("bad_role", ["", "neutral", "host"])
+def test_invalid_competitor_roles_cannot_make_another_fixture_unique(bad_role):
+    malformed = scoreboard_event("401800060")
+    malformed["competitions"][0]["competitors"][0]["homeAway"] = bad_role
+    rows = [malformed, scoreboard_event("401800061")]
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({("eng.1", "20261107"): rows}))
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
