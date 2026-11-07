@@ -13,6 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,13 @@ SERVICES = {
     "worker": "srv-dapkbc0473hc73c1978g",
 }
 SHA = re.compile(r"^[0-9a-f]{40}$")
+# A freshly merged main SHA cannot be live until Render's native checksPass
+# deploy completes. Inside this bounded window ONLY, a Render live-SHA mismatch
+# is a typed PENDING observation instead of a failing check on the very commit
+# Render is evaluating (which would deny the deploy it is waiting for).
+# After the window the mismatch is a genuine HOLD and fails the job again.
+PENDING_DEPLOY_GRACE_SECONDS = 90 * 60
+PENDING_DEPLOY_REASON_PREFIX = "RENDER_LIVE_SHA_MISMATCH:"
 
 
 class ReadbackHold(ValueError):
@@ -185,12 +193,78 @@ def _readback() -> dict[str, Any]:
     return outcome
 
 
+def pending_deploy_outcome(reason: str, *, target_sha: str, commit_iso: Any,
+                           now: datetime) -> dict[str, Any] | None:
+    """Typed PENDING only for a live-SHA mismatch on a recent exact main commit.
+
+    Every other reason, an unparseable or future commit time, a missing time
+    zone, or an expired window returns None so the caller keeps the HOLD.
+    This never reports the deployment as verified or the model as ready.
+    """
+    if (not isinstance(reason, str)
+            or not reason.startswith(PENDING_DEPLOY_REASON_PREFIX)
+            or not SHA.fullmatch(target_sha or "")
+            or not isinstance(commit_iso, str)):
+        return None
+    try:
+        committed = datetime.fromisoformat(commit_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if committed.tzinfo is None or now.tzinfo is None:
+        return None
+    age = (now - committed).total_seconds()
+    if not 0 <= age <= PENDING_DEPLOY_GRACE_SECONDS:
+        return None
+    return {
+        "status": "READBACK_PENDING_DEPLOY",
+        "reason": reason,
+        "expected_sha": target_sha,
+        "grace_seconds": PENDING_DEPLOY_GRACE_SECONDS,
+        "production_verified": False,
+        "terminal": "DEPLOY_PENDING_NOT_ACCEPTANCE",
+        "model_ready": "UNVERIFIED",
+        "can_execute": False,
+    }
+
+
+def _commit_time(target: str) -> str:
+    gh_token = os.environ.get("GH_TOKEN") or ""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": "Bearer " + gh_token,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    commit = _get_json("https://api.github.com/repos/" + REPO + "/commits/" + target, headers)
+    return str(((commit.get("commit") or {}).get("committer") or {}).get("date") or "")
+
+
+def _emit_output(name: str, value: str) -> None:
+    target = os.environ.get("GITHUB_OUTPUT")
+    if target:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(name + "=" + value + "\n")
+
+
 def main() -> int:
     path = Path(os.environ.get("READBACK_RECEIPT", "lean-production-readback.json"))
     try:
         outcome = _readback()
         code = 0
     except Exception as exc:
+        target = os.environ.get("EXPECTED_SHA", "")
+        deferred = None
+        if isinstance(exc, ReadbackHold) and str(exc).startswith(PENDING_DEPLOY_REASON_PREFIX):
+            try:
+                deferred = pending_deploy_outcome(
+                    str(exc), target_sha=target, commit_iso=_commit_time(target),
+                    now=datetime.now(timezone.utc))
+            except Exception:  # any lookup doubt keeps the fail-closed HOLD
+                deferred = None
+        if deferred is not None:
+            path.write_text(json.dumps(deferred, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps(deferred, sort_keys=True))
+            _emit_output("deploy_pending", "true")
+            return 0
         # Even a transport reset, truncated HTTP response or malformed JSON
         # shape must leave a typed, credential-free HOLD for independent SIRT.
         reason = str(exc) if isinstance(exc, ReadbackHold) else "READBACK_SOURCE_UNAVAILABLE_OR_INVALID"
@@ -205,6 +279,7 @@ def main() -> int:
         code = 1
     path.write_text(json.dumps(outcome, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(outcome, sort_keys=True))
+    _emit_output("deploy_pending", "false")
     return code
 
 
