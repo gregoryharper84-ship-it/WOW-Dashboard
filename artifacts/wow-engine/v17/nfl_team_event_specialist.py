@@ -400,6 +400,14 @@ def _reused_prediction_result(
     snapshot = row.get("model_output_snapshot")
     if not isinstance(snapshot, dict):
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_REUSE_SNAPSHOT_MISSING")
+    # Never retroactively attest an immutable row using a newer champion.
+    # Incomplete or conflicting persisted publication evidence fails closed.
+    stored_publishable = (
+        row.get("model_probability_publishable") is True
+        and snapshot.get("model_probability_publishable") is True
+        and snapshot.get("probability_publishable") is True
+        and model_probability_publishable is True
+    )
     return {
         "code": "NFL_FITTED_MODEL_PATH_PROVEN",
         **snapshot,
@@ -422,8 +430,8 @@ def _reused_prediction_result(
         "failure_code": None,
         "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
         "blend_publishable": False,
-        "model_probability_publishable": model_probability_publishable,
-        "probability_publishable": model_probability_publishable,
+        "model_probability_publishable": stored_publishable,
+        "probability_publishable": stored_publishable,
         "prediction_reused": True,
         "can_execute": False,
     }
