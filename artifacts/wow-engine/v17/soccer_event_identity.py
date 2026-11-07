@@ -182,11 +182,19 @@ def _partial_fixture_may_match(
             continue
         side = str(competitor.get("homeAway") or "").strip().lower()
         team = competitor.get("team")
-        if side in {"home", "away"} and isinstance(team, Mapping):
+        if not isinstance(team, Mapping):
+            continue
+        tokens = _team_tokens(team)
+        if side in {"home", "away"}:
             requested = home_norm if side == "home" else away_norm
-            if requested in _team_tokens(team):
+            if requested in tokens:
                 matching_side = True
                 break
+        elif home_norm in tokens or away_norm in tokens:
+            # An unassigned role could belong to either requested club. Only
+            # a same-window kickoff can make it a relevant source hold.
+            matching_side = True
+            break
     if not matching_side:
         return False
     try:
