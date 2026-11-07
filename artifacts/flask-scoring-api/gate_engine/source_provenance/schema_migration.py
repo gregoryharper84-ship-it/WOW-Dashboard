@@ -118,14 +118,17 @@ def run_provenance_migration(conn) -> dict[str, Any]:
             try:
                 cur.execute(statement)
             except Exception as exc:
-                # If rollback itself fails the outer handler aborts the whole
-                # transaction; never pretend a partly recovered DDL succeeded.
-                cur.execute("ROLLBACK TO SAVEPOINT wow_provenance_step")
+                # Do not attempt RELEASE while the transaction remains aborted:
+                # it would mask the original rollback failure. Fail closed.
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT wow_provenance_step")
+                except Exception:
+                    raise RuntimeError("PROVENANCE_SAVEPOINT_ROLLBACK_FAILED") from None
                 errors.append(f"{label}: {exc}")
                 log.warning("provenance_migration: %s failed: %s", label, type(exc).__name__)
-                return False
-            finally:
                 cur.execute("RELEASE SAVEPOINT wow_provenance_step")
+                return False
+            cur.execute("RELEASE SAVEPOINT wow_provenance_step")
             return True
 
         for col_name, col_type in _PROVENANCE_COLUMNS:
@@ -163,7 +166,13 @@ def run_provenance_migration(conn) -> dict[str, Any]:
         }
 
     except Exception as exc:
-        log.error("provenance_migration: fatal error: %s", type(exc).__name__)
+        # Only publish this trusted internal literal, never raw DB errors.
+        fatal_code = (
+            "PROVENANCE_SAVEPOINT_ROLLBACK_FAILED"
+            if type(exc) is RuntimeError and str(exc) == "PROVENANCE_SAVEPOINT_ROLLBACK_FAILED"
+            else type(exc).__name__
+        )
+        log.error("provenance_migration: fatal error: %s", fatal_code)
         try:
             conn.rollback()
         except Exception:
@@ -173,7 +182,7 @@ def run_provenance_migration(conn) -> dict[str, Any]:
             "columns_added": columns_added,
             "indexes_added": indexes_added,
             "fk_applied": fk_applied,
-            "errors": errors + [f"fatal: {type(exc).__name__}"],
+            "errors": errors + [f"fatal: {fatal_code}"],
         }
     finally:
         if cur is not None:

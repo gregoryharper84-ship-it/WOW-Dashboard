@@ -102,6 +102,6 @@ def test_savepoint_rollback_failure_fails_closed_without_commit():
                     fail_rollback=True)
     out = run_provenance_migration(db)
     assert out["success"] is False
-    assert any("fatal:" in e for e in out["errors"])
+    assert any("fatal: PROVENANCE_SAVEPOINT_ROLLBACK_FAILED" == e for e in out["errors"])
     assert db.rollback_count == 1
     assert not db.committed

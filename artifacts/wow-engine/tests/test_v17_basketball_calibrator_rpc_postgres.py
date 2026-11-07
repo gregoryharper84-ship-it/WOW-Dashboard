@@ -112,6 +112,21 @@ def _start_cluster(tmp_path_factory) -> _Cluster:
             or params.get("dbname") != "wow_agent_ci"
         ):
             pytest.fail("NBA_CALIBRATOR_DB_REMOTE_OR_SHARED_TARGET_FORBIDDEN", pytrace=False)
+        # Authorization and a loopback DSN alone do not prove a disposable
+        # target: e.g. a shared server forwarded to localhost. Before any DDL,
+        # read back the actual DB name and refuse an existing model schema.
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as probe:
+                actual = probe.execute(
+                    """select current_database(),
+                              to_regclass('public.wow_basketball_team_event_calibrators') is not null,
+                              to_regclass('public.wow_team_event_specialist_certifications') is not null,
+                              to_regprocedure('public.wow_basketball_certified_calibrator_artifact(text, uuid)') is not null"""
+                ).fetchone()
+        except Exception:
+            pytest.fail("NBA_CALIBRATOR_DB_TARGET_PREFLIGHT_UNAVAILABLE", pytrace=False)
+        if actual != ("wow_agent_ci", False, False, False):
+            pytest.fail("NBA_CALIBRATOR_DB_TARGET_NOT_DISPOSABLE", pytrace=False)
         return _Cluster(dsn)
     try:
         import pgserver
@@ -160,6 +175,39 @@ def test_refuse_ambient_postgres_redirect_for_calibrator_proof(
     monkeypatch.setenv(environment_key, malicious_value)
     with pytest.raises(pytest.fail.Exception):
         _start_cluster(None)
+
+
+@pytest.mark.parametrize("target,admitted", [
+    (("wow_agent_ci", False, False, False), True),
+    (("production", False, False, False), False),
+    (("wow_agent_ci", True, False, False), False),
+    (("wow_agent_ci", False, True, False), False),
+    (("wow_agent_ci", False, False, True), False),
+])
+def test_authorized_local_dsn_still_requires_empty_disposable_database(
+    monkeypatch, target, admitted
+):
+    """Reject shared/previously migrated servers even behind loopback DSNs."""
+    monkeypatch.setenv(
+        "WOW_TEST_POSTGRES_DSN",
+        "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci",
+    )
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DISPOSABLE", "1")
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+
+    class Probe:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def execute(self, _sql): return self
+        def fetchone(self): return target
+
+    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: Probe())
+    if admitted:
+        assert _start_cluster(None).dsn.endswith("/wow_agent_ci")
+    else:
+        with pytest.raises(pytest.fail.Exception, match="NBA_CALIBRATOR_DB_TARGET_NOT_DISPOSABLE"):
+            _start_cluster(None)
 
 
 def _connect(cluster: _Cluster):
