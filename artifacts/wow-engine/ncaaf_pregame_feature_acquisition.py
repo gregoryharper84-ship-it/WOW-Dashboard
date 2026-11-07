@@ -411,7 +411,10 @@ def acquire_schedule_geometry(
                 "occurrence_retrieved_at": prior["receipt"]["retrieved_at"].isoformat(),
             }
             evidence_at = max(game["receipt"]["retrieved_at"], prior["receipt"]["retrieved_at"])
-            if scope == "AWAY":
+            # At neutral venues both teams travel; HOME is not at its
+            # ordinary home field. Refuse a complete REST_TRAVEL slot unless
+            # verified venue geometry exists for that team as well.
+            if scope == "AWAY" or game["neutral_site"] is True:
                 catalog, venue_reason, venue_receipt = _catalog(venues, kickoff)
                 if catalog is None or venue_receipt is None:
                     coverage.append(_coverage(
@@ -512,6 +515,11 @@ def schedule_geometry_feature_row(receipt: Mapping[str, Any], official_event_id:
     if neutral_values != {home["payload"].get("neutral_site")} or not (neutral_values <= {True, False}) or None in neutral_values:
         return {**held, "code": "NCAAF_NEUTRAL_SITE_NOT_ON_SOURCE"}
     neutral = home["payload"]["neutral_site"]
+    if neutral is True and (
+        not isinstance(home["payload"].get("travel_distance_miles"), (int, float))
+        or not isinstance(away["payload"].get("travel_distance_miles"), (int, float))
+    ):
+        return {**held, "code": "NCAAF_NEUTRAL_HOME_TRAVEL_UNVERIFIED"}
     features = {
         "home_rest_days": home["payload"]["rest_days"],
         "away_rest_days": away["payload"]["rest_days"],
@@ -532,6 +540,11 @@ def schedule_geometry_feature_row(receipt: Mapping[str, Any], official_event_id:
         "schedule_payload_sha256": home["schedule_payload_sha256"],
         "venue_source_snapshot_id": away["payload"].get("venue_source_snapshot_id"),
         "venue_payload_sha256": away["payload"].get("venue_payload_sha256"),
+        # HOME travel is provenance, not a silently added fitted-model input.
+        # The reduced 4-feature contract is unchanged and remains unpromoted.
+        "neutral_home_travel_distance_miles": (
+            home["payload"].get("travel_distance_miles") if neutral else None
+        ),
         "evidence_timestamps": {"HOME": home["evidence_timestamp"], "AWAY": away["evidence_timestamp"]},
         "v1_compatible": False,
         "probability_publishable": False,
@@ -554,6 +567,7 @@ def reduced_challenger_contract() -> dict[str, Any]:
             "canceled, postponed, and rescheduled priors rejected",
             "venue coordinates from a hashed /venues receipt retrieved before kickoff",
             "neutral_site copied from the target schedule receipt, with no default",
+            "neutral-site HOME and AWAY travel both require pregame venue geometry; HOME distance is held as separate provenance, not an extra model input",
             "scores, ratings, box scores, and market prices unused",
             "independent certification before publication",
             "team-event bridge remains unregistered",
