@@ -207,6 +207,7 @@ def _raw_specialist_research(
     lane: dict[str, Any],
     preflight: dict[str, Any],
     blockers: list[str],
+    expected_snapshot_id: str | None = None,
 ) -> dict[str, Any]:
     """Run certified raw specialist inference only; never run calibration/persistence."""
     specialist = market_api.prod.base_api._controlling_specialist_provider(req.sport, req.stat_type)
@@ -277,6 +278,29 @@ def _raw_specialist_research(
         detail["governed_publishable"] = False
         detail["can_execute"] = False
         raise HTTPException(status_code=422, detail=detail)
+
+    effective_snapshot_id = str(
+        evidence.get("effective_source_snapshot_id") or evidence.get("source_snapshot_id") or ""
+    ).strip()
+    if expected_snapshot_id is not None and effective_snapshot_id != str(expected_snapshot_id).strip():
+        # Canonical Pick Request already reconciled Scout/Research against its
+        # frozen packet. A fallback packet must not be scored under that older
+        # receipt/fingerprint. Direct score-prop repair behavior is unchanged.
+        raise _failure(
+            req=req,
+            status_code=422,
+            code="MODEL_INPUTS_INSUFFICIENT",
+            blocker_code="PROP_RESEARCH_FROZEN_SNAPSHOT_MISMATCH",
+            specialist_name=specialist_name,
+            specialist_capability="AVAILABLE",
+            specialist_status="NOT_INVOKED_FROZEN_SNAPSHOT_MISMATCH",
+            extra={
+                "specialist_invoked": False,
+                "requested_source_snapshot_id": str(expected_snapshot_id),
+                "effective_source_snapshot_id": effective_snapshot_id or None,
+                "acquisition_repair_status": evidence.get("acquisition_repair_status"),
+            },
+        )
 
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = market_api._server_owned_inference_request(req, evidence, scored_at)

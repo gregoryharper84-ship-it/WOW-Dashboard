@@ -19,6 +19,8 @@ from typing import Any
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 SOURCE_WORKFLOW = "wow-verify"
 SOURCE_PATH = ".github/workflows/wow-verify.yml"
+OBSERVER_WORKFLOW = "wow-v17-lean-production-readback"
+OBSERVER_PATH = ".github/workflows/wow-v17-lean-production-readback.yml"
 PUBLIC_HEALTH = "https://wow-governed-probability-engine.onrender.com/health/live"
 SERVICES = {
     "web": "srv-da7sa9gu01pc73brt80g",
@@ -43,6 +45,26 @@ def validate_source_run(run: dict[str, Any], *, target_sha: str) -> None:
             or run.get("conclusion") != "success"
             or run.get("event") not in {"push", "workflow_dispatch"}):
         raise ReadbackHold("MAIN_CI_SOURCE_NOT_AUTHENTIC_EXACT_SUCCESS")
+
+
+def validate_observer_run(run: dict[str, Any], *, target_sha: str, source_run_id: str) -> None:
+    """Authenticate the scheduled/manual observer as a trigger only.
+
+    The observer deliberately continues on readback failures. Its workflow
+    conclusion is never deployment evidence: every consumer repeats the
+    current-main, both-service LIVE SHA and health readback below.
+    """
+    if (str(run.get("id")) != source_run_id
+            or run.get("name") != OBSERVER_WORKFLOW
+            or run.get("path") != OBSERVER_PATH
+            or (run.get("repository") or {}).get("full_name") != REPO
+            or (run.get("head_repository") or {}).get("full_name") != REPO
+            or run.get("head_branch") != "main"
+            or run.get("head_sha") != target_sha
+            or run.get("status") != "completed"
+            or run.get("conclusion") != "success"
+            or run.get("event") not in {"schedule", "workflow_dispatch"}):
+        raise ReadbackHold("PRODUCTION_OBSERVER_SOURCE_NOT_AUTHENTIC_EXACT_SUCCESS")
 
 
 def _live_deploy(deploys: Any, role: str) -> tuple[str, str]:
@@ -122,7 +144,13 @@ def _readback() -> dict[str, Any]:
         if not re.fullmatch(r"[1-9][0-9]*", source_id):
             raise ReadbackHold("MAIN_CI_SOURCE_RUN_ID_INVALID")
         source = _get_json(api + "/actions/runs/" + source_id, gh_headers)
-        validate_source_run(source, target_sha=target)
+        source_kind = os.environ.get("SOURCE_RUN_KIND", "main_ci")
+        if source_kind == "production_observer":
+            validate_observer_run(source, target_sha=target, source_run_id=source_id)
+        elif source_kind == "main_ci":
+            validate_source_run(source, target_sha=target)
+        else:
+            raise ReadbackHold("SOURCE_RUN_KIND_NOT_ALLOWED")
     elif event not in {"workflow_dispatch", "schedule"}:
         raise ReadbackHold("SOURCE_EVENT_NOT_ALLOWED")
     # Scheduled runs observe an existing deployment without becoming a source
@@ -147,10 +175,14 @@ def _readback() -> dict[str, Any]:
             health_ok = response.status == 200
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         health_ok = False
-    return classify_readback(
+    outcome = classify_readback(
         target_sha=target, main_sha=main_sha, services=services,
         deploys=deploys, health_ok=health_ok,
     )
+    if event == "workflow_run":
+        outcome["source_run_id"] = source_id
+        outcome["source_run_kind"] = source_kind
+    return outcome
 
 
 def main() -> int:

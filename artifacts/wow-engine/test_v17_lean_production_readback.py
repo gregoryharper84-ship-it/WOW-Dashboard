@@ -171,3 +171,109 @@ def test_observer_is_nonblocking_and_never_a_render_writer():
     assert "gh pr merge" not in source
     assert "render.com/v1/services" not in source
     assert workflow["permissions"]["contents"] == "read"
+
+
+def observer_source_run():
+    return {
+        "id": 987,
+        "name": "wow-v17-lean-production-readback",
+        "path": ".github/workflows/wow-v17-lean-production-readback.yml",
+        "repository": {"full_name": m.REPO},
+        "head_repository": {"full_name": m.REPO},
+        "head_branch": "main", "head_sha": SHA, "status": "completed",
+        "conclusion": "success", "event": "schedule",
+    }
+
+
+@pytest.mark.parametrize("worker_sha,main_sha,reason", [
+    (OLD, SHA, "RENDER_LIVE_SHA_MISMATCH:worker"),
+    (SHA, OLD, "TARGET_NOT_CURRENT_MAIN"),
+    (SHA, SHA, None),
+])
+def test_post_deploy_source_is_authenticated_but_still_requires_fresh_both_service_readback(monkeypatch, worker_sha, main_sha, reason):
+    """A green nonblocking observer is only a trigger, never deployment proof."""
+    monkeypatch.setenv("EXPECTED_SHA", SHA)
+    monkeypatch.setenv("GITHUB_REPOSITORY", m.REPO)
+    monkeypatch.setenv("GH_TOKEN", "fixture-token")
+    monkeypatch.setenv("RENDER_API_KEY", "fixture-token")
+    monkeypatch.setenv("SOURCE_EVENT", "workflow_run")
+    monkeypatch.setenv("SOURCE_RUN_ID", "987")
+    monkeypatch.setenv("SOURCE_RUN_KIND", "production_observer")
+
+    def getter(url, _headers):
+        if url.endswith("/actions/runs/987"):
+            return observer_source_run()
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": main_sha}}
+        if "/services/" in url and "/deploys?" not in url:
+            role = next(role for role, sid in m.SERVICES.items() if sid in url)
+            return service(role)
+        if "/deploys?" in url:
+            role = next(role for role, sid in m.SERVICES.items() if sid in url)
+            # Source workflow success cannot hide an old worker deployment.
+            return [deploy(worker_sha if role == "worker" else SHA, ident="dep-" + role)]
+        raise AssertionError("Unexpected authenticated GET " + url)
+
+    monkeypatch.setattr(m, "_get_json", getter)
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+    monkeypatch.setattr(m.urllib.request, "urlopen", lambda *_a, **_k: Response())
+    if reason:
+        with pytest.raises(m.ReadbackHold, match=reason):
+            m._readback()
+    else:
+        # No upstream artifact read is allowed by the getter: fresh deployment
+        # API evidence supplies this observation, and still cannot approve it.
+        result = m._readback()
+        assert result["status"] == "WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED"
+        assert result["source_run_id"] == "987"
+        assert result["source_run_kind"] == "production_observer"
+        assert result["production_verified"] is False
+        assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("field,value", [
+    ("name", "wow-v17-render-production-deploy"),
+    ("path", ".github/workflows/foreign.yml"),
+    ("head_sha", OLD),
+    ("head_branch", "feature"),
+    ("event", "pull_request"),
+    ("conclusion", "failure"),
+    ("id", 988),
+    ("repository", {"full_name": "foreign/repo"}),
+    ("head_repository", {"full_name": "foreign/repo"}),
+])
+def test_native_post_deploy_source_must_be_exact_authenticated_observer(field, value):
+    run = observer_source_run()
+    run[field] = value
+    with pytest.raises(m.ReadbackHold, match="PRODUCTION_OBSERVER_SOURCE_NOT_AUTHENTIC_EXACT_SUCCESS"):
+        m.validate_observer_run(run, target_sha=SHA, source_run_id="987")
+
+
+@pytest.mark.parametrize("credential", ["GH_TOKEN", "RENDER_API_KEY"])
+def test_missing_authenticated_readback_credentials_is_hold_without_any_source_read(monkeypatch, credential):
+    monkeypatch.setenv("EXPECTED_SHA", SHA)
+    monkeypatch.setenv("GITHUB_REPOSITORY", m.REPO)
+    monkeypatch.setenv("GH_TOKEN", "fixture-token")
+    monkeypatch.setenv("RENDER_API_KEY", "fixture-token")
+    monkeypatch.delenv(credential, raising=False)
+    def unexpected_get(*_a, **_kw):
+        raise AssertionError("credential failure must stop before reading any source")
+    monkeypatch.setattr(m, "_get_json", unexpected_get)
+    with pytest.raises(m.ReadbackHold, match="READ_ONLY_API_CREDENTIAL_MISSING"):
+        m._readback()
+
+
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+def test_native_observer_trigger_can_start_acceptance_but_cannot_approve_production(event):
+    source = observer_source_run()
+    source["event"] = event
+    m.validate_observer_run(source, target_sha=SHA, source_run_id="987")
+    # Independent approval remains missing even after a valid authenticated
+    # trigger and exact current-main web/worker readback.
+    result = score()
+    assert result["production_verified"] is False
+    assert result["terminal"] == "PENDING_SIRT_INDEPENDENT_ACCEPTANCE"
+    assert result["can_execute"] is False

@@ -185,11 +185,11 @@ jobs:
           http.server.ThreadingHTTPServer(("127.0.0.1", 3000), ProxyHandler).serve_forever()
           PY
           PROXY_PID=$!
-          celery -A agent_runtime.celery_app:celery_app worker --loglevel=WARNING --pool=solo --concurrency=1 > "$RUNNER_TEMP/wow-agent-worker.log" 2>&1 &
+          python -m celery -A agent_runtime.celery_app:celery_app worker --loglevel=WARNING --pool=solo --concurrency=1 > "$RUNNER_TEMP/wow-agent-worker.log" 2>&1 &
           WORKER_PID=$!
           trap 'kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true; cat "$RUNNER_TEMP/wow-agent-worker.log" || true; cat "$RUNNER_TEMP/rest-v1-proxy.log" || true' EXIT
           sleep 3
-          python -m pytest -q test_agent_runtime_postgres_integration.py
+          python -m pytest -q test_agent_runtime_postgres_integration.py test_prop_snapshot_min3_postgres.py
           kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
           wait "$WORKER_PID" 2>/dev/null || true
           wait "$PROXY_PID" 2>/dev/null || true
@@ -255,7 +255,7 @@ jobs:
           # Worker remains non-executing and follows protected-main CI admission.
           assert worker["autoDeployTrigger"] == "checksPass"
           assert worker["autoDeployTrigger"] == service["autoDeployTrigger"]
-          assert "agent_runtime.celery_app:celery_app" in worker["startCommand"]
+          assert worker["startCommand"] == "python -m celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2"
           worker_env_by_key = {item["key"]: item for item in worker["envVars"]}
           assert worker_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
           assert worker_env_by_key["WOW_DRY_RUN_ONLY"]["value"] == "true"
