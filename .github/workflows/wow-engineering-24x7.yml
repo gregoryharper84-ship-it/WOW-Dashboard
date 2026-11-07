@@ -300,13 +300,12 @@ jobs:
             echo "- Decision: $decision"
             echo "- Next action: $action"
             echo "- Re-entry trigger: $trigger"
-            echo "- Independent security, release, CODEOWNER and merge rules unchanged."
+            echo "- Current protected contexts: three Actions App regressions, Independent QA App, and Release Authority App."
+            echo "- Historical manual semantic review is not a sixth required check; any same-SHA signed REJECT stays binding."
+            echo "- CODEOWNER and native merge rules unchanged; this stage never grants approval."
             echo "- No reviewer invocation, second writer, protected merge, deploy or wager."
-            if [ "$decision" = "EVIDENCE_PENDING" ]; then
-              echo "- Exact owner re-entry (one authorized dispatch only if no active review):"
-              echo '~~~sh'
-              printf 'gh workflow run wow-v17-simple-security-review.yml -R %s --ref main -f pr_number=%s -f head_sha=%s\n' "$GITHUB_REPOSITORY" "$TARGET_PR" "$TARGET_SHA"
-              echo '~~~'
+            if [ "$decision" = "EVIDENCE_PENDING" ] || [ "$decision" = "NATIVE_REGRESSION_PENDING" ]; then
+              echo "- Follow the existing exact-head native CI / QA / Release producers; do not re-dispatch a retired historical reviewer."
             fi
             if [ "$decision" = "SEMANTIC_REJECT_SAME_SHA" ]; then
               echo "- Binding signed REJECT: repair the source on a NEW SHA; no review retry."
