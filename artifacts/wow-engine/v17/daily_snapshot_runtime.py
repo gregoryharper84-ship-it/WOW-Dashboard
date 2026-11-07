@@ -15,7 +15,7 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -193,6 +193,16 @@ def _team_rows(db: Any, requested_date: str, limit: int) -> list[dict[str, Any]]
     raise last_exc or RuntimeError("TEAM_EVENT_SNAPSHOT_QUERY_FAILED")
 
 
+def _mlb_acquisition_found_no_candidates(acquisition: dict[str, Any] | None) -> bool:
+    """Only a successful, identified MLB producer proves no eligible MLB candidates."""
+    return bool(
+        acquisition
+        and acquisition.get("status") == "COMPLETED"
+        and acquisition.get("candidate_source") == "MLB_OFFICIAL_PROBABLE_PITCHERS"
+        and int(acquisition.get("attempted") or 0) == 0
+    )
+
+
 def _acquisition_counts(acquisition: dict[str, Any] | None) -> dict[str, int]:
     acquisition = acquisition or {}
     return {
@@ -286,6 +296,8 @@ def _lane_reconciliation(
             # canonical lane is empty. Reporting NO_CANONICAL_CANDIDATES here
             # misattributes a client-requested bound to missing upstream data.
             zero_row_reason = "REQUESTED_ROW_LIMIT_ZERO"
+        elif lane == "PROPS" and _mlb_acquisition_found_no_candidates(acquisition):
+            zero_row_reason = "PROP_ACQUISITION_NO_ELIGIBLE_EVENTS:MLB"
         else:
             zero_row_reason = "NO_CANONICAL_CANDIDATES"
     result = {
@@ -370,6 +382,16 @@ def _cross_sport_moneyline_rows(
         return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
     def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
+        if req.max_team_events == 0:
+            # Full-board discovery still records every event, but a zero model
+            # budget cannot invoke a fitted specialist or grant publication.
+            return {
+                "code": "REQUESTED_ROW_LIMIT_ZERO",
+                "model_invoked": False,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
         if str(event.official_event_id or "") in covered_event_ids:
             return {
                 "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
@@ -480,6 +502,10 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         date.fromisoformat(req.requested_slate_date)
     except ValueError:
         return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_SLATE_DATE_INVALID"], "can_execute": False}
+    try:
+        ZoneInfo(req.requested_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_TIMEZONE_INVALID"], "can_execute": False}
 
     run_id = f"v17-daily-{uuid4()}"
     # Server-generated, non-secret provenance; never trust a client-supplied identity.
@@ -513,7 +539,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         # Acquisition exists to fill an empty canonical lane. A zero-length page
         # caused by max_props is not an empty lane, so it must not trigger a
         # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        if req.max_props > 0 and not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
@@ -647,6 +673,8 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     prop_counts = _acquisition_counts(prop_acquisition)
     true_zero_upstream = (
         "PROPS" in requested_lanes
+        and req.max_props > 0
+        and prop_acquisition is not None
         and not prop_manifest
         and prop_counts["lane_discovered_raw"] == 0
         and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
@@ -655,8 +683,12 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     )
     if not rows and not blockers:
         if true_zero_upstream:
-            blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
-        elif "PROPS" not in requested_lanes:
+            blockers.append(
+                "PROP_ACQUISITION_NO_ELIGIBLE_EVENTS:MLB"
+                if _mlb_acquisition_found_no_candidates(prop_acquisition)
+                else "NO_CANONICAL_PREGAME_SNAPSHOTS"
+            )
+        elif "MONEYLINE" in requested_lanes and req.max_team_events > 0 and ("PROPS" not in requested_lanes or req.max_props == 0):
             blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
 
     requested_limits = {"PROPS": req.max_props, "MONEYLINE": req.max_team_events}
