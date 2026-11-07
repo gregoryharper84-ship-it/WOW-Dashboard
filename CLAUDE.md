@@ -88,3 +88,7 @@ Stop the affected action — not every unrelated task — for: model/calibration
 Lead with **what was built/fixed and proven**. Then give `ID • PR/SHA • tests/CI • independent review • deployed revision • live receipt • status • exact remaining blocker/owner` as applicable. State measured deltas rather than activity or vague progress. Never claim a merge, deployment, 24/7 monitor, fitted result, independent sign-off, or resolved blocker without its receipt.
 
 If the current task is clearly executable, **do it now**. If it is not, diagnose the precise reason, leave the smallest actionable handoff, and continue with independently executable tasks.
+
+## CI failures must retain their original causes
+
+Classify red checks before changing code: `APPLICATION_REGRESSION`, `CI_ENVIRONMENT_GAP`, `DEPENDENCY_VERSION_DRIFT`, `DATABASE_SCHEMA_BOOTSTRAP_GAP`, `MISSING_EXTERNAL_SERVICE_BY_DESIGN`, `PREEXISTING_TEST_FAILURE`, or `UNKNOWN`. Capture the exact failed command, log and tested SHA; a green retry is not evidence that a deterministic failure was corrected. Do not delete assertions, add skip guards solely to hide real regressions, open governance bypasses, or use production credentials in CI. For production-adjacent changes, test the actual release/runtime surface after authorized deployment.
