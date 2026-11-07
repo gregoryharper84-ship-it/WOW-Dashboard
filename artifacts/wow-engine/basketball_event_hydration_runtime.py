@@ -570,6 +570,10 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
                 batch = [row for row in batch if row["game_id"] not in existing]
                 if not batch:
                     continue
+                # Confirmation may only attest the IDs this invocation actually
+                # offered. Validating against the pre-filter list would accept
+                # a boundary that echoes an already-present row back as "new".
+                offered_ids = [row["game_id"] for row in batch]
             # A failed/ambiguous response may still represent a committed write.
             write_attempted = True
             if canonical_nba:
@@ -578,11 +582,16 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
                 ).execute()
                 inserted = getattr(result, "data", None)
                 if not isinstance(inserted, list) or any(
-                    not isinstance(row, dict) or row.get("game_id") not in ids
-                    for row in inserted
+                    not isinstance(row, dict) for row in inserted
                 ):
                     raise BasketballHydrationError("BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED")
-                new_ids.update(row["game_id"] for row in inserted)
+                confirmed = [row.get("game_id") for row in inserted]
+                if (
+                    any(identifier not in offered_ids for identifier in confirmed)
+                    or len(confirmed) != len(set(confirmed))
+                ):
+                    raise BasketballHydrationError("BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED")
+                new_ids.update(confirmed)
             else:
                 client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
                 new_ids.update(set(ids) - existing)
