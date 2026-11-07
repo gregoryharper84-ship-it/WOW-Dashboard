@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Offline regression suite for the PreToolUse guard. No GitHub/network writes."""
 import importlib.util
+import io
 import json
+from unittest import mock
 import subprocess
 import sys
 import unittest
@@ -14,6 +16,8 @@ spec.loader.exec_module(guard)
 
 BLOCKED = [
     "git push origin main",
+    "(git push origin main)",
+    "git push origin rescue/replit-emergency-20260820-1221",
     "git push origin master",
     "git push origin feat:main",
     "git push origin feat:master",
@@ -48,8 +52,15 @@ BLOCKED = [
     "gh pr merge 123",
     "gh pr merge 123 --squash",
     "gh pr review 111 --approve",
+    "gh pr review 111 -a",
+    "echo gh && git push origin main",
+    "gh; git push origin main",
     "gh pr review --approve 111",
     "gh api -X POST repos/org/repo/pulls/1/merge",
+    "gh api -XPOST repos/org/repo/pulls/1/merge",
+    "gh api -XDELETE repos/org/repo/branches/main/protection",
+    "gh api -fsha=abcdef repos/org/repo/pulls/1/merge",
+    "gh api -Fkey=xyz repos/org/repo/merges",
     "gh api --method PUT repos/org/repo/branches/main/protection",
     "gh api repos/org/repo/git/refs/heads/main -f sha=abcdef",
     "gh api repos/org/repo/branches/master/protection --raw-field=x",
@@ -71,6 +82,9 @@ BLOCKED = [
     "export -p",
     "set +o",
     "echo $OPENAI_API_KEY",
+    "echo $TOKEN",
+    "echo ${SECRET}",
+    "echo $API_KEY_2",
     "echo ${SERVICE_SECRET}",
     "printf '%s' $ACCESS_TOKEN",
     'bash -c "cat .env"',
@@ -90,6 +104,7 @@ ALLOWED = [
     "git show --stat HEAD",
     "git push -u origin feature/v17-hooks",
     "git push origin feature/v17-hooks",
+    "git push origin 'main)'",
     "git push origin feat:feature/v17-safe",
     "git push origin :feature/obsolete",
     "git push --delete origin feature/obsolete",
@@ -112,6 +127,10 @@ ALLOWED = [
     "python3 -I -m unittest discover",
     "python3 -m json.tool .claude/settings.json",
     "echo $HOME",
+    "echo $AUTHOR",
+    "python -m venv env",
+    "pytest -k env",
+    "git checkout -b eval",
     "echo project-ready",
     "pwd",
     "ls -la",
@@ -159,6 +178,13 @@ class GuardTests(unittest.TestCase):
         proc = subprocess.run([sys.executable, "-I", str(HOOK_PATH)], input="garbage", capture_output=True, text=True)
         self.assertEqual(proc.returncode, 2)
         self.assertIn("invalid hook JSON", proc.stderr)
+
+    def test_internal_evaluation_failure_denies_with_exit_two(self):
+        with mock.patch.object(guard, "evaluate", side_effect=RuntimeError("synthetic failure")):
+            with mock.patch.object(sys, "stdin", io.StringIO("{}")):
+                with self.assertRaises(SystemExit) as raised:
+                    guard.main()
+        self.assertEqual(raised.exception.code, 2)
 
     def test_exit_code_blocks(self):
         p = subprocess.run([sys.executable, "-I", str(HOOK_PATH)], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "gh pr merge 12"}}), capture_output=True, text=True)
