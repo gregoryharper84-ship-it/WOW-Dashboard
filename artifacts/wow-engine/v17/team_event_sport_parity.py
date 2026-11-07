@@ -641,6 +641,7 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
     ).strip()
 
     from v17.soccer_event_identity import (
+        SoccerEventIdentityError,
         resolve_soccer_current_event_identity,
     )
 
@@ -668,8 +669,21 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
         )
     except Exception as exc:  # noqa: BLE001 - preserve typed canonical hold
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
-        raw["canonical_identity_blocker"] = str(
-            getattr(exc, "code", None) or type(exc).__name__
+        raw["canonical_identity_blocker"] = (
+            exc.code if isinstance(exc, SoccerEventIdentityError)
+            and exc.code.startswith("SOCCER_")
+            and exc.code in {
+                "SOCCER_EVENT_TIME_INVALID",
+                "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT",
+                "SOCCER_OFFICIAL_SOURCE_TRANSPORT_FAILED",
+                "SOCCER_OFFICIAL_SOURCE_RATE_LIMITED",
+                "SOCCER_OFFICIAL_SOURCE_RESPONSE_INVALID",
+                "SOCCER_COMPETITION_UNSUPPORTED",
+                "SOCCER_PROVIDER_TEAM_ALIAS_INVALID",
+                "SOCCER_CANONICAL_EVENT_NOT_FOUND",
+                "SOCCER_CANONICAL_EVENT_AMBIGUOUS",
+            }
+            else "SOCCER_CANONICAL_RESOLVER_FAILED"
         )
         return replace(event, official_event_id=None, raw=raw)
 
