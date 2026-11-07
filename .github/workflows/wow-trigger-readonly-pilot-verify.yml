@@ -38,24 +38,5 @@ jobs:
           node --test
       - name: Build-time SDK compatibility (isolated, no deploy)
         run: |
-          npm install --ignore-scripts --no-audit --no-fund --package-lock=false
+          npm ci --ignore-scripts --no-audit --no-fund
           npm run typecheck
-      - name: Prepare reproducible lockfile artifact for review
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - name: Retain lockfile for future pinned CI
-        uses: actions/upload-artifact@v4
-        with:
-          name: wow-trigger-pilot-lockfile-${{ github.sha }}
-          path: integrations/trigger-dev-pilot/package-lock.json
-          if-no-files-found: error
-          retention-days: 7
-      - name: Expose non-secret lockfile for connector transfer
-        run: |
-          node - <<'NODE'
-          const fs = require("node:fs");
-          const b64 = fs.readFileSync("package-lock.json").toString("base64");
-          for (let i = 0; i < b64.length; i += 1024) {
-            console.log("WOW_TRIGGER_LOCK_CHUNK " + (i / 1024) + " " + b64.slice(i, i + 1024));
-          }
-          console.log("WOW_TRIGGER_LOCK_END " + b64.length);
-          NODE

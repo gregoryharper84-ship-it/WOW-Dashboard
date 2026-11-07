@@ -18,12 +18,12 @@ Prove bounded durable retries, stable trigger idempotency options, and read-only
 
 ## Local tests (no credentials; no HTTP)
 
-Run `node --test` from this directory. The tests use stubbed fetch calls and do not require installing Trigger.dev SDK. For full SDK type-check/CLI integration install this package's dependencies with `npm install` in this isolated directory, not at workspace root.
+Run `node --test` from this directory. The tests use stubbed fetch calls and do not require installing Trigger.dev SDK. For full SDK type-check/CLI integration install this package's dependencies with `npm ci` in this isolated directory, not at workspace root.
 
 ## DEV-only deployment procedure (operator action)
 
 1. In existing **WOW Enterprise / WOW Model** Trigger.dev DEVELOPMENT environment, open project settings to obtain its actual `proj_...` project reference (the URL slug is not this reference). Configure `TRIGGER_PROJECT_REF` locally. Never paste secret keys into chat or code.
-2. In the isolated directory run `npm install`; then `npm run typecheck` and `npm test`. Confirm SDK v4 compatibility and lint/review the security constraints. Keep auto-deploy / GitHub integration disabled during trial.
+2. In the isolated directory run `npm ci --ignore-scripts`; then `npm run typecheck` and `npm test`. Confirm SDK v4 compatibility and lint/review the security constraints. The committed `package-lock.json` pins the tested dependency graph. Keep auto-deploy / GitHub integration disabled during trial.
 3. In your own environment set `WOW_TRIGGER_PILOT_ENABLED=true`, `WOW_TRIGGER_PILOT_ENV=dev`, `WOW_CAN_EXECUTE=false`, `WOW_DRY_RUN_ONLY=true`. Run `npm run dev` with your own *development* Trigger secret key; this registers the manually triggered task in DEV without deploying a production worker.
 4. For an explicit one-off trial set `WOW_TRIGGER_PILOT_ENV=dev` and execute `node bin/trigger-once.mjs 2026-11-07-manual-1`. Repeat the identical command to verify Trigger.dev returns the same run ID and no second execution within 24h; then use a new probe ID for a second run.
 5. In Trigger.dev development Runs, capture: task ID, environment, both invocation run IDs, attempt count, status, request HTTP code, duration, compute usage. For actual retry behavior, run the built-in **synthetic retry task** described below; local tests already inject a 503→503→200 sequence. Do **not** manipulate the production health endpoint to induce faults.
