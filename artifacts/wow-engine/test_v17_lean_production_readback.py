@@ -277,3 +277,115 @@ def test_native_observer_trigger_can_start_acceptance_but_cannot_approve_product
     assert result["production_verified"] is False
     assert result["terminal"] == "PENDING_SIRT_INDEPENDENT_ACCEPTANCE"
     assert result["can_execute"] is False
+
+
+# --- Bounded pending-deploy observation (release-gate circularity repair) ---
+from datetime import datetime, timedelta, timezone
+
+NOW = datetime(2026, 11, 7, 15, 0, 0, tzinfo=timezone.utc)
+
+
+def _iso(delta_seconds):
+    return (NOW - timedelta(seconds=delta_seconds)).isoformat().replace("+00:00", "Z")
+
+
+@pytest.mark.parametrize("role", ["web", "worker"])
+def test_recent_live_sha_mismatch_is_typed_pending_never_verified(role):
+    out = m.pending_deploy_outcome(
+        "RENDER_LIVE_SHA_MISMATCH:" + role, target_sha=SHA, commit_iso=_iso(600), now=NOW)
+    assert out["status"] == "READBACK_PENDING_DEPLOY"
+    assert out["expected_sha"] == SHA
+    assert out["production_verified"] is False
+    assert out["model_ready"] == "UNVERIFIED"
+    assert out["can_execute"] is False
+    assert out["terminal"] == "DEPLOY_PENDING_NOT_ACCEPTANCE"
+
+
+@pytest.mark.parametrize("reason", [
+    "HEALTH_LIVE_NOT_SUCCESS",
+    "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web",
+    "RENDER_LIVE_DEPLOY_NOT_UNIQUE:worker",
+    "TARGET_NOT_CURRENT_MAIN",
+    "READBACK_SOURCE_UNAVAILABLE_OR_INVALID",
+    "",
+])
+def test_only_a_live_sha_mismatch_can_be_pending(reason):
+    assert m.pending_deploy_outcome(
+        reason, target_sha=SHA, commit_iso=_iso(60), now=NOW) is None
+
+
+@pytest.mark.parametrize("commit_iso", [
+    None, "", "not-a-date", "2026-11-07T14:50:00",          # naive (no zone)
+    _iso(m.PENDING_DEPLOY_GRACE_SECONDS + 1),                  # expired window
+    (NOW + timedelta(seconds=5)).isoformat(),                 # commit "in the future"
+    12345,
+])
+def test_pending_requires_a_valid_recent_zoned_commit_time(commit_iso):
+    assert m.pending_deploy_outcome(
+        "RENDER_LIVE_SHA_MISMATCH:web", target_sha=SHA, commit_iso=commit_iso, now=NOW) is None
+
+
+def test_grace_window_boundary_is_inclusive_and_bounded():
+    reason = "RENDER_LIVE_SHA_MISMATCH:web"
+    assert m.pending_deploy_outcome(
+        reason, target_sha=SHA, commit_iso=_iso(m.PENDING_DEPLOY_GRACE_SECONDS), now=NOW)
+    assert m.pending_deploy_outcome(
+        reason, target_sha="not-a-sha", commit_iso=_iso(10), now=NOW) is None
+
+
+def _run_main(monkeypatch, tmp_path, *, exc, commit_time):
+    import json
+    receipt, gh_out = tmp_path / "r.json", tmp_path / "out.txt"
+    monkeypatch.setenv("READBACK_RECEIPT", str(receipt))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    monkeypatch.setenv("EXPECTED_SHA", SHA)
+
+    def fail():
+        raise exc
+    monkeypatch.setattr(m, "_readback", fail)
+    if isinstance(commit_time, Exception):
+        def boom(_t):
+            raise commit_time
+        monkeypatch.setattr(m, "_commit_time", boom)
+    else:
+        monkeypatch.setattr(m, "_commit_time", lambda _t: commit_time)
+    code = m.main()
+    return code, json.loads(receipt.read_text()), gh_out.read_text()
+
+
+def test_main_exits_zero_with_pending_receipt_inside_grace(monkeypatch, tmp_path):
+    fresh = datetime.now(timezone.utc).isoformat()
+    code, receipt, out = _run_main(
+        monkeypatch, tmp_path, exc=m.ReadbackHold("RENDER_LIVE_SHA_MISMATCH:web"), commit_time=fresh)
+    assert code == 0
+    assert receipt["status"] == "READBACK_PENDING_DEPLOY"
+    assert receipt["production_verified"] is False
+    assert "deploy_pending=true" in out
+
+
+def test_main_still_fails_closed_after_grace_expires(monkeypatch, tmp_path):
+    old = (datetime.now(timezone.utc) - timedelta(seconds=m.PENDING_DEPLOY_GRACE_SECONDS + 60)).isoformat()
+    code, receipt, out = _run_main(
+        monkeypatch, tmp_path, exc=m.ReadbackHold("RENDER_LIVE_SHA_MISMATCH:worker"), commit_time=old)
+    assert code == 1
+    assert receipt["status"] == "READBACK_HOLD"
+    assert receipt["reason"] == "RENDER_LIVE_SHA_MISMATCH:worker"
+    assert "deploy_pending=false" in out
+
+
+@pytest.mark.parametrize("commit_time", [RuntimeError("github down"), "garbage"])
+def test_main_fails_closed_when_commit_age_cannot_be_established(monkeypatch, tmp_path, commit_time):
+    code, receipt, out = _run_main(
+        monkeypatch, tmp_path, exc=m.ReadbackHold("RENDER_LIVE_SHA_MISMATCH:web"), commit_time=commit_time)
+    assert code == 1 and receipt["status"] == "READBACK_HOLD"
+    assert "deploy_pending=false" in out
+
+
+@pytest.mark.parametrize("reason", [
+    "HEALTH_LIVE_NOT_SUCCESS", "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web", "TARGET_NOT_CURRENT_MAIN",
+])
+def test_main_recent_commit_never_masks_non_deploy_holds(monkeypatch, tmp_path, reason):
+    fresh = datetime.now(timezone.utc).isoformat()
+    code, receipt, _ = _run_main(
+        monkeypatch, tmp_path, exc=m.ReadbackHold(reason), commit_time=fresh)
+    assert code == 1 and receipt["status"] == "READBACK_HOLD" and receipt["reason"] == reason

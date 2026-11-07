@@ -217,3 +217,46 @@ def test_workflow_dedupe_step_uses_deployment_identity_script():
     step = next(s for s in job["steps"] if s.get("id") == "dedupe")
     assert "post_deploy_dedupe.py" in step["run"]
     assert "head_sha" not in step["run"]
+
+
+# --- Pending deploy must not poison the commit Render is evaluating ---
+def test_pending_deploy_defers_every_acceptance_lane_and_dedupe():
+    jobs = _load()["jobs"]
+    readback = jobs["deployment-readback"]
+    assert readback["outputs"]["deploy_pending"] == "${{ steps.readback.outputs.deploy_pending }}"
+    dedupe = next(s for s in readback["steps"] if s.get("id") == "dedupe")
+    assert dedupe["if"] == "steps.readback.outputs.deploy_pending != 'true'"
+    for lane in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
+        condition = jobs[lane]["if"]
+        assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in condition, lane
+        assert "needs.deployment-readback.result == 'success'" in condition, lane
+
+
+def _run_receipt(tmp_path, **overrides):
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "WOW_CAN_EXECUTE": "false", "WOW_DRY_RUN_ONLY": "true",
+        "DEPLOYMENT_READBACK": "success", "DEPLOY_PENDING": "true", "ALREADY_ACCEPTED": "",
+        "SPREAD_FORWARD": "skipped", "SPREAD_CERTIFICATION": "skipped",
+        "PRIORITY_PROPS": "skipped", "GOLDEN_FULL_SLATE": "skipped",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        **overrides,
+    }
+    done = subprocess.run(["bash", "-c", _receipt_script()], cwd=ROOT, env=env,
+                          text=True, capture_output=True, check=False)
+    return done.returncode, summary.read_text() if summary.exists() else ""
+
+
+def test_pending_receipt_passes_only_with_a_successful_pending_readback(tmp_path):
+    code, text = _run_receipt(tmp_path)
+    assert code == 0
+    assert "READBACK_PENDING_DEPLOY" in text and "production_verified=false" in text
+    # A failed readback can never be rescued by the pending flag.
+    assert _run_receipt(tmp_path, DEPLOYMENT_READBACK="failure")[0] == 1
+
+
+def test_pending_flag_cannot_hide_missing_lanes_once_deploy_is_live(tmp_path):
+    # deploy_pending absent/false: skipped lanes remain missing evidence (fail closed).
+    assert _run_receipt(tmp_path, DEPLOY_PENDING="false")[0] == 1
+    assert _run_receipt(tmp_path, DEPLOY_PENDING="")[0] == 1
