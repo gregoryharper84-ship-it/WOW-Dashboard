@@ -107,7 +107,7 @@ def test_conflicting_provider_data_fails_closed(mutation, code):
     if mutation[3] == "status":
         payload["header"]["competitions"][0]["status"]["type"][mutation[4]] = mutation[5]
     elif mutation[3] == "competitors":
-        payload["header"]["competitions"][0]["competitors"][mutation[4]]["team"]["id"] = mutation[5]
+        payload["header"]["competitions"][0]["competitors"][mutation[4]]["team"][mutation[5]] = mutation[6]
     else:
         payload["header"]["competitions"][0][mutation[3]] = mutation[4]
     _held(code, payload)
