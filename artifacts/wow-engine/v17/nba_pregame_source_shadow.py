@@ -29,8 +29,20 @@ _TEAM_ID = re.compile(r"(?:espn-)?[0-9]{1,6}\Z", re.ASCII)
 
 
 class NBAShadowSourceError(ValueError):
-    def __init__(self, code: str):
+    def __init__(
+        self,
+        code: str,
+        *,
+        source_snapshot_id: str | None = None,
+        observation_timestamp: str | None = None,
+        state_hash: str | None = None,
+    ):
         self.code = code
+        # Reconciliation coordinates are attributes only, not error-message
+        # content. A provider/DB exception must not leak secrets or PII.
+        self.source_snapshot_id = source_snapshot_id
+        self.observation_timestamp = observation_timestamp
+        self.state_hash = state_hash
         super().__init__(code)
 
 
@@ -68,7 +80,7 @@ def capture_nba_pregame_shadow(
 
     The runtime supplies the HTTP client and clock; callers never supply ESPN
     payloads, result labels, market odds, model features or attestation flags.
-    This function does not persist, score or certify anything.
+    It can optionally persist a source-only projection; it never scores or certifies.
     """
     event = str(official_event_id or "").strip()
     if not _EVENT_ID.fullmatch(event):
@@ -245,7 +257,12 @@ def _persist_nba_shadow_source(
     try:
         saved = db.table("wow_live_state_snapshots").insert(row).execute()
     except Exception as exc:
-        raise NBAShadowSourceError("NBA_SHADOW_SOURCE_PERSISTENCE_FAILED") from exc
+        raise NBAShadowSourceError(
+            "NBA_SHADOW_SOURCE_PERSISTENCE_FAILED",
+            source_snapshot_id=source_id,
+            observation_timestamp=observed.isoformat(),
+            state_hash=state_hash,
+        ) from exc
 
     persisted = getattr(saved, "data", None)
     if (
@@ -254,7 +271,12 @@ def _persist_nba_shadow_source(
         or str(persisted[0].get("source_snapshot_id") or "") != source_id
         or persisted[0].get("state_hash") != state_hash
     ):
-        raise NBAShadowSourceError("NBA_SHADOW_SOURCE_PERSISTENCE_UNVERIFIED")
+        raise NBAShadowSourceError(
+            "NBA_SHADOW_SOURCE_PERSISTENCE_UNVERIFIED",
+            source_snapshot_id=source_id,
+            observation_timestamp=observed.isoformat(),
+            state_hash=state_hash,
+        )
     return {
         **receipt,
         "raw_source_snapshot_id": source_id,

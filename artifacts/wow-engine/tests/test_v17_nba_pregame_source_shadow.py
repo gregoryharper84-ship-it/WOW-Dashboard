@@ -143,11 +143,12 @@ from types import SimpleNamespace
 
 
 class _SnapshotDB:
-    def __init__(self, *, fail=False, missing_confirmation=False):
+    def __init__(self, *, fail=False, missing_confirmation=False, confirmation_mode="correct"):
         self.rows = []
         self.names = []
         self.fail = fail
         self.missing_confirmation = missing_confirmation
+        self.confirmation_mode = confirmation_mode
 
     def table(self, name):
         self.names.append(name)
@@ -162,7 +163,16 @@ class _SnapshotDB:
             raise RuntimeError("private database message should not escape")
         if self.missing_confirmation:
             return SimpleNamespace(data=[])
-        return SimpleNamespace(data=[self.rows[-1]])
+        row = dict(self.rows[-1])
+        if self.confirmation_mode == "wrong_id":
+            row["source_snapshot_id"] = "b1e2915a-b865-4749-9c41-44ef5e16743c"
+        elif self.confirmation_mode == "wrong_hash":
+            row["state_hash"] = "0" * 64
+        elif self.confirmation_mode == "two_rows":
+            return SimpleNamespace(data=[row, dict(row)])
+        elif self.confirmation_mode != "correct":
+            raise AssertionError("unexpected fixture mode")
+        return SimpleNamespace(data=[row])
 
 
 def test_shadow_current_source_can_append_immutable_non_scoring_projection():
@@ -237,3 +247,43 @@ def test_shadow_persistence_unsafe_provider_identity_never_writes():
         _capture(payload, db=db)
     assert caught.value.code == "NBA_SHADOW_SOURCE_EVENT_IDENTITY_MISMATCH"
     assert db.rows == []
+
+
+@pytest.mark.parametrize("mode", ["wrong_id", "wrong_hash", "two_rows"])
+def test_shadow_persistence_rejects_wrong_or_duplicate_db_confirmations(mode):
+    db = _SnapshotDB(confirmation_mode=mode)
+    with pytest.raises(NBAShadowSourceError) as caught:
+        _capture(
+            db=db,
+            clock_values=[BEFORE, BEFORE + timedelta(seconds=1), BEFORE + timedelta(seconds=2)],
+        )
+    assert caught.value.code == "NBA_SHADOW_SOURCE_PERSISTENCE_UNVERIFIED"
+    assert str(caught.value) == caught.value.code
+    assert len(db.rows) == 1
+    attempted = db.rows[0]
+    assert caught.value.source_snapshot_id == attempted["source_snapshot_id"]
+    assert caught.value.state_hash == attempted["state_hash"]
+    assert caught.value.observation_timestamp == attempted["snapshot_timestamp"]
+    assert "model" not in str(caught.value).lower()
+
+
+@pytest.mark.parametrize("mode,code", [
+    ("throw", "NBA_SHADOW_SOURCE_PERSISTENCE_FAILED"),
+    ("unverified", "NBA_SHADOW_SOURCE_PERSISTENCE_UNVERIFIED"),
+])
+def test_shadow_persistence_ambiguous_commit_can_be_reconciled_without_secret_in_message(mode, code):
+    db = _SnapshotDB(fail=mode == "throw", missing_confirmation=mode == "unverified")
+    with pytest.raises(NBAShadowSourceError) as caught:
+        _capture(
+            db=db,
+            clock_values=[BEFORE, BEFORE + timedelta(seconds=1), BEFORE + timedelta(seconds=2)],
+        )
+    assert caught.value.code == code
+    assert str(caught.value) == code
+    assert len(db.rows) == 1  # INSERT might have committed before the failure
+    attempted = db.rows[0]
+    assert caught.value.source_snapshot_id == attempted["source_snapshot_id"]
+    assert caught.value.state_hash == attempted["state_hash"]
+    assert caught.value.observation_timestamp == attempted["snapshot_timestamp"]
+    assert attempted["can_execute"] is False
+    assert attempted["state_json"]["model_ready"] is False
