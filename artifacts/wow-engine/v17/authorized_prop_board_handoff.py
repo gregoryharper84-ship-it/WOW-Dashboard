@@ -135,6 +135,7 @@ def compile_authorized_prop_handoff(
     source_use_permitted: bool,
     official_resolver: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
     exact_offer_refresh: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
+    scorer_compatibility: Callable[[str, str], bool] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Compile exact-once scoring proposals, never attempt /score-pick-request.
@@ -212,6 +213,20 @@ def compile_authorized_prop_handoff(
         stat = _text(official["stat_type"]).upper()
         if not stat or not _line(row.get("exact_display_line")):
             blocked.append(_hold(row, "PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED"))
+            continue
+        # The canonical Action accepts a free-form stat string. Only a trusted
+        # server-side lookup against the actual scorer's sport/stat registry
+        # can prove this proposal is representable; research rows cannot.
+        if scorer_compatibility is None:
+            blocked.append(_hold(row, "PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED"))
+            continue
+        try:
+            compatible = scorer_compatibility(_text(row.get("sport")).upper(), stat)
+        except Exception:
+            blocked.append(_hold(row, "PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED"))
+            continue
+        if compatible is not True:
+            blocked.append(_hold(row, "PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED"))
             continue
         key = (
             _text(row.get("sport")), _text(official["official_event_id"]),
