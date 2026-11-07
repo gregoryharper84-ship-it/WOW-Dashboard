@@ -48,6 +48,10 @@ from v17.team_event_model_registry_audit import (
     probe_sport,
     resolve_state,
 )
+from v17.team_event_candidate_bridge_registry import (
+    candidate_bridge_health,
+    install_candidate_team_event_bridges,
+)
 
 CAN_EXECUTE = False
 DISCOVERY_ONLY_LABEL = "DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED"
@@ -416,12 +420,14 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
     for sport in [*sports, *extras]:
         registration = TEAM_EVENT_BRIDGES.get(sport)
         registered = registration is not None
+        candidate_health = candidate_bridge_health(sport)
         probe = probe_sport(sport)
         certification, certification_id = certification_state(sport, registered=registered)
         health[sport] = {
             "status": "UP" if registered else MODEL_UNAVAILABLE,
             "registered": registered,
             "registered_capability": registered,
+            **candidate_health,
             "registry_state": resolve_state(sport, registered=registered, probe=probe),
             "certification_status": certification,
             "certification_id": certification_id,
@@ -657,6 +663,9 @@ def install_team_event_bridge_runtime() -> dict[str, Any]:
     # condition, and with no promoted champion the scorer still fails closed as
     # MODEL_UNAVAILABLE at score time.
     _register_nfl_bridge_if_available()
+    # Candidate registrations are inspection-only: they never enter
+    # TEAM_EVENT_BRIDGES and cannot alter live scoring/terminal semantics.
+    install_candidate_team_event_bridges()
 
     _base_runtime.score_team_event_request = score_registered_team_event_request
     _install_health_overlay()

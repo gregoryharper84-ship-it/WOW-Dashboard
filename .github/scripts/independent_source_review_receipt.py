@@ -1264,7 +1264,7 @@ def resolve_qa_review_policy(
             and SHA.fullmatch(live_sha) is not None
         )
         superseded = (
-            pr.get("state") == "closed"
+            (pr.get("state") == "closed" and pr.get("draft") is False)
             or (pr.get("state") == "open" and pr.get("draft") is False
                 and not pr.get("merged_at") and live_sha != head_sha)
         )
