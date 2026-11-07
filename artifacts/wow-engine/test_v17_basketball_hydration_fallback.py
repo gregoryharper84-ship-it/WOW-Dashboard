@@ -824,7 +824,7 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
     assert result["recent_supplement_status"][2026] == (
         "SOURCE_BLOCKED:ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
     )
-    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
     assert result["latest_game_date_after"] == "2026-06-13"
     assert result["fresh_acquisition_new_settled_games"] == 0
     assert result["can_execute"] is False
