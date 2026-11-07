@@ -174,6 +174,7 @@ def _load_receipts(raws: Iterable[Mapping[str, Any]] | None, endpoint: str) -> t
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     seen: dict[str, dict[str, Any]] = {}
+    conflicted: set[str] = set()
     for raw in raws or []:
         if not isinstance(raw, Mapping):
             rejected.append({"endpoint": endpoint, "source_snapshot_id": None, "reason": "NCAAF_SOURCE_RECEIPT_PROVENANCE_MISSING"})
@@ -183,8 +184,13 @@ def _load_receipts(raws: Iterable[Mapping[str, Any]] | None, endpoint: str) -> t
         if parsed is None:
             rejected.append({"endpoint": endpoint, "source_snapshot_id": snapshot_id, "reason": reason})
             continue
+        if parsed["source_snapshot_id"] in conflicted:
+            # A digest collision poisons this snapshot ID for the whole batch,
+            # including later replays of the original payload.
+            continue
         previous = seen.get(parsed["source_snapshot_id"])
         if previous is not None and previous["payload_sha256"] != parsed["payload_sha256"]:
+            conflicted.add(parsed["source_snapshot_id"])
             rejected.append({
                 "endpoint": endpoint,
                 "source_snapshot_id": parsed["source_snapshot_id"],
@@ -291,8 +297,11 @@ def _prior(team: str, kickoff: datetime, sightings: list[dict[str, Any]]) -> tup
         else:
             reason = "NCAAF_PRIOR_OCCURRENCE_NOT_VERIFIED"
         candidates.append((rows[0]["event_start_time"], event_id, None, reason))
-    occurred = [item for item in candidates if item[2] is not None]
-    pool = occurred or candidates
+    # Do not skip an unverified recent game merely because an older game
+    # was completed. Only an affirmative cancellation/postponement can be
+    # excluded from possible prior occurrences.
+    possible = [item for item in candidates if item[3] != "NCAAF_PRIOR_GAME_NOT_PLAYED"]
+    pool = possible or candidates
     latest = max(item[0] for item in pool)
     tied = [item for item in pool if item[0] == latest]
     if len(tied) != 1:
