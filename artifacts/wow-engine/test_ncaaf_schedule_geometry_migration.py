@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -62,21 +64,48 @@ def test_rollback_guards_manifest_citations_and_keeps_narrow_grants():
     assert PROVIDER in sql
 
 
+# Only an explicitly disposable local CI PostgreSQL service can run this proof.
+# Never accept caller-supplied database URLs, remote hosts, or credential files.
+_CI_TEST_DSN = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+
+
+def _psql_base(database: str) -> list[str]:
+    ci_dsn = os.environ.get("WOW_NCAAF_MIGRATION_PROOF_DSN")
+    if ci_dsn is not None:
+        if (
+            ci_dsn != _CI_TEST_DSN
+            or os.environ.get("WOW_NCAAF_MIGRATION_PROOF_DISPOSABLE") != "1"
+        ):
+            pytest.fail("NCAAF_MIGRATION_PROOF_TARGET_NOT_DISPOSABLE", pytrace=False)
+        if shutil.which("psql") is None:
+            pytest.fail("NCAAF_MIGRATION_PROOF_PSQL_MISSING", pytrace=False)
+        return [
+            "psql",
+            "--dbname",
+            "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/" + database,
+        ]
+    return ["sudo", "-n", "-u", "postgres", "psql", "-d", database]
+
+
 def _psql_available() -> bool:
     try:
         probe = subprocess.run(
-            ["sudo", "-n", "-u", "postgres", "psql", "-d", "postgres", "-c", "select 1"],
+            _psql_base("postgres") + ["-v", "ON_ERROR_STOP=1", "-c", "select 1"],
             capture_output=True,
             text=True,
         )
     except OSError:
+        if "WOW_NCAAF_MIGRATION_PROOF_DSN" in os.environ:
+            pytest.fail("NCAAF_MIGRATION_PROOF_CONNECTION_FAILED", pytrace=False)
         return False
+    if probe.returncode != 0 and "WOW_NCAAF_MIGRATION_PROOF_DSN" in os.environ:
+        pytest.fail("NCAAF_MIGRATION_PROOF_CONNECTION_FAILED", pytrace=False)
     return probe.returncode == 0
 
 
 def _psql(database: str, sql: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["sudo", "-n", "-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        _psql_base(database) + ["-v", "ON_ERROR_STOP=1", "-f", "-"],
         input=sql,
         capture_output=True,
         text=True,
@@ -85,7 +114,7 @@ def _psql(database: str, sql: str) -> subprocess.CompletedProcess[str]:
 
 def _scalar(database: str, sql: str) -> str:
     result = subprocess.run(
-        ["sudo", "-n", "-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-tA", "-c", sql],
+        _psql_base(database) + ["-v", "ON_ERROR_STOP=1", "-tA", "-c", sql],
         capture_output=True,
         text=True,
     )
