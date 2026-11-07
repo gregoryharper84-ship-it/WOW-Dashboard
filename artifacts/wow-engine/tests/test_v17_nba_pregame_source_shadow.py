@@ -135,3 +135,105 @@ def test_provider_failure_and_malformed_schema_keep_typed_holds():
         _capture(http_get=error)
     assert exc.value.code == "NBA_SHADOW_SOURCE_PROVIDER_UNAVAILABLE"
     assert "secret" not in str(exc.value)
+
+
+# The existing DB ledger accepts SCHEDULED source-only snapshots and forbids
+# UPDATE/DELETE; these tests keep even successfully persisted data non-model-ready.
+from types import SimpleNamespace
+
+
+class _SnapshotDB:
+    def __init__(self, *, fail=False, missing_confirmation=False):
+        self.rows = []
+        self.names = []
+        self.fail = fail
+        self.missing_confirmation = missing_confirmation
+
+    def table(self, name):
+        self.names.append(name)
+        return self
+
+    def insert(self, value):
+        self.rows.append(value)
+        return self
+
+    def execute(self):
+        if self.fail:
+            raise RuntimeError("private database message should not escape")
+        if self.missing_confirmation:
+            return SimpleNamespace(data=[])
+        return SimpleNamespace(data=[self.rows[-1]])
+
+
+def test_shadow_current_source_can_append_immutable_non_scoring_projection():
+    db = _SnapshotDB()
+    receipt, requests = _capture(
+        db=db,
+        clock_values=[BEFORE, BEFORE + timedelta(seconds=1), BEFORE + timedelta(seconds=2)],
+    )
+    assert len(requests) == 1
+    assert db.names == ["wow_live_state_snapshots"]
+    assert len(db.rows) == 1
+    row = db.rows[0]
+    assert row["event_status"] == "SCHEDULED"
+    assert row["source_provider"] == "ESPN_NBA_GAME_SUMMARY"
+    assert row["source_uri"] == SOURCE_URL + "?event=401909999"
+    assert row["official_event_id"] == "espn-401909999"
+    assert row["source_snapshot_id"] == receipt["raw_source_snapshot_id"]
+    assert row["state_hash"] == hashlib.sha256(
+        json.dumps(row["state_json"], sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    assert row["state_json"]["source_hash_semantics"] == "CANONICAL_JSON_NOT_HTTP_WIRE_BYTES"
+    assert row["state_json"]["source_replay_status"] == "SOURCE_BODY_NOT_RETAINED_NO_EVENT_REPLAY_ATTESTATION"
+    assert "probability" not in str(row["state_json"])
+    assert "feature" not in row["state_json"] or row["state_json"]["feature_hydration_status"] == "NOT_MATERIALIZED"
+    assert receipt["immutable_persistence_status"] == "PERSISTED_SOURCE_PROJECTION_ONLY"
+    assert receipt["timestamp_attestation"] == "UNVERIFIED"
+    for key in ("model_ready", "model_invoked", "probability_publishable", "rank_eligible", "can_execute"):
+        assert receipt[key] is False
+    assert row["can_execute"] is False
+    assert "calibrated_probability" not in receipt
+    assert "model_ready_source_snapshot_id" not in receipt
+
+
+@pytest.mark.parametrize("failure,expected", [
+    ("throw", "NBA_SHADOW_SOURCE_PERSISTENCE_FAILED"),
+    ("unverified", "NBA_SHADOW_SOURCE_PERSISTENCE_UNVERIFIED"),
+])
+def test_shadow_persistence_failure_keeps_native_typed_hold_without_model_output(failure, expected):
+    db = _SnapshotDB(fail=failure == "throw", missing_confirmation=failure == "unverified")
+    with pytest.raises(NBAShadowSourceError) as caught:
+        _capture(db=db, clock_values=[BEFORE, BEFORE + timedelta(seconds=1), BEFORE + timedelta(seconds=2)])
+    assert caught.value.code == expected
+    assert "private" not in str(caught.value)
+    assert db.names == ["wow_live_state_snapshots"]
+
+
+def test_shadow_capture_crosses_tipoff_before_insert_and_never_writes():
+    db = _SnapshotDB()
+    with pytest.raises(NBAShadowSourceError) as caught:
+        _capture(db=db, clock_values=[
+            BEFORE, BEFORE + timedelta(seconds=1),
+            datetime(2026, 11, 8, 1, 0, tzinfo=timezone.utc),
+        ])
+    assert caught.value.code == "NBA_SHADOW_SOURCE_CAPTURE_AFTER_KICKOFF"
+    assert db.names == []
+    assert db.rows == []
+
+
+def test_shadow_capture_rewinds_clock_before_insert_and_never_writes():
+    db = _SnapshotDB()
+    with pytest.raises(NBAShadowSourceError) as caught:
+        _capture(db=db, clock_values=[BEFORE, BEFORE + timedelta(seconds=1), BEFORE])
+    assert caught.value.code == "NBA_SHADOW_SOURCE_CAPTURE_AFTER_KICKOFF"
+    assert db.rows == []
+
+
+def test_shadow_persistence_unsafe_provider_identity_never_writes():
+    db = _SnapshotDB()
+    payload = _payload()
+    payload["header"]["competitions"][0]["competitors"][0]["team"]["id"] = "3"
+    with pytest.raises(NBAShadowSourceError) as caught:
+        _capture(payload, db=db)
+    assert caught.value.code == "NBA_SHADOW_SOURCE_EVENT_IDENTITY_MISMATCH"
+    assert db.rows == []
