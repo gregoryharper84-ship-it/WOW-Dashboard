@@ -41,8 +41,8 @@ alter table public.wow_ncaaf_source_snapshots
                        '/ratings/srs','/ratings/elo','/ratings/fpi','/venues'));
 
 alter table public.wow_ncaaf_source_snapshots enable row level security;
-revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated;
-grant all on table public.wow_ncaaf_source_snapshots to service_role;
+revoke all on table public.wow_ncaaf_source_snapshots from public, anon, authenticated, service_role;
+grant select, insert on table public.wow_ncaaf_source_snapshots to service_role;
 
 comment on table public.wow_ncaaf_source_snapshots is
   'Immutable research staging for raw NCAAF source responses. Insert-only. Staging does not certify model features or enable probability publication.';
@@ -70,3 +70,10 @@ drop trigger if exists trg_wow_ncaaf_source_snapshot_immutable
 create trigger trg_wow_ncaaf_source_snapshot_immutable
     before update or delete on public.wow_ncaaf_source_snapshots
     for each row execute function public.wow_ncaaf_reject_source_snapshot_mutation();
+
+-- TRUNCATE does not fire a row-level UPDATE/DELETE trigger.
+drop trigger if exists trg_wow_ncaaf_source_snapshot_no_truncate
+    on public.wow_ncaaf_source_snapshots;
+create trigger trg_wow_ncaaf_source_snapshot_no_truncate
+    before truncate on public.wow_ncaaf_source_snapshots
+    for each statement execute function public.wow_ncaaf_reject_source_snapshot_mutation();

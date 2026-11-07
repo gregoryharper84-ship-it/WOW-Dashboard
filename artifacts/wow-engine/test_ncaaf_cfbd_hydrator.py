@@ -148,7 +148,9 @@ def test_staging_sql_is_internal_and_non_executable():
     sql = Path(__file__).with_name("ncaaf_cfbd_staging.sql").read_text()
     lowered = sql.lower()
     assert "enable row level security" in lowered
-    assert "revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated" in lowered
+    assert "revoke all on table public.wow_ncaaf_source_snapshots from public, anon, authenticated, service_role" in lowered
+    assert "grant select, insert on table public.wow_ncaaf_source_snapshots to service_role" in lowered
+    assert "before truncate" in lowered
     assert "can_execute boolean not null default false" in lowered
     assert "wow_ncaaf_source_never_execute" in lowered
     assert "wow_ncaaf_reject_source_snapshot_mutation" in lowered
