@@ -143,6 +143,10 @@ def _sides(row: Mapping[str, Any]) -> dict[str, Mapping[str, Any]] | None:
         if not isinstance(competitor, Mapping):
             continue
         side = str(competitor.get("homeAway") or "").strip().lower()
+        if side not in {"home", "away"}:
+            raise SoccerEventIdentityError(
+                "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT", "invalid home/away role"
+            )
         team = competitor.get("team")
         if side in {"home", "away"} and isinstance(team, Mapping):
             if side in sides:
