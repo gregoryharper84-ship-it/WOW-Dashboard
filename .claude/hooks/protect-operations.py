@@ -12,7 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROTECTED = {"main", "master"}
+UNKNOWN_BRANCH = "<unknown>"
+PROTECTED = {"main", "master", UNKNOWN_BRANCH}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SENSITIVE_VAR = re.compile(r"\$\{?(?:[A-Za-z_][A-Za-z0-9_]*?)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|AUTH)(?:_[A-Za-z0-9_]*)?\}?(?![A-Za-z0-9_])", re.I)
 UNSAFE_SHELL = re.compile(r"`|\$\(|<<")
@@ -34,9 +35,9 @@ def current_branch(cwd):
             ["git", "branch", "--show-current"], cwd=cwd,
             capture_output=True, text=True, timeout=3, check=False,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        return result.stdout.strip() if result.returncode == 0 else UNKNOWN_BRANCH
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        return UNKNOWN_BRANCH
 
 
 def reject(reason):
