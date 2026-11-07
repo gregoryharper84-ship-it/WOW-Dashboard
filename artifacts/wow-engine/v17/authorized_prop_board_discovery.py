@@ -251,14 +251,18 @@ def discover_authorized_prop_board(
     get_page = fetch_page or _http_page
     candidates, blocked, cursors = [], [], set()
     pages = 0
+    attempts = 0
     cursor = None
     source_rows = 0
     previous_ids = set()
     blockers = []
     while pages < max_pages:
-        if (pages + 1) * MAX_RESERVED_CREDITS_PER_PAGE > max_credits:
+        if (attempts + 1) * MAX_RESERVED_CREDITS_PER_PAGE > max_credits:
             blockers.append("PROP_FEED_CREDIT_BUDGET_EXHAUSTED")
             break
+        # An attempted request may consume provider credits even if its
+        # transport or normalization subsequently fails. Reserve before I/O.
+        attempts += 1
         try:
             payload = get_page(key=key, league=league, cursor=cursor)
             page = normalize_page(payload, league=league, now=current)
@@ -273,8 +277,13 @@ def discover_authorized_prop_board(
         # Duplicate projection IDs across pages indicate unstable pagination:
         # explicitly block, never pretend to have complete board coverage.
         ids = {
-            r.get("id") for r in payload["data"] if isinstance(r, dict) and r.get("id")
+            _text(r.get("id")) for r in payload["data"] if isinstance(r, dict)
         }
+        ids.discard("")
+        # A normalized ID must not be counted twice on one page either.
+        if sum(bool(_text(r.get("id"))) for r in payload["data"] if isinstance(r, dict)) != len(ids):
+            blockers.append("PROP_FEED_PAGINATION_DUPLICATE")
+            break
         if previous_ids.intersection(ids):
             blockers.append("PROP_FEED_PAGINATION_DUPLICATE")
             break
@@ -305,8 +314,9 @@ def discover_authorized_prop_board(
     complete = not blockers and cursor is None and page_reconciled
     return {
         "schema": SCHEMA, "source_provider": PROVIDER, "sport": sport,
-        "source_pages_read": pages, "source_rows_received": source_rows,
-        "per_run_requested_credit_reservation": pages * MAX_RESERVED_CREDITS_PER_PAGE,
+        "source_pages_read": pages, "source_pages_attempted": attempts,
+        "source_rows_received": source_rows,
+        "per_run_requested_credit_reservation": attempts * MAX_RESERVED_CREDITS_PER_PAGE,
         "monthly_provider_credits_remaining": None,
         "credit_budget_limit": max_credits,
         "unique_base_props": len({r["source_projection_id"] for r in candidates}),
