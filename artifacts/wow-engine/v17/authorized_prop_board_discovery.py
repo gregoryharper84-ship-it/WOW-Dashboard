@@ -274,6 +274,11 @@ def discover_authorized_prop_board(
             break
         pages += 1
         source_rows += page["source_rows"]
+        # Malformed identity rows were retained as typed row blockers, but
+        # cannot establish complete trustworthy discovery coverage.
+        if any(row.get("typed_blocker") == "PROP_FEED_ROW_SCHEMA_INVALID"
+               for row in page["blocked_source_rows"]):
+            blockers.append("PROP_FEED_ROW_SCHEMA_INVALID")
         # Duplicate projection IDs across pages indicate unstable pagination:
         # explicitly block, never pretend to have complete board coverage.
         ids = {
