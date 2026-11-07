@@ -209,5 +209,57 @@ class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
         self.assertFalse(blocked["can_execute"])
 
 
+    def test_failed_request_reserves_the_attempt_and_never_reports_a_clean_scan(self):
+        def fail(**kwargs):
+            raise RuntimeError("upstream refused a request")
+        result = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=fail, max_pages=4, max_credits=6,
+        )
+        self.assertEqual(result["source_pages_attempted"], 1)
+        self.assertEqual(result["source_pages_read"], 0)
+        self.assertEqual(result["per_run_requested_credit_reservation"], 6)
+        self.assertEqual(result["blockers"], ["PROP_FEED_PROVIDER_CALL_FAILED"])
+        self.assertFalse(result["source_coverage_complete_for_requested_sport"])
+
+    def test_normalization_failure_reserves_the_sent_page(self):
+        result = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=lambda **kwargs: page([sample()], health="stale"),
+        )
+        self.assertEqual(result["source_pages_attempted"], 1)
+        self.assertEqual(result["source_pages_read"], 0)
+        self.assertEqual(result["per_run_requested_credit_reservation"], 6)
+        self.assertEqual(result["blockers"], ["PROP_FEED_SOURCE_STALE_OR_UNHEALTHY"])
+
+    def test_whitespace_variant_projection_id_is_duplicate_across_pages(self):
+        calls = []
+        def fetch(*, key, league, cursor):
+            calls.append(cursor)
+            return page([sample(id=" pp_1 ")]) if cursor else page([sample()], cursor="next")
+        result = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=fetch, max_pages=2, max_credits=12,
+        )
+        self.assertEqual(calls, [None, "next"])
+        self.assertIn("PROP_FEED_PAGINATION_DUPLICATE", result["blockers"])
+        self.assertFalse(result["source_coverage_complete_for_requested_sport"])
+        self.assertEqual(result["source_pages_attempted"], 2)
+        self.assertEqual(result["per_run_requested_credit_reservation"], 12)
+
+    def test_unhashable_projection_id_is_a_typed_partial_receipt(self):
+        for bad in (["pp_1"], {"key": "pp_1"}):
+            with self.subTest(bad=bad):
+                result = discover_authorized_prop_board(
+                    sport="NBA", authorized=True, api_key="test", now=NOW,
+                    fetch_page=lambda **kwargs: page([sample(), sample(id=bad)]),
+                )
+                self.assertEqual(result["source_rows_received"], 2)
+                self.assertEqual(result["source_rows_blocked"], 1)
+                self.assertIn("PROP_FEED_ROW_SCHEMA_INVALID", result["blockers"])
+                self.assertFalse(result["source_coverage_complete_for_requested_sport"])
+                self.assertEqual(result["directional_candidates_count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
