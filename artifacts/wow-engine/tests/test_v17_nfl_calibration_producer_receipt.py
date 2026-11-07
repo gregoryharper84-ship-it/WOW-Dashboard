@@ -177,30 +177,46 @@ class _Query:
     def __init__(self, rows, *, filter_field=None):
         self.rows = rows
         self.filter_field = filter_field
+        self.total = None
 
-    def select(self, *_a):
+    def select(self, *_a, **_kw):
         return self
 
     def eq(self, field, value):
         if field == self.filter_field:
             self.rows = [row for row in self.rows if row.get(field) == value]
+            if field == "model_version":
+                self.total = len(self.rows)
         return self
 
-    def order(self, *_a, **_kw):
+    def order(self, field, **_kw):
+        if self.filter_field == "model_version":
+            assert field == "official_event_id"
+            self.rows = sorted(self.rows, key=lambda row: row["official_event_id"])
+        return self
+
+    def range(self, start, end):
+        assert self.filter_field == "model_version"
+        self.rows = self.rows[start:end + 1]
         return self
 
     def limit(self, *_a):
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self.rows)
+        return SimpleNamespace(data=self.rows, count=self.total)
 
 
 class _CertifiedDb:
-    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None):
+    def __init__(self, approved, graded, status="PASS", grade_version=None,
+                 unique_games=None, prediction_rows=None):
+        # The registry schema pins probability_publishable to false, so the
+        # explicit champion authorization this gate can observe is the governed
+        # lifecycle state, not the publication flag.
         self.model = {
             "active": True, "promoted": True,
-            "probability_publishable": approved,
+            "lifecycle_state": "CHAMPION" if approved else "PROSPECTIVE_CERTIFIED",
+            "probability_publishable": False,
         }
         self.health = {
             "graded_n": graded, "minimum_forward_required": 100,
@@ -208,16 +224,28 @@ class _CertifiedDb:
             "certification_recommendation": "FORWARD_EVIDENCE_PASS",
             "blockers": [],
         }
+        self.prediction_rows = prediction_rows or []
         count = graded if unique_games is None else unique_games
         self.grades = [
             {
                 "official_event_id": f"nfl-game-{i}",
                 "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+                "event_prediction_id": f"nfl-pred-{i}",
+                "event_start_time_utc": "2026-10-25T17:00:00Z",
+                "prediction_created_at": "2026-10-24T16:00:00Z",
+                "selected_participant": "San Francisco 49ers",
+                "calibrated_probability": 0.7,
+                "calibrated_lower_bound": 0.65,
+                "calibrated_upper_bound": 0.75,
+                "outcome": int(i % 10 < 7),
+                "source_game_id": f"nfl-settlement-{i}",
             }
             for i in range(count)
         ]
 
     def table(self, name):
+        if name == "wow_nfl_event_predictions":
+            return _Query(self.prediction_rows, filter_field="event_prediction_id")
         if name == "wow_nfl_event_fitted_model_artifacts":
             return _Query([self.model])
         if name == "wow_nfl_forward_calibration_health":
@@ -245,3 +273,52 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     assert _forward_certification_proven(
         _CertifiedDb(True, 100, unique_games=53), row
     ) is False
+
+
+def test_champion_attachment_never_bypasses_prediction_or_upstream_holds():
+    from v17.nfl_daily_stage_receipts import attach_nfl_daily_stage_receipt
+
+    req, row, governed = _bound_evidence()
+    db = _CertifiedDb(True, 100, prediction_rows=[row])
+    approved = attach_nfl_daily_stage_receipt(
+        db=db, req=req, governed=governed,
+    )
+    assert approved["nfl_stage_receipt"]["status"] == "PASS"
+    assert approved["nfl_stage_receipt"]["forward_certification_status"] == "PASS"
+    assert approved["rank_eligible"] is True
+    assert approved["probability_publishable"] is True
+    assert approved["can_execute"] is False
+
+    unpublishable_row = deepcopy(row)
+    unpublishable_row["model_probability_publishable"] = False
+    denied = attach_nfl_daily_stage_receipt(
+        db=_CertifiedDb(True, 100, prediction_rows=[unpublishable_row]),
+        req=req, governed=governed,
+    )
+    assert denied["rank_eligible"] is False
+    assert denied["probability_publishable"] is False
+    assert denied["nfl_stage_receipt"]["status"] == "HOLD"
+    assert denied["can_execute"] is False
+
+    upstream_hold = deepcopy(governed)
+    upstream_hold["rank_eligible"] = False
+    upstream_hold["probability_publishable"] = False
+    upstream_hold["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+    held = attach_nfl_daily_stage_receipt(
+        db=db, req=req, governed=upstream_hold,
+    )
+    assert held["nfl_stage_receipt"]["forward_certification_status"] == "PASS"
+    assert held["rank_eligible"] is False
+    assert held["probability_publishable"] is False
+    assert held["can_execute"] is False
+
+    invalid_refresh = deepcopy(governed)
+    invalid_refresh["llp_governance"]["final_refresh"]["final_refresh_status"] = "HOLD"
+    blocked = attach_nfl_daily_stage_receipt(
+        db=db, req=req, governed=invalid_refresh,
+    )
+    assert blocked["nfl_stage_receipt"]["status"] == "HOLD"
+    assert blocked["rank_eligible"] is False
+    assert blocked["probability_publishable"] is False
+    assert blocked["can_execute"] is False
+
