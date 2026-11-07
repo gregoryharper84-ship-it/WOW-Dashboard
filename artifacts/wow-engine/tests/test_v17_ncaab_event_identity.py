@@ -273,3 +273,32 @@ def test_matching_fixture_with_invalid_id_holds_even_if_valid_fixture_exists(bad
     with pytest.raises(identity.NCAABEventIdentityError) as exc:
         _resolve(fetcher=fetcher_for({"20261104": rows}))
     assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_injected_monotonic_clock_controls_success_cache_ttl(monkeypatch):
+    fetches = []
+    monkeypatch.setattr(
+        identity, "_fetch_scoreboard",
+        lambda _date: fetches.append("fetch") or [scoreboard_event("401809900")],
+    )
+    first = identity._scoreboard_rows("20261104", now_monotonic=100.0)
+    assert first[0]["id"] == "401809900"
+    cached = identity._scoreboard_rows("20261104", now_monotonic=399.0)
+    assert cached == first
+    assert fetches == ["fetch"]
+    identity._scoreboard_rows("20261104", now_monotonic=401.0)
+    assert fetches == ["fetch", "fetch"]
+
+
+def test_injected_monotonic_clock_controls_failure_cache_ttl(monkeypatch):
+    fetches = []
+    def unavailable(_date):
+        fetches.append("fetch")
+        raise identity.NCAABEventIdentityError("NCAAB_OFFICIAL_SOURCE_TRANSPORT_FAILED")
+
+    monkeypatch.setattr(identity, "_fetch_scoreboard", unavailable)
+    for now_value in (100.0, 399.0, 401.0):
+        with pytest.raises(identity.NCAABEventIdentityError) as exc:
+            identity._scoreboard_rows("20261104", now_monotonic=now_value)
+        assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_TRANSPORT_FAILED"
+    assert fetches == ["fetch", "fetch"]
