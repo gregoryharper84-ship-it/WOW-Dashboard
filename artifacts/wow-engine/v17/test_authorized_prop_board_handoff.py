@@ -5,7 +5,14 @@ from copy import deepcopy
 from v17.authorized_prop_board_discovery import (
     PROVIDER, SCHEMA, normalize_page,
 )
-from v17.authorized_prop_board_handoff import compile_authorized_prop_handoff
+from v17.authorized_prop_board_handoff import compile_authorized_prop_handoff as _compile_authorized_prop_handoff
+
+
+def compile_authorized_prop_handoff(*args, **kwargs):
+    # Trusted, server-side exact sport/stat capability fixture. Never infer
+    # route support from the third-party offer or an untrusted assertion.
+    kwargs.setdefault("scorer_compatibility", lambda sport, stat: sport == "NBA" and stat == "POINTS")
+    return _compile_authorized_prop_handoff(*args, **kwargs)
 
 NOW = datetime(2026, 11, 6, 19, 0, tzinfo=timezone.utc)
 
@@ -273,3 +280,39 @@ def test_official_resolver_and_offer_refresh_exceptions_remain_typed():
         )
         assert out["scoring_input_proposals"] == []
         assert {r["typed_blocker"] for r in out["blocked_rows"]} == {expected}
+
+
+def test_scorer_compatibility_must_be_explicitly_verified_server_side():
+    source = board()
+    for check in (None, lambda *_: False, lambda *_: "yes"):
+        out = _compile_authorized_prop_handoff(
+            source, now=NOW, source_use_permitted=True,
+            official_resolver=official, exact_offer_refresh=fresh_offer,
+            scorer_compatibility=check,
+        )
+        assert out["scoring_input_proposals"] == []
+        assert {r["typed_blocker"] for r in out["blocked_rows"]} == {
+            "PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED"
+        }
+        assert out["status"] == "BLOCKED_OR_EMPTY"
+    def unsupported(row):
+        return {**official(row), "stat_type": "UNREGISTERED_PLAYER_STAT"}
+    out = compile_authorized_prop_handoff(
+        source, now=NOW, source_use_permitted=True,
+        official_resolver=unsupported, exact_offer_refresh=fresh_offer,
+    )
+    assert not out["scoring_input_proposals"]
+    assert {r["typed_blocker"] for r in out["blocked_rows"]} == {
+        "PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED"
+    }
+    def raises(*_args):
+        raise ConnectionError("registry unavailable")
+    out = _compile_authorized_prop_handoff(
+        source, now=NOW, source_use_permitted=True,
+        official_resolver=official, exact_offer_refresh=fresh_offer,
+        scorer_compatibility=raises,
+    )
+    assert not out["scoring_input_proposals"]
+    assert {r["typed_blocker"] for r in out["blocked_rows"]} == {
+        "PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED"
+    }
