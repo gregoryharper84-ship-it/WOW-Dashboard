@@ -185,9 +185,15 @@ def resolve_ncaaf_current_event_identity(
     home_team: str,
     away_team: str,
     client: CFBDClient | None = None,
+    season: int | None = None,
 ) -> dict[str, Any]:
     event_time = _aware(event_start_time)
-    rows = _season_rows(event_time.year, client=client)
+    # January bowls belong to the prior CFBD season. Callers that already know
+    # the official season must not be matched against the kickoff calendar year.
+    query_year = event_time.year if season is None else int(season)
+    if query_year < 1869 or query_year > 2100:
+        raise NCAAFEventIdentityError("NCAAF_SEASON_INVALID", str(query_year))
+    rows = _season_rows(query_year, client=client)
 
     matches: list[Mapping[str, Any]] = []
     for row in rows:
@@ -228,9 +234,22 @@ def resolve_ncaaf_current_event_identity(
     # features must be reconciled to a real source boolean.
     neutral_raw = selected.get("neutralSite", selected.get("neutral_site"))
     neutral_site = neutral_raw if type(neutral_raw) is bool else None
+    raw_season = selected.get("season", selected.get("year"))
+    if raw_season is None:
+        resolved_season = query_year
+    else:
+        try:
+            resolved_season = int(raw_season)
+        except (TypeError, ValueError) as exc:
+            raise NCAAFEventIdentityError("NCAAF_SEASON_INVALID", str(raw_season)) from exc
+    if season is not None and resolved_season != int(season):
+        raise NCAAFEventIdentityError("NCAAF_SEASON_MISMATCH", str(resolved_season))
+    if resolved_season != query_year:
+        raise NCAAFEventIdentityError("NCAAF_SEASON_MISMATCH", str(resolved_season))
     return {
         "neutral_site": neutral_site,
         "event_id": selected_id,
+        "season": resolved_season,
         "event_start_time": _aware(_start_value(selected)).isoformat(),
         "home_team": str(_home_name(selected) or ""),
         "away_team": str(_away_name(selected) or ""),
