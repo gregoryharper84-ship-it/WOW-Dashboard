@@ -548,7 +548,7 @@ def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch
     assert result["fresh_acquisition_new_settled_games"] == 0
     assert result["latest_game_date_after"] == "2026-10-22"
     assert result["can_execute"] is False
-    assert called and called[0][0] == "NBA"
+    assert called == []
     assert persisted == []
 
 
@@ -565,10 +565,10 @@ def test_recent_source_failure_never_advertises_updated_games(monkeypatch):
         ),
     )
     result = hydration.hydrate(
-        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "WNBA", [2026], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
     )
-    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
-    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"
+    assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
+    assert result["recent_supplement_status"][2026] == "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"
     assert result["settled_rows"] == 0
     assert result["fresh_acquisition_new_settled_games"] == 0
     assert persisted == []
@@ -587,9 +587,9 @@ def test_duplicated_recent_event_ids_do_not_create_duplicate_training_games(monk
         lambda *_args, **_kwargs: [repeated, repeated],
     )
     result = hydration.hydrate(
-        "NBA", [2027], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+        "WNBA", [2026], client=object(), now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
     )
-    assert result["recent_supplement_status"][2027] == "SOURCE_BLOCKED:ESPN_RECENT_DUPLICATE_GAME_ID"
+    assert result["recent_supplement_status"][2026] == "SOURCE_BLOCKED:ESPN_RECENT_DUPLICATE_GAME_ID"
     assert result["settled_rows"] == 0
     assert persisted == []
 
@@ -668,7 +668,7 @@ def test_unlicensed_recent_espn_is_not_fetched_or_persisted_during_shadow_refres
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
     assert result["settled_rows"] == 0
     assert result["recent_supplement_status"][2027] == (
-        "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:MODEL_SOURCE_UNCLASSIFIED"
+        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
     )
     assert persisted == []
     assert result["can_execute"] is False
@@ -818,10 +818,10 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
         ),
     )
     result = hydration.hydrate(
-        "NBA", [2027], client=object(),
+        "WNBA", [2026], client=object(),
         now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
     )
-    assert result["recent_supplement_status"][2027] == (
+    assert result["recent_supplement_status"][2026] == (
         "SOURCE_BLOCKED:ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
     )
     assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
