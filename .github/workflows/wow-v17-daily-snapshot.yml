@@ -203,7 +203,7 @@ jobs:
                   except (TypeError, ValueError):
                       raise AssertionError("NFL_FUTURE_PREGAME_IDENTITY_INVALID")
                   if (not isinstance(event_id, str) or not event_id.strip()
-                      or event_time.utcoffset() is None or event_time <= now_utc
+                      or event_time.utcoffset() is None or event_time <= receipt_checked_at_utc
                       or event_time.astimezone(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat() != slate_date):
                       raise AssertionError("NFL_FUTURE_PREGAME_IDENTITY_INVALID")
                   detail = (row.get("result") or {}).get("detail") or {}
