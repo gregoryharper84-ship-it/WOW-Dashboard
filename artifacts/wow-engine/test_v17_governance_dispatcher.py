@@ -1651,9 +1651,7 @@ def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner()
         "github.event.check_run.conclusion == 'success'",
     ):
         assert part in gate
-    assert "check_run" in parsed["on"]
-    assert "workflow_run" in parsed["on"]
-    assert "pull_request_target" in parsed["on"]
+    assert set(parsed["on"]) == {"workflow_dispatch"}
     assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
     assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
     assert "cancel-in-progress: false" in source

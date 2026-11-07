@@ -658,6 +658,77 @@ def test_qa_policy_artifact_authenticates_exact_run_mode_target_and_freshness():
     }
 
 
+@pytest.mark.parametrize(("state", "head", "merged_at"), [
+    ("open", MAIN, None),  # Observed #2426: source head advanced after QA.
+    ("closed", HEAD, "2026-11-04T16:41:00Z"),
+    ("closed", MAIN, None),
+])
+def test_release_only_superseded_qa_is_neutral_after_authentic_policy(state, head, merged_at):
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["state"] = state
+    target["head"]["sha"] = head
+    target["merged_at"] = merged_at
+    routes["/pulls/1822"] = target
+    kwargs = dict(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"], run_attempt=1, token="read-only",
+        now=datetime.now(timezone.utc), get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+    )
+    # The strict verifier remains fail-closed for every stale source.
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(**kwargs)
+    neutral = review.resolve_qa_review_policy(
+        **kwargs, allow_superseded_target=True,
+    )
+    assert neutral["disposition"] == "neutral"
+    assert neutral["reason"] == "RELEASE_QA_SOURCE_PR_SUPERSEDED"
+    assert neutral["policy"]["target"]["head_sha"] == HEAD
+
+
+@pytest.mark.parametrize(("change", "value"), [
+    ("head.repo", {"full_name": "foreign/repository"}),
+    ("base.ref", "development"),
+    ("head.sha", "not-a-sha"),
+    ("draft", True),
+])
+def test_release_superseded_qa_never_neutralizes_foreign_or_invalid_target(change, value):
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["head"]["sha"] = MAIN
+    if change == "head.repo":
+        target["head"]["repo"] = value
+    elif change == "base.ref":
+        target["base"]["ref"] = value
+    elif change == "head.sha":
+        target["head"]["sha"] = value
+    else:
+        target["draft"] = value
+    routes["/pulls/1822"] = target
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=PRODUCER_RUN["id"], run_attempt=1, token="read-only",
+            now=datetime.now(timezone.utc), get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+            allow_superseded_target=True,
+        )
+
+
+def test_release_superseded_mode_does_not_neutralize_current_exact_head():
+    routes, archive = qa_policy_routes()
+    current = review.resolve_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"], run_attempt=1, token="read-only",
+        now=datetime.now(timezone.utc), get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+        allow_superseded_target=True,
+    )
+    assert current["policy"]["target"]["head_sha"] == HEAD
+    assert "disposition" not in current
+
+
 def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path):
     policy = qa_policy("canary")
     run_path = tmp_path / "run.json"
