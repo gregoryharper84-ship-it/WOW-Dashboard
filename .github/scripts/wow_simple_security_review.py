@@ -5,11 +5,13 @@ Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 """
 import hashlib
+from http.client import HTTPException
 import json
 import os
 import re
 from pathlib import Path
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
@@ -102,6 +104,85 @@ class NoCredentialRedirect(HTTPRedirectHandler):
 
 HTTP_CLIENT = build_opener(NoCredentialRedirect)
 
+# Diagnostic-only vocabulary for an ambiguous provider rejection. These are
+# provider-defined, finite categories, never response text. They make a 400/404
+# attributable without changing classification, fallback or verdict behavior.
+PROVIDER_ERROR_TYPES = frozenset({
+    "invalid_request_error", "authentication_error", "permission_error",
+    "not_found_error", "request_too_large", "rate_limit_error",
+    "api_error", "overloaded_error",
+})
+PROVIDER_ERROR_PARAMS = frozenset({
+    "model", "max_tokens", "messages", "system", "tools", "tool_choice",
+    "stream", "temperature", "top_p", "stop_sequences", "metadata", "thinking",
+})
+PROVIDER_ERROR_STATUSES = frozenset({
+    "INVALID_ARGUMENT", "FAILED_PRECONDITION", "NOT_FOUND", "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL", "UNAUTHENTICATED",
+    "OUT_OF_RANGE", "UNIMPLEMENTED",
+})
+
+
+def provider_rejection_label(obj):
+    """Fixed, allowlisted labels for an ambiguous provider rejection body.
+
+    Anthropic reports a bad request as ``error.type``/``error.param``; Google
+    reports it as ``error.status``. A parameter path is reduced to its first
+    segment, so no attacker- or model-controlled text can reach the log.
+    Unknown values are reported as unclassified, never echoed.
+    """
+    detail = obj.get("error") if isinstance(obj, dict) else None
+    if not isinstance(detail, dict):
+        return "ERROR_UNCLASSIFIED"
+    parts = []
+    raw_type = detail.get("type")
+    if isinstance(raw_type, str) and raw_type.lower() in PROVIDER_ERROR_TYPES:
+        parts.append("ERROR_TYPE_" + raw_type.upper())
+    elif raw_type is not None:
+        parts.append("ERROR_TYPE_UNCLASSIFIED")
+    raw_param = detail.get("param")
+    if isinstance(raw_param, str):
+        head = raw_param.strip().split(".")[0].split("[")[0]
+        if head in PROVIDER_ERROR_PARAMS:
+            parts.append("PARAM_" + head.upper())
+        else:
+            parts.append("PARAM_UNCLASSIFIED")
+    raw_status = detail.get("status")
+    if isinstance(raw_status, str) and raw_status in PROVIDER_ERROR_STATUSES:
+        parts.append("STATUS_" + raw_status)
+    elif raw_status is not None:
+        parts.append("STATUS_UNCLASSIFIED")
+    return ":".join(parts) if parts else "ERROR_UNCLASSIFIED"
+
+
+def github_http_rejection_label(exc):
+    """Classify GitHub 403/429; never expose header values or API body.
+
+    A 403 alone does not prove a credential defect: GitHub also uses 403 for
+    primary and secondary rate limits. Diagnosis never changes HOLD behavior.
+    """
+    headers = exc.headers
+    remaining = headers.get("X-RateLimit-Remaining") if headers else None
+    if remaining == "0":
+        return "PRIMARY_RATE_LIMIT"
+    try:
+        obj = json.loads(exc.read(4096))
+    except (ValueError, TypeError, AttributeError, OSError,
+            HTTPException, RecursionError):
+        obj = {}
+    message = obj.get("message", "") if isinstance(obj, dict) else ""
+    words = message.lower() if isinstance(message, str) else ""
+    if "secondary rate limit" in words or "abuse detection" in words:
+        return "SECONDARY_RATE_LIMIT"
+    if ("resource not accessible by integration" in words
+            or "resource not accessible by personal access token" in words):
+        return "CREDENTIAL_PERMISSION_DENIED"
+    if headers and headers.get("Retry-After") is not None:
+        return "RETRY_AFTER_PRESENT"
+    if "rate limit" in words:
+        return "RATE_LIMIT_UNCLASSIFIED"
+    return "UNCLASSIFIED"
+
 
 def safe_label(url, has_body):
     """Fixed, allowlisted endpoint label; never a URL, query string or response."""
@@ -146,7 +227,7 @@ def safe_label(url, has_body):
     return "UNKNOWN_API:" + verb + ":UNCLASSIFIED"
 
 
-def request_json(url, *, token=None, data=None, headers=None):
+def request_json(url, *, token=None, data=None, headers=None, _github_get_retry=True):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
             or url == "https://api.anthropic.com/v1/models?limit=1000"
@@ -174,19 +255,58 @@ def request_json(url, *, token=None, data=None, headers=None):
     except HTTPError as exc:
         print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint,
               file=sys.stderr)
+        if (exc.code in (403, 429)
+                and endpoint.startswith("GITHUB_API:")):
+            github_reason = github_http_rejection_label(exc)
+            print("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_" + str(exc.code)
+                  + ":" + endpoint + ":" + github_reason,
+                  file=sys.stderr)
+            # Only idempotent authenticated reads can be retried. A 403 is
+            # never automatically transient: require explicit rate-limit
+            # evidence, never a permission denial or unknown error. The same
+            # request is attempted at most twice, with an exact-source
+            # identity check performed by the caller before acceptance.
+            if (data is None and token and _github_get_retry
+                    and (exc.code == 429 or github_reason in (
+                        "PRIMARY_RATE_LIMIT", "SECONDARY_RATE_LIMIT"))):
+                print("REVIEW_GITHUB_READ_RETRY_ONCE:" + github_reason,
+                      file=sys.stderr)
+                time.sleep(60)
+                return request_json(url, token=token, data=data,
+                                    headers=headers, _github_get_retry=False)
         is_provider = data is not None and not url.startswith("https://api.github.com/")
+        # Provider metadata GETs (model catalog/model metadata) are reviewer
+        # routes too, but they carry no request body, so they are not
+        # fallback-eligible. Attribute them without changing that decision.
+        provider_route = endpoint.startswith(("ANTHROPIC_API:", "GEMINI_API:"))
+        # Read one bounded provider body for every ambiguous or retryable
+        # rejection (400/404, 429, 5xx) and emit fixed allowlisted labels.
+        # Status and endpoint alone cannot distinguish a rate limit from a
+        # spent workspace or a bad request field. GitHub API errors are
+        # excluded: they use a different body shape, and their endpoint label
+        # is already definitive. This is additive diagnostics only; the
+        # Hold/ProviderUnavailable decision below is unchanged.
+        provider_body = {}
+        if provider_route and (exc.code in (400, 404) or exc.code == 429
+                               or 500 <= exc.code <= 599):
+            try:
+                parsed = json.loads(exc.read(4096))
+            except (ValueError, TypeError, AttributeError, OSError,
+            HTTPException, RecursionError):
+                parsed = {}
+            provider_body = parsed if isinstance(parsed, dict) else {}
+            print("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_" + str(exc.code) + ":"
+                  + endpoint + ":" + provider_rejection_label(provider_body),
+                  file=sys.stderr)
         if is_provider and exc.code in RETRYABLE_HTTP:
             raise ProviderUnavailable("PROVIDER_HTTP_" + str(exc.code)) from None
         # 400 / 404 are ambiguous. Promote to availability ONLY with an explicit
         # provider-native, structured error indicating exhausted credit or retired model.
         if is_provider and exc.code in (400, 404):
-            obj = {}
-            try:
-                obj = json.loads(exc.read(4096))
-                message = obj.get("error", {}).get("message", "")
-                if type(message) is not str:
-                    message = ""
-            except (ValueError, TypeError, AttributeError, OSError):
+            obj = provider_body
+            detail = obj.get("error") if isinstance(obj, dict) else None
+            message = detail.get("message", "") if isinstance(detail, dict) else ""
+            if type(message) is not str:
                 message = ""
             words = message.lower()
             if exc.code == 400 and any(x in words for x in CREDIT_ERRORS):
@@ -197,7 +317,6 @@ def request_json(url, *, token=None, data=None, headers=None):
             # model-access failure for this credential, not a semantic verdict.
             # It is accepted only when the provider-native error is structured,
             # avoiding fallback on ambiguous arbitrary HTTP 404 responses.
-            detail = obj.get("error") if isinstance(obj, dict) else None
             if (exc.code == 404
                     and endpoint == "GEMINI_API:POST:GENERATE_CONTENT"
                     and isinstance(detail, dict)
@@ -394,6 +513,9 @@ def review_models(provider, key, *, strict=False):
         raise Hold("PROVIDER_IDENTITY_INVALID")
     if configured and not pattern.fullmatch(configured):
         raise Hold("GEMINI_MODEL_INVALID" if label == "GEMINI" else "CLAUDE_MODEL_UNAPPROVED")
+    # Catalog-unverified static fallback has no credential-listed alternates.
+    # Permit at most one such generation request, never 429 model-shopping.
+    catalog_verified = True
     try:
         data = request_json(endpoint, headers=headers)
         if not isinstance(data, dict):
@@ -440,6 +562,7 @@ def review_models(provider, key, *, strict=False):
                                       "HTTP_529", "PROVIDER_TRANSPORT"):
             raise
         print("REVIEW_MODEL_CATALOG_UNAVAILABLE:" + label, file=sys.stderr)
+        catalog_verified = False
         discovered = list(defaults)
     def rank(model):
         m = pattern.fullmatch(model)
@@ -455,7 +578,8 @@ def review_models(provider, key, *, strict=False):
         ordered.insert(0, configured)
     # A configured ID omitted from a valid provider catalog is not a
     # source-policy rejection; try other discovered approved models.
-    return ordered[:MAX_REVIEW_MODELS]
+    # Only a complete credential-scoped catalog can authorize rotation.
+    return ordered[:MAX_REVIEW_MODELS if catalog_verified else 1]
 
 
 def call_provider(provider, key, prompt):
@@ -519,6 +643,7 @@ def call_provider(provider, key, prompt):
         if not models:
             raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
         result = None
+        last_unavailable = "PROVIDER_MODEL_UNAVAILABLE"
         for model in models:
             print("REVIEW_GEMINI_MODEL_SELECTED:" + model, file=sys.stderr)
             try:
@@ -534,11 +659,19 @@ def call_provider(provider, key, prompt):
                     raise Hold("GEMINI_RESPONSE_INVALID")
                 break
             except ProviderUnavailable as err:
-                if str(err) != "PROVIDER_MODEL_UNAVAILABLE":
+                reason = str(err)
+                # Rotate only across credential-listed, preapproved Gemini models.
+                # A real semantic verdict, malformed evidence, auth denial or
+                # transport failure is never a license to shop for a PASS.
+                if reason not in ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_429"):
                     raise
-                print("REVIEW_GEMINI_MODEL_UNAVAILABLE:" + model, file=sys.stderr)
+                last_unavailable = reason
+                if reason == "PROVIDER_HTTP_429":
+                    print("REVIEW_GEMINI_MODEL_RATE_LIMITED:" + model, file=sys.stderr)
+                else:
+                    print("REVIEW_GEMINI_MODEL_UNAVAILABLE:" + model, file=sys.stderr)
         if result is None:
-            raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
+            raise ProviderUnavailable(last_unavailable)
         if not result.get("candidates") or result["candidates"][0].get("finishReason") != "STOP":
             raise Hold("GEMINI_REVIEW_INCOMPLETE")
         try:
@@ -722,6 +855,41 @@ def require_live_identity(current, target):
 
 
 
+def github_read_preflight():
+    """Owner-only zero-inference check of the same PR metadata GET used by review.
+
+    This read has no QA App token, reviewer verdict, or check publication.
+    An ambiguous permission/transport response remains a fail-closed Hold.
+    """
+    if (os.environ.get("GITHUB_REPOSITORY") != REPO
+            or os.environ.get("GITHUB_REF") != "refs/heads/main"
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("GITHUB_ACTOR") != OWNER_LOGIN):
+        raise Hold("REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED")
+    read_token = os.environ.get("GH_READ_TOKEN", "")
+    if not read_token:
+        raise Hold("READ_TOKEN_MISSING")
+    try:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    except (KeyError, OSError, ValueError, TypeError):
+        raise Hold("REVIEWER_PREFLIGHT_EVENT_INVALID") from None
+    pr_number, expected_sha = event_target(event, "workflow_dispatch")
+    if pr_number <= 0 or pr_number > 10000000:
+        raise Hold("PR_NUMBER_INVALID")
+    pr = gh(f"/pulls/{pr_number}", read_token)
+    head = (pr.get("head") or {})
+    base = (pr.get("base") or {})
+    if (pr.get("state") != "open"
+            or base.get("ref") != "main"
+            or (base.get("repo") or {}).get("full_name") != REPO
+            or (head.get("repo") or {}).get("full_name") != REPO
+            or type(head.get("sha")) is not str
+            or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])
+            or (expected_sha and head["sha"] != expected_sha)):
+        raise Hold("PR_TARGET_STALE_OR_UNTRUSTED")
+    print("GITHUB_PR_READ_READY:PR_METADATA:READ_ONLY")
+
+
 def reviewer_preflight():
     """Read-only, zero-inference provider compatibility check.
 
@@ -837,6 +1005,7 @@ def main():
 if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["--preflight"]:
+            github_read_preflight()
             reviewer_preflight()
         elif len(sys.argv) == 1:
             main()
