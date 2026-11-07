@@ -9,7 +9,14 @@ from ncaaf_feature_source_coverage import (
 
 
 def test_approved_provider_seed_matches_the_reviewed_sql():
-    sql = Path(__file__).with_name("ncaaf_verified_availability_sources.sql").read_text()
+    root = Path(__file__).parent
+    sql = "\n".join(
+        path.read_text()
+        for path in (
+            root / "ncaaf_verified_availability_sources.sql",
+            root / "ncaaf_schedule_geometry_source.sql",
+        )
+    )
     for provider, kinds in APPROVED_PROVIDER_KINDS.items():
         match = re.search(rf"'{provider}'.+?array\[([^\]]+)\]", sql)
         assert match is not None, provider
@@ -17,7 +24,7 @@ def test_approved_provider_seed_matches_the_reviewed_sql():
         assert found == set(kinds)
 
 
-def test_compiler_slots_and_only_four_have_an_approved_source():
+def test_compiler_slots_and_only_six_have_an_approved_source():
     matrix = build_feature_source_matrix()
     assert matrix["required_slot_count"] == len(REQUIRED_SCOPED_KEYS) == 29
     assert matrix["approved_slots"] == [
@@ -25,8 +32,10 @@ def test_compiler_slots_and_only_four_have_an_approved_source():
         "QB_CERTAINTY:AWAY",
         "SKILL_AVAILABILITY:HOME",
         "SKILL_AVAILABILITY:AWAY",
+        "REST_TRAVEL:HOME",
+        "REST_TRAVEL:AWAY",
     ]
-    assert matrix["missing_slot_count"] == 25
+    assert matrix["missing_slot_count"] == 23
     assert "TEAM_POWER:HOME" in matrix["missing_slots"]
     assert "OFF_EPA:AWAY" in matrix["missing_slots"]
     assert "WEATHER:EVENT" in matrix["missing_slots"]
@@ -47,13 +56,16 @@ def test_compiler_slots_and_only_four_have_an_approved_source():
         "qb_value_delta",
         "ol_health_delta",
         "def_front_health_delta",
-        "rest_days_delta",
         "tempo_delta",
         "turnover_volatility_delta",
         "special_teams_delta",
-        "travel_distance_miles",
         "weather_wind_mph",
         "weather_precip_probability",
     ]
     covered_features = [row["feature"] for row in matrix["fitted_features"] if row["coverage"] == "APPROVED_SOURCE"]
-    assert covered_features == ["qb_certainty_delta", "skill_availability_delta"]
+    assert covered_features == [
+        "qb_certainty_delta",
+        "skill_availability_delta",
+        "rest_days_delta",
+        "travel_distance_miles",
+    ]

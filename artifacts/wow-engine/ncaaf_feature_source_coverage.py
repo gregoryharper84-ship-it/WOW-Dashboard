@@ -1,8 +1,8 @@
 """Map NCAAF_FEATURES_V1 slots to reviewed pregame providers.
 
-The approved provider set is the seed in ncaaf_verified_availability_sources.sql.
-A slot with no approved provider cannot be materialized. Availability reports,
-Elo, box scores, and market prices are not substitutes for a missing slot.
+The approved provider set is the availability seed plus the schedule-geometry
+seed. A slot with no approved provider cannot be materialized. Availability
+reports, Elo, box scores, and market prices are not substitutes for a missing slot.
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ APPROVED_PROVIDER_KINDS: dict[str, frozenset[str]] = {
         "QB_CERTAINTY",
         "SKILL_AVAILABILITY",
     }),
+    "CFBD_SCHEDULE_GEOMETRY_V1": frozenset({"REST_TRAVEL"}),
 }
 _RAW_ONLY_KINDS = frozenset({"PLAYER_AVAILABILITY_REPORT", "QB_STATUS", "MARKET_NO_VIG"})
 # Evidence slots required before the existing 18-feature logistic vector can be built.
