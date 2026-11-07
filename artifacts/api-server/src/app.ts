@@ -51,6 +51,9 @@ const staticLimiter = rateLimit({
   legacyHeaders: false,
 });
 const base = rawBase === "/" ? "" : rawBase.slice(0, -1);
+// Keep the server root navigable when the dashboard uses a prefixed base.
+// Redirect without performing a filesystem read, preserving canonical assets.
+if (base) app.get("/", (_req, res) => res.redirect(302, rawBase));
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../final-lock/dist/public");
 app.use(base || "/", staticLimiter, express.static(publicDir));
 app.get(`${base}/*splat`, staticLimiter, (_req, res) => { res.sendFile(path.join(publicDir, "index.html")); });
