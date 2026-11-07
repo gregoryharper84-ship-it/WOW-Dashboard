@@ -7,8 +7,8 @@ the function as each role.
 
 Two supported targets:
 
-* ``WOW_TEST_POSTGRES_DSN`` -- an authorized disposable database (CI service
-  container or a scratch project). Roles ``anon``, ``authenticated`` and
+* ``WOW_TEST_POSTGRES_DSN`` -- an explicitly disposable LOCAL CI database
+  (never a remote or shared project). Roles ``anon``, ``authenticated`` and
   ``service_role`` must exist, as they do in Supabase.
 * the local ``pgserver`` package -- a throwaway PostgreSQL cluster started by the
   test. Used here when the package and ``psycopg`` are installed.
@@ -92,6 +92,26 @@ class _Cluster:
 def _start_cluster(tmp_path_factory) -> _Cluster:
     dsn = os.environ.get("WOW_TEST_POSTGRES_DSN")
     if dsn:
+        # This suite applies and rolls back DDL and temporarily changes
+        # database roles. An arbitrary remote DSN is never safe to probe.
+        if os.environ.get("WOW_TEST_POSTGRES_DISPOSABLE") != "1":
+            pytest.fail("NBA_CALIBRATOR_DB_DISPOSABLE_OPT_IN_REQUIRED", pytrace=False)
+        try:
+            params = psycopg.conninfo.conninfo_to_dict(dsn)
+        except Exception:
+            pytest.fail("NBA_CALIBRATOR_DB_DSN_INVALID", pytrace=False)
+        host = params.get("host")
+        hostaddr = params.get("hostaddr") or os.environ.get("PGHOSTADDR")
+        service = params.get("service") or os.environ.get("PGSERVICE")
+        hosts = host.split(",") if host else []
+        if (
+            not hosts
+            or hostaddr
+            or service
+            or any(part not in {"localhost", "127.0.0.1", "::1"} for part in hosts)
+            or params.get("dbname") != "wow_agent_ci"
+        ):
+            pytest.fail("NBA_CALIBRATOR_DB_REMOTE_OR_SHARED_TARGET_FORBIDDEN", pytrace=False)
         return _Cluster(dsn)
     try:
         import pgserver
@@ -103,6 +123,23 @@ def _start_cluster(tmp_path_factory) -> _Cluster:
     path = tmp_path_factory.mktemp("pgdata")
     server = pgserver.get_server(str(path), cleanup_mode=None)
     return _Cluster(server.get_uri(), server)
+
+
+
+@pytest.mark.parametrize(
+    "dsn,disposable",
+    [
+        ("postgresql://wow_agent_ci:wow_agent_ci@db.example.test:5432/wow_agent_ci", "1"),
+        ("postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/production", "1"),
+        ("postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci?hostaddr=127.0.0.2", "1"),
+        ("postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci", "0"),
+    ],
+)
+def test_refuse_non_disposable_or_remote_db_proof_target(monkeypatch, dsn, disposable):
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DSN", dsn)
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DISPOSABLE", disposable)
+    with pytest.raises(pytest.fail.Exception):
+        _start_cluster(None)
 
 
 def _connect(cluster: _Cluster):
