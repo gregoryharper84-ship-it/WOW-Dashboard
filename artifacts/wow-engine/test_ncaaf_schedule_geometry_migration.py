@@ -1,4 +1,5 @@
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ import pytest
 ROOT = Path(__file__).parent
 FORWARD = ROOT / "migrations" / "20261107_ncaaf_venues_snapshot_and_schedule_geometry.sql"
 ROLLBACK = ROOT / "migrations" / "20261107_ncaaf_venues_snapshot_and_schedule_geometry_rollback.sql"
-PROOF_DB = "ncaaf_geometry_migration_proof"
+PROOF_DB = f"ncaaf_geometry_migration_proof_{uuid.uuid4().hex[:12]}"
 PROVIDER = "CFBD_SCHEDULE_GEOMETRY_V1"
 
 
@@ -62,11 +63,14 @@ def test_rollback_guards_manifest_citations_and_keeps_narrow_grants():
 
 
 def _psql_available() -> bool:
-    probe = subprocess.run(
-        ["sudo", "-n", "-u", "postgres", "psql", "-d", "postgres", "-c", "select 1"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "-u", "postgres", "psql", "-d", "postgres", "-c", "select 1"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
     return probe.returncode == 0
 
 
@@ -91,51 +95,37 @@ def _scalar(database: str, sql: str) -> str:
 
 @pytest.fixture(scope="module")
 def proof_database():
+    """Isolated proof database; never drop or replace existing global roles."""
     if not _psql_available():
         pytest.skip("local postgres superuser is not available for the isolated migration proof")
-    subprocess.run(
-        ["sudo", "-n", "-u", "postgres", "psql", "-d", "postgres", "-c", f"drop database if exists {PROOF_DB} with (force)"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    dropped = _psql(
+    roles = ("anon", "authenticated", "service_role")
+    existing = set(_scalar(
         "postgres",
-        """
-        drop role if exists service_role;
-        drop role if exists authenticated;
-        drop role if exists anon;
-        """,
-    )
-    if dropped.returncode != 0:
-        pytest.skip("existing anon, authenticated, or service_role roles could not be removed")
-    created = _psql(
-        "postgres",
-        f"""
-        create role anon nologin;
-        create role authenticated nologin;
-        create role service_role nologin bypassrls;
-        create database {PROOF_DB};
-        """,
-    )
-    assert created.returncode == 0, created.stderr
+        "select rolname from pg_roles where rolname in ('anon','authenticated','service_role');",
+    ).splitlines())
+    created_roles = []
+    database_created = False
     try:
+        for role in roles:
+            if role not in existing:
+                role_sql = (
+                    "create role service_role nologin bypassrls;"
+                    if role == "service_role" else f"create role {role} nologin;"
+                )
+                creation = _psql("postgres", role_sql)
+                assert creation.returncode == 0, creation.stderr
+                created_roles.append(role)
+        created = _psql("postgres", f"create database {PROOF_DB};")
+        assert created.returncode == 0, created.stderr
+        database_created = True
         yield PROOF_DB
     finally:
-        subprocess.run(
-            ["sudo", "-n", "-u", "postgres", "psql", "-d", "postgres", "-c", f"drop database if exists {PROOF_DB} with (force)"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        _psql(
-            "postgres",
-            """
-            drop role if exists service_role;
-            drop role if exists authenticated;
-            drop role if exists anon;
-            """,
-        )
+        if database_created:
+            dropped = _psql("postgres", f"drop database {PROOF_DB} with (force);")
+            assert dropped.returncode == 0, dropped.stderr
+        for role in reversed(created_roles):
+            dropped_role = _psql("postgres", f"drop role {role};")
+            assert dropped_role.returncode == 0, dropped_role.stderr
 
 
 def _install_pre_migration_schema(database: str) -> None:
