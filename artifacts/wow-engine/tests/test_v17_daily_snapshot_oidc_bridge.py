@@ -159,3 +159,45 @@ def test_bridge_cannot_upgrade_execution_or_probability_claim(monkeypatch):
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
     assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_one_existing_thursday_daily_slot_is_reassigned_to_nfl_future_capture():
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[3]
+        / ".github/workflows/wow-v17-daily-snapshot.yml"
+    ).read_text(encoding="utf-8")
+    # 4 scans/day stays 4 scans/day; Thursday 17 UTC is a separately
+    # identifiable schedule, not an extra trigger or duplicated request.
+    assert 'cron: "0 17 * * 0,1,2,3,5,6"' in workflow
+    assert 'cron: "0 17 * * 4"' in workflow
+    assert 'cron: "0 17 * * *"' not in workflow
+    assert "WOW_NFL_NEXT_SUNDAY_CAPTURE:" in workflow
+    assert "github.event.schedule == '0 17 * * 4'" in workflow
+    assert 'os.environ.get("GITHUB_EVENT_NAME") == "schedule"' in workflow
+    assert 'os.environ.get("WOW_NFL_NEXT_SUNDAY_CAPTURE") == "true"' in workflow
+    assert 'days=(6 - today.weekday()) % 7' in workflow
+    assert '"response_mode": "FULL" if next_sunday_capture else "COMPACT"' in workflow
+    assert '"max_team_events": 32 if next_sunday_capture else 24' in workflow
+    # The existing independent post-deploy acceptance gate is NOT repurposed
+    # as a scheduler. Its exact protected call condition remains unchanged.
+    assert "if: inputs.post_deploy_acceptance == true" in workflow
+
+
+def test_weekly_nfl_capture_requires_real_pregame_prediction_receipts():
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[3]
+        / ".github/workflows/wow-v17-daily-snapshot.yml"
+    ).read_text(encoding="utf-8")
+    assert 'if next_sunday_capture:' in workflow
+    assert 'NFL_FUTURE_PROSPECTIVE_CAPTURE_INSUFFICIENT' in workflow
+    assert 'NFL_FUTURE_PREGAME_IDENTITY_INVALID' in workflow
+    assert 'detail.get("prediction_id")' in workflow
+    assert 'len(future_nfl_predictions) < 5' in workflow
+    assert 'event_time <= now_utc' in workflow
+    assert '"nfl_future_prediction_receipts"' in workflow
+    assert '"model_terminal_certification": "NOT_PROVEN_BY_PROSPECTIVE_CAPTURE"' in workflow
+    assert '"probability_values_logged": False' in workflow
