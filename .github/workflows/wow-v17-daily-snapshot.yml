@@ -184,6 +184,7 @@ jobs:
           rows = result.get("rows") or []
           future_nfl_predictions = {}
           if next_sunday_capture:
+              receipt_checked_at_utc = datetime.now(timezone.utc)
               # Count only genuine, persisted model receipts from one future
               # canonical event each. A discovery-only or model-unavailable
               # board is NOT progress toward the 100 forward grades.
