@@ -18,6 +18,9 @@ export function assertPilotSafety(env = process.env) {
   if (env.WOW_TRIGGER_PILOT_ENABLED !== "true") {
     throw new ProbeError("PILOT_DISABLED", false);
   }
+  if (env.WOW_TRIGGER_PILOT_ENV !== "dev") {
+    throw new ProbeError("NOT_DEV_PILOT", false);
+  }
   if (env.WOW_CAN_EXECUTE !== "false" || env.WOW_DRY_RUN_ONLY !== "true") {
     throw new ProbeError("EXECUTION_GUARD_NOT_PROVEN", false);
   }

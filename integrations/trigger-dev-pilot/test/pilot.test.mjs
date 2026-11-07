@@ -4,13 +4,20 @@ import { readFileSync } from "node:fs";
 import { HEALTH_URL, ProbeError, observeWowHealth } from "../src/lib/read-only-health.mjs";
 import { TASK_ID, idempotencyKeyFor, enqueueReadOnlyProbe } from "../src/lib/submit-readonly.mjs";
 
-const safe = Object.freeze({ WOW_TRIGGER_PILOT_ENABLED: "true", WOW_CAN_EXECUTE: "false", WOW_DRY_RUN_ONLY: "true" });
+const safe = Object.freeze({ WOW_TRIGGER_PILOT_ENABLED: "true", WOW_TRIGGER_PILOT_ENV: "dev", WOW_CAN_EXECUTE: "false", WOW_DRY_RUN_ONLY: "true" });
 const okResponse = { status: 200 };
 
 test("fails closed when disabled: no network call", async () => {
   let calls = 0;
   await assert.rejects(observeWowHealth({ env: {}, fetchImpl: async () => { calls++; return okResponse; } }),
     (err) => err instanceof ProbeError && err.code === "PILOT_DISABLED" && !err.retryable);
+  assert.equal(calls, 0);
+});
+
+test("refuses non-development environments before any request", async () => {
+  let calls = 0;
+  await assert.rejects(observeWowHealth({ env: {...safe, WOW_TRIGGER_PILOT_ENV: "prod"}, fetchImpl: async () => { calls++; return okResponse; } }),
+    err => err.code === "NOT_DEV_PILOT" && !err.retryable);
   assert.equal(calls, 0);
 });
 
