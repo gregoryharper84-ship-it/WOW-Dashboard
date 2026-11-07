@@ -146,7 +146,10 @@ def fetch_sportsdataverse_games(
     text = str(response.text or "").lstrip("\ufeff")
     reader = csv.DictReader(io.StringIO(text))
     fieldnames = {str(value or "").strip() for value in (reader.fieldnames or [])}
-    missing = sorted(SPORTSDATAVERSE_REQUIRED_COLUMNS - fieldnames)
+    missing = sorted(
+        SPORTSDATAVERSE_REQUIRED_COLUMNS - fieldnames
+        | ({"season_type"} - fieldnames if normalized == "NBA" else set())
+    )
     if missing:
         raise BasketballHydrationError(
             "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT:" + ",".join(missing)
@@ -301,6 +304,11 @@ def normalize_sportsdataverse_game(
     completed = str(raw.get("status_type_completed") or "").strip().lower() in {"1", "true", "yes"}
     # A textual "postponed" or "postponement" is not a completed result.
     if not completed:
+        return None
+    # ESPN 2 is the regular season; 1/3/4/5 represent other NBA regimes.
+    # Never put completed postseason, preseason or unknown rows into a fitted
+    # regular-season training cohort, even if their game scores are final.
+    if sport.upper().strip() == "NBA" and str(raw.get("season_type") or "").strip() != "2":
         return None
     event_id = str(raw.get("game_id") or raw.get("id") or "").strip()
     date_text = str(raw.get("game_date") or raw.get("date") or "")[:10]
