@@ -612,7 +612,7 @@ The third-party feed is a separate independent API, not official PrizePicks.
 | `PROP_FEED_CLOCK_SKEW` | SOURCE_ADAPTER | Source observation timestamp is more than two minutes in the future | Recheck source timestamp, refresh bounded observation, never reuse stale row |
 | `PROP_FEED_CREDENTIAL_MISSING` | SOURCE_ADAPTER | credential missing | Restore authorized entitlement/credential through trusted operator; no bypass |
 | `PROP_FEED_CREDIT_BUDGET_EXHAUSTED` | SOURCE_ADAPTER | Next source page exceeds the caller-approved per-run credit reservation | Stop before next request; wait for quota or reduce budget; never rotate credentials |
-| `PROP_FEED_CREDIT_BUDGET_INVALID` | SOURCE_ADAPTER | Per-run credit limit is outside the supported 6–100 range | Stop before next request; wait for quota or reduce budget; never rotate credentials |
+| `PROP_FEED_CREDIT_BUDGET_INVALID` | SOURCE_ADAPTER | Per-run credit limit is outside the supported 6–100 range | Correct the caller's request to the approved 6–100 bound; do not send any provider request |
 | `PROP_FEED_CURSOR_CYCLE` | SOURCE_ADAPTER | cursor cycle | Audit source pages and counts; never declare complete board |
 | `PROP_FEED_CURSOR_INVALID` | SOURCE_ADAPTER | cursor invalid | Audit source pages and counts; never declare complete board |
 | `PROP_FEED_DEMO_OR_PROVENANCE_UNVERIFIED` | SOURCE_ADAPTER | Row is a demo or its demo provenance is missing | Preserve native typed hold; repair source/contract and rerun affected row only |
@@ -646,16 +646,18 @@ The third-party feed is a separate independent API, not official PrizePicks.
 | `PROP_FEED_TRANSPORT_FAILED` | SOURCE_ADAPTER | transport failed | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_FEED_ZERO_ROWS_NOT_NO_SLATE_PROOF` | SOURCE_ADAPTER | Vendor returned no rows; insufficient to prove no pregame markets | Audit source pages and counts; never declare complete board |
 | `PROP_HANDOFF_CANDIDATES_INVALID` | PROP_HANDOFF | candidates invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_DISCOVERY_BLOCKERS_INVALID` | PROP_HANDOFF | Discovery blockers are not a bounded list of typed strings | Reject malformed upstream receipt; restore valid discovery evidence, not credentials |
 | `PROP_HANDOFF_DISCOVERY_SCHEMA_INVALID` | PROP_HANDOFF | discovery schema invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
-| `PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED` | PROP_HANDOFF | exact route unresolved | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED` | PROP_HANDOFF | Partial-game period, tiered offer, line or stat cannot be represented by canonical full-game standard Action | Hold that row until exact period and offer semantics are supported by the governed scorer; no silent market conversion |
 | `PROP_HANDOFF_NOW_UNAWARE` | PROP_HANDOFF | now unaware | Preserve native typed hold; repair source/contract and rerun affected row only |
-| `PROP_HANDOFF_RESEARCH_AUTHORITY_CONFLICT` | PROP_HANDOFF | Research row tries to claim scoring or execution authority | Restore authorized entitlement/credential through trusted operator; no bypass |
+| `PROP_HANDOFF_RESEARCH_AUTHORITY_CONFLICT` | PROP_HANDOFF | Research row tries to claim scoring or execution authority | Reject the source row; require a research-only/non-executable receipt from the trusted adapter |
 | `PROP_HANDOFF_ROW_SCHEMA_INVALID` | PROP_HANDOFF | row schema invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_HANDOFF_ROW_SOURCE_CONFLICT` | PROP_HANDOFF | row source conflict | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_HANDOFF_SOURCE_INVALID` | PROP_HANDOFF | source invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_HANDOFF_SOURCE_USE_NOT_PERMITTED` | PROP_HANDOFF | Trusted caller has not established permitted API data use | Restore authorized entitlement/credential through trusted operator; no bypass |
-| `PROP_IDENTITY_AUTHORITY_INVALID` | OFFICIAL_IDENTITY | Research/third-party source was misrepresented as official identity evidence | Restore authorized entitlement/credential through trusted operator; no bypass |
+| `PROP_IDENTITY_AUTHORITY_INVALID` | OFFICIAL_IDENTITY | Research/third-party source was misrepresented as official identity evidence | Reject third-party authority claim; require canonical official event/player source evidence |
 | `PROP_IDENTITY_EVENT_START_CONFLICT` | OFFICIAL_IDENTITY | Provider game start differs from independently verified official start | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_OPPONENT_CONFLICT` | OFFICIAL_IDENTITY | Third-party opponent does not match the official opponent or trusted official aliases | Hold until the canonical official opponent identity or verified aliases reconcile; never infer a game |
 | `PROP_IDENTITY_OFFICIAL_EVIDENCE_STALE` | OFFICIAL_IDENTITY | Official identity lookup is stale or future-dated | Recheck source timestamp, refresh bounded observation, never reuse stale row |
 | `PROP_IDENTITY_OFFICIAL_RESOLUTION_INCOMPLETE` | OFFICIAL_IDENTITY | Official event, player, source, period or stat proof field is missing | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
 | `PROP_IDENTITY_OFFICIAL_RESOLUTION_MISSING` | OFFICIAL_IDENTITY | No official identity match returned by trusted resolver | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
