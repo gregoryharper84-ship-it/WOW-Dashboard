@@ -95,3 +95,36 @@ can_execute: false
 ```
 
 No review pass may waive a failed acceptance criterion or missing required evidence.
+
+
+## WOW-owned native context preflight — vendor independent
+
+Before issuing architectural findings, the existing authenticated Engineering worker
+should prepare a complete exact-head source packet using
+`v17.native_senior_review.build_review_packet` once that module is merged and
+the worker's normal GitHub read-only intake can supply authenticated base/head
+SHAs, complete changed-file patches, exact-head source contents and relevant
+caller dependencies. This is a **review input contract**, not a second review
+agent, backend service, GitHub App, workflow, or approval gate.
+
+Required behavior:
+- Keep every changed path in the manifest and expose missing, oversized or
+  unparseable source as `CONTEXT_INCOMPLETE`; never silently sample and claim a
+  full-codebase review.
+- Use the packet's module import references and risk-lens questions to
+  challenge cross-file regressions, error classification, data integrity,
+  security, concurrency and preservation of previously correct behavior.
+- Check proposed source excerpts with
+  `v17.native_senior_review.preflight_review_finding`; its
+  `EVIDENCE_LOCATED_NOT_SEMANTICALLY_VERIFIED` result is **not** a defect proof.
+  Reproduce actionable findings and capture test/counterexample evidence.
+- Re-evaluate a finding if source SHA changes. A stale or tampered packet must
+  never become a passing review receipt.
+- Route verified findings to the existing canonical Engineering incident and
+  one authorized writer; keep SIRT, QA, System Architect and Release checks
+  independent. No assistant, external review product or new provider gets
+  automatic approval, merge, deploy or V17 terminal authority.
+
+The context module runs no AI and no network. Invoking it alone does **not**
+satisfy this agent's existing independent review or protected acceptance
+contract. No CodeRabbit subscription, API or installed app is required.
