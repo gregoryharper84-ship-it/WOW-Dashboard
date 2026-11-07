@@ -1,0 +1,42 @@
+name: wow-trigger-readonly-pilot-verify
+
+# Tests only: no cron, no Trigger.dev auth, no external probes and no deploy.
+on:
+  pull_request:
+    paths:
+      - "integrations/trigger-dev-pilot/**"
+      - ".github/workflows/wow-trigger-readonly-pilot-verify.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-trigger-pilot-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-contract:
+    name: Verify read-only pilot contract (no credentials)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: integrations/trigger-dev-pilot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Local no-network contracts
+        run: |
+          node --check src/lib/read-only-health.mjs
+          node --check src/lib/submit-readonly.mjs
+          node --check bin/trigger-once.mjs
+          node --test
+      - name: Build-time SDK compatibility (isolated, no deploy)
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund --package-lock=false
+          npm run typecheck
