@@ -222,15 +222,16 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
 
     # The latest day can be clean while earlier games in this season's
     # persisted training window have a wrong season/provider. Validate ALL
-    # settled rows before replay. Stable two-key ordering and bounded
-    # pages prevent truncation from being silently accepted.
+    # settled rows before replay. An exact PostgREST count makes a server-side
+    # row cap observable: a short page must not silently end validation.
     scanned_ids: set[str] = set()
     season_open = date(season_start_year, 10, 1)
     page_size = 100
     max_pages = 20
+    expected_count: int | None = None
     for page in range(max_pages + 1):
         result = (
-            db.table(table).select(fields)
+            db.table(table).select(fields, count="exact")
             .eq("settled", True)
             .gte("game_date", season_open.isoformat())
             .lte("game_date", clock.date().isoformat())
@@ -239,9 +240,22 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
             .execute()
         )
         batch = getattr(result, "data", None)
-        if not isinstance(batch, list) or len(batch) > page_size:
+        total_count = getattr(result, "count", None)
+        if (
+            not isinstance(batch, list) or len(batch) > page_size
+            or type(total_count) is not int
+            or total_count < 0 or total_count > max_pages * page_size
+            or (expected_count is not None and total_count != expected_count)
+        ):
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
+        if expected_count is None:
+            expected_count = total_count
+        offset = page * page_size
+        if offset + len(batch) > expected_count:
             raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
         if page == max_pages:
+            # This sentinel page must be empty because the maximum accepted
+            # count is max_pages * page_size.
             if batch:
                 raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
             break
@@ -266,8 +280,12 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
             ):
                 raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
             scanned_ids.add(event)
-        if len(batch) < page_size:
+        if offset + len(batch) == expected_count:
             break
+        if len(batch) != page_size:
+            # PostgREST may cap rows below the requested range. Without this
+            # check, an earlier wrong-provider settlement can escape review.
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
     if not seen_ids.issubset(scanned_ids):
         raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH")
     return latest_day.isoformat()
