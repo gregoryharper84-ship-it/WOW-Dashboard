@@ -1,0 +1,105 @@
+{
+  "schema": "WOW_V17_THREE_SPORT_CERTIFICATION_DEMONSTRATION_PLAN_V1",
+  "as_of": "2026-10-29",
+  "scope": "PLAYER_PROP_ONLY",
+  "target_order": [
+    "NFL",
+    "NCAAF",
+    "NBA"
+  ],
+  "lanes": [
+    {
+      "sport": "NFL",
+      "stat_type": "PASSING_YARDS",
+      "controlling_specialist": "wow.nfl-player-prop-probability-expert",
+      "starting_lifecycle": "PROSPECTIVE_CERTIFIED",
+      "starting_artifact_count": 1,
+      "starting_publishable_artifacts": 0,
+      "known_training_rows": 1082,
+      "known_calibration_rows": 535,
+      "known_holdout_rows": 522,
+      "source_path": "nflverse + approved official pregame frozen sources; PropsMadness visual research only",
+      "required_next": [
+        "independent real current pregame frozen player inputs",
+        "exact-line scoring using fitted artifact and calibration package",
+        "V17_TERMINAL_REDUCER FINAL_APPROVED genuine receipt"
+      ]
+    },
+    {
+      "sport": "NCAAF",
+      "stat_type": "RECEIVING_YARDS",
+      "controlling_specialist": "wow.ncaaf-player-prop-probability-expert",
+      "starting_lifecycle": "NO_REGISTERED_PROP_ARTIFACT",
+      "starting_artifact_count": 0,
+      "starting_publishable_artifacts": 0,
+      "known_outcome_rows_for_stat": 48948,
+      "source_path": "CFBD 2023-2026 recovered postgame outcomes; verified 2026 schedule snapshots",
+      "required_next": [
+        "complete independent strictly pregame player context for forward 2026 games",
+        "fit seven-stat Class-C challenger in research and create real candidate artifact",
+        "independent chronology/calibration/holdout and action canary"
+      ]
+    },
+    {
+      "sport": "NBA",
+      "stat_type": "POINTS",
+      "controlling_specialist": "wow.nba-player-prop-probability-expert",
+      "starting_lifecycle": "CANDIDATE",
+      "starting_artifact_count": 1,
+      "starting_publishable_artifacts": 0,
+      "known_source_training_rows": 18179,
+      "source_path": "existing frozen NBA joint-component candidate + licensed player-game sporting outcomes; PropsMadness visual research only",
+      "required_next": [
+        "verify exact-line historical candidate snapshot and player/event IDs",
+        "fit independent exact-line probability calibration with untouched forward cohort",
+        "canonical Action scored receipt and terminal acceptance"
+      ]
+    }
+  ],
+  "shared_acceptance": {
+    "source_rights": "written rights review or independently approved alternatives",
+    "outcomes": "immutable hash and official player/event/stat identity",
+    "historical_features": "source-first-observed <= feature_as_of < event_start for real pregame use",
+    "training": "fitted sport-specific model with frozen SHA/versions and chronological untouched holdout",
+    "calibration": "genuine exact-line lower-bound package with independent validator",
+    "scorer": "canonical V17 score-pick-request, real prediction_id and immutable snapshot",
+    "terminal": "Genuine V17_TERMINAL_REDUCER FINAL_APPROVED, or typed MARKET/CARD-only HELD with completed sporting probability explicitly preserved. Never infer certification or market approval from a hold.",
+    "safety": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS; can_execute=false",
+    "sporting_vs_market": "Completed certified sporting probability package may survive unavailable downstream price; separate card and execution decisions from model evidence."
+  },
+  "parallel_research": [
+    {
+      "sport": "NFL",
+      "source": "PropsMadness authenticated account-view offline parser",
+      "rights": "not approved for recurring copying",
+      "purpose": "visual validation and research only"
+    },
+    {
+      "sport": "NBA",
+      "source": "PropsMadness account-view adapter",
+      "rights": "real authenticated layout still to be verified",
+      "purpose": "visual validation and research only"
+    },
+    {
+      "sport": "MLB",
+      "source": "PropsMadness account-view adapter plus existing MLB official outcomes",
+      "rights": "real authenticated layout and copying rights unverified",
+      "purpose": "separate research only"
+    },
+    {
+      "sport": "WNBA",
+      "source": "PropsMadness account-view adapter plus independently permitted sources",
+      "rights": "real authenticated layout and copying rights unverified",
+      "purpose": "separate research only"
+    },
+    {
+      "sport": "NHL",
+      "source": "NHL official final boxscores and independent licensed alternative evaluation",
+      "rights": "NHL_PUBLIC_API LICENSE_REVIEW_REQUIRED for training",
+      "purpose": "bounded source research only"
+    }
+  ],
+  "automatic_certification": false,
+  "model_probability_authority": false,
+  "can_execute": false
+}
