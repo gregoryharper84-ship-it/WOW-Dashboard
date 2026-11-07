@@ -374,6 +374,13 @@ def _validate_automated_review(
         )
     except _source_review_module.SourceReviewError as exc:
         raise ExistingPrGovernanceReceiptError(str(exc)) from exc
+    # An authentic REJECT is valid provenance, never release authorization.
+    # Both receipt issuance and receipt replay use this same validator.
+    review = artifact.get("review")
+    _require(
+        isinstance(review, Mapping) and review.get("decision") == "PASS",
+        "SOURCE_REVIEW_DECISION_NOT_PASS",
+    )
     return hashlib.sha256(
         (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode("utf-8")
     ).hexdigest()
