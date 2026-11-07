@@ -12,6 +12,7 @@ visible. can_execute is always false.
 from __future__ import annotations
 
 from dataclasses import replace
+import re
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -671,8 +672,8 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = (
             exc.code if isinstance(exc, SoccerEventIdentityError)
-            and exc.code.startswith("SOCCER_")
-            and exc.code in {
+            and (
+                exc.code in {
                 "SOCCER_EVENT_TIME_INVALID",
                 "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT",
                 "SOCCER_OFFICIAL_SOURCE_TRANSPORT_FAILED",
@@ -682,7 +683,11 @@ def canonicalize_soccer_discovery_identity(event: Any) -> Any:
                 "SOCCER_PROVIDER_TEAM_ALIAS_INVALID",
                 "SOCCER_CANONICAL_EVENT_NOT_FOUND",
                 "SOCCER_CANONICAL_EVENT_AMBIGUOUS",
-            }
+                }
+                or re.fullmatch(
+                    r"SOCCER_OFFICIAL_SOURCE_HTTP_[1-5][0-9]{2}", exc.code
+                ) is not None
+            )
             else "SOCCER_CANONICAL_RESOLVER_FAILED"
         )
         return replace(event, official_event_id=None, raw=raw)
