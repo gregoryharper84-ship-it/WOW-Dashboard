@@ -65,21 +65,14 @@ jobs:
         # fresh GET-only service/deploy/current-main evidence gates these lanes.
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
-      - name: Skip repeat acceptance for an SHA that already passed
+      - name: Skip repeat acceptance only for the identical deployment
         id: dedupe
-        # The hourly observer re-triggers this workflow on unchanged
-        # deployments. The fresh readback above still ran (drift fails the job);
-        # only the expensive lanes are skipped, and only when a prior run of
-        # this orchestrator fully succeeded on this exact SHA. Manual dispatch
-        # always runs everything.
-        run: |
-          already=false
-          if [ "$SOURCE_EVENT" = "workflow_run" ]; then
-            prior=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-post-deploy-verification-orchestrator.yml/runs?head_sha=${EXPECTED_SHA}&status=completed&per_page=50" \
-              --jq "[.workflow_runs[] | select(.conclusion==\"success\" and .id != ${GITHUB_RUN_ID})] | length")
-            [ "${prior:-0}" -gt 0 ] && already=true
-          fi
-          echo "already_accepted=${already}" >> "$GITHUB_OUTPUT"
+        # The hourly observer re-triggers this workflow on unchanged deployments.
+        # The fresh readback above still ran (drift fails the job). Expensive
+        # lanes are skipped only when a prior successful run observed the same
+        # SHA AND the same live web and worker deploy IDs; a redeploy of the same
+        # SHA gets new deploy IDs and runs everything. Any doubt fails closed.
+        run: python artifacts/wow-engine/v17/post_deploy_dedupe.py
 
       - name: Preserve readback receipt (observation, never SIRT approval)
         if: always()
@@ -182,11 +175,11 @@ jobs:
 
           failed=0
 
-          # Unchanged SHA already fully accepted: lanes were intentionally not
+          # Identical deployment (SHA + web/worker deploy IDs) already accepted: lanes not
           # repeated. Only a verified-success readback may take this path.
           if [ "${ALREADY_ACCEPTED:-}" = "true" ]; then
             [ "$DEPLOYMENT_READBACK" = "success" ] || failed=1
-            echo "Lanes skipped: this SHA already passed all acceptance lanes." >> "$GITHUB_STEP_SUMMARY"
+            echo "Lanes skipped: this exact deployment already passed all acceptance lanes." >> "$GITHUB_STEP_SUMMARY"
             exit "$failed"
           fi
 

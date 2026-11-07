@@ -57,7 +57,7 @@ app.get(`${base}/*splat`, staticLimiter, (_req, res) => { res.sendFile(path.join
 app.get(base || "/", staticLimiter, (_req, res) => { res.sendFile(path.join(publicDir, "index.html")); });
 
 const apiError: ErrorRequestHandler = (error, req, res, next) => {
-  if (!req.path.startsWith("/api/")) return next(error);
+  if (req.path !== "/api" && !req.path.startsWith("/api/")) return next(error);
   const invalidInput = [400, 413].includes(Number(error?.status));
   return res.status(invalidInput ? Number(error.status) : 500).json({
     ok: false,

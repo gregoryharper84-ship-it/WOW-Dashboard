@@ -160,3 +160,60 @@ def test_acceptance_repeats_exact_sha_readback_after_the_long_running_lanes():
     assert job["env"]["SOURCE_RUN_KIND"] == "production_observer"
     artifact = next(s for s in steps if "upload-artifact@" in s.get("uses", ""))
     assert artifact["with"]["if-no-files-found"] == "error"
+
+
+def _dedupe():
+    import importlib.util
+    path = ROOT / "artifacts" / "wow-engine" / "v17" / "post_deploy_dedupe.py"
+    spec = importlib.util.spec_from_file_location("post_deploy_dedupe", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _receipt(sha="a" * 40, web="dep-web-1", worker="dep-wrk-1", status="WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED"):
+    return {"status": status, "target_sha": sha, "web_deploy_id": web, "worker_deploy_id": worker}
+
+
+def test_dedupe_skips_only_identical_deployment():
+    d = _dedupe()
+    assert d.already_accepted(_receipt(), [_receipt()]) is True
+
+
+@pytest.mark.parametrize("prior", [
+    _receipt(web="dep-web-2"),          # same SHA, web redeployed
+    _receipt(worker="dep-wrk-2"),       # same SHA, worker redeployed
+    _receipt(sha="b" * 40),             # different SHA
+])
+def test_dedupe_runs_everything_after_redeploy_of_same_sha_or_new_sha(prior):
+    assert _dedupe().already_accepted(_receipt(), [prior]) is False
+
+
+@pytest.mark.parametrize("bad", [
+    {}, None, "x", _receipt(status="READBACK_HOLD"), _receipt(web=""), _receipt(worker=""),
+])
+def test_dedupe_fails_closed_on_missing_or_malformed_evidence(bad):
+    d = _dedupe()
+    assert d.already_accepted(bad, [_receipt()]) is False
+    assert d.already_accepted(_receipt(), [bad]) is False
+    assert d.already_accepted(_receipt(), []) is False
+
+
+def test_dedupe_cli_fails_closed_when_github_unreachable(tmp_path):
+    receipt = tmp_path / "r.json"
+    receipt.write_text(__import__("json").dumps(_receipt()), encoding="utf-8")
+    out = tmp_path / "out"
+    env = {**os.environ, "SOURCE_EVENT": "workflow_run", "READBACK_RECEIPT": str(receipt),
+           "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1", "GITHUB_OUTPUT": str(out),
+           "PATH": str(tmp_path)}  # no gh on PATH -> must fail closed, not crash
+    done = subprocess.run([__import__("sys").executable, str(ROOT / "artifacts/wow-engine/v17/post_deploy_dedupe.py")],
+                          env=env, capture_output=True, text=True, check=False)
+    assert done.returncode == 0
+    assert out.read_text().strip() == "already_accepted=false"
+
+
+def test_workflow_dedupe_step_uses_deployment_identity_script():
+    job = _load()["jobs"]["deployment-readback"]
+    step = next(s for s in job["steps"] if s.get("id") == "dedupe")
+    assert "post_deploy_dedupe.py" in step["run"]
+    assert "head_sha" not in step["run"]
