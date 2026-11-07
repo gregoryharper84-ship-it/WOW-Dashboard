@@ -171,6 +171,20 @@ def test_unresolved_control_still_lands_in_the_identity_bucket():
     assert row.bucket == IDENTITY_UNRESOLVED
 
 
+def test_soccer_unresolved_competition_blocker_survives_routing():
+    event = soccer_alias_event(raw_extra={
+        "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+        "canonical_identity_blocker": "SOCCER_COMPETITION_UNSUPPORTED",
+    })
+    routed = _route(event)
+    assert routed.bucket == IDENTITY_UNRESOLVED
+    assert routed.identity["canonical_identity_blocker"] == "SOCCER_COMPETITION_UNSUPPORTED"
+    assert routed.identity["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    payload = routed.as_dict()
+    assert payload["can_execute"] is False
+    assert payload["identity"]["canonical_identity_blocker"] == "SOCCER_COMPETITION_UNSUPPORTED"
+
+
 def test_soccer_identity_never_publishes_a_probability_or_a_draw_shortcut():
     event = DiscoveredEvent(
         **{
