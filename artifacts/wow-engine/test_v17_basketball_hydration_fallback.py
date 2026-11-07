@@ -389,7 +389,7 @@ def test_hydrate_rejects_unentitled_raw_espn_when_sportsdataverse_is_unavailable
     assert persisted == []
 
 
-def test_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
+def test_wnba_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
     monkeypatch.setattr(
         hydration,
         "fetch_games",
@@ -1260,7 +1260,7 @@ def test_hydrate_does_not_promote_unentitled_raw_espn_to_fitted_training(monkeyp
         assert "ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED" in str(exc)
         assert "MODEL_SOURCE_UNCLASSIFIED" in str(exc)
 
-def test_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
+def test_nba_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
     monkeypatch.setattr(
         hydration,
         "fetch_games",
