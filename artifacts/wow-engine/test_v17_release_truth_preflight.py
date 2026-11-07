@@ -111,6 +111,32 @@ def test_unknown_rule_patterns_never_silently_claim_zero_approvals():
     assert "RULESET_REQUIREMENTS_UNVERIFIED" in names(r)
 
 
+def test_unassessed_active_ruleset_types_cannot_claim_full_policy_coverage():
+    for unassessed in ("workflows", "merge_queue", "required_deployments",
+                       "code_scanning", "required_signatures", "non_fast_forward"):
+        rs = rule()
+        rs["rules"].append({"type": unassessed, "parameters": {}})
+        observed = report(rules=[rs])
+        assert observed["ruleset_human_review"] == "UNVERIFIED", unassessed
+        assert "RULESET_REQUIREMENTS_UNVERIFIED" in names(observed), unassessed
+        assert observed["rejected_obsolete_claims"] == [], unassessed
+        assert observed["can_execute"] is False
+
+
+def test_missing_gh_binary_returns_typed_unverified_json(monkeypatch):
+    import subprocess
+    import v17.release_truth_preflight as preflight
+    def missing(*_args, **_kwargs):
+        raise FileNotFoundError("gh not installed")
+    monkeypatch.setattr(subprocess, "run", missing)
+    try:
+        preflight.gh_json("/repos/example/example/pulls/1")
+    except RuntimeError as exc:
+        assert str(exc) == "GITHUB_READ_FAILED: /repos/example/example/pulls/1"
+    else:
+        raise AssertionError("missing gh did not fail closed")
+
+
 def test_real_required_review_not_dismissed():
     r = report(rules=[rule(count=1)])
     assert r["ruleset_human_review"] == "REQUIRED"
