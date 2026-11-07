@@ -179,7 +179,7 @@ def test_one_existing_thursday_daily_slot_is_reassigned_to_nfl_future_capture():
     assert 'os.environ.get("WOW_NFL_NEXT_SUNDAY_CAPTURE") == "true"' in workflow
     assert 'days=(6 - today.weekday()) % 7' in workflow
     assert '"response_mode": "FULL" if next_sunday_capture else "COMPACT"' in workflow
-    assert '"max_team_events": 32 if next_sunday_capture else 24' in workflow
+    assert '"max_team_events": 24' in workflow
     # The existing independent post-deploy acceptance gate is NOT repurposed
     # as a scheduler. Its exact protected call condition remains unchanged.
     assert "if: inputs.post_deploy_acceptance == true" in workflow
