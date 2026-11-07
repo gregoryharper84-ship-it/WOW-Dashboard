@@ -532,6 +532,19 @@ def test_january_bowl_uses_requested_cfbd_season_not_calendar_year():
     assert result["can_execute"] is False
 
 
+def test_season_below_cfbd_client_bound_is_invalid():
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="1999-10-10T18:00:00Z",
+            home_team="Georgia",
+            away_team="Texas",
+            season=1999,
+            client=_Client([]),
+        )
+    assert exc.value.code == "NCAAF_SEASON_INVALID"
+    assert exc.value.detail == "1999"
+
+
 def test_season_on_the_source_row_must_match_the_requested_season():
     client = _Client([{
         "id": "401762002",

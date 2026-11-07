@@ -191,7 +191,9 @@ def resolve_ncaaf_current_event_identity(
     # January bowls belong to the prior CFBD season. Callers that already know
     # the official season must not be matched against the kickoff calendar year.
     query_year = event_time.year if season is None else int(season)
-    if query_year < 1869 or query_year > 2100:
+    # CFBDClient.games rejects years below 2000 with ValueError. Keep that
+    # bound here so callers receive NCAAF_SEASON_INVALID instead of an escape.
+    if query_year < 2000 or query_year > 2100:
         raise NCAAFEventIdentityError("NCAAF_SEASON_INVALID", str(query_year))
     rows = _season_rows(query_year, client=client)
 

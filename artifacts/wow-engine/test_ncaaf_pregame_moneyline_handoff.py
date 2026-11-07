@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
 
 from ncaaf_cfbd_hydrator import SourceSnapshot
 from ncaaf_event_feature_handoff import NCAAFEventFeatureHandoffUnavailable
@@ -84,6 +87,43 @@ def _snapshot(endpoint, *, retrieved, blockers=()):
     )
 
 
+def test_resolved_cfbd_start_already_underway_is_not_pregame():
+    requested = NOW + timedelta(minutes=20)
+    official = NOW - timedelta(minutes=10)
+    client = _Client([{
+        "id": "401800001",
+        "season": 2026,
+        "startDate": official.isoformat(),
+        "homeTeam": "Texas",
+        "awayTeam": "Oklahoma",
+    }])
+    result = establish_official_event_identity(
+        event_start_time=requested.isoformat(),
+        home_team="Texas Longhorns",
+        away_team="Oklahoma Sooners",
+        season=2026,
+        now=NOW.isoformat(),
+        client=client,
+    )
+    assert result["code"] == "NCAAF_EVENT_NOT_PREGAME"
+    assert result["detail"]["detail"] == "RESOLVED_START_NOT_PREGAME"
+    assert result["model_invoked"] is False
+    assert result["can_execute"] is False
+
+
+def test_season_below_cfbd_bound_is_a_hold_not_an_escape():
+    result = establish_official_event_identity(
+        event_start_time="1999-10-10T18:00:00Z",
+        home_team="Georgia",
+        away_team="Texas",
+        season=1999,
+        now="1999-10-10T12:00:00Z",
+        client=_Client([]),
+    )
+    assert result["code"] == "NCAAF_SEASON_INVALID"
+    assert result["can_execute"] is False
+
+
 def test_official_identity_rejects_post_start_and_id_mismatch():
     client = _Client([{
         "id": "401800001",
@@ -162,6 +202,12 @@ def test_future_evidence_and_team_mismatch_fail_closed():
     mismatched[0] = {**mismatched[0], "team": "Texas Tech"}
     identity = verify_pregame_inputs(_event(), mismatched, now=NOW)
     assert identity["code"] == "NCAAF_EVENT_IDENTITY_MISMATCH"
+
+
+def test_evidence_iterator_is_visible_to_both_checks():
+    result = verify_pregame_inputs(_event(), iter(_complete()), now=NOW)
+    assert result["status"] == "PREGAME_INPUTS_VERIFIED"
+    assert result["feature_row"]["market_home_no_vig"] is None
 
 
 def test_verified_inputs_keep_market_features_empty():
@@ -243,6 +289,66 @@ def test_empty_corpus_uses_training_data_empty():
     )
     assert result["native_code"] == "NCAAF_TRAINING_DATA_EMPTY"
     assert result["code"] == "MODEL_INPUTS_INSUFFICIENT"
+
+
+def test_trainer_preconditions_are_not_scorer_failures():
+    calls = []
+
+    def train(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("trainer must not run")
+
+    missing_sha = evaluate_fitted_challenger(
+        object(),
+        training_code_sha="short",
+        materialize=lambda _db: {"complete_feature_rows": 300, "games_seen": 300, "evidence_rows_seen": 1},
+        train=train,
+    )
+    assert calls == []
+    assert missing_sha["code"] == "NCAAF_TRAINING_CODE_SHA_REQUIRED"
+    assert missing_sha["model_invoked"] is False
+
+    class PersistError(Exception):
+        code = "NCAAF_CANDIDATE_ARTIFACT_PERSIST_FAILED"
+
+    persisted = evaluate_fitted_challenger(
+        object(),
+        training_code_sha="abcdef1234567890",
+        materialize=lambda _db: {"complete_feature_rows": 300, "games_seen": 300, "evidence_rows_seen": 1},
+        train=lambda *_args, **_kwargs: (_ for _ in ()).throw(PersistError("write")),
+    )
+    assert persisted["code"] == "NCAAF_CANDIDATE_ARTIFACT_PERSIST_FAILED"
+    assert persisted["model_invoked"] is False
+    assert persisted["code"] != "MODEL_SCORER_FAILED"
+
+
+@pytest.mark.parametrize("flag", ["probability_publishable", "can_execute", "promoted"])
+def test_challenger_authority_flags_stay_held(flag):
+    payload = {
+        "model_artifact_version": "NCAAF_LOGISTIC_V1-test",
+        "calibrator_version": "NCAAF_CAL-test",
+        "training_rows": 300,
+        "lifecycle_state": "CHAMPION" if flag == "promoted" else "CANDIDATE",
+        "calibration_health_status": "BLOCKED",
+        "probability_publishable": False,
+        "promoted": False,
+        "can_execute": False,
+    }
+    if flag == "promoted":
+        payload["promoted"] = True
+        payload["lifecycle_state"] = "CHAMPION"
+    else:
+        payload[flag] = True
+    result = evaluate_fitted_challenger(
+        object(),
+        training_code_sha="abcdef1234567890",
+        materialize=lambda _db: {"complete_feature_rows": 300, "games_seen": 300, "evidence_rows_seen": 1},
+        train=lambda *_args, **_kwargs: payload,
+    )
+    assert result["code"] == "NCAAF_CANDIDATE_AUTHORITY_INVALID"
+    assert result["model_invoked"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
 
 
 def test_sufficient_rows_fit_a_held_candidate_only():
@@ -327,10 +433,11 @@ def test_missing_snapshot_is_inputs_insufficient_and_success_stays_unpublished()
             "status": "SCORED_HELD",
             "raw_home_probability": 0.61,
             "raw_away_probability": 0.39,
-            "calibrated_lower_bound": None,
-            "probability_publishable": False,
-            "rank_eligible": False,
-            "can_execute": False,
+            "calibrated_lower_bound": 0.55,
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "promoted": True,
+            "can_execute": True,
             "blockers": ["NCAAF_CERTIFIED_DYNAMIC_BOUND_NOT_AVAILABLE"],
         }
 
@@ -346,8 +453,17 @@ def test_missing_snapshot_is_inputs_insufficient_and_success_stays_unpublished()
     assert receipt["status"] == "SCORED_HELD"
     assert receipt["raw_home_probability"] == 0.61
     assert receipt["calibrated_lower_bound"] is None
+    assert receipt["uncertified_lower_bound_contained"] is True
+    assert "NCAAF_UNCERTIFIED_LOWER_BOUND_CONTAINED" in receipt["blockers"]
+    assert 0.55 not in receipt.values()
     assert receipt["probability_publishable"] is False
     assert receipt["rank_eligible"] is False
     assert receipt["promoted"] is False
     assert receipt["can_execute"] is False
     assert "NCAAF_CERTIFIED_DYNAMIC_BOUND_NOT_AVAILABLE" in receipt["blockers"]
+
+
+def test_handoff_does_not_register_the_team_event_bridge():
+    source = Path(__file__).with_name("ncaaf_pregame_moneyline_handoff.py").read_text()
+    assert "register_team_event_bridge" not in source
+    assert "TEAM_EVENT_BRIDGES" not in source

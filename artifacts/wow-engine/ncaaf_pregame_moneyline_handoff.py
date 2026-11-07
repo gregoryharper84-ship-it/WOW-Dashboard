@@ -229,6 +229,8 @@ def establish_official_event_identity(
     except NCAAFEventIdentityError as exc:
         return _hold_from_code(exc.code, detail=exc.detail)
     resolved_kickoff = _aware(resolved["event_start_time"])
+    if resolved_kickoff <= current_time:
+        return _hold_from_code("NCAAF_EVENT_NOT_PREGAME", detail="RESOLVED_START_NOT_PREGAME")
     if int(resolved["season"]) != int(season):
         return _hold_from_code("NCAAF_SEASON_MISMATCH", detail=str(resolved["season"]))
     requested_id = str(official_event_id or "").strip()
@@ -264,11 +266,12 @@ def verify_pregame_inputs(
     pregame evidence rows can become model inputs, and a post-start or
     mismatched row fails the event instead of being dropped.
     """
-    contradiction = _reject_contradictory_evidence(event, evidence_rows, now=now)
+    rows = list(evidence_rows)
+    contradiction = _reject_contradictory_evidence(event, rows, now=now)
     if contradiction:
         return _hold_from_code(contradiction)
     try:
-        compiled = compile_official_event_feature_row(event, evidence_rows)
+        compiled = compile_official_event_feature_row(event, rows)
     except NCAAFFeatureCompileBlocked as exc:
         return _hold_from_code(exc.code, detail=",".join(exc.blockers))
     if compiled.get("market_home_no_vig") is not None or compiled.get("market_away_no_vig") is not None:
@@ -340,6 +343,12 @@ def evaluate_fitted_challenger(
                 "challenger_fit": False,
             },
         )
+    if not isinstance(training_code_sha, str) or len(training_code_sha.strip()) < 7:
+        return _hold_from_code(
+            "NCAAF_TRAINING_CODE_SHA_REQUIRED",
+            model_invoked=False,
+            extra={"feature_compilation": report, "challenger_fit": False},
+        )
     if train is None:
         from ncaaf_candidate_training_runner import train_and_persist_candidate
 
@@ -349,17 +358,21 @@ def evaluate_fitted_challenger(
     except Exception as exc:
         native = str(getattr(exc, "code", None) or type(exc).__name__)
         if native in {"NCAAF_TRAINING_DATA_EMPTY", "NCAAF_COMPLETE_TRAINING_ROWS_INSUFFICIENT"}:
-            return _hold_from_code(
-                "MODEL_INPUTS_INSUFFICIENT",
-                detail=native,
-                model_invoked=False,
-                extra={"feature_compilation": report},
-            )
+            failure = "MODEL_INPUTS_INSUFFICIENT"
+        elif native in {
+            "NCAAF_TRAINING_CODE_SHA_REQUIRED",
+            "NCAAF_TRAINING_DATA_READ_FAILED",
+            "NCAAF_TRAINING_DATA_INVALID",
+            "NCAAF_CANDIDATE_ARTIFACT_PERSIST_FAILED",
+        }:
+            failure = native
+        else:
+            failure = "NCAAF_CANDIDATE_TRAINING_FAILED"
         return _hold_from_code(
-            "MODEL_SCORER_FAILED",
+            failure,
             detail=native,
-            model_invoked=True,
-            extra={"feature_compilation": report},
+            model_invoked=False,
+            extra={"feature_compilation": report, "challenger_fit": False},
         )
     if trained.get("probability_publishable") is not False or trained.get("can_execute") is not False:
         return _hold_from_code("NCAAF_CANDIDATE_AUTHORITY_INVALID", detail="publish_or_execute")
@@ -423,12 +436,20 @@ def score_pregame_moneyline(
         return _hold_from_code(exc.code, detail=str(exc), model_invoked=invoked)
     except Exception as exc:
         return _hold_from_code("MODEL_SCORER_FAILED", detail=type(exc).__name__, model_invoked=True)
+    supplied_bound = scored.get("calibrated_lower_bound")
     scored["probability_publishable"] = False
     scored["rank_eligible"] = False
     scored["can_execute"] = False
     scored["promoted"] = False
+    scored["automatic_certification"] = False
     scored["automatic_promotion"] = False
-    scored.setdefault("calibrated_lower_bound", None)
+    # A callback lower bound is not a certified dynamic bound. Drop the value.
+    scored["calibrated_lower_bound"] = None
+    scored["uncertified_lower_bound_contained"] = supplied_bound is not None
+    if supplied_bound is not None:
+        blockers = list(scored.get("blockers") or [])
+        blockers.append("NCAAF_UNCERTIFIED_LOWER_BOUND_CONTAINED")
+        scored["blockers"] = list(dict.fromkeys(str(item) for item in blockers))
     scored.setdefault("code", "NCAAF_PREGAME_MONEYLINE_SCORED_HELD")
     scored.setdefault("native_code", "NCAAF_CERTIFIED_DYNAMIC_BOUND_NOT_AVAILABLE")
     return scored
