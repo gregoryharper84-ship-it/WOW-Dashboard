@@ -30,7 +30,8 @@ def board():
     return {
         "schema": SCHEMA, "source_provider": PROVIDER,
         "directional_candidates": result["directional_candidates"],
-        "can_execute": False,
+        "source_coverage_complete_for_requested_sport": True,
+        "blockers": [], "can_execute": False,
     }
 
 
@@ -186,3 +187,89 @@ def test_no_source_upgrades_from_user_supplied_boolean_flags():
     assert {x["typed_blocker"] for x in out["blocked_rows"]} == {
         "PROP_HANDOFF_RESEARCH_AUTHORITY_CONFLICT"
     }
+
+
+def test_official_opponent_conflict_is_held_but_trusted_alias_is_accepted():
+    def conflicting(row):
+        return {**official(row), "opponent": "PHI"}
+    result = compile_authorized_prop_handoff(
+        board(), now=NOW, source_use_permitted=True,
+        official_resolver=conflicting, exact_offer_refresh=fresh_offer,
+    )
+    assert not result["scoring_input_proposals"]
+    assert {r["typed_blocker"] for r in result["blocked_rows"]} == {"PROP_IDENTITY_OPPONENT_CONFLICT"}
+
+    def aliased(row):
+        return {**official(row), "opponent": "New York Knicks", "opponent_aliases": ["NYK"]}
+    accepted = compile_authorized_prop_handoff(
+        board(), now=NOW, source_use_permitted=True,
+        official_resolver=aliased, exact_offer_refresh=fresh_offer,
+    )
+    assert accepted["status"] == "INPUT_PROPOSALS_READY"
+    assert len(accepted["scoring_input_proposals"]) == 2
+
+
+def test_incomplete_discovery_retains_partial_proposals_and_original_blockers():
+    receipt = board()
+    receipt["source_coverage_complete_for_requested_sport"] = False
+    receipt["blockers"] = ["PROP_FEED_CREDIT_BUDGET_EXHAUSTED", "PROP_FEED_CURSOR_CYCLE"]
+    out = compile_authorized_prop_handoff(
+        receipt, now=NOW, source_use_permitted=True,
+        official_resolver=official, exact_offer_refresh=fresh_offer,
+    )
+    assert len(out["scoring_input_proposals"]) == 2
+    assert out["status"] == "BLOCKED_OR_EMPTY"
+    assert out["source_coverage_complete_for_requested_sport"] is False
+    assert out["source_discovery_blockers"] == receipt["blockers"]
+    assert out["probability_publishable"] is False and out["can_execute"] is False
+
+
+def test_partial_game_and_tiered_offers_cannot_be_submitted_as_full_game_standard():
+    for field, value in (("period_display", "First quarter"), ("offer_type", "goblin")):
+        receipt = board()
+        for row in receipt["directional_candidates"]:
+            row[field] = value
+        def resolver(row):
+            resolved = official(row)
+            if field == "period_display":
+                resolved["period"] = value
+            return resolved
+        def refresh(row):
+            fresh = fresh_offer(row)
+            if field == "offer_type":
+                fresh["offer_type"] = value
+            return fresh
+        out = compile_authorized_prop_handoff(
+            receipt, now=NOW, source_use_permitted=True,
+            official_resolver=resolver, exact_offer_refresh=refresh,
+        )
+        assert out["scoring_input_proposals"] == [], field
+        assert {r["typed_blocker"] for r in out["blocked_rows"]} == {
+            "PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED"
+        }, field
+
+
+def test_bad_discovery_blocker_contract_fails_closed():
+    receipt = board()
+    receipt["blockers"] = [{"untrusted": "object"}]
+    import pytest
+    with pytest.raises(ValueError, match="PROP_HANDOFF_DISCOVERY_BLOCKERS_INVALID"):
+        compile_authorized_prop_handoff(
+            receipt, now=NOW, source_use_permitted=True,
+            official_resolver=official, exact_offer_refresh=fresh_offer,
+        )
+
+
+def test_official_resolver_and_offer_refresh_exceptions_remain_typed():
+    def failed(*args):
+        raise RuntimeError("provider offline")
+    for resolver, refresh, expected in (
+        (failed, fresh_offer, "PROP_IDENTITY_OFFICIAL_RESOLVER_FAILED"),
+        (official, failed, "PROP_OFFER_REFRESH_FAILED"),
+    ):
+        out = compile_authorized_prop_handoff(
+            board(), now=NOW, source_use_permitted=True,
+            official_resolver=resolver, exact_offer_refresh=refresh,
+        )
+        assert out["scoring_input_proposals"] == []
+        assert {r["typed_blocker"] for r in out["blocked_rows"]} == {expected}
