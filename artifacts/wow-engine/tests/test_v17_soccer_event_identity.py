@@ -290,3 +290,22 @@ def test_soccer_scoreboard_mixed_bad_member_holds_full_page(monkeypatch, invalid
     with pytest.raises(identity.SoccerEventIdentityError) as exc:
         identity._fetch_scoreboard("eng.1", "20261107")
     assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("missing_id", [None, ""])
+def test_soccer_scoreboard_missing_fixture_id_holds_mixed_page(monkeypatch, missing_id):
+    malformed = scoreboard_event()
+    if missing_id is None:
+        del malformed["id"]
+    else:
+        malformed["id"] = missing_id
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200,
+            json=lambda: {"events": [malformed, scoreboard_event("401800080")]},
+        ),
+    )
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        identity._fetch_scoreboard("eng.1", "20261107")
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
