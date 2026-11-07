@@ -368,6 +368,21 @@ def test_deep_research_pregame_source_flags_trigger_recheck_not_pick_flip():
     assert out["can_execute"] is False
 
 
+def test_deep_research_accepts_canonical_acquisition_snapshot_fallback():
+    row = _row("evt-acquisition-snapshot", "NE", "BUF", 0.72)
+    row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T19:00:00+00:00"
+    context = _research_context(row)
+    snapshot = row.pop("source_snapshot_id")
+    row["candidate_envelope"].pop("source_snapshot_id")
+    row["canonical_acquisition"] = {"source_snapshot_id": snapshot}
+    row["pickem_deep_research_context"] = context
+    out = select_pickem_game(row)
+    assert out["deep_research_audit"]["status"] == "SOURCE_CONTEXT_RECORDED_UNCERTIFIED"
+    assert out["pool_pick"] == "BUF"
+    assert out["selected_probability"] == 0.72
+    assert out["can_execute"] is False
+
+
 def test_post_kickoff_or_wrong_snapshot_research_is_never_accepted():
     row = _row("evt-postgame", "NYJ", "CHI", 0.61)
     row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T19:00:00+00:00"
