@@ -1,3 +1,10 @@
+"""NCAAF migration contracts plus the isolated PostgreSQL proof.
+
+A local run without a disposable database may skip DB integration tests. Such
+skips are NOT acceptance: only the dedicated PR migration proof job, with a
+bound disposable DSN and zero skipped JUnit tests, establishes DB behavior.
+"""
+
 import os
 import shutil
 import subprocess
@@ -71,6 +78,11 @@ _CI_TEST_DSN = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_
 
 def _psql_base(database: str) -> list[str]:
     ci_dsn = os.environ.get("WOW_NCAAF_MIGRATION_PROOF_DSN")
+    # The dedicated CI proof must not fall back to the local sudo/skip lane.
+    # Other CI shards are not DB-proof jobs and may run without PostgreSQL.
+    if (ci_dsn is None and os.environ.get("CI", "").lower() == "true"
+            and os.environ.get("GITHUB_JOB") == "migration-geometry-db-proof"):
+        pytest.fail("NCAAF_MIGRATION_PROOF_DSN_REQUIRED_IN_PROOF_JOB", pytrace=False)
     if ci_dsn is not None:
         if (
             ci_dsn != _CI_TEST_DSN
@@ -85,6 +97,21 @@ def _psql_base(database: str) -> list[str]:
             "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/" + database,
         ]
     return ["sudo", "-n", "-u", "postgres", "psql", "-d", database]
+
+
+def test_missing_proof_dsn_fails_closed_in_dedicated_ci_job(monkeypatch):
+    monkeypatch.delenv("WOW_NCAAF_MIGRATION_PROOF_DSN", raising=False)
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_JOB", "migration-geometry-db-proof")
+    with pytest.raises(pytest.fail.Exception, match="NCAAF_MIGRATION_PROOF_DSN_REQUIRED_IN_PROOF_JOB"):
+        _psql_base("postgres")
+
+
+def test_unrelated_ci_shard_does_not_claim_db_proof(monkeypatch):
+    monkeypatch.delenv("WOW_NCAAF_MIGRATION_PROOF_DSN", raising=False)
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_JOB", "verify")
+    assert _psql_base("postgres") == ["sudo", "-n", "-u", "postgres", "psql", "-d", "postgres"]
 
 
 def _psql_available() -> bool:
