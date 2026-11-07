@@ -236,6 +236,20 @@ def test_registry_loader_rejects_promoted_or_wrong_schema_rows():
     assert "NHL_FITTED_ARTIFACT_FEATURE_SCHEMA_MISMATCH" in caught.value.blockers
 
 
+def test_registry_loader_skips_malformed_newest_candidate_and_falls_back():
+    malformed = _candidate_row()
+    malformed["training_rows"] = "3676"
+    malformed["created_at"] = "2026-11-18T00:00:00+00:00"
+    valid = _candidate_row()
+    valid["created_at"] = "2026-11-17T00:00:00+00:00"
+
+    candidate = nhl.load_nhl_fitted_candidate(
+        _DB(candidates=[malformed, valid]), as_of_utc=NOW
+    )
+
+    assert candidate.model_version == "NHL_RS_LOGISTIC_V1-5528ab8891df79fd-372bef19a04a"
+
+
 def test_identity_calibrator_scores_deterministically_and_withholds_bounds():
     candidate = nhl.load_nhl_fitted_candidate(_DB(), as_of_utc=NOW)
     reconstruction = _reconstruction()
@@ -571,6 +585,31 @@ def test_batch_boundary_resolves_full_club_names_to_the_selected_side():
     assert "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID" in held["blockers"]
 
 
+def test_current_event_rejects_mismatched_or_malformed_season_evidence():
+    for bad_season in ("20252026", "not-a-season", 20252026, True):
+        with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+            nhl.score_current_nhl_event(
+                _request(season=bad_season), db=_DB(), now_utc=NOW
+            )
+        assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
+        assert "NHL_SEASON_IDENTITY_INVALID" in caught.value.blockers
+
+
+@pytest.mark.parametrize("bad_season", ["20252026", "not-a-season"])
+def test_reconstruction_rejects_mismatched_or_malformed_season_evidence(bad_season):
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.reconstruct_nhl_pregame_features(
+            _DB().table(nhl.SOURCE_TABLE).execute().data,
+            official_event_id="2026029001",
+            event_start_time=START.isoformat(),
+            home_team="BOS",
+            away_team="NYR",
+            season=bad_season,
+        )
+    assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_SEASON_IDENTITY_INVALID" in caught.value.blockers
+
+
 def test_bridge_preserves_fitted_specialist_typed_blockers(monkeypatch):
     from fastapi import HTTPException
 
@@ -609,6 +648,55 @@ def test_bridge_preserves_fitted_specialist_typed_blockers(monkeypatch):
     assert caught.value.status_code == 422
     assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
     assert "NHL_PRIOR_GAMES_INSUFFICIENT" in caught.value.detail["blockers"]
+    assert caught.value.detail["can_execute"] is False
+
+
+def test_registered_nhl_scorer_translates_native_typed_failure(monkeypatch):
+    from fastapi import HTTPException
+
+    import v17.team_event_bridge_runtime as bridge_runtime
+    import v17.team_event_request_runtime as host_routing
+
+    monkeypatch.setattr(
+        host_routing,
+        "resolve_host_route",
+        lambda *_args: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
+            candidate_family="NHL",
+        ),
+    )
+
+    def _blocked(_req, **_kwargs):
+        raise nhl.NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_GOALIE_STATUS_STALE"]
+        )
+
+    monkeypatch.setattr(nhl, "score_current_nhl_event", _blocked)
+    previous = bridge_runtime.TEAM_EVENT_BRIDGES.pop("NHL", None)
+    try:
+        bridge_runtime.register_team_event_bridge(
+            "NHL",
+            adapter_name="TEST_NHL_ADAPTER",
+            controlling_specialist="TEST_NHL_SPECIALIST",
+            scorer=nhl.score_nhl_fitted_team_event,
+            required_inputs=("official_event_id",),
+        )
+        request = _request()
+        request.requester_host_identity = "test-requester-host"
+        request.candidate_family = "NHL"
+        with pytest.raises(HTTPException) as caught:
+            bridge_runtime.score_registered_team_event_request(
+                request, event_api=object()
+            )
+    finally:
+        bridge_runtime.TEAM_EVENT_BRIDGES.pop("NHL", None)
+        if previous is not None:
+            bridge_runtime.TEAM_EVENT_BRIDGES["NHL"] = previous
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_GOALIE_STATUS_STALE" in caught.value.detail["blockers"]
+    assert caught.value.detail["model_invoked"] is True
     assert caught.value.detail["can_execute"] is False
 
 

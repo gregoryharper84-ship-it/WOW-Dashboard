@@ -286,13 +286,16 @@ def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
         metrics.get("calibration_n"),
         metrics.get("test_n"),
     )
-    if (
-        not all(type(value) is int and value > 0 for value in stored_counts)
-        or not all(type(value) is int and value > 0 for value in fitted_counts)
-        or stored_counts != fitted_counts
-    ):
+    counts_valid = (
+        all(type(value) is int and value > 0 for value in stored_counts)
+        and all(type(value) is int and value > 0 for value in fitted_counts)
+        and stored_counts == fitted_counts
+    )
+    if not counts_valid:
         blockers.append("NHL_FITTED_ARTIFACT_PARTITION_MISMATCH")
-    if (
+    # Never index or add unvalidated registry values. A malformed newest
+    # candidate must yield a typed blocker and allow an older valid fallback.
+    if not counts_valid or (
         type(artifact.get("train_end_index")) is not int
         or artifact.get("train_end_index") != stored_counts[0]
         or type(artifact.get("calibration_end_index")) is not int
@@ -548,6 +551,28 @@ def _season_id(start_year: int) -> int:
     return int(f"{int(start_year)}{int(start_year) + 1}")
 
 
+def _supplied_season(value: Any) -> int | None:
+    """Return an exact numeric season id, or None for malformed evidence."""
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _validated_target_season(value: Any, event_start: datetime) -> int:
+    """Require caller season evidence to match the event-derived season."""
+    target = _season_id(_season_start_year(event_start))
+    if value in (None, ""):
+        return target
+    if _supplied_season(value) != target:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SEASON_IDENTITY_INVALID"],
+        )
+    return target
+
+
 def reconstruct_nhl_pregame_features(
     events: Iterable[Mapping[str, Any]],
     *,
@@ -576,8 +601,8 @@ def reconstruct_nhl_pregame_features(
         target_start = datetime.now(timezone.utc)
     if not home or not away or home == away:
         blockers.append("NHL_TEAM_IDENTITY_UNVERIFIED")
-    expected_season = int(season) if season not in (None, "") else _season_id(_season_start_year(target_start))
-    if str(expected_season) != str(season) and season not in (None, ""):
+    expected_season = _season_id(_season_start_year(target_start))
+    if season not in (None, "") and _supplied_season(season) != expected_season:
         blockers.append("NHL_SEASON_IDENTITY_INVALID")
     # Source-row persistence does not retain the raw neutral-site flag. Only an
     # explicit boolean may define the target feature; it is never inferred.
@@ -928,6 +953,7 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         raise NHLFittedSpecialistError(
             "MODEL_INPUTS_INSUFFICIENT", ["NHL_NEUTRAL_SITE_UNVERIFIED"]
         )
+    season = _validated_target_season(evidence.get("season"), target_start)
     provider = db if db is not None else _REGISTRY_DB_PROVIDER
     if provider is None:
         raise NHLFittedSpecialistError(
@@ -935,10 +961,6 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         )
     client = provider() if callable(provider) else provider
     candidate = load_nhl_fitted_candidate(client, as_of_utc=now)
-    season_value = evidence.get("season")
-    season = int(season_value) if season_value not in (None, "") else _season_id(
-        _season_start_year(target_start)
-    )
     events = load_nhl_season_events(client, season=season)
     reconstruction = reconstruct_nhl_pregame_features(
         events,
@@ -957,9 +979,36 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
     )
 
 
+def _fitted_http_failure(req: Any, exc: NHLFittedSpecialistError):
+    """Translate a native fitted-specialist hold into the shared bridge shape."""
+    from v17.team_event_bridge_runtime import _model_failure_detail
+
+    status_code = {
+        "MODEL_UNAVAILABLE": 503,
+        "MODEL_INPUTS_INSUFFICIENT": 422,
+        "MODEL_OUTPUT_INVALID": 500,
+    }.get(exc.code, 500)
+    blocker = exc.blockers[0] if exc.blockers else "NHL_FITTED_SPECIALIST_BLOCKED"
+    return _model_failure_detail(
+        req,
+        code=exc.code,
+        blocker=blocker,
+        status_code=status_code,
+        extra={
+            "blockers": list(exc.blockers),
+            "model_invoked": exc.code != "MODEL_UNAVAILABLE",
+        },
+    )
+
+
 def score_nhl_fitted_team_event(req: Any, **_kwargs: Any) -> dict[str, Any]:
     """Bridge-compatible scorer; extra bridge kwargs are intentionally ignored."""
-    return score_current_nhl_event(req)
+    try:
+        return score_current_nhl_event(req)
+    except NHLFittedSpecialistError as exc:
+        # The registered bridge calls this function directly rather than going
+        # through _score_one, so preserve the native typed blocker here.
+        raise _fitted_http_failure(req, exc) from exc
 
 
 __all__ = [

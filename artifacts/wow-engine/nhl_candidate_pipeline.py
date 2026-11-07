@@ -9,7 +9,7 @@ until independent source review and prospective evidence are complete.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -82,6 +82,9 @@ class NHLGame:
     game_state: str = "FINAL"
     historical_reconstruction: bool = True
     can_execute: bool = False
+    # Preserve the raw upstream value so re-ingest can reject coerced evidence.
+    # It is metadata, not part of the game's identity or hash.
+    neutral_site_evidence: Any = field(default=None, compare=False)
 
 
 @dataclass
@@ -173,6 +176,7 @@ def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str
         home_score=home_score,
         away_score=away_score,
         neutral_site=bool(raw.get("neutralSite", False)),
+        neutral_site_evidence=raw.get("neutralSite"),
         game_type=game_type,
         game_state=game_state,
         source_uri=source_uri,

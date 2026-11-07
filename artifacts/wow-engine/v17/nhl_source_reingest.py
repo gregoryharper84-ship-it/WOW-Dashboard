@@ -108,6 +108,11 @@ def build_reingest_rows(
             raise NHLSourceReingestError("NHL_SOURCE_GAME_STATE_UNVERIFIED", game.game_id)
         if type(game.neutral_site) is not bool:
             raise NHLSourceReingestError("NHL_SOURCE_NEUTRAL_SITE_UNVERIFIED", game.game_id)
+        # normalize_game historically coerced ``neutralSite`` with bool(), so a
+        # missing key, string, or numeric value became a persisted boolean. The
+        # raw evidence must be an explicit boolean before this lane may write it.
+        if type(getattr(game, "neutral_site_evidence", None)) is not bool:
+            raise NHLSourceReingestError("NHL_SOURCE_NEUTRAL_SITE_UNVERIFIED", game.game_id)
         raw_commitment = str(game.source_payload_sha256 or "").strip().lower()
         if len(raw_commitment) != 64 or any(
             char not in "0123456789abcdef" for char in raw_commitment
@@ -184,7 +189,11 @@ def run_nhl_source_reingest(
         effective_season = int(season) if season is not None else default_season_id()
         start_year = _season_start_year(effective_season)
     except (TypeError, ValueError, NHLSourceReingestError) as exc:
-        return _blocked("NHL_SEASON_ID_INVALID", stage="CONFIGURATION", detail=str(exc))
+        return _blocked(
+            "NHL_SEASON_ID_INVALID",
+            stage="CONFIGURATION",
+            detail={"error_type": type(exc).__name__},
+        )
 
     sha = str(ingest_code_sha or os.getenv("RENDER_GIT_COMMIT") or "").strip()
     if len(sha) < 7:
@@ -197,7 +206,11 @@ def run_nhl_source_reingest(
             session=session or requests,
         )
     except NHLCandidateError as exc:
-        return _blocked(exc.code, stage="SOURCE_ACQUISITION", detail=str(exc))
+        return _blocked(
+            exc.code,
+            stage="SOURCE_ACQUISITION",
+            detail={"error_type": type(exc).__name__},
+        )
     except Exception as exc:  # noqa: BLE001 - acquisition is a typed boundary
         return _blocked(
             "NHL_SOURCE_ACQUISITION_FAILED",
@@ -222,7 +235,11 @@ def run_nhl_source_reingest(
     try:
         rows = build_reingest_rows(selected, ingest_code_sha=sha)
     except NHLSourceReingestError as exc:
-        return _blocked(exc.code, stage="PROVENANCE", detail=exc.detail)
+        return _blocked(
+            exc.code,
+            stage="PROVENANCE",
+            detail={"error_type": type(exc).__name__},
+        )
 
     expected_events = {row["official_event_id"] for row in rows}
     if dry_run:
@@ -242,7 +259,11 @@ def run_nhl_source_reingest(
     try:
         persistence = persist_source_events_bulk(db, rows)
     except D1RegistryError as exc:
-        return _blocked(exc.code, stage="SOURCE_PERSISTENCE", detail=str(exc))
+        return _blocked(
+            exc.code,
+            stage="SOURCE_PERSISTENCE",
+            detail={"error_type": type(exc).__name__},
+        )
     except Exception as exc:  # noqa: BLE001 - persistence is a typed boundary
         return _blocked(
             "NHL_SOURCE_PERSISTENCE_FAILED",

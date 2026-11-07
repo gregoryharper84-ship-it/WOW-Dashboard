@@ -522,6 +522,27 @@ def test_reingest_rejects_invalid_neutral_site_evidence():
     assert caught.value.code == "NHL_SOURCE_NEUTRAL_SITE_UNVERIFIED"
 
 
+@pytest.mark.parametrize("raw_neutral", ["__missing__", None, "false", 0, 1])
+def test_reingest_rejects_coerced_raw_neutral_site_evidence(raw_neutral):
+    raw = json.loads(json.dumps(_fixture()["games"][0]))
+    if raw_neutral == "__missing__":
+        raw.pop("neutralSite", None)
+    else:
+        raw["neutralSite"] = raw_neutral
+    game = pipeline.normalize_game(
+        raw,
+        source_uri=(
+            "https://api-web.nhle.com/v1/club-schedule-season/"
+            f"{raw['homeTeam']['abbrev']}/{SEASON}"
+        ),
+        retrieved_at="2026-11-07T00:00:00+00:00",
+    )
+    assert game is not None
+    with pytest.raises(reingest.NHLSourceReingestError) as caught:
+        reingest.build_reingest_rows([game], ingest_code_sha=INGEST_SHA)
+    assert caught.value.code == "NHL_SOURCE_NEUTRAL_SITE_UNVERIFIED"
+
+
 def test_reingest_retry_recovers_from_a_partial_write(monkeypatch):
     import v17.d1_bulk_candidate_registry as bulk
 
