@@ -40,3 +40,25 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm run typecheck
+      - name: Rebuild cross-platform optional lockfile in isolated scratch directory
+        run: |
+          mkdir -p /tmp/wow-trigger-lock-rebuild
+          cp package.json /tmp/wow-trigger-lock-rebuild/package.json
+          cd /tmp/wow-trigger-lock-rebuild
+          npm install --package-lock-only --include=dev --include=optional --ignore-scripts --no-audit --no-fund
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const p = JSON.parse(fs.readFileSync("package-lock.json", "utf8")).packages;
+          const required = [
+            "node_modules/@depot/cli-darwin-arm64",
+            "node_modules/@depot/cli-darwin-x64",
+            "node_modules/@esbuild/darwin-arm64",
+            "node_modules/@rollup/rollup-darwin-arm64",
+            "node_modules/fsevents"
+          ];
+          console.log("CROSS_PLATFORM_LOCK_REBUILD", JSON.stringify({entries: Object.keys(p).length, missing: required.filter(x => !p[x])}));
+          const b64 = fs.readFileSync("package-lock.json").toString("base64");
+          for (let i=0;i<b64.length;i+=1024) console.log("CROSS_PLATFORM_LOCK_CHUNK " + (i/1024) + " " + b64.slice(i, i+1024));
+          console.log("CROSS_PLATFORM_LOCK_END " + b64.length);
+          if (required.some(x => !p[x])) process.exit(1);
+          NODE
