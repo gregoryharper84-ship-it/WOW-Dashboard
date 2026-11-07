@@ -83,6 +83,16 @@ def _validate_official(row: Mapping[str, Any], resolved: Any, now: datetime) -> 
     if (_text(row.get("team_unverified"))
             and _text(resolved["team"]).casefold() != _text(row.get("team_unverified")).casefold()):
         return "PROP_IDENTITY_TEAM_CONFLICT"
+    board_opponent = _text(row.get("opponent_unverified")).casefold()
+    if board_opponent:
+        known_opponents = {_text(resolved.get("opponent")).casefold()}
+        # Alias proof can only come from the trusted official resolver, never
+        # from the third-party offer row that is being reconciled.
+        aliases = resolved.get("opponent_aliases", ())
+        if isinstance(aliases, (list, tuple)) and all(isinstance(a, str) for a in aliases):
+            known_opponents.update(_text(a).casefold() for a in aliases)
+        if board_opponent not in known_opponents:
+            return "PROP_IDENTITY_OPPONENT_CONFLICT"
     event_start = _utc(resolved["event_start_time"])
     board_start = _utc(row.get("event_start_time"))
     checked = _utc(resolved["verified_at"])
@@ -143,6 +153,12 @@ def compile_authorized_prop_handoff(
     candidates = discovery.get("directional_candidates")
     if not isinstance(candidates, list) or len(candidates) > MAX_RECEIVED_CANDIDATES:
         raise ValueError("PROP_HANDOFF_CANDIDATES_INVALID")
+    source_blockers = discovery.get("blockers", [])
+    if not isinstance(source_blockers, list) or len(source_blockers) > 100 or any(
+        not isinstance(b, str) or not b.strip() or len(b) > 160 for b in source_blockers
+    ):
+        raise ValueError("PROP_HANDOFF_DISCOVERY_BLOCKERS_INVALID")
+    source_coverage_complete = discovery.get("source_coverage_complete_for_requested_sport") is True
 
     ready: list[dict[str, Any]] = []
     proposal_provenance: list[dict[str, Any]] = []
@@ -185,6 +201,13 @@ def compile_authorized_prop_handoff(
         reason = _validate_offer(row, latest, current)
         if reason:
             blocked.append(_hold(row, reason))
+            continue
+        # The canonical score Action does not yet express partial-game
+        # periods or tier-specific payouts. Never project those markets onto
+        # a standard full-game stat merely because the stat name matches.
+        if (_text(row.get("period_display")).casefold() != "full game"
+                or _text(row.get("offer_type")).casefold() != "standard"):
+            blocked.append(_hold(row, "PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED"))
             continue
         stat = _text(official["stat_type"]).upper()
         if not stat or not _line(row.get("exact_display_line")):
@@ -243,11 +266,15 @@ def compile_authorized_prop_handoff(
     batches = [ready[i:i + ACTION_BATCH_SIZE] for i in range(0, len(ready), ACTION_BATCH_SIZE)]
     return {
         "schema": HANDOFF_SCHEMA,
-        "status": "INPUT_PROPOSALS_READY" if ready and reconciled else "BLOCKED_OR_EMPTY",
+        "status": ("INPUT_PROPOSALS_READY" if ready and reconciled
+                   and source_coverage_complete and not source_blockers
+                   else "BLOCKED_OR_EMPTY"),
         "source_provenance": PROVIDER, "received_directional_candidates": len(candidates),
         "scoring_input_proposals": ready, "batches_for_future_action": batches,
         "proposal_provenance": proposal_provenance,
         "blocked_rows": blocked, "duplicate_rows": duplicate,
+        "source_discovery_blockers": list(source_blockers),
+        "source_coverage_complete_for_requested_sport": source_coverage_complete,
         "reconciliation_valid": reconciled,
         "source_full_board_coverage_established": False,
         "scoring_attempted": False, "action_receipts": [],
