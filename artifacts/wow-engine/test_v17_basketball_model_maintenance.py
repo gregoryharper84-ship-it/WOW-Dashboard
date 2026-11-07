@@ -810,8 +810,9 @@ def test_verified_nba_season_readback_enforces_exact_label_and_canonical_source(
             self.filters = []
             self.limit_count = None
             self.page = None
-        def select(self, fields):
+        def select(self, fields, *, count=None):
             assert fields == "game_date,season,game_id,source_provider"
+            assert count in (None, "exact")
             return self
         def eq(self, name, value):
             self.filters.append((name, value))
@@ -836,7 +837,10 @@ def test_verified_nba_season_readback_enforces_exact_label_and_canonical_source(
         def execute(self):
             assert ("settled", True) in self.filters
             if self.page is not None:
-                return SimpleNamespace(data=self.rows[self.page[0]:self.page[1] + 1])
+                return SimpleNamespace(
+                    data=self.rows[self.page[0]:self.page[1] + 1],
+                    count=len(self.rows),
+                )
             if self.limit_count == 1:
                 return SimpleNamespace(data=self.rows[:1])
             assert ("game_date", "2026-11-05") in self.filters
@@ -1010,7 +1014,8 @@ def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
     class Query:
         def __init__(self, db):
             self.db, self.lim, self.page = db, None, None
-        def select(self, _fields):
+        def select(self, _fields, *, count=None):
+            assert count in (None, "exact")
             return self
         def eq(self, *_args):
             return self
@@ -1029,15 +1034,21 @@ def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
         def execute(self):
             if self.page is not None:
                 a, b = self.page
-                return SimpleNamespace(data=self.db.rows[a:b + 1])
+                selected = self.db.rows[a:b + 1]
+                if self.db.cap is not None:
+                    selected = selected[:self.db.cap]
+                return SimpleNamespace(
+                    data=selected,
+                    count=len(self.db.rows) if self.db.has_exact_count else None,
+                )
             if self.lim == 1:
                 return SimpleNamespace(data=self.db.rows[:1])
             return SimpleNamespace(data=[
                 r for r in self.db.rows if r["game_date"] == "2026-11-05"
             ][:101])
     class DB:
-        def __init__(self, rows):
-            self.rows = rows
+        def __init__(self, rows, *, cap=None, has_exact_count=True):
+            self.rows, self.cap, self.has_exact_count = rows, cap, has_exact_count
         def table(self, _name):
             return Query(self)
     clock = datetime(2026, 11, 6, tzinfo=timezone.utc)
@@ -1048,6 +1059,13 @@ def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
         for i in range(135)
     ]
     assert maintenance._nba_verified_current_season_date(DB(rows), clock) == "2026-11-05"
+    # An API cap of 50 rows must not hide the other 85 settled games.
+    for limited in (DB(rows, cap=50), DB(rows, has_exact_count=False)):
+        with pytest.raises(
+            maintenance.BasketballHydrationError,
+            match="NBA_CURRENT_SEASON_READBACK_INCOMPLETE",
+        ):
+            maintenance._nba_verified_current_season_date(limited, clock)
     corrupted = [{**r} for r in rows]
     corrupted[110]["season"] = 2026
     with pytest.raises(maintenance.BasketballHydrationError, match="NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID"):
