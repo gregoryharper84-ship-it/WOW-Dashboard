@@ -86,12 +86,12 @@ def test_invalid_caller_identity_cannot_trigger_fetch(override, code):
     def forbidden(*_args, **_kwargs):
         calls.append(True)
         raise AssertionError("network should not be touched")
+    args = dict(official_event_id="espn-401909999", home_team_id="espn-1",
+                away_team_id="espn-2", event_start_time_utc=TIP,
+                http_get=forbidden, clock=lambda: BEFORE)
+    args.update(override)
     with pytest.raises(NBAShadowSourceError, match=code):
-        capture_nba_pregame_shadow(
-            official_event_id="espn-401909999", home_team_id="espn-1",
-            away_team_id="espn-2", event_start_time_utc=TIP,
-            http_get=forbidden, clock=lambda: BEFORE, **override
-        )
+        capture_nba_pregame_shadow(**args)
     assert not calls
 
 
@@ -104,8 +104,8 @@ def test_invalid_caller_identity_cannot_trigger_fetch(override, code):
 ])
 def test_conflicting_provider_data_fails_closed(mutation, code):
     payload = copy.deepcopy(_payload())
-    if mutation[3] in ("state", "completed"):
-        payload["header"]["competitions"][0]["status"]["type"][mutation[3]] = mutation[4]
+    if mutation[3] == "status":
+        payload["header"]["competitions"][0]["status"]["type"][mutation[4]] = mutation[5]
     elif mutation[3] == "competitors":
         payload["header"]["competitions"][0]["competitors"][mutation[4]]["team"]["id"] = mutation[5]
     else:
