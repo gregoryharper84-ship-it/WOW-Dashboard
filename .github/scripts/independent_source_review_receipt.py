@@ -1247,8 +1247,8 @@ def resolve_qa_review_policy(
     # not poison the unrelated protected-main commit via workflow_run. Only
     # this *read-only* Release admission caller may classify a verified
     # superseded target as neutral. The default remains strict/fail-closed.
-    # A foreign PR/repository, bad head identity, draft conversion or invalid
-    # policy is never a neutral shortcut.
+    # A foreign PR/repository, bad head identity, a draft at the same head or
+    # an invalid policy is never a neutral shortcut.
     if allow_superseded_target and isinstance(pr, Mapping):
         head = pr.get("head") if isinstance(pr.get("head"), Mapping) else {}
         base = pr.get("base") if isinstance(pr.get("base"), Mapping) else {}
@@ -1263,9 +1263,13 @@ def resolve_qa_review_policy(
             and isinstance(live_sha, str)
             and SHA.fullmatch(live_sha) is not None
         )
+        # An open PR (draft or ready) whose live head has moved off the head
+        # the QA policy was issued for is no longer the reviewed source. A
+        # draft at the *same* head stays strict (QA_POLICY_TARGET_NO_LONGER_CURRENT)
+        # so draft conversion alone can never neutralize a current target.
         superseded = (
             pr.get("state") == "closed"
-            or (pr.get("state") == "open" and pr.get("draft") is False
+            or (pr.get("state") == "open" and isinstance(pr.get("draft"), bool)
                 and not pr.get("merged_at") and live_sha != head_sha)
         )
         if same_origin and superseded:
