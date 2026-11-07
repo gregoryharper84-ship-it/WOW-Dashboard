@@ -276,3 +276,17 @@ def test_soccer_failure_codes_are_registered():
     assert not {code for code in fixed_codes if f"`{code}`" not in registry}
     assert "`SOCCER_OFFICIAL_SOURCE_HTTP_{status}`" in registry
 
+
+
+@pytest.mark.parametrize("invalid_member", [None, "bad-fixture", 17])
+def test_soccer_scoreboard_mixed_bad_member_holds_full_page(monkeypatch, invalid_member):
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200,
+            json=lambda: {"events": [invalid_member, scoreboard_event()]},
+        ),
+    )
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        identity._fetch_scoreboard("eng.1", "20261107")
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT"
