@@ -164,6 +164,10 @@ def _fetch_scoreboard(competition: str, date_key: str) -> list[Mapping[str, Any]
         # Reject the entire malformed snapshot rather than silently discard an
         # invalid member and promote an identity from an incomplete page.
         raise SoccerEventIdentityError("SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT")
+    if any(not str(event.get("id") or "").strip() for event in events):
+        # A fixture without an official ID may be the same game as another
+        # candidate. No identity may be promoted from that incomplete page.
+        raise SoccerEventIdentityError("SOCCER_OFFICIAL_SOURCE_SCHEMA_DRIFT")
     return list(events)
 
 
