@@ -8,6 +8,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `NCAAF_TRAINING_PAGINATION_INVALID` | NCAAF fitted candidate-training corpus read | Unsupported paging contract, missing/malformed primary-key identity or a duplicate primary key across stable PostgREST pages. Fail before any fitted artifact is trained/persisted; never promote or fill missing games with odds/heuristics. Recovery class: REPAIRABLE_CODE for broken query ordering; EVIDENCE_PENDING if authoritative source identities conflict. | No |
 | `NFL_FORWARD_PAGINATION_INVALID` | NFL prospective forward grading and calibration health | PostgREST page reads lacked stable primary-key order or contained missing/duplicate prediction, settled-game or existing-grade identities. Fail the entire shadow-grading run before appending misleading calibration results; not a fitted-model capability error. | No |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
