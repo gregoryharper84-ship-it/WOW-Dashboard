@@ -188,7 +188,10 @@ def normalize_game(
         return _drop("NHL_SOURCE_SCORE_INVALID", "score")
     try:
         start_utc = _aware(start)
-    except NHLCandidateError:
+    except (NHLCandidateError, ValueError):
+        # _aware raises NHLCandidateError for naive timestamps and ValueError
+        # for malformed ones; both are invalid start evidence. Non-strict mode
+        # drops the row, strict re-ingest fails closed as a typed block.
         return _drop("NHL_SOURCE_EVENT_TIME_INVALID", "startTimeUTC")
     try:
         home_score, away_score = int(hs), int(aws)

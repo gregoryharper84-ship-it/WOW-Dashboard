@@ -703,10 +703,93 @@ def test_registered_nhl_scorer_translates_native_typed_failure(monkeypatch):
 def test_nhl_bridge_registration_uses_the_fitted_server_scorer():
     from v17.multisport_team_event_bridges import (
         BRIDGE_SCORERS,
+        MODEL_SCORERS,
         SPORT_MODEL_INPUTS,
-        score_nhl_fitted_team_event,
+        score_nhl_team_event_request,
     )
+    from v17.nhl_fitted_specialist import score_nhl_fitted_team_event
 
-    assert BRIDGE_SCORERS["NHL"] is score_nhl_fitted_team_event
+    # The bridge entry point must be the governed request wrapper so NHL keeps
+    # route contract, Scout/Research barrier, terminal reduction and official
+    # publication guarding. The fitted specialist is the raw model scorer.
+    assert BRIDGE_SCORERS["NHL"] is score_nhl_team_event_request
+    assert MODEL_SCORERS["NHL"] is score_nhl_fitted_team_event
     assert "calibration_artifact" not in SPORT_MODEL_INPUTS["NHL"]
     assert "goalie_identity_snapshot_id" in SPORT_MODEL_INPUTS["NHL"]
+
+
+def test_registered_nhl_path_applies_reducer_and_publication_guard(monkeypatch):
+    import v17.multisport_team_event_bridges as bridges
+
+    called: dict[str, object] = {}
+
+    def _reduce(_req, package):
+        called["reduce"] = dict(package)
+        return {
+            "status": "HOLD",
+            "terminal_label": "MODEL_QUALIFIED_HOLD",
+            "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "global_terminal_reducer": bridges.GLOBAL_TERMINAL_REDUCER,
+            "blockers": ["TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"],
+            "can_execute": False,
+        }
+
+    def _publication(result):
+        called["publication"] = dict(result)
+        return {
+            "official_publication_allowed": False,
+            "blockers": ["OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
+        }
+
+    monkeypatch.setitem(
+        bridges.MODEL_SCORERS,
+        "NHL",
+        lambda _req: {
+            "fitted_registry_scoring": True,
+            "selected_participant": "BOS",
+            "raw_probability": 0.55,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+            "blockers": ["NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE"],
+        },
+    )
+    monkeypatch.setattr(
+        bridges,
+        "_route_contract",
+        lambda _req: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            candidate_family="NHL",
+        ),
+    )
+    monkeypatch.setattr(
+        bridges.base_runtime,
+        "_run_mandatory_scout_research",
+        lambda _req: {"status": "PASS"},
+    )
+    monkeypatch.setattr(bridges, "reduce_multisport_team_event", _reduce)
+    monkeypatch.setattr(
+        bridges, "evaluate_team_event_official_publication", _publication
+    )
+
+    request = SimpleNamespace(
+        sport="NHL",
+        league="NHL",
+        event_key="NHL:2026029001",
+        requester_host_identity="test-requester-host",
+        candidate_family="NHL",
+    )
+    result = bridges._score_one("NHL", request, event_api=None)
+
+    # A raw fitted package may never reach the caller without the shared
+    # terminal reducer and official-publication guard being applied.
+    assert "reduce" in called and "publication" in called
+    assert result["llp_governance"]["status"] == "HOLD"
+    assert result["official_publication_guard"]["official_publication_allowed"] is False
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
+    assert "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in result["blockers"]
+    assert "OFFICIAL_PUBLICATION_NOT_CERTIFIED" in result["blockers"]

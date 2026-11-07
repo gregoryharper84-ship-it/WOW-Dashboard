@@ -290,6 +290,53 @@ def test_reingest_dry_run_does_not_write():
     assert db.operations == []
 
 
+def test_reingest_treats_final_and_off_as_one_settled_identity():
+    fixture = _fixture()
+    db = _FakeDB()
+    first = _run(db)
+    assert first["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    rows = db.rows["wow_d1_source_events"]
+    assert len(rows) == 32
+    original_states = {
+        row["official_event_id"]: row["outcome_json"]["game_state"] for row in rows
+    }
+
+    # The official lifecycle can report the same completed game as FINAL and
+    # later as OFF. Both are settled, so a later re-ingest must not append a
+    # second provenance identity for the event nor rewrite the first row.
+    flipped = {"games": []}
+    for game in fixture["games"]:
+        copy = dict(game)
+        copy["gameState"] = "OFF" if game["gameState"] == "FINAL" else "FINAL"
+        flipped["games"].append(copy)
+
+    second = _run(db, session=_Session(_by_team(flipped)))
+    assert second["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    assert second["provenance_complete"] is True
+    assert len(db.rows["wow_d1_source_events"]) == 32
+    assert {
+        row["official_event_id"]: row["outcome_json"]["game_state"]
+        for row in db.rows["wow_d1_source_events"]
+    } == original_states
+
+
+def test_strict_normalization_rejects_malformed_start_time_as_typed_block():
+    raw = dict(_fixture()["games"][0])
+    raw["startTimeUTC"] = "not-a-date"
+    uri = f"https://api-web.nhle.com/v1/club-schedule-season/BOS/{SEASON}"
+    assert pipeline.normalize_game(
+        raw, source_uri=uri, retrieved_at="2026-11-07T00:00:00+00:00"
+    ) is None
+    with pytest.raises(pipeline.NHLCandidateError) as caught:
+        pipeline.normalize_game(
+            raw,
+            source_uri=uri,
+            retrieved_at="2026-11-07T00:00:00+00:00",
+            strict=True,
+        )
+    assert caught.value.code == "NHL_SOURCE_EVENT_TIME_INVALID"
+
+
 def test_reingest_blocks_when_the_official_source_has_no_settled_games():
     db = _FakeDB()
     result = _run(db, session=_Session({}))

@@ -468,7 +468,11 @@ score_mma_team_event_request = _make_scorer("MMA")
 
 BRIDGE_SCORERS: dict[str, Callable[..., dict[str, Any]]] = {
     "WNBA": score_wnba_team_event_request,
-    "NHL": score_nhl_fitted_team_event,
+    # NHL must dispatch through the same governed request wrapper as every other
+    # sport: _score_one applies the route contract, the mandatory Scout/Research
+    # barrier, reduce_multisport_team_event and the official-publication guard.
+    # The fitted specialist itself is the raw MODEL_SCORERS["NHL"] entry.
+    "NHL": score_nhl_team_event_request,
     "SOCCER": score_soccer_team_event_request,
     "TENNIS": score_tennis_team_event_request,
     "MMA": score_mma_team_event_request,

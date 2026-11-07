@@ -124,6 +124,10 @@ New module: `v17/nhl_source_reingest.py`; guarded route
   legacy raw hashes cannot collide with V2 provenance rows. An intentionally
   constructed exact-hash collision is never overwritten; it fails closed as
   `NHL_SOURCE_REINGEST_PROVENANCE_INCOMPLETE`.
+- Canonicalizes the settled state (`FINAL` and `OFF`) inside that envelope, so a
+  lifecycle transition from `FINAL` to `OFF` cannot append a second provenance
+  identity for one event. The raw reported state is still retained in
+  `outcome_json.game_state`.
 - Acquires and validates every game, including duplicate-club identity, before
   the first write. A source failure cannot leave a partial timeline. Database
   batching is not assumed atomic: a mid-batch failure returns a typed retryable
@@ -220,7 +224,7 @@ Typed holds preserved:
   tests/test_*team_event*.py tests/test_*candidate*.py \
   test_v17_nhl_model_maintenance.py test_v17_d1_candidate_registry.py \
   test_v17_model_source_entitlements.py
-639 passed  (29 files)
+654 passed  (29 files)
 ```
 
 The new suite proves: the real registry artifact checksum is reproduced; a
@@ -246,6 +250,16 @@ route rejects anonymous requests without touching the database. The persisted
 genuine timeline replays target `2026020257` (PIT 2 – BOS 6) with exact
 training-pipeline feature parity (15 home / 16 away prior games), then scores
 with the governed artifact while remaining non-publishable.
+
+Routing and input-boundary regressions prove: NHL dispatches through the shared
+governed request wrapper (`BRIDGE_SCORERS["NHL"]`), so the route contract, the
+mandatory Scout/Research barrier, `reduce_multisport_team_event` and the
+official-publication guard all run, while the fitted specialist remains the raw
+`MODEL_SCORERS["NHL"]` scorer. A malformed `startTimeUTC` is a typed
+`NHL_SOURCE_EVENT_TIME_INVALID` block under strict re-ingest acquisition and a
+dropped row on the non-strict training path. Re-ingesting the same settled game
+first as `FINAL` and then as `OFF` keeps exactly one provenance row and never
+rewrites the persisted evidence.
 
 ## 7. Acceptance status
 

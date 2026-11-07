@@ -19,6 +19,11 @@ from typing import Any
 
 SOURCE_PROVENANCE_VERSION = "NHL_SOURCE_PROVENANCE_V2"
 SOURCE_PAYLOAD_HASH_SCOPE = "PROVENANCE_ENVELOPE_V1"
+# The official lifecycle can report a completed game as FINAL and later as OFF.
+# Both mean settled, so the identity envelope canonicalizes them to one token;
+# the raw state remains in outcome_json for audit.
+SETTLED_GAME_STATES = frozenset({"FINAL", "OFF"})
+SETTLED_STATE_TOKEN = "SETTLED"
 
 
 def canonical_sha256(payload: Any) -> str:
@@ -42,6 +47,11 @@ def _canonical_start(value: Any) -> str:
     if parsed.utcoffset() is None:
         return token
     return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _canonical_game_state(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    return SETTLED_STATE_TOKEN if token in SETTLED_GAME_STATES else token
 
 
 def _canonical_season(value: Any) -> str:
@@ -75,7 +85,7 @@ def provenance_envelope_hash(
         "home_score": int(home_score),
         "away_score": int(away_score),
         "game_type": int(game_type),
-        "game_state": str(game_state or "").strip().upper(),
+        "game_state": _canonical_game_state(game_state),
         "neutral_site": bool(neutral_site),
         "provenance_version": str(provenance_version or "").strip(),
         "payload_hash_scope": SOURCE_PAYLOAD_HASH_SCOPE,
@@ -84,6 +94,8 @@ def provenance_envelope_hash(
 
 
 __all__ = [
+    "SETTLED_GAME_STATES",
+    "SETTLED_STATE_TOKEN",
     "SOURCE_PAYLOAD_HASH_SCOPE",
     "SOURCE_PROVENANCE_VERSION",
     "canonical_sha256",
