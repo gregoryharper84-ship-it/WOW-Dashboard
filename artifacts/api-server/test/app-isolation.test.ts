@@ -14,6 +14,14 @@ test("V17 server boots without legacy DB and API parsing failures stay typed JSO
   const base = `http://127.0.0.1:${port}/api`;
   const headers = { "X-Dashboard-Key": "isolated-dashboard-key" };
   try {
+    const root = await fetch(`http://127.0.0.1:${port}/`, { redirect: "manual" });
+    assert.equal(root.status, 302);
+    assert.equal(root.headers.get("location"), "/final-lock/");
+    const exactApiInvalid = await fetch(base, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{invalid-json",
+    });
+    assert.equal(exactApiInvalid.status, 400);
+    assert.equal((await exactApiInvalid.json()).code, "DASHBOARD_INPUT_INVALID");
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
     const legacy = await fetch(`${base}/props/providers`, { headers });
