@@ -28,6 +28,7 @@ def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="
         "home_score": home_score,
         "away_score": away_score,
         "status_type_completed": "True",
+        "season_type": "2",
         "status_type_name": "STATUS_FINAL",
         "status_type_state": "post",
         "status_type_description": "Final",
@@ -68,6 +69,40 @@ def test_normalize_sportsdataverse_game_creates_provenance_complete_settled_row(
     assert row["source_endpoint"].endswith("wnba_schedule_2026.csv")
     assert len(row["source_payload_sha256"]) == 64
     assert row["settled"] is True
+
+
+def test_nba_sdv_rejects_non_regular_finished_games_and_unknown_season_type():
+    """Completed playoff or exhibition games must never contaminate NBA training."""
+    for season_type in ("1", "3", "4", "5", "", None, "UNKNOWN"):
+        raw = _sportsdataverse_row()
+        raw["season_type"] = season_type
+        assert hydration.normalize_sportsdataverse_game(
+            raw, "NBA", "2026-11-07T13:00:00Z", source_release_year=2027,
+        ) is None
+    regular = _sportsdataverse_row()
+    assert hydration.normalize_sportsdataverse_game(
+        regular, "NBA", "2026-11-07T13:00:00Z", source_release_year=2027,
+    ) is not None
+
+
+def test_nba_sdv_missing_season_type_column_is_schema_drift(monkeypatch):
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda _source: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
+    )
+    class Response:
+        status_code = 200
+        text = ("game_id,game_date,home_id,away_id,home_score,away_score,"
+                "status_type_completed\n401,2026-10-22,10,20,99,88,True\n")
+    class Session:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+    try:
+        hydration.fetch_sportsdataverse_games("NBA", 2027, session=Session())
+        raise AssertionError("missing season_type must fail source schema validation")
+    except hydration.BasketballHydrationError as exc:
+        assert "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT:season_type" in str(exc)
 
 
 def test_fetch_sportsdataverse_fails_closed_when_source_registry_blocks(monkeypatch):
