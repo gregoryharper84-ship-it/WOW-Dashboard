@@ -1,19 +1,7 @@
-import { useState, useEffect } from "react";
-
-const STORAGE_KEY = "wow_api_key";
+import { useSyncExternalStore } from "react";
+import { getApiKey, setApiKey, subscribeApiKey } from "./api-key-store";
 
 export function useApiKey() {
-  const [apiKey, setApiKeyState] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEY) ?? "";
-  });
-
-  useEffect(() => {
-    if (apiKey) {
-      localStorage.setItem(STORAGE_KEY, apiKey);
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  }, [apiKey]);
-
-  return { apiKey, setApiKey: setApiKeyState };
+  const apiKey = useSyncExternalStore(subscribeApiKey, getApiKey, () => "");
+  return { apiKey, setApiKey };
 }

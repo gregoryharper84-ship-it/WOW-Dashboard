@@ -317,17 +317,99 @@ def calibration_health(
     }
 
 
-def _paginate(db: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
+# Each supported source needs a stable, unique database ordering key. PostgREST
+# ranges without an explicit order are not deterministic once the forward
+# cohort exceeds a page, which can silently change the grading denominator.
+_FORWARD_PAGE_KEYS = {
+    PREDICTION_TABLE: "event_prediction_id",
+    OUTCOME_TABLE: "game_id",
+    GRADE_TABLE: "grade_id",
+}
+
+
+# A broken/hostile PostgREST client could otherwise return endlessly full pages.
+# The production default allows 128,000 source rows, well above the normal NFL
+# cohort, but never loops without a finite bound.
+MAX_FORWARD_PAGES = 128
+
+
+def _paginate(
+    db: Any,
+    table: str,
+    columns: str,
+    *,
+    page_size: int = 1000,
+    max_pages: int = MAX_FORWARD_PAGES,
+) -> list[dict[str, Any]]:
+    """Read an entire supported source with deterministic ordered bounded pages.
+
+    Page sizes and limits must be exact positive Python integers (not bool,
+    float or string). An empty one-row probe after a full final page proves an
+    exact-length dataset; any extra row fails before grades/health are stored.
+    """
+    if (
+        table not in _FORWARD_PAGE_KEYS
+        or type(page_size) is not int or page_size <= 0
+        or type(max_pages) is not int or max_pages <= 0
+    ):
+        raise NFLForwardShadowError("NFL_FORWARD_PAGINATION_INVALID:TABLE_OR_PAGE_SIZE")
+    key = _FORWARD_PAGE_KEYS[table]
+    fields = [part.strip() for part in columns.split(",")]
+    # Projection names must be plain trusted identifiers. Reject malformed
+    # strings rather than composing accidental PostgREST expressions.
+    if not fields or any(not field.isidentifier() for field in fields):
+        raise NFLForwardShadowError("NFL_FORWARD_PAGINATION_INVALID:PROJECTION_INVALID")
+    if key not in fields:
+        fields.append(key)
+    projection = ",".join(dict.fromkeys(fields))
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     start = 0
-    while True:
-        result = db.table(table).select(columns).range(start, start + page_size - 1).execute()
+    for _ in range(max_pages):
+        result = (
+            db.table(table)
+            .select(projection)
+            .order(key)
+            .range(start, start + page_size - 1)
+            .execute()
+        )
         batch = list(result.data or [])
-        rows.extend(batch)
+        if len(batch) > page_size:
+            raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:PAGE_LENGTH_INVALID")
+        for row in batch:
+            if not isinstance(row, Mapping):
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
+            raw_id = row.get(key)
+            if raw_id is None or raw_id == "":
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
+            # PostgREST emits text/UUID primary keys as JSON strings. Do not
+            # stringify integers/bools: mixing ID types can change dedup.
+            if not isinstance(raw_id, str):
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_TYPE_INVALID")
+            if not raw_id.strip():
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
+            if raw_id in seen:
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_DUPLICATED")
+            seen.add(raw_id)
+            rows.append(dict(row))
         if len(batch) < page_size:
-            break
+            return rows
         start += page_size
-    return rows
+    # A full final page can be the exact dataset boundary. Probe ONE additional
+    # ordered primary-key row, without permitting another data page. This
+    # distinguishes an exact-size valid corpus from truncation, while retaining
+    # the hard query/row bound and a fail-closed response for over-limit sources.
+    probe = (
+        db.table(table)
+        .select(key)
+        .order(key)
+        .range(start, start)
+        .execute()
+    )
+    probe_rows = list(probe.data or [])
+    if len(probe_rows) == 0:
+        return rows
+    raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:PAGE_LIMIT_EXCEEDED")
 
 
 def load_prediction_rows(db: Any) -> list[dict[str, Any]]:
