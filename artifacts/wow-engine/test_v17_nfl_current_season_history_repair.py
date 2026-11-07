@@ -68,6 +68,7 @@ def _model_result():
         "calibration_version": "test",
         "calibration_training_n": 100,
         "uncertainty_method": "test",
+        "can_execute": False,
     }
 
 
