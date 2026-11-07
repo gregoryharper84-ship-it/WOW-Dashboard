@@ -25,6 +25,7 @@ from v17.llp_governed_package_scoring import (
     MODEL_INPUTS_INSUFFICIENT,
     MODEL_OUTPUT_INVALID,
     MODEL_SCORER_FAILED,
+    MODEL_UNAVAILABLE,
 )
 from v17.multisport_team_event_calibration import (
     CalibrationArtifactInvalid,
@@ -44,6 +45,10 @@ from v17.multisport_team_event_models import (
     ModelOutputInvalid,
     ModelScorerFailed,
 )
+from v17.nhl_fitted_specialist import (
+    NHLFittedSpecialistError,
+    score_nhl_fitted_team_event,
+)
 from v17.team_event_official_publication_guard import (
     evaluate_team_event_official_publication,
 )
@@ -53,14 +58,11 @@ _INSTALLED = False
 
 SPORT_MODEL_INPUTS: dict[str, tuple[str, ...]] = {
     "WNBA": ("home_win_pct", "away_win_pct", "calibration_artifact"),
+    # The fitted NHL specialist resolves its artifact server-side. A caller
+    # must never supply coefficients or a calibrator.
     "NHL": (
-        "home_elo",
-        "away_elo",
-        "home_goalie_sv_pct",
-        "away_goalie_sv_pct",
-        "home_pp_pct",
-        "away_pk_pct",
-        "calibration_artifact",
+        "goalie_identity_snapshot_id",
+        "goalie_status_observed_at",
     ),
     "SOCCER": ("home_xg_per_game", "away_xg_per_game", "calibration_artifact"),
     # Tennis owns multiple alternative numeric paths; the scorer resolves them.
@@ -344,15 +346,40 @@ def _score_one(
     scorer = MODEL_SCORERS[sport]
     try:
         raw_package = scorer(req)
+    except NHLFittedSpecialistError as exc:
+        # Preserve the specialist's exact failure semantics. A missing artifact
+        # is MODEL_UNAVAILABLE, missing evidence is MODEL_INPUTS_INSUFFICIENT,
+        # and a malformed package is MODEL_OUTPUT_INVALID.
+        status_code = {
+            MODEL_UNAVAILABLE: 409,
+            MODEL_INPUTS_INSUFFICIENT: 422,
+            MODEL_OUTPUT_INVALID: 500,
+        }.get(exc.code, 503)
+        raise bridges._model_failure_detail(
+            req,
+            code=exc.code,
+            blocker=(exc.blockers[0] if exc.blockers else "NHL_FITTED_SPECIALIST_BLOCKED"),
+            status_code=status_code,
+            extra={
+                "blockers": list(exc.blockers),
+                "model_invoked": exc.code != MODEL_UNAVAILABLE,
+                "detail": exc.detail,
+            },
+        ) from exc
     except (ModelInputsInsufficient, ModelOutputInvalid, ModelScorerFailed) as exc:
         raise _typed_failure(req, exc) from exc
     except Exception as exc:  # noqa: BLE001 - convert unknown scorer faults to typed failure
         raise _typed_failure(req, ModelScorerFailed(type(exc).__name__)) from exc
 
-    try:
-        package = _apply_governed_calibration(req, raw_package)
-    except CalibrationArtifactInvalid as exc:
-        raise _typed_failure(req, exc, model_invoked=True) from exc
+    if raw_package.get("fitted_registry_scoring") is True:
+        # The fitted specialist already applied its own chronological
+        # calibrator. Re-applying a caller artifact would override the model.
+        package = dict(raw_package)
+    else:
+        try:
+            package = _apply_governed_calibration(req, raw_package)
+        except CalibrationArtifactInvalid as exc:
+            raise _typed_failure(req, exc, model_invoked=True) from exc
 
     governance = reduce_multisport_team_event(req, package)
     passed = (
@@ -382,7 +409,15 @@ def _score_one(
             if passed
             else "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
         ),
-        "blockers": list(governance.get("blockers") or []),
+        # Preserve every upstream typed blocker; governance may add, never erase.
+        "blockers": list(
+            dict.fromkeys(
+                [
+                    *list(package.get("blockers") or []),
+                    *list(governance.get("blockers") or []),
+                ]
+            )
+        ),
         "blend_publishable": False,
         "host_terminal_authority": False,
         "can_execute": False,
@@ -433,7 +468,7 @@ score_mma_team_event_request = _make_scorer("MMA")
 
 BRIDGE_SCORERS: dict[str, Callable[..., dict[str, Any]]] = {
     "WNBA": score_wnba_team_event_request,
-    "NHL": score_nhl_team_event_request,
+    "NHL": score_nhl_fitted_team_event,
     "SOCCER": score_soccer_team_event_request,
     "TENNIS": score_tennis_team_event_request,
     "MMA": score_mma_team_event_request,

@@ -20,6 +20,11 @@ import requests
 
 from v17.binary_candidate_lifecycle import BinaryCandidate, BinaryTrainingRow, train_binary_candidate
 from v17.model_source_entitlements import source_readiness
+from v17.nhl_provenance import (
+    SOURCE_PAYLOAD_HASH_SCOPE,
+    SOURCE_PROVENANCE_VERSION,
+    provenance_envelope_hash,
+)
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -74,6 +79,7 @@ class NHLGame:
     source_retrieved_at: str
     source_payload_sha256: str
     game_type: int = 2
+    game_state: str = "FINAL"
     historical_reconstruction: bool = True
     can_execute: bool = False
 
@@ -131,9 +137,11 @@ def teams_for_start_year(start_year: int) -> tuple[str, ...]:
 
 
 def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str) -> NHLGame | None:
-    if int(raw.get("gameType") or 0) != 2:
+    game_type = int(raw.get("gameType") or 0)
+    game_state = str(raw.get("gameState") or "").upper()
+    if game_type != 2:
         return None
-    if str(raw.get("gameState") or "").upper() not in {"FINAL", "OFF"}:
+    if game_state not in {"FINAL", "OFF"}:
         return None
     home = raw.get("homeTeam")
     away = raw.get("awayTeam")
@@ -165,6 +173,8 @@ def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str
         home_score=home_score,
         away_score=away_score,
         neutral_site=bool(raw.get("neutralSite", False)),
+        game_type=game_type,
+        game_state=game_state,
         source_uri=source_uri,
         source_retrieved_at=retrieved_at,
         source_payload_sha256=_hash_payload(raw),
@@ -499,7 +509,10 @@ __all__ = [
     "NHLCandidateError",
     "NHLGame",
     "SOURCE_ID",
+    "SOURCE_PAYLOAD_HASH_SCOPE",
+    "SOURCE_PROVENANCE_VERSION",
     "TEAM_ABBREVIATIONS",
+    "provenance_envelope_hash",
     "build_candidate",
     "candidate_record",
     "fetch_historical_games",

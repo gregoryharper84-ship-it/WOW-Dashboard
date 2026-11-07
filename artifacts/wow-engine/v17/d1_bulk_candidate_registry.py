@@ -15,6 +15,7 @@ from v17.d1_candidate_registry import (
     SOURCE_TABLE,
     TRAINING_TABLE,
     persist_candidate,
+    source_outcome_json,
 )
 
 CAN_EXECUTE = False
@@ -42,11 +43,7 @@ def _source_row(raw: Mapping[str, Any]) -> dict[str, Any]:
         "event_start_time": raw.get("event_start_time"),
         "home_participant": raw.get("home_team") or raw.get("home_participant"),
         "away_participant": raw.get("away_team") or raw.get("away_participant"),
-        "outcome_json": {
-            "home_score": raw.get("home_score"),
-            "away_score": raw.get("away_score"),
-            "positive_outcome": raw.get("positive_outcome"),
-        },
+        "outcome_json": source_outcome_json(raw),
         "source_provider": str(raw.get("source_provider") or "").strip(),
         "source_uri": raw.get("source_uri"),
         "source_retrieved_at": raw.get("source_retrieved_at"),
@@ -102,6 +99,22 @@ def _upsert_batches(db: Any, table: str, rows: list[dict[str, Any]], *, on_confl
     return written
 
 
+def persist_source_events_bulk(db: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append-only source-event persistence shared by re-ingest and maintenance."""
+    sources = [_source_row(row) for row in rows]
+    written = _upsert_batches(
+        db,
+        SOURCE_TABLE,
+        sources,
+        on_conflict="sport,official_event_id,source_payload_sha256",
+    )
+    return {
+        "status": "D1_SOURCE_EVENTS_PERSISTED",
+        "source_events": {"attempted": len(sources), "written_or_existing": written},
+        "can_execute": False,
+    }
+
+
 def persist_candidate_package_bulk(db: Any, package: Mapping[str, Any]) -> dict[str, Any]:
     if package.get("can_execute") is not False or package.get("probability_publishable") is not False:
         raise D1RegistryError("D1_PACKAGE_GOVERNANCE_INVALID", "package must be inert")
@@ -141,4 +154,5 @@ __all__ = [
     "CAN_EXECUTE",
     "DEFAULT_BATCH_SIZE",
     "persist_candidate_package_bulk",
+    "persist_source_events_bulk",
 ]

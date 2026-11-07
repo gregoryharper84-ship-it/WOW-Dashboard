@@ -18,6 +18,7 @@ from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
 from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 from v17.interactive_latency_telemetry import annotate_request, stage_timer
+from v17.nhl_fitted_specialist import install_nhl_fitted_registry_provider
 from v17.team_event_probability_preservation import score_team_event_request as score_v17_team_event_request
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
@@ -499,20 +500,37 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
     # Generic calibrated_* fields are home-oriented in the multisport package
     # (see v17.multisport_team_event_models._base_package). Resolve the selected
     # side explicitly so an away selection can never publish the home number.
-    home_team = str(row.home_team or "").strip()
-    away_team = str(row.away_team or "").strip()
+    # Prefer the specialist's canonical event participants, then fall back to
+    # the request identity. NHL aliases are resolved to official club
+    # abbreviations so a full club name and its abbreviation are one identity.
+    home_team = str(scored.get("home_team") or row.home_team or "").strip()
+    away_team = str(scored.get("away_team") or row.away_team or "").strip()
+    sport = str(row.sport or "").strip().upper()
+
+    def _participant_keys(value: str) -> set[str]:
+        text = str(value or "").strip()
+        keys = {text.casefold()} if text else set()
+        if sport == "NHL" and text:
+            from v17.nhl_event_identity import team_abbreviation
+            abbreviation = team_abbreviation(text)
+            if abbreviation:
+                keys.add(str(abbreviation).casefold())
+        return {key for key in keys if key}
+
     # Only the two exact identified participants may inherit a side-specific
     # winner package. Draw is a separate three-way outcome and cannot borrow
     # the home-oriented generic probability triple.
-    if not home_team or not away_team or home_team.casefold() == away_team.casefold():
+    home_keys = _participant_keys(home_team)
+    away_keys = _participant_keys(away_team)
+    selected_keys = _participant_keys(selected)
+    if not home_keys or not away_keys or home_keys & away_keys:
         return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_OPPONENT_IDENTITY_INVALID", scored)
-    selected_identity = selected.casefold()
-    if selected_identity not in (home_team.casefold(), away_team.casefold()):
+    if selected_keys.isdisjoint(home_keys | away_keys):
         return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID", scored)
+    is_away = selected_keys.isdisjoint(home_keys) and not selected_keys.isdisjoint(away_keys)
     probability_key, lower_key, upper_key = (
         "calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound")
-    if (away_team and selected.casefold() == away_team.casefold()
-            and selected.casefold() != home_team.casefold()):
+    if is_away:
         probability_key, lower_key, upper_key = (
             "calibrated_away_probability",
             "calibrated_away_lower_bound",
@@ -561,6 +579,10 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
     install_nfl_model_startup(app, db_client_fn=db_client_fn)
+    # The fitted NHL specialist resolves its exact governed artifact from the
+    # shared candidate registry. A request may never supply coefficients or a
+    # calibrator, so the trusted db client is bound once at startup.
+    install_nhl_fitted_registry_provider(db_client_fn)
     if os.getenv("WOW_V17_ACTIVE", "0") == "1":
         install_nfl_team_event_publication(v17_team_event_base)
         install_basketball_model_maintenance_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
