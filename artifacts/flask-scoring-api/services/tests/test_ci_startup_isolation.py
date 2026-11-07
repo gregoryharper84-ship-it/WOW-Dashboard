@@ -41,3 +41,47 @@ with patch('threading.Thread.start', lambda thread: started.append(thread.name))
         env=env, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_session_schema_startup_has_connect_and_ddl_deadlines(monkeypatch):
+    """A stalled session-ledger DDL must not wait indefinitely for a PG lock."""
+    from gate_engine import pg_session_ledger
+    from types import SimpleNamespace
+
+    observed = []
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql):
+            observed.append(sql)
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            observed.append("COMMIT")
+
+    def connect(dsn, **kwargs):
+        assert dsn == "postgresql://fake/schema"
+        assert kwargs["connect_timeout"] == 5
+        return FakeConnection()
+
+    monkeypatch.setitem(sys.modules, "psycopg2", SimpleNamespace(connect=connect))
+    pg_session_ledger.ensure_table_exists("postgresql://fake/schema")
+    assert observed == [
+        "SET LOCAL lock_timeout = '3000ms'",
+        "SET LOCAL statement_timeout = '10000ms'",
+        pg_session_ledger._DDL,
+        "COMMIT",
+    ]
