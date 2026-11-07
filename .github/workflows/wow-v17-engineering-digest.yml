@@ -99,8 +99,12 @@ jobs:
               add | [.[] | select((.name == "WOW Independent QA exact-head" and .app.id == 5245832)
                          or (.name == "WOW Release Authority exact-head" and .app.id == 5245853))]
               | group_by(.name) | map(max_by(.id))
-              | map(select(.conclusion == "failure"))
-              | sort_by(.id) | last // {} | .output.summary // ""
+              | map(select(.conclusion == "failure" or .conclusion == "cancelled"
+                          or .conclusion == "timed_out" or .conclusion == "action_required"
+                          or .conclusion == "stale"))
+              | sort_by(.id) | last // {}
+              | if (.output.summary // "") != "" then .output.summary
+                else (.conclusion // "" | ascii_upcase) end
             ' <<<"$checks")
 
             if [ -n "$summary" ]; then
