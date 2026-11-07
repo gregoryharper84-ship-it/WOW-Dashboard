@@ -4,7 +4,10 @@ on:
   schedule:
     - cron: "0 3 * * *"
     - cron: "0 11 * * *"
-    - cron: "0 17 * * *"
+    # Preserve exactly four Daily invocations per day. Reuse one Thursday
+    # slot to capture next Sunday's genuine prospective NFL model rows.
+    - cron: "0 17 * * 0,1,2,3,5,6"
+    - cron: "0 17 * * 4"
     - cron: "0 23 * * *"
   workflow_dispatch:
   workflow_call:
@@ -67,6 +70,9 @@ jobs:
       WOW_USER_TIMEZONE: America/Chicago
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      # Only the Thursday 17 UTC scheduled invocation gets the next-Sunday
+      # prospective cohort. Workflow dispatch/post-deploy still score today.
+      WOW_NFL_NEXT_SUNDAY_CAPTURE: ${{ github.event_name == 'schedule' && github.event.schedule == '0 17 * * 4' && 'true' || 'false' }}
     steps:
       - name: Assert non-execution governance and OIDC context
         shell: bash
@@ -86,7 +92,7 @@ jobs:
           import urllib.error
           import urllib.parse
           import urllib.request
-          from datetime import datetime
+          from datetime import datetime, timedelta, timezone
           from zoneinfo import ZoneInfo
 
           def fresh_oidc_token():
@@ -100,14 +106,23 @@ jobs:
               with urllib.request.urlopen(oidc_request, timeout=20) as response:
                   return json.load(response)["value"]
 
-          slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+          now_utc = datetime.now(timezone.utc)
+          today = now_utc.astimezone(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date()
+          next_sunday_capture = (
+              os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+              and os.environ.get("WOW_NFL_NEXT_SUNDAY_CAPTURE") == "true"
+          )
+          slate_date = (
+              (today + timedelta(days=(6 - today.weekday()) % 7)).isoformat()
+              if next_sunday_capture else today.isoformat()
+          )
           payload = {
               "requested_slate_date": slate_date,
               "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
               "lanes": ["MONEYLINE"],
               "max_props": 0,
               "max_team_events": 24,
-              "response_mode": "COMPACT",
+              "response_mode": "FULL" if next_sunday_capture else "COMPACT",
           }
           body = json.dumps(payload).encode("utf-8")
           endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/daily-snapshot"
@@ -156,7 +171,7 @@ jobs:
               raise AssertionError("DAILY_SNAPSHOT_ROW_RECONCILIATION_FAILED")
 
           lane = (result.get("lane_reconciliation") or {}).get("MONEYLINE") or {}
-          if lane.get("requested_row_limit") != 24:
+          if lane.get("requested_row_limit") != payload["max_team_events"]:
               raise AssertionError("DAILY_SNAPSHOT_FULL_SLATE_LIMIT_NOT_APPLIED")
 
           cross_sport = result.get("cross_sport_discovery_audit")
@@ -167,9 +182,48 @@ jobs:
               raise AssertionError("DAILY_SNAPSHOT_CROSS_SPORT_RECONCILIATION_FAILED")
 
           rows = result.get("rows") or []
+          future_nfl_predictions = {}
+          if next_sunday_capture:
+              receipt_checked_at_utc = datetime.now(timezone.utc)
+              # Count only genuine, persisted model receipts from one future
+              # canonical event each. A discovery-only or model-unavailable
+              # board is NOT progress toward the 100 forward grades.
+              for row in rows:
+                  if not isinstance(row, dict) or row.get("lane") != "MONEYLINE":
+                      continue
+                  identity = row.get("identity") or {}
+                  if not isinstance(identity, dict) or str(identity.get("sport") or "").upper() != "NFL":
+                      continue
+                  if row.get("can_execute") is not False:
+                      raise AssertionError("NFL_FUTURE_CAPTURE_EXECUTION_INVARIANT")
+                  event_id = identity.get("official_event_id")
+                  event_at = identity.get("commence_time_utc")
+                  try:
+                      event_time = datetime.fromisoformat(str(event_at).replace("Z", "+00:00"))
+                  except (TypeError, ValueError):
+                      raise AssertionError("NFL_FUTURE_PREGAME_IDENTITY_INVALID")
+                  if (not isinstance(event_id, str) or not event_id.strip()
+                      or event_time.utcoffset() is None or event_time <= receipt_checked_at_utc
+                      or event_time.astimezone(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat() != slate_date):
+                      raise AssertionError("NFL_FUTURE_PREGAME_IDENTITY_INVALID")
+                  detail = (row.get("result") or {}).get("detail") or {}
+                  if not isinstance(detail, dict):
+                      continue
+                  prediction_id = detail.get("prediction_id") or detail.get("event_prediction_id")
+                  model_version = detail.get("model_version")
+                  if isinstance(prediction_id, str) and prediction_id.strip() and isinstance(model_version, str) and model_version.strip():
+                      if event_id in future_nfl_predictions:
+                          raise AssertionError("NFL_FUTURE_DUPLICATE_EVENT_ID")
+                      future_nfl_predictions[event_id] = prediction_id
+              if len(future_nfl_predictions) < 5:
+                  raise AssertionError("NFL_FUTURE_PROSPECTIVE_CAPTURE_INSUFFICIENT")
+
           summary = {
               "run_id": result.get("run_id"),
               "run_status": result.get("run_status"),
+              "capture_mode": "NFL_NEXT_SUNDAY" if next_sunday_capture else "TODAY",
+              "nfl_future_prediction_receipts": len(future_nfl_predictions),
+              "model_terminal_certification": "NOT_PROVEN_BY_PROSPECTIVE_CAPTURE",
               "requested_slate_date": result.get("requested_slate_date"),
               "moneyline_rows": len([row for row in rows if row.get("lane") == "MONEYLINE"]),
               "rows_completed": reconciliation.get("rows_completed"),
