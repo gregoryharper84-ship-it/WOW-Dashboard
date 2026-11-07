@@ -69,6 +69,37 @@ class AmbiguousWrite(DispatchError):
     pass
 
 
+def _read_retry_delay(error: HTTPError) -> float | None:
+    """Honor explicit rate-limit waits within the existing five-second budget.
+
+    A permission-denied 403 is never retryable. Long or malformed hints return
+    the native error for a later scheduled pass, rather than retrying early.
+    """
+    headers = error.headers or {}
+    try:
+        if error.code in {403, 429}:
+            delays = []
+            if headers.get("Retry-After") is not None:
+                delay = int(headers["Retry-After"])
+                if delay < 0:
+                    return None
+                delays.append(delay)
+            if headers.get("X-RateLimit-Remaining") == "0":
+                delays.append(max(0, int(headers["X-RateLimit-Reset"]) - time.time()))
+            if not delays:
+                return None
+            delay = max(delays)
+        elif error.code in RETRYABLE_STATUSES:
+            delay = int(headers.get("Retry-After", "1"))
+            if delay < 0:
+                return None
+        else:
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return max(1, delay) if delay <= 5 else None
+
+
 class GitHub:
     def __init__(self, token: str):
         if not token:
@@ -97,10 +128,11 @@ class GitHub:
                     parsed = json.loads(payload) if payload else None
                     return response.status, parsed
             except HTTPError as exc:
-                if method == "GET" and exc.code in RETRYABLE_STATUSES and attempt + 1 < MAX_RETRIES:
-                    delay = min(5, max(1, int(exc.headers.get("Retry-After", "1"))))
-                    time.sleep(delay)
-                    continue
+                if method == "GET" and attempt + 1 < MAX_RETRIES:
+                    delay = _read_retry_delay(exc)
+                    if delay is not None:
+                        time.sleep(delay)
+                        continue
                 return exc.code, None
             except (TimeoutError, URLError, OSError, json.JSONDecodeError) as exc:
                 if method == "GET" and attempt + 1 < MAX_RETRIES:
