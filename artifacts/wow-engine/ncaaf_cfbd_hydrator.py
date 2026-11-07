@@ -254,27 +254,132 @@ def profile_cfbd_player_stats(snapshots: Iterable[SourceSnapshot]) -> dict[str, 
     }
 
 
+_SNAPSHOT_TABLE = "wow_ncaaf_source_snapshots"
+_SNAPSHOT_IDENTITY = ("provider", "endpoint", "season", "week", "payload_sha256")
+_SNAPSHOT_IMMUTABLE_FIELDS = (
+    "provider",
+    "endpoint",
+    "season",
+    "week",
+    "payload_sha256",
+    "response_row_count",
+    "acquisition_status",
+    "blocker_codes",
+    "can_execute",
+)
+
+
+def _snapshot_row(snapshot: SourceSnapshot) -> dict[str, Any]:
+    row = asdict(snapshot)
+    if row.get("can_execute") is not False:
+        raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_EXECUTION_FLAG_INVALID")
+    if not str(row.get("payload_sha256") or "").strip():
+        raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_HASH_MISSING")
+    return row
+
+
+def _identity_value(row: Mapping[str, Any], field: str) -> Any:
+    value = row.get(field)
+    if field == "week":
+        return None if value is None else int(value)
+    if field == "season" or field == "response_row_count":
+        return int(value)
+    if field == "blocker_codes":
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_IMMUTABLE_CONFLICT")
+        return [str(item) for item in value]
+    if field == "can_execute":
+        return value is True
+    return value
+
+
+def _same_snapshot_identity(stored: Mapping[str, Any], incoming: Mapping[str, Any]) -> bool:
+    try:
+        return all(
+            _identity_value(stored, field) == _identity_value(incoming, field)
+            for field in _SNAPSHOT_IDENTITY
+        )
+    except (TypeError, ValueError, RuntimeError):
+        return False
+
+
+def _same_immutable_snapshot(stored: Mapping[str, Any], incoming: Mapping[str, Any]) -> bool:
+    try:
+        return all(
+            _identity_value(stored, field) == _identity_value(incoming, field)
+            for field in _SNAPSHOT_IMMUTABLE_FIELDS
+        )
+    except (TypeError, ValueError, RuntimeError):
+        return False
+
+
+def _existing_snapshots(client: Any, row: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    query = (
+        client.table(_SNAPSHOT_TABLE)
+        .select(
+            "provider,endpoint,season,week,payload_sha256,response_row_count,"
+            "acquisition_status,blocker_codes,can_execute"
+        )
+        .eq("provider", row["provider"])
+        .eq("endpoint", row["endpoint"])
+        .eq("season", int(row["season"]))
+        .eq("payload_sha256", row["payload_sha256"])
+    )
+    if row["week"] is None:
+        # Postgres UNIQUE treats NULL week as distinct, so season-wide
+        # /games receipts must be matched explicitly rather than upserted.
+        query = query.is_("week", "null")
+    else:
+        query = query.eq("week", int(row["week"]))
+    try:
+        result = query.execute()
+    except Exception as exc:
+        raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_READ_FAILED") from exc
+    data = getattr(result, "data", None)
+    if not isinstance(data, list):
+        raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_READ_INVALID")
+    return [item for item in data if isinstance(item, Mapping)]
+
+
 def persist_source_snapshots(supabase_client: Any, snapshots: Iterable[SourceSnapshot]) -> int:
-    """Persist staged raw observations using a service-role Supabase client.
+    """Insert immutable raw observations. Never rewrite a stored receipt.
 
     The target table is RLS-protected and not exposed to anon/authenticated.
-    This function returns inserted/upserted row count only; it has no scoring
-    side effects.
+    A repeated identical provider/endpoint/season/week/hash is an acknowledgement
+    of the existing receipt. A same-hash body whose status, count, or blockers
+    disagree is a conflict and is not updated. NULL week is part of the identity
+    even though a plain UNIQUE constraint does not treat NULL as equal.
+
+    Writes stay one snapshot per call. A 20-week player-history batch previously
+    failed as a single upsert and lost every successful week.
     """
-    # A 20-week CFBD /games/players season can contain many megabytes of
-    # nested JSON. The former single upsert(rows) produced Supabase HTTP 520
-    # for the season batch and lost ALL successful source acquisition.
-    # Keep the immutable per-week hash, store one bounded snapshot per call,
-    # and require an acknowledgement for each. Previous weeks survive a later
-    # transport failure and the caller can retry only uncached weeks.
     persisted = 0
+    seen: dict[tuple[Any, ...], Mapping[str, Any]] = {}
     for snapshot in snapshots:
-        result = supabase_client.table("wow_ncaaf_source_snapshots").upsert(
-            asdict(snapshot),
-            on_conflict="provider,endpoint,season,week,payload_sha256",
-        ).execute()
+        row = _snapshot_row(snapshot)
+        key = tuple(_identity_value(row, field) for field in _SNAPSHOT_IDENTITY)
+        prior = seen.get(key)
+        if prior is not None:
+            if not _same_immutable_snapshot(prior, row):
+                raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_IMMUTABLE_CONFLICT")
+            persisted += 1
+            continue
+        stored = [
+            item for item in _existing_snapshots(supabase_client, row)
+            if _same_snapshot_identity(item, row)
+        ]
+        if stored:
+            if any(not _same_immutable_snapshot(item, row) for item in stored):
+                raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_IMMUTABLE_CONFLICT")
+            seen[key] = row
+            persisted += 1
+            continue
+        result = supabase_client.table(_SNAPSHOT_TABLE).insert(row).execute()
         data = getattr(result, "data", None)
         if not isinstance(data, list) or len(data) != 1:
             raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_WRITE_ACK_INVALID")
+        seen[key] = row
         persisted += 1
     return persisted

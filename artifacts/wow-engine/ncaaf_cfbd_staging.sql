@@ -45,4 +45,28 @@ revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated;
 grant all on table public.wow_ncaaf_source_snapshots to service_role;
 
 comment on table public.wow_ncaaf_source_snapshots is
-  'Immutable-style research staging for raw NCAAF source responses. Staging does not certify model features or enable probability publication.';
+  'Immutable research staging for raw NCAAF source responses. Insert-only. Staging does not certify model features or enable probability publication.';
+
+-- Stored receipts are evidence. A later acquisition must insert a new hash
+-- or acknowledge the existing one. It must not rewrite retrieved_at, payload,
+-- or blockers on a row that has already been staged.
+create or replace function public.wow_ncaaf_reject_source_snapshot_mutation()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $$
+begin
+    raise exception 'NCAAF_SOURCE_SNAPSHOT_IMMUTABLE'
+        using errcode = '55000';
+end;
+$$;
+
+revoke all on function public.wow_ncaaf_reject_source_snapshot_mutation() from public, anon, authenticated;
+grant execute on function public.wow_ncaaf_reject_source_snapshot_mutation() to service_role;
+
+drop trigger if exists trg_wow_ncaaf_source_snapshot_immutable
+    on public.wow_ncaaf_source_snapshots;
+create trigger trg_wow_ncaaf_source_snapshot_immutable
+    before update or delete on public.wow_ncaaf_source_snapshots
+    for each row execute function public.wow_ncaaf_reject_source_snapshot_mutation();

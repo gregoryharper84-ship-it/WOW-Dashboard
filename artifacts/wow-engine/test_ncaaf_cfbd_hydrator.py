@@ -135,3 +135,6 @@ def test_staging_sql_is_internal_and_non_executable():
     assert "revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated" in lowered
     assert "can_execute boolean not null default false" in lowered
     assert "wow_ncaaf_source_never_execute" in lowered
+    assert "wow_ncaaf_reject_source_snapshot_mutation" in lowered
+    assert "before update or delete" in lowered
+    assert "revoke all on function public.wow_ncaaf_reject_source_snapshot_mutation() from public, anon, authenticated" in lowered
