@@ -165,10 +165,10 @@ def _scoreboard_rows(
         rows = list(_fetch_scoreboard(date_key))
     except NCAABEventIdentityError as exc:
         with _CACHE_LOCK:
-            _CACHE[date_key] = (time.monotonic(), None, exc.code)
+            _CACHE[date_key] = (now_value, None, exc.code)
         raise
     with _CACHE_LOCK:
-        _CACHE[date_key] = (time.monotonic(), list(rows), None)
+        _CACHE[date_key] = (now_value, list(rows), None)
     return rows
 
 
