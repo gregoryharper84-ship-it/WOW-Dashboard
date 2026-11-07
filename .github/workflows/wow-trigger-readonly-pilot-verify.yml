@@ -49,3 +49,13 @@ jobs:
           path: integrations/trigger-dev-pilot/package-lock.json
           if-no-files-found: error
           retention-days: 7
+      - name: Expose non-secret lockfile for connector transfer
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const b64 = fs.readFileSync("package-lock.json").toString("base64");
+          for (let i = 0; i < b64.length; i += 1024) {
+            console.log("WOW_TRIGGER_LOCK_CHUNK " + (i / 1024) + " " + b64.slice(i, i + 1024));
+          }
+          console.log("WOW_TRIGGER_LOCK_END " + b64.length);
+          NODE
