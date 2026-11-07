@@ -9,7 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from hashlib import sha256
 import json
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    # Type only: runtime import would pull scikit-learn into serving startup.
+    from ncaaf_trainer import TrainingRow
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
