@@ -90,6 +90,65 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # P0/P1 migration proof must run on an isolated real PostgreSQL cluster.
+  # A skipped DB test is NOT an acceptance receipt, even if the sharded suite is green.
+  migration-geometry-db-proof:
+    name: NCAAF geometry migration isolated PostgreSQL proof
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_agent_ci
+          POSTGRES_PASSWORD: wow_agent_ci
+          POSTGRES_DB: wow_agent_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_agent_ci -d wow_agent_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated DB test tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          python -m pip install pytest
+      - name: Prove forward rollback and immutability against PostgreSQL 16
+        env:
+          WOW_NCAAF_MIGRATION_PROOF_DSN: postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci
+          WOW_NCAAF_MIGRATION_PROOF_DISPOSABLE: "1"
+          WOW_CAN_EXECUTE: "false"
+        run: |
+          set -euo pipefail
+          python -m pytest -q -ra test_ncaaf_schedule_geometry_migration.py --junitxml="$RUNNER_TEMP/ncaaf-geometry-db-proof.xml"
+          python - "$RUNNER_TEMP/ncaaf-geometry-db-proof.xml" <<'PY'
+          import sys
+          from xml.etree import ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+          n = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          failed = sum(int(s.get("failures", 0)) for s in suites)
+          print(f"NCAAF_GEOMETRY_REAL_POSTGRES_PROOF tests={n} skipped={skipped} errors={errors} failed={failed}")
+          if n < 4 or skipped or errors or failed:
+              raise SystemExit("NCAAF_GEOMETRY_MIGRATION_PROOF_NOT_ESTABLISHED")
+          print("NCAAF_GEOMETRY_MIGRATION_ISOLATED_DB_PROOF_PASS")
+          PY
+
   verify:
     name: Verify NCAAF maintenance contract
     runs-on: ubuntu-latest
