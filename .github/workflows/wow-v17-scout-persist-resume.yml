@@ -108,6 +108,9 @@ jobs:
                     if (.jobs | type) != "array"
                        or (.total_count | type) != "number"
                        or .total_count != (.jobs | length)
+                       or any(.jobs[]; (type != "object")
+                         or ((.name | type) != "string")
+                         or ((.name | length) == 0))
                     then "UNVERIFIED"
                     else
                       ([.jobs[] | select(.name == "Nightly all-sport discovery and governed specialist handoff")] |
