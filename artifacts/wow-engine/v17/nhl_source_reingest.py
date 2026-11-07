@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from fastapi import FastAPI
 import requests
@@ -181,23 +181,18 @@ def build_reingest_rows(
     return [by_id[key] for key in sorted(by_id, key=lambda item: (by_id[item]["event_start_time"], item))]
 
 
-def _persisted_v2_identities(
-    db: Any, *, season: int, expected: Iterable[str]
+def _v2_identities_from_rows(
+    rows: Iterable[Mapping[str, Any]], expected: Iterable[str]
 ) -> dict[str, set[str]]:
-    """Read persisted V2 envelope identities for the events about to be written.
-
-    Existing rows are never mutated, so appending a second identity for one
-    official event would leave the season unusable for fitted replay with no
-    retry path. This read-only preflight lets the lane fail closed instead.
-    """
+    """Group persisted V2 envelope identities by official event id."""
     wanted = set(expected)
     identities: dict[str, set[str]] = {}
-    for row in load_nhl_season_events(db, season=season):
+    for row in rows:
         event_id = str(row.get("official_event_id") or "").strip()
         if event_id not in wanted:
             continue
         outcome = row.get("outcome_json")
-        if not isinstance(outcome, dict):
+        if not isinstance(outcome, Mapping):
             continue
         if outcome.get("provenance_version") != SOURCE_PROVENANCE_VERSION:
             continue
@@ -205,6 +200,20 @@ def _persisted_v2_identities(
             str(row.get("source_payload_sha256") or "").strip().lower()
         )
     return identities
+
+
+def _persisted_v2_identities(
+    db: Any, *, season: int, expected: Iterable[str]
+) -> dict[str, set[str]]:
+    """Read persisted V2 identities before writing to an append-only ledger.
+
+    Existing rows are never mutated, so appending a second identity for one
+    official event would leave the season unusable for fitted replay with no
+    retry path. This read-only preflight lets the lane fail closed instead.
+    """
+    return _v2_identities_from_rows(
+        load_nhl_season_events(db, season=season), expected
+    )
 
 
 def _identity_conflicts(
@@ -314,6 +323,12 @@ def run_nhl_source_reingest(
             stage="SOURCE_IDENTITY",
             detail={"blockers": list(exc.blockers)},
         )
+    except Exception as exc:  # noqa: BLE001 - identity preflight is a typed boundary
+        return _blocked(
+            "NHL_SOURCE_IDENTITY_UNVERIFIABLE",
+            stage="SOURCE_IDENTITY",
+            detail={"error_type": type(exc).__name__, "retryable": True},
+        )
     conflicted = _identity_conflicts(rows, persisted)
     if conflicted:
         return _blocked(
@@ -374,6 +389,25 @@ def run_nhl_source_reingest(
             "probability_publishable": False,
             "can_execute": False,
         }
+
+    # The preflight is check-then-write, so a concurrent writer or a correction
+    # that surfaced mid-run can still land a second identity. Verify the
+    # post-write season with the same invariant the reader enforces; a
+    # conflicted season must never be reported complete.
+    post_conflicts = _identity_conflicts(
+        rows, _v2_identities_from_rows(verified, expected_events)
+    )
+    if post_conflicts:
+        return _blocked(
+            "NHL_SOURCE_IDENTITY_CONFLICT",
+            stage="SOURCE_VERIFICATION",
+            detail={
+                "conflicting_event_n": len(post_conflicts),
+                "conflicting_event_ids": post_conflicts[:20],
+                "retryable": False,
+                "requires_append_only_correction_protocol": True,
+            },
+        )
 
     provenanced: set[str] = set()
     distinct: set[str] = set()

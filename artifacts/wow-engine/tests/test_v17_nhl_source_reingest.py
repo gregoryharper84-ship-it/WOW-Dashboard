@@ -829,3 +829,46 @@ def test_reingest_rejects_inexact_season_evidence(season):
     assert result["code"] == "NHL_SEASON_ID_INVALID"
     assert result["provenance_complete"] is False
     assert db.rows == {}
+
+
+def test_reingest_detects_a_conflict_that_lands_after_the_preflight(monkeypatch):
+    games = _normalized_games(_fixture())
+    db = _FakeDB()
+    assert _run(db)["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    rows = db.rows["wow_d1_source_events"]
+    target = games[0].game_id
+
+    # A concurrent writer lands a different V2 identity after our preflight read
+    # but before our own write, so only the post-write check can see it.
+    monkeypatch.setattr(
+        reingest, "_persisted_v2_identities", lambda db, *, season, expected: {}
+    )
+    forged = dict(next(row for row in rows if row["official_event_id"] == target))
+    forged["source_event_id"] = "source-concurrent-conflict"
+    forged["source_payload_sha256"] = "f" * 64
+    rows.append(forged)
+
+    result = _run(db)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_IDENTITY_CONFLICT"
+    assert result["blocked_stage"] == "SOURCE_VERIFICATION"
+    assert result["provenance_complete"] is False
+    assert result["detail"]["conflicting_event_ids"] == [target]
+    assert len(rows) == 33
+
+
+def test_reingest_maps_an_unexpected_preflight_failure_to_a_typed_block(monkeypatch):
+    def offline(db, *, season):
+        raise RuntimeError("client offline")
+
+    monkeypatch.setattr(reingest, "load_nhl_season_events", offline)
+    db = _FakeDB()
+    result = _run(db)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_IDENTITY_UNVERIFIABLE"
+    assert result["detail"]["error_type"] == "RuntimeError"
+    assert result["detail"]["retryable"] is True
+    assert result["can_execute"] is False
+    assert db.rows == {}

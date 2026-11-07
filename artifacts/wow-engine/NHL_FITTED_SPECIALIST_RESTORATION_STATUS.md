@@ -224,7 +224,7 @@ Typed holds preserved:
   tests/test_*team_event*.py tests/test_*candidate*.py \
   test_v17_nhl_model_maintenance.py test_v17_d1_candidate_registry.py \
   test_v17_model_source_entitlements.py
-662 passed  (29 files)
+664 passed  (29 files)
 ```
 
 The new suite proves: the real registry artifact checksum is reproduced; a
@@ -252,7 +252,11 @@ read that reports a corrected score or start time is blocked before any write
 `provenance_complete=false` rather than appending a second immutable identity
 that the reader would reject for the whole season; an already-conflicted season
 can never be reported complete, and inexact season evidence is rejected instead
-of truncated. The persisted
+of truncated. Post-write verification re-checks the same one-identity invariant,
+so a concurrent writer or a correction that surfaces mid-run is reported as
+`NHL_SOURCE_IDENTITY_CONFLICT` at `SOURCE_VERIFICATION` rather than a false
+completion, and an unexpected preflight read failure is a typed retryable block.
+The persisted
 genuine timeline replays target `2026020257` (PIT 2 – BOS 6) with exact
 training-pipeline feature parity (15 home / 16 away prior games), then scores
 with the governed artifact while remaining non-publishable.
