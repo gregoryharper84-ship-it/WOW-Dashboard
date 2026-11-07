@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -903,6 +904,68 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         base.update(changes)
         return base
 
+    def test_owner_preflight_validates_exact_github_read_without_generation(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        target = "a" * 40
+        event = {"inputs": {"pr_number": "2382", "head_sha": target}}
+        pr = {"state": "open",
+              "head": {"sha": target, "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "repo": {"full_name": m.REPO}}}
+        env = self._pref_env(GH_READ_TOKEN="SECRET_TOKEN",
+                             GITHUB_EVENT_PATH="/tmp/unused-preflight-event.json")
+        output = io.StringIO()
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=json.dumps(event)), \
+             patch.object(m, "gh", return_value=pr) as read, \
+             patch.object(m, "review_models") as model, \
+             patch.object(m, "publish_check") as publish, \
+             contextlib.redirect_stdout(output):
+            m.github_read_preflight()
+        read.assert_called_once_with("/pulls/2382", "SECRET_TOKEN")
+        model.assert_not_called()
+        publish.assert_not_called()
+        self.assertEqual(output.getvalue().strip(),
+                         "GITHUB_PR_READ_READY:PR_METADATA:READ_ONLY")
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_owner_preflight_rejects_stale_or_untrusted_pr_identity(self):
+        from unittest.mock import patch
+        event = {"inputs": {"pr_number": "2382", "head_sha": "a" * 40}}
+        good = {"state": "open",
+                "head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
+                "base": {"ref": "main", "repo": {"full_name": m.REPO}}}
+        env = self._pref_env(GH_READ_TOKEN="SECRET_TOKEN",
+                             GITHUB_EVENT_PATH="/tmp/unused-preflight-event.json")
+        for bad in (
+            {**good, "head": {"sha": "b" * 40, "repo": {"full_name": m.REPO}}},
+            {**good, "base": {"ref": "other",
+                              "repo": {"full_name": m.REPO}}},
+            {**good, "state": "closed"},
+        ):
+            with self.subTest(bad=bad):
+                with patch.dict(m.os.environ, env, clear=True), \
+                     patch.object(m.Path, "read_text", return_value=json.dumps(event)), \
+                     patch.object(m, "gh", return_value=bad):
+                    with self.assertRaisesRegex(m.Hold, "PR_TARGET_STALE_OR_UNTRUSTED"):
+                        m.github_read_preflight()
+
+    def test_owner_preflight_requires_credential_and_owner_identity(self):
+        from unittest.mock import patch
+        for changes, reason in (
+            ({"GITHUB_ACTOR": "foreign-bot", "GH_READ_TOKEN": "SECRET_TOKEN"},
+             "REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED"),
+            ({"GH_READ_TOKEN": ""}, "READ_TOKEN_MISSING"),
+        ):
+            env = self._pref_env(GITHUB_EVENT_PATH="/tmp/unread", **changes)
+            with self.subTest(reason=reason):
+                with patch.dict(m.os.environ, env, clear=True), \
+                     patch.object(m, "gh") as read:
+                    with self.assertRaisesRegex(m.Hold, reason):
+                        m.github_read_preflight()
+                    read.assert_not_called()
+
     def test_preflight_catalog_read_only_no_inference(self):
         env = self._pref_env()
         env["WOW_QA_REVIEW_ANTHROPIC_API_KEY"] = ""
@@ -1034,12 +1097,33 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     m.call_provider("gemini-generative-api", "key", "untrusted diff")
                 self.assertEqual(request.call_count, 1)
 
-    def test_review_model_listing_http_error_uses_short_static_fallback(self):
+    def test_review_model_listing_http_error_allows_one_static_fallback(self):
         self._models_patch.stop()
         with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
              patch.object(m, "request_json", side_effect=m.Hold("HTTP_503")):
             self.assertEqual(m.review_models("gemini-generative-api", "key"),
-                             ["gemini-3.8-flash", "gemini-3.6-flash"])
+                             ["gemini-3.8-flash"])
+
+    def test_gemini_unavailable_catalog_never_rotates_unlisted_models(self):
+        self._models_patch.stop()
+        # A transient catalog failure does not prove the next static model
+        # is credential-listed; a 429 on the single fallback is terminal.
+        for status in ("HTTP_503", "HTTP_429"):
+            seen = []
+            def request(url, **kwargs):
+                seen.append(url)
+                if "pageSize=1000" in url:
+                    raise m.Hold(status)
+                self.assertIn("gemini-3.8-flash:generateContent", url)
+                raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+            with self.subTest(catalog=status), \
+                 patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+                 patch.object(m, "request_json", side_effect=request):
+                with self.assertRaisesRegex(m.ProviderUnavailable, "PROVIDER_HTTP_429"):
+                    m.call_provider("gemini-generative-api", "key", "diff")
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(sum(":generateContent" in url for url in seen), 1)
+            self.assertNotIn("gemini-3.6-flash:generateContent", " ".join(seen))
 
     def test_review_model_only_typed_unavailable_moves_to_next_model(self):
         self._models_patch.stop()
@@ -1059,6 +1143,99 @@ class SimpleSecurityReviewTests(unittest.TestCase):
              patch.object(m, "request_json", side_effect=request) as req:
             self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "PASS")
             self.assertEqual(req.call_count, 3)
+
+
+    def test_gemini_429_switches_only_to_next_catalog_approved_model(self):
+        self._models_patch.stop()
+        import json
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        good = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(self._passing())}]}}]}
+        seen = []
+        def request(url, **kwargs):
+            seen.append(url)
+            if "pageSize" in url:
+                return catalog
+            self.assertEqual(kwargs["headers"], {"x-goog-api-key": "key"})
+            self.assertEqual(kwargs["data"]["contents"],
+                             [{"parts": [{"text": "diff"}]}])
+            self.assertEqual(kwargs["data"]["systemInstruction"],
+                             {"parts": [{"text": m.SYSTEM_ROLE}]})
+            self.assertEqual(kwargs["data"]["generationConfig"],
+                             {"responseMimeType": "application/json"})
+            if "3.8-flash:generateContent" in url:
+                raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+            return good
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "PASS")
+        self.assertEqual(len(seen), 3)
+        self.assertIn("3.8-flash:generateContent", seen[1])
+        self.assertIn("3.6-flash:generateContent", seen[2])
+
+    def test_gemini_429_all_models_hold_with_original_typed_reason(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        urls = []
+        def request(url, **kwargs):
+            urls.append(url)
+            if "pageSize" in url:
+                return catalog
+            raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            with self.assertRaisesRegex(m.ProviderUnavailable, "PROVIDER_HTTP_429"):
+                m.call_provider("gemini-generative-api", "key", "diff")
+        self.assertEqual(len(urls), 1 + m.MAX_REVIEW_MODELS)
+        self.assertEqual(len(set(urls)), len(urls))
+
+    def test_gemini_exhaustion_reports_last_actual_typed_reason(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        cases = (
+            ("PROVIDER_HTTP_429", "PROVIDER_MODEL_UNAVAILABLE"),
+            ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_429"),
+        )
+        for first, final in cases:
+            with self.subTest(first=first, final=final):
+                calls = []
+                def request(url, **kwargs):
+                    calls.append(url)
+                    if "pageSize" in url:
+                        return catalog
+                    if "3.8-flash:generateContent" in url:
+                        raise m.ProviderUnavailable(first)
+                    raise m.ProviderUnavailable(final)
+                with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+                     patch.object(m, "request_json", side_effect=request):
+                    with self.assertRaises(m.ProviderUnavailable) as err:
+                        m.call_provider("gemini-generative-api", "key", "diff")
+                self.assertEqual(str(err.exception), final)
+                self.assertEqual(len(calls), 3)
+
+    def test_gemini_transport_failure_does_not_rotate_to_another_model(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        seen = []
+        def request(url, **kwargs):
+            seen.append(url)
+            if "pageSize" in url:
+                return catalog
+            raise m.ProviderUnavailable("PROVIDER_TRANSPORT")
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            with self.assertRaisesRegex(m.ProviderUnavailable, "PROVIDER_TRANSPORT"):
+                m.call_provider("gemini-generative-api", "key", "diff")
+        self.assertEqual(len(seen), 2)
 
     def test_review_model_semantic_rejection_never_switches_model(self):
         self._models_patch.stop()
@@ -1114,6 +1291,16 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("if: inputs.preflight_only != true", workflow)
         self.assertIn("environment: wow-qa", workflow)
         self.assertIn("ref: main", workflow)
+        # Credit-backed inference is an explicit opt-in, never a byproduct of
+        # an untrusted draft PR update; preflight is generation-free.
+        self.assertIn("vars.WOW_QA_PAID_REVIEW_ENABLED == 'true'", workflow)
+        self.assertIn("github.event.pull_request.draft == false", workflow)
+        self.assertIn("github.event.action == 'ready_for_review'", workflow)
+        self.assertIn("github.event.action == 'opened'", workflow)
+        self.assertIn("github.event.action == 'reopened'", workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.preflight_only == true", workflow)
+        self.assertNotIn("github.event.action == 'synchronize'", workflow)
+        self.assertIn("if: inputs.preflight_only != true", workflow)
 
 
 def load_tests(loader, tests, pattern):
