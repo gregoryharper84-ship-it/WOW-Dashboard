@@ -142,6 +142,26 @@ def test_refuse_non_disposable_or_remote_db_proof_target(monkeypatch, dsn, dispo
         _start_cluster(None)
 
 
+@pytest.mark.parametrize(
+    "environment_key,malicious_value",
+    [
+        ("PGHOSTADDR", "198.51.100.17"),
+        ("PGSERVICE", "production"),
+    ],
+)
+def test_refuse_ambient_postgres_redirect_for_calibrator_proof(
+    monkeypatch, environment_key, malicious_value
+):
+    monkeypatch.setenv(
+        "WOW_TEST_POSTGRES_DSN",
+        "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci",
+    )
+    monkeypatch.setenv("WOW_TEST_POSTGRES_DISPOSABLE", "1")
+    monkeypatch.setenv(environment_key, malicious_value)
+    with pytest.raises(pytest.fail.Exception):
+        _start_cluster(None)
+
+
 def _connect(cluster: _Cluster):
     return psycopg.connect(cluster.dsn, autocommit=True, row_factory=dict_row)
 
