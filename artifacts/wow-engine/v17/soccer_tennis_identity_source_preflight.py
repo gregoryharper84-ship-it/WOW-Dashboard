@@ -63,7 +63,7 @@ def preflight_fixture_source(
     guessed from a sportsbook name. A positive result remains research-only.
     """
     sport = str(sport or "").upper()
-    if source_id != SOURCES.get(sport):
+    if sport not in SOURCES or source_id != SOURCES[sport]:
         return _hold("SOURCE_EVIDENCE_UNVERIFIED", source_id=source_id)
     if not isinstance(source_payload, Mapping) or not isinstance(crosswalk, Mapping):
         return _hold("SOURCE_FIXTURE_SCHEMA_INVALID", source_id=source_id)
@@ -111,11 +111,12 @@ def preflight_fixture_source(
             comp, h, a = fixture.get("competition"), fixture.get("homeTeam"), fixture.get("awayTeam")
             if not all(isinstance(x, Mapping) for x in (comp, h, a)):
                 return _hold("SOURCE_FIXTURE_SCHEMA_INVALID", source_id=source_id)
-            comparable = (
-                _id(comp.get("id")) == competition
-                and _id(h.get("id")) == home
-                and _id(a.get("id")) == away
-            )
+            comp_id, home_id, away_id = (_id(comp.get("id")), _id(h.get("id")), _id(a.get("id")))
+            if any(v is None for v in (comp_id, home_id, away_id)):
+                # A partially identified fixture cannot be silently skipped
+                # next to one valid candidate in the same complete response.
+                return _hold("SOURCE_FIXTURE_SCHEMA_INVALID", source_id=source_id)
+            comparable = comp_id == competition and home_id == home and away_id == away
             fixture_start = _utc(fixture.get("utcDate"))
             fixture_id = _id(fixture.get("id"))
             status = str(fixture.get("status") or "").upper()
@@ -125,6 +126,9 @@ def preflight_fixture_source(
             if not all(isinstance(x, Mapping) for x in (p1, p2, event)):
                 return _hold("SOURCE_FIXTURE_SCHEMA_INVALID", source_id=source_id)
             ids = {_id(p1.get("id")), _id(p2.get("id"))}
+            fixture_tour = str(
+                fixture.get("tour") or event.get("tour") or ""
+            ).strip().upper()
             comparable = (
                 _id(event.get("id")) == tournament
                 and ids == {player1, player2} and None not in ids
@@ -137,6 +141,10 @@ def preflight_fixture_source(
                 eligible = False
         if not comparable:
             continue
+        if sport == "TENNIS" and fixture_tour != tour:
+            # An absent or contradictory tour can map ATP and WTA players or
+            # identically named tournaments onto the wrong fixture.
+            return _hold("SOURCE_EVIDENCE_UNVERIFIED", source_id=source_id)
         if fixture_start is None or fixture_id is None:
             return _hold("SOURCE_FIXTURE_SCHEMA_INVALID", source_id=source_id)
         if abs((fixture_start - start).total_seconds()) > MATCH_WINDOW_SECONDS:
