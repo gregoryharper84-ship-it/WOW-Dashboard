@@ -520,7 +520,7 @@ def _mock_stale_sportsdataverse(monkeypatch):
 
 def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch):
     # Even a future ESPN training entitlement cannot establish an ESPN-to-BDL
-    # or ESPN-to-SportsDataverse *provider* contract. Fail before persistence.
+    # or ESPN-to-SportsDataverse *provider* contract. Record a hold, not a successful supplement.
     monkeypatch.setattr(
         hydration,
         "source_readiness",
@@ -537,14 +537,17 @@ def test_stale_espn_supplement_cannot_contaminate_nba_fitted_history(monkeypatch
             _espn_event(event_id="401908002", game_date="2026-10-22"),
         ],
     )
-    try:
-        hydration.hydrate(
-            "NBA", [2027], client=object(),
-            now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
-        )
-        raise AssertionError("raw ESPN data must never be inserted into the fitted NBA ledger")
-    except hydration.BasketballHydrationError as exc:
-        assert str(exc) == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+    )
+    assert result["recent_supplement_status"][2027] == (
+        "SOURCE_BLOCKED:NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
+    )
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["fresh_acquisition_new_settled_games"] == 0
+    assert result["latest_game_date_after"] == "2026-10-22"
+    assert result["can_execute"] is False
     assert called and called[0][0] == "NBA"
     assert persisted == []
 
@@ -804,7 +807,7 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
     )
     monkeypatch.setattr(
         hydration, "_persist_rows",
-        lambda *_: (_ for _ in ()).throw(
+        lambda _client, _sport, rows: 0 if not rows else (_ for _ in ()).throw(
             AssertionError("No partial backfill may advance persisted date")
         ),
     )
@@ -814,14 +817,17 @@ def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monke
             AssertionError("Cannot use 14-day fetch to bridge June-October")
         ),
     )
-    try:
-        hydration.hydrate(
-            "NBA", [2027], client=object(),
-            now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
-        )
-        raise AssertionError("expected a typed backfill failure")
-    except hydration.BasketballHydrationError as exc:
-        assert str(exc) == "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+    result = hydration.hydrate(
+        "NBA", [2027], client=object(),
+        now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+    )
+    assert result["recent_supplement_status"][2027] == (
+        "SOURCE_BLOCKED:ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
+    )
+    assert result["source_by_season"][2027] == "SPORTSDATAVERSE_ESPN"
+    assert result["latest_game_date_after"] == "2026-06-13"
+    assert result["fresh_acquisition_new_settled_games"] == 0
+    assert result["can_execute"] is False
 
 
 def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
