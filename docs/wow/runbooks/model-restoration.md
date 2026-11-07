@@ -20,6 +20,8 @@ an artifact or replace a missing probability with sportsbook odds or an LLM.
 - The real integration job uses Redis and a separate Celery worker, not eager
   in-process execution. Native Render acceptance verifies both service commits
   before and after its scoring lanes, including the full-board lane.
+- Both worker launch commands use `python -m celery`, which keeps the engine
+  directory importable when tasks load local dependencies after startup.
 - The dashboard has a protected canonical V17 request/receipt surface. Historical
   Flask pages remain explicitly legacy and do not become V17 model authority.
 
@@ -103,6 +105,9 @@ Custom GPT editor synchronization and usable model result are separate facts.
 After protected release, independently verify:
 
 - current protected-main SHA on both fixed Render services, before/after canaries;
+- the actual Render worker start command matches `render.yaml`, including
+  `python -m celery`; committing the Blueprint alone does not prove that an
+  existing service has applied its settings;
 - actual runtime database binding and migration/function definition;
 - one current event through acquisition, controlling fitted scorer, calibration,
   immutable prediction persistence, terminal reducer and receipt lookup;
