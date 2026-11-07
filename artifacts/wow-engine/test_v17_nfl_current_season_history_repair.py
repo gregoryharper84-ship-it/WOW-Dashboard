@@ -327,7 +327,12 @@ def test_unpublished_nfl_champion_never_stamps_artifact_false_green_or_reuse(mon
     assert first["event_prediction_id"] == again["event_prediction_id"]
     assert first["prediction_reused"] is False
     assert again["prediction_reused"] is True
-    for record in (stored, stored["model_output_snapshot"], first, again):
+    # The immutable SQL prediction table has model_probability_publishable,
+    # but not a separate probability_publishable column. The nested fitted
+    # receipt and returned results carry both flags.
+    assert stored["model_probability_publishable"] is False
+    assert stored["can_execute"] is False
+    for record in (stored["model_output_snapshot"], first, again):
         assert record["model_probability_publishable"] is False
         assert record["probability_publishable"] is False
         assert record["can_execute"] is False
@@ -340,7 +345,6 @@ def test_unpublished_nfl_champion_never_stamps_artifact_false_green_or_reuse(mon
 def test_nfl_missing_champion_publication_flag_fails_closed(monkeypatch):
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
     _patch_model(monkeypatch)
-    original = specialist.load_champion_model
     monkeypatch.setattr(
         specialist, "load_champion_model",
         lambda db: SimpleNamespace(

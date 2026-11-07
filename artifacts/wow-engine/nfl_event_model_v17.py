@@ -582,7 +582,7 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         "artifact_checksum": model.artifact_checksum,
         "market_prior_weight": 0.0,
         "blend_publishable": False,
-        "probability_publishable": model.probability_publishable is True,
+        "probability_publishable": getattr(model, "probability_publishable", False) is True,
         "provenance_complete": True,
         "can_execute": False,
     }
