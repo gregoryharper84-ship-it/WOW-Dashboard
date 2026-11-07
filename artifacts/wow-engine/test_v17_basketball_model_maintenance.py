@@ -1052,3 +1052,69 @@ def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
     corrupted[110]["season"] = 2026
     with pytest.raises(maintenance.BasketballHydrationError, match="NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID"):
         maintenance._nba_verified_current_season_date(DB(corrupted), clock)
+
+
+
+def test_typed_maintenance_failure_codes_never_expose_provider_or_db_details():
+    """Sanitize exception messages without relabeling known typed failures."""
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError("NBA_SOURCE_HTTP_503"),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "NBA_SOURCE_HTTP_503"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError(
+            "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:postgres://secret-host"
+        ),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable"),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "BALLDONTLIE_API_KEY unavailable"
+    assert maintenance._public_failure_code(
+        RuntimeError("WNBA_TRAINING_CORPUS_EMPTY"),
+        "BASKETBALL_TRAINING_REPLAY_BLOCKED",
+    ) == "WNBA_TRAINING_CORPUS_EMPTY"
+    for error in (RuntimeError("postgres://secret-provider-host"),
+                  ValueError("https://private-user:private-pass@example.com"),
+                  maintenance.BasketballHydrationError("bad secret"),
+                  RuntimeError("NBA_FAILURE secret=password")):
+        public_code = maintenance._public_failure_code(error, "BASKETBALL_HYDRATION_FAILED")
+        assert "secret" not in public_code and "example.com" not in public_code
+        assert public_code in ("BASKETBALL_HYDRATION_FAILED", "NBA_FAILURE")
+
+
+def test_internal_maintenance_return_redacts_caught_database_exception(monkeypatch):
+    """A caught runtime exception must not leak into the HTTP result payload."""
+    monkeypatch.setattr(maintenance, "hydrate",
+        lambda *_args, **_kwargs: {"sport": "WNBA", "settled_rows": 0})
+    def replay_failed(*_args, **_kwargs):
+        raise RuntimeError("postgres://secret-db-host:user-token")
+    monkeypatch.setattr(maintenance, "run_training_replay", replay_failed)
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("WNBA",), seasons=(2026,)
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["rows"][0]["code"] == "BASKETBALL_TRAINING_REPLAY_BLOCKED"
+    assert "secret-db-host" not in str(result)
+    assert result["can_execute"] is False
+
+
+def test_hydration_transport_error_is_redacted_inside_an_upstream_blocker(monkeypatch):
+    """NBA current-season fallback preserves a typed cause, never the secret."""
+    monkeypatch.setattr(maintenance, "hydrate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ConnectionError("postgres://secret-db-host:key")
+        ))
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",),
+        now=datetime(2026, 11, 6, tzinfo=timezone.utc),
+    )
+    assert result["status"] == "BLOCKED"
+    row = result["rows"][0]
+    assert row["code"] == "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"
+    assert row["hydration_blocker"]["upstream_hydration_blocker"]["code"] == (
+        "BASKETBALL_HYDRATION_FAILED"
+    )
+    assert "secret-db-host" not in str(row)
+    assert row["can_execute"] is False

@@ -20,6 +20,7 @@ probability, and never enables execution.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import re
 from typing import Any, Iterable
 
 from fastapi import FastAPI
@@ -80,8 +81,39 @@ def _blocked(
     return payload
 
 
+_PUBLIC_REASON_PREFIXES = (
+    "BASKETBALL_", "BALLDONTLIE_", "SPORTSDATAVERSE_",
+    "ESPN_", "NBA_", "WNBA_", "SOURCE_", "MODEL_", "CALIBRATION_",
+)
+_LEGACY_PUBLIC_REASONS = frozenset({
+    "BALLDONTLIE_API_KEY unavailable",
+    "SUPABASE service credential unavailable",
+})
+
+
+def _public_failure_code(exc: Exception, fallback: str) -> str:
+    """Preserve trusted typed failure families, never raw provider/DB details.
+
+    A source can nest its error under a colon or a prose description; only the
+    stable uppercase family is public. Arbitrary RuntimeError messages and
+    transport exceptions must not be forwarded into an authenticated response.
+    """
+    if not isinstance(exc, (BasketballHydrationError, RuntimeError)):
+        return fallback
+    raw = str(exc).strip()
+    if raw in _LEGACY_PUBLIC_REASONS:
+        return raw
+    token = re.split(r"[:\s]", raw, maxsplit=1)[0]
+    if (
+        token.startswith(_PUBLIC_REASON_PREFIXES)
+        and re.fullmatch(r"[A-Z][A-Z0-9_]{3,119}", token, flags=re.ASCII)
+    ):
+        return token
+    return fallback
+
+
 def _hydration_blocker(exc: Exception) -> dict[str, Any]:
-    code = str(exc) or "BASKETBALL_HYDRATION_FAILED"
+    code = _public_failure_code(exc, "BASKETBALL_HYDRATION_FAILED")
     return {
         "status": "BLOCKED",
         "stage": "FRESH_SOURCE_HYDRATION",
@@ -401,7 +433,9 @@ def run_basketball_model_maintenance(
                     except BasketballHydrationError as exc:
                         # Surface exact typed readback failures but never raw
                         # provider or database transport exception details.
-                        hydration["current_season_readback_code"] = str(exc)
+                        hydration["current_season_readback_code"] = _public_failure_code(
+                            exc, "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
+                        )
                     except Exception:  # noqa BLE001 - no unsafe replay after DB failure
                         hydration["current_season_readback_code"] = (
                             "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
@@ -462,7 +496,7 @@ def run_basketball_model_maintenance(
             results.append(
                 _blocked(
                     sport,
-                    str(exc) or "BASKETBALL_TRAINING_REPLAY_BLOCKED",
+                    _public_failure_code(exc, "BASKETBALL_TRAINING_REPLAY_BLOCKED"),
                     error_type=type(exc).__name__,
                     hydration_blocker=hydration_blocker,
                 )
