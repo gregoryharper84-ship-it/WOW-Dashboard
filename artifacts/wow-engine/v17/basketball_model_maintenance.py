@@ -179,12 +179,64 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
             or row.get("source_provider") != "SPORTSDATAVERSE_ESPN"
             or not isinstance(event, str)
             or not event.startswith("espn-")
+            or not event[5:].isascii()
             or not event[5:].isdigit()
             or event in seen_ids
         ):
             raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
         seen_ids.add(event)
     if top_row.get("game_id") not in seen_ids:
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH")
+
+    # The latest day can be clean while earlier games in this season's
+    # persisted training window have a wrong season/provider. Validate ALL
+    # settled rows before replay. Stable two-key ordering and bounded
+    # pages prevent truncation from being silently accepted.
+    scanned_ids: set[str] = set()
+    season_open = date(season_start_year, 10, 1)
+    page_size = 100
+    max_pages = 20
+    for page in range(max_pages + 1):
+        result = (
+            db.table(table).select(fields)
+            .eq("settled", True)
+            .gte("game_date", season_open.isoformat())
+            .lte("game_date", clock.date().isoformat())
+            .order("game_date", desc=True).order("game_id", desc=True)
+            .range(page * page_size, (page + 1) * page_size - 1)
+            .execute()
+        )
+        batch = getattr(result, "data", None)
+        if not isinstance(batch, list) or len(batch) > page_size:
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
+        if page == max_pages:
+            if batch:
+                raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
+            break
+        for row in batch:
+            if not isinstance(row, dict) or not isinstance(row.get("game_date"), str):
+                raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
+            try:
+                actual_date = date.fromisoformat(row["game_date"])
+            except ValueError as exc:
+                raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID") from exc
+            event = row.get("game_id")
+            if (
+                not season_open <= actual_date <= clock.date()
+                or type(row.get("season")) is not int
+                or row["season"] != label
+                or row.get("source_provider") != "SPORTSDATAVERSE_ESPN"
+                or not isinstance(event, str)
+                or not event.startswith("espn-")
+                or not event[5:].isascii()
+                or not event[5:].isdigit()
+                or event in scanned_ids
+            ):
+                raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
+            scanned_ids.add(event)
+        if len(batch) < page_size:
+            break
+    if not seen_ids.issubset(scanned_ids):
         raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH")
     return latest_day.isoformat()
 

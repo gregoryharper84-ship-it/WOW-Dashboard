@@ -809,25 +809,40 @@ def test_verified_nba_season_readback_enforces_exact_label_and_canonical_source(
             self.rows = rows
             self.filters = []
             self.limit_count = None
+            self.page = None
         def select(self, fields):
             assert fields == "game_date,season,game_id,source_provider"
             return self
         def eq(self, name, value):
             self.filters.append((name, value))
             return self
+        def gte(self, name, value):
+            assert (name, value) == ("game_date", "2026-10-01")
+            return self
+        def lte(self, name, value):
+            assert (name, value) == ("game_date", "2026-11-06")
+            return self
         def order(self, key, *, desc):
-            assert (key, desc) == ("game_date", True)
+            assert key in {"game_date", "game_id"} and desc
             return self
         def limit(self, count):
             assert count in (1, 101)
             self.limit_count = count
             return self
+        def range(self, start, end):
+            assert end - start == 99
+            self.page = (start, end)
+            return self
         def execute(self):
             assert ("settled", True) in self.filters
+            if self.page is not None:
+                return SimpleNamespace(data=self.rows[self.page[0]:self.page[1] + 1])
             if self.limit_count == 1:
                 return SimpleNamespace(data=self.rows[:1])
             assert ("game_date", "2026-11-05") in self.filters
-            return SimpleNamespace(data=self.rows[:self.limit_count])
+            return SimpleNamespace(data=[
+                x for x in self.rows if x.get("game_date") == "2026-11-05"
+            ][:self.limit_count])
     class DB:
         def __init__(self, rows):
             self.rows = rows
@@ -850,9 +865,21 @@ def test_verified_nba_season_readback_enforces_exact_label_and_canonical_source(
     assert maintenance._nba_verified_current_season_date(DB([good, another]), clock) == "2026-11-05"
     for contaminant in ({**another, "season": 2026},
                         {**another, "source_provider": "ESPN_SCOREBOARD"},
-                        {**another, "game_id": good["game_id"]}):
+                        {**another, "game_id": good["game_id"]},
+                        {**another, "game_id": "espn-²"}):
         with pytest.raises(maintenance.BasketballHydrationError):
             maintenance._nba_verified_current_season_date(DB([good, contaminant]), clock)
+
+    earlier = {**another, "game_date": "2026-10-28"}
+    assert maintenance._nba_verified_current_season_date(DB([good, earlier]), clock) == "2026-11-05"
+    # The last day is clean, but one older settled row is not: no shadow replay.
+    for prior_bad in ({**earlier, "season": 2026},
+                      {**earlier, "source_provider": "ESPN_SCOREBOARD"},
+                      {**earlier, "season": None},
+                      {**earlier, "source_provider": None},
+                      {**earlier, "game_id": "espn-²"}):
+        with pytest.raises(maintenance.BasketballHydrationError):
+            maintenance._nba_verified_current_season_date(DB([good, prior_bad]), clock)
 
 
 def test_scheduled_nba_replay_refuses_wrong_season_or_untrusted_hydration_proof(monkeypatch):
@@ -976,3 +1003,50 @@ def test_nba_latest_day_readback_rejects_oversized_or_unverified_rows():
             return q
     with pytest.raises(maintenance.BasketballHydrationError, match="NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH"):
         maintenance._nba_verified_current_season_date(SplitDB(), clock)
+
+
+def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
+    """All pages of the settled October-November season are checked."""
+    class Query:
+        def __init__(self, db):
+            self.db, self.lim, self.page = db, None, None
+        def select(self, _fields):
+            return self
+        def eq(self, *_args):
+            return self
+        def gte(self, *_args):
+            return self
+        def lte(self, *_args):
+            return self
+        def order(self, *_args, **_kwargs):
+            return self
+        def limit(self, count):
+            self.lim = count
+            return self
+        def range(self, a, b):
+            self.page = (a, b)
+            return self
+        def execute(self):
+            if self.page is not None:
+                a, b = self.page
+                return SimpleNamespace(data=self.db.rows[a:b + 1])
+            if self.lim == 1:
+                return SimpleNamespace(data=self.db.rows[:1])
+            return SimpleNamespace(data=self.db.rows[:101])
+    class DB:
+        def __init__(self, rows):
+            self.rows = rows
+        def table(self, _name):
+            return Query(self)
+    clock = datetime(2026, 11, 6, tzinfo=timezone.utc)
+    rows = [
+        {"game_date": "2026-11-05", "season": 2027,
+         "game_id": f"espn-{401810000 + i}",
+         "source_provider": "SPORTSDATAVERSE_ESPN"}
+        for i in range(135)
+    ]
+    assert maintenance._nba_verified_current_season_date(DB(rows), clock) == "2026-11-05"
+    corrupted = [{**r} for r in rows]
+    corrupted[110]["season"] = 2026
+    with pytest.raises(maintenance.BasketballHydrationError, match="NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID"):
+        maintenance._nba_verified_current_season_date(DB(corrupted), clock)
