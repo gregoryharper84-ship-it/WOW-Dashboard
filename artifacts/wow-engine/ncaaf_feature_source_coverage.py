@@ -59,8 +59,16 @@ FITTED_FEATURE_SLOTS: dict[str, tuple[str, ...]] = {
 
 def parse_evidence_source_seeds(sql: str) -> dict[str, frozenset[str]]:
     """Parse provider allow-lists without depending on one-line SQL layout."""
+    # Preserve SQL string literals while ignoring -- comments. A disabled
+    # provider row must not appear in the approved registry just because its
+    # text is present in the migration.
+    uncommented = re.sub(
+        r"'(?:''|[^'])*'|(--[^\r\n]*)",
+        lambda match: "" if match.group(1) is not None else match.group(0),
+        sql,
+    )
     found: dict[str, frozenset[str]] = {}
-    for match in _SEED_ROW.finditer(sql):
+    for match in _SEED_ROW.finditer(uncommented):
         provider = match.group("provider")
         if provider in found:
             raise ValueError(f"NCAAF_EVIDENCE_SOURCE_DUPLICATE:{provider}")
