@@ -391,7 +391,10 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
         + repr([(r["identity"].get("sport"), r["result"].get("bucket"), r["result"].get("model_status")) for r in moneyline_rows])
     )
     # Every supported sport was *queried*, not just the ones with a model.
-    assert audit["discovery"]["sports_queried"] == list(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    queried = audit["discovery"]["sports_queried"]
+    assert queried[:4] == ["NBA", "NFL", "NHL", "NCAAF"]
+    assert set(queried) == set(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    assert len(queried) == len(discovery.SUPPORTED_DISCOVERY_SPORTS)
     assert audit["discovery"]["discovery_independent_of_model_registry"] is True
 
     for row in moneyline_rows:
@@ -421,3 +424,177 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+
+def test_daily_active_sports_get_first_discovery_budget(monkeypatch):
+    """An 8-second deadline must not spend MLB time before active sports."""
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+
+    captured = {}
+
+    def fake_scan(**kwargs):
+        captured["order"] = kwargs.get("supported_sports")
+        return {"rows": [], "discovery": {}, "reconciliation": {}}
+
+    monkeypatch.setattr(runtime.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(discovery, "run_cross_sport_winner_scan", fake_scan)
+    rows, _audit = runtime._cross_sport_moneyline_rows(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+                             lanes=["MONEYLINE"]),
+        run_id="priority-test", event_api=Event, covered_event_ids=set(),
+        fetch_sport_events=lambda *args, **kwargs: [],
+    )
+    assert rows == []
+    assert captured["order"][:4] == ("NBA", "NFL", "NHL", "NCAAF")
+    assert set(captured["order"]) == set(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    assert len(captured["order"]) == len(set(captured["order"]))
+
+
+def test_mlb_event_id_collision_never_hides_active_sports(monkeypatch):
+    """League-owned event identifiers are not globally unique."""
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+
+    sports = ("MLB", "NBA", "NFL", "NHL", "NCAAF")
+
+    def fake_scan(**_kwargs):
+        return {
+            "rows": [
+                {"sport": sport, "official_event_id": "shared-identity",
+                 "home_team": "Home", "away_team": "Away",
+                 "bucket": discovery.MODEL_UNAVAILABLE,
+                 "rank_eligible": False, "probability_publishable": False,
+                 "can_execute": False}
+                for sport in sports
+            ],
+            "discovery": {}, "reconciliation": {},
+        }
+
+    monkeypatch.setattr(runtime.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(discovery, "run_cross_sport_winner_scan", fake_scan)
+    rows, _audit = runtime._cross_sport_moneyline_rows(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+                             lanes=["MONEYLINE"]),
+        run_id="identity-test", event_api=Event,
+        covered_event_ids={("MLB", "shared-identity")},
+        fetch_sport_events=lambda *args, **kwargs: [],
+    )
+    assert {row["identity"]["sport"] for row in rows} == {"NBA", "NFL", "NHL", "NCAAF"}
+    assert all(row["row_status"] == "HELD" and row["can_execute"] is False for row in rows)
+
+
+def test_daily_real_discovery_budget_attempts_active_sports_before_mlb(monkeypatch):
+    """The real discovery walker must spend its bounded budget on live sports first."""
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+
+    # Exactly one deterministic provider target per catalog family. This runs
+    # the actual acquisition loop, not a stub of run_cross_sport_winner_scan.
+    def one_target_per_sport(sports, **_kwargs):
+        return {
+            family: (
+                discovery.DiscoveryTarget(
+                    family=family, provider="TEST_FEED", league=family,
+                    sport_id=index + 1,
+                ),
+            )
+            for index, family in enumerate(sports)
+        }
+
+    clock = [0.0]
+    attempted = []
+
+    def bounded_feed(family, _target):
+        attempted.append(family)
+        clock[0] += 0.6
+        return []
+
+    monkeypatch.setattr(discovery, "default_discovery_targets", one_target_per_sport)
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 2.3)
+    monkeypatch.setattr(discovery, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runtime.discovery_feed, "enabled", lambda: True)
+
+    rows, scan = runtime._cross_sport_moneyline_rows(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+        ),
+        run_id="budget-integrated", event_api=Event, covered_event_ids=set(),
+        fetch_sport_events=bounded_feed,
+    )
+    assert rows == []
+    assert attempted == ["NBA", "NFL", "NHL", "NCAAF"]
+    audit = {row["family"]: row for row in scan["discovery"]["acquisition_audit"]}
+    assert all(audit[family]["request_status"] == discovery.NO_EVENTS_RETURNED
+               for family in attempted)
+    assert set(audit) == set(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    for family in set(discovery.SUPPORTED_DISCOVERY_SPORTS) - set(attempted):
+        assert audit[family]["request_status"] == discovery.DISCOVERY_BUDGET_EXHAUSTED
+        assert audit[family]["provider_sport_ids_attempted"] == []
+    assert scan["reconciliation"]["row_reconciliation"] == "PASS"
+    assert scan["can_execute"] is False
+
+
+def test_daily_scoring_callback_keeps_cross_sport_event_id_collision(monkeypatch):
+    """A same-numbered MLB game must not suppress an NFL fitted-bridge invocation."""
+    from types import SimpleNamespace
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+    from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
+
+    def two_targets(sports, **_kwargs):
+        return {
+            family: (
+                discovery.DiscoveryTarget(
+                    family=family, provider="TEST_FEED", league=family,
+                    sport_id=1 if family == "MLB" else 2,
+                ),
+            ) if family in {"MLB", "NFL"} else ()
+            for family in sports
+        }
+
+    def same_identifier(family, _target):
+        return [_cross_sport_event("shared-identity")] if family in {"MLB", "NFL"} else []
+
+    called = []
+
+    def held_score(request, **_kwargs):
+        called.append((request.sport, request.official_event_id))
+        return {
+            "code": "MODEL_INPUTS_INSUFFICIENT",
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(discovery, "default_discovery_targets", two_targets)
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 600.0)
+    monkeypatch.setattr(runtime.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(runtime, "score_team_event_request", held_score)
+    monkeypatch.setitem(TEAM_EVENT_BRIDGES, "NFL",
+                        SimpleNamespace(supported_regimes=("REGULAR_SEASON",)))
+    monkeypatch.setitem(TEAM_EVENT_BRIDGES, "MLB",
+                        SimpleNamespace(supported_regimes=("REGULAR_SEASON",)))
+
+    rows, scan = runtime._cross_sport_moneyline_rows(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+        ),
+        run_id="collision-integrated", event_api=Event,
+        covered_event_ids={("MLB", "shared-identity")},
+        fetch_sport_events=same_identifier,
+    )
+    assert called == [("NFL", "shared-identity")]
+    assert len(rows) == 1
+    assert rows[0]["identity"]["sport"] == "NFL"
+    assert rows[0]["result"]["model_status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert rows[0]["row_status"] == "HELD"
+    assert rows[0]["can_execute"] is False
+    assert [row["model_status"] for row in scan["rows"] if row["sport"] == "MLB"] == [
+        "ALREADY_SCORED_IN_CANONICAL_LANE"
+    ]
+    assert scan["reconciliation"]["events_discovered"] == 2
+    assert scan["reconciliation"]["row_reconciliation"] == "PASS"
