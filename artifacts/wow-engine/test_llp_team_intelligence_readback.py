@@ -251,6 +251,16 @@ def test_unsupported_daily_sport_is_not_counted_as_corrupt():
     assert view["invalid_event_rows"] == 0
 
 
+def test_canonical_mlb_candidate_envelope_is_not_malformed_llp_event():
+    saved = _row(certified=False)
+    saved["identity"].pop("sport")
+    saved["detail"]["result"]["candidate_envelope"] = {"sport": "MLB", "league": "MLB"}
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    assert view["unsupported_sport_rows_skipped"] == 1
+    assert view["invalid_event_rows"] == 0
+    assert view["events"] == []
+
+
 def test_saved_score_event_schema_translates_only_explicit_winner():
     saved = _row(certified=True)
     raw = saved["detail"]["result"]
@@ -278,6 +288,47 @@ def test_saved_score_event_schema_translates_only_explicit_winner():
     assert view["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
     assert "SOURCE_RECEIPT_MISSING" in view["events"][0]["markets"][0]["reason_codes"]
     assert "calibrated_probability" not in view["events"][0]["markets"][0]
+
+
+def test_nested_daily_scorer_receipt_is_read_without_bypassing_outer_publication():
+    saved = _row(certified=True)
+    outer = saved["detail"]["result"]
+    fields = (
+        "selected_side", "source_receipt_id", "terminal_authority",
+        "model_class", "model_version", "calibration_version",
+        "model_timestamp", "source_snapshot_timestamp",
+        "calibrated_probability", "calibrated_probability_lower_bound",
+        "calibrated_probability_upper_bound",
+    )
+    nested = {name: outer.pop(name) for name in fields}
+    outer["detail"] = nested
+    event = {**saved["identity"], "event_start_time_utc": START.isoformat()}
+    receipt = llp._winner_receipt_from_row(saved, event)
+    assert receipt["side"] == "DAL"
+    assert receipt["source_receipt_id"] == "receipt-prekick-1"
+    assert receipt["model_version"] == "test-model"
+    assert receipt["calibrated_probability"] == .61
+    assert receipt["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert receipt["probability_publishable"] is True
+    assert receipt["can_execute"] is False
+
+    # Nested scoring data alone must not override the Daily terminal HOLD.
+    saved["detail"]["probability_publishable"] = False
+    assert llp._winner_receipt_from_row(saved, event)["probability_publishable"] is False
+
+
+def test_saved_daily_reason_and_bucket_survive_as_typed_source_holds():
+    saved = _row(certified=False)
+    result = saved["detail"]["result"]
+    result["reason"] = "NFL_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE"
+    result["bucket"] = "MODEL_UNAVAILABLE"
+    result["detail"] = {"reason": "SOURCE_HOLD"}
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    codes = view["events"][0]["source_diagnostics"]["source_reason_codes"]
+    assert "NFL_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE" in codes
+    assert "MODEL_UNAVAILABLE" in codes
+    assert "SOURCE_HOLD" in codes
+    assert view["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
 
 
 def test_no_selected_side_is_invented_from_larger_home_probability():
