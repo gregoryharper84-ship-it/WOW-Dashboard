@@ -573,6 +573,14 @@ class DiscoveredEvent:
             "commence_time_utc": self.commence_time_utc,
             "event_status": self.event_status,
             "discovery_source": self.source,
+            # Preserve the canonical identity diagnostic beyond the upstream
+            # alias-only event; this is not model or publication authority.
+            **({
+                "canonical_identity_status": self.raw.get("canonical_identity_status"),
+                "canonical_identity_blocker": self.raw.get("canonical_identity_blocker"),
+            } if isinstance(self.raw, Mapping) and
+            (self.raw.get("canonical_identity_status") or self.raw.get("canonical_identity_blocker"))
+              else {}),
         }
 
 
