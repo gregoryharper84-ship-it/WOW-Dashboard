@@ -12,19 +12,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from fastapi import FastAPI
 import requests
 
 from github_actions_oidc import scout_route_auth_dependency
-from nhl_candidate_pipeline import (
-    NHLGame,
-    NHLCandidateError,
-    fetch_historical_games,
-    game_record,
-    season_id,
-)
 from v17.nhl_provenance import (
     SOURCE_PAYLOAD_HASH_SCOPE,
     SOURCE_PROVENANCE_VERSION,
@@ -36,6 +29,9 @@ from v17.nhl_fitted_specialist import (
     NHLFittedSpecialistError,
     load_nhl_season_events,
 )
+
+if TYPE_CHECKING:
+    from nhl_candidate_pipeline import NHLGame
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -51,12 +47,18 @@ class NHLSourceReingestError(RuntimeError):
 
 
 def default_season_id(now: datetime | None = None) -> int:
+    # nhl_candidate_pipeline owns sklearn-backed training imports. Keep it off
+    # the production route-construction path; re-ingest only needs it on call.
+    from nhl_candidate_pipeline import season_id
+
     current = now or datetime.now(timezone.utc)
     start_year = current.year if current.month >= 7 else current.year - 1
     return season_id(start_year)
 
 
 def _season_start_year(value: Any) -> int:
+    from nhl_candidate_pipeline import season_id
+
     token = str(value or "").strip()
     if len(token) != 8 or not token.isdigit():
         raise NHLSourceReingestError("NHL_SEASON_ID_INVALID", token)
@@ -86,6 +88,8 @@ def build_reingest_rows(
     provenance_version: str = SOURCE_PROVENANCE_VERSION,
 ) -> list[dict[str, Any]]:
     """Build deterministic append-only rows from settled regular-season games."""
+    from nhl_candidate_pipeline import NHLGame, game_record
+
     sha = str(ingest_code_sha or "").strip()
     if len(sha) < 7:
         raise NHLSourceReingestError("NHL_INGEST_CODE_SHA_UNAVAILABLE")
@@ -174,6 +178,8 @@ def run_nhl_source_reingest(
     All games are acquired and validated before the first write. A source or
     identity failure therefore cannot leave a partially appended timeline.
     """
+    from nhl_candidate_pipeline import NHLCandidateError, fetch_historical_games
+
     try:
         effective_season = int(season) if season is not None else default_season_id()
         start_year = _season_start_year(effective_season)

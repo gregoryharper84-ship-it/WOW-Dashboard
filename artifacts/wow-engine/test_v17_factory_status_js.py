@@ -20,7 +20,9 @@ def test_read_only_factory_status_javascript_contract() -> None:
     assert node is not None, "CI must provide Node to verify the factory probe"
     assert NODE_TEST.is_file(), "factory probe Node regression suite must be present"
     result = subprocess.run(
-        [node, "--test", str(NODE_TEST)],
+        # Node's default test reporter is version-dependent. Pin TAP so the
+        # summary assertion below verifies the same contract on every runner.
+        [node, "--test", "--test-reporter=tap", str(NODE_TEST)],
         cwd=REPOSITORY_ROOT,
         capture_output=True,
         text=True,
