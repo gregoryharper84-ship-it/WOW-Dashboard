@@ -57,8 +57,14 @@ def ensure_table_exists(conn_string: str | None = None) -> None:
     """Create the wow_session_exposure table if it doesn't exist."""
     import psycopg2
     url = conn_string or os.environ.get("DATABASE_URL", "")
-    with psycopg2.connect(url) as conn:
+    # Startup schema checks must not hang indefinitely on DNS/connectivity
+    # problems or a conflicting ACCESS EXCLUSIVE PostgreSQL lock. These
+    # transaction-local limits apply only to warmup DDL, not to live ledger
+    # read/write operations or their normal transaction semantics.
+    with psycopg2.connect(url, connect_timeout=5) as conn:
         with conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '3000ms'")
+            cur.execute("SET LOCAL statement_timeout = '10000ms'")
             cur.execute(_DDL)
         conn.commit()
 
