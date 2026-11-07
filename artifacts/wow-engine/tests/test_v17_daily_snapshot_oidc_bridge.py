@@ -201,3 +201,113 @@ def test_weekly_nfl_capture_requires_real_pregame_prediction_receipts():
     assert '"nfl_future_prediction_receipts"' in workflow
     assert '"model_terminal_certification": "NOT_PROVEN_BY_PROSPECTIVE_CAPTURE"' in workflow
     assert '"probability_values_logged": False' in workflow
+
+
+@pytest.mark.parametrize("persisted_receipts,expected_error", [
+    (5, None),
+    (4, "NFL_FUTURE_PROSPECTIVE_CAPTURE_INSUFFICIENT"),
+])
+def test_weekly_nfl_script_requires_persisted_not_merely_discovered(
+    monkeypatch, capsys, persisted_receipts, expected_error,
+):
+    """Execute the actual workflow Python with mocked OIDC/HTTPS, no network."""
+    import io
+    import json
+    import textwrap
+    import urllib.request
+    from datetime import datetime, time, timezone
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    workflow = (
+        Path(__file__).resolve().parents[3]
+        / ".github/workflows/wow-v17-daily-snapshot.yml"
+    ).read_text(encoding="utf-8")
+    daily_job = workflow.split("  daily-snapshot:", 1)[1].split(
+        "  nfl-full-slate-exact-once-acceptance:", 1
+    )[0]
+    script = textwrap.dedent(
+        daily_job.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    )
+    compiled = compile(script, "wow-v17-daily-snapshot:inline", "exec")
+
+    for key, value in {
+        "GITHUB_EVENT_NAME": "schedule",
+        "WOW_NFL_NEXT_SUNDAY_CAPTURE": "true",
+        "WOW_USER_TIMEZONE": "America/Chicago",
+        "WOW_ACTION_ORIGIN": "https://test.example",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.test.example/token",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "fixture-only",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    called = []
+
+    def fake_urlopen(request, timeout=None):
+        if request.full_url.startswith("https://oidc.test.example/token"):
+            return io.BytesIO(json.dumps({"value": "fixture-oidc"}).encode())
+        assert request.full_url == "https://test.example/internal/v17/daily-snapshot"
+        assert request.get_method() == "POST"
+        body = json.loads(request.data.decode())
+        called.append(body)
+        assert body["max_team_events"] == 24
+        assert body["response_mode"] == "FULL"
+        assert body["lanes"] == ["MONEYLINE"]
+        assert body["requested_timezone"] == "America/Chicago"
+        sunday = datetime.fromisoformat(body["requested_slate_date"]).date()
+        kickoff = datetime.combine(
+            sunday, time(23, 59, tzinfo=ZoneInfo("America/Chicago"))
+        ).astimezone(timezone.utc).isoformat()
+        rows = [
+            {
+                "lane": "MONEYLINE",
+                "identity": {
+                    "sport": "NFL",
+                    "official_event_id": f"nfl-future-event-{i}",
+                    "commence_time_utc": kickoff,
+                },
+                "can_execute": False,
+                "result": {"detail": {
+                    "model_version": "FIXTURE_FITTED_SPECIALIST",
+                    **({"prediction_id": f"immutable-pred-{i}"}
+                       if i < persisted_receipts else {}),
+                }},
+            }
+            for i in range(5)
+        ]
+        output = {
+            "run_id": "fixture-daily",
+            "run_status": "COMPLETED",
+            "requested_slate_date": body["requested_slate_date"],
+            "rows": rows,
+            "reconciliation": {
+                "balanced": True,
+                "rows_completed": 0,
+                "rows_held": 5,
+                "rows_rejected": 0,
+            },
+            "lane_reconciliation": {
+                "MONEYLINE": {"requested_row_limit": 24},
+            },
+            "cross_sport_discovery_audit": {
+                "reconciliation": {"row_reconciliation": "PASS"},
+            },
+            "global_terminal_authority": "V17_TERMINAL_REDUCER",
+            "automation_auth": "GITHUB_ACTIONS_OIDC",
+            "can_execute": False,
+        }
+        return io.BytesIO(json.dumps(output).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    if expected_error:
+        with pytest.raises(AssertionError, match=expected_error):
+            exec(compiled, {"__name__": "__main__"})
+    else:
+        exec(compiled, {"__name__": "__main__"})
+        receipt = json.loads(capsys.readouterr().out.strip())
+        assert receipt["capture_mode"] == "NFL_NEXT_SUNDAY"
+        assert receipt["nfl_future_prediction_receipts"] == 5
+        assert receipt["model_terminal_certification"] == "NOT_PROVEN_BY_PROSPECTIVE_CAPTURE"
+        assert receipt["probability_values_logged"] is False
+        assert receipt["can_execute"] is False
+    assert len(called) == 1
