@@ -687,6 +687,24 @@ def test_release_only_superseded_qa_is_neutral_after_authentic_policy(state, hea
     assert neutral["policy"]["target"]["head_sha"] == HEAD
 
 
+def test_closed_draft_supersession_is_never_a_neutral_shortcut():
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["state"] = "closed"
+    target["draft"] = True
+    target["head"]["sha"] = MAIN
+    target["merged_at"] = None
+    routes["/pulls/1822"] = target
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=PRODUCER_RUN["id"], run_attempt=1, token="read-only",
+            now=datetime.now(timezone.utc), get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+            allow_superseded_target=True,
+        )
+
+
 @pytest.mark.parametrize(("change", "value"), [
     ("head.repo", {"full_name": "foreign/repository"}),
     ("base.ref", "development"),
