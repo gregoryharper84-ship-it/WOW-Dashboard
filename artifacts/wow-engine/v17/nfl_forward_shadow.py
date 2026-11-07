@@ -21,7 +21,9 @@ from v17.nfl_forward_settlement_refresh import refresh_recent_settled_outcomes
 
 CAN_EXECUTE = False
 MIN_FORWARD_GRADED = 100
-HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V1"
+# V2 is required after the private verified-grade view migration; stale V1
+# health snapshots cannot authorize the forward certification admission gate.
+HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V2"
 GRADE_SCHEMA_VERSION = "NFL_FORWARD_SHADOW_GRADE_V1"
 
 PREDICTION_TABLE = "wow_nfl_event_predictions"
@@ -188,15 +190,26 @@ def grade_forward_predictions(
         outcome = outcomes.get(prediction.official_event_id)
         if outcome is None:
             continue
-        if outcome.get("tie") is True:
-            # Standard NFL moneyline tie settlement is not a binary win/loss.
-            # It is excluded from binary calibration rather than mislabeled loss.
-            continue
+        # Never infer a binary result from a conflicting or incomplete
+        # settlement. In particular, equal scores are a tie even when a
+        # persisted tie flag is missing or corrupt. The source producer emits
+        # integer scores and a real boolean home_win; require both to agree.
+        # This prevents a malformed settlement from inflating the forward
+        # cohort or changing Brier/log-loss and calibration certification.
+        home_score = outcome.get("home_score")
+        away_score = outcome.get("away_score")
         home_win = outcome.get("home_win")
-        if home_win is None:
+        if (
+            type(home_score) is not int or type(away_score) is not int
+            or home_score < 0 or away_score < 0
+            or home_score == away_score
+            or outcome.get("tie") is not False
+            or type(home_win) is not bool
+            or home_win != (home_score > away_score)
+        ):
             continue
         selected_home = prediction.selected_participant == prediction.home_team
-        won = bool(home_win) if selected_home else not bool(home_win)
+        won = home_win if selected_home else not home_win
         y = int(won)
         p = prediction.calibrated_probability
         grades.append(
