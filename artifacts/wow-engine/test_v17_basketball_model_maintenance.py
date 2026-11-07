@@ -1032,7 +1032,9 @@ def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
                 return SimpleNamespace(data=self.db.rows[a:b + 1])
             if self.lim == 1:
                 return SimpleNamespace(data=self.db.rows[:1])
-            return SimpleNamespace(data=self.db.rows[:101])
+            return SimpleNamespace(data=[
+                r for r in self.db.rows if r["game_date"] == "2026-11-05"
+            ][:101])
     class DB:
         def __init__(self, rows):
             self.rows = rows
@@ -1040,7 +1042,7 @@ def test_nba_current_season_full_window_paginates_and_never_trusts_truncation():
             return Query(self)
     clock = datetime(2026, 11, 6, tzinfo=timezone.utc)
     rows = [
-        {"game_date": "2026-11-05", "season": 2027,
+        {"game_date": "2026-11-05" if i == 0 else "2026-10-28", "season": 2027,
          "game_id": f"espn-{401810000 + i}",
          "source_provider": "SPORTSDATAVERSE_ESPN"}
         for i in range(135)
