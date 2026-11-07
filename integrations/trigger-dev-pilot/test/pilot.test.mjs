@@ -107,3 +107,15 @@ test("actual Trigger DEV config enables retries and stays isolated", () => {
   assert.match(config, /dirs:\s*\["\.\/src\/trigger"\]/);
   assert.doesNotMatch(config, /schedules\.task|cron\s*\(|deploy\s*\(/i);
 });
+
+test("synthetic retry task is DEV-only and has no external side effects", () => {
+  const source = readFileSync(new URL("../src/trigger/synthetic-retry.ts", import.meta.url), "utf8");
+  assert.match(source, /assertPilotSafety\(\)/);
+  assert.match(source, /idempotencyKeyFor\(payload\?\.probeId\)/);
+  assert.match(source, /ctx\.attempt\.number/);
+  assert.match(source, /attempt === 1 \|\| attempt === 2/);
+  assert.match(source, /attempt !== 3/);
+  assert.match(source, /maxAttempts:\s*3/);
+  assert.match(source, /concurrency:\s*\{\s*total:\s*1\s*\}/);
+  assert.doesNotMatch(source, /fetch\s*\(|https?:\/\/|POST|supabase|cron\s*\(|schedules\.task/i);
+});

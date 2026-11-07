@@ -29,6 +29,12 @@ Run `node --test` from this directory. The tests use stubbed fetch calls and do 
 5. In Trigger.dev development Runs, capture: task ID, environment, both invocation run IDs, attempt count, status, request HTTP code, duration, compute usage. To test retry behavior in Trigger.dev without perturbing production, use a **separate mocked HTTP adapter/test environment**; the local tests already inject a 503→503→200 sequence. Do **not** manipulate the production health endpoint to induce faults.
 6. Production acceptance requires independent SIRT comparison with GitHub Actions and Render readbacks; no automatic promotion on successful health GET.
 
+## Deterministic DEV retry proof (no HTTP calls)
+
+The **separate** manually triggered `wow-v17-synthetic-retry-pilot` task performs no network or database operations. It deliberately fails on Trigger.dev platform attempts 1 and 2 and succeeds on attempt 3, using the SDK's `ctx.attempt.number`. After starting `trigger dev`, open this task in the existing DEV dashboard, select **Test**, and supply `{"probeId":"2026-11-07-synthetic-1"}`. Verify a single Trigger.dev run has exactly 3 attempts and a terminal success. The task is not scheduled and cannot touch a sport/model workflow.
+
+Keep `WOW_TRIGGER_PILOT_ENABLED=true`, `WOW_TRIGGER_PILOT_ENV=dev`, `WOW_CAN_EXECUTE=false`, and `WOW_DRY_RUN_ONLY=true` set in the **Trigger.dev DEV task environment**, not merely the invocation shell. Do not add project secrets or enable production.
+
 ## Acceptance criteria
 
 1. `node --test` succeeds on the exact PR head; Trigger.dev DEV retries are explicitly enabled.
