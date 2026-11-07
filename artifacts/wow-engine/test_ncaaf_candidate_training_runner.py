@@ -104,10 +104,10 @@ def test_training_page_reads_have_stable_primary_key_order_and_projection():
     games = _paged(db, "wow_ncaaf_training_games", "official_event_id", page_size=2)
     features = _paged(db, "wow_ncaaf_training_features", "training_game_id", page_size=2)
     assert len(games) == len(features) == 5
-    assert db.orders == [
-        ("wow_ncaaf_training_games", "training_game_id"),
-        ("wow_ncaaf_training_features", "feature_row_id"),
-    ] * 3  # one ordering per page, including the final short page
+    assert db.orders == (
+        [("wow_ncaaf_training_games", "training_game_id")] * 3
+        + [("wow_ncaaf_training_features", "feature_row_id")] * 3
+    )  # one ordering per page, including the final short page
     assert db.projections[0] == (
         "wow_ncaaf_training_games", "official_event_id,training_game_id"
     )
