@@ -383,3 +383,57 @@ def test_reused_immutable_nfl_prediction_never_becomes_publishable_retroactively
     assert db.predictions.rows[0]["model_probability_publishable"] is False
     assert len(db.predictions.rows) == 1
     assert reused["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "disagreement",
+    ("missing_row_flag", "missing_snapshot_model_flag", "missing_snapshot_publication_flag",
+     "row_held", "snapshot_held"),
+)
+def test_reused_nfl_prediction_requires_complete_stored_publication_evidence(
+    monkeypatch, disagreement,
+):
+    """Even a publishable champion cannot backfill absent or conflicting receipt flags."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=True)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    row = db.predictions.rows[0]
+    snapshot = row["model_output_snapshot"]
+    if disagreement == "missing_row_flag":
+        row.pop("model_probability_publishable")
+    elif disagreement == "missing_snapshot_model_flag":
+        snapshot.pop("model_probability_publishable")
+    elif disagreement == "missing_snapshot_publication_flag":
+        snapshot.pop("probability_publishable")
+    elif disagreement == "row_held":
+        row["model_probability_publishable"] = False
+    else:
+        snapshot["probability_publishable"] = False
+
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+    assert reused["prediction_reused"] is True
+    assert reused["event_prediction_id"] == first["event_prediction_id"]
+    assert reused["model_probability_publishable"] is False
+    assert reused["probability_publishable"] is False
+    assert reused["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+    assert reused["can_execute"] is False
+    assert len(db.predictions.rows) == 1
+
+
+def test_reused_nfl_prediction_holds_if_current_artifact_is_not_publishable(monkeypatch):
+    """Stored positive flags cannot override a later governed artifact hold."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=True)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    assert first["model_probability_publishable"] is True
+    _patch_model(monkeypatch, publishable=False)
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+    assert reused["prediction_reused"] is True
+    assert reused["model_probability_publishable"] is False
+    assert reused["probability_publishable"] is False
+    assert reused["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+    assert db.predictions.rows[0]["model_probability_publishable"] is True
+    assert len(db.predictions.rows) == 1
+    assert reused["can_execute"] is False
