@@ -22,7 +22,11 @@ HEALTH = {
 READY = {
     "mode": "SHADOW",
     "trigger_installed": True,
-    "startup_enabled": True,
+    # The isolated runtime collects only through the authenticated POST
+    # trigger; the in-process startup loop is intentionally off there.
+    "startup_enabled": False,
+    "collection_path": "AUTHENTICATED_POST_TRIGGER",
+    "capture_trigger_installed": True,
     "can_execute": False,
     "probability_publishable": False,
 }
@@ -46,9 +50,17 @@ class WakeProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(probe.ProbeError, "WEATHER_PROBABILITY_SAFETY_INVALID"):
             probe.verify(HEALTH, {**READY, "can_execute": True})
 
-    def test_fails_on_disabled_collector(self):
-        with self.assertRaisesRegex(probe.ProbeError, "WEATHER_COLLECTOR_NOT_CONFIGURED"):
-            probe.verify(HEALTH, {**READY, "startup_enabled": False})
+    def test_fails_when_authenticated_capture_trigger_is_missing(self):
+        with self.assertRaisesRegex(probe.ProbeError, "WEATHER_CAPTURE_TRIGGER_NOT_INSTALLED"):
+            probe.verify(HEALTH, {**READY, "capture_trigger_installed": False})
+
+    def test_trigger_only_deployment_passes_with_in_process_loop_disabled(self):
+        """A correct trigger-only runtime must not fail closed on startup_enabled."""
+        probe.verify(HEALTH, {**READY, "startup_enabled": False})
+
+    def test_fails_when_collection_path_is_not_the_authenticated_trigger(self):
+        with self.assertRaisesRegex(probe.ProbeError, "WEATHER_COLLECTION_PATH_UNVERIFIED"):
+            probe.verify(HEALTH, {**READY, "collection_path": "DISABLED_NO_OWNER"})
 
     def test_retry_on_temporary_cold_start(self):
         calls = []

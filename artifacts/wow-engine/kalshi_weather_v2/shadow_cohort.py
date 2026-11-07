@@ -68,6 +68,28 @@ class CohortRunResult:
     can_execute: bool = False
     market_microstructure_snapshots_captured: int = 0
     market_microstructure_failures: tuple[str, ...] = ()
+    low_memory_suppressed: int = 0
+
+
+@dataclass(frozen=True)
+class SettlementBacklogResult:
+    """Bounded settlement receipt. Never evidence of capability or execution."""
+
+    status: str
+    pending_eligible: int
+    attempted: int
+    settled: int
+    remaining_after_run: int
+    truncated: bool
+    failures: tuple[str, ...]
+    probability_publishable: bool = False
+    can_execute: bool = False
+
+
+SETTLEMENT_BACKLOG_CLEARED = "SETTLEMENT_BACKLOG_CLEARED"
+SETTLEMENT_BACKLOG_COMPLETE = "SETTLEMENT_BACKLOG_COMPLETE"
+SETTLEMENT_BACKLOG_PARTIAL = "SETTLEMENT_BACKLOG_PARTIAL"
+SETTLEMENT_BACKLOG_FAILED = "SETTLEMENT_BACKLOG_FAILED"
 
 
 def run_hourly_shadow_cohort_once(
@@ -218,32 +240,87 @@ async def run_shadow_cohort_loop(
 
 
 def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any]:
-    predictions = _select_rows(client, "wow_kalshi_weather_predictions", limit=5000)
-    outcomes = _select_rows(client, "wow_kalshi_weather_outcomes", limit=5000)
+    # Calibration must never interpret an unavailable or truncated source as
+    # an empty complete sample. An incomplete ledger cannot produce a fit.
+    try:
+        predictions = _strict_calibration_rows(
+            client, "wow_kalshi_weather_predictions", limit=5000
+        )
+        outcomes = _strict_calibration_rows(
+            client, "wow_kalshi_weather_outcomes", limit=5000
+        )
+    except RuntimeError as exc:
+        return {
+            "status": "EMPIRICAL_CALIBRATION_REPORT_INCOMPLETE",
+            "minimum_candidate_n": minimum_n,
+            "groups": [],
+            "dataset_integrity": {
+                "source_ledgers_complete": False,
+                "source_ledger_error_code": str(exc),
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+            "probability_publishable": False,
+            "capability_promotion_allowed": False,
+            "can_execute": False,
+        }
     outcome_by_prediction = {str(row.get("prediction_id")): row for row in outcomes if row.get("prediction_id")}
 
     groups: dict[tuple[str, str, str], dict[str, tuple[str, ForecastResidual]]] = {}
+    exclusions: dict[str, int] = {}
+    last_decision_by_station: dict[str, str] = {}
+    settled_predictions = 0
+    eligible_predictions = 0
+    missing_settlement = 0
+    valid_residual_predictions = 0
+
+    def exclude(reason: str) -> None:
+        exclusions[reason] = exclusions.get(reason, 0) + 1
+
     for prediction in predictions:
         prediction_id = str(prediction.get("prediction_id") or "")
         outcome = outcome_by_prediction.get(prediction_id)
-        if not outcome or prediction.get("central_estimate_f") is None or outcome.get("settled_value") is None:
-            continue
+        if outcome and outcome.get("settled_value") is not None:
+            settled_predictions += 1
         model_payload = prediction.get("model_payload") if isinstance(prediction.get("model_payload"), Mapping) else {}
         contract = model_payload.get("contract") if isinstance(model_payload.get("contract"), Mapping) else {}
         lane = str(contract.get("lane") or "").upper()
         if lane != "HOURLY_TEMPERATURE":
+            exclude("LANE_NOT_HOURLY_TEMPERATURE")
             continue
         station_id = str(contract.get("settlement_location_code") or "")
+        if not station_id:
+            exclude("SETTLEMENT_LOCATION_MISSING")
+            continue
         observation_window = str(contract.get("observation_window") or "")
         prefix = "POINT_IN_TIME:"
-        if not station_id or not observation_window.startswith(prefix):
+        if not observation_window.startswith(prefix):
+            exclude("OBSERVATION_WINDOW_NOT_POINT_IN_TIME")
+            continue
+        bucket = str(model_payload.get("lead_time_bucket") or "").upper()
+        if not bucket:
+            exclude("LEAD_TIME_BUCKET_MISSING")
+            continue
+        decision_time = _normalized_z(str(prediction.get("decision_time") or ""))
+        if not decision_time:
+            exclude("DECISION_TIME_MISSING")
+            continue
+        previous_decision = last_decision_by_station.get(station_id)
+        if previous_decision is None or decision_time > previous_decision:
+            last_decision_by_station[station_id] = decision_time
+        eligible_predictions += 1
+        if not outcome or outcome.get("settled_value") is None:
+            missing_settlement += 1
+            exclude("OFFICIAL_SETTLEMENT_MISSING")
+            continue
+        if prediction.get("central_estimate_f") is None:
+            exclude("FORECAST_CENTRAL_ESTIMATE_MISSING")
+            continue
+        settlement_time = _normalized_z(str(outcome.get("settled_at") or ""))
+        if not settlement_time:
+            exclude("SETTLEMENT_TIME_MISSING")
             continue
         target_time = observation_window[len(prefix):]
-        bucket = str(model_payload.get("lead_time_bucket") or "").upper()
-        decision_time = _normalized_z(str(prediction.get("decision_time") or ""))
-        settlement_time = _normalized_z(str(outcome.get("settled_at") or ""))
-        if not bucket or not decision_time or not settlement_time:
-            continue
         sample_key = cohort_sample_key(station_id.removeprefix("KALSHI_WEATHER_INDEX:"), target_time, bucket)
         residual = ForecastResidual(
             forecast_value_f=float(prediction["central_estimate_f"]),
@@ -251,6 +328,10 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             forecast_as_of=decision_time,
             settlement_time=settlement_time,
         )
+        # Only usable residuals can count toward deduplicated samples.
+        # Settled rows lacking a forecast/settlement timestamp are exclusions,
+        # not duplicates of another weather target.
+        valid_residual_predictions += 1
         key = (station_id, lane, bucket)
         current = groups.setdefault(key, {}).get(sample_key)
         if current is None or decision_time < current[0]:
@@ -272,8 +353,11 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             "train_n": 0,
             "validation_n": 0,
             "validation_mae_f": None,
+            "baseline_mae_f": None,
+            "mae_improvement_f": None,
             "validation_bias_f": None,
             "within_1sigma_rate": None,
+            "certified": False,
         }
         if len(rows) >= minimum_n + 10:
             validation_n = max(10, int(round(len(rows) * 0.20)))
@@ -290,13 +374,24 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
                 bias = float(train_fit.profile.bias_f)
                 sigma = float(train_fit.profile.sigma_f)
                 corrected_errors = [row.residual_f - bias for row in validation_rows]
+                corrected_mae = mean(abs(value) for value in corrected_errors)
+                # Baseline is the uncorrected forecast on the same chronological
+                # holdout. Without it an improvement claim is unfalsifiable.
+                baseline_mae = mean(abs(row.residual_f) for row in validation_rows)
                 validation = {
                     "status": "FORWARD_VALIDATION_REPORTED",
                     "train_n": len(train_rows),
                     "validation_n": len(validation_rows),
-                    "validation_mae_f": mean(abs(value) for value in corrected_errors),
+                    "validation_mae_f": corrected_mae,
+                    "baseline_mae_f": baseline_mae,
+                    "mae_improvement_f": baseline_mae - corrected_mae,
                     "validation_bias_f": mean(corrected_errors),
                     "within_1sigma_rate": mean(1.0 if abs(value) <= sigma else 0.0 for value in corrected_errors),
+                    "certified": False,
+                    "certification_note": (
+                        "Chronological holdout comparison on research samples only. "
+                        "A positive improvement is not a certification or a publication gate."
+                    ),
                 }
 
         reports.append(
@@ -314,10 +409,41 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             }
         )
 
+    unique_samples_by_bucket: dict[str, int] = {}
+    unique_samples_by_station: dict[str, int] = {}
+    for (station_id, _lane, bucket), keyed_rows in groups.items():
+        unique_samples_by_bucket[bucket] = unique_samples_by_bucket.get(bucket, 0) + len(keyed_rows)
+        unique_samples_by_station[station_id] = unique_samples_by_station.get(station_id, 0) + len(keyed_rows)
+    unique_total = sum(unique_samples_by_bucket.values())
+    settled_eligible = max(0, eligible_predictions - missing_settlement)
+
     return {
         "status": "EMPIRICAL_CALIBRATION_REPORT",
         "minimum_candidate_n": minimum_n,
         "groups": reports,
+        "dataset_integrity": {
+            "source_ledgers_complete": True,
+            "total_predictions": len(predictions),
+            "settled_predictions": settled_predictions,
+            "eligible_hourly_predictions": eligible_predictions,
+            "settled_eligible_predictions": settled_eligible,
+            "unique_calibration_samples": unique_total,
+            "duplicate_predictions_collapsed": max(0, valid_residual_predictions - unique_total),
+            "missing_official_settlements": missing_settlement,
+            "unique_samples_by_lead_bucket": dict(sorted(unique_samples_by_bucket.items())),
+            "unique_samples_by_station": dict(sorted(unique_samples_by_station.items())),
+            "last_decision_time_by_station": dict(sorted(last_decision_by_station.items())),
+            "exclusion_reasons": dict(sorted(exclusions.items())),
+            "usable_fraction": (
+                round(unique_total / eligible_predictions, 6) if eligible_predictions else 0.0
+            ),
+            "point_in_time_note": (
+                "Forecast availability timestamps remain unverified upstream; strict "
+                "point-in-time eligibility is not claimed for samples whose provenance is missing."
+            ),
+            "probability_publishable": False,
+            "can_execute": False,
+        },
         "probability_publishable": False,
         "capability_promotion_allowed": False,
         "can_execute": False,
@@ -441,6 +567,192 @@ def _settle_ready_predictions(
         settled += 1
         outcome_prediction_ids.add(prediction_id)
     return settled
+
+
+def _pending_settlement_targets(
+    client,
+    now: str,
+    *,
+    scan_limit: int,
+) -> tuple[list[tuple[str, str]], bool]:
+    """Eligible unsettled hourly predictions, oldest scan order preserved."""
+    def strict_rows(table: str):
+        # Fail closed: an unavailable ledger is never an empty backlog.
+        response = (
+            client.table(table).select("*")
+            .order("prediction_id", desc=False)
+            .limit(scan_limit + 1).execute()
+        )
+        data = getattr(response, "data", None)
+        if not isinstance(data, list) or any(not isinstance(x, Mapping) for x in data):
+            raise RuntimeError("SETTLEMENT_DATABASE_READ_INVALID")
+        return data[:scan_limit], len(data) > scan_limit
+
+    outcome_rows, outcomes_truncated = strict_rows("wow_kalshi_weather_outcomes")
+    prediction_rows, predictions_truncated = strict_rows("wow_kalshi_weather_predictions")
+    settled_ids = {
+        str(row.get("prediction_id")) for row in outcome_rows if row.get("prediction_id")
+    }
+    cutoff = _parse_utc(now) - timedelta(minutes=SETTLEMENT_GRACE_MINUTES)
+    pending: list[tuple[str, str]] = []
+    for prediction in prediction_rows:
+        prediction_id = str(prediction.get("prediction_id") or "")
+        if not prediction_id or prediction_id in settled_ids:
+            continue
+        model_payload = (
+            prediction.get("model_payload")
+            if isinstance(prediction.get("model_payload"), Mapping)
+            else {}
+        )
+        contract = (
+            model_payload.get("contract")
+            if isinstance(model_payload.get("contract"), Mapping)
+            else {}
+        )
+        if str(contract.get("lane") or "").upper() != "HOURLY_TEMPERATURE":
+            continue
+        window = str(contract.get("observation_window") or "")
+        station_id = str(contract.get("settlement_location_code") or "")
+        prefix = "POINT_IN_TIME:"
+        station_prefix = "KALSHI_WEATHER_INDEX:"
+        if not window.startswith(prefix) or not station_id.startswith(station_prefix):
+            continue
+        # A malformed identity must fail closed here rather than reach a provider
+        # query with an empty city and burn a bounded settlement attempt.
+        index_city = station_id[len(station_prefix):].strip()
+        if not index_city:
+            continue
+        try:
+            target_time = _parse_utc(window[len(prefix):])
+        except Exception:
+            continue
+        if target_time > cutoff:
+            continue
+        pending.append((prediction_id, index_city))
+    return pending, not (outcomes_truncated or predictions_truncated)
+
+
+def run_bounded_settlement_backlog_once(
+    *,
+    client,
+    now: str | None = None,
+    max_attempts: int = 10,
+    scan_limit: int = 500,
+) -> SettlementBacklogResult:
+    """Drain a hard-capped slice of the settlement backlog.
+
+    Settlement is a separate memory and latency workload from capture. It is
+    idempotent (a surviving outcome is never re-settled), bounded per call, and
+    reports how much work remains instead of implying the backlog is clear.
+    """
+    limit = max(0, min(int(max_attempts), 25))
+    now_iso = _iso(_parse_or_now(now))
+    page_limit = max(1, min(int(scan_limit), 500))
+    try:
+        pending, scan_complete = _pending_settlement_targets(
+            client, now_iso, scan_limit=page_limit
+        )
+    except Exception:
+        return SettlementBacklogResult(
+            status=SETTLEMENT_BACKLOG_FAILED,
+            pending_eligible=0,
+            attempted=0,
+            settled=0,
+            remaining_after_run=0,
+            truncated=True,
+            failures=("SETTLEMENT_BACKLOG_DATABASE_READ_FAILED",),
+        )
+    if not scan_complete:
+        # An incomplete outcomes ledger could hide already settled IDs.
+        # Never attempt writes until both source ledgers are exhaustive.
+        return SettlementBacklogResult(
+            status=SETTLEMENT_BACKLOG_PARTIAL,
+            pending_eligible=len(pending),
+            attempted=0,
+            settled=0,
+            remaining_after_run=len(pending),
+            truncated=True,
+            failures=("SETTLEMENT_BACKLOG_SCAN_TRUNCATED",),
+        )
+    failures: list[str] = []
+    attempted = 0
+    settled = 0
+    http = ReadOnlyJsonClient()
+    try:
+        for prediction_id, index_city in pending:
+            if attempted >= limit:
+                break
+            attempted += 1
+            try:
+                settle_hourly_prediction(
+                    client=client,
+                    prediction_id=prediction_id,
+                    index_city=index_city,
+                    settled_at=now_iso,
+                    http=http,
+                )
+            except Exception as exc:
+                failures.append(
+                    f"{prediction_id}:{type(exc).__name__}:{getattr(exc, 'code', '')}"
+                )
+                continue
+            settled += 1
+    finally:
+        http.close()
+
+    remaining = max(0, len(pending) - settled)
+    if not scan_complete:
+        failures.append("SETTLEMENT_BACKLOG_SCAN_TRUNCATED")
+        status = SETTLEMENT_BACKLOG_PARTIAL
+    elif not pending:
+        status = SETTLEMENT_BACKLOG_CLEARED
+    elif settled == 0 and failures:
+        status = SETTLEMENT_BACKLOG_FAILED
+    elif remaining == 0 and not failures:
+        status = SETTLEMENT_BACKLOG_COMPLETE
+    else:
+        status = SETTLEMENT_BACKLOG_PARTIAL
+
+    return SettlementBacklogResult(
+        status=status,
+        pending_eligible=len(pending),
+        attempted=attempted,
+        settled=settled,
+        remaining_after_run=remaining,
+        truncated=(not scan_complete or len(pending) > attempted),
+        failures=tuple(failures),
+    )
+
+
+
+def _strict_calibration_rows(
+    client, table: str, *, limit: int
+) -> list[Mapping[str, Any]]:
+    """Return complete small-sample calibration ledger or fail closed.
+
+    For larger ledgers use a separately reviewed paginated calibration reader;
+    never fit from an invisible tail or a transiently unreadable table.
+    """
+    try:
+        response = (
+            client.table(table)
+            .select("*", count="exact")
+            .limit(limit + 1)
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError("CALIBRATION_LEDGER_READ_FAILED") from exc
+    rows = getattr(response, "data", None)
+    if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+        raise RuntimeError("CALIBRATION_LEDGER_RESPONSE_INVALID")
+    exact_count = getattr(response, "count", None)
+    # PostgREST can impose max_rows below the requested limit. A short
+    # data page alone does not establish full-ledger coverage.
+    if not isinstance(exact_count, int) or exact_count < len(rows):
+        raise RuntimeError("CALIBRATION_LEDGER_COUNT_UNAVAILABLE")
+    if exact_count > len(rows) or exact_count > limit:
+        raise RuntimeError("CALIBRATION_LEDGER_TRUNCATED")
+    return [dict(row) for row in rows]
 
 
 def _select_rows(client, table: str, *, limit: int) -> list[Mapping[str, Any]]:
