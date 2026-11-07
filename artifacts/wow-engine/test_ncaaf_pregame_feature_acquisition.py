@@ -71,6 +71,55 @@ def _acquire(games=None, venues=None, schedule_at=SCHEDULE_AT, venue_at=VENUE_AT
     )
 
 
+def test_newer_unverified_prior_blocks_older_completed_rest_evidence():
+    games = _slate()
+    games.insert(2, _game(
+        "newer-unknown", KICKOFF - timedelta(days=3),
+        "Texas", "New Opponent", "austin", completed=False,
+    ))
+    receipt = _acquire(games=games)
+    home = next(
+        row for row in receipt["coverage"]
+        if row["official_event_id"] == "target"
+        and row["slot"] == "REST_TRAVEL:HOME"
+    )
+    assert home["status"] == "MISSING"
+    assert home["reason"] == "NCAAF_PRIOR_OCCURRENCE_NOT_VERIFIED"
+    assert home["blocked_prior_event_id"] == "newer-unknown"
+    assert not any(
+        row["official_event_id"] == "target" and row["scope"] == "HOME"
+        for row in receipt["evidence_rows"]
+    )
+    # Once the newer game is affirmatively cancelled, the older proved
+    # occurrence can legitimately be used again.
+    games[2]["status"] = "canceled"
+    canceled = _acquire(games=games)
+    home_evidence = next(
+        row for row in canceled["evidence_rows"]
+        if row["official_event_id"] == "target" and row["scope"] == "HOME"
+    )
+    assert home_evidence["payload"]["prior_event_id"] == "prior-home"
+
+
+def test_conflicted_snapshot_id_cannot_reenter_with_original_digest():
+    initial = _slate()
+    changed = initial + [_game(
+        "extra", KICKOFF - timedelta(days=4), "Kansas", "Navy",
+        "austin", completed=True,
+    )]
+    receipt = acquire_schedule_geometry([
+        _receipt("/games", initial, SCHEDULE_AT, "reused-id"),
+        _receipt("/games", changed, SCHEDULE_AT, "reused-id"),
+        _receipt("/games", initial, SCHEDULE_AT, "reused-id"),
+    ], [])
+    assert receipt["schedule_receipts_read"] == 0
+    assert receipt["evidence_rows"] == []
+    assert any(
+        item["reason"] == "NCAAF_SOURCE_RECEIPT_DUPLICATE"
+        for item in receipt["rejected_receipts"]
+    )
+
+
 def test_neutral_venue_requires_home_and_away_travel_receipts():
     """Do not treat the nominal HOME team as stationary at a neutral site."""
     games = _slate()
