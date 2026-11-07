@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
 CAN_EXECUTE = False
@@ -209,7 +210,134 @@ def apply_multiclass_artifact(raw: Mapping[str, float], artifact: Mapping[str, A
     }
 
 
+_CANONICAL_ESCAPES = {
+    '"': '\\"',
+    "\\": "\\\\",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\b": "\\b",
+    "\f": "\\f",
+}
+
+
+class CalibrationArtifactDigestError(ValueError):
+    """Raised when a calibration payload does not match its declared digest."""
+
+    code = "MODEL_OUTPUT_INVALID"
+
+
+def _canonical_string(value: str) -> str:
+    out = ['"']
+    for char in value:
+        escaped = _CANONICAL_ESCAPES.get(char)
+        if escaped is not None:
+            out.append(escaped)
+        elif char < " ":
+            out.append("\\u%04x" % ord(char))
+        else:
+            out.append(char)
+    out.append('"')
+    return "".join(out)
+
+
+def _canonical_number(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CalibrationArtifactDigestError("CALIBRATION_ARTIFACT_NUMBER_INVALID") from exc
+    if not math.isfinite(number):
+        raise CalibrationArtifactDigestError("CALIBRATION_ARTIFACT_NUMBER_INVALID")
+    # Signed zero and integral floats keep the PostgreSQL jsonb numeric rendering
+    # ("0.0", "240.0") so the database can recompute the same digest bytes.
+    if number == 0.0:
+        return "0.0"
+    if number.is_integer() and abs(number) < 1e16:
+        return f"{number:.1f}"
+    text = repr(number)
+    if "e" in text or "E" in text:
+        # jsonb numeric rendering never uses exponent notation.
+        text = format(Decimal(text), "f")
+    return text
+
+
+def _canonical_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return _canonical_string(value)
+    if isinstance(value, (int, float)):
+        return _canonical_number(value)
+    if isinstance(value, Mapping):
+        for key in value:
+            if not isinstance(key, str):
+                raise CalibrationArtifactDigestError("CALIBRATION_ARTIFACT_KEY_INVALID")
+        return "{" + ",".join(
+            f"{_canonical_string(key)}:{_canonical_value(value[key])}"
+            for key in sorted(value)
+        ) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_canonical_value(item) for item in value) + "]"
+    # Preserve the historical `default=str` behaviour for non-JSON scalars
+    # (for example numpy integers) as a canonical JSON string.
+    return _canonical_string(str(value))
+
+
+def canonical_calibration_json(payload: Any) -> str:
+    """Return the canonical calibration-artifact serialization.
+
+    Single source of truth shared with the PostgreSQL side: sorted keys, compact
+    separators, UTF-8 text preserved, numeric scale preserved. The byte string
+    produced here is what `public.wow_canonical_json_text(jsonb)` must reproduce.
+    Accepts any JSON-shaped value so nested evidence rows (source rows, split
+    rows, fold audits) can be bound by the same rules as the artifact itself.
+    """
+    return _canonical_value(payload)
+
+
+def calibration_payload_sha256(payload: Any) -> str:
+    return hashlib.sha256(canonical_calibration_json(payload).encode("utf-8")).hexdigest()
+
+
+def normalize_payload_sha256(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if len(token) != 64 or any(ch not in "0123456789abcdef" for ch in token):
+        raise CalibrationArtifactDigestError("CALIBRATION_ARTIFACT_SHA256_INVALID")
+    return token
+
+
+def verify_calibration_payload_digest(
+    payload: Mapping[str, Any],
+    *,
+    declared_sha256: Any,
+    certified_sha256: Any,
+) -> str:
+    """Cryptographically verify a calibration payload against its digest.
+
+    The digest is recomputed from the payload content itself. A caller-supplied
+    (or stored) digest is never trusted: it must equal the independently
+    certified digest as well.
+    """
+    if not isinstance(payload, Mapping):
+        raise CalibrationArtifactDigestError("CALIBRATION_ARTIFACT_PAYLOAD_INVALID")
+    declared = normalize_payload_sha256(declared_sha256)
+    certified = normalize_payload_sha256(certified_sha256)
+    computed = calibration_payload_sha256(payload)
+    if computed != declared or computed != certified or declared != certified:
+        raise CalibrationArtifactDigestError("CALIBRATION_ARTIFACT_PAYLOAD_DIGEST_MISMATCH")
+    return computed
+
+
 def artifact_fingerprint(artifact: Mapping[str, Any]) -> str:
+    # Preserve existing NHL/WNBA/etc. certification fingerprints byte-for-byte.
+    # NBA database-bound payloads use calibration_payload_sha256 explicitly;
+    # silently switching this legacy helper would invalidate prior receipts.
     payload = json.dumps(dict(artifact), sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -217,12 +345,17 @@ def artifact_fingerprint(artifact: Mapping[str, Any]) -> str:
 __all__ = [
     "BINARY_ARTIFACT_TYPE",
     "CAN_EXECUTE",
+    "CalibrationArtifactDigestError",
     "CalibrationArtifactInvalid",
     "MIN_CALIBRATION_N",
     "MULTICLASS_ARTIFACT_TYPE",
     "apply_binary_artifact",
     "apply_multiclass_artifact",
     "artifact_fingerprint",
+    "calibration_payload_sha256",
+    "canonical_calibration_json",
+    "normalize_payload_sha256",
     "validate_binary_artifact",
     "validate_multiclass_artifact",
+    "verify_calibration_payload_digest",
 ]

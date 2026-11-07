@@ -6,9 +6,24 @@ This file is the repository source of truth for governed typed failure/status co
 
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ccbca8adf06a73cf62fa8e7d36d0f2cb1e256a02ddcaef152e5d2822fa78dee9 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+<!-- coderabbit-ai-generated-section:v1:da02db52c5cd11cd3bd00224d82c11f5aebaa6cc445a4a7e54a61abc0af27e72 -->
+<!-- coderabbit-ai-generated:v1 -->
+<!-- coderabbit-ai-generated-section:v1:cf64259410f3769b67608b7c70ae5b7109c5ae0f2302439fa87ca05602b5abde -->
+<!-- /coderabbit-ai-generated:v1 -->
+<!-- /coderabbit-ai-generated:v1 -->
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
 | `NFL_FORWARD_PAGINATION_INVALID` | NFL prospective forward grading and calibration health | PostgREST page reads lacked stable primary-key order or contained missing/duplicate prediction, settled-game or existing-grade identities. Fail the entire shadow-grading run before appending misleading calibration results; not a fitted-model capability error. | No |
+| `WNBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED` | WNBA fitted forward-feature hydration / source identity | Official future WNBA event identity is ESPN-prefixed, but persisted settled-game history is BallDontLie, unknown-provider, or not ESPN-prefixed; no verified cross-provider mapping exists. Hold before feature assembly, never reinterpret mismatch as missing games or guess team IDs. Recovery: independently prove a one-to-one identity crosswalk or ingest matched ESPN-keyed history; research-only, no rank/publish/execute. | No |
+| `NBA_CURRENT_SEASON_SETTLED_DATA_MISSING` | NBA default scheduled basketball maintenance / fresh-source hydration | For a current-season refresh in October–June, the persisted most-recent settled game is absent/invalid/future dated or predates the current October NBA season. October may replay prior history only before an aware opening instant from the acquired canonical SportsDataverse schedule; unknown/malformed/conflicting opening evidence does not waive the hold. Jul–Sep offseason and explicit season selection remain separate. Historical shadow replay cannot be claimed as a successful current-season refresh. Fail closed before replay; preserve native acquisition failures, recovery_class=SOURCE_COVERAGE_REPAIR, required_season_start, latest_persisted_game_date and ending-year reacquisition target. Never promote, publish, or execute. | No |
+| `BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED` | NBA/WNBA explicit-clock model maintenance / persisted replay | Hydration honors the requested clock but persisted provenance, freshness, feature replay and fitting reads do not yet share that cutoff. Preserve acquisition results and native source failures; do not replay, fit, promote or publish historical shadow evidence. Default live maintenance remains supported. Restore historical fitting only after every persisted read proves cutoff-aware evidence. | No |
+| `BASKETBALL_MODEL_MAINTENANCE_FAILED` | NBA/WNBA maintenance HTTP boundary | An authenticated maintenance request raised outside a typed per-sport hold. Return a fixed 500 hold with no database, provider, or stack-trace detail; never convert the failure into model readiness or execution. | No |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
@@ -20,6 +35,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CLAUDE_REVIEW_INCOMPLETE` | independent semantic reviewer / Claude response | Provider ended without required authenticated tool output for a non-truncation stop reason (including `end_turn`, `stop_sequence`, `pause_turn`, unknown). `EVIDENCE_PENDING`; QA App HOLD and security owner investigates allowlisted stop-reason metadata. Do not retry or fallback on such ambiguity. | No |
 | `CLAUDE_RESPONSE_INVALID` | independent semantic reviewer / Claude tool transport | Provider message or content is not a valid dict/list container for exact-one `submit_review` tool payload. `REPAIRABLE_CODE` only after source/transport diagnosis, never fallback or PASS. | No |
 | `CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE` | independent semantic reviewer / Claude tool contract | `tool_use` stop reason but not exactly one named `submit_review` result. `EVIDENCE_PENDING`; preserve HOLD and inspect the code-level tool schema, not the raw response. No retry or alternate reviewer shopping. | No |
+| `PROVENANCE_SAVEPOINT_ROLLBACK_FAILED` | LLP Stage 2 / source provenance schema migration | A failed optional DDL statement could not roll back to its named savepoint. Abort and roll back the entire transaction; never attempt RELEASE in an aborted transaction or report readiness. Recovery: independent database/lock diagnosis. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -88,6 +104,10 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CATALOG_ACCESS_REQUIRED_FIRST` | TheRundown health | Strict provider health did not attempt event access because catalog authentication/access failed first. | Does not decide sporting rank |
 | `DATE_MUST_BE_YYYY_MM_DD` | diagnostic API | Invalid date supplied to a bounded health/discovery diagnostic route. | N/A |
 | `INVALID_PAGINATION` | diagnostic API | Page/page-size request is invalid. | N/A |
+
+
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Multisport calibration artifact detail blockers
 
@@ -594,3 +614,12 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+## NBA season-boundary and fitted-calibrator RPC integrity (2026-11-04)
+
+These pre-existing detail failures remain in the NBA hydration / calibrated-specialist lane. They cannot become a fitted probability, and do not grant any release authority.
+
+| Canonical detail code | Owning lane/stage | Exact condition | Recovery class | Rank eligible? |
+|---|---|---|---|---|
+| `ESPN_RECENT_WINDOW_GAP_NOT_COVERED` | WNBA current-season SportsDataverse/ESPN hydration | During an active WNBA season, the eligible ESPN scoreboard supplement's 14-day covered window cannot bridge the full gap after the last persisted canonical settlement; reject without advancing the corpus date fence. NBA instead holds with `NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED` before any ESPN supplement fetch. | DATA_SOURCE_COVERAGE | No |
+| `NBA_CERTIFIED_CALIBRATOR_INVALID` | NBA fitted specialist certified-calibrator RPC | RPC row missing nested mapping `artifact_payload` or containing a legacy flat outer `artifact_type` that would bypass digest verification; reject even if declared digest/ID appear to match certification. | CODE_REPAIR | No |
