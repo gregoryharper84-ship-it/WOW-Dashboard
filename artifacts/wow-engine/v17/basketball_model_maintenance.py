@@ -130,39 +130,63 @@ def _nba_verified_current_season_date(db: Any, clock: datetime) -> str | None:
     """
     season_start_year = clock.year if clock.month >= 10 else clock.year - 1
     label = season_start_year + 1
-    response = (
-        db.table("wow_nba_training_games")
-        .select("game_date,season,game_id,source_provider")
-        .eq("settled", True)
-        .eq("season", label)
-        .order("game_date", desc=True)
-        .limit(1)
-        .execute()
+    table = "wow_nba_training_games"
+    fields = "game_date,season,game_id,source_provider"
+    # Read the latest settled date from the entire persisted cohort, not
+    # just the season-labelled subset. A recent row from a different season
+    # cannot be hidden by a valid NBA 2027 row on the same day.
+    top = (
+        db.table(table).select(fields)
+        .eq("settled", True).order("game_date", desc=True)
+        .limit(1).execute()
     )
-    rows = getattr(response, "data", None)
-    if not isinstance(rows, list) or len(rows) > 1:
+    top_rows = getattr(top, "data", None)
+    if not isinstance(top_rows, list) or len(top_rows) > 1:
         raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
-    if not rows:
+    if not top_rows:
         return None
-    row = rows[0]
-    if not isinstance(row, dict) or type(row.get("season")) is not int:
-        raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
-    event = row.get("game_id")
-    if (
-        row["season"] != label
-        or row.get("source_provider") != "SPORTSDATAVERSE_ESPN"
-        or not isinstance(event, str)
-        or not event.startswith("espn-")
-        or not event[5:].isdigit()
-    ):
-        raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
-    raw_date = row.get("game_date")
-    if not isinstance(raw_date, str):
+    top_row = top_rows[0]
+    if not isinstance(top_row, dict) or not isinstance(top_row.get("game_date"), str):
         raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
     try:
-        return date.fromisoformat(raw_date).isoformat()
+        latest_day = date.fromisoformat(top_row["game_date"])
     except ValueError as exc:
         raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID") from exc
+    if not date(season_start_year, 10, 1) <= latest_day <= clock.date():
+        return None
+
+    # A date can contain multiple settled games. Inspect *every* latest-day
+    # identity; comparing a season-filtered date alone admits same-day
+    # wrong-season records. 101 rows is far beyond an NBA day's slate; if
+    # reached, fail closed rather than silently trust a truncated response.
+    response = (
+        db.table(table).select(fields)
+        .eq("settled", True).eq("game_date", latest_day.isoformat())
+        .limit(101).execute()
+    )
+    rows = getattr(response, "data", None)
+    if not isinstance(rows, list) or not rows or len(rows) >= 101:
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INCOMPLETE")
+    seen_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_READBACK_INVALID")
+        event = row.get("game_id")
+        if (
+            type(row.get("season")) is not int
+            or row["season"] != label
+            or row.get("game_date") != latest_day.isoformat()
+            or row.get("source_provider") != "SPORTSDATAVERSE_ESPN"
+            or not isinstance(event, str)
+            or not event.startswith("espn-")
+            or not event[5:].isdigit()
+            or event in seen_ids
+        ):
+            raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID")
+        seen_ids.add(event)
+    if top_row.get("game_id") not in seen_ids:
+        raise BasketballHydrationError("NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH")
+    return latest_day.isoformat()
 
 
 def _nba_current_season_data_gap(
@@ -322,6 +346,10 @@ def run_basketball_model_maintenance(
                         hydration["latest_current_season_game_date_after"] = (
                             _nba_verified_current_season_date(db, clock)
                         )
+                    except BasketballHydrationError as exc:
+                        # Surface exact typed readback failures but never raw
+                        # provider or database transport exception details.
+                        hydration["current_season_readback_code"] = str(exc)
                     except Exception:  # noqa BLE001 - no unsafe replay after DB failure
                         hydration["current_season_readback_code"] = (
                             "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
