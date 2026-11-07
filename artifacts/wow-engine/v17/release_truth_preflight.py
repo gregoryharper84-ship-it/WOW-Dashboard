@@ -107,6 +107,10 @@ def classify(
                     continue
                 kind, params = rule.get("type"), rule.get("parameters")
                 if kind not in ("pull_request", "required_status_checks"):
+                    # Other active rule types (deployments, merge queue,
+                    # signing, workflows, scanning...) are not assessed here.
+                    # Skipping them would falsely imply full rule coverage.
+                    policy_unknown = True
                     continue
                 if not isinstance(params, dict):
                     policy_unknown = True
@@ -228,7 +232,12 @@ def classify(
 
 
 def gh_json(route: str) -> Any:
-    proc = subprocess.run(["gh", "api", route], capture_output=True, text=True, timeout=25)
+    try:
+        proc = subprocess.run(["gh", "api", route], capture_output=True, text=True, timeout=25)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # An absent/non-executable gh binary still returns typed JSON through
+        # the caller, never an unhandled traceback or an invented green gate.
+        raise RuntimeError(f"GITHUB_READ_FAILED: {route.split('?')[0]}") from exc
     if proc.returncode:
         raise RuntimeError(f"GITHUB_READ_FAILED: {route.split('?')[0]}")
     return json.loads(proc.stdout)
@@ -251,7 +260,7 @@ def live_report(repo: str, number: int) -> dict[str, Any]:
             gh_json(f"/repos/{repo}/rulesets/{r['id']}")
             for r in index if r.get("enforcement") == "active" and r.get("target") == "branch"
         ]
-    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):
         rulesets = None
 
     checks: list[dict[str, Any]] | None = None
@@ -274,7 +283,7 @@ def live_report(repo: str, number: int) -> dict[str, Any]:
                     raise ValueError("CHECK_INVENTORY_TRUNCATED")
                 checks = pages
                 break
-    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):
         checks = None
     return classify(pr, rulesets, checks, repository=repo)
 
@@ -286,7 +295,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         data = live_report(args.repo, args.pr_number)
-    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as exc:
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired) as exc:
         data = {
             "pr": args.pr_number, "repository": args.repo,
             "findings": [{"finding": "LIVE_PR_EVIDENCE_UNVERIFIED",
