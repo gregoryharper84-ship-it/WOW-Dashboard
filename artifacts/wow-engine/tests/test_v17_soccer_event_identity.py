@@ -439,3 +439,16 @@ def test_soccer_failure_codes_are_registered():
     assert not {code for code in fixed_codes if f"`{code}`" not in registry}
     assert "`SOCCER_OFFICIAL_SOURCE_HTTP_{status}`" in registry
 
+
+
+@pytest.mark.parametrize("invalid_status", [None, 0, "invalid", -1, 600, 999])
+def test_soccer_missing_or_invalid_http_status_has_registered_source_failure(
+    monkeypatch, invalid_status,
+):
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_kw: SimpleNamespace(status_code=invalid_status),
+    )
+    with pytest.raises(identity.SoccerEventIdentityError) as exc:
+        identity._fetch_scoreboard("eng.1", "20261107")
+    assert exc.value.code == "SOCCER_OFFICIAL_SOURCE_RESPONSE_INVALID"
