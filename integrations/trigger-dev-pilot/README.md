@@ -1,0 +1,43 @@
+# WOW V17 Trigger.dev isolated read-only pilot
+
+**Status: proposed, not deployed.** This experiment adds NO new production scheduler, scoring workers, settlement/publishing calls, model certification or database writes. It does not modify the existing Render/Supabase/GitHub Action chain.
+
+## Purpose
+
+Prove bounded durable retries, stable trigger idempotency options, and read-only observability *in Trigger.dev DEVELOPMENT* before proposing any production adoption. The only permitted request is `GET https://wow-governed-probability-engine.onrender.com/health/live`, with no redirects or Authorization header. A 200 response means HTTP reachability **only**, not model health, publishability or production verification.
+
+## Architecture and boundaries
+
+- Existing authority: GitHub Actions OWNS existing scheduled data collection, grading, and prop lifecycle; Render/Supabase remain canonical.
+- Pilot: a manual-only Trigger task, `wow-v17-readonly-health-pilot`; no `schedules.task`, cron, trigger webhook, or GitHub Action dispatcher.
+- Fixed external GET only, no user-controlled hostname or route, no secrets sent to Render.
+- `concurrency.total = 1`, `maxAttempts = 3`, 1–5s bounded backoff, 30s max duration, 8s request timeout. HTTP 429/5xx and transport failures retry; HTTP 4xx (other than 429) and disabled safety guards abort without retry.
+- Invocation uses 24h idempotency key and 10m enqueue TTL; local tests verify stable options but **only an actual Trigger.dev run can prove remote deduplication**.
+- Fail-closed `WOW_TRIGGER_PILOT_ENABLED=true`, `WOW_CAN_EXECUTE=false`, `WOW_DRY_RUN_ONLY=true`; caller refuses non-dev Trigger secret keys.
+- Free tier: zero schedules; manual probes only. Monitor usage; do not authorize plan upgrades.
+
+## Local tests (no credentials; no HTTP)
+
+Run `node --test` from this directory. The tests use stubbed fetch calls and do not require installing Trigger.dev SDK. For full SDK type-check/CLI integration install this package's dependencies with `npm install` in this isolated directory, not at workspace root.
+
+## DEV-only deployment procedure (operator action)
+
+1. In existing **WOW Enterprise / WOW Model** Trigger.dev DEVELOPMENT environment, open project settings to obtain its actual `proj_...` project reference (the URL slug is not this reference). Configure `TRIGGER_PROJECT_REF` locally. Never paste secret keys into chat or code.
+2. In the isolated directory run `npm install`; then `npm run typecheck` and `npm test`. Confirm SDK v4 compatibility and lint/review the security constraints. Keep auto-deploy / GitHub integration disabled during trial.
+3. In your own environment set `WOW_TRIGGER_PILOT_ENABLED=true`, `WOW_CAN_EXECUTE=false`, `WOW_DRY_RUN_ONLY=true`. Run `npm run dev` with your own *development* Trigger secret key; this registers the manually triggered task in DEV without deploying a production worker.
+4. For an explicit one-off trial set `WOW_TRIGGER_PILOT_ENV=dev` and execute `node bin/trigger-once.mjs 2026-11-07-manual-1`. Repeat the identical command to verify Trigger.dev returns the same run ID and no second execution within 24h; then use a new probe ID for a second run.
+5. In Trigger.dev development Runs, capture: task ID, environment, both invocation run IDs, attempt count, status, request HTTP code, duration, compute usage. To test retry behavior in Trigger.dev without perturbing production, use a **separate mocked HTTP adapter/test environment**; the local tests already inject a 503→503→200 sequence. Do **not** manipulate the production health endpoint to induce faults.
+6. Production acceptance requires independent SIRT comparison with GitHub Actions and Render readbacks; no automatic promotion on successful health GET.
+
+## Acceptance criteria
+
+1. `node --test` succeeds on the exact PR head.
+2. Exactly one GET is observed per probe attempt; forbidden mutation API paths absent.
+3. Duplicate DEV invocations with the same key return the same run ID with one execution during the dedupe window (must be verified live, not inferred from tests).
+4. 429/5xx fail transiently; 4xx permanent failures and missing governance flags abort without retry.
+5. No new Trigger schedules or overlapping production workers; no changes to existing Actions, Render, Supabase, grading, scoring, or publication.
+6. Real DEV run receipt plus independent validation before widening scope.
+
+## Required before production integration
+
+Verify durable cross-provider leases and recipient-side idempotency in the existing V17 API before ever moving any non-GET work. Trigger.dev idempotency alone cannot make a non-idempotent remote POST safe when a request times out after side effects. Maintain independent exact-head release and SIRT acceptance.
