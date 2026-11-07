@@ -67,17 +67,20 @@ class FakeQuery:
     def in_(self, field, values):
         return self
 
-    def upsert(self, rows, on_conflict=None):
-        self.mode = "upsert"
-        self.rows = [rows] if isinstance(rows, dict) else list(rows)
+    def is_(self, field, value):
+        return self
+
+    def insert(self, row):
+        self.mode = "insert"
+        self.rows = [row] if isinstance(row, dict) else list(row)
         return self
 
     def execute(self):
         if self.mode == "select":
             return SimpleNamespace(data=list(self.db.available_rows))
-        if self.mode == "upsert":
+        if self.mode == "insert":
             self.db.persisted.extend(self.rows)
-            return SimpleNamespace(data=[{} for _ in self.rows])
+            return SimpleNamespace(data=list(self.rows))
         raise AssertionError("query mode was not selected")
 
 
