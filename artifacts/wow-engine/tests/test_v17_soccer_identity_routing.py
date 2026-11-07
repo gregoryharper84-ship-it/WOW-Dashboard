@@ -102,6 +102,26 @@ def test_identity_failure_keeps_the_row_held(monkeypatch):
     assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_EVENT_NOT_FOUND"
 
 
+def test_soccer_resolver_unexpected_and_unregistered_codes_are_canonical_holds(monkeypatch):
+    import v17.soccer_event_identity as identity
+
+    def unregistered(**_kwargs):
+        raise identity.SoccerEventIdentityError("UNREGISTERED_PRIVATE_PROVIDER_ERROR")
+
+    monkeypatch.setattr(identity, "resolve_soccer_current_event_identity", unregistered)
+    out = canonicalize_soccer_discovery_identity(soccer_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_RESOLVER_FAILED"
+
+    def unexpected(**_kwargs):
+        raise RuntimeError("contains private transport details")
+
+    monkeypatch.setattr(identity, "resolve_soccer_current_event_identity", unexpected)
+    out = canonicalize_soccer_discovery_identity(soccer_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_RESOLVER_FAILED"
+
+
 def test_other_sports_pass_through_untouched():
     event = DiscoveredEvent(
         sport="NCAAB",
