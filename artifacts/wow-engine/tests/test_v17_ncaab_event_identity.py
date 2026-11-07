@@ -237,3 +237,29 @@ def test_ni_017_malformed_event_row_holds_source_instead_of_dropping_data(monkey
     with pytest.raises(identity.NCAABEventIdentityError) as exc:
         identity._fetch_scoreboard("20261104")
     assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+@pytest.mark.parametrize("bad_date", [None, "", "not-a-date", "2026-11-04"])
+def test_ni_018_malformed_scoreboard_date_holds_entire_snapshot(monkeypatch, bad_date):
+    row = scoreboard_event("401800018", date=bad_date)
+    monkeypatch.setattr(
+        identity.requests, "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200,
+            json=lambda: {"events": [row, scoreboard_event("401800019")]},
+        ),
+    )
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        identity._fetch_scoreboard("20261104")
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
+
+
+def test_ni_019_injected_fetcher_cannot_skip_malformed_date_to_promote_valid_row():
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        _resolve(fetcher=fetcher_for({
+            "20261104": [
+                scoreboard_event("401800019", date=None),
+                scoreboard_event("401800020"),
+            ],
+        }))
+    assert exc.value.code == "NCAAB_OFFICIAL_SOURCE_SCHEMA_DRIFT"
