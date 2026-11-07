@@ -119,6 +119,36 @@ def test_soccer_resolver_unexpected_and_unregistered_codes_are_canonical_holds(m
     assert out.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_RESOLVER_FAILED"
 
 
+
+def test_registered_soccer_http_codes_preserved_without_accepting_foreign_codes(monkeypatch):
+    import v17.soccer_event_identity as identity
+
+    def fail_with_code(code):
+        def fail(**_kwargs):
+            raise identity.SoccerEventIdentityError(code)
+        monkeypatch.setattr(identity, "resolve_soccer_current_event_identity", fail)
+        return canonicalize_soccer_discovery_identity(soccer_alias_event())
+
+    for status in (100, 404, 503, 599):
+        code = f"SOCCER_OFFICIAL_SOURCE_HTTP_{status}"
+        held = fail_with_code(code)
+        assert held.official_event_id is None
+        assert held.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+        assert held.raw["canonical_identity_blocker"] == code
+
+    for code in (
+        "SOCCER_OFFICIAL_SOURCE_HTTP_099",
+        "SOCCER_OFFICIAL_SOURCE_HTTP_600",
+        "SOCCER_OFFICIAL_SOURCE_HTTP_5030",
+        "SOCCER_OFFICIAL_SOURCE_HTTP_UNKNOWN",
+        "SOCCER_OFFICIAL_SOURCE_HTTP_50X",
+        "SOCCER_OFFICIAL_SOURCE_HTTP_٥٠٣",
+    ):
+        held = fail_with_code(code)
+        assert held.official_event_id is None
+        assert held.raw["canonical_identity_blocker"] == "SOCCER_CANONICAL_RESOLVER_FAILED"
+
+
 def test_other_sports_pass_through_untouched():
     event = DiscoveredEvent(
         sport="NCAAB",
