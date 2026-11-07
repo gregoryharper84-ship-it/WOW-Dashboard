@@ -1,5 +1,6 @@
 """Exercise app startup without leaving database daemons in the test process."""
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -32,7 +33,11 @@ with patch('threading.Thread.start', lambda thread: started.append(thread.name))
         "ANTHROPIC_API_KEY": "wow-ci-placeholder-not-live",
         "SESSION_SECRET": "wow-ci-attestation-secret-not-live",
     })
+    # Parent conftest adds import paths only to the pytest process. The child
+    # must start in the artifact root so gate_engine/app import hermetically.
+    artifact_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30
+        [sys.executable, "-c", script], cwd=str(artifact_root),
+        env=env, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
