@@ -469,8 +469,16 @@ def ensure_all_tables() -> None:
     with _TABLES_LOCK:
         if _TABLES_READY:
             return
+        conn = None
         try:
             conn = _get_conn()
+            # Session-scoped limits survive run_provenance_migration's COMMIT;
+            # SET LOCAL would disappear before the remaining startup DDL.
+            # This dedicated connection is always closed below.
+            with conn.cursor() as deadline_cursor:
+                deadline_cursor.execute("SET lock_timeout = '3000ms'")
+                deadline_cursor.execute("SET statement_timeout = '10000ms'")
+            conn.commit()
 
             # WOW-PATCH-2026-08-16: Run provenance column migration FIRST so that
             # columns like freshness_status exist on any pre-existing tables BEFORE
@@ -501,12 +509,18 @@ def ensure_all_tables() -> None:
                 cur.execute(ddl)
             conn.commit()
             cur.close()
-            conn.close()
             _TABLES_READY      = True
             _TABLES_LAST_ERROR = None
         except Exception as exc:
             # Surface the error for diagnostics — future calls will retry
             _TABLES_LAST_ERROR = str(exc)
+        finally:
+            # A lock timeout aborts the transaction; do not leak the connection.
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
