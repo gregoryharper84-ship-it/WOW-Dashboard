@@ -123,7 +123,7 @@ class _DB:
         return self.predictions
 
 
-def _patch_model(monkeypatch):
+def _patch_model(monkeypatch, *, publishable=True):
     monkeypatch.setattr(
         specialist,
         "load_champion_model",
@@ -131,6 +131,7 @@ def _patch_model(monkeypatch):
             artifact_id="model-1",
             model_artifact_version="NFL_EVENT_V17_TEST",
             model_family="NFL_EVENT_V17_TEST",
+            probability_publishable=publishable,
         ),
     )
     monkeypatch.setattr(specialist, "score_feature_row", lambda model, row: _model_result())
@@ -310,4 +311,46 @@ def test_summary_refresh_materializes_only_nonzero_pbp_rows(monkeypatch):
     assert writes["rows"] == [{"game_id": "2026_02_GB_NYJ", "team": "GB", "offensive_plays": 60}]
     assert result["team_game_summaries_materialized"] == 1
     assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_unpublished_nfl_champion_never_stamps_artifact_false_green_or_reuse(monkeypatch):
+    """Real source artifact publishability FALSE must survive both insert and reuse."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=False)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    again = specialist.score_nfl_team_event(_req(), db=db)
+
+    assert len(db.predictions.rows) == 1
+    stored = db.predictions.rows[0]
+    assert first["event_prediction_id"] == again["event_prediction_id"]
+    assert first["prediction_reused"] is False
+    assert again["prediction_reused"] is True
+    for record in (stored, stored["model_output_snapshot"], first, again):
+        assert record["model_probability_publishable"] is False
+        assert record["probability_publishable"] is False
+        assert record["can_execute"] is False
+    assert stored["calibrated_home_probability"] == pytest.approx(0.60)
+    assert stored["calibrated_away_probability"] == pytest.approx(0.40)
+    assert first["calibrated_selection_probability"] == pytest.approx(0.60)
+    assert again["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+
+
+def test_nfl_missing_champion_publication_flag_fails_closed(monkeypatch):
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch)
+    original = specialist.load_champion_model
+    monkeypatch.setattr(
+        specialist, "load_champion_model",
+        lambda db: SimpleNamespace(
+            artifact_id="model-1", model_artifact_version="NFL_EVENT_V17_TEST",
+            model_family="NFL_EVENT_V17_TEST",
+        ),
+    )
+    db = _DB()
+    result = specialist.score_nfl_team_event(_req(), db=db)
+    assert result["model_probability_publishable"] is False
+    assert result["probability_publishable"] is False
+    assert db.predictions.rows[0]["model_probability_publishable"] is False
     assert result["can_execute"] is False

@@ -71,6 +71,9 @@ class CertifiedNFLModel:
     artifact_checksum: str
     training_dataset_hash: str
     validation_metrics: dict[str, Any]
+    # Source artifact lifecycle flag only; forward calibration and the terminal
+    # reducer remain independent requirements before any publication.
+    probability_publishable: bool = False
 
 
 def _canonical_json(value: Any) -> str:
@@ -460,6 +463,7 @@ def load_champion_model(db: Any) -> CertifiedNFLModel:
         artifact_checksum=str(artifact["artifact_checksum"]),
         training_dataset_hash=str(artifact["training_dataset_hash"]),
         validation_metrics=dict(artifact.get("validation_metrics") or {}),
+        probability_publishable=artifact.get("probability_publishable") is True,
     )
 
 
@@ -578,7 +582,7 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         "artifact_checksum": model.artifact_checksum,
         "market_prior_weight": 0.0,
         "blend_publishable": False,
-        "probability_publishable": True,
+        "probability_publishable": model.probability_publishable is True,
         "provenance_complete": True,
         "can_execute": False,
     }

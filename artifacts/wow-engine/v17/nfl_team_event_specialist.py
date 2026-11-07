@@ -395,6 +395,7 @@ def _reused_prediction_result(
     *,
     feature_row: dict[str, Any],
     evidence: dict[str, Any],
+    model_probability_publishable: bool,
 ) -> dict[str, Any]:
     snapshot = row.get("model_output_snapshot")
     if not isinstance(snapshot, dict):
@@ -421,7 +422,8 @@ def _reused_prediction_result(
         "failure_code": None,
         "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
         "blend_publishable": False,
-        "probability_publishable": True,
+        "model_probability_publishable": model_probability_publishable,
+        "probability_publishable": model_probability_publishable,
         "prediction_reused": True,
         "can_execute": False,
     }
@@ -505,6 +507,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     except Exception as exc:
         raise NFLModelScorerFailed("NFL_FITTED_SCORER_FAILED") from exc
 
+    model_publishable = getattr(model, "probability_publishable", False) is True
+
     prediction_identity_key = _prediction_identity_key(
         research_run_id=str(req.research_run_id),
         canonical_game_id=canonical_game_id,
@@ -523,6 +527,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
             existing_prediction,
             feature_row=feature_row,
             evidence=evidence,
+            model_probability_publishable=model_publishable,
         )
 
     try:
@@ -568,6 +573,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     model_output_snapshot = {
         **model_result,
         "feature_row_hash": feature_row["row_inputs_hash"],
+        "model_probability_publishable": model_publishable,
+        "probability_publishable": model_publishable,
         "feature_max_prior_gameday": feature_row.get("max_prior_gameday"),
         "selected_participant": selected,
         "ranked_probability": selection_lower,
@@ -620,7 +627,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "ranked_probability": selection_lower,
         "model_package_valid": True,
         "provenance_complete": True,
-        "model_probability_publishable": True,
+        "model_probability_publishable": model_publishable,
         "blend_publishable": False,
         "can_execute": False,
         "model_output_snapshot": model_output_snapshot,
@@ -638,6 +645,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
                 existing_prediction,
                 feature_row=feature_row,
                 evidence=evidence,
+                model_probability_publishable=model_publishable,
             )
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_PERSISTENCE_FAILED") from exc
     if len(persisted) != 1:
@@ -666,7 +674,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "failure_code": None,
         "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
         "blend_publishable": False,
-        "probability_publishable": True,
+        "model_probability_publishable": model_publishable,
+        "probability_publishable": model_publishable,
         "prediction_reused": False,
         "can_execute": False,
     }
