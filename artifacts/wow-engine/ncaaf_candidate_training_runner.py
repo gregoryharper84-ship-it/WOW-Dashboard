@@ -96,7 +96,14 @@ def load_training_rows(client: Any) -> tuple[list[TrainingRow], list[dict[str, A
         if str(feature.get("feature_schema_version") or "") != FEATURE_SCHEMA_VERSION:
             continue
         game = games_by_id.get(str(feature.get("training_game_id") or ""))
-        if not game or game.get("home_won") is None:
+        if game is None:
+            # Games and features are read separately. A concurrent insert can
+            # yield a feature whose parent was absent from our games snapshot;
+            # silently dropping it would produce a non-reproducible fit corpus.
+            raise NCAAFTrainingRunnerUnavailable(
+                "NCAAF_TRAINING_DATA_INVALID", "feature parent missing from training read"
+            )
+        if game.get("home_won") is None:
             continue
         merged = {**feature, **{
             "official_event_id": game.get("official_event_id"),
