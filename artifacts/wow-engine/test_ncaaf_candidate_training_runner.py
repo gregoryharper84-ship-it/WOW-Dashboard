@@ -5,6 +5,7 @@ import pytest
 
 from ncaaf_candidate_training_runner import (
     NCAAFTrainingRunnerUnavailable,
+    _paged,
     load_training_rows,
     train_and_persist_candidate,
 )
@@ -16,7 +17,9 @@ class Result:
 
 class Table:
     def __init__(self, db, name): self.db, self.name = db, name
-    def select(self, columns): return Query(self.db, self.name)
+    def select(self, columns):
+        self.db.projections.append((self.name, columns))
+        return Query(self.db, self.name)
     def upsert(self, rows, on_conflict=None):
         self.db.writes.append((self.name, rows, on_conflict)); return self
     def execute(self): return Result([])
@@ -24,12 +27,19 @@ class Table:
 
 class Query:
     def __init__(self, db, name): self.db, self.name = db, name; self.a = 0; self.b = 999
+    def order(self, key):
+        self.db.orders.append((self.name, key))
+        return self
     def range(self, a, b): self.a, self.b = a, b; return self
     def execute(self): return Result(self.db.data[self.name][self.a:self.b+1])
 
 
 class DB:
-    def __init__(self, data): self.data = data; self.writes = []
+    def __init__(self, data):
+        self.data = data
+        self.writes = []
+        self.orders = []
+        self.projections = []
     def table(self, name): return Table(self, name)
 
 
@@ -46,7 +56,8 @@ def data(n=300):
             "home_won": (signal + (0.25 if i % 3 else -0.25)) > 0,
         })
         features.append({
-            "training_game_id": tid, "feature_schema_version": "NCAAF_FEATURES_V1",
+            "feature_row_id": f"f-{i}", "training_game_id": tid,
+            "feature_schema_version": "NCAAF_FEATURES_V1",
             "feature_as_of": (kickoff - timedelta(hours=12)).isoformat(),
             "home_power_rating": signal, "away_power_rating": 0.0,
             "home_off_epa": signal*.4, "away_off_epa": 0.0, "home_def_epa": -signal*.2, "away_def_epa": 0.0,
@@ -86,3 +97,44 @@ def test_candidate_runner_requires_auditable_code_sha():
     with pytest.raises(NCAAFTrainingRunnerUnavailable) as exc:
         train_and_persist_candidate(DB(data()), training_code_sha="bad")
     assert exc.value.code == "NCAAF_TRAINING_CODE_SHA_REQUIRED"
+
+
+def test_training_page_reads_have_stable_primary_key_order_and_projection():
+    db = DB(data(5))
+    games = _paged(db, "wow_ncaaf_training_games", "official_event_id", page_size=2)
+    features = _paged(db, "wow_ncaaf_training_features", "training_game_id", page_size=2)
+    assert len(games) == len(features) == 5
+    assert db.orders == [
+        ("wow_ncaaf_training_games", "training_game_id"),
+        ("wow_ncaaf_training_features", "feature_row_id"),
+    ] * 3  # one ordering per page, including the final short page
+    assert db.projections[0] == (
+        "wow_ncaaf_training_games", "official_event_id,training_game_id"
+    )
+    assert db.projections[3] == (
+        "wow_ncaaf_training_features", "training_game_id,feature_row_id"
+    )
+
+
+def test_training_duplicate_at_exact_page_boundary_is_fail_closed():
+    db = DB({"wow_ncaaf_training_games": [
+        {"training_game_id": "g-000"}, {"training_game_id": "g-001"},
+        {"training_game_id": "g-001"}, {"training_game_id": "g-002"},
+    ]})
+    with pytest.raises(NCAAFTrainingRunnerUnavailable) as exc:
+        _paged(db, "wow_ncaaf_training_games", "*", page_size=2)
+    assert exc.value.code == "NCAAF_TRAINING_PAGINATION_INVALID"
+    assert not db.writes
+
+
+@pytest.mark.parametrize("bad_row", [
+    {"training_game_id": ""},
+    {"official_event_id": "missing-id"},
+    None,
+])
+def test_training_pagination_rejects_missing_or_malformed_identity(bad_row):
+    db = DB({"wow_ncaaf_training_games": [bad_row]})
+    with pytest.raises(NCAAFTrainingRunnerUnavailable) as exc:
+        _paged(db, "wow_ncaaf_training_games", "*", page_size=2)
+    assert exc.value.code == "NCAAF_TRAINING_PAGINATION_INVALID"
+    assert not db.writes
