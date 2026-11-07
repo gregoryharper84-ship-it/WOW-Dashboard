@@ -855,6 +855,23 @@ def _verified_named_check(
     }
 
 
+def _v3_owner_authored(author: Mapping[str, Any]) -> bool:
+    id_matches = author.get("id") == OWNER_ID
+    login_matches = str(author.get("login", "")).casefold() == OWNER_LOGIN.casefold()
+    if id_matches or login_matches:
+        _require(id_matches and login_matches and author.get("type") == "User",
+                 "PR_AUTHOR_IDENTITY_UNKNOWN")
+        return True
+    return False
+
+
+def _owner_authorship_scope(head_sha: str) -> dict[str, Any]:
+    # Deterministic admission evidence only. Authorship is not a merge action,
+    # an independent review, a security verdict or production authorization.
+    return {"basis": "AUTHENTICATED_OWNER_AUTHORSHIP", "head_sha": head_sha,
+            "owner_merge_required": True, "release_authorized": False}
+
+
 def build_trust_root_bootstrap(
     evidence: Mapping[str, Any],
     *,
@@ -895,10 +912,7 @@ def build_trust_root_bootstrap(
     author = pr.get("user") or {}
     author_login = _login(author.get("login"), "PR_AUTHOR_IDENTITY_UNKNOWN")
     author_id = _positive_int(author.get("id"), "PR_AUTHOR_IDENTITY_UNKNOWN")
-    _require(
-        author_id != OWNER_ID and author_login.casefold() != OWNER_LOGIN.casefold(),
-        "TRUST_ROOT_OWNER_AUTHORED",
-    )
+    owner_authored = _v3_owner_authored(author)
     _require(
         pr.get("number") == expected_pr_number
         and pr.get("state") == "open"
@@ -915,13 +929,13 @@ def build_trust_root_bootstrap(
     check_runs = evidence.get("check_runs")
     _require(isinstance(reviews, list), "REVIEW_INVENTORY_INVALID")
     _require(isinstance(check_runs, list), "CHECK_INVENTORY_INVALID")
-    owner_review = _owner_approval(reviews, head_sha=expected_head_sha)
+    owner_review = None if owner_authored else _owner_approval(reviews, head_sha=expected_head_sha)
     verified = {
         name: _verified_named_check(check_runs, name=name, app_id=app_id, head_sha=expected_head_sha)
         for name, app_id in BOOTSTRAP_CHECKS.items()
     }
-    return {
-        "receipt_schema_version": 2,
+    receipt = {
+        "receipt_schema_version": 3 if owner_authored else 2,
         "workflow_name": WORKFLOW_NAME,
         "repository": expected_repository,
         "workflow_run_id": str(expected_workflow_run_id),
@@ -946,6 +960,10 @@ def build_trust_root_bootstrap(
         "can_execute": False,
     }
 
+    if owner_authored:
+        receipt["owner_authorization"] = _owner_authorship_scope(expected_head_sha)
+    return receipt
+
 
 def verify_trust_root_bootstrap(
     receipt: Mapping[str, Any],
@@ -967,8 +985,12 @@ def verify_trust_root_bootstrap(
         "fallback_expires_utc", "target", "changed_files", "owner_review",
         "required_checks", "evidence_state", "terminal_authority", "can_execute",
     }
+    schema_version = receipt.get("receipt_schema_version")
+    _require(type(schema_version) is int and schema_version in {2, 3},
+             "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
+    if schema_version == 3:
+        keys.add("owner_authorization")
     _exact_keys(receipt, keys, "RECEIPT")
-    _require(receipt.get("receipt_schema_version") == 2, "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
     _require(receipt.get("certification_mode") == BOOTSTRAP_MODE, "CERTIFICATION_MODE_MISMATCH")
     _require(receipt.get("evidence_state") == "TRUST_ROOT_BOOTSTRAP_VERIFIED",
              "TRUST_ROOT_BOOTSTRAP_NOT_VERIFIED")
@@ -1001,8 +1023,22 @@ def verify_trust_root_bootstrap(
     author = _exact_keys(target.get("author"), {"login", "id"}, "PR_AUTHOR")
     author_id = _positive_int(author.get("id"), "PR_AUTHOR_ID")
     author_login = _login(author.get("login"), "PR_AUTHOR_LOGIN")
-    _require(author_id != OWNER_ID and author_login.casefold() != OWNER_LOGIN.casefold(),
-             "TRUST_ROOT_OWNER_AUTHORED")
+    if schema_version == 2:
+        # Historical receipts retain their original non-owner-only meaning.
+        _require(author_id != OWNER_ID and author_login.casefold() != OWNER_LOGIN.casefold(),
+                 "TRUST_ROOT_OWNER_AUTHORED")
+    else:
+        _require(author_id == OWNER_ID and author_login.casefold() == OWNER_LOGIN.casefold(),
+                 "PR_AUTHOR_IDENTITY_UNKNOWN")
+        _require(receipt.get("owner_review") is None, "OWNER_AUTHORIZATION_SCOPE_INVALID")
+        scope = _exact_keys(receipt.get("owner_authorization"),
+                            {"basis", "head_sha", "owner_merge_required", "release_authorized"},
+                            "OWNER_AUTHORIZATION")
+        _require(scope.get("basis") == "AUTHENTICATED_OWNER_AUTHORSHIP"
+                 and scope.get("head_sha") == expected_head_sha
+                 and scope.get("owner_merge_required") is True
+                 and scope.get("release_authorized") is False,
+                 "OWNER_AUTHORIZATION_SCOPE_INVALID")
     _require(
         target.get("base_ref") == "main"
         and target.get("head_ref") == expected_head_ref
@@ -1020,18 +1056,19 @@ def verify_trust_root_bootstrap(
              "LIVE_REVIEW_INVENTORY_INVALID")
     _require(isinstance(live_checks, Sequence) and not isinstance(live_checks, (str, bytes)),
              "LIVE_CHECK_INVENTORY_INVALID")
-    live_owner = _owner_approval(live_reviews, head_sha=expected_head_sha)
-    recorded = _exact_keys(
-        receipt.get("owner_review"),
-        {"state", "reviewer", "review_id", "commit_id", "submitted_at"},
-        "OWNER_REVIEW",
-    )
-    _require(
-        recorded.get("review_id") == live_owner["review_id"]
-        and recorded.get("commit_id") == expected_head_sha
-        and recorded.get("state") == "APPROVED",
-        "TRUST_ROOT_OWNER_APPROVAL_WITHDRAWN_OR_CHANGED",
-    )
+    if schema_version == 2:
+        live_owner = _owner_approval(live_reviews, head_sha=expected_head_sha)
+        recorded = _exact_keys(
+            receipt.get("owner_review"),
+            {"state", "reviewer", "review_id", "commit_id", "submitted_at"},
+            "OWNER_REVIEW",
+        )
+        _require(
+            recorded.get("review_id") == live_owner["review_id"]
+            and recorded.get("commit_id") == expected_head_sha
+            and recorded.get("state") == "APPROVED",
+            "TRUST_ROOT_OWNER_APPROVAL_WITHDRAWN_OR_CHANGED",
+        )
     checks = receipt.get("required_checks")
     _exact_keys(checks, set(BOOTSTRAP_CHECKS), "REQUIRED_CHECKS")
     for name, app_id in BOOTSTRAP_CHECKS.items():

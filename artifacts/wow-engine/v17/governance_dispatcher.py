@@ -80,6 +80,25 @@ def latest_check(check_runs: list[dict[str, Any]], name: str, head_sha: str, app
     }
 
 
+def _authenticated_semantic_reject(check_runs: list[dict[str, Any]], head_sha: str) -> bool:
+    """An earlier exact-head QA-App semantic REJECT is a permanent veto.
+
+    Read only the authenticated GitHub check identity, never a PR comment,
+    untrusted review text, or a same-named check from another App.
+    """
+    return any(
+        isinstance(row, dict)
+        and row.get("name") == "WOW Independent Security Review"
+        and row.get("head_sha") == head_sha
+        and isinstance(row.get("app"), dict)
+        and str(row["app"].get("id")) == str(QA_APP_ID)
+        and row.get("status") == "completed"
+        and isinstance(row.get("output"), dict)
+        and row["output"].get("title") == "REJECT — independent semantic source review"
+        for row in (check_runs if isinstance(check_runs, list) else [])
+    )
+
+
 def _owner_approved_at_head(reviews: list[dict[str, Any]], owner_id: int, head_sha: str) -> bool:
     owner_reviews = [
         review
@@ -155,10 +174,18 @@ def classify_target(
     protected = any(is_trust_root(path, trust_roots) for path in paths)
     if protected:
         author = pull.get("user") or {}
-        if author.get("id") == owner_id or str(author.get("login", "")).casefold() == owner_login.casefold():
-            return {"action": "HOLD", "findings": ["TRUST_ROOT_OWNER_AUTHORED"], "head_sha": head}
-        if not _owner_approved_at_head(reviews, owner_id, head):
+        owner_id_matches = author.get("id") == owner_id
+        owner_login_matches = str(author.get("login", "")).casefold() == owner_login.casefold()
+        if owner_id_matches or owner_login_matches:
+            if not (owner_id_matches and owner_login_matches and author.get("type") == "User"):
+                return {"action": "HOLD", "findings": ["PR_AUTHOR_IDENTITY_UNKNOWN"], "head_sha": head}
+        elif not _owner_approved_at_head(reviews, owner_id, head):
             return {"action": "HOLD", "findings": ["TRUST_ROOT_OWNER_APPROVAL_MISSING"], "head_sha": head}
+
+    # Do not let zero-credit mode erase a genuine signed semantic veto.
+    # The check inventory is already fetched for the exact head.
+    if _authenticated_semantic_reject(check_runs, head):
+        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_REJECT"], "head_sha": head}
 
     if not isinstance(zero_credit_mode, bool):
         return {"action": "HOLD", "findings": ["ZERO_CREDIT_POLICY_INVALID"], "head_sha": head}
@@ -182,6 +209,11 @@ def classify_target(
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_PENDING:{name}"], "head_sha": head}
         if check.get("conclusion") != "success":
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_FAILED:{name}"], "head_sha": head}
+    # Genuine verified source review vetoes cannot disappear when paid review is
+    # disabled. Missing review may follow the explicit reduced-assurance route,
+    # but REJECT/INVALID must never be promoted to QA or Release dispatch.
+    if source_review in {"REJECT", "INVALID"}:
+        return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
     if not zero_credit_mode:
         if source_review not in {
             "PASS",
@@ -193,8 +225,6 @@ def classify_target(
             "ACTION_REQUIRED_ZERO_JOBS",
         }:
             return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STATUS_INVALID"], "head_sha": head}
-        if source_review in {"REJECT", "INVALID"}:
-            return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
         if source_review == "ACTION_REQUIRED_ZERO_JOBS":
             if runs.get("source_review") != "action_required":
                 return {"action": "HOLD", "findings": ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"], "head_sha": head}

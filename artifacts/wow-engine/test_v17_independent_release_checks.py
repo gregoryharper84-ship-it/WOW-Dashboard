@@ -545,6 +545,105 @@ def test_missing_aggregate_defers_only_for_authentic_active_native_job():
     assert m.pending_required_regressions(ev) == ["WOW required-three regression"]
 
 
+def test_raw_qa_app_reject_is_derived_from_signed_failing_check_only():
+    raw = {"id": 9701, "name": m.SECURITY_REVIEW_CHECK,
+           "head_sha": HEAD, "status": "completed", "conclusion": "failure",
+           "app": {"id": m.SECURITY_REVIEW_APP_ID},
+           "output": {"title": m.SECURITY_REJECT_TITLE}}
+    assert m._raw_security_check_rejected(raw) is True
+    for key, value in (
+        ("conclusion", "success"),
+        ("app", {"id": m.SECURITY_REVIEW_APP_ID + 1}),
+        ("output", {"title": "HOLD — independent semantic source review"}),
+    ):
+        assert m._raw_security_check_rejected({**raw, key: value}) is False
+
+
+def signed_semantic_reject_check(*, app_id=m.SECURITY_REVIEW_APP_ID, head=HEAD,
+                                  reject=True):
+    return {"id": 9701, "name": m.SECURITY_REVIEW_CHECK,
+            "head_sha": head, "app_id": app_id, "status": "completed",
+            "conclusion": "failure",
+            "semantic_reject": reject,
+            "completed_at": datetime.now(timezone.utc).isoformat()}
+
+
+@pytest.mark.parametrize("state", ["queued", "in_progress"])
+def test_exact_head_semantic_reject_preempts_empty_job_deferral_and_fails_qa_release(
+    tmp_path, capsys, state,
+):
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER,
+                  independent_review_active=False, source_review=None)
+    ev["qa_review_policy"] = {
+        "mode": "zero_credit",
+        "target": {"pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830"},
+        "canary_scope": None,
+    }
+    ev["zero_credit_enabled"] = True
+    ev["check_runs"] = [
+        row for row in ev["check_runs"] if row["name"] not in {
+            "WOW required-three regression", "WOW additional required regression"
+        }
+    ] + [signed_semantic_reject_check()]
+    ev["native_workflow_runs"] = [_native_verify_run(status=state, jobs=[])]
+    assert m.pending_required_regressions(ev), "startup really is pending"
+    path = tmp_path / "evidence.json"
+    path.write_text(json.dumps(ev))
+    assert m.main(["classify-release-readiness", "--evidence", str(path)]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["disposition"] == "ready"
+    assert output["pending_checks"] == []
+    assert "QA_PREVIOUS_SEMANTIC_REJECT_SAME_SHA" in m.qa_findings(ev)
+    release = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_PREVIOUS_SEMANTIC_REJECT_SAME_SHA" in release
+    assert m.decision("qa", m.qa_findings(ev), ev)["conclusion"] == "failure"
+
+
+@pytest.mark.parametrize("change", ("foreign_app", "stale_head", "hold_only"))
+def test_zero_credit_untrusted_security_check_does_not_create_semantic_veto(change):
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER,
+                  independent_review_active=False, source_review=None)
+    check = signed_semantic_reject_check()
+    if change == "foreign_app":
+        check["app_id"] = m.SECURITY_REVIEW_APP_ID + 1
+    elif change == "stale_head":
+        check["head_sha"] = OLD
+    else:
+        check["semantic_reject"] = False
+    ev["check_runs"].append(check)
+    assert m._has_signed_semantic_reject(ev) is False
+    assert "QA_PREVIOUS_SEMANTIC_REJECT_SAME_SHA" not in m.qa_findings(ev)
+
+
+@pytest.mark.parametrize("state", ["queued", "in_progress"])
+def test_new_trusted_native_run_with_unpublished_jobs_defers_not_fails(state):
+    # GitHub can expose a genuine exact-head workflow before the first job is
+    # instantiated. Missing aggregate check-runs during that bounded startup
+    # window are not evidence that native regression has failed.
+    ev = evidence()
+    ev["check_runs"] = [
+        c for c in ev["check_runs"] if c["name"] not in {
+            "WOW required-three regression", "WOW additional required regression"
+        }
+    ]
+    ev["native_workflow_runs"] = [_native_verify_run(status=state, jobs=[])]
+    assert set(m.pending_required_regressions(ev)) == {
+        "WOW required-three regression", "WOW additional required regression"
+    }
+
+
+@pytest.mark.parametrize("override", [
+    {"workflow_id": -1},
+    {"head_sha": OLD},
+    {"status": "completed"},
+    {"created_at": (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat()},
+])
+def test_native_empty_jobs_cannot_defer_untrusted_stale_or_completed_run(override):
+    ev = evidence()
+    ev["native_workflow_runs"] = [_native_verify_run(jobs=[], **override)]
+    assert m.pending_required_regressions(ev) == []
+
+
 @pytest.mark.parametrize("run_changes", [
     {"workflow_id": 1},
     {"path": ".github/workflows/other.yml"},
@@ -766,6 +865,24 @@ def _source_review_resolver(**kwargs):
         author="bot",
         pr_number=kwargs["pr_number"],
     )
+
+
+def test_gather_normalizes_only_genuine_qa_app_exact_review_reject():
+    raw = {"id": 9721, "name": m.SECURITY_REVIEW_CHECK,
+           "head_sha": HEAD, "status": "completed", "conclusion": "failure",
+           "app": {"id": m.SECURITY_REVIEW_APP_ID},
+           "output": {"title": m.SECURITY_REJECT_TITLE}}
+    for changed, trusted in (
+        ({}, True),
+        ({"app": {"id": m.SECURITY_REVIEW_APP_ID + 1}}, False),
+        ({"conclusion": "success"}, False),
+        ({"output": {"title": "HOLD — independent semantic source review"}}, False),
+    ):
+        rows = [{**raw, **changed}]
+        ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(runs=rows)),
+                      source_review_resolver=_source_review_resolver)
+        assert ev["check_runs"][0]["semantic_reject"] is trusted
+        assert m._has_signed_semantic_reject(ev) is trusted
 
 
 def test_gather_collects_exact_head_evidence():

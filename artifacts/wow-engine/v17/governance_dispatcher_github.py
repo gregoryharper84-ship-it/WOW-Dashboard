@@ -424,7 +424,7 @@ def source_review_status(
         return body
 
     try:
-        module.resolve_current_source_review(
+        validated = module.resolve_current_source_review(
             repository=REPOSITORY,
             pr_number=pr["number"],
             head_sha=(pr.get("head") or {}).get("sha") or "",
@@ -433,7 +433,12 @@ def source_review_status(
             expected_file_paths=paths,
             get_json=get_json,
         )
-        return "PASS"
+        # Provenance-valid is not a semantic PASS. The canonical source-review
+        # artifact verifier permits signed REJECT evidence; never relabel it.
+        artifact = validated.get("artifact") if isinstance(validated, dict) else None
+        review = artifact.get("review") if isinstance(artifact, dict) else None
+        decision = review.get("decision") if isinstance(review, dict) else None
+        return decision if decision in {"PASS", "REJECT"} else "INVALID"
     except module.SourceReviewError as exc:
         text = str(exc)
         if text == "SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING":
@@ -874,6 +879,27 @@ def reconcile(
                     **target_evidence,
                     source_review=reviewer_status,
                 )
+            elif (zero_credit_mode and preflight.get("action") == "DISPATCH"
+                  and (role_runs.get("source_review") or {}).get("history")):
+                # No paid provider call: the existing authenticated source-review
+                # run inventory can contain an actual semantic REJECT. Resolve
+                # that receipt before zero-credit QA/Release; never allow the
+                # absence of inference billing to erase a signed veto.
+                reviewer_status = source_review_status(
+                    client, module=module, pr=pr, files=files,
+                    source_runs=role_runs["source_review"]["history"],
+                )
+                if reviewer_status in {"REJECT", "INVALID"}:
+                    decision = policy.classify_target(
+                        **target_evidence, source_review=reviewer_status,
+                    )
+                elif reviewer_status in {"PENDING", "STALE", "MISSING"}:
+                    decision = {
+                        "action": "HOLD", "head_sha": head_sha,
+                        "findings": ["SOURCE_REVIEW_" + reviewer_status],
+                    }
+                else:
+                    decision = preflight
             else:
                 decision = preflight
                 reviewer_status = "PENDING"
