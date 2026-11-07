@@ -8,6 +8,67 @@ from v17 import scout_handoff_queue as queue
 from v17.scout_handoff_queue import build_handoff_plan, process_claimed_job
 
 
+def _free_core(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    monkeypatch.setenv("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "false")
+    monkeypatch.setenv("WOW_MARKET_EVIDENCE_ENABLED", "false")
+    monkeypatch.setenv("WOW_MARKET_EVIDENCE_KILL_SWITCH", "true")
+    monkeypatch.setenv("WOW_V17_PAID_CALL_BUDGET_PER_SCAN", "0")
+    monkeypatch.setenv("WOW_V17_PAID_FINAL_REFRESH_RESERVE", "0")
+
+
+def test_scout_worker_needs_live_zero_paid_source_proof(monkeypatch):
+    _free_core(monkeypatch)
+    assert queue.free_core_runtime_verified() is True
+    for name, forbidden in (
+        ("WOW_V17_SOURCE_MODE", "HYBRID"),
+        ("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "true"),
+        ("WOW_MARKET_EVIDENCE_ENABLED", "true"),
+        ("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false"),
+        ("WOW_V17_PAID_CALL_BUDGET_PER_SCAN", "1"),
+        ("WOW_V17_PAID_FINAL_REFRESH_RESERVE", "1"),
+    ):
+        original = queue.os.environ[name]
+        monkeypatch.setenv(name, forbidden)
+        assert queue.free_core_runtime_verified() is False, name
+        monkeypatch.setenv(name, original)
+    monkeypatch.delenv("WOW_V17_SOURCE_MODE")
+    assert queue.free_core_runtime_verified() is False
+
+
+def test_cost_unverified_worker_cannot_claim_saved_scout_jobs(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    stop = asyncio.Event()
+    monkeypatch.setattr(
+        queue.memory_admission, "try_acquire_heavy_job",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("Hybrid Scout must never reserve a worker slot")
+        ),
+    )
+    monkeypatch.setattr(
+        queue, "_claim",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("Hybrid Scout must never claim queued work")
+        ),
+    )
+
+    async def probe():
+        task = asyncio.create_task(queue.worker_loop(
+            db_client_fn=lambda: (_ for _ in ()).throw(
+                AssertionError("Hybrid Scout must never open the DB")
+            ),
+            prop_score_fn=lambda *_a, **_kw: {},
+            team_score_fn=lambda *_a, **_kw: {},
+            worker_id="test-hybrid-hold",
+            stop_event=stop,
+        ))
+        await asyncio.sleep(0.02)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(probe())
+
+
 def _handoff():
     prop = {
         "official_event_id": "mlb-event-1",
@@ -278,6 +339,7 @@ def test_existing_research_red_team_quarantine_blocks_before_specialist_queue():
 
 
 def test_worker_reclaims_process_memory_after_each_claimed_job(monkeypatch):
+    _free_core(monkeypatch)
     stop = asyncio.Event()
     calls = []
 
@@ -303,6 +365,7 @@ def test_worker_reclaims_process_memory_after_each_claimed_job(monkeypatch):
 
 
 def test_worker_reclaims_process_memory_when_specialist_job_raises(monkeypatch):
+    _free_core(monkeypatch)
     stop = asyncio.Event()
     calls = []
 
@@ -328,6 +391,7 @@ def test_worker_reclaims_process_memory_when_specialist_job_raises(monkeypatch):
 
 
 def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
+    _free_core(monkeypatch)
     stop = asyncio.Event()
 
     def pressure(_operation):

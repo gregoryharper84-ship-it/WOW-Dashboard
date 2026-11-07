@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 10 * * *"
   workflow_dispatch:
+    inputs:
+      confirm_paid_market_probe:
+        description: Owner-authorized paid market probe (never for normal Scout runs)
+        required: false
+        default: false
+        type: boolean
   workflow_run:
     workflows: ["wow-v17-render-production-deploy"]
     types: [completed]
@@ -157,12 +163,14 @@ jobs:
 
   market-evidence-acceptance:
     name: Credentialed provider acceptance (captured_rows > 0)
+    # Paid probes are NEVER triggered by schedule, push, or deployment.
+    # Both an explicit owner variable and a specific manual confirmation are
+    # required. This lane currently stays fail-closed pending approved source
+    # credentials and independent costing review; ordinary Scout is FREE_CORE.
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      vars.WOW_PAID_MARKET_ACCEPTANCE_ENABLED == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.confirm_paid_market_probe == true
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -170,12 +178,19 @@ jobs:
       run:
         working-directory: artifacts/wow-engine
     env:
-      WOW_MARKET_EVIDENCE_ENABLED: "true"
+      WOW_V17_SOURCE_MODE: "FREE_CORE"
+      WOW_MARKET_EVIDENCE_KILL_SWITCH: "true"
+      WOW_MARKET_EVIDENCE_ENABLED: "false"
+      WOW_RUNDOWN_ML_BOARD_ENABLED: "false"
+      WOW_LLP_RUNDOWN_MARKET_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_HISTORY_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_STARTUP_MODE: "OFF"
+      WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED: "false"
+      WOW_V17_PAID_CALL_BUDGET_PER_SCAN: "0"
+      WOW_V17_PAID_FINAL_REFRESH_RESERVE: "0"
       WOW_USER_TIMEZONE: America/Chicago
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
-      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -184,12 +199,15 @@ jobs:
         id: gate
         shell: bash
         run: |
-          if [ -z "$RUNDOWN_API_KEY" ] && [ -z "$SHARPAPI_API_KEY" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "No provider credential configured; acceptance is not applicable."
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+          if [ "$WOW_V17_SOURCE_MODE" = "FREE_CORE" ] || [ "$WOW_MARKET_EVIDENCE_KILL_SWITCH" = "true" ]; then
+            echo "::error::PAID_ACCEPTANCE_NOT_IMPLEMENTED_IN_FREE_CORE"
+            exit 1
           fi
+          if [ -z "$RUNDOWN_API_KEY" ] && [ -z "$SHARPAPI_API_KEY" ]; then
+            echo "::error::PAID_ACCEPTANCE_CREDENTIALS_MISSING"
+            exit 1
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         if: steps.gate.outputs.configured == 'true'
         with:
@@ -257,9 +275,16 @@ jobs:
       WOW_SCOUT_ASYNC_HANDOFF_ENABLED: "true"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_MARKET_EVIDENCE_ENABLED: "true"
-      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
-      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
+      WOW_V17_SOURCE_MODE: "FREE_CORE"
+      WOW_MARKET_EVIDENCE_KILL_SWITCH: "true"
+      WOW_MARKET_EVIDENCE_ENABLED: "false"
+      WOW_RUNDOWN_ML_BOARD_ENABLED: "false"
+      WOW_LLP_RUNDOWN_MARKET_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_HISTORY_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_STARTUP_MODE: "OFF"
+      WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED: "false"
+      WOW_V17_PAID_CALL_BUDGET_PER_SCAN: "0"
+      WOW_V17_PAID_FINAL_REFRESH_RESERVE: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -276,7 +301,9 @@ jobs:
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
-          test "$WOW_MARKET_EVIDENCE_ENABLED" = "true"
+          test "$WOW_MARKET_EVIDENCE_ENABLED" = "false"
+          test "$WOW_V17_SOURCE_MODE" = "FREE_CORE"
+          test "$WOW_MARKET_EVIDENCE_KILL_SWITCH" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
       - name: Capture research-only cross-book market evidence snapshot
