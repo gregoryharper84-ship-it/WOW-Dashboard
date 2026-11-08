@@ -151,6 +151,17 @@ def _validate_sealed_provenance(snapshot: Mapping[str, Any]) -> None:
     person_id = str(identity.get("nba_person_id") or "")
     espn_event_id = str(identity.get("espn_event_id") or "")
     canonical_event_id = str(identity.get("canonical_event_id") or "")
+    role_team_id = str(role.get("team_id") or "")
+    role_team_tricode = str(role.get("team") or "").upper()
+    opportunity = snapshot.get("opportunity_ledger")
+    source_times = snapshot.get("source_timestamps")
+    try:
+        identity_start = _aware(identity.get("event_start_time"))
+        snapshot_start = _aware(snapshot.get("event_start_time"))
+        identity_market = _aware(identity.get("market_capture_at"))
+        snapshot_market = _aware((source_times or {}).get("market_board_capture"))
+    except (TypeError, ValueError):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SOURCE_IDENTITY_INVALID")
     if (
         not re.fullmatch(r"[0-9]{10}", game_id)
         or not re.fullmatch(r"[1-9][0-9]{0,9}", person_id)
@@ -159,12 +170,19 @@ def _validate_sealed_provenance(snapshot: Mapping[str, Any]) -> None:
         or espn_event_id != canonical_event_id
         or str(identity.get("player") or "").strip().casefold()
         != str(snapshot.get("player") or "").strip().casefold()
-        or str(identity.get("team_id") or "") != str(snapshot.get("team") or "")
+        or not role_team_id
+        or str(identity.get("team_id") or "") != role_team_id
+        or str(identity.get("team_tricode") or "").upper() != role_team_tricode
         or float(identity.get("line")) != float(snapshot.get("line"))
         or str(identity.get("period") or "") != "FULL_GAME"
         or str(identity.get("stat_type") or "") != "POINTS"
+        or identity_start != snapshot_start
+        or identity_market != snapshot_market
         or str(identity.get("request_run_id") or "").strip() == ""
         or str(identity.get("request_row_key") or "").strip() == ""
+        or not isinstance(opportunity, Mapping)
+        or str(opportunity.get("status") or "").upper() not in {"READY", "PASS", "COMPLETE"}
+        or str(role.get("status") or "").upper() != "ACTIVE"
     ):
         raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SOURCE_IDENTITY_INVALID")
 
