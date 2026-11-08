@@ -6,7 +6,7 @@ import { TASK_ID, idempotencyKeyFor, enqueueReadOnlyProbe } from "../src/lib/sub
 
 const safe = Object.freeze({ WOW_TRIGGER_PILOT_ENABLED: "true", WOW_TRIGGER_PILOT_ENV: "dev", WOW_CAN_EXECUTE: "false", WOW_DRY_RUN_ONLY: "true" });
 const okResponse = { status: 200 };
-const observeDev = options => observeDev({ triggerEnvironmentType: "DEVELOPMENT", ...options });
+const observeDev = options => observeWowHealth({ triggerEnvironmentType: "DEVELOPMENT", ...options });
 
 test("fails closed when disabled: no network call", async () => {
   let calls = 0;
