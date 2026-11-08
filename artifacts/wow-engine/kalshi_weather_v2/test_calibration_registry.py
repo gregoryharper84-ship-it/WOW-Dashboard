@@ -13,6 +13,7 @@ from kalshi_weather_v2.calibration_registry import (
     persist_candidate_calibration_profiles,
     probability_scoring_summary,
 )
+from kalshi_weather_v2.calibration_fit import ForecastResidual, fit_candidate_calibration_profile
 from kalshi_weather_v2.models import ContractSnapshot, WeatherEvidenceSnapshot
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from kalshi_weather_v2.probability_core import CalibrationProfile
@@ -217,6 +218,26 @@ def _profile(*, certified: bool) -> CalibrationProfile:
         certified=certified,
     )
 
+
+
+
+def test_candidate_fit_rejects_fractional_second_lookahead_as_an_instant():
+    result = fit_candidate_calibration_profile(
+        [
+            ForecastResidual(
+                forecast_value_f=80.5,
+                settled_value_f=80.0,
+                forecast_as_of="2026-11-01T00:00:00.500000Z",
+                settlement_time="2026-11-01T00:00:00Z",
+            )
+        ],
+        station_id=STATION,
+        lane=LANE,
+        lead_time_bucket="H0",
+        minimum_n=1,
+    )
+    assert result.profile is None
+    assert "CALIBRATION_LOOKAHEAD_LEAKAGE" in result.blockers
 
 def test_threshold_siblings_collapse_to_one_residual():
     predictions = [
