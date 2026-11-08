@@ -45,6 +45,11 @@ def _install_fake_psycopg2(monkeypatch, *, reject_ddl=False):
 
     driver = types.ModuleType("psycopg2")
     driver.connect = connect
+    # Existing unit tests model a DSN with a pre-resolved address; dedicated
+    # tests below exercise the bounded resolver path.
+    driver.extensions = types.SimpleNamespace(
+        parse_dsn=lambda _url: {"host": "fake", "hostaddr": "192.0.2.10"}
+    )
     monkeypatch.setitem(sys.modules, "psycopg2", driver)
     return observed, conn
 
@@ -69,6 +74,55 @@ def test_startup_schema_uses_configured_url_without_disabling_deadlines(monkeypa
 
     assert observed == [(("postgresql://configured/ci",), {"connect_timeout": 5})]
     assert conn.calls[-1] == pg_session_ledger._DDL
+
+
+
+def test_startup_dns_is_resolved_before_connect_and_hostaddr_is_bound(monkeypatch):
+    """Pass a bounded, resolved address to libpq without dropping the TLS hostname."""
+    import socket
+
+    observed, conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
+    monkeypatch.setattr(
+        pg_session_ledger.socket,
+        "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.40", port))
+        ],
+    )
+
+    url = "postgresql://user:secret@db.example.invalid:5432/safety-test"
+    pg_session_ledger.ensure_table_exists(url)
+
+    assert observed == [( (url,), {"connect_timeout": 5, "hostaddr": "192.0.2.40"} )]
+    assert conn.commit_calls == 1
+
+
+def test_startup_dns_timeout_fails_before_opening_database_connection(monkeypatch):
+    """A stalled system resolver cannot hold synchronous warmup indefinitely."""
+    import threading
+
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
+    release = threading.Event()
+
+    def blocked_resolver(*_args, **_kwargs):
+        release.wait(1.0)
+        return []
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", blocked_resolver)
+    monkeypatch.setattr(pg_session_ledger, "DNS_RESOLUTION_TIMEOUT_SECONDS", 0.01)
+    try:
+        with pytest.raises(TimeoutError, match="SESSION_LEDGER_DNS_TIMEOUT"):
+            pg_session_ledger.ensure_table_exists(
+                "postgresql://user:secret@db.example.invalid:5432/safety-test"
+            )
+        assert observed == []
+    finally:
+        # Let the daemon resolver exit promptly in this deterministic unit test.
+        release.set()
 
 
 def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
