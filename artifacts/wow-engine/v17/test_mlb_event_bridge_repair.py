@@ -226,6 +226,7 @@ def test_governance_stage_audit_marks_probability_and_event_governor_pass():
 
 
 def test_health_route_exposes_render_deployed_sha(monkeypatch):
+    """Expose the Render commit SHA through the V17 MLB health replacement."""
     app = FastAPI()
     event_api = SimpleNamespace(
         base_api=SimpleNamespace(_render_deployed_sha=lambda: "a" * 40),
