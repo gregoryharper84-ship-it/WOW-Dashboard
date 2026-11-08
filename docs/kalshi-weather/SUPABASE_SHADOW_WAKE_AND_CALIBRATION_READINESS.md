@@ -26,8 +26,8 @@ Status: `IMPLEMENTED_IN_PR`.
 - Replacement job `kalshi-weather-v2-authenticated-collection-trigger`, UTC cadence `*/30 * * * *` (two times per hour). Applying the file twice is safe: it unschedules every existing row with that name before installing exactly one job.
 - Only operation: authenticated HTTPS **POST** to `/internal/kalshi-weather/v17/empirical-cohort/cron-run` with header `X-WOW-Weather-Cohort-Key`; `90,000 ms` maximum HTTP timeout; User-Agent `kalshi-supabase-cron-collection/1`; empty JSON body.
 - Credentials are read from Supabase Vault at dispatch time and are never embedded in `cron.job.command`: `wow_kalshi_weather_service_url` and `wow_kalshi_weather_cohort_key`.
-- Three fail-closed guards run before any dispatch: missing service URL, missing cohort key, and a service URL that is not TLS on the isolated `wow-kalshi-weather-v2*.onrender.com` origin. Each returns `BLOCKED` with a typed reason and dispatches nothing, so a mistyped or tampered Vault value cannot send the cohort key to another host over cleartext.
-- Residual gap, stated plainly: the destination guard pins the service identity prefix and TLS, not one exact hostname. Read `destination_host` from the dispatch receipt and confirm it is the isolated service before treating a cycle as verified.
+- Three fail-closed guards run before any dispatch: missing service URL, missing cohort key, and a service URL that is not exactly `https://wow-kalshi-weather-v2.onrender.com`. The exact hostname was read from the live Render service configuration. A prefix allowlist is deliberately not used. Each blocked path emits a PostgreSQL `WARNING` with its typed reason (never the secret value), returns `BLOCKED`, and dispatches nothing.
+- Destination identity: the migration accepts only the exact verified HTTPS origin above. Any other hostname, suffix, explicit port, path, embedded credentials or cleartext URL is blocked before the cohort key is attached.
 - Required on the isolated Render service (out of band, dashboard-managed — this service is not declared in `render.yaml`): `WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER=1` (without it the trigger route is not installed and the POST returns 404), `WOW_KALSHI_WEATHER_COHORT_KEY` matching the Vault secret, `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED=0` so the in-process loop is not a second writer, and a deploy of the merged SHA — Render currently runs `8857e488`, which does not contain this trigger.
 - No Supabase service key, Kalshi API secret, alternate collector, order controller, probability issuance, or capability promotion.
 - The existing Render process retains sole bounded weather-capture and settlement responsibility, guarded by `WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER`. Keep the GitHub external wake workflow as *best-effort backup*, not an independent data writer.
@@ -65,12 +65,14 @@ BEGIN
   ORDER BY created_at DESC LIMIT 1;
 
   IF nullif(trim(v_base_url), '') IS NULL THEN
+    RAISE WARNING 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%', 'KALSHI_WEATHER_SERVICE_URL_SECRET_MISSING';
     RETURN jsonb_build_object('status','BLOCKED',
       'reason','KALSHI_WEATHER_SERVICE_URL_SECRET_MISSING',
       'probability_publishable',false,'can_execute',false);
   END IF;
 
   IF nullif(trim(v_cohort_key), '') IS NULL THEN
+    RAISE WARNING 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%', 'KALSHI_WEATHER_COHORT_KEY_SECRET_MISSING';
     RETURN jsonb_build_object('status','BLOCKED',
       'reason','KALSHI_WEATHER_COHORT_KEY_SECRET_MISSING',
       'probability_publishable',false,'can_execute',false);
@@ -79,7 +81,8 @@ BEGIN
   v_base_url := rtrim(btrim(v_base_url), '/');
 
   -- Destination guard: TLS on the isolated Render origin, before the key is sent.
-  IF v_base_url !~* '^https://wow-kalshi-weather-v2[a-z0-9-]*\.onrender\.com$' THEN
+  IF v_base_url !~* '^https://wow-kalshi-weather-v2\.onrender\.com$' THEN
+    RAISE WARNING 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%', 'KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED';
     RETURN jsonb_build_object('status','BLOCKED',
       'reason','KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED',
       'probability_publishable',false,'can_execute',false);
@@ -138,6 +141,68 @@ SELECT cron.schedule(
 
 **Not applied.** Run this SQL manually against Supabase `kasbebndczmaopvcvfco` (not through GitHub Actions) only after the pull request merges and the owner authorizes the migration. Until then this document is the intended configuration and verification contract, not a description of production.
 
+## Operator checklist — production verification
+
+**Do not start this checklist until PR #2527 and PR #2528 are merged with their exact accepted heads.** The current production state is still `IMPLEMENTED_IN_PR`; these steps are a controlled release procedure, not permission to bypass protected acceptance.
+
+### 1. GitHub release preflight
+
+- [ ] Confirm PR #2527 and #2528 each show the expected merge commit and are based on the accepted `main` lineage.
+- [ ] Confirm Independent QA and Release Authority are green on the exact final heads, not an earlier commit.
+- [ ] Confirm required regressions, governed backend, CodeQL and applicable review findings are complete.
+- [ ] Record both merge SHAs. Do not deploy a branch head or a stale pre-merge SHA.
+
+### 2. Render — isolated service configuration
+
+Open Render Dashboard → `wow-kalshi-weather-v2` → **Environment**.
+
+- [ ] Confirm the service origin is exactly `https://wow-kalshi-weather-v2.onrender.com`.
+- [ ] Set `WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER=1` so the authenticated collection route is installed.
+- [ ] Set `WOW_KALSHI_WEATHER_COHORT_KEY` to a newly generated high-entropy secret. Do not paste it into GitHub, chat, source files, SQL text, or logs.
+- [ ] Keep `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED=0`; the database scheduler remains the sole collection writer.
+- [ ] Save the environment and manually deploy the accepted merged SHA. Auto-deploy is disabled for this service.
+- [ ] Verify the completed live deploy reports the exact expected SHA. A successful deploy status without SHA parity is insufficient.
+
+### 3. Supabase — Vault secrets
+
+Open Supabase Dashboard → project `kasbebndczmaopvcvfco` → **Vault / Secrets**.
+
+- [ ] Create `wow_kalshi_weather_service_url` with exactly `https://wow-kalshi-weather-v2.onrender.com` (no trailing path, port, query, or alternate hostname).
+- [ ] Create `wow_kalshi_weather_cohort_key` with the exact same secret value configured on Render.
+- [ ] Confirm both secret names exist. Never expose or query decrypted secret values for verification.
+
+### 4. Supabase — apply and read back the migration
+
+Only after the accepted Render SHA is live and both Vault secrets exist:
+
+- [ ] Open Supabase SQL Editor for project `kasbebndczmaopvcvfco`.
+- [ ] Run the complete `kalshi_weather_v2_collection_trigger_cron.sql` from the merged `main` SHA.
+- [ ] Read back `cron.job`: exactly one active `kalshi-weather-v2-authenticated-collection-trigger` row must exist.
+- [ ] Confirm `kalshi-weather-v2-shadow-read-only-wake` is absent.
+- [ ] Confirm there is no duplicate job-name row and both `pg_cron` and `pg_net` extensions are present.
+- [ ] If any check fails, stop. Do not manually create a second scheduler or enable the in-process loop as a workaround.
+
+### 5. Verify the first real collection cycle
+
+Wait for the next `*/30` scheduled run, then inspect:
+
+- [ ] `cron.job_run_details` for a new run of the authenticated trigger.
+- [ ] `net._http_response` for the corresponding request time and HTTP status. HTTP 401 means the Render and Vault keys differ; 404 means the route is not installed; 503 means the Render key/configuration is unavailable. A `BLOCKED` warning in PostgreSQL logs identifies a missing or unapproved Vault configuration.
+- [ ] Render logs for `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=EMPIRICAL_SHADOW_COHORT_PASS`.
+- [ ] Supabase `wow_kalshi_weather_predictions` for a new immutable prediction ID with `created_at` after that collection cycle.
+- [ ] Verify source-snapshot IDs and the prediction's settlement identity are present. A health response, pg_cron success, HTTP 200, or `DISPATCHED` request ID alone is not proof of collection.
+
+### 6. Stability check
+
+- [ ] Observe at least two further scheduled cycles.
+- [ ] Confirm exactly one collection scheduler remains active and the GitHub health probe remains read-only.
+- [ ] Confirm fresh immutable rows are added without duplicate target-hour residuals or a second writer.
+- [ ] Confirm `probability_publishable=false` and `can_execute=false` remain in force. Collection restoration is not probability certification or trading authorization.
+
+### Stop conditions
+
+Stop and retain `NO_PLAY_DATA_INSUFFICIENT` if the destination is not the exact approved host, a credential mismatch occurs, the route returns 404/503, no new immutable row appears, deployed SHA differs, duplicate schedulers exist, or the cohort reports `DISABLED`. Do not weaken authentication, turn on a second writer, or infer success from a liveness check.
+
 ## Verification (read only)
 
 These queries are expected to show the old health-only job until the migration is applied. A successful SQL client exit is not `MIGRATION_APPLIED`; read the rows back.
@@ -177,11 +242,13 @@ Confirm the request was authenticated, not merely dispatched. `net._http_respons
 
 ## Calibration gate
 
-- Use **one immutable forecast error per settlement station + hourly target time + lead-time bucket**, from as-of weather forecasts and exact Synoptic Data index settlement. Threshold sibling contracts are *not* independent samples.
-- The current `fit_candidate_calibration_profile` requires at least **30 independent eligible samples per station/lane/horizon**. At **40 or more**, `build_calibration_report` also permits a chronological forward holdout calculation. Both are research-only; neither certifies probability automatically.
-- Report MAE, signed bias, sample size, source outages/429, holdout scores and station identity; do not fit or backfill using information published after the prediction decision time.
-- Miami contracts currently carry `settlement_location_code = KALSHI_WEATHER_INDEX:MIAMI` with `settlement_station_id` and `settlement_station_name` null. The Kalshi Weather Index city is the settlement object, so residual grouping by that code is permitted, but it is **not** proof of an exact physical station. Station-specific model promotion stays blocked until a real station identity is recorded.
-- An approved probability model additionally requires calibration evidence, appropriate coverage, governance capability, exact fees, executable prices and conservative lower-bound edge. `KALSHI_WEATHER_PROBABILITY` remains `UNAVAILABLE`, `probability_publishable=false`, `can_execute=false` until independently certified.
+- Candidate fitting requires at least **30 unique eligible residuals per settlement-identity key + lane + lead-time bucket**. Threshold sibling contracts are one target observation, not independent samples; revisions collapse to the earliest decision-time forecast.
+- The authoritative forward-validation scorecard requires **50 total unique residuals**, with at least **30 chronologically earlier training residuals** and **20 later holdout residuals**. The split is by settlement time; boundary ties stay in holdout. It checks holdout absolute mean error `<= 0.75°F`, MAE `<= 2.5°F`, and one-sigma coverage of `50–85%`.
+- The legacy `build_calibration_report()` validation fields use a separate holdout calculation. They are not the authoritative pass/fail result for the new forward-validation thresholds; use `forward_validation.py` and its explicit gate objects.
+- A passing residual scorecard is research-only. It does not certify a probability, permit publication, promote a capability, or authorize execution. Separate probability-level review still requires Brier score, log loss, probability-bucket calibration, and comparison against a no-skill/base-rate and other precommitted baselines.
+- Miami contracts currently carry `settlement_location_code = KALSHI_WEATHER_INDEX:MIAMI` with `settlement_station_id` and `settlement_station_name` null. The settlement object is the Kalshi Weather Index city, so the code can group index-city research residuals; it is **not** proof of an exact physical station. The scorecard must label this `INDEX_CITY`, and station-specific promotion stays blocked until a real station identity is recorded.
+- Report MAE, signed bias, sample size, source outages/429, holdout scores and settlement identity; do not fit or backfill using information published after the prediction decision time.
+- An approved probability model additionally requires calibrated probability-level evidence, appropriate coverage, governance capability, exact fees, executable prices and conservative lower-bound edge. `KALSHI_WEATHER_PROBABILITY` remains `UNAVAILABLE`, `probability_publishable=false`, `can_execute=false` until independently certified.
 
 ### Research progress SQL — no probability or write
 
