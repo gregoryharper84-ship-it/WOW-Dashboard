@@ -212,6 +212,7 @@ def test_available_prop_lane_can_never_reach_legacy_fitted_params_path(monkeypat
 
 
 def test_governance_reports_lane_split(monkeypatch):
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "a" * 40)
     fake = _FakeClient(prop_status="UNAVAILABLE")
     monkeypatch.setattr(api_prod, "get_client", lambda: fake)
     monkeypatch.setattr(api_prod.base_api, "_query_deployment_gate_state", lambda: {
@@ -226,12 +227,20 @@ def test_governance_reports_lane_split(monkeypatch):
     body = response.json()
     assert body["compute_provider"] == "RENDER"
     assert body["database_provider"] == "SUPABASE"
+    assert body["deployed_sha"] == "a" * 40
     assert body["lane_capabilities"]["PROP_PROBABILITY"]["status"] == "UNAVAILABLE"
     assert body["routing_contract"]["LLP_TEAM_BETTING_MODEL"].startswith("/score-event")
     assert body["arithmetic_audit"]["provider"] == "PYTHON_PRIMARY"
     assert body["arithmetic_audit"]["external_transport_required"] is False
     assert body["arithmetic_audit"]["blocks_model_probability"] is False
     assert body["can_execute"] is False
+
+
+def test_render_deployed_sha_rejects_missing_or_malformed_value(monkeypatch):
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    assert api_prod.base_api._render_deployed_sha() is None
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "not-a-commit")
+    assert api_prod.base_api._render_deployed_sha() is None
 
 
 def test_visible_model_evidence_contains_ess_bounds_and_provenance_without_execution():
