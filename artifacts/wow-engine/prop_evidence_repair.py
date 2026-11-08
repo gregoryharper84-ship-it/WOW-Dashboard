@@ -56,15 +56,39 @@ def _annotate(
     return result
 
 
+def _canonical_identity(req: Any) -> tuple[str, str, str]:
+    """Normalize lookup keys exactly as the governed snapshot writer stores them.
+
+    The primary ``wow_prop_evidence_snapshot`` RPC resolves the row by primary
+    key and only compares sport/stat case-insensitively, so a caller using a
+    lowercase sport or alias casing can still read a valid snapshot there. The
+    fallback locator queries the table directly, and the writer persists an
+    uppercase sport, an uppercase canonical stat type and whitespace-collapsed
+    player identity. Without this normalization the fallback silently misses a
+    governed snapshot that exists and reports ``PROP_EVIDENCE_SNAPSHOT_NOT_FOUND``.
+
+    This changes identity comparison only. It cannot create evidence, relax
+    calibration, or publish a probability.
+    """
+    sport = str(getattr(req, "sport", "") or "").strip().upper()
+    player = " ".join(str(getattr(req, "player", "") or "").split())
+    raw_stat = str(getattr(req, "stat_type", "") or "").strip()
+    # Mirror pick_request_runtime_core._canonical_stat's raw normalization;
+    # ingress already resolves the alias map before this repair layer runs.
+    stat_type = "_".join(raw_stat.upper().replace("-", " ").split())
+    return sport, player, stat_type
+
+
 def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
     """Return newest exact-identity snapshots captured strictly before start."""
+    sport, player, stat_type = _canonical_identity(req)
     query = (
         client.table("wow_prop_evidence_snapshots")
         .select("source_snapshot_id,captured_at")
         .eq("event_id", req.event_id)
-        .eq("sport", req.sport)
-        .eq("player", req.player)
-        .eq("stat_type", req.stat_type)
+        .eq("sport", sport)
+        .eq("player", player)
+        .eq("stat_type", stat_type)
         .eq("line", req.line)
         .eq("hydration_status", "PASS")
         .lt("captured_at", req.event_start_time)
