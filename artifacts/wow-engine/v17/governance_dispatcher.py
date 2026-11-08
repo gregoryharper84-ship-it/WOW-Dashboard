@@ -214,32 +214,8 @@ def classify_target(
 
     if ancillary_ci_hold:
         return {"action": "HOLD", "findings": [ancillary_ci_hold], "head_sha": head}
-    if not protected and not zero_credit_mode:
-        trusted = latest_check(checks, TRUSTED_GOVERNANCE_CHECK, head, GITHUB_ACTIONS_APP_ID)
-        if trusted is None:
-            return {
-                "action": "HOLD",
-                "findings": [f"TRUSTED_GOVERNANCE_CHECK_MISSING:{TRUSTED_GOVERNANCE_CHECK}"],
-                "head_sha": head,
-            }
-        if trusted.get("_foreign_source"):
-            return {
-                "action": "HOLD",
-                "findings": [f"TRUSTED_GOVERNANCE_CHECK_FOREIGN_SOURCE:{TRUSTED_GOVERNANCE_CHECK}"],
-                "head_sha": head,
-            }
-        if trusted.get("status") != "completed":
-            return {
-                "action": "HOLD",
-                "findings": [f"TRUSTED_GOVERNANCE_CHECK_PENDING:{TRUSTED_GOVERNANCE_CHECK}"],
-                "head_sha": head,
-            }
-        if trusted.get("conclusion") != "success":
-            return {
-                "action": "HOLD",
-                "findings": [f"TRUSTED_GOVERNANCE_CHECK_FAILED:{TRUSTED_GOVERNANCE_CHECK}"],
-                "head_sha": head,
-            }
+    # V4: no downstream trusted-governance certifier dependency.
+    # The exact App-pinned QA/Release checks and required CI remain mandatory.
 
     qa_check = latest_check(checks, QA_CHECK, head, QA_APP_ID)
     if qa_check is None:

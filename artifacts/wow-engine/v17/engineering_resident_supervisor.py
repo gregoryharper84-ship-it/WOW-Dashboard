@@ -33,6 +33,7 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 # against GET /repos/{owner}/{repo}. Never accept a different numeric ID.
 REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
+FINALIZE_WORKFLOW = "wow-v17-remote-writer-finalize.yml"
 # Only the three registered engineering workflows can own the implementation
 # writer. Unrelated CI run churn must never corrupt this busy check.
 ACTIVE_WORKFLOW_FILES = (
@@ -146,7 +147,10 @@ class GitHubTransport:
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
-        for workflow in ("wow-v17-chatgpt-engineering-worker.yml", "wow-v17-claude-engineering-worker.yml"):
+        for workflow in (
+            "wow-v17-chatgpt-engineering-worker.yml",
+            "wow-v17-claude-engineering-worker.yml",
+        ):
             workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
             items = workers.get("workflow_runs")
             if not isinstance(items, list):
@@ -177,6 +181,50 @@ class GitHubTransport:
                 elif (decision == "PROVIDER_ADMITTED"
                       and route.get("provider") == ("openai" if "chatgpt" in workflow else "anthropic")):
                     decision = "PROVIDER_RECOVERY_UNVERIFIED"
+        if (not latest_success
+                and (route.get("provider") == "cursor"
+                     or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
+            # A finalizer workflow run alone never grants admission; the #1138
+            # shared-writer ledger must also prove all held reservations have a
+            # verified terminal release receipt under a stable protected-main SHA.
+            pre_main = self.get("commits/main")
+            pre_main_sha = pre_main.get("sha") if isinstance(pre_main, dict) else None
+            try:
+                fence_cleared = bool(
+                    isinstance(pre_main_sha, str)
+                    and re.fullmatch(r"[0-9a-f]{40}", pre_main_sha)
+                    and self.remote_writer_clear()
+                )
+            except Exception:
+                fence_cleared = False
+            if fence_cleared:
+                finalizers = self.get(
+                    f"actions/workflows/{FINALIZE_WORKFLOW}/runs?branch=main&status=completed&per_page=1"
+                )
+                fin_items = finalizers.get("workflow_runs")
+                if not isinstance(fin_items, list):
+                    return "PROVIDER_STATUS_UNVERIFIED"
+                if fin_items:
+                    fin = fin_items[0]
+                    if (fin.get("path") != f".github/workflows/{FINALIZE_WORKFLOW}"
+                            or fin.get("head_branch") != "main" or fin.get("status") != "completed"
+                            or type(fin.get("id")) is not int or fin["id"] <= 0
+                            or not re.fullmatch(r"[0-9a-f]{40}", str(fin.get("head_sha", "")))
+                            or fin.get("conclusion") not in {"success", "failure", "cancelled", "timed_out"}):
+                        return "PROVIDER_STATUS_UNVERIFIED"
+                    fin_updated = datetime.fromisoformat(fin["updated_at"].replace("Z", "+00:00"))
+                    route_time = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
+                    fin_age = (now - fin_updated).total_seconds()
+                    if fin_age < 0:
+                        return "PROVIDER_STATUS_UNVERIFIED"
+                    if fin_updated >= route_time and fin["conclusion"] == "success":
+                        post_main = self.get("commits/main")
+                        post_main_sha = post_main.get("sha") if isinstance(post_main, dict) else None
+                        latest_success |= (
+                            fin["head_sha"] == run["head_sha"]
+                            and fin["head_sha"] == pre_main_sha
+                            and post_main_sha == pre_main_sha
+                        )
         if latest_success:
             return "PROVIDER_ADMITTED"
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:

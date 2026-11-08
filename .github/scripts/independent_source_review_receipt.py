@@ -1158,6 +1158,8 @@ def resolve_qa_review_policy(
     now: datetime | None = None,
     get_json: Any = None,
     download_artifact: Any = None,
+    allow_superseded_target: bool = False,
+    neutralize_draft_target: bool = False,
 ) -> dict[str, Any]:
     _require(repository == CANONICAL_REPOSITORY, "QA_POLICY_REPOSITORY_MISMATCH")
     _positive_int(run_id, "QA_POLICY_RUN_ID")
@@ -1242,6 +1244,60 @@ def resolve_qa_review_policy(
         now=now,
     )
     pr = json_fetch(f"/pulls/{pr_number}")
+    # A completed, authenticated QA policy for a no-longer-active source must
+    # not poison the unrelated protected-main commit via workflow_run. Only
+    # this *read-only* Release admission caller may classify a verified
+    # superseded target as neutral. The default remains strict/fail-closed.
+    # A foreign PR/repository, bad head identity, a draft at the same head or
+    # an invalid policy is never a neutral shortcut.
+    if allow_superseded_target and isinstance(pr, Mapping):
+        head = pr.get("head") if isinstance(pr.get("head"), Mapping) else {}
+        base = pr.get("base") if isinstance(pr.get("base"), Mapping) else {}
+        live_sha = head.get("sha")
+        head_repo = head.get("repo") if isinstance(head.get("repo"), Mapping) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), Mapping) else {}
+        same_origin = (
+            pr.get("number") == pr_number
+            and head_repo.get("full_name") == repository
+            and base.get("ref") == "main"
+            and base_repo.get("full_name") == repository
+            and isinstance(live_sha, str)
+            and SHA.fullmatch(live_sha) is not None
+        )
+        # An open PR (draft or ready) whose live head has moved off the head
+        # the QA policy was issued for is no longer the reviewed source. A
+        # draft at the *same* head stays strict (QA_POLICY_TARGET_NO_LONGER_CURRENT)
+        # so draft conversion alone can never neutralize a current target.
+        superseded = (
+            pr.get("state") == "closed"
+            or (pr.get("state") == "open" and isinstance(pr.get("draft"), bool)
+                and not pr.get("merged_at") and live_sha != head_sha)
+        )
+        # A draft source at the exact policy head is not "current live work"
+        # that a merge could release: GitHub cannot merge a draft. Without this
+        # branch every QA run on a draft PR publishes a failing admission check
+        # on the unrelated protected-main commit Render's checksPass trigger is
+        # evaluating. Opt-in only, so the strict default is unchanged and a
+        # draft can never become Release evidence.
+        draft_target = (
+            neutralize_draft_target
+            and pr.get("state") == "open"
+            and pr.get("draft") is True
+            and not pr.get("merged_at")
+            and live_sha == head_sha
+        )
+        if same_origin and superseded:
+            return {
+                "artifact_id": artifact_id, "policy": policy, "run": run,
+                "disposition": "neutral",
+                "reason": "RELEASE_QA_SOURCE_PR_SUPERSEDED",
+            }
+        if same_origin and draft_target:
+            return {
+                "artifact_id": artifact_id, "policy": policy, "run": run,
+                "disposition": "neutral",
+                "reason": "RELEASE_QA_DRAFT_TARGET_NOT_RELEASABLE",
+            }
     _require(
         isinstance(pr, Mapping)
         and pr.get("number") == pr_number

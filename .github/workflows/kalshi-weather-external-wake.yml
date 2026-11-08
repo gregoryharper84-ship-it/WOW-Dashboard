@@ -43,7 +43,10 @@ jobs:
     if: github.event_name != 'pull_request'
     name: Wake and validate isolated weather shadow service
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Two endpoints can each take 65s on every one of three cold-start retries.
+    # 3 * 2 * 65 + 2 * 8 + 30s runner margin = 436s; five minutes truncates
+    # the final permitted retry. Concurrency still serializes overlapping wakes.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: Wake API, verify DB-read and shadow collector flags

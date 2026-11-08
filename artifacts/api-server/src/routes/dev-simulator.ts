@@ -16,6 +16,12 @@ const FLASK_BASE = process.env["SCORING_API_URL"] ?? "http://localhost:25643";
 const API_KEY    = process.env["SCORING_API_KEY"]  ?? "";
 const API_BASE   = process.env["API_SERVER_URL"]   ?? "http://localhost:8080/api";
 
+function dashboardFetch(url: string, options: RequestInit = {}) {
+  const headers = new Headers(options.headers);
+  headers.set("X-Dashboard-Key", process.env.WOW_DASHBOARD_API_KEY ?? "");
+  return fetch(url, { ...options, headers, redirect: "error" });
+}
+
 // ── Valid DataStatus values ───────────────────────────────────────────────────
 const VALID_SOURCE_STATUSES = [
   "RETRIEVED",
@@ -244,7 +250,7 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
 
   // 2. GET /api/props/providers
   checks.push(await runCheck("props_providers", async () => {
-    const r = await fetch(`${API_BASE}/props/providers`, { signal: AbortSignal.timeout(5000) });
+    const r = await dashboardFetch(`${API_BASE}/props/providers`, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json() as { providers?: Record<string, { configured: boolean }> };
     const configured = Object.values(d.providers ?? {}).filter(p => p.configured).length;
@@ -255,7 +261,7 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
   // 3. POST /api/props/normalize with mock fallback
   let mockProps: Record<string, unknown>[] = [];
   checks.push(await runCheck("props_normalize_mock", async () => {
-    const r = await fetch(`${API_BASE}/props/normalize`, {
+    const r = await dashboardFetch(`${API_BASE}/props/normalize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sport: "NBA", providers: ["mock"] }),
@@ -273,7 +279,7 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
   // 4. Mock props cannot approve
   checks.push(await runCheck("mock_cannot_approve", async () => {
     if (mockProps.length === 0) throw new Error("No mock props available to test");
-    const r = await fetch(`${API_BASE}/props/score-batch`, {
+    const r = await dashboardFetch(`${API_BASE}/props/score-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ props: mockProps.slice(0, 2) }),
@@ -299,7 +305,7 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
   checks.push(await runCheck("row_count_reconciliation", async () => {
     const testProps = mockProps.slice(0, 3);
     if (testProps.length === 0) return "Skipped — no mock props";
-    const r = await fetch(`${API_BASE}/props/score-batch`, {
+    const r = await dashboardFetch(`${API_BASE}/props/score-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ props: testProps }),
@@ -315,12 +321,12 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
 
   // 6. Odds API live check (warn, not fail, if missing key)
   checks.push(await runCheck("odds_api_live", async () => {
-    const r = await fetch(`${API_BASE}/props/providers`, { signal: AbortSignal.timeout(5000) });
+    const r = await dashboardFetch(`${API_BASE}/props/providers`, { signal: AbortSignal.timeout(5000) });
     const d = await r.json() as { providers?: Record<string, { configured: boolean }> };
     if (!d.providers?.["odds_api"]?.configured) {
       throw new Error("ODDS_API_KEY not configured — live provider unavailable");
     }
-    const norm = await fetch(`${API_BASE}/props/normalize`, {
+    const norm = await dashboardFetch(`${API_BASE}/props/normalize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sport: "baseball_mlb", providers: ["odds_api"] }),
@@ -368,7 +374,7 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
 
   // 10. Source-status simulator (DATA_UNOBTAINABLE cannot approve)
   checks.push(await runCheck("sim_data_unobtainable", async () => {
-    const r = await fetch(`${API_BASE}/dev/source-status-sim`, {
+    const r = await dashboardFetch(`${API_BASE}/dev/source-status-sim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -394,7 +400,7 @@ router.post("/smoke-test", async (_req: Request, res: Response) => {
 
   // 11. SOURCE_CONFLICT cannot approve
   checks.push(await runCheck("sim_source_conflict", async () => {
-    const r = await fetch(`${API_BASE}/dev/source-status-sim`, {
+    const r = await dashboardFetch(`${API_BASE}/dev/source-status-sim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

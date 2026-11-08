@@ -10,6 +10,17 @@ spec.loader.exec_module(m)
 
 
 class SimpleSecurityReviewTests(unittest.TestCase):
+    def setUp(self):
+        # Legacy tests isolate verdict parsing. Discovery has separate
+        # negative tests; avoid adding catalog calls to existing fixtures.
+        self._models_patch = patch.object(
+            m, "review_models",
+            side_effect=lambda provider, key, strict=False:
+            ["gemini-3.8-flash"] if provider == "gemini-generative-api"
+            else ["claude-sonnet-4-6"])
+        self._models_patch.start()
+        self.addCleanup(self._models_patch.stop)
+
     def test_exact_event_target(self):
         self.assertEqual(m.event_target({"pull_request": {"number": 2247, "head": {"sha": "a" * 40}}},
                                         "pull_request_target"), (2247, "a" * 40))
@@ -258,6 +269,45 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
                     self.assertNotIn(forbidden, stderr.getvalue())
 
+    def test_successful_malformed_http_200_never_triggers_model_failover(self):
+        # Regression for independent P1 security finding at PR #2373:
+        # JSON 'null' must never be read as an exhausted list of models.
+        # Malformed 200 responses are not availability errors.
+        candidates = {
+            "anthropic-claude-api": ["claude-sonnet-4-6", "claude-sonnet-4-5"],
+            "gemini-generative-api": ["gemini-3.8-flash", "gemini-3.6-flash"],
+        }
+        for provider, models in candidates.items():
+            for malformed in (None, False, [], "", 0):
+                with self.subTest(provider=provider, malformed=malformed), \
+                     patch.object(m, "review_models", return_value=models), \
+                     patch.object(m, "request_json", return_value=malformed) as req:
+                    with self.assertRaises(m.Hold) as caught:
+                        m.call_provider(provider, "scoped-key", "untrusted diff")
+                    self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+                    self.assertEqual(str(caught.exception),
+                                     "CLAUDE_RESPONSE_INVALID" if provider == "anthropic-claude-api"
+                                     else "GEMINI_RESPONSE_INVALID")
+                    self.assertEqual(req.call_count, 1,
+                                     "No second model may see a malformed first response")
+
+    def test_malformed_success_does_not_fall_through_to_other_provider(self):
+        target = {"pr": 2373, "head_sha": "a" * 40,
+                  "diff_sha256": "b" * 64, "diff": "untrusted"}
+        creds = {p: "scoped-key" for p in m.PROVIDERS}
+        with patch.object(m, "prompt_for", return_value="untrusted diff"), \
+             patch.object(m, "review_models", return_value=["claude-sonnet-4-6"]), \
+             patch.object(m, "request_json", return_value=None) as request:
+            with self.assertRaises(m.Hold) as caught:
+                m.semantic_review(target, creds)
+            self.assertEqual(str(caught.exception), "CLAUDE_RESPONSE_INVALID")
+            self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+            self.assertEqual(caught.exception.attempts, [
+                {"provider": "anthropic-claude-api", "result": "CLAUDE_RESPONSE_INVALID"}
+            ])
+            self.assertEqual(request.call_count, 1,
+                             "Malformed Claude response cannot be laundered into Gemini PASS")
+
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
@@ -391,16 +441,55 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
     def test_unknown_provider_models_are_denied_before_network(self):
-        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": "unapproved-model"}):
-            with self.assertRaises(m.Hold) as cm:
-                m.call_provider("anthropic-claude-api", "key", "review")
-            self.assertEqual(str(cm.exception), "CLAUDE_MODEL_UNAPPROVED")
-        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-unapproved"}):
-            with self.assertRaises(m.Hold) as cm:
-                m.call_provider("gemini-generative-api", "key", "review")
-            self.assertEqual(str(cm.exception), "GEMINI_MODEL_INVALID")
+        self._models_patch.stop()
+        for provider, setting, model, reason in (
+            ("anthropic-claude-api", "WOW_QA_CLAUDE_MODEL", "unapproved-model",
+             "CLAUDE_MODEL_UNAPPROVED"),
+            ("gemini-generative-api", "WOW_QA_GEMINI_MODEL", "gemini-unapproved",
+             "GEMINI_MODEL_INVALID"),
+        ):
+            with self.subTest(provider=provider), patch.dict(m.os.environ, {setting: model}):
+                with patch.object(m, "request_json") as request:
+                    with self.assertRaisesRegex(m.Hold, reason):
+                        m.call_provider(provider, "fake", "review")
+                    request.assert_not_called()
 
+    def test_gemini_fallback_pins_stable_free_tier_candidate_and_keeps_fail_closed_parser(self):
+        import json
+        verdict = self._passing()
+        candidate = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}
+        with patch.object(m, "request_json", return_value=candidate) as req:
+            decision, payload = m.call_provider(
+                "gemini-generative-api", "TEST_KEY", "untrusted diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        self.assertEqual(req.call_args.args[0],
+                         "https://generativelanguage.googleapis.com/v1beta/models/"
+                         "gemini-3.8-flash:generateContent")
+        self.assertEqual(req.call_args.kwargs["data"]["generationConfig"],
+                         {"responseMimeType": "application/json"})
 
+    def test_gemini_fallback_invalid_responses_hold_without_retry(self):
+        import json
+        good = self._passing()
+        cases = (
+            ("malformed_json", "STOP", "{not valid json}", "SEMANTIC_RESPONSE_NOT_JSON"),
+            ("invalid_verdict", "STOP", json.dumps({**good, "security_review": "NOT_PASS"}),
+             "SEMANTIC_VERDICT_INVALID"),
+            ("non_stop", "MAX_TOKENS", json.dumps(good), "GEMINI_REVIEW_INCOMPLETE"),
+        )
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            for name, reason, body, expected in cases:
+                with self.subTest(name=name):
+                    result = {"candidates": [{"finishReason": reason, "content": {
+                        "parts": [{"text": body}]}}]}
+                    with patch.object(m, "request_json", return_value=result) as request:
+                        with self.assertRaises(m.Hold) as caught:
+                            m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                        self.assertEqual(str(caught.exception), expected)
+                        self.assertEqual(request.call_count, 1)
 
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -577,6 +666,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                            "reason": "OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED"}, "qa-app")
             self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
 
+
+    def test_bounded_timeout_only_for_gemini_generatecontent(self):
+        # PR #2374 run 41453642828/2: Gemini model catalog succeeded,
+        # but full-source generation hit the former 60s transport timeout.
+        # Longer one-shot inference must never relax other endpoint budgets
+        # or turn a timeout into a positive security verdict.
+        cases = (
+            ("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+             {"data": {"contents": []}}, 180, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+             {}, 60, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://api.anthropic.com/v1/messages",
+             {"data": {"messages": []}}, 60, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://api.github.com/repos/" + m.REPO + "/pulls/2374",
+             {}, 60, m.Hold, "GITHUB_TRANSPORT"),
+        )
+        for url, request_kwargs, timeout, failure_type, typed_reason in cases:
+            with self.subTest(url=url), \
+                 patch.object(m.HTTP_CLIENT, "open", side_effect=TimeoutError()) as opener:
+                with self.assertRaises(failure_type) as err:
+                    m.request_json(url, **request_kwargs)
+                self.assertEqual(str(err.exception), typed_reason)
+                self.assertEqual(opener.call_args.kwargs["timeout"], timeout)
+                self.assertEqual(opener.call_count, 1, "No hidden HTTP retry permitted")
 
     def test_typed_provider_error_retry_mapping(self):
         import io
@@ -755,7 +868,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         prompt = m.prompt_for(target)
         self.assertIn("BEGIN_UNTRUSTED_DIFF", prompt)
         self.assertIn("END_UNTRUSTED_DIFF", prompt)
-        self.assertTrue(prompt.endswith("Return review findings for the exact identified PR and SHA only."))
+        self.assertIn("CRITICAL FORMAT REQUIREMENT", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("500 characters or fewer", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("if uncertain, FAIL", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
 
     def test_capture_rejects_head_change_during_diff_pagination(self):
         initial = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -776,6 +891,229 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn('PROTECTED_BASE_MOVED_BEFORE_PUBLICATION', source)
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
+
+
+
+    def _pref_env(self, **changes):
+        base = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_ACTOR": m.OWNER_LOGIN,
+                "WOW_QA_REVIEW_GEMINI_API_KEY": "secret-do-not-log",
+                "WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}
+        base.update(changes)
+        return base
+
+    def test_preflight_catalog_read_only_no_inference(self):
+        env = self._pref_env()
+        env["WOW_QA_REVIEW_ANTHROPIC_API_KEY"] = ""
+        self._models_patch.stop()
+        data = {"models": [{"name": "models/gemini-3.8-flash",
+                            "supportedGenerationMethods": ["generateContent"]}]}
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m, "request_json", return_value=data) as request, \
+             patch.object(m, "publish_check") as publish, \
+             patch("builtins.print") as print_output:
+            m.reviewer_preflight()
+        request.assert_called_once_with(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            headers={"x-goog-api-key": "secret-do-not-log"})
+        publish.assert_not_called()
+        self.assertTrue(any("PROVIDER_READY:gemini-generative-api:gemini-3.8-flash:READ_ONLY"
+                            in str(x) for x in print_output.call_args_list))
+        self.assertNotIn("secret-do-not-log", str(print_output.call_args_list))
+
+    def test_preflight_rejects_untrusted_caller_before_http(self):
+        self._models_patch.stop()
+        for changes in ({"GITHUB_ACTOR": "foreign-bot"},
+                        {"GITHUB_REF": "refs/heads/test"},
+                        {"GITHUB_REPOSITORY": "attacker/fork"},
+                        {"GITHUB_EVENT_NAME": "pull_request_target"}):
+            with self.subTest(changes=changes), \
+                 patch.dict(m.os.environ, self._pref_env(**changes), clear=True), \
+                 patch.object(m, "request_json") as request:
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED"):
+                    m.reviewer_preflight()
+                request.assert_not_called()
+
+    def test_preflight_explicit_invalid_model_never_calls_provider(self):
+        self._models_patch.stop()
+        for model in ("gemini-4-argon", " gemini-3.8-flash", "gemini-3.8-flash\\n", "other"):
+            with self.subTest(model=model), \
+                 patch.dict(m.os.environ, self._pref_env(WOW_QA_GEMINI_MODEL=model,
+                     WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+                 patch.object(m, "request_json") as request:
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                    m.reviewer_preflight()
+                request.assert_not_called()
+
+    def test_preflight_missing_credential_fails_closed(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ,
+                        self._pref_env(WOW_QA_REVIEW_GEMINI_API_KEY="",
+                                       WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+             patch.object(m, "request_json") as request:
+            with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                m.reviewer_preflight()
+            request.assert_not_called()
+
+    def test_preflight_missing_capability_and_empty_catalog_are_unavailable(self):
+        self._models_patch.stop()
+        for data in (None, [], {}, {"models": [{"name": "models/gemini-3.8-flash"}]},
+                     {"models": [{"name": "models/gemini-4-argon",
+                                   "supportedGenerationMethods": ["generateContent"]}]},
+                     {"models": [{"name": "models/gemini-3.8-flash",
+                                   "supportedGenerationMethods": ["embedContent"]}]}):
+            with self.subTest(data=data), \
+                 patch.dict(m.os.environ, self._pref_env(
+                     WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+                 patch.object(m, "request_json", return_value=data):
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                    m.reviewer_preflight()
+
+    def test_preflight_http_404_is_never_security_pass(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, self._pref_env(
+             WOW_QA_REVIEW_ANTHROPIC_API_KEY=""), clear=True), \
+             patch.object(m, "request_json", side_effect=m.Hold("HTTP_404")), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL"):
+                m.reviewer_preflight()
+            publish.assert_not_called()
+
+    def test_review_model_list_allowlist_and_order(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.1-pro", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-4-argon", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.9-flash-preview", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.9-flash\\n/path", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.9-flash", "supportedGenerationMethods": ["embedContent"]},
+        ]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=catalog):
+            self.assertEqual(m.review_models("gemini-generative-api", "key"),
+                             ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-pro"])
+
+    def test_review_model_configured_preferred_only_when_listed(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.6-flash"}), \
+             patch.object(m, "request_json", return_value=catalog):
+            self.assertEqual(m.review_models("gemini-generative-api", "key"),
+                             ["gemini-3.6-flash", "gemini-3.8-flash"])
+
+    def test_review_model_catalog_invalid_is_hold_not_static_fallback(self):
+        self._models_patch.stop()
+        for data in ({}, {"models": "not a list"},
+                     {"nextPageToken": "next", "models": []},
+                     {"models": [None]}):
+            with self.subTest(data=data), patch.object(m, "request_json", return_value=data):
+                with self.assertRaises(m.Hold):
+                    m.review_models("gemini-generative-api", "key")
+
+    def test_complete_empty_model_catalog_never_uses_static_models(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", return_value={"models": []}) as request:
+            with self.assertRaisesRegex(m.ProviderUnavailable,
+                                        "PROVIDER_MODEL_UNAVAILABLE"):
+                m.review_models("gemini-generative-api", "key")
+        self.assertEqual(request.call_count, 1)
+
+    def test_nontransient_catalog_401_does_not_spend_generation_tokens(self):
+        self._models_patch.stop()
+        for status in ("HTTP_401", "HTTP_403", "HTTP_404"):
+            with self.subTest(status=status), \
+                 patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+                 patch.object(m, "request_json", side_effect=m.Hold(status)) as request:
+                with self.assertRaisesRegex(m.Hold, status):
+                    m.call_provider("gemini-generative-api", "key", "untrusted diff")
+                self.assertEqual(request.call_count, 1)
+
+    def test_review_model_listing_http_error_uses_short_static_fallback(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=m.Hold("HTTP_503")):
+            self.assertEqual(m.review_models("gemini-generative-api", "key"),
+                             ["gemini-3.8-flash", "gemini-3.6-flash"])
+
+    def test_review_model_only_typed_unavailable_moves_to_next_model(self):
+        self._models_patch.stop()
+        import json
+        verdict = self._passing()
+        good = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        def request(url, **kwargs):
+            if "pageSize" in url: return catalog
+            if "3.8-flash:generateContent" in url:
+                raise m.ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
+            return good
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request) as req:
+            self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "PASS")
+            self.assertEqual(req.call_count, 3)
+
+    def test_review_model_semantic_rejection_never_switches_model(self):
+        self._models_patch.stop()
+        import json
+        rejected = {**self._passing(), "security_review": "FAIL"}
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        calls = []
+        def request(url, **kwargs):
+            calls.append(url)
+            if "pageSize" in url: return catalog
+            return {"candidates": [{"finishReason": "STOP", "content": {
+                "parts": [{"text": json.dumps(rejected)}]}}]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "REJECT")
+        self.assertEqual(len(calls), 2)
+
+    def test_model_catalog_endpoints_are_bounded_and_attributed(self):
+        self._models_patch.stop()
+        models = {"data": [{"id": "claude-sonnet-4-6"}], "has_more": False}
+        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=models) as req:
+            self.assertEqual(m.review_models("anthropic-claude-api", "key"),
+                             ["claude-sonnet-4-6"])
+            self.assertEqual(req.call_args.args[0],
+                             "https://api.anthropic.com/v1/models?limit=1000")
+        self.assertEqual(m.safe_label(req.call_args.args[0], False),
+                         "ANTHROPIC_API:GET:MODEL_CATALOG")
+        self.assertEqual(m.safe_label(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            False), "GEMINI_API:GET:MODEL_CATALOG")
+
+    def test_review_model_claude_candidates_are_limited_to_sonnet(self):
+        self._models_patch.stop()
+        catalog = {"data": [{"id": "claude-sonnet-4-6"},
+                            {"id": "claude-sonnet-4-5"},
+                            {"id": "claude-sonnet-5"},
+                            {"id": "claude-sonnet-5-2"},
+                            {"id": "claude-opus-4-6"},
+                            {"id": "claude-sonnet-5-3-preview"}], "has_more": False}
+        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=catalog):
+            self.assertEqual(m.review_models("anthropic-claude-api", "key"),
+                             ["claude-sonnet-5-2", "claude-sonnet-5", "claude-sonnet-4-6"])
+
+    def test_workflow_preflight_never_mints_qa_token_or_reviews_diff(self):
+        workflow = (PATH.parents[1] / "workflows" / "wow-v17-simple-security-review.yml").read_text()
+        self.assertIn("preflight_only:", workflow)
+        self.assertIn("run: python .github/scripts/wow_simple_security_review.py --preflight", workflow)
+        self.assertIn("if: inputs.preflight_only == true", workflow)
+        self.assertIn("if: inputs.preflight_only != true", workflow)
+        self.assertIn("environment: wow-qa", workflow)
+        self.assertIn("ref: main", workflow)
 
 
 def load_tests(loader, tests, pattern):

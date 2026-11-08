@@ -22,6 +22,10 @@
       "destination": "/api/gateway?__route=%2Fv17%2Fdaily-snapshot-run%2F__ROWS__&run_id=:run_id"
     },
     {
+      "source": "/functions/v1/wow-llp-action-gateway/v17/llp-team-intelligence/:run_id/events",
+      "destination": "/api/gateway?__route=%2Fv17%2Fllp-team-intelligence%2F__EVENTS__&run_id=:run_id"
+    },
+    {
       "source": "/functions/v1/wow-llp-action-gateway/score-team-event",
       "destination": "/api/gateway?__route=%2Fscore-team-event"
     },

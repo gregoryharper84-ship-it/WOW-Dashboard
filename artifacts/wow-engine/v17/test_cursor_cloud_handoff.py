@@ -432,6 +432,22 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual(len(api.comments), 1)
             self.assertTrue(remote.reservations(api.comments)[0][1]["hold"])
 
+    def test_failed_cursor_launch_preserves_reconciliation_identity_and_http_status(self):
+        err = mod.HandoffBlocked(
+            "CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS", provider_http_status=400,
+        )
+        api = FakeApi(post_error=err)
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS")
+        self.assertEqual(cm.exception.details["writer_lease_comment_id"], 55)
+        self.assertEqual(cm.exception.details["writer_lease_status"], "CURSOR_LAUNCH_RESERVED")
+        self.assertEqual(cm.exception.details["agent_id"], mod.agent_id(REPO, 1948, SHA))
+        self.assertIsNone(cm.exception.details["run_id"])
+        self.assertEqual(cm.exception.details["main_sha"], MAIN_SHA)
+        self.assertTrue(cm.exception.details["reconciliation_required"])
+        self.assertEqual(cm.exception.details["provider_http_status"], 400)
+
 
 if __name__ == "__main__":
     unittest.main()

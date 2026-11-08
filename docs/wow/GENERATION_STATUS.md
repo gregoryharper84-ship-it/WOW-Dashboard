@@ -45,6 +45,8 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = true
 ## Controlling current-state pointers
 
 - Backend and release status: `artifacts/wow-engine/V17_PRODUCTION_STATUS.md`
+
+- Governance reconciliation audit (proposed, not runtime authority): `docs/wow/governance/WOW-V17-GOVERNANCE-LEDGER-2026-11-04.md`
 - V17 host/runtime alignment: `artifacts/wow-engine/v17/PHASE_A_ALIGNMENT_STATUS.md`
 - V17 WOW editor source: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`
 - V17 LLP editor source: `artifacts/wow-engine/LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt`

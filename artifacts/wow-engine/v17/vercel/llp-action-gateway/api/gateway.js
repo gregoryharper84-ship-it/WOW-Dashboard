@@ -8,6 +8,7 @@ const ROUTES = new Map([
   ["/v17/host-contract", { method: "GET", auth: true }],
   ["/v17/daily-snapshot-run", { method: "POST", auth: true }],
   ["/v17/daily-snapshot-run/__ROWS__", { method: "GET", auth: true }],
+  ["/v17/llp-team-intelligence/__EVENTS__", { method: "GET", auth: true }],
   ["/score-team-event", { method: "POST", auth: true }],
   ["/score-team-event-request", { method: "POST", auth: true }],
   ["/live-probability/health", { method: "GET", auth: true }],
@@ -48,6 +49,11 @@ function fail(res, status, code, requestId, extra = {}) {
 
 function normalizedRoute(query) {
   const route = String(query.__route || "");
+  if (route === "/v17/llp-team-intelligence/__EVENTS__") {
+    const runId = String(query.run_id || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(runId)) return null;
+    return `/v17/llp-team-intelligence/${encodeURIComponent(runId)}/events`;
+  }
   if (route === "/v17/daily-snapshot-run/__ROWS__") {
     const runId = String(query.run_id || "").trim();
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(runId)) return null;

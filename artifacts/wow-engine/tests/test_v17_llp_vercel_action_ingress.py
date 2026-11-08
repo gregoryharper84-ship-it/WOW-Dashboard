@@ -23,7 +23,8 @@ def test_vercel_challenger_rewrites_exactly_the_canonical_llp_action_paths():
         for path in rewrites
     }
 
-    assert len(canonical) == 16
+    assert len(canonical) == 17
+    assert "/functions/v1/wow-llp-action-gateway/v17/llp-team-intelligence/{run_id}/events" in canonical
     assert normalized == canonical
 
 

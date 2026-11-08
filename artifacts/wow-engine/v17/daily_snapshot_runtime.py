@@ -797,6 +797,15 @@ def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_clien
     install_v17_detailed_evidence(app, auth_dependency=auth_dependency, market_api=market_api)
     install_prop_forward_cohort_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn, market_api=market_api)
     _install_prop_evidence_acquisition_scheduler(app, db_client_fn=db_client_fn)
+    # Additive LLP read-only readback is OFF unless explicitly enabled. It
+    # consumes durable Daily row details; it never calls the NFL Pick'em runtime,
+    # changes the existing /rows contract, or performs any scoring.
+    if os.getenv("WOW_LLP_TEAM_INTELLIGENCE_READBACK_ENABLED", "0") == "1":
+        from v17.llp_team_intelligence_readback import install_llp_team_intelligence_readback
+
+        install_llp_team_intelligence_readback(
+            app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
+        )
     if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes):
         return
 

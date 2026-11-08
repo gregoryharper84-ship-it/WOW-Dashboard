@@ -64,10 +64,14 @@ def test_free_mode_rejects_forged_target_head():
     assert "QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH" in qa(ev)
 
 
-def test_free_mode_cannot_lower_legacy_governance_requirement():
+def test_v4_retired_governance_not_a_zero_credit_or_legacy_qa_dependency():
     ev = evidence()
     ev["qa_review_policy"]["mode"] = "legacy"
-    assert "QA_EVIDENCE_MISSING:Trusted exact-head engineering governance" in qa(ev)
+    # Retiring the named trusted-governance mechanism does not turn off
+    # the exact-head regression, QA, or distinct Release App evidence.
+    assert qa(ev) == []
+    ev["check_runs"].pop()
+    assert any(f.startswith("QA_EVIDENCE_MISSING:") for f in qa(ev))
 
 
 def test_free_mode_still_requires_all_regressions():

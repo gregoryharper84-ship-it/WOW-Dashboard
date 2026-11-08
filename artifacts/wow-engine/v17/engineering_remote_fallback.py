@@ -264,7 +264,11 @@ def reconcile(api, comments, incident=""):
         elif old["provider"] == "cursor":
             # A stale observation must never mutate the digest of the held
             # record or invalidate a pending append-only release proof.
-            result["status"] = "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW"
+            result["status"] = (
+                "CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE"
+                if old.get("status") == "CURSOR_LAUNCH_RESERVED" and old.get("cursor_run_id") is None
+                else "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW"
+            )
         else:
             pr = _source_pr(api, issue, old["main_sha"])
             result["status"] = ("SOURCE_PR_AWAITING_INDEPENDENT_REVIEW"

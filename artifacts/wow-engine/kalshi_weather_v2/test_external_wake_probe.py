@@ -74,8 +74,83 @@ class WakeProbeTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertNotIn("secrets", stderr.getvalue())
 
+    def test_redirect_handler_refuses_all_locations_without_followup_get(self):
+        from urllib.request import Request
+        request = Request(probe.BASE_URL + "/health", method="GET")
+        handler = probe._RejectRedirects()
+        for destination in (
+            "https://example.org/collector/readiness",
+            probe.BASE_URL + "/unapproved",
+            probe.BASE_URL + "/collector/readiness",
+        ):
+            with self.subTest(destination=destination):
+                self.assertIsNone(handler.redirect_request(
+                    request, None, 302, "Found", {"Location": destination}, destination
+                ))
+
+    def test_installed_opener_refuses_redirect_response_before_followup_get(self):
+        """Exercise the real opener with a fake HTTPS transport, without network."""
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from urllib.request import HTTPSHandler
+        from urllib.response import addinfourl
+
+        self.assertTrue(any(isinstance(h, probe._RejectRedirects)
+                            for h in probe.HTTP_CLIENT.handlers))
+        transport = next(h for h in probe.HTTP_CLIENT.handlers
+                         if isinstance(h, HTTPSHandler))
+        for destination in (
+            "https://example.net/health",
+            probe.BASE_URL + "/unapproved",
+            probe.BASE_URL + "/collector/readiness",
+        ):
+            visits = []
+            def fake_get(request):
+                visits.append(request.full_url)
+                result = addinfourl(
+                    BytesIO(b""), {"Location": destination},
+                    request.full_url, code=302,
+                )
+                result.msg = "Found"
+                return result
+
+            with self.subTest(destination=destination):
+                with patch.object(transport, "https_open", side_effect=fake_get):
+                    with self.assertRaises(HTTPError) as error:
+                        probe.read_json("/health")
+                self.assertEqual(error.exception.code, 302)
+                self.assertEqual(visits, [probe.BASE_URL + "/health"])
+
+    def test_proxy_url_mismatch_is_rejected_even_on_same_host(self):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"{}"
+        response.geturl.return_value = probe.BASE_URL + "/unapproved"
+        with patch.object(probe.HTTP_CLIENT, "open", return_value=response):
+            with self.assertRaisesRegex(probe.ProbeError, "PROBE_RESPONSE_ORIGIN_CHANGED"):
+                probe.read_json("/health")
+
+    def test_workflow_timeout_covers_complete_bounded_retry_budget(self):
+        """A final valid retry must not be truncated by the job wall clock."""
+        workflow = (
+            Path(__file__).resolve().parents[3]
+            / ".github/workflows/kalshi-weather-external-wake.yml"
+        ).read_text(encoding="utf-8")
+        heartbeat = workflow.split("  heartbeat:", 1)[1]
+        timeout = next(
+            int(line.split(":", 1)[1].strip())
+            for line in heartbeat.splitlines()
+            if line.strip().startswith("timeout-minutes:")
+        )
+        # Default: three attempts, two independent HTTP requests each, one
+        # 65s upper bound per request, 8s backoff twice, 30s runner margin.
+        seconds = 3 * 2 * 65 + 2 * 8 + 30
+        self.assertGreaterEqual(timeout * 60, seconds)
+
     def test_reject_unexpected_path_without_network(self):
-        with self.assertRaises(probe.ProbeError), patch.object(probe, "urlopen") as fn:
+        with self.assertRaises(probe.ProbeError), patch.object(probe.HTTP_CLIENT, "open") as fn:
             probe.read_json("/internal/kalshi-weather/v17/empirical-cohort/cron-run")
         fn.assert_not_called()
 

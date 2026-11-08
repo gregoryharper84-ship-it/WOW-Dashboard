@@ -68,7 +68,8 @@ def summarize(
     recent = [
         pr
         for pr in merged_prs
-        if (merged_at := _dt(pr.get("merged_at"))) is not None and merged_at >= window_start
+        if (merged_at := _dt(pr.get("merged_at"))) is not None
+        and window_start <= merged_at <= now
     ]
     followups = [pr for pr in recent if is_followup(pr)]
     explicit_superseded = [pr for pr in open_prs if superseded_by(pr) is not None]
