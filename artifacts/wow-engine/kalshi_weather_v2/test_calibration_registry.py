@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from kalshi_weather_v2.calibration_registry import (
     MINIMUM_CANDIDATE_SAMPLES,
+    ROW_LIMIT,
     collect_unique_residual_samples,
     fit_candidate_profile_sets,
+    load_scoring_evidence_rows,
     persist_candidate_calibration_profiles,
     probability_scoring_summary,
 )
 from kalshi_weather_v2.models import ContractSnapshot, WeatherEvidenceSnapshot
-from kalshi_weather_v2.persistence import KalshiWeatherPersistence
+from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from kalshi_weather_v2.probability_core import CalibrationProfile
 from kalshi_weather_v2.runtime import RESEARCH_PROBABILITY_STATUS, _resolve_probability
 
@@ -293,10 +297,13 @@ def test_identical_evidence_is_an_idempotent_append():
         client, model_version="TEST_MODEL_V1", fitted_as_of=FITTED_AT
     )
     second = persist_candidate_calibration_profiles(
-        client, model_version="TEST_MODEL_V1", fitted_as_of=FITTED_AT
+        client, model_version="TEST_MODEL_V1", fitted_as_of="2026-12-01T00:15:00Z"
     )
     assert len(client.tables["wow_kalshi_weather_calibration_profiles"].rows) == 1
     assert first["profiles_persisted"][0]["calibration_profile_id"] == second["profiles_persisted"][0]["calibration_profile_id"]
+    assert second["profiles_persisted"][0]["reused_existing"] is True
+    stored = next(iter(client.tables["wow_kalshi_weather_calibration_profiles"].rows.values()))
+    assert stored["fitted_as_of"] == "2026-12-01T00:00:00.000000Z"
 
 
 def test_new_residual_evidence_appends_a_new_profile_version():
@@ -327,6 +334,139 @@ def test_new_residual_evidence_appends_a_new_profile_version():
         != second["profiles_persisted"][0]["calibration_profile_id"]
     )
 
+
+
+
+def test_candidate_refit_with_unchanged_group_does_not_block_a_later_new_group():
+    client = _Client()
+    h0_predictions, h0_outcomes = _evidence_rows(MINIMUM_CANDIDATE_SAMPLES)
+    h1_predictions = [
+        {**_prediction(i, bucket="H1", ticker="H1"), "prediction_id": f"pred-h1-{i}"}
+        for i in range(MINIMUM_CANDIDATE_SAMPLES)
+    ]
+    h1_outcomes = [
+        {
+            "outcome_id": f"out-h1-{i}",
+            "prediction_id": f"pred-h1-{i}",
+            "settled_at": f"2026-11-30T{ i % 24:02d}:00:00Z",
+            "settled_value": 80.0 + (i % 7),
+            "yes_outcome": True,
+        }
+        for i in range(MINIMUM_CANDIDATE_SAMPLES)
+    ]
+    client.tables["wow_kalshi_weather_predictions"].rows = {
+        row["prediction_id"]: row for row in h0_predictions + h1_predictions
+    }
+    client.tables["wow_kalshi_weather_outcomes"].rows = {
+        row["outcome_id"]: row for row in h0_outcomes + h1_outcomes
+    }
+    first = persist_candidate_calibration_profiles(
+        client, model_version="TEST_MODEL_V1", fitted_as_of=FITTED_AT
+    )
+    assert len(first["profiles_persisted"]) == 2
+
+    new_prediction = {
+        **_prediction(MINIMUM_CANDIDATE_SAMPLES, bucket="H1", ticker="H1"),
+        "prediction_id": f"pred-h1-{MINIMUM_CANDIDATE_SAMPLES}",
+    }
+    new_outcome = {
+        "outcome_id": f"out-h1-{MINIMUM_CANDIDATE_SAMPLES}",
+        "prediction_id": new_prediction["prediction_id"],
+        "settled_at": "2026-11-30T23:00:00Z",
+        "settled_value": 80.0 + (MINIMUM_CANDIDATE_SAMPLES % 7),
+        "yes_outcome": True,
+    }
+    client.tables["wow_kalshi_weather_predictions"].rows[new_prediction["prediction_id"]] = new_prediction
+    client.tables["wow_kalshi_weather_outcomes"].rows[new_outcome["outcome_id"]] = new_outcome
+
+    second = persist_candidate_calibration_profiles(
+        client, model_version="TEST_MODEL_V1", fitted_as_of="2026-12-01T00:15:00Z"
+    )
+    assert len(client.tables["wow_kalshi_weather_calibration_profiles"].rows) == 3
+    assert any(row["reused_existing"] for row in second["profiles_persisted"])
+    assert any(not row["reused_existing"] for row in second["profiles_persisted"])
+
+
+def test_candidate_evidence_identity_includes_target_sample_keys():
+    client = _Client()
+    predictions, outcomes = _evidence_rows(MINIMUM_CANDIDATE_SAMPLES)
+    client.tables["wow_kalshi_weather_predictions"].rows = {
+        row["prediction_id"]: row for row in predictions
+    }
+    client.tables["wow_kalshi_weather_outcomes"].rows = {
+        row["outcome_id"]: row for row in outcomes
+    }
+    first = persist_candidate_calibration_profiles(
+        client, model_version="TEST_MODEL_V1", fitted_as_of=FITTED_AT
+    )
+    first_id = first["profiles_persisted"][0]["calibration_profile_id"]
+
+    changed = {}
+    for row in predictions:
+        copied = dict(row)
+        copied["model_payload"] = {
+            **row["model_payload"],
+            "contract": {
+                **row["model_payload"]["contract"],
+                "observation_window": row["model_payload"]["contract"]["observation_window"] + "-REV",
+            },
+        }
+        changed[copied["prediction_id"]] = copied
+    client.tables["wow_kalshi_weather_predictions"].rows = changed
+    # Restore valid point-in-time target labels with distinct target hours.
+    for index, row in enumerate(changed.values()):
+        row["model_payload"]["contract"]["observation_window"] = f"POINT_IN_TIME:2026-12-02T{index:02d}:00:00Z"
+
+    second = persist_candidate_calibration_profiles(
+        client, model_version="TEST_MODEL_V1", fitted_as_of="2026-12-01T00:15:00Z"
+    )
+    assert second["profiles_persisted"][0]["calibration_profile_id"] != first_id
+
+
+def test_scoring_input_read_failure_is_not_reported_as_an_empty_ledger():
+    class _FailingClient:
+        def table(self, _name):
+            raise RuntimeError("database unavailable")
+
+    with pytest.raises(KalshiWeatherPersistenceError) as caught:
+        load_scoring_evidence_rows(_FailingClient())
+    assert caught.value.code == "KALSHI_WEATHER_CALIBRATION_LEDGER_READ_FAILED"
+
+
+def test_scoring_input_at_row_limit_fails_closed_as_potentially_truncated():
+    client = _Client()
+    table = client.tables["wow_kalshi_weather_predictions"]
+    table.rows = {
+        f"pred-{index:05d}": {"prediction_id": f"pred-{index:05d}"}
+        for index in range(ROW_LIMIT)
+    }
+    with pytest.raises(KalshiWeatherPersistenceError) as caught:
+        load_scoring_evidence_rows(client)
+    assert caught.value.code == "KALSHI_WEATHER_CALIBRATION_INPUT_TRUNCATED"
+
+
+def test_mixed_precision_decisions_choose_the_earliest_instant():
+    earlier = _prediction(0, ticker="EARLY")
+    later = _prediction(0, ticker="LATE")
+    earlier["decision_time"] = "2026-10-31T00:00:00Z"
+    later["decision_time"] = "2026-10-31T00:00:00.500000Z"
+    outcomes = [
+        {
+            "outcome_id": "early-out",
+            "prediction_id": earlier["prediction_id"],
+            "settled_at": "2026-11-30T00:00:00Z",
+            "settled_value": 80.0,
+        },
+        {
+            "outcome_id": "late-out",
+            "prediction_id": later["prediction_id"],
+            "settled_at": "2026-11-30T00:00:00Z",
+            "settled_value": 80.0,
+        },
+    ]
+    groups = collect_unique_residual_samples([later, earlier], outcomes)
+    sample = groups[(STATION, LANE, "H0")][0]
+    assert sample.decision_time == "2026-10-31T00:00:00.000000Z"
 
 def test_candidate_loader_cannot_return_a_certified_profile():
     client = _Client()
