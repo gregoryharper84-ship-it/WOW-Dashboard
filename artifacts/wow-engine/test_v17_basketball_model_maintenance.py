@@ -1092,11 +1092,16 @@ def test_typed_maintenance_failure_codes_never_expose_provider_or_db_details():
     assert maintenance._public_failure_code(
         RuntimeError("WNBA_TRAINING_CORPUS_EMPTY"),
         "BASKETBALL_TRAINING_REPLAY_BLOCKED",
-    ) == "WNBA_TRAINING_CORPUS_EMPTY"
+) == "WNBA_TRAINING_CORPUS_EMPTY"
+    assert maintenance._public_failure_code(
+        RuntimeError("NBA_SECRET_DATABASE_PASSWORD"),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "BASKETBALL_HYDRATION_FAILED"
     for error in (RuntimeError("postgres://secret-provider-host"),
                   ValueError("https://private-user:private-pass@example.com"),
                   maintenance.BasketballHydrationError("bad secret"),
-                  RuntimeError("NBA_FAILURE secret=password")):
+                  RuntimeError("NBA_FAILURE secret=password"),
+                  RuntimeError("NBA_SECRET_DATABASE_PASSWORD")):
         public_code = maintenance._public_failure_code(error, "BASKETBALL_HYDRATION_FAILED")
         assert "secret" not in public_code and "example.com" not in public_code
         assert public_code in ("BASKETBALL_HYDRATION_FAILED", "NBA_FAILURE")
