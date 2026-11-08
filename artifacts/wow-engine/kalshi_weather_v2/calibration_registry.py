@@ -148,6 +148,8 @@ def fit_candidate_profile_sets(
     minimum_n: int = MINIMUM_CANDIDATE_SAMPLES,
 ) -> list[dict[str, Any]]:
     """Fit one research candidate per station/lane/lead-time group."""
+    if minimum_n != MINIMUM_CANDIDATE_SAMPLES:
+        raise ValueError("minimum_n is a precommitted constant and cannot be changed")
     groups = collect_unique_residual_samples(predictions, outcomes)
     fitted: list[dict[str, Any]] = []
     for (station_id, lane, bucket), samples in sorted(groups.items()):
@@ -188,6 +190,8 @@ def persist_candidate_calibration_profiles(
         raise ValueError("fitted_as_of must be a timezone-aware timestamp")
     if not str(model_version).strip():
         raise ValueError("model_version is required")
+    if minimum_n != MINIMUM_CANDIDATE_SAMPLES:
+        raise ValueError("minimum_n is a precommitted constant and cannot be changed")
 
     predictions, outcomes = load_scoring_evidence_rows(client)
     store = KalshiWeatherPersistence(client)
@@ -245,7 +249,7 @@ def persist_candidate_calibration_profiles(
             "profile_scope": "RESEARCH_CANDIDATE_UNCERTIFIED",
             "certified": False,
             "certification_required": True,
-            "minimum_candidate_samples": minimum_n,
+            "minimum_candidate_samples": MINIMUM_CANDIDATE_SAMPLES,
             "minimum_forward_validation_samples": 50,
             "unique_sample_n": len(samples),
             "latest_sample_decision_time": samples[-1].decision_time,
@@ -331,7 +335,7 @@ def persist_candidate_calibration_profiles(
         "status": "CALIBRATION_CANDIDATES_PERSISTED" if persisted else "CALIBRATION_CANDIDATES_HELD",
         "model_version": str(model_version),
         "fitted_as_of": as_of,
-        "minimum_candidate_samples": minimum_n,
+        "minimum_candidate_samples": MINIMUM_CANDIDATE_SAMPLES,
         "profiles_persisted": persisted,
         "profiles_held": held,
         "probability_publishable": False,
