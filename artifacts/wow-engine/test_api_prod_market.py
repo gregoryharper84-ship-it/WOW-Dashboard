@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api_prod_market
+from pick_request_runtime_core import PROP_STAT_ALIASES
 from prop_distribution_contract import CoverageDecision
 
 
@@ -174,6 +175,9 @@ def test_complete_model_missing_market_keeps_probability_and_holds_market(monkey
 
 
 def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
+    # Force the governed writer's WNBA alias path regardless of which test
+    # modules happened to import the runtime alias registration first.
+    monkeypatch.setitem(PROP_STAT_ALIASES, ("WNBA", "REB"), "REBOUNDS")
     captured = {}
 
     def fake_score(**kwargs):
@@ -207,6 +211,9 @@ def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
     assert body["objective_lanes"]["MARKET"]["blocks_model_probability"] is False
     assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
     assert body["can_execute"] is False
+    assert captured["request"].stat_type == "REBOUNDS"
+    assert captured["market_side_a"].stat == "REBOUNDS"
+    assert captured["market_side_b"].stat == "REBOUNDS"
     assert captured["market_side_a"].side == "MORE"
     assert captured["market_side_b"].side == "LESS"
     assert captured["market_side_a"].line == 10.5

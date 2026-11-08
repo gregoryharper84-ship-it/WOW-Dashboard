@@ -26,6 +26,7 @@ os.environ["WOW_ACTION_API_KEY"] = TEST_KEY
 
 import api_prod_market
 import ledger
+import prop_discrete_engine
 from calibration import CalibrationStatus
 from prop_discrete_engine import (
     PropCalibrationOutput,
@@ -105,7 +106,21 @@ def _calibrator(_inference, raw_probability, _line_probs, _features, _seed):
     )
 
 
-register_prop_calibration_adapter(CALIBRATOR_VERSION, _calibrator)
+@pytest.fixture(autouse=True)
+def _registered_calibration_adapter():
+    """Register this module's calibrator per test and restore prior state.
+
+    Other test modules clear the process-global adapter registry. Registering
+    at import time therefore makes this test pass alone but fail in a shard.
+    """
+    registry = prop_discrete_engine._CALIBRATION_ADAPTERS
+    previous = dict(registry)
+    register_prop_calibration_adapter(CALIBRATOR_VERSION, _calibrator)
+    try:
+        yield
+    finally:
+        registry.clear()
+        registry.update(previous)
 
 
 def _infer(_client, *, request, line, features):

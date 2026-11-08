@@ -346,3 +346,24 @@ independent authority remain blocked or absent.
   modules; `git diff --check` clean.
 - **Authority:** no merge, deployment, production request, fabricated receipt
   or certification. `can_execute=false` throughout.
+
+### Session 3 shard-order correction
+
+- Exact-head CI at `7ae34341` exposed two order-dependent failures that the
+  focused runs did not. Neither was accepted as a flake.
+- **Calibration registry:** the new regression registered its test calibrator
+  at import time, but other shard modules clear the process-global adapter
+  registry. The test now snapshots, registers per test, and restores the prior
+  registry, so it no longer depends on import order and does not leak state.
+- **Market identity alignment:** canonical evidence resolved WNBA `REB` to
+  `REBOUNDS`, while the market audit compared the quote's raw `REB`. That is a
+  genuine identity disagreement, not just test noise. The audit now normalizes
+  quote event/player/stat/period with the same writer resolver used by the
+  evidence identity; line, side, price, freshness and settlement basis are
+  unchanged. The two-way market test now forces the alias path and asserts the
+  effective request and both audited quotes resolve to `REBOUNDS`.
+- **Local shard rerun:** shard 0 **2299 passed, 39 skipped**; shard 1
+  **2870 passed, 7 skipped**; shard 2 **1845 passed, 9 skipped**; shard 3
+  **2183 passed, 1 skipped**. Focused affected set **98 passed, 8 skipped**
+  (all skips require the ephemeral Postgres integration service).
+- `can_execute=false`; no merge or deployment.

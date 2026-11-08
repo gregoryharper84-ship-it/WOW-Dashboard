@@ -10,6 +10,7 @@ false unconditionally.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import logging
@@ -156,6 +157,29 @@ def _to_market_quote(value: Optional[MarketQuoteInput]) -> Optional[MarketQuote]
     if value is None:
         return None
     return MarketQuote(**value.model_dump())
+
+
+def _canonical_market_quote(quote: Optional[MarketQuote], sport: str) -> Optional[MarketQuote]:
+    """Return an audit-only quote with writer-normalized identity fields.
+
+    Market quotes can use the same stat alias or padded labels as the caller
+    request. The evidence writer has already resolved those labels to one
+    canonical identity. Normalize only identity comparison fields here; line,
+    side, price, freshness and settlement basis remain exactly as supplied.
+    """
+    if quote is None:
+        return None
+    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+
+    return replace(
+        quote,
+        event_id=str(quote.event_id or "").strip(),
+        participant=" ".join(str(quote.participant or "").split()),
+        stat=writer_canonical_stat(
+            str(sport or "").strip().upper(), str(quote.stat or "")
+        ),
+        period=str(quote.period or "").strip().upper(),
+    )
 
 
 def _to_settlement_rule(value: Optional[SettlementRuleInput]) -> Optional[SettlementRule]:
@@ -948,6 +972,8 @@ def score_prop(
     with _score_stage_timer("market_settlement_resolution", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
         raw_market_a = _to_market_quote(effective_req.market_side_a)
         raw_market_b = _to_market_quote(effective_req.market_side_b)
+        audit_market_a = _canonical_market_quote(raw_market_a, effective_req.sport)
+        audit_market_b = _canonical_market_quote(raw_market_b, effective_req.sport)
         observed_rule = _to_settlement_rule(effective_req.settlement_rule)
 
         provider_candidates = [
@@ -982,8 +1008,8 @@ def score_prop(
             period=_prop_period(effective_req.stat_type),
             line=effective_req.line,
             settlement_rule=settlement_rule,
-            side_a=raw_market_a,
-            side_b=raw_market_b,
+            side_a=audit_market_a,
+            side_b=audit_market_b,
             # Exact line matching is server-owned. No caller may widen tolerance.
             line_tolerance=0.0,
         )
