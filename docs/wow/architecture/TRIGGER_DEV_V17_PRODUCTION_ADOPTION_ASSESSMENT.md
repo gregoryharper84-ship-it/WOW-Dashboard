@@ -9,7 +9,7 @@
 
 Do not add Trigger.dev as a production scoring worker or scheduler at this time. WOW already has a durable Supabase Scout handoff queue, row-leased worker execution in the Render FastAPI process, GitHub Actions OIDC scheduling, retry/lease rules, specialist receipts, and terminal reconciliation.
 
-The latest inspected production run proves the existing worker did execute all 622 handed-off jobs. The failure was in terminal evidence reconciliation: the job rows contain attempts and specialist receipts, while the separate state-event ledger is missing the worker-transition events that the summary currently requires. Trigger.dev retries cannot repair that data-model/evidence mismatch.
+The latest inspected production run proves the existing worker did execute all 622 handed-off jobs. The failure was in terminal evidence reconciliation: the job rows contain attempts and specialist receipts, but the state-event query returned exactly 1,000 rows—the PostgREST default page limit—and did not request subsequent pages. The returned first page contained only pre-worker lifecycle events. This does not prove that the database lacks worker-transition events; the reader failed to fetch the complete ledger. Trigger.dev retries cannot repair a truncated database read.
 
 The model blockers are independent of orchestration. The same run returned zero qualified rows because the sport-specific model bridges, artifacts, certifications, event identity and feature inputs were not ready. Adding another task platform would not make those models available or qualified.
 
@@ -36,9 +36,9 @@ The durable run artifact contained:
 - 622/622 jobs with `attempt_count=1`.
 - 622/622 jobs in `MODEL_EVALUATED`.
 - 622/622 jobs with a persisted specialist receipt and one specialist result row.
-- The state-event ledger contained 250 each of `DISCOVERED`, `RESEARCH_INTEREST`, `RED_TEAM_PASSED`, and `SPECIALIST_HANDOFF_QUEUED`, but zero `SPECIALIST_PROCESSING` and zero `MODEL_EVALUATED` events.
+- The state-event response contained exactly 1,000 rows: 250 each of `DISCOVERED`, `RESEARCH_INTEREST`, `RED_TEAM_PASSED`, and `SPECIALIST_HANDOFF_QUEUED`, with no worker transitions in that returned page. Because the query did not paginate, the artifact cannot establish whether later database pages contain `SPECIALIST_PROCESSING` and `MODEL_EVALUATED` events.
 
-The old `read_run_summary` counted `specialist_processing_seen` and `model_evaluated` only from the event table. It therefore reported `SCOUT_TERMINAL_ACCEPTANCE_WORKER_PATH_NOT_PROVEN` despite the durable job rows proving that the queue worker claimed and evaluated every job.
+The old `read_run_summary` counted `specialist_processing_seen` and `model_evaluated` only from the first event page. It therefore reported `SCOUT_TERMINAL_ACCEPTANCE_WORKER_PATH_NOT_PROVEN` despite the durable job rows proving that the queue worker claimed and evaluated every job. The repair paginates the complete event history and also derives worker evidence from durable job attempts/receipts so a future event-read gap remains explicit rather than becoming a false worker failure.
 
 The repair in [PR #2517](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2517) derives worker evidence from the job attempt counter and valid non-executable specialist receipt, while separately exposing missing event transitions as warnings. It does not change model output or qualification.
 
