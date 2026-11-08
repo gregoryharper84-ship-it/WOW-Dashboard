@@ -696,7 +696,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
         *,
         run_id: str,
         event_api: Any,
-        covered_event_ids: set[str],
+        covered_event_ids: set[tuple[str, str]],
         fetch_sport_events: Any = None,
     ):
         if not daily.discovery_feed.enabled():
@@ -740,7 +740,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             return daily.bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
         def score(event: Any, model: Any) -> dict[str, Any]:
-            if str(event.official_event_id or "") in covered_event_ids:
+            if (str(event.sport or ""), str(event.official_event_id or "")) in covered_event_ids:
                 return {
                     "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
                     "probability_publishable": False,
@@ -809,6 +809,8 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             resolve_model=resolve_model,
             score_row=score,
             canonicalize_identity=canonicalize_identity,
+            include_regime_variants=True,
+            supported_sports=daily._daily_discovery_sports(),
         ))
         scan["model_coverage"] = cross_sport_model_coverage(
             scan.get("rows"),
@@ -839,7 +841,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 ),
             )
             for row in scan["rows"]
-            if str(row.get("official_event_id") or "") not in covered_event_ids
+            if (str(row.get("sport") or ""), str(row.get("official_event_id") or "")) not in covered_event_ids
         ]
         return rows, scan
 
