@@ -30,7 +30,7 @@ export function sanitizeWorkerOutput(value, env = {}) {
     output = output.split(env.TRIGGER_PROJECT_REF).join("[REDACTED_PROJECT_REF]");
   }
   return output
-    .replace(/\btr_(?:dev|prod|stg|preview)_[A-Za-z0-9_-]+\b/gi, "[REDACTED_TRIGGER_KEY]")
+    .replace(/\btr_(?:dev|prod|stg|preview|pat|oat)_[A-Za-z0-9_-]+\b/gi, "[REDACTED_TRIGGER_CREDENTIAL]")
     .replace(/(Bearer\s+)[^\s]+/gi, "$1[REDACTED]")
     .replace(/(authorization\s*[:=]\s*)[^\r\n]+/gi, "$1[REDACTED]")
     .slice(-2500);
@@ -155,7 +155,7 @@ export async function pollRun(runId, {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (worker && (worker.spawnFailed || worker.exitCode !== null || worker.signalCode !== null)) {
-      console.error("TRIGGER_DEV_WORKER_EXIT_DIAGNOSTIC", JSON.stringify(workerDiagnostic(worker)));
+      console.error("TRIGGER_DEV_WORKER_EXIT_DIAGNOSTIC", JSON.stringify(workerDiagnostic(worker, process.env)));
       throw new Error("DEV_WORKER_EXITED_EARLY");
     }
     const run = await retrieveRun(runId);
