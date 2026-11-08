@@ -60,6 +60,44 @@ class Test24x7(unittest.TestCase):
             ("BUILD", 1527),
         )
 
+    def test_p0_requires_manifest_domain_lease_and_p1_uses_global(self):
+        manifest = {
+            "restoration": [
+                {"issue_number": 823, "severity": "P0", "lease_group": "P0_LLP_RESTORE"},
+                {"issue_number": 1950, "severity": "P0", "lease_group": "P0_NBA_RESTORE"},
+                {"issue_number": 1527, "severity": "P1"},
+            ]
+        }
+        result = mod.plan([
+            issue(1767, "P0", updated_at="2026-11-03T03:57:26Z"),
+            issue(1950, "P0", updated_at="2026-11-05T10:00:00Z"),
+            issue(823, "P0", updated_at="2026-11-06T21:06:38Z"),
+        ], [], manifest=manifest)
+        self.assertEqual((result["incident"], result["lease_group"]),
+                         (823, "P0_LLP_RESTORE"))
+        # An exact P0 target absent from the approved lease manifest is held.
+        held = mod.plan([issue(1767, "P0")], [], target=1767, manifest=manifest)
+        self.assertEqual((held["action"], held["reason"]),
+                         ("IDLE", "NO_ELIGIBLE_ISSUE_OR_EXPLICIT_TARGET"))
+        # Standard P1 engineering work is routed through the global lease.
+        p1 = mod.plan([issue(1527, "P1")], [], target=1527, manifest=manifest)
+        self.assertEqual((p1["action"], p1["lease_group"]), ("BUILD", "GLOBAL"))
+
+    def test_p0_global_or_invalid_manifest_lease_is_denied(self):
+        for group in ("GLOBAL", "not-valid!"):
+            with self.subTest(group=group):
+                manifest = {"restoration": [
+                    {"issue_number": 823, "severity": "P0", "lease_group": group}
+                ]}
+                result = mod.plan([issue(823, "P0")], [], manifest=manifest)
+                self.assertEqual(result["action"], "IDLE")
+        duplicate = {"restoration": [
+            {"issue_number": 823, "severity": "P0", "lease_group": "P0_LLP_RESTORE"},
+            {"issue_number": 823, "severity": "P0", "lease_group": "P0_NBA_RESTORE"},
+        ]}
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            mod.plan([issue(823, "P0")], [], manifest=duplicate)
+
     def test_resume_same_incident_without_duplicate(self):
         result = mod.plan([issue(9, "P0")], [pr(40, 9)])
         self.assertEqual((result["action"], result["pr"], result["head_sha"]),
@@ -240,6 +278,10 @@ class Test24x7(unittest.TestCase):
         self.assertEqual(wf.count(' | test('), 2)
         self.assertNotIn("contains($tag)", wf)
         self.assertIn("DISPATCH_NOT_OBSERVED", wf)
+        self.assertEqual(wf.count("--manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json"), 3)
+        self.assertIn('LEASE_GROUP: ${{ needs.select.outputs.lease_group }}', wf)
+        self.assertIn('-f lease_group="$LEASE_GROUP"', wf)
+        self.assertNotIn("-f lease_group=GLOBAL", wf)
         self.assertIn("DUPLICATE_DISPATCH_OBSERVED", wf)
 
     def test_run_for_different_issue_does_not_block(self):
