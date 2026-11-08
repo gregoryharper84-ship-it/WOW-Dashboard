@@ -117,5 +117,5 @@ def test_runbook_distinguishes_implemented_merged_applied_and_verified():
     assert "Render currently runs `8857e488`" in doc
     assert "https://wow-kalshi-weather-v2.onrender.com" in doc
     assert "50 total" in doc
-    assert "30 chronological training" in doc
+    assert "30 chronologically earlier training residuals" in doc
     assert "20 chronological holdout" in doc
