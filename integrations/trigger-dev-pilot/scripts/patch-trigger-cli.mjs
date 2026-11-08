@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const EXPECTED_CLI_VERSION = "4.8.3";
+const EXPECTED_MINIMATCH_VERSION = "11.0.1";
 const OLD_IMPORT = 'import { makeRe } from "minimatch";';
 const NEW_IMPORT = 'import { Minimatch } from "minimatch";';
 const OLD_CALL = "const externalRegex = makeRe(externalName);";
@@ -17,6 +18,7 @@ const NEW_CALL = "const externalRegex = new Minimatch(externalName).makeRe();";
  */
 export function patchTriggerCli(rootDir = process.cwd()) {
   const packageJsonPath = join(rootDir, "node_modules", "trigger.dev", "package.json");
+  const minimatchPackageJsonPath = join(rootDir, "node_modules", "minimatch", "package.json");
   const externalsPath = join(rootDir, "node_modules", "trigger.dev", "dist", "esm", "build", "externals.js");
 
   let cliPackage;
@@ -28,6 +30,16 @@ export function patchTriggerCli(rootDir = process.cwd()) {
 
   if (cliPackage.version !== EXPECTED_CLI_VERSION) {
     throw new Error(`UNSUPPORTED_TRIGGER_CLI_VERSION:${String(cliPackage.version)}`);
+  }
+
+  let minimatchPackage;
+  try {
+    minimatchPackage = JSON.parse(readFileSync(minimatchPackageJsonPath, "utf8"));
+  } catch (error) {
+    throw new Error("MINIMATCH_PACKAGE_NOT_INSTALLED", { cause: error });
+  }
+  if (minimatchPackage.version !== EXPECTED_MINIMATCH_VERSION) {
+    throw new Error(`UNSUPPORTED_MINIMATCH_VERSION:${String(minimatchPackage.version)}`);
   }
 
   let source;
