@@ -262,6 +262,14 @@ class KalshiWeatherPersistence:
         out["can_execute"] = False
         return out
 
+    def load_calibration_profile_by_id(self, calibration_profile_id: str) -> Mapping[str, Any] | None:
+        """Read an immutable calibration profile by its deterministic identity."""
+        return self._select_one(
+            "wow_kalshi_weather_calibration_profiles",
+            "calibration_profile_id",
+            calibration_profile_id,
+        )
+
     def load_latest_certified_calibration(
         self,
         *,
