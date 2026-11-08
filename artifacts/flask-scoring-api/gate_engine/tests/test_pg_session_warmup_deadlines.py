@@ -111,6 +111,95 @@ def test_startup_dns_is_resolved_before_connect_and_hostaddr_is_bound(monkeypatc
     assert conn.commit_calls == 1
 
 
+
+def test_multi_host_dns_preserves_order_addresses_and_per_host_ports(monkeypatch):
+    """Resolve every libpq host in order and keep its matching port/address."""
+    import socket
+
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {
+        "host": "db-primary.example.invalid,db-replica.example.invalid",
+        "port": "5432,6432",
+    }
+
+    def resolve(host, port, **_kwargs):
+        """Return one distinct address for each configured failover host."""
+        address = "192.0.2.11" if host.startswith("db-primary") else "192.0.2.22"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", resolve)
+    pg_session_ledger.ensure_table_exists(
+        "postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test"
+    )
+
+    assert observed == [(
+        ("postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test",),
+        {"connect_timeout": 5, "hostaddr": "192.0.2.11,192.0.2.22"},
+    )]
+
+
+def test_multi_host_dns_skips_unresolvable_primary_and_keeps_fallback(monkeypatch):
+    """A DNS failure on the primary must not prevent a later host from connecting."""
+    import socket
+
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {
+        "host": "db-primary.example.invalid,db-replica.example.invalid",
+        "port": "5432,6432",
+    }
+
+    def resolve(host, port, **_kwargs):
+        """Fail the primary lookup and return a usable replica address."""
+        if host.startswith("db-primary"):
+            raise OSError("private primary DNS detail")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.22", port))]
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", resolve)
+    pg_session_ledger.ensure_table_exists(
+        "postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test"
+    )
+
+    assert observed == [(
+        ("postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test",),
+        {
+            "connect_timeout": 5,
+            "host": "db-replica.example.invalid",
+            "hostaddr": "192.0.2.22",
+            "port": "6432",
+        },
+    )]
+
+
+def test_one_hostname_retains_all_addresses_before_next_failover_host(monkeypatch):
+    """Expand a multi-address hostname without changing its priority."""
+    import socket
+
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
+    monkeypatch.setattr(
+        pg_session_ledger.socket,
+        "getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::10", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.10", port)),
+        ],
+    )
+
+    pg_session_ledger.ensure_table_exists("postgresql://local/safety-test")
+
+    assert observed == [(
+        ("postgresql://local/safety-test",),
+        {
+            "connect_timeout": 5,
+            "host": "db.example.invalid,db.example.invalid",
+            "hostaddr": "192.0.2.10,2001:db8::10",
+        },
+    )]
+
+
 def test_startup_dns_timeout_fails_before_opening_database_connection(monkeypatch):
     """A stalled system resolver cannot hold synchronous warmup indefinitely."""
     import threading
@@ -181,8 +270,8 @@ def test_dns_timeout_allows_only_one_inflight_resolver(monkeypatch):
 @pytest.mark.parametrize(
     "parsed,parse_error,expected_code",
     [
-        ({"host": "db-a.example,db-b.example", "port": "5432"}, None,
-         "SESSION_LEDGER_DNS_MULTIHOST_UNSUPPORTED"),
+        ({"host": "db-a.example,db-b.example", "hostaddr": "192.0.2.10", "port": "5432"}, None,
+         "SESSION_LEDGER_DSN_HOSTADDR_INVALID"),
         ({"host": "db.example.invalid", "port": "not-a-port"}, None,
          "SESSION_LEDGER_DSN_PORT_INVALID"),
         (None, ValueError("secret DSN parse detail"), "SESSION_LEDGER_DSN_INVALID"),
@@ -272,14 +361,6 @@ def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
         def release(self):
             return None
 
-    class Completion:
-        def set(self):
-            return None
-
-        def wait(self, timeout):
-            resolver_waits.append(timeout)
-            return True
-
     class ImmediateThread:
         def __init__(self, *, target, **_kwargs):
             self.target = target
@@ -287,14 +368,9 @@ def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
         def start(self):
             self.target()
 
-    monkeypatch.setattr(
-        pg_session_ledger, "time", SimpleNamespace(monotonic=lambda: clock[0])
-    )
+    monkeypatch.setattr(pg_session_ledger.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(pg_session_ledger, "_DNS_RESOLUTION_SLOT", Slot())
-    monkeypatch.setattr(
-        pg_session_ledger, "threading",
-        SimpleNamespace(Event=Completion, Thread=ImmediateThread),
-    )
+    monkeypatch.setattr(pg_session_ledger.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(
         pg_session_ledger.socket, "getaddrinfo",
         lambda host, port, **_kwargs: [
