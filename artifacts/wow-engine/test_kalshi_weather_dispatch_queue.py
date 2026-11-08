@@ -11,13 +11,17 @@ from kalshi_weather_v2.isolated_capture_wiring import install_isolated_capture_i
 def test_claim_next_dispatch_uses_service_role_rpc_and_validates_single_row():
     """Claim exactly one well-formed row through the narrow RPC."""
     class Rpc:
+        """Fake response wrapper for the Supabase RPC call."""
         def execute(self):
+            """Return the configured fake database response."""
             return SimpleNamespace(
                 data=[{"dispatch_id": 17, "scheduled_slot": "2026-11-08T14:30:00Z", "attempts": 1}]
             )
 
     class Client:
+        """Minimal Supabase client double for the queue tests."""
         def rpc(self, name):
+            """Return the fake claim RPC builder."""
             assert name == "claim_wow_kalshi_weather_collection_dispatch"
             return Rpc()
 
@@ -31,11 +35,15 @@ def test_claim_next_dispatch_uses_service_role_rpc_and_validates_single_row():
 def test_claim_next_dispatch_returns_none_for_empty_queue():
     """An empty durable queue is a normal idle poll."""
     class Rpc:
+        """Fake response wrapper for the Supabase RPC call."""
         def execute(self):
+            """Return the configured fake database response."""
             return SimpleNamespace(data=[])
 
     class Client:
+        """Minimal Supabase client double for the queue tests."""
         def rpc(self, _name):
+            """Return the fake claim RPC builder."""
             return Rpc()
 
     assert empirical_runtime._claim_next_dispatch(lambda: Client()) is None
@@ -44,11 +52,15 @@ def test_claim_next_dispatch_returns_none_for_empty_queue():
 def test_claim_next_dispatch_rejects_multiple_or_malformed_rows():
     """The RPC contract must never silently process an ambiguous claim."""
     class Rpc:
+        """Fake response wrapper for the Supabase RPC call."""
         def execute(self):
+            """Return the configured fake database response."""
             return SimpleNamespace(data=[{"dispatch_id": 1}, {"dispatch_id": 2}])
 
     class Client:
+        """Minimal Supabase client double for the queue tests."""
         def rpc(self, _name):
+            """Return the fake claim RPC builder."""
             return Rpc()
 
     try:
@@ -64,23 +76,30 @@ def test_finish_dispatch_uses_claimed_status_compare_and_set():
     captured = {}
 
     class Query:
+        """PostgREST update-query double for dispatch completion."""
         def update(self, payload):
+            """Capture the dispatch update payload."""
             captured["payload"] = payload
             return self
 
         def eq(self, key, value):
+            """Capture a compare-and-set filter and return the query builder."""
             captured.setdefault("filters", []).append((key, value))
             return self
 
         def select(self, fields):
+            """Record the selected return fields and return the query builder."""
             captured["select"] = fields
             return self
 
         def execute(self):
+            """Return the configured fake database response."""
             return SimpleNamespace(data=[{"id": 17}])
 
     class Client:
+        """Minimal Supabase client double for the queue tests."""
         def table(self, name):
+            """Return the fake dispatch-table query builder."""
             captured["table"] = name
             return Query()
 
@@ -227,3 +246,54 @@ def test_isolated_wiring_reports_queue_consumer_without_http_trigger(monkeypatch
     assert result["dispatch_queue_enabled"] is True
     assert result["trigger_installed"] is False
     assert result["can_execute"] is False
+
+
+def test_install_scheduler_registers_no_secret_bearing_http_trigger(monkeypatch):
+    """The queue worker is installed as a startup task, never an HTTP route."""
+    app = FastAPI()
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_QUEUE_ENABLED", "1")
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED", "0")
+
+    empirical_runtime.install_empirical_cohort_scheduler(
+        app,
+        db_client_fn=lambda: None,
+    )
+
+    assert app.state.kalshi_weather_empirical_scheduler_installed is True
+    assert len(app.router.on_startup) == 1
+    assert not any(
+        getattr(route, "path", "").endswith("/empirical-cohort/cron-run")
+        for route in app.routes
+    )
+
+
+def test_dispatch_cycle_failure_records_only_typed_error(monkeypatch):
+    """Collection exceptions do not persist provider or secret-bearing details."""
+    finished = []
+    monkeypatch.setattr(
+        empirical_runtime,
+        "_claim_next_dispatch",
+        lambda _client_fn: {"dispatch_id": 29, "attempts": 1},
+    )
+    monkeypatch.setattr(empirical_runtime, "_weather_memory_pressure", lambda: (False, 0.2))
+    monkeypatch.setattr(
+        empirical_runtime,
+        "_run_bounded_shadow_cycle",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private URL and token")),
+    )
+    monkeypatch.setattr(
+        empirical_runtime,
+        "_finish_dispatch",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+
+    try:
+        asyncio.run(empirical_runtime._process_dispatch_once(lambda: None))
+    except RuntimeError as exc:
+        assert str(exc) == "private URL and token"
+    else:
+        raise AssertionError("the bounded collector error must propagate to the poll loop")
+
+    assert finished[0][0][1:3] == (29, "FAILED")
+    assert finished[0][1]["error_code"] == "COLLECTION_RuntimeError"
+    assert "private URL and token" not in repr(finished[0][1])
