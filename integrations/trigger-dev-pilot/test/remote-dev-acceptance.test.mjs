@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   assertCompletedRun,
+  sanitizeWorkerOutput,
+  workerDiagnostic,
   healthReceipt,
   syntheticRetryReceipt,
   recoveryReceipt,
@@ -112,4 +114,42 @@ test("remote worker workflow is opt-in, same-repository PR only and read-only", 
   assert.match(workflow, /secrets\.TRIGGER_SECRET_KEY/);
   assert.match(workflow, /permissions:\s*contents: read/);
   assert.doesNotMatch(workflow, /pull_request_target:|schedule:|contents:\s*write/i);
+});
+
+
+test("worker diagnostics redact Trigger keys, project references and bearer tokens", () => {
+  const secret = "tr_dev_NEVER_LOG_THIS_KEY";
+  const project = "proj_NEVER_LOG_THIS_REFERENCE";
+  const value = `auth=${secret} project=${project} Bearer abc123 tr_prod_OTHER_SECRET`;
+  const safe = sanitizeWorkerOutput(value, {
+    TRIGGER_SECRET_KEY: secret,
+    TRIGGER_PROJECT_REF: project,
+  });
+  assert.ok(!safe.includes(secret));
+  assert.ok(!safe.includes(project));
+  assert.ok(!safe.includes("abc123"));
+  assert.ok(!safe.includes("tr_prod_OTHER_SECRET"));
+  assert.match(safe, /REDACTED_TRIGGER_KEY/);
+  assert.match(safe, /REDACTED_PROJECT_REF/);
+});
+
+test("worker diagnostic is bounded and reports exit metadata without environment values", () => {
+  const worker = {
+    spawnFailed: false,
+    spawnError: null,
+    exitCode: 1,
+    signalCode: null,
+    stdoutTail: "x".repeat(6000),
+    stderrTail: "startup failed",
+  };
+  const diagnostic = workerDiagnostic(worker, {
+    TRIGGER_SECRET_KEY: "tr_dev_hidden",
+    TRIGGER_PROJECT_REF: "proj_hidden",
+  });
+  assert.equal(diagnostic.exit_code, 1);
+  assert.equal(diagnostic.signal_code, null);
+  assert.ok(diagnostic.stdout_tail.length <= 2500);
+  assert.equal(diagnostic.stderr_tail, "startup failed");
+  assert.equal(JSON.stringify(diagnostic).includes("tr_dev_hidden"), false);
+  assert.equal(JSON.stringify(diagnostic).includes("proj_hidden"), false);
 });
