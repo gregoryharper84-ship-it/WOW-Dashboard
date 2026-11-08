@@ -219,10 +219,21 @@ def _require_action_api_key(authorization: Optional[str] = Header(default=None))
         raise HTTPException(status_code=401, detail="Invalid credential.")
 
 
+def _render_deployed_sha() -> str | None:
+    """Return Render's source commit SHA; unknown values remain explicitly null."""
+    value = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        return None
+    return value
+
+
 @app.get("/health")
 def health():
     return {
         "status": "ok",
+        "deployed_sha": _render_deployed_sha(),
         "host_type": "EXTERNAL_GOVERNED_BACKEND",
         "compute_provider": "RENDER",
         "database_provider": "SUPABASE",
