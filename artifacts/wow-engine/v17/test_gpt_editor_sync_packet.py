@@ -206,3 +206,13 @@ def test_research_fallback_actions_are_authenticated_non_predictive_and_containe
     assert "WebIntelligenceScoutRequest:" in text
     assert "additionalProperties: false" in text
     assert "FRESH_CHAT_SCOUT_RESEARCH_FALLBACK_FAIL_CLOSED" in module.build_packet()[1]["acceptance_required"]
+
+
+def test_wow_pick_request_is_bound_to_render_not_the_llp_supabase_gateway():
+    schema_text = module.ACTION_SCHEMA.read_text(encoding="utf-8")
+    assert "servers:\\n  - url: https://wow-governed-probability-engine.onrender.com" in schema_text
+    assert "https://iczfhsmjrrafhvcpmqhr.supabase.co" not in schema_text
+    assert "  /score-pick-request:\\n" in schema_text
+    assert "operationId: scoreWowPickRequest" in schema_text
+    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 29
+    assert module.REQUIRED_OPERATION_COUNT == 29
