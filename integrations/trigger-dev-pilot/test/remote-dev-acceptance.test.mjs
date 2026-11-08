@@ -123,14 +123,18 @@ test("remote worker workflow is opt-in, same-repository PR only and read-only", 
 
 test("worker diagnostics redact Trigger keys, project references and bearer tokens", () => {
   const secret = "tr_dev_NEVER_LOG_THIS_KEY";
+  const pat = "tr_pat_NEVER_LOG_THIS_TOKEN";
   const project = "proj_NEVER_LOG_THIS_REFERENCE";
-  const value = `auth=${secret} project=${project} Bearer abc123 tr_prod_OTHER_SECRET`;
+  const value = `auth=${secret} pat=${pat} project=${project} Bearer abc123 tr_prod_OTHER_SECRET`;
   const safe = sanitizeWorkerOutput(value, {
     TRIGGER_SECRET_KEY: secret,
+    TRIGGER_ACCESS_TOKEN: pat,
     TRIGGER_PROJECT_REF: project,
   });
   assert.ok(!safe.includes(secret));
+  assert.ok(!safe.includes(pat));
   assert.ok(!safe.includes(project));
+  assert.ok(!sanitizeWorkerOutput("tr_pat_PATTERN_ONLY_SECRET").includes("tr_pat_PATTERN_ONLY_SECRET"));
   assert.ok(!safe.includes("abc123"));
   assert.ok(!safe.includes("tr_prod_OTHER_SECRET"));
   assert.match(safe, /REDACTED_TRIGGER_KEY/);
@@ -143,11 +147,12 @@ test("worker diagnostic is bounded and reports exit metadata without environment
     spawnError: null,
     exitCode: 1,
     signalCode: null,
-    stdoutTail: "x".repeat(6000),
+    stdoutTail: `${"x".repeat(6000)} tr_pat_hidden_in_tail`,
     stderrTail: "startup failed",
   };
   const diagnostic = workerDiagnostic(worker, {
     TRIGGER_SECRET_KEY: "tr_dev_hidden",
+    TRIGGER_ACCESS_TOKEN: "tr_pat_hidden_in_env",
     TRIGGER_PROJECT_REF: "proj_hidden",
   });
   assert.equal(diagnostic.exit_code, 1);
@@ -155,6 +160,7 @@ test("worker diagnostic is bounded and reports exit metadata without environment
   assert.ok(diagnostic.stdout_tail.length <= 2500);
   assert.equal(diagnostic.stderr_tail, "startup failed");
   assert.equal(JSON.stringify(diagnostic).includes("tr_dev_hidden"), false);
+  assert.equal(JSON.stringify(diagnostic).includes("tr_pat_hidden"), false);
   assert.equal(JSON.stringify(diagnostic).includes("proj_hidden"), false);
 });
 
