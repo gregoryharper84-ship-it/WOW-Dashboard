@@ -304,6 +304,29 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
     assert "req.headers" not in source.split('headers.set("user-agent"')[1]
 
 
+def test_wow_prop_action_stays_on_render_and_is_rejected_by_llp_gateways():
+    wow = yaml.safe_load(WOW_SCHEMA.read_text(encoding="utf-8"))
+    edge = LLP_GATEWAY.read_text(encoding="utf-8")
+    vercel = (HERE / "vercel/llp-action-gateway/api/gateway.js").read_text(encoding="utf-8")
+
+    assert wow["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
+    prop = wow["paths"]["/score-pick-request"]["post"]
+    assert prop["operationId"] == "scoreWowPickRequest"
+    assert prop["security"] == [{"actionBearer": []}]
+
+    # The LLP gateways intentionally expose team-event transport only. A prop
+    # request rejected here never reaches Render's invocation-receipt middleware.
+    for gateway in (edge, vercel):
+        assert "/score-pick-request" not in gateway
+        assert "/score-prop" not in gateway
+    assert '"x-wow-gateway": "supabase-edge"' in edge
+    assert '"x-wow-gateway": "vercel-action-ingress"' in vercel
+    assert 'return jsonResponse(404, "LLP_GATEWAY_PATH_NOT_ALLOWED", requestId);' in edge
+    assert 'return fail(res, 404, "LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED", requestId);' in vercel
+    assert edge.index("if (pathMatches.length === 0)") < edge.index('gatewayLog("UPSTREAM_DISPATCH"')
+    assert vercel.index("if (!route)") < vercel.index("const upstream = new URL(TARGET + path);")
+
+
 def test_llp_gateway_supabase_platform_jwt_check_is_disabled_for_wow_bearer():
     config = LLP_SUPABASE_CONFIG.read_text()
     assert "[functions.wow-llp-action-gateway]" in config
