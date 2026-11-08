@@ -198,10 +198,14 @@ def test_memory_pressure_requeues_without_consuming_an_attempt(monkeypatch):
         "_finish_dispatch",
         lambda *args, **kwargs: finished.append((args, kwargs)),
     )
+    def fail_collection(**_kwargs):
+        """Prove memory pressure prevents the bounded collector from running."""
+        raise AssertionError("must not collect under memory pressure")
+
     monkeypatch.setattr(
         empirical_runtime,
         "_run_bounded_shadow_cycle",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not collect under memory pressure")),
+        fail_collection,
     )
 
     assert asyncio.run(empirical_runtime._process_dispatch_once(lambda: None)) is True
