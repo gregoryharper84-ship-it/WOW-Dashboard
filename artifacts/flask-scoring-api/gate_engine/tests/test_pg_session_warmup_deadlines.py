@@ -125,6 +125,43 @@ def test_startup_dns_timeout_fails_before_opening_database_connection(monkeypatc
         release.set()
 
 
+
+def test_dns_timeout_allows_only_one_inflight_resolver(monkeypatch):
+    """A stuck system resolver must not leak one daemon thread per warmup."""
+    import threading
+
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocked_resolver(*_args, **_kwargs):
+        calls.append("resolve")
+        started.set()
+        release.wait(1.0)
+        return []
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", blocked_resolver)
+    monkeypatch.setattr(pg_session_ledger, "DNS_RESOLUTION_TIMEOUT_SECONDS", 0.01)
+    try:
+        with pytest.raises(TimeoutError, match="SESSION_LEDGER_DNS_TIMEOUT"):
+            pg_session_ledger.ensure_table_exists(
+                "postgresql://user:secret@db.example.invalid:5432/safety-test"
+            )
+        assert started.is_set()
+        with pytest.raises(TimeoutError, match="SESSION_LEDGER_DNS_BUSY"):
+            pg_session_ledger.ensure_table_exists(
+                "postgresql://user:secret@db.example.invalid:5432/safety-test"
+            )
+        assert calls == ["resolve"]
+    finally:
+        release.set()
+    assert pg_session_ledger._DNS_RESOLUTION_SLOT.acquire(timeout=1.0)
+    pg_session_ledger._DNS_RESOLUTION_SLOT.release()
+
+
 def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
     observed, conn = _install_fake_psycopg2(monkeypatch, reject_ddl=True)
     with pytest.raises(RuntimeError, match="synthetic lock timeout"):
