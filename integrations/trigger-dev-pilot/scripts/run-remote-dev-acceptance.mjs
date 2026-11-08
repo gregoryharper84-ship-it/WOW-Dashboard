@@ -10,6 +10,13 @@ import { enqueueReadOnlyProbe } from "../src/lib/submit-readonly.mjs";
 
 export const DEV_BRANCH = "wow-v17-github-actions-acceptance";
 
+export function assertRemoteCliAuth(env = {}) {
+  if (typeof env.TRIGGER_ACCESS_TOKEN !== "string" || !/^tr_pat_[A-Za-z0-9_-]+$/.test(env.TRIGGER_ACCESS_TOKEN)) {
+    throw new Error("TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED");
+  }
+  return true;
+}
+
 function appendTail(current, chunk, max = 5000) {
   return (current + String(chunk)).slice(-max);
 }
@@ -49,6 +56,7 @@ const SAFE_FAILURES = new Set([
   "ENGINEERING_AGENT_PILOT_FLAG_REQUIRED",
   "DEV_BRANCH_MISMATCH",
   "TRIGGER_CLI_NOT_INSTALLED",
+  "TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED",
   "DEV_WORKER_SPAWN_FAILED",
   "DEV_WORKER_EXITED_EARLY",
   "TRIGGER_RUN_POLL_TIMEOUT",
@@ -216,6 +224,7 @@ async function stopWorker(worker) {
 
 async function main() {
   assertDevPreflight(process.env);
+  assertRemoteCliAuth(process.env);
   if (process.env.WOW_TRIGGER_ENGINEERING_AGENT_ENABLED !== "true") {
     throw new Error("ENGINEERING_AGENT_PILOT_FLAG_REQUIRED");
   }
