@@ -31,12 +31,12 @@ acceptance. It must not be treated as NBA restoration.
 
 | Objective | Status | Root cause / exact blocker | Existing PR | Branch / commit | Verification | Remaining blocker | Next action |
 |---|---|---|---|---|---|---|---|
-| A1 Production environment identity | BLOCKED | No Render or production Supabase credentials/readback available in this environment; connected Supabase project is the validation project, not production | — | — | Read-only repo inspection only | Production access / owner-provided credentials | Bind production secrets and prove web+worker deployed SHA and database project |
-| A2 Action-to-backend evidence ingestion | WORKING_NOT_COMPLETE | Fallback acquisition used raw caller identity. Session 2 reconciled lookup and revalidation to the actual writer (stripped `event_id`, uppercase sport, whitespace-collapsed player, alias-resolved canonical stat) and added a read-only evidence readback plus receipt audit. The reported 422 pair was `SELF_ACCEPTANCE`, not a live Action call | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft) | `fix/prop-evidence-fallback-canonical-identity-20261108` / `f6ab9e14` + `8c9217af` | Canonical repair, readback and adjacent suites **140 passed, 23 integration-gated skips**; readback executed on both actual validation receipts | Production readback/deployment not executed (no production credentials); live Action parity and production evidence remain unproven | Deploy the readback and run it with a production request id/identity |
+| A1 Production environment identity | BLOCKED | No authorized production write/read credentials in this environment; connected Supabase project is the validation project, not production. Public read-only `/health` now reports `deployed_sha=db5e6b7c`, `RENDER`/`SUPABASE`, `can_execute=false`; worker revision, database project identity, Action request and receipt row remain unproven | — | — | Public production `/health` and `/governance` readback (2026-11-08) | Authorized production readback for web and worker revisions, database binding, Action request, evidence lookup and receipt | Do not request secrets in chat; owner binds read-only production access or runs the documented readback |
+| A2 Action-to-backend evidence ingestion | WORKING_NOT_COMPLETE | Fallback acquisition used raw caller identity. Session 2 reconciled lookup and revalidation to the actual writer (stripped `event_id`, uppercase sport, whitespace-collapsed player, alias-resolved canonical stat) and added a read-only evidence readback plus receipt audit. The reported 422 pair was `SELF_ACCEPTANCE`, not a live Action call | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft at session start; ready for review after exact-head green) | `fix/prop-evidence-fallback-canonical-identity-20261108` / `f6ab9e14` + `0f93f596` (ledger commit follows) | Canonical repair, readback and adjacent suites **140 passed, 23 integration-gated skips**; real-Postgres integration file **8 passed**; exact head `0f93f596` all checks **SUCCESS** including durable Agent Runtime integration and governed probability backend | Production readback/deployment not executed; live Action parity, production request id and receipt remain unproven; CodeRabbit review pending ready-for-review | Deploy the readback and run it with a production request id/identity |
 | A3 Worker processing | BLOCKED | No production queue/worker access; queue admission was not accepted as scoring | — | — | None | Production Render worker + DB access | Prove claim, specialist invocation, retry idempotency and durable receipt |
 | A4 Immutable receipts | BLOCKED | Depends on A1–A3 and a certified specialist | — | — | None | Production evidence | Verify receipt fields end-to-end |
-| B NBA restoration | BLOCKED | `CERTIFIED_TEAM_EVENT_SPORTS` contains only MLB; `TEAM_EVENT_BRIDGES` registers MLB and NFL at bootstrap; `nba_current_pregame_scorer.py` is explicitly unregistered and stops at `NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED`; no certified NBA artifact or current-season data was proven | #2504 (conflicted, uncertified) | — | Code inspection | Certified fitted artifact, calibration, current pregame data, independent acceptance | Do not register an uncertified seam; complete artifact promotion and certification first |
-| C NFL restoration | WORKING_NOT_COMPLETE | Artifact/row publishability provenance defect is the subject of open PR #2512; forward evidence is 81/100 grades per work order | #2512 | — | PR body read; not independently re-run | 19 genuine forward grades, independent certification, exact-head review | Review and accept #2512 on its exact head; do not flip flags |
+| B NBA restoration | BLOCKED | `CERTIFIED_TEAM_EVENT_SPORTS` contains only MLB; `TEAM_EVENT_BRIDGES` registers MLB and NFL at bootstrap; `nba_current_pregame_scorer.py` is explicitly unregistered and stops at `NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED`; no certified NBA artifact or current-season data was proven | #2504 (conflict resolved; still uncertified) | `integration/nba-2472-onto-2502` / `f50cc5de` | Merged protected main `db5e6b7c`; only `wow-engine-verify.yml` conflicted, resolved by union of main's live-SHA job and both NBA real-Postgres jobs; YAML validated; PR CI pending | Certified fitted artifact, calibration, current pregame data, independent acceptance | Do not register an uncertified seam; complete artifact promotion and certification first |
+| C NFL restoration | WORKING_NOT_COMPLETE | Artifact/row publishability provenance defect is the subject of open PR #2512; forward evidence is 81/100 grades per work order | #2512 | `engineering/p0-1896-nfl-row-provenance-20261107` / `e8671058` | Exact head `e8671058` all checks **SUCCESS**, including `WOW Independent QA exact-head` and `WOW Release Authority exact-head`; CodeRabbit and testdriver findings marked addressed in `2259fdd..e8671058`; local provenance and Pick'em suites **49 passed** | 19 genuine forward grades, authorized protected merge, and semantic SIRT signoff (App checks are deterministic, not a SIRT verdict) | Preserve the verified head; do not rewrite flags or manufacture grades |
 | D NHL restoration | BLOCKED | Registered candidate path is not a certified operational model; goalie/rest/Elo/PP/PK/calibration inputs and an active certification were not proven | — | — | Repo inspection | Certified artifact + calibration + full evidence hydration | Keep typed `MODEL_INPUTS_INSUFFICIENT` until real evidence exists |
 | E NCAAF restoration | BLOCKED | No fitted NCAAF artifact, feature rows, calibrator, or predictions were proven; discovery returned zero events | — | — | Repo inspection | Historical feature pipeline, reproducible fit, calibration, discovery diagnosis | Build pipeline only from validated historical source data |
 | F Cross-sport discovery | UNPROVEN | `rundown_sport_registry` does include NCAAF id 1 and NFL id 2, so a missing provider id is not supported by code inspection; zero-event results need live diagnostics | — | — | Code inspection | Live provider/acquisition receipts | Diagnose date/timezone/feed coverage on production evidence |
@@ -136,9 +136,52 @@ remains unproven.
 - `can_execute=false` remains enforced by the repair annotation and by every
   assertion. No model, calibration, bound, threshold or terminal authority changed.
 
-Still not claimed: the live 422 cause, production evidence, deployment,
-independent semantic acceptance, or merge. Those require production readback and
-an external reviewer respectively.
+Still not claimed: the live 422 cause, the production Action request or receipt,
+deployment, independent semantic acceptance, or merge. Those require authorized
+production readback and an external reviewer respectively.
+
+### Session 2 continuation — exact-head correction and cross-PR reconciliation
+
+- CI failure at `5c49ab11`: the durable Agent Runtime integration job failed
+  because the new Postgres test asserted the caller's `stat_type` became
+  `pass-yds`. The repair intentionally leaves the caller request untouched
+  (`model_copy` is applied only to the fallback), so the assertion contradicted
+  its own non-mutation guarantee. Corrected to `pass-yards` in `0f93f596`.
+- Reproduced the entire integration file against a real PostgreSQL 16 in this
+  sandbox with the same base DDL and migrations in an ephemeral schema:
+  **8 passed**, including requested-snapshot-missing → canonical fallback → RPC
+  revalidation and every fail-closed freshness/hydration/identity case. The
+  disposable cluster was destroyed; no project or production database was
+  touched.
+- Exact head `0f93f596` rollup: **SUCCESS** for CodeQL, change-impact gate, rapid
+  regression, governed backend shards 0–3, durable Agent Runtime integration,
+  release contracts, additional shards, required-three regression and governed
+  probability backend. CodeRabbit was skipped only because the PR was still a
+  draft at that head; ready-for-review is requested after this ledger commit so
+  the review covers the final head.
+- #2512 exact head `e8671058`: all checks **SUCCESS**, including
+  `WOW Independent QA exact-head` and `WOW Release Authority exact-head`.
+  CodeRabbit's provenance finding is marked addressed in
+  `2259fdd..e8671058`; the testdriver duplicate describes the same defect. The
+  local docstring-only commit was deliberately not pushed: it would replace a
+  verified head with one carrying no new engineering content. The 19 genuine
+  forward grades and the authorized protected merge remain external.
+- #2504: merged protected main `db5e6b7c` into the NBA candidate. The only
+  conflict was `wow-engine-verify.yml`; the resolution keeps main's live-SHA
+  ancestry observation and both NBA real-Postgres contract jobs, with all five
+  governed-backend prerequisites unchanged. Pushed as `f50cc5de`. This resolves
+  the conflict only; the PR remains an uncertified Class C candidate with no
+  certified NBA artifact, calibration, or current-season pregame corpus.
+- NHL and NCAAF maintenance lanes: their fail-closed contract suites pass
+  (**44 passed**), but neither proves a certified operational model or real
+  historical training corpus. No generic output or training row was created.
+- Production readback via public `/health` and `/governance`: deployed SHA
+  `db5e6b7c`, RENDER/SUPABASE, `can_execute=false`; 7 registered team-event
+  sports and 2 model-ready (MLB, NFL); NBA/NCAAF unregistered. This does not
+  prove an Action request, worker claim, evidence lookup, or immutable receipt.
+- Autonomous engineering: no controller dispatch was made in this session. CI
+  check runs are durable receipts for authored work, not a substitute for a
+  `wow-engineering` App dispatch. Objective G remains UNVERIFIED.
 
 ## Escalation blockers
 
