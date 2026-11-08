@@ -94,8 +94,9 @@ export const wowV17EngineeringRecoveryIntake = task({
       },
       governance: {
         custom_gpt_identity: "WOW_BETTING_ENGINE",
-        runtime_generation: "V17_ACTIVE",
+        runtime_generation: "UNVERIFIED_BY_READ_ONLY_INTAKE",
         terminal_authority: "V17_TERMINAL_REDUCER",
+        terminal_authority_verified: false,
         probability_authority: "NONE",
         can_execute: false,
         dry_run_only: true,

@@ -88,7 +88,8 @@ export async function fetchIncidentSnapshot({ incidentNumber, fetchImpl = global
     );
   }
 
-  if (!response || !Number.isInteger(response.status)) {
+  if (!response || !Number.isInteger(response.status) || response.status < 100 || response.status > 599) {
+    if (response?.body) await cancelResponseBody(response);
     throw new EngineeringIntakeError("GITHUB_RESPONSE_INVALID");
   }
 
@@ -141,7 +142,7 @@ export async function fetchIncidentSnapshot({ incidentNumber, fetchImpl = global
     issue_number: number,
     title: issue.title,
     state: issue.state,
-    labels,
+    labels: Object.freeze(labels),
     created_at: issue.created_at,
     updated_at: issue.updated_at,
     html_url: issue.html_url,
@@ -159,6 +160,8 @@ export function sameIncidentSnapshot(before, after) {
     && before.issue_number === after.issue_number
     && before.updated_at === after.updated_at
     && before.body_sha256 === after.body_sha256
+    && before.title === after.title
+    && JSON.stringify(before.labels) === JSON.stringify(after.labels)
     && before.state === after.state,
   );
 }

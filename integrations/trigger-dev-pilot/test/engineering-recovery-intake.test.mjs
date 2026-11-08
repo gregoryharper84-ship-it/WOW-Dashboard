@@ -190,6 +190,31 @@ test("body-cancellation failures remain typed and retryable", async () => {
   );
 });
 
+
+test("rejects out-of-range HTTP status values", async () => {
+  await assert.rejects(
+    fetchIncidentSnapshot({
+      incidentNumber: 2516,
+      fetchImpl: async () => ({ status: 600, body: { cancel: async () => {} } }),
+    }),
+    error => error.code === "GITHUB_RESPONSE_INVALID" && error.retryable === false,
+  );
+});
+
+test("snapshot comparison detects title and label changes", async () => {
+  const before = await fetchIncidentSnapshot({ incidentNumber: 2516, fetchImpl: async () => response() });
+  const titleChanged = await fetchIncidentSnapshot({
+    incidentNumber: 2516,
+    fetchImpl: async () => response({ ...issue, title: "Changed title" }),
+  });
+  const labelsChanged = await fetchIncidentSnapshot({
+    incidentNumber: 2516,
+    fetchImpl: async () => response({ ...issue, labels: [{ name: "P1" }] }),
+  });
+  assert.equal(sameIncidentSnapshot(before, titleChanged), false);
+  assert.equal(sameIncidentSnapshot(before, labelsChanged), false);
+});
+
 test("snapshot comparison detects a changed issue during checkpoint wait", async () => {
   const before = await fetchIncidentSnapshot({ incidentNumber: 2516, fetchImpl: async () => response() });
   const after = await fetchIncidentSnapshot({
@@ -209,5 +234,7 @@ test("Trigger task is single-concurrency, DEV-only, durable-wait and read-only",
   assert.match(source, /fetchIncidentSnapshot/);
   assert.match(source, /dispatched:\s*false/);
   assert.match(source, /can_execute:\s*false/);
+  assert.match(source, /runtime_generation:\s*"UNVERIFIED_BY_READ_ONLY_INTAKE"/);
+  assert.match(source, /terminal_authority_verified:\s*false/);
   assert.doesNotMatch(source, /schedules\.task|cron\s*\(|fetch\s*\(|workflow_dispatch|pulls\/[^"']+\/merge|from\s+["']@supabase|score-pick-request/i);
 });
