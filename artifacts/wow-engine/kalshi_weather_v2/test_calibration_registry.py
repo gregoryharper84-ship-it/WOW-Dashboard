@@ -415,7 +415,9 @@ def test_candidate_evidence_identity_includes_target_sample_keys():
     client.tables["wow_kalshi_weather_predictions"].rows = changed
     # Restore valid point-in-time target labels with distinct target hours.
     for index, row in enumerate(changed.values()):
-        row["model_payload"]["contract"]["observation_window"] = f"POINT_IN_TIME:2026-12-02T{index:02d}:00:00Z"
+        target_day = 3 + index // 24
+        target_hour = index % 24
+        row["model_payload"]["contract"]["observation_window"] = f"POINT_IN_TIME:2026-11-{target_day:02d}T{target_hour:02d}:00:00Z"
 
     second = persist_candidate_calibration_profiles(
         client, model_version="TEST_MODEL_V1", fitted_as_of="2026-12-01T00:15:00Z"
