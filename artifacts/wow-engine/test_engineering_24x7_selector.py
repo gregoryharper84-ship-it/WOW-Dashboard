@@ -299,6 +299,15 @@ class Test24x7(unittest.TestCase):
         self.assertIn('LEASE_GROUP: ${{ needs.select.outputs.lease_group }}', wf)
         self.assertIn('-f lease_group="$LEASE_GROUP"', wf)
         self.assertNotIn("-f lease_group=GLOBAL", wf)
+        root = Path(__file__).resolve().parents[2]
+        for legacy in (
+            "wow-v17-engineering-provider-dispatcher.yml",
+            "wow-v17-engineering-specialist-support.yml",
+            "wow-v17-24h-engineering-closure-loop.yml",
+        ):
+            legacy_workflow = (root / ".github" / "workflows" / legacy).read_text(encoding="utf-8")
+            self.assertIn("vars.WOW_24X7_ACTIVE != 'true'", legacy_workflow)
+            self.assertIn("vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'", legacy_workflow)
         self.assertIn("DUPLICATE_DISPATCH_OBSERVED", wf)
 
     def test_run_for_different_issue_does_not_block(self):
