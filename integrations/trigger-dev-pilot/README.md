@@ -38,6 +38,7 @@ Keep `WOW_TRIGGER_PILOT_ENABLED=true`, `WOW_TRIGGER_PILOT_ENV=dev`, `WOW_CAN_EXE
 ## Security review notes and limits
 
 - The CI workflow pins third-party actions to immutable commit SHAs, installs the committed lockfile with lifecycle scripts disabled, and audits the dependency tree for high/critical advisories.
+- The current CLI dependency tree uses explicit patched overrides for `deepmerge-ts@8.0.2`, `esbuild@0.25.0`, `minimatch@11.0.1`, `tar@7.5.22`, and `zod@4.6.7`. These are recorded in the committed lockfile; do not replace them with `npm audit fix --force` or silently downgrade Trigger.dev.
 - The fixed health response body is cancelled after headers; redirects are surfaced (never followed) and treated as permanent non-2xx failures. Missing fetch support is a non-retryable configuration failure; timeout and transport errors remain retryable.
 - The source-text checks in `pilot.test.mjs` are smoke-test tripwires only. They are not proof that the whole package is side-effect-free; the reviewed task import graph and the fixed GET implementation establish the current bounded behavior.
 - `WOW_*` flags are operator-set configuration guards, not cryptographic proof of Trigger.dev environment identity. The CLI requires a `tr_dev_` key and the task performs only the fixed GET, but this package must not be deployed to Staging or Production. No deploy script, schedule, GitHub deployment integration, or production credential is part of this pilot. Any broader deployment requires separate environment-attestation controls and independent approval.
