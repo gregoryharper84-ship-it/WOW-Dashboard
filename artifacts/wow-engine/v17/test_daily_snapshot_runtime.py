@@ -598,3 +598,76 @@ def test_daily_scoring_callback_keeps_cross_sport_event_id_collision(monkeypatch
     ]
     assert scan["reconciliation"]["events_discovered"] == 2
     assert scan["reconciliation"]["row_reconciliation"] == "PASS"
+
+def test_installed_parity_overlay_keeps_league_scoped_canonical_dedup(monkeypatch):
+    """The live-installed overlay must honor the same tuple IDs and priority as Daily."""
+    from types import SimpleNamespace
+
+    from v17 import daily_snapshot_runtime as daily
+    from v17 import team_event_sport_parity as parity
+    from v17 import cross_sport_winner_discovery as discovery
+
+    # The installer mutates the module globally; restore both attributes even
+    # when a prior suite test has already installed the production overlay.
+    monkeypatch.setattr(daily, "_cross_sport_moneyline_rows", daily._cross_sport_moneyline_rows)
+    monkeypatch.setattr(
+        daily, "_v17_cross_sport_discovery_evidence_handoff_installed",
+        False, raising=False,
+    )
+    captured = {}
+
+    def fake_scan(**kwargs):
+        captured["sports"] = kwargs.get("supported_sports")
+        captured["variants"] = kwargs.get("include_regime_variants")
+        events = [
+            SimpleNamespace(sport=sport, official_event_id="shared-event",
+                            event_key=f"{sport}:shared-event", provider="TEST",
+                            sport_key=sport, commence_time_utc=FUTURE,
+                            home_team="Home", away_team="Away", league=sport, raw={})
+            for sport in ("MLB", "NFL")
+        ]
+        captured["scores"] = [kwargs["score_row"](event, None) for event in events]
+        return {
+            "rows": [
+                {"sport": event.sport, "official_event_id": event.official_event_id,
+                 "bucket": discovery.MODEL_UNAVAILABLE,
+                 "model_status": captured["scores"][idx]["code"],
+                 "probability_publishable": False, "rank_eligible": False,
+                 "can_execute": False}
+                for idx, event in enumerate(events)
+            ],
+            "discovery": {}, "reconciliation": {},
+        }
+
+    monkeypatch.setattr(daily.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(daily.discovery, "run_cross_sport_winner_scan", fake_scan)
+    monkeypatch.setattr(daily, "TeamEventRequest", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(
+        daily, "score_team_event_request",
+        lambda request, **kwargs: {
+            "code": "MODEL_INPUTS_INSUFFICIENT",
+            "probability_publishable": False, "rank_eligible": False,
+            "can_execute": False,
+        },
+    )
+    assert parity.install_cross_sport_discovery_evidence_handoff() is True
+
+    rows, scan = daily._cross_sport_moneyline_rows(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+        ),
+        run_id="scoped-identity-overlay-regression", event_api=Event,
+        covered_event_ids={("MLB", "shared-event")},
+        fetch_sport_events=lambda *args, **kwargs: [],
+    )
+    assert captured["sports"][:4] == ("NBA", "NFL", "NHL", "NCAAF")
+    assert captured["variants"] is True
+    assert captured["scores"][0]["code"] == "ALREADY_SCORED_IN_CANONICAL_LANE"
+    assert captured["scores"][1]["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert len(rows) == 1
+    assert rows[0]["identity"]["sport"] == "NFL"
+    assert rows[0]["row_status"] == "HELD"
+    assert rows[0]["can_execute"] is False
+    assert scan["model_coverage"]["discovered_rows"] == 2
+
