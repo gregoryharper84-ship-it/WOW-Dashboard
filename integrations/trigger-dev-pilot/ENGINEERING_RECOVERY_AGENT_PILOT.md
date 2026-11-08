@@ -47,7 +47,7 @@ Before any write-capable handoff, prove cross-provider idempotency, ambiguous-ti
 
 \`\`\`text
 custom_gpt_identity=WOW_BETTING_ENGINE
-runtime_generation=V17_ACTIVE
+runtime_generation=V17_ACTIVE only when independently verified; this intake returns UNVERIFIED_BY_READ_ONLY_INTAKE
 terminal_authority=V17_TERMINAL_REDUCER
 probability_authority=NONE
 can_execute=false
