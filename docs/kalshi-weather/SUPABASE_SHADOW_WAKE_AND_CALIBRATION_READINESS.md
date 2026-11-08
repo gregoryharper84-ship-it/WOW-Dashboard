@@ -253,12 +253,12 @@ Confirm the request was authenticated, not merely dispatched. `net._http_respons
 ### Research progress SQL — no probability or write
 
 ```sql
--- One eligible pre-target as-of forecast per station, target hour and bucket.
+-- One eligible pre-target as-of forecast per settlement identity, target hour and bucket.
 -- Duplicate market threshold siblings and revisions must not multiply N.
 WITH eligible AS (
   SELECT
     p.prediction_id,
-    p.model_payload->'contract'->>'settlement_location_code' AS settlement_station,
+    p.model_payload->'contract'->>'settlement_location_code' AS settlement_group_key,
     p.model_payload->'contract'->>'observation_window' AS target_window,
     p.model_payload->>'lead_time_bucket' AS lead_bucket,
     p.decision_time,
@@ -275,13 +275,13 @@ WITH eligible AS (
 ), independent_targets AS (
   SELECT *,
          ROW_NUMBER() OVER (
-           PARTITION BY settlement_station, target_window, lead_bucket
+           PARTITION BY settlement_group_key, target_window, lead_bucket
            ORDER BY decision_time ASC, prediction_id ASC
          ) AS target_rank
   FROM eligible
 )
 SELECT
-  settlement_station,
+  settlement_group_key,
   lead_bucket,
   COUNT(*) AS independent_settled_target_hours,
   GREATEST(0, 30 - COUNT(*)) AS remaining_to_30_per_bucket,
@@ -289,12 +289,12 @@ SELECT
   ROUND(AVG(signed_error_f)::numeric, 3) AS signed_bias_f
 FROM independent_targets
 WHERE target_rank = 1
-GROUP BY settlement_station, lead_bucket
-ORDER BY settlement_station, lead_bucket;
+GROUP BY settlement_group_key, lead_bucket
+ORDER BY settlement_group_key, lead_bucket;
 ```
 
 This is a retrospective research-only progress check, not probability certification.
-The 30/40 sample gates apply **within each** station/lane/horizon bucket, not
+The 30-sample candidate-fit and 50-sample forward-validation gates apply **within each** settlement-identity/lane/horizon bucket, not
 across buckets or model-version groups. Recheck target identity, as-of evidence,
 source quality, and chronological holdout through the governed calibration tool
 before treating any result as a qualifying research cohort.
