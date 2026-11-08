@@ -53,6 +53,7 @@ jobs:
     env:
       TRIGGER_PROJECT_REF: ${{ vars.TRIGGER_PROJECT_REF }}
       TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
+      TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
       TRIGGER_DEV_BRANCH: wow-v17-github-actions-acceptance
       TRIGGER_PREVIEW_BRANCH: wow-v17-github-actions-acceptance
       WOW_TRIGGER_PILOT_ENABLED: "true"
