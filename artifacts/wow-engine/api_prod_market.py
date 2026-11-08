@@ -25,6 +25,11 @@ from market import MarketQuote
 from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop_end_to_end
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_evidence_repair import repair_prop_evidence
+from prop_evidence_readback import (
+    PropEvidenceReadbackRequest,
+    diagnose_prop_evidence,
+    log_prop_evidence_failure,
+)
 from prop_fitted_provider import PropFittedProviderUnavailable
 from prop_market_audit import audit_candidate_market
 from prop_settlement import (
@@ -814,6 +819,8 @@ def _preflight_prop_route(
 def score_prop(
     req: ScorePropRequest,
     x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
+    x_wow_request_id: Optional[str] = Header(default=None, alias="X-WOW-Request-ID"),
+    x_wow_caller_class: Optional[str] = Header(default=None, alias="X-WOW-Caller-Class"),
 ):
     """Governed player-prop scoring with explicit objective separation."""
     with _score_stage_timer("route_preflight", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
@@ -841,6 +848,12 @@ def score_prop(
         detail["specialist_invoked"] = False
         detail["probability_publishable"] = False
         detail["can_execute"] = False
+        log_prop_evidence_failure(
+            req,
+            code=str(detail.get("code") or "RUN_INVALID_ACQUISITION_INCOMPLETE"),
+            request_id=x_wow_request_id,
+            caller_class=x_wow_caller_class,
+        )
         raise HTTPException(status_code=422, detail=detail)
 
     scored_at = datetime.now(timezone.utc).isoformat()
@@ -1023,3 +1036,32 @@ _install_recommendation_ledger_routes(
     auth_dependency=Depends(prod._require_action_api_key),
     get_client_fn=prod.get_client,
 )
+
+
+@app.post("/v17/prop-evidence-readback", include_in_schema=False)
+def prop_evidence_readback(
+    req: PropEvidenceReadbackRequest,
+    _: Any = Depends(prod._require_action_api_key),
+):
+    """Read-only diagnosis of a /score-prop evidence failure.
+
+    Hidden from the Action schema and authentication-gated. It never invokes a
+    specialist, repairs evidence, or returns player names, game logs, box
+    scores or probabilities.
+    """
+    try:
+        client = prod.get_client()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "PROP_EVIDENCE_READBACK_UNAVAILABLE",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
+    return diagnose_prop_evidence(
+        client,
+        req.model_dump(),
+        request_id=req.request_id,
+    )
