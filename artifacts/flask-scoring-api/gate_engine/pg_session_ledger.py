@@ -59,6 +59,10 @@ CREATE INDEX IF NOT EXISTS idx_wse_expires ON wow_session_exposure (expires_at);
 # Bound it before connecting, then pass the resolved address as hostaddr while
 # retaining the original host name for TLS verification and diagnostics.
 DNS_RESOLUTION_TIMEOUT_SECONDS = 2.0
+# A resolver call may outlive its request-thread deadline. Permit only one
+# daemon resolver in flight per process so repeated warmups cannot leak an
+# unbounded number of blocked threads when the system resolver is unhealthy.
+_DNS_RESOLUTION_SLOT = threading.BoundedSemaphore(1)
 
 
 def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
@@ -82,6 +86,8 @@ def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
     except (TypeError, ValueError):
         raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID") from None
 
+    if not _DNS_RESOLUTION_SLOT.acquire(blocking=False):
+        raise TimeoutError("SESSION_LEDGER_DNS_BUSY")
     outcome: dict[str, Any] = {}
     completed = threading.Event()
 
@@ -94,13 +100,21 @@ def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
         except OSError:
             outcome["failed"] = True
         finally:
+            _DNS_RESOLUTION_SLOT.release()
             completed.set()
 
     worker = threading.Thread(
         target=resolve, name="pg-session-ledger-dns", daemon=True
     )
-    worker.start()
+    try:
+        worker.start()
+    except Exception:
+        _DNS_RESOLUTION_SLOT.release()
+        raise RuntimeError("SESSION_LEDGER_DNS_WORKER_UNAVAILABLE") from None
     if not completed.wait(DNS_RESOLUTION_TIMEOUT_SECONDS):
+        # The resolver thread may finish later and release the single-flight
+        # slot. Until then, subsequent warmups fail fast instead of spawning
+        # another thread that could remain blocked on the same system resolver.
         raise TimeoutError("SESSION_LEDGER_DNS_TIMEOUT")
     records = outcome.get("records") or ()
     addresses: list[str] = []
