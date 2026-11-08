@@ -14,57 +14,72 @@ import v17.basketball_model_maintenance as maintenance
 
 
 class Store:
+    """In-memory database store for basketball hydration regression tests."""
     def __init__(self, rows=()):
+        """Initialize the test double and its in-memory state."""
         self.rows = [dict(row) for row in rows]
 
     def table(self, _name):
+        """Return a query builder for the requested table."""
         return Query(self)
 
 
 class Query:
+    """PostgREST-style query builder backed by the in-memory store."""
     def __init__(self, store):
+        """Initialize the test double and its in-memory state."""
         self.store, self.filters, self.orders = store, [], []
         self.maximum = self.window = self.incoming = None
         self.ignore_duplicates = False
 
     def select(self, _fields):
+        """Record the selected fields and return this query builder."""
         return self
 
     def eq(self, key, value):
+        """Add an equality filter and return this query builder."""
         self.filters.append(lambda row: row.get(key) == value)
         return self
 
     def gte(self, key, value):
+        """Add a lower-bound filter and return this query builder."""
         self.filters.append(lambda row: row.get(key, "") >= value)
         return self
 
     def lte(self, key, value):
+        """Add an upper-bound filter and return this query builder."""
         self.filters.append(lambda row: row.get(key, "") <= value)
         return self
 
     def in_(self, key, values):
+        """Add a membership filter and return this query builder."""
         self.filters.append(lambda row: row.get(key) in values)
         return self
 
     def order(self, key, desc=False):
+        """Record a sort key and return this query builder."""
         self.orders.append((key, desc))
         return self
 
     def limit(self, count):
+        """Set the maximum number of rows returned by this query."""
         self.maximum = count
         return self
 
     def range(self, start, end):
+        """Set the inclusive result window for this query."""
         self.window = (start, end)
         return self
 
     def upsert(self, rows, on_conflict, ignore_duplicates=False):
+        """Record an attempted upsert and return this query builder."""
         assert on_conflict == "game_id"
         self.incoming = rows
         self.ignore_duplicates = ignore_duplicates
         return self
 
     def execute(self):
+        """Execute the in-memory query and return its result rows."""
         if self.incoming is not None:
             written = []
             for row in self.incoming:
@@ -85,6 +100,7 @@ class Query:
 
 
 def source_row(**overrides):
+    """Build a canonical provider game row for a regression test."""
     return {
         "game_id": "401000001", "game_date": "2026-11-05",
         "game_date_time": "2026-11-05T19:00:00-05:00",
@@ -97,6 +113,7 @@ def source_row(**overrides):
 
 
 def settled_row(**overrides):
+    """Build a persisted settled game row for a regression test."""
     return {
         "game_id": "espn-401000001", "game_date": "2026-11-05", "season": 2027,
         "settled": True, "source_provider": "SPORTSDATAVERSE_ESPN", **overrides,
@@ -104,18 +121,23 @@ def settled_row(**overrides):
 
 
 def freeze_live_clock(monkeypatch, at="2026-11-07T12:00:00+00:00"):
+    """Freeze the maintenance clock for deterministic assertions."""
     class Clock(datetime):
+        """Fixed datetime implementation used by the deterministic clock fixture."""
         @classmethod
         def now(cls, tz=None):
+            """Return the fixed UTC clock value used by the test."""
             return cls.fromisoformat(at).astimezone(tz or timezone.utc)
     monkeypatch.setattr(maintenance, "datetime", Clock)
 
 
 def shadow_replay(*_args, **_kwargs):
+    """Return a shadow replay result without granting promotion."""
     return {"persisted_status": "SHADOW", "promotion_attempted": False, "can_execute": False}
 
 
 def forbidden_replay(*_args, **_kwargs):
+    """Fail if unverified current-season evidence reaches replay."""
     pytest.fail("Unverified current-season evidence must not reach fitting")
 
 
@@ -126,10 +148,12 @@ def forbidden_replay(*_args, **_kwargs):
     ("WNBA", "2026-11-07T12:00:00+00:00", (2023, 2024, 2025, 2026)),
 ])
 def test_provider_season_windows_follow_league_ending_year(sport, at, want):
+    """Verify that provider season windows follow league ending year."""
     assert maintenance.default_seasons(datetime.fromisoformat(at), sport=sport) == want
 
 
 def test_default_nba_refresh_cannot_refit_only_the_june_corpus(monkeypatch):
+    """Verify that default nba refresh cannot refit only the june corpus."""
     freeze_live_clock(monkeypatch)
     monkeypatch.setattr(maintenance, "hydrate", lambda *_a, **_k: {
         "settled_rows": 100, "latest_game_date_after": "2026-06-13",
@@ -146,8 +170,10 @@ def test_default_nba_refresh_cannot_refit_only_the_june_corpus(monkeypatch):
 
 
 def test_missing_acquisition_is_not_current_season_proof(monkeypatch):
+    """Verify that missing acquisition is not current season proof."""
     freeze_live_clock(monkeypatch)
     def fail(*_a, **_k):
+        """Raise the configured typed hydration failure."""
         raise hydration.BasketballHydrationError("NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:SPORTSDATAVERSE_ESPN_HTTP_503")
     monkeypatch.setattr(maintenance, "hydrate", fail)
     monkeypatch.setattr(maintenance, "run_training_replay", forbidden_replay)
@@ -161,6 +187,7 @@ def test_missing_acquisition_is_not_current_season_proof(monkeypatch):
     {"season": 2026}, {"source_provider": "BALLDONTLIE"}, {"game_id": "401000002"},
 ])
 def test_latest_day_and_full_season_readback_reject_invalid_identity(monkeypatch, corrupt):
+    """Verify that latest day and full season readback reject invalid identity."""
     freeze_live_clock(monkeypatch)
     monkeypatch.setattr(maintenance, "hydrate", lambda *_a, **_k: {
         "settled_rows": 1, "latest_game_date_after": "2026-11-05",
@@ -175,6 +202,7 @@ def test_latest_day_and_full_season_readback_reject_invalid_identity(monkeypatch
 
 
 def test_readback_inspects_history_beyond_first_page(monkeypatch):
+    """Verify that readback inspects history beyond first page."""
     freeze_live_clock(monkeypatch)
     monkeypatch.setattr(maintenance, "hydrate", lambda *_a, **_k: {
         "settled_rows": 1, "latest_game_date_after": "2026-11-05",
@@ -187,6 +215,7 @@ def test_readback_inspects_history_beyond_first_page(monkeypatch):
 
 
 def test_verified_current_season_replay_is_shadow_and_not_new_acquisition(monkeypatch):
+    """Verify that verified current season replay is shadow and not new acquisition."""
     freeze_live_clock(monkeypatch)
     monkeypatch.setattr(maintenance, "hydrate", lambda *_a, **_k: {
         "settled_rows": 100, "fresh_acquisition_new_settled_games": 0,
@@ -208,6 +237,7 @@ def test_verified_current_season_replay_is_shadow_and_not_new_acquisition(monkey
     ("2026-10-20T19:00:00+00:00", "BLOCKED"),
 ])
 def test_october_exception_requires_verified_canonical_schedule_before_opening(monkeypatch, at, want):
+    """Verify that october exception requires verified canonical schedule before opening."""
     freeze_live_clock(monkeypatch, at)
     monkeypatch.setattr(maintenance, "hydrate", lambda *_a, **_k: {
         "settled_rows": 0, "latest_game_date_after": "2026-06-13",
@@ -219,6 +249,7 @@ def test_october_exception_requires_verified_canonical_schedule_before_opening(m
 
 
 def test_explicit_clock_cannot_fit_unbounded_persisted_history(monkeypatch):
+    """Verify that explicit clock cannot fit unbounded persisted history."""
     monkeypatch.setattr(maintenance, "hydrate", lambda *_a, **_k: {"settled_rows": 0})
     monkeypatch.setattr(maintenance, "run_training_replay", forbidden_replay)
     result = maintenance.run_basketball_model_maintenance(
@@ -229,6 +260,7 @@ def test_explicit_clock_cannot_fit_unbounded_persisted_history(monkeypatch):
 
 
 def test_missing_csv_season_inherits_acquired_release_and_endpoint():
+    """Verify that missing csv season inherits acquired release and endpoint."""
     row = hydration.normalize_sportsdataverse_game(
         source_row(), "NBA", "2026-11-07T12:00:00Z", source_release_year=2027,
     )
@@ -244,14 +276,17 @@ def test_missing_csv_season_inherits_acquired_release_and_endpoint():
     {"game_date_time": "2026-11-08T19:00:00-05:00"},
 ])
 def test_inconsistent_or_future_source_observations_never_become_settled(overrides):
+    """Verify that inconsistent or future source observations never become settled."""
     assert hydration.normalize_sportsdataverse_game(
         source_row(**overrides), "NBA", "2026-11-07T12:00:00Z", source_release_year=2027,
     ) is None
 
 
 def test_nba_acquisition_is_canonical_and_counts_only_new_persisted_ids(monkeypatch):
+    """Verify that nba acquisition is canonical and counts only new persisted ids."""
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [source_row()])
     def unverified_bdl(*_a, **_k):
+        """Fail if an unverified provider enters the training corpus."""
         pytest.fail("An unverified NBA provider namespace must not enter training")
     monkeypatch.setattr(hydration, "fetch_games", unverified_bdl)
     store = Store()
@@ -265,7 +300,9 @@ def test_nba_acquisition_is_canonical_and_counts_only_new_persisted_ids(monkeypa
 
 
 def test_current_nba_source_failure_never_switches_to_unverified_provider(monkeypatch):
+    """Verify that current nba source failure never switches to unverified provider."""
     def unavailable(*_):
+        """Raise the typed canonical-source outage used by the test."""
         raise hydration.BasketballHydrationError("SPORTSDATAVERSE_ESPN_HTTP_503")
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", unavailable)
     monkeypatch.setattr(hydration, "fetch_games", lambda *_: [])
@@ -274,8 +311,10 @@ def test_current_nba_source_failure_never_switches_to_unverified_provider(monkey
 
 
 def test_partially_committed_refresh_is_not_replayed(monkeypatch):
+    """Verify that partially committed refresh is not replayed."""
     freeze_live_clock(monkeypatch)
     def source(_sport, year):
+        """Return the configured provider rows for the requested season."""
         if year == 2027:
             raise hydration.BasketballHydrationError("SPORTSDATAVERSE_ESPN_HTTP_503")
         return [source_row(game_date="2026-06-01", game_date_time="2026-06-01T19:00:00-04:00", season="2026")]
@@ -289,6 +328,7 @@ def test_partially_committed_refresh_is_not_replayed(monkeypatch):
 
 
 def bdl_row(**overrides):
+    """Build a representative BallDontLie game row."""
     return {
         "id": 123, "season": 2026, "date": "2026-09-20", "status": "Final",
         "home_team_score": 88, "visitor_team_score": 80,
@@ -298,6 +338,7 @@ def bdl_row(**overrides):
 
 
 def test_historical_bdl_hydration_cannot_backdate_a_later_final(monkeypatch):
+    """Verify that historical bdl hydration cannot backdate a later final."""
     monkeypatch.setattr(hydration, "fetch_games", lambda *_: [bdl_row()])
     store = Store()
     result = hydration.hydrate(
@@ -315,21 +356,26 @@ def test_historical_bdl_hydration_cannot_backdate_a_later_final(monkeypatch):
     {"_wow_source_observed_at": "2026-09-23T12:00:00Z"},
 ])
 def test_bdl_final_requires_valid_event_and_acquisition_chronology(overrides):
+    """Verify that bdl final requires valid event and acquisition chronology."""
     assert hydration.normalize_game(
         bdl_row(**overrides), "WNBA", "2026-09-22T12:00:00Z",
     ) is None
 
 
 def test_bdl_source_time_is_actual_acquisition_not_the_replay_cutoff():
+    """Verify that bdl source time is actual acquisition not the replay cutoff."""
     row = hydration.normalize_game(bdl_row(), "WNBA", "2026-09-22T12:00:00Z")
     assert row["source_retrieved_at"] == "2026-09-21T12:00:00Z"
     assert row["updated_at"] == "2026-09-21T12:00:00Z"
 
 
 def test_bdl_fetch_overwrites_provider_claimed_acquisition_time(monkeypatch):
+    """Verify that bdl fetch overwrites provider claimed acquisition time."""
     class Clock(datetime):
+        """Fixed datetime implementation used by the deterministic clock fixture."""
         @classmethod
         def now(cls, tz=None):
+            """Return the fixed UTC clock value used by the test."""
             return cls(2026, 9, 21, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(hydration, "datetime", Clock)
     monkeypatch.setattr(hydration, "_key", lambda: "test-only")
@@ -343,8 +389,10 @@ def test_bdl_fetch_overwrites_provider_claimed_acquisition_time(monkeypatch):
 
 
 def test_canonical_outage_can_replay_independently_verified_current_corpus(monkeypatch):
+    """Verify that canonical outage can replay independently verified current corpus."""
     freeze_live_clock(monkeypatch)
     def unavailable(*_a, **_k):
+        """Raise the typed canonical-source outage used by the test."""
         raise hydration.BasketballHydrationError("NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:SPORTSDATAVERSE_ESPN_HTTP_503")
     monkeypatch.setattr(maintenance, "hydrate", unavailable)
     monkeypatch.setattr(maintenance, "run_training_replay", shadow_replay)
@@ -361,8 +409,10 @@ def test_canonical_outage_can_replay_independently_verified_current_corpus(monke
 
 @pytest.mark.parametrize("rows", [[], [settled_row(season=2026)], [settled_row(source_provider="BALLDONTLIE")]])
 def test_canonical_outage_cannot_waive_current_corpus_identity(monkeypatch, rows):
+    """Verify that canonical outage cannot waive current corpus identity."""
     freeze_live_clock(monkeypatch)
     def unavailable(*_a, **_k):
+        """Raise the typed canonical-source outage used by the test."""
         raise hydration.BasketballHydrationError("NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE")
     monkeypatch.setattr(maintenance, "hydrate", unavailable)
     monkeypatch.setattr(maintenance, "run_training_replay", forbidden_replay)
@@ -373,6 +423,7 @@ def test_canonical_outage_cannot_waive_current_corpus_identity(monkeypatch, rows
 
 @pytest.mark.parametrize("latest_day", ["2026-11-05", "2026-11-06"])
 def test_later_canonical_snapshot_fills_partial_days_without_rewriting_evidence(monkeypatch, latest_day):
+    """Verify that later canonical snapshot fills partial days without rewriting evidence."""
     first_rows = [source_row()]
     if latest_day != "2026-11-05":
         first_rows.append(source_row(
@@ -394,6 +445,7 @@ def test_later_canonical_snapshot_fills_partial_days_without_rewriting_evidence(
 
 
 def test_canonical_reconciliation_keeps_the_cross_provider_date_fence(monkeypatch):
+    """Verify that canonical reconciliation keeps the cross provider date fence."""
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [source_row()])
     store = Store([settled_row(game_id="123", source_provider="BALLDONTLIE")])
     with pytest.raises(hydration.BasketballHydrationError, match="NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED"):
@@ -402,11 +454,13 @@ def test_canonical_reconciliation_keeps_the_cross_provider_date_fence(monkeypatc
 
 
 def test_completed_canonical_season_reconciles_without_false_recent_source_target(monkeypatch):
+    """Verify that completed canonical season reconciles without false recent source target."""
     old = source_row(
         game_date="2026-06-13", game_date_time="2026-06-13T19:00:00-04:00",
         season="2026", _wow_source_observed_at="2026-06-14T03:00:00Z",
     )
     def source(_sport, season):
+        """Return the configured provider rows for the requested season."""
         return [old] if season == 2026 else [source_row(game_id="401000002")]
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", source)
     store = Store()
@@ -422,16 +476,22 @@ def test_completed_canonical_season_reconciles_without_false_recent_source_targe
 
 
 def test_canonical_insert_race_cannot_rewrite_settled_observation_or_count_as_new():
+    """Verify that canonical insert race cannot rewrite settled observation or count as new."""
     original = settled_row(home_score=111, source_retrieved_at="2026-11-06T03:00:00Z")
     class RacingStore(Store):
+        """Store double that simulates an insert race."""
         def table(self, _name):
+            """Return a query builder for the requested table."""
             return RacingQuery(self)
     class RacingQuery(Query):
+        """Query double that simulates a concurrent canonical-row insertion."""
         def upsert(self, rows, on_conflict, ignore_duplicates=False):
+            """Record an attempted upsert and return this query builder."""
             self.incoming = rows
             self.ignore_duplicates = ignore_duplicates
             return self
         def execute(self):
+            """Execute the in-memory query and return its result rows."""
             if self.incoming is not None:
                 self.store.rows = [dict(original)]  # Another writer won after our ID readback.
                 if self.ignore_duplicates:
@@ -449,7 +509,9 @@ def test_canonical_confirmation_cannot_count_a_preexisting_id_as_new():
     new_row = settled_row(game_id="espn-401000099")
 
     class EchoingQuery(Query):
+        """Query double that echoes an existing row after an upsert."""
         def execute(self):
+            """Execute the in-memory query and return its result rows."""
             if self.incoming is not None:
                 for row in self.incoming:
                     self.store.rows.append(dict(row))
@@ -457,7 +519,9 @@ def test_canonical_confirmation_cannot_count_a_preexisting_id_as_new():
             return super().execute()
 
     class EchoingStore(Store):
+        """Store double used to test canonical readback reconciliation."""
         def table(self, _name):
+            """Return a query builder for the requested table."""
             return EchoingQuery(self)
 
     store = EchoingStore([original])
@@ -474,18 +538,23 @@ def test_canonical_confirmation_cannot_count_a_preexisting_id_as_new():
 
 
 def test_canonical_confirmation_rejects_a_duplicated_new_id():
+    """Verify that canonical confirmation rejects a duplicated new id."""
     original = settled_row()
     new_row = settled_row(game_id="espn-401000098")
 
     class DuplicatingQuery(Query):
+        """Query double that returns duplicate inserted identities."""
         def execute(self):
+            """Execute the in-memory query and return its result rows."""
             if self.incoming is not None:
                 self.store.rows.append(dict(self.incoming[0]))
                 return SimpleNamespace(data=[dict(self.incoming[0]), dict(self.incoming[0])])
             return super().execute()
 
     class DuplicatingStore(Store):
+        """Store double used to test duplicate insert confirmation."""
         def table(self, _name):
+            """Return a query builder for the requested table."""
             return DuplicatingQuery(self)
 
     with pytest.raises(hydration.BasketballHydrationPartialWriteError) as caught:
@@ -505,18 +574,26 @@ def test_canonical_existing_id_read_must_be_complete_before_write(malformed_rows
     original = settled_row()
 
     class MalformedReadEchoingQuery(Query):
+        """Query double that echoes an old row after malformed readback."""
+        def upsert(self, rows, on_conflict, ignore_duplicates=False):
+            """Record an attempted upsert and return this query builder."""
+            self.store.upsert_calls += 1
+            return super().upsert(rows, on_conflict, ignore_duplicates)
+
         def execute(self):
+            """Execute the in-memory query and return its result rows."""
             if self.incoming is not None:
-                self.store.upsert_calls += 1
                 # Adversarial boundary echoes the pre-existing row back as if
                 # it had just been inserted.
                 return SimpleNamespace(data=[dict(original)])
             return SimpleNamespace(data=list(malformed_rows))
 
     class MalformedReadStore(Store):
+        """Store double that counts attempted writes during malformed readback."""
         upsert_calls = 0
 
         def table(self, _name):
+            """Return a query builder for the requested table."""
             return MalformedReadEchoingQuery(self)
 
     store = MalformedReadStore([original])
@@ -530,6 +607,7 @@ def test_canonical_existing_id_read_must_be_complete_before_write(malformed_rows
 
 
 def test_canonical_empty_day_readback_fills_a_whole_older_missing_day(monkeypatch):
+    """Verify that canonical empty day readback fills a whole older missing day."""
     newer = source_row(
         game_id="401000002", game_date="2026-11-06",
         game_date_time="2026-11-06T19:00:00-05:00",
@@ -554,17 +632,23 @@ def test_canonical_empty_day_readback_fills_a_whole_older_missing_day(monkeypatc
     ([settled_row(game_id="espn-malformed")], "NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED"),
 ])
 def test_canonical_day_reconciliation_rejects_incomplete_or_unverified_storage(monkeypatch, bad_rows, code):
+    """Verify that canonical day reconciliation rejects incomplete or unverified storage."""
     class BadDayQuery(Query):
+        """Query double that returns incomplete canonical-day readback."""
         day_read = False
         def eq(self, key, value):
+            """Add an equality filter and return this query builder."""
             self.day_read |= key == "game_date"
             return super().eq(key, value)
         def execute(self):
+            """Execute the in-memory query and return its result rows."""
             if self.day_read:
                 return SimpleNamespace(data=bad_rows)
             return super().execute()
     class BadDayStore(Store):
+        """Test fixture class for the surrounding regression scenarios."""
         def table(self, _name):
+            """Return a query builder for the requested table."""
             return BadDayQuery(self)
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [source_row(game_id="401000002")])
     store = BadDayStore([settled_row()])
@@ -575,17 +659,23 @@ def test_canonical_day_reconciliation_rejects_incomplete_or_unverified_storage(m
 
 
 def test_canonical_day_readback_failure_never_writes_or_exposes_transport_detail(monkeypatch):
+    """Verify that canonical day readback failure never writes or exposes transport detail."""
     class BrokenDayQuery(Query):
+        """Query double that raises during canonical-day readback."""
         day_read = False
         def eq(self, key, value):
+            """Add an equality filter and return this query builder."""
             self.day_read |= key == "game_date"
             return super().eq(key, value)
         def execute(self):
+            """Execute the in-memory query and return its result rows."""
             if self.day_read:
                 raise RuntimeError("database detail must remain private")
             return super().execute()
     class BrokenDayStore(Store):
+        """Test fixture class for the surrounding regression scenarios."""
         def table(self, _name):
+            """Return a query builder for the requested table."""
             return BrokenDayQuery(self)
     monkeypatch.setattr(hydration, "fetch_sportsdataverse_games", lambda *_: [source_row(game_id="401000002")])
     store = BrokenDayStore([settled_row()])
