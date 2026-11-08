@@ -20,6 +20,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
+import { scoreLegacyProp } from "../lib/legacy-batch";
 
 const router = Router();
 
@@ -68,6 +69,8 @@ export interface WowProp {
   /** Initial blockers set by the adapter layer (before gate evaluation). */
   blockers:        string[];
   timestamp:       string;
+  status_confirmed?: boolean;
+  line_verified?: boolean;
 }
 
 interface NormalizeResult {
@@ -672,107 +675,33 @@ router.get("/providers", (_req: Request, res: Response) => {
  * Normalize props then fire each through the Flask /final-lock endpoint.
  * Returns the full gate result per prop. All execution flags remain false.
  *
- * Audit trail: every scored prop is written to scoring_requests
- * (environment='score_batch') so it appears in /request-log.
- * Filter: GET /request-log?environment=score_batch  (maps to run_source=score_batch)
+ * Audit trail: successful legacy rows are submitted best-effort to the legacy
+ * scoring_requests table (environment='score_batch'). Failures retain native errors.
+ * This endpoint never creates V17 prediction receipts.
  *
  * LOW team_confidence props are capped at REJECT_DATA_QUALITY and
  * can never reach MONEY_QUALIFIED or FINAL_APPROVED.
  */
 router.post("/score-batch", async (req: Request, res: Response) => {
-  const FLASK_BASE = process.env["SCORING_API_URL"] ?? "http://localhost:25643";
-  const API_KEY    = process.env["SCORING_API_KEY"]  ?? "";
-
   const { props } = req.body as { props?: WowProp[] };
-  if (!props || !Array.isArray(props) || props.length === 0) {
-    return res.status(400).json({ ok: false, error: "props array required" });
+  if (!Array.isArray(props) || props.length === 0 || props.length > 50 || props.some(p => !p || typeof p !== "object" || Array.isArray(p))) {
+    return res.status(400).json({ ok: false, error: "props array requires between 1 and 50 objects", can_execute: false });
   }
-
-  const results = await Promise.allSettled(props.map(async prop => {
-    // Normalize source_status before sending to Flask
-    const normalizedSS = normalizeSourceStatus(prop.source_status);
-
-    try {
-      const r = await fetch(`${FLASK_BASE}/final-lock`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key":    API_KEY,
-        },
-        body: JSON.stringify({
-          player:            prop.player,
-          team:              prop.team,
-          opponent:          prop.opponent,
-          sport:             prop.sport,
-          prop:              prop.prop_type,
-          side:              prop.side,
-          line:              prop.line,
-          pp_line:           prop.line,
-          platform:          prop.platform,
-          payout_context:    prop.payout_context ?? "2-pick Power",
-          source:            prop.source,
-          source_status:     normalizedSS,
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const raw = await r.json() as Record<string, unknown>;
-
-      // Normalize Flask /final-lock response terminal label
-      const rawLabel = (
-        (raw["terminal_label"] as string | undefined) ??
-        (raw["classification"] as string | undefined) ??
-        (raw["label"] as string | undefined) ??
-        "UNKNOWN"
-      );
-      const flaskBlockers = [
-        ...(prop.blockers ?? []),
-        ...(Array.isArray(raw["blockers"]) ? (raw["blockers"] as string[]) : []),
-        ...(raw["blocker_code"] ? [String(raw["blocker_code"])] : []),
-        ...(raw["blocker"] ? [String(raw["blocker"])] : []),
-      ];
-      const terminal_label = enforcTeamConfidenceCap(
-        normalizeTerminalLabel(rawLabel, { source_status: normalizedSS, blockers: flaskBlockers }),
-        prop.team_confidence ?? "UNKNOWN",
-      );
-
-      const result = {
-        ...raw,
-        terminal_label,
-        source_status:   normalizedSS,
-        team_confidence: prop.team_confidence ?? "UNKNOWN",
-        blocker:         raw["blocker_code"] ?? raw["blocker"] ?? null,
-        can_execute:     false,
-        execution_rule:  "READ_ONLY_NO_EXECUTION",
-        run_source:      "score_batch",
-      };
-
-      // Audit log — best-effort, never blocks response
-      void writeBatchAuditEntry({ ...prop, source_status: normalizedSS }, terminal_label);
-
-      return { prop, result, ok: true };
-    } catch (err) {
-      const terminal_label = "REJECT_DATA_QUALITY";
-      void writeBatchAuditEntry({ ...prop, source_status: normalizedSS }, terminal_label);
-      return {
-        prop,
-        result: {
-          error: String(err),
-          terminal_label,
-          source_status: normalizedSS,
-          team_confidence: prop.team_confidence ?? "UNKNOWN",
-          can_execute: false,
-          execution_rule: "READ_ONLY_NO_EXECUTION",
-          run_source: "score_batch",
-        },
-        ok: false,
-      };
+  const rows = await Promise.all(props.map(async prop => {
+    const normalized = { ...prop, source_status: normalizeSourceStatus(typeof prop.source_status === "string" ? prop.source_status : undefined) };
+    const row = await scoreLegacyProp(normalized);
+    // Only successful legacy scoring is eligible for its legacy audit table.
+    // Failed attempts retain native errors; no invented terminal label is stored.
+    if (row.ok) {
+      const native = String(row.result.terminal_label ?? row.result.classification ?? row.result.label ?? "");
+      const label = enforcTeamConfidenceCap(normalizeTerminalLabel(native, { source_status: normalized.source_status }), prop.team_confidence ?? "UNKNOWN");
+      row.result.native_terminal_label = native;
+      row.result.terminal_label = label;
+      row.result.legacy_normalized_label = label;
+      void writeBatchAuditEntry(normalized, label);
     }
+    return row;
   }));
-
-  const rows = results.map(r => {
-    if (r.status === "fulfilled") return r.value;
-    return { prop: null, result: { error: String(r.reason), terminal_label: "REJECT_DATA_QUALITY" }, ok: false };
-  });
 
   return res.json({
     ok:          rows.every(r => r.ok),
@@ -780,7 +709,8 @@ router.post("/score-batch", async (req: Request, res: Response) => {
     results:     rows,
     can_execute: false,
     execution_rule: "READ_ONLY_NO_EXECUTION",
-    audit_note:  "Each scored prop written to scoring_requests (environment=score_batch). Filter via GET /request-log?environment=score_batch.",
+    generation: "LEGACY_V16",
+    audit_note: "Successful legacy results are submitted to the legacy score_batch audit table on a best-effort basis. V17 receipts are stored only by the governed backend.",
   });
 });
 
