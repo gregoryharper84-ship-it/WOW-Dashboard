@@ -452,3 +452,28 @@ def test_live_action_422_without_validation_code_is_unattributed():
 
     assert result["reported_failure_attribution"] == "LIVE_ACTION_OTHER_422"
     assert result["reported_cause_supported"] is None
+
+
+def test_invalid_identity_does_not_echo_exception_text():
+    result = readback.diagnose_prop_evidence(
+        _Client(),
+        {**BASE, "source_snapshot_id": "not-a-uuid"},
+    )
+
+    assert result["status"] == "INVALID_IDENTITY"
+    assert result["error"] == "INVALID_IDENTITY"
+    serialized = json.dumps(result, default=str)
+    assert "must be a UUID" not in serialized
+    assert "Traceback" not in serialized
+    assert "ValueError" not in serialized
+
+
+def test_rpc_error_message_never_enters_readback_response():
+    client = _Client(rpc_error=RuntimeError("postgres://reader:super-secret@db"))
+    result = readback.diagnose_prop_evidence(client, BASE)
+
+    assert result["primary_lookup"]["status"] == "INFRA_UNAVAILABLE"
+    serialized = json.dumps(result, default=str)
+    assert "super-secret" not in serialized
+    assert "postgres://" not in serialized
+    assert "Traceback" not in serialized

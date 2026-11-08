@@ -309,3 +309,40 @@ the bounded A2 fallback-identity repair and the read-only evidence readback
 validation ledger disproves the reported 422 as a live Action failure: it is the
 expected self-acceptance probe. Production readback, real model evidence, and
 independent authority remain blocked or absent.
+
+## Session 3 — canonical effective scoring identity
+
+- **Defect:** `repair_prop_evidence()` recovered canonical evidence, but
+  `_server_owned_inference_request()` still hashed the raw caller
+  event/player/stat labels. Equivalent requests such as `K` versus
+  `PITCHER_STRIKEOUTS`, or padded player/event text, could therefore produce
+  different `market_identity_id` and `prediction_id` values for the same
+  governed evidence.
+- **Change:** added `_canonical_scoring_identity()` and
+  `_effective_scoring_request()`. The effective copy is derived from the
+  validated evidence and drives the inference request, settlement resolution,
+  market audit, discrete model, settlement lane and persistence. The original
+  caller request is never mutated and is returned in `request_identity_audit`.
+  Line, direction, period/settlement semantics, market quotes and seed remain
+  as offered.
+- **Regression:** `tests/test_prop_canonical_effective_identity.py` submits a
+  canonical request and an alias/padded request with a different requested
+  snapshot id through the real `/score-prop` route, real repair fallback, real
+  discrete scoring engine and real `ledger.insert_prediction()` idempotency.
+  It asserts one evidence snapshot, one market identity, one prediction id,
+  one inserted row, unchanged line/direction, and raw caller audit fields.
+- **Readback acceptance:** `test_api_prod_market.py` now exercises
+  `/v17/prop-evidence-readback` with missing auth (401), empty/partial identity
+  (422), unavailable client and unexpected diagnosis failure (sanitized 503),
+  and a valid read-only response that does not expose player names, game logs,
+  box scores or probabilities and does not call scoring/repair/mutation.
+- **CodeQL disposition:** removed the readback's `str(exc)` response field
+  (stable `INVALID_IDENTITY` code instead) and wrapped the whole endpoint in a
+  sanitized 503 boundary. Exact-head CodeQL annotation must be re-read after
+  push; a green workflow alone is not accepted as proof.
+- **Local verification:** focused suites **54 passed**; broader affected
+  suites **44 passed, 8 skipped** (all skips require the ephemeral Postgres
+  integration service); docstring coverage **100%** in the three changed source
+  modules; `git diff --check` clean.
+- **Authority:** no merge, deployment, production request, fabricated receipt
+  or certification. `can_execute=false` throughout.

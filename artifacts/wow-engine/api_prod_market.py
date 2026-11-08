@@ -152,18 +152,21 @@ app.exception_handlers.update(prod.app.exception_handlers)
 
 
 def _to_market_quote(value: Optional[MarketQuoteInput]) -> Optional[MarketQuote]:
+    """Convert the validated request quote into the market audit value object."""
     if value is None:
         return None
     return MarketQuote(**value.model_dump())
 
 
 def _to_settlement_rule(value: Optional[SettlementRuleInput]) -> Optional[SettlementRule]:
+    """Convert the caller's observed rule into the server audit value object."""
     if value is None:
         return None
     return SettlementRule(**value.model_dump())
 
 
 def _candidate_american_odds(direction: str, side_a: Optional[MarketQuote], side_b: Optional[MarketQuote]) -> Optional[float]:
+    """Return the audited price for the requested side, never the opposite side."""
     target = str(direction or "").upper()
     aliases = {"MORE": {"MORE", "OVER"}, "LESS": {"LESS", "UNDER"}}
     for quote in (side_a, side_b):
@@ -173,6 +176,7 @@ def _candidate_american_odds(direction: str, side_a: Optional[MarketQuote], side
 
 
 def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementRule], resolution: SettlementRuleResolution, audited_a: Optional[MarketQuote], audited_b: Optional[MarketQuote]) -> dict[str, Any]:
+    """Map the PMF into settlement masses without changing the model probability."""
     result = settle_prop_probability(
         direction=req.direction,
         probability_more=getattr(row, "probability_more", None),
@@ -213,6 +217,7 @@ def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementR
 
 
 def _effective_money_lane(row: Any, settlement_lane: dict[str, Any]) -> dict[str, Any]:
+    """Hold money evaluation when settlement is unresolved or lineup-dependent."""
     lane = _money_lane(row)
     if settlement_lane.get("status") != "PASS":
         lane = dict(lane)
@@ -226,6 +231,7 @@ def _effective_money_lane(row: Any, settlement_lane: dict[str, Any]) -> dict[str
 
 
 def _market_lane_with_audit(row: Any, market_audit: Any) -> dict[str, Any]:
+    """Attach exact-market audit status without letting it erase the model lane."""
     lane = _market_lane(row)
     lane["candidate_audit_status"] = market_audit.status
     lane["candidate_audit_blocker"] = market_audit.blocker
@@ -237,6 +243,7 @@ def _market_lane_with_audit(row: Any, market_audit: Any) -> dict[str, Any]:
 
 
 def _market_lane(row: Any) -> dict[str, Any]:
+    """Expose the objective-separated market prior and its hold state."""
     available = bool(getattr(row, "market_prior_available", False))
     quality = getattr(row, "market_prior_quality", None) or "NO_QUALIFYING_MARKET"
     status = "PASS" if available and quality == "EXACT_TWO_WAY_NO_VIG" else "HOLD"
@@ -256,6 +263,7 @@ def _market_lane(row: Any) -> dict[str, Any]:
 
 
 def _money_lane(row: Any) -> dict[str, Any]:
+    """Expose payout resolution separately from the sporting probability."""
     status = getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"
     return {
         "status": "PASS" if status == "RESOLVED" else "HOLD",
@@ -266,6 +274,7 @@ def _money_lane(row: Any) -> dict[str, Any]:
 
 
 def _american_implied_probability(odds: float) -> float:
+    """Convert one American price to its raw implied break-even probability."""
     value = float(odds)
     if value == 0:
         raise ValueError("american odds must be non-zero")
@@ -391,6 +400,7 @@ def _apply_wolfram_arithmetic_gate(
     money_lane: dict[str, Any],
     prediction_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Audit arithmetic claims and hold dependent lanes when verification fails."""
     required = wolfram_audit_enabled()
     claims = _wolfram_arithmetic_claims(
         row,
@@ -438,6 +448,7 @@ def _apply_wolfram_arithmetic_gate(
 
 
 def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any], settlement_lane: dict[str, Any]) -> dict[str, Any]:
+    """Reduce the model verdict with every stricter downstream blocker."""
     qualification = classify_prop_probability(
         calibrated_probability=getattr(row, "calibrated_probability", None),
         calibrated_lower_bound=getattr(row, "calibrated_probability_lower_bound", None),
@@ -476,6 +487,7 @@ def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane
 
 
 def _aware_event_start(value: str) -> datetime:
+    """Require an absolute event-start instant before any scoring identity."""
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError as exc:
@@ -500,6 +512,7 @@ def _aware_event_start(value: str) -> datetime:
 
 
 def _prop_period(stat_type: str) -> str:
+    """Derive the settlement period from the canonical stat identity."""
     upper = str(stat_type or "").upper()
     return "FIRST_INNING" if "1IP" in upper or "FIRST_INNING" in upper else "FULL_GAME"
 
@@ -548,25 +561,79 @@ def _prop_route_artifact(sport: str, stat_type: str) -> dict[str, Any]:
     return payload
 
 
+def _canonical_scoring_identity(
+    req: ScorePropRequest, evidence: dict[str, Any]
+) -> dict[str, str]:
+    """Return the exact identity the governed evidence writer persisted.
+
+    Caller identity is untrusted formatting: stat aliases, case and padding
+    can differ while naming the same governed market. The evidence row has
+    already passed the acquisition validator, so its values are authoritative;
+    request values are a fallback only when a payload omits a field. This
+    normalizes identity comparison only. The offered line, direction, period
+    and settlement semantics are never rewritten here.
+    """
+    # Reuse the writer's own alias map so ``K`` and ``PITCHER_STRIKEOUTS``
+    # resolve to one identity. Imported lazily for the same reason as the
+    # repair layer: the governed runtime loads this module indirectly.
+    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+
+    event_id = str(evidence.get("event_id") or req.event_id or "").strip()
+    sport = str(evidence.get("sport") or req.sport or "").strip().upper()
+    player = " ".join(str(evidence.get("player") or req.player or "").split())
+    stat_type = writer_canonical_stat(
+        sport, str(evidence.get("stat_type") or req.stat_type or "")
+    )
+    return {
+        "event_id": event_id,
+        "sport": sport,
+        "player": player,
+        "stat_type": stat_type,
+    }
+
+
+def _effective_scoring_request(
+    req: ScorePropRequest, evidence: dict[str, Any]
+) -> ScorePropRequest:
+    """Copy the request with canonical, evidence-validated identity fields.
+
+    The original caller object is never mutated: it remains the immutable
+    audit record of what was submitted. Only event/sport/player/stat identity
+    is replaced. Line, direction, market quotes, settlement rule, seed and
+    event start time remain exactly as offered by the caller.
+    """
+    canonical = _canonical_scoring_identity(req, evidence)
+    update = {
+        name: value
+        for name, value in canonical.items()
+        if str(getattr(req, name) or "") != value
+    }
+    return req.model_copy(update=update)
+
+
 def _server_owned_inference_request(req: ScorePropRequest, evidence: dict[str, Any], scored_at: str) -> PropInferenceRequest:
     """Build the provider identity without caller-controlled model metadata.
 
     Exact player/event/stat identity has already been locked by the Supabase
-    evidence RPC. ``player_id`` is a deterministic internal key over sport and
-    the exact evidence player name; no external-ID claim is made.
+    evidence RPC. This derives one canonical market identity from that
+    validated evidence so equivalent aliases/padding cannot split prediction
+    identity. ``player_id`` is a deterministic internal key over sport and the
+    exact evidence player name; no external-ID claim is made.
     """
+    canonical = _canonical_scoring_identity(req, evidence)
     event_start = _aware_event_start(req.event_start_time)
-    player = str(evidence.get("player") or req.player or "").strip()
-    normalized_player = " ".join(player.casefold().split())
-    player_id = "wow-name:" + sha256(f"{req.sport.upper()}|{normalized_player}".encode("utf-8")).hexdigest()
-    period = _prop_period(req.stat_type)
+    normalized_player = canonical["player"].casefold()
+    player_id = "wow-name:" + sha256(
+        f"{canonical['sport']}|{normalized_player}".encode("utf-8")
+    ).hexdigest()
+    period = _prop_period(canonical["stat_type"])
     settlement_basis = "FIRST_INNING_PLAYER_STAT" if period == "FIRST_INNING" else "FULL_GAME_PLAYER_STAT"
     canonical_market = "|".join(
         (
-            req.sport.upper(),
-            req.event_id,
+            canonical["sport"],
+            canonical["event_id"],
             normalized_player,
-            req.stat_type.upper(),
+            canonical["stat_type"].upper(),
             period,
             format(float(req.line), ".12g"),
             settlement_basis,
@@ -575,11 +642,11 @@ def _server_owned_inference_request(req: ScorePropRequest, evidence: dict[str, A
     market_identity_id = "wow-market:" + sha256(canonical_market.encode("utf-8")).hexdigest()
     evidence_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
     return PropInferenceRequest(
-        event_id=req.event_id,
+        event_id=canonical["event_id"],
         player_id=player_id,
-        sport=req.sport,
+        sport=canonical["sport"],
         league_season=str(event_start.year),
-        stat_type=req.stat_type,
+        stat_type=canonical["stat_type"],
         evidence_snapshot_id=evidence_snapshot_id,
         market_identity_id=market_identity_id,
         as_of_timestamp=scored_at,
@@ -612,6 +679,7 @@ def _model_features(evidence: dict[str, Any]) -> dict[str, Any]:
 
 
 def _discrete_model_evidence(result: Any) -> dict[str, Any]:
+    """Project immutable model/artifact provenance for the API response."""
     row = result.row
     artifact = result.inference.artifact
     distribution = result.inference.distribution
@@ -656,6 +724,7 @@ def _discrete_model_evidence(result: Any) -> dict[str, Any]:
 
 
 def _raise_model_path_error(exc: Exception) -> None:
+    """Translate a typed model-path failure without collapsing its semantics."""
     code = getattr(exc, "code", None) or "PROP_DISCRETE_MODEL_UNAVAILABLE"
     status_code = 409 if code in {
         "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
@@ -870,15 +939,19 @@ def score_prop(
         raise HTTPException(status_code=422, detail=detail)
 
     scored_at = datetime.now(timezone.utc).isoformat()
-    inference_request = _server_owned_inference_request(req, evidence, scored_at)
+    # The original ``req`` stays untouched for audit. Every downstream identity
+    # decision uses the evidence-validated copy so equivalent spellings of the
+    # same governed prop cannot split market or prediction identity.
+    effective_req = _effective_scoring_request(req, evidence)
+    inference_request = _server_owned_inference_request(effective_req, evidence, scored_at)
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
-    with _score_stage_timer("market_settlement_resolution", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
-        raw_market_a = _to_market_quote(req.market_side_a)
-        raw_market_b = _to_market_quote(req.market_side_b)
-        observed_rule = _to_settlement_rule(req.settlement_rule)
+    with _score_stage_timer("market_settlement_resolution", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
+        raw_market_a = _to_market_quote(effective_req.market_side_a)
+        raw_market_b = _to_market_quote(effective_req.market_side_b)
+        observed_rule = _to_settlement_rule(effective_req.settlement_rule)
 
         provider_candidates = [
-            normalize_provider(req.settlement_provider),
+            normalize_provider(effective_req.settlement_provider),
             normalize_provider(getattr(raw_market_a, "provider", None)),
             normalize_provider(getattr(raw_market_b, "provider", None)),
         ]
@@ -894,20 +967,20 @@ def score_prop(
             settlement_resolution = resolve_prop_settlement_rule(
                 client=prod.get_client(),
                 provider=next(iter(provider_set), None),
-                sport=req.sport,
-                stat_type=req.stat_type,
-                period=_prop_period(req.stat_type),
-                direction=req.direction,
-                event_start_time=req.event_start_time,
+                sport=effective_req.sport,
+                stat_type=effective_req.stat_type,
+                period=_prop_period(effective_req.stat_type),
+                direction=effective_req.direction,
+                event_start_time=effective_req.event_start_time,
                 observed_rule=observed_rule,
             )
         settlement_rule = settlement_resolution.rule
         market_audit = audit_candidate_market(
-            event_id=req.event_id,
-            participant=str(evidence.get("player") or req.player),
-            stat=req.stat_type,
-            period=_prop_period(req.stat_type),
-            line=req.line,
+            event_id=effective_req.event_id,
+            participant=str(evidence.get("player") or effective_req.player),
+            stat=effective_req.stat_type,
+            period=_prop_period(effective_req.stat_type),
+            line=effective_req.line,
             settlement_rule=settlement_rule,
             side_a=raw_market_a,
             side_b=raw_market_b,
@@ -915,18 +988,18 @@ def score_prop(
             line_tolerance=0.0,
         )
     try:
-        with _score_stage_timer("fitted_model_pipeline", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        with _score_stage_timer("fitted_model_pipeline", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
             result = score_discrete_prop_end_to_end(
                 client=prod.get_client(),
                 request=inference_request,
-                event_start_time=req.event_start_time,
-                player=str(evidence.get("player") or req.player),
-                line=req.line,
-                direction=req.direction,
+                event_start_time=effective_req.event_start_time,
+                player=str(evidence.get("player") or effective_req.player),
+                line=effective_req.line,
+                direction=effective_req.direction,
                 source_snapshot_id=effective_snapshot_id,
                 features=_model_features(evidence),
-                seed=req.seed,
-                money_lane_status=req.money_lane_status,
+                seed=effective_req.seed,
+                money_lane_status=effective_req.money_lane_status,
                 market_side_a=market_audit.side_a,
                 market_side_b=market_audit.side_b,
             )
@@ -945,7 +1018,7 @@ def score_prop(
             },
         )
 
-    with _score_stage_timer("prediction_persistence", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+    with _score_stage_timer("prediction_persistence", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
         persisted = prod.base_api._persist_fn(result.row)
     if not isinstance(persisted, dict) or not persisted.get("prediction_id"):
         raise HTTPException(
@@ -957,25 +1030,53 @@ def score_prop(
             },
         )
 
-    with _score_stage_timer("settlement_market_lanes", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+    with _score_stage_timer("settlement_market_lanes", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
         market_lane = _market_lane_with_audit(result.row, market_audit)
-        settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
+        settlement_lane = _settlement_lane(result.row, effective_req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
         money_lane = _effective_money_lane(result.row, settlement_lane)
-    with _score_stage_timer("arithmetic_audit", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+    with _score_stage_timer("arithmetic_audit", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
         market_lane, settlement_lane, money_lane, arithmetic_audit = _apply_wolfram_arithmetic_gate(
             row=result.row,
-            direction=req.direction,
+            direction=effective_req.direction,
             market_audit=market_audit,
             market_lane=market_lane,
             settlement_lane=settlement_lane,
             money_lane=money_lane,
             prediction_id=str(persisted["prediction_id"]),
         )
-    with _score_stage_timer("probability_qualification", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+    with _score_stage_timer("probability_qualification", sport=effective_req.sport, stat_type=effective_req.stat_type, direction=effective_req.direction):
         probability_qualification = _probability_qualification(result.row, market_lane, money_lane, settlement_lane)
+    caller_identity = {
+        "event_id": req.event_id,
+        "sport": req.sport,
+        "player": req.player,
+        "stat_type": req.stat_type,
+    }
+    canonical_identity = _canonical_scoring_identity(req, evidence)
     return {
         "ok": True,
         "prediction": persisted,
+        "request_identity_audit": {
+            "caller_request": {
+                **caller_identity,
+                "line": req.line,
+                "direction": req.direction,
+                "source_snapshot_id": str(req.source_snapshot_id),
+            },
+            "effective_request": {
+                **canonical_identity,
+                "line": effective_req.line,
+                "direction": effective_req.direction,
+                "source_snapshot_id": inference_request.evidence_snapshot_id,
+            },
+            "canonicalized": any(
+                str(getattr(req, name) or "") != value
+                for name, value in canonical_identity.items()
+            ),
+            "market_identity_id": inference_request.market_identity_id,
+            "player_id": inference_request.player_id,
+            "can_execute": False,
+        },
         "acquisition_evidence": prod._visible_acquisition_evidence(evidence, req.line),
         "acquisition_repair": {
             "status": evidence.get("acquisition_repair_status"),
@@ -1064,7 +1165,17 @@ def prop_evidence_readback(
     """
     try:
         client = prod.get_client()
+        return diagnose_prop_evidence(
+            client,
+            req.model_dump(),
+            request_id=req.request_id,
+        )
+    except HTTPException:
+        raise
     except Exception:
+        # Never return provider, driver or stack detail from a read-only
+        # diagnosis. The caller gets one stable typed code and a closed
+        # execution boundary.
         raise HTTPException(
             status_code=503,
             detail={
@@ -1073,8 +1184,3 @@ def prop_evidence_readback(
                 "can_execute": False,
             },
         ) from None
-    return diagnose_prop_evidence(
-        client,
-        req.model_dump(),
-        request_id=req.request_id,
-    )

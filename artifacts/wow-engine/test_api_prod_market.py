@@ -535,3 +535,194 @@ def test_score_stage_timer_success_is_timing_only(caplog):
     assert "stage=prediction_persistence" in log_text
     assert "status=PASS" in log_text
     assert "private-prediction-id" not in log_text
+
+
+# --- /v17/prop-evidence-readback HTTP acceptance -------------------------
+
+READBACK_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+READBACK_EVENT = "MLB:2026-11-09:NYY-BOS"
+READBACK_PLAYER = "Leaky Player"
+
+
+class _ReadbackResponse:
+    def __init__(self, data):
+        self.data = data
+
+    def execute(self):
+        return self
+
+
+class _ReadbackQuery:
+    def __init__(self, rows):
+        self.rows = rows
+        self.filters = []
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, key, value):
+        self.filters.append((key, value))
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, count):
+        self.limit_count = count
+        return self
+
+    def execute(self):
+        rows = [dict(row) for row in self.rows]
+        for key, value in self.filters:
+            rows = [row for row in rows if row.get(key) == value]
+        return _ReadbackResponse(rows)
+
+
+class _ReadbackTable:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def select(self, *_args, **_kwargs):
+        return _ReadbackQuery(self.rows)
+
+
+class _ReadbackClient:
+    def __init__(self):
+        self.rpc_calls = []
+        self.table_calls = []
+        self.rows = [
+            {
+                "source_snapshot_id": READBACK_ID,
+                "captured_at": "2026-11-08T07:54:00+00:00",
+                "event_id": READBACK_EVENT,
+                "sport": "MLB",
+                "player": READBACK_PLAYER,
+                "stat_type": "PITCHER_STRIKEOUTS",
+                "line": 5.5,
+                "hydration_status": "PASS",
+                "blockers": [],
+                "game_log": [1.0, 2.0, 3.0],
+                "box_score_log": [{"secret-box": "DO_NOT_RETURN"}],
+                "role_status": {"status": "ACTIVE"},
+                "role_timestamp": "2026-11-08T06:00:00+00:00",
+            }
+        ]
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        return _ReadbackResponse({"ok": True, "code": "PROP_EVIDENCE_READY"})
+
+    def table(self, name):
+        self.table_calls.append(name)
+        if name == "wow_prop_evidence_snapshots":
+            return _ReadbackTable(self.rows)
+        if name == "wow_action_invocation_receipts":
+            return _ReadbackTable([])
+        raise AssertionError(f"unexpected table {name}")
+
+
+def _readback_payload():
+    return {
+        "source_snapshot_id": READBACK_ID,
+        "event_id": READBACK_EVENT,
+        "sport": "MLB",
+        "player": READBACK_PLAYER,
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": 5.5,
+        "request_id": "req-readback-test",
+    }
+
+
+def test_readback_endpoint_requires_authentication():
+    response = client.post("/v17/prop-evidence-readback", json=_readback_payload())
+    assert response.status_code == 401
+    assert READBACK_PLAYER not in response.text
+    assert "can_execute" not in response.text
+
+
+def test_readback_endpoint_rejects_empty_and_partial_identity():
+    empty = client.post("/v17/prop-evidence-readback", json={}, headers=AUTH)
+    partial = client.post(
+        "/v17/prop-evidence-readback",
+        json={"event_id": READBACK_EVENT},
+        headers=AUTH,
+    )
+    assert empty.status_code == 422
+    assert partial.status_code == 422
+
+
+def test_readback_endpoint_sanitizes_database_unavailability(monkeypatch):
+    def unavailable():
+        raise RuntimeError("postgres://reader:super-secret-password@db.internal:5432/wow")
+
+    monkeypatch.setattr(api_prod_market.prod, "get_client", unavailable)
+    response = client.post(
+        "/v17/prop-evidence-readback",
+        json=_readback_payload(),
+        headers=AUTH,
+    )
+    assert response.status_code == 503
+    body = response.json()
+    assert body["detail"]["code"] == "PROP_EVIDENCE_READBACK_UNAVAILABLE"
+    assert body["detail"]["probability_publishable"] is False
+    assert body["detail"]["can_execute"] is False
+    assert "super-secret-password" not in response.text
+    assert "postgres://" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_readback_endpoint_sanitizes_unexpected_diagnosis_failure(monkeypatch):
+    monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: object())
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("stack-secret-should-not-escape")
+
+    monkeypatch.setattr(api_prod_market, "diagnose_prop_evidence", broken)
+    response = client.post(
+        "/v17/prop-evidence-readback",
+        json=_readback_payload(),
+        headers=AUTH,
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "PROP_EVIDENCE_READBACK_UNAVAILABLE"
+    assert "stack-secret-should-not-escape" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_readback_endpoint_is_read_only_and_does_not_leak_evidence(monkeypatch):
+    fake_client = _ReadbackClient()
+    monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: fake_client)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("readback must not score, repair or mutate")
+
+    monkeypatch.setattr(api_prod_market, "score_discrete_prop_end_to_end", forbidden)
+    monkeypatch.setattr(api_prod_market, "repair_prop_evidence", forbidden)
+
+    response = client.post(
+        "/v17/prop-evidence-readback",
+        json=_readback_payload(),
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["operation"] == "PROP_EVIDENCE_READBACK"
+    assert body["read_only"] is True
+    assert body["can_execute"] is False
+    assert body["diagnosis"] == "EVIDENCE_READY"
+    assert body["snapshot_row"]["present"] is True
+    assert body["snapshot_row"]["game_log_count"] == 3
+    assert fake_client.rpc_calls[0][0] == "wow_prop_evidence_snapshot"
+    assert set(fake_client.table_calls) <= {
+        "wow_prop_evidence_snapshots",
+        "wow_action_invocation_receipts",
+    }
+
+    text = response.text
+    assert READBACK_PLAYER not in text
+    assert "DO_NOT_RETURN" not in text
+    assert "secret-box" not in text
+    assert "1.0, 2.0, 3.0" not in text
+    assert "probability_more" not in text
+    assert "probability_less" not in text
+    assert "calibrated_probability" not in text

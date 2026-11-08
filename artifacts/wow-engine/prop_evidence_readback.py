@@ -87,6 +87,7 @@ class PropEvidenceReadbackRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_request_or_complete_identity(self) -> "PropEvidenceReadbackRequest":
+        """Reject empty and partial identities instead of guessing a prop."""
         provided = [
             name for name in _IDENTITY_FIELDS if getattr(self, name) is not None
         ]
@@ -101,6 +102,7 @@ class PropEvidenceReadbackRequest(BaseModel):
 
 
 def _get(value: Any, name: str, default: Any = None) -> Any:
+    """Read one field from either a mapping or a model-like object."""
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
@@ -119,6 +121,7 @@ def _canonical_stat(sport: Any, value: Any) -> str:
 
 
 def _canonical_player(value: Any) -> str:
+    """Collapse player whitespace exactly as the snapshot writer stores it."""
     return " ".join(str(value or "").split())
 
 
@@ -176,6 +179,7 @@ def identity_fingerprint(value: Any) -> str:
 
 
 def _iso(value: Any) -> Optional[str]:
+    """Render a timestamp for display without losing an aware ISO offset."""
     if value is None:
         return None
     if hasattr(value, "isoformat"):
@@ -184,6 +188,7 @@ def _iso(value: Any) -> Optional[str]:
 
 
 def _rows(response: Any) -> list[dict[str, Any]]:
+    """Return only real row objects from a PostgREST response."""
     data = getattr(response, "data", None)
     if not isinstance(data, list):
         return []
@@ -191,10 +196,12 @@ def _rows(response: Any) -> list[dict[str, Any]]:
 
 
 def _count(value: Any) -> int:
+    """Count a JSON array without treating a scalar as one row."""
     return len(value) if isinstance(value, list) else 0
 
 
 def _mismatch_fields(row: Mapping[str, Any], identity: Mapping[str, Any]) -> list[str]:
+    """List identity fields whose persisted value differs from the request."""
     mismatches: list[str] = []
     if str(row.get("event_id") or "").strip() != identity["event_id"]:
         mismatches.append("event_id")
@@ -215,6 +222,7 @@ def _mismatch_fields(row: Mapping[str, Any], identity: Mapping[str, Any]) -> lis
 
 
 def _row_summary(row: Mapping[str, Any], identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe one evidence row without exposing player names or logs."""
     mismatches = _mismatch_fields(row, identity)
     raw_blockers = row.get("blockers")
     blockers = [str(item) for item in raw_blockers] if isinstance(raw_blockers, list) else []
@@ -233,6 +241,7 @@ def _row_summary(row: Mapping[str, Any], identity: Mapping[str, Any]) -> dict[st
 
 
 def _lookup_row(client: Any, identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the exact primary-key row and distinguish failure from absence."""
     try:
         response = (
             client.table("wow_prop_evidence_snapshots")
@@ -285,6 +294,7 @@ def _lookup_candidates(client: Any, identity: Mapping[str, Any]) -> dict[str, An
 
 
 def _receipt_summary(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the non-secret receipt fields used to attribute a 422."""
     return {
         "invocation_id": str(row.get("invocation_id") or ""),
         "occurred_at": _iso(row.get("occurred_at")),
@@ -297,6 +307,7 @@ def _receipt_summary(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _lookup_receipt(client: Any, request_id: Optional[str]) -> dict[str, Any]:
+    """Find bounded invocation receipts for one caller request id."""
     if not request_id:
         return {
             "status": "NOT_PROVIDED",
@@ -332,6 +343,7 @@ def _lookup_receipt(client: Any, request_id: Optional[str]) -> dict[str, Any]:
 
 
 def _receipt_attribution(latest: Optional[Mapping[str, Any]]) -> str:
+    """Classify whether a receipt can support an evidence-failure claim."""
     if latest is None:
         return "UNATTRIBUTED_NO_RECEIPT"
     if str(latest.get("route") or "") != "/score-prop":
@@ -356,6 +368,12 @@ def _receipt_attribution(latest: Optional[Mapping[str, Any]]) -> str:
 def _rpc_lookup(
     client: Any, identity: Mapping[str, Any], request: Any
 ) -> dict[str, Any]:
+    """Call the governed primary RPC while preserving its raw stat argument.
+
+    The writer stores canonical stat aliases, but the primary RPC compares the
+    caller's label as supplied. Passing the raw label keeps an alias mismatch
+    visible instead of silently rewriting the failure into a different row.
+    """
     try:
         response = client.rpc(
             "wow_prop_evidence_snapshot",
@@ -492,6 +510,7 @@ def classify_evidence_state(
 
 
 def _cause_assessment(attribution: str, diagnosis: str) -> tuple[Optional[bool], str]:
+    """Map a diagnosis to whether the reported 422 cause is supported."""
     if attribution == "EXPECTED_SELF_ACCEPTANCE_PROBE":
         return False, "SELF_ACCEPTANCE_PROBE_EXPECTS_422"
     if attribution == "SELF_ACCEPTANCE_PROBE_OTHER_TERMINAL":
@@ -513,10 +532,12 @@ def _cause_assessment(attribution: str, diagnosis: str) -> tuple[Optional[bool],
 
 
 def _identity_provided(request: Any) -> bool:
+    """Return whether any exact-identity field was supplied."""
     return any(_get(request, name) is not None for name in _IDENTITY_FIELDS)
 
 
 def _base_result(*, request_id: Optional[str], receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the closed, read-only response envelope before any lookup."""
     attribution = str(receipt.get("attribution") or "UNATTRIBUTED")
     return {
         "status": "OK",
@@ -563,8 +584,11 @@ def diagnose_prop_evidence(
     if request is not None and _identity_provided(request):
         try:
             identity = normalize_identity(request)
-        except ValueError as exc:
-            identity_error = str(exc)
+        except ValueError:
+            # Return a stable code, never exception text: a value error can
+            # contain operator-visible detail and must not cross the HTTP
+            # boundary as a de facto stack-trace surface.
+            identity_error = "INVALID_IDENTITY"
 
     if identity_error is not None:
         result["status"] = "INVALID_IDENTITY"
@@ -679,6 +703,7 @@ def log_prop_evidence_failure(
 
 
 def _client_from_env() -> Any:
+    """Create the read-only Supabase client used by the CLI entrypoint."""
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
     if not url or not key:
@@ -692,6 +717,7 @@ def _client_from_env() -> Any:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    """Run the read-only diagnosis CLI for one request JSON or request id."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--request-json",

@@ -32,6 +32,7 @@ def _attempt(
     code: str | None,
     status: str,
 ) -> dict[str, Any]:
+    """Record one acquisition attempt without changing its outcome."""
     return {
         "path": path,
         "source_snapshot_id": source_snapshot_id,
@@ -47,6 +48,7 @@ def _annotate(
     attempts: list[dict[str, Any]],
     repair_status: str,
 ) -> dict[str, Any]:
+    """Attach requested/effective snapshot identity and repair history."""
     result = dict(payload)
     result["requested_source_snapshot_id"] = requested_source_snapshot_id
     result["effective_source_snapshot_id"] = result.get("source_snapshot_id") or requested_source_snapshot_id
