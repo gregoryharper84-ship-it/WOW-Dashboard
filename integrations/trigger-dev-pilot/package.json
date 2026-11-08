@@ -16,7 +16,8 @@
   "devDependencies": {
     "trigger.dev": "^4.8.3",
     "typescript": "~5.9.2",
-    "@types/node": "^22.16.0"
+    "@types/node": "^22.16.0",
+    "picomatch": "2.3.2"
   },
   "overrides": {
     "deepmerge-ts": "8.0.2",
