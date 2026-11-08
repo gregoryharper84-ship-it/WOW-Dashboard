@@ -22,7 +22,7 @@
 | CLI missing probe ID and Trigger API failures could emit unhandled stack traces | Low operator reliability risk | Fixed with usage validation, safe error codes and non-zero exit codes; raw SDK errors/secrets are not printed. |
 | Regex/source-text checks could be mistaken for proof of no side effects | Test-evidence limitation | Documentation now explicitly labels these as smoke tripwires, not security proof. The task's current allowed import graph and fixed GET implementation were reviewed directly. |
 | Task environment was previously guarded only by operator-set flags | Medium deployment-boundary risk | Fixed in the current code: both tasks check the provider-reported Trigger.dev `ctx.environment.type` and abort unless it is exactly `DEVELOPMENT`; the read-only health helper requires this value before making the fixed GET. Unit tests reject `PRODUCTION`, `STAGING`, `PREVIEW`, and missing environment types before network access. The CLI separately requires a `tr_dev_` key. |
-| npm audit found 9 transitive advisories (including high/critical findings in deepmerge-ts, esbuild, minimatch, tar and zod) in the Trigger.dev CLI tree | High dependency/supply-chain risk in developer tooling | Fixed with explicit compatible overrides to `deepmerge-ts@8.0.2`, `esbuild@0.25.0`, `minimatch@11.0.1`, `tar@7.5.22`, and `zod@4.6.7`; the regenerated lockfile contains these patched versions. A runner-side `npm audit --audit-level=high` completed successfully with the regenerated lockfile. The committed-lock exact-head pilot run passed on `eb1dc700579d179e3c9f5d4b5a1f916994aa82c5` (run `42432620798`): 17/17 tests, `npm ci`, TypeScript check, all 33 platform lock entries, and `npm audit` reported 0 vulnerabilities. The additional provider-environment guard is now under a fresh exact-head CI run. |
+| npm audit found 9 transitive advisories (including high/critical findings in deepmerge-ts, esbuild, minimatch, tar and zod) in the Trigger.dev CLI tree | High dependency/supply-chain risk in developer tooling | Security overrides were added for `deepmerge-ts@8.0.2`, `esbuild@0.25.0`, `minimatch@11.0.1`, `tar@7.5.22`, and `zod@4.6.7`, and the lockfile audit reports zero vulnerabilities. However, these overrides were not runtime-compatible by themselves: the exact-head local `npm run dev` later failed because Trigger.dev CLI 4.8.3 imports the removed top-level `minimatch.makeRe` export. This was a false-green gap in the earlier CI evidence; see the Nov 8 runtime re-challenge below. A version/source-guarded local CLI compatibility patch now addresses this import only for the pinned 4.8.3 package. It is not an upstream-supported release and does not establish full DEV worker startup. |
 | Sequential duplicate submissions returned one run ID and one execution | Accepted for tested case only | Does not prove simultaneous race behavior, 24-hour expiry-boundary behavior, cancellation semantics, or exactly-once side effects. Future writable operations require durable cross-provider leases and recipient-side idempotency. |
 | Trigger Development API key was created with full access within the Development environment | Bounded credential scope | Keep it private, do not put it in GitHub or chat, and revoke it when no longer needed. It is not a Production key. |
 
@@ -38,3 +38,29 @@
 
 **Conditional technical readiness for the isolated, manually triggered Development pilot only, subject to final exact-head checks and formal non-author SIRT sign-off against this report and the live run receipts. This is not SIRT approval. Not approved for Production, Staging, scheduler replacement, writable workflows, model qualification, or automatic promotion.**
 
+
+
+## 2026-11-08 exact-head runtime re-challenge
+
+**Observed failure on parent PR #2507 head `9ca92f8f7e215e4eecea975117e46841183b297f`:** after a clean `npm ci --ignore-scripts`, `npm run dev` failed before the Trigger.dev worker started:
+
+```text
+SyntaxError: The requested module 'minimatch' does not provide an export named 'makeRe'
+Node.js v26.12.0
+```
+
+The lockfile and installed dependency tree showed `trigger.dev@4.8.3` with the security override `minimatch@11.0.1`. The published CLI source imports `makeRe` and calls it once in `dist/esm/build/externals.js`; minimatch 11 exports `Minimatch` and retains the equivalent instance `.makeRe()` method. The zero-vulnerability npm audit did not establish runtime compatibility.
+
+**Bounded remediation on this PR branch:**
+- Added `scripts/patch-trigger-cli.mjs`, restricted to CLI version 4.8.3 and exactly one expected import/call pair.
+- The script rewrites only the local installed CLI import to `Minimatch` and the call to `new Minimatch(externalName).makeRe()`.
+- It is idempotent and fails closed on an unexpected package version or source shape.
+- `npm run dev` invokes it through `predev`; `npm ci --ignore-scripts` remains lifecycle-script-free.
+- Added three unit tests for exact patch behavior, idempotency, version rejection and source drift.
+- Added a no-credential CI smoke import of the patched CLI module.
+
+**Exact-head CI evidence:** commit `1c6d947c07c4282c32bd06f9fd6e2910aeaa7345`, workflow run [#42492995058](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42492995058) completed successfully: 21/21 tests, patch applied, CLI module import smoke passed, TypeScript check passed, cross-platform lock entries present, and `npm audit` reported zero vulnerabilities.
+
+**Limits:** this proves the patched CLI module imports in CI. It does not prove `trigger dev` starts a connected worker, provider-reported `DEVELOPMENT`, actual task registration, retries, remote idempotency, or checkpoint/resume. Those require the operator's local DEV project reference/key and real Trigger.dev receipts. The patch is a temporary local compatibility adaptation, not an upstream Trigger.dev fix.
+
+**Disposition:** runtime compatibility is improved but the pilot remains `WORKING_NOT_COMPLETE`. No merge, deployment, production activation, scheduler change, writable task, or SIRT acceptance is claimed.
