@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .calibration_registry import persist_candidate_calibration_profiles, probability_scoring_summary
+from .forward_validation import build_forward_validation_report
 from .empirical_runtime import install_empirical_cohort_scheduler
 from .free_public_sources import source_registry_snapshot
 from .operational_cycle import run_weather_operational_cycle_once
@@ -344,6 +345,21 @@ def install_kalshi_weather_v2_routes(
                 predictions = client.table("wow_kalshi_weather_predictions").select("*").limit(5000).execute().data or []
                 outcomes = client.table("wow_kalshi_weather_outcomes").select("*").limit(5000).execute().data or []
                 return dict(probability_scoring_summary(predictions, outcomes))
+            except Exception as exc:
+                _raise_governed(exc)
+
+    if "/internal/kalshi-weather/v17/forward-validation" not in existing:
+        @app.get(
+            "/internal/kalshi-weather/v17/forward-validation",
+            dependencies=[auth_dependency],
+            operation_id="getKalshiWeatherV17ForwardValidation",
+        )
+        def forward_validation_scorecard():
+            try:
+                client = db_client_fn()
+                predictions = client.table("wow_kalshi_weather_predictions").select("*").limit(5000).execute().data or []
+                outcomes = client.table("wow_kalshi_weather_outcomes").select("*").limit(5000).execute().data or []
+                return dict(build_forward_validation_report(predictions, outcomes))
             except Exception as exc:
                 _raise_governed(exc)
 

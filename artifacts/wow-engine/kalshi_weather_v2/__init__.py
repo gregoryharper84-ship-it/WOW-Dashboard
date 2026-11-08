@@ -33,6 +33,10 @@ from .fee_policy import (
     quote_trade_fee,
     resolve_fee_policy,
 )
+from .forward_validation import (
+    build_forward_validation_report,
+    build_forward_validation_scorecard,
+)
 from .hourly_forecast_fusion import (
     HourlyForecastEstimate,
     HourlyForecastFusion,
@@ -112,6 +116,8 @@ __all__ = [
     "fit_candidate_profile_sets",
     "persist_candidate_calibration_profiles",
     "probability_scoring_summary",
+    "build_forward_validation_report",
+    "build_forward_validation_scorecard",
     "ObservationPoint",
     "ReconstructedExtreme",
     "reconstruct_temperature_series",
