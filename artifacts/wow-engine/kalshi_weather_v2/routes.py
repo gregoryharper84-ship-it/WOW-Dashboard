@@ -6,7 +6,11 @@ from typing import Callable
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from .calibration_registry import persist_candidate_calibration_profiles, probability_scoring_summary
+from .calibration_registry import (
+    load_scoring_evidence_rows,
+    persist_candidate_calibration_profiles,
+    probability_scoring_summary,
+)
 from .forward_validation import build_forward_validation_report
 from .empirical_runtime import install_empirical_cohort_scheduler
 from .free_public_sources import source_registry_snapshot
@@ -342,8 +346,7 @@ def install_kalshi_weather_v2_routes(
         def probability_scoring():
             try:
                 client = db_client_fn()
-                predictions = client.table("wow_kalshi_weather_predictions").select("*").limit(5000).execute().data or []
-                outcomes = client.table("wow_kalshi_weather_outcomes").select("*").limit(5000).execute().data or []
+                predictions, outcomes = load_scoring_evidence_rows(client)
                 return dict(probability_scoring_summary(predictions, outcomes))
             except Exception as exc:
                 _raise_governed(exc)
@@ -357,8 +360,7 @@ def install_kalshi_weather_v2_routes(
         def forward_validation_scorecard():
             try:
                 client = db_client_fn()
-                predictions = client.table("wow_kalshi_weather_predictions").select("*").limit(5000).execute().data or []
-                outcomes = client.table("wow_kalshi_weather_outcomes").select("*").limit(5000).execute().data or []
+                predictions, outcomes = load_scoring_evidence_rows(client)
                 return dict(build_forward_validation_report(predictions, outcomes))
             except Exception as exc:
                 _raise_governed(exc)
