@@ -657,7 +657,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     rows = _paginate_query(job_query)
     event_query = (
         db.table("wow_scout_handoff_state_events")
-        .select("job_id,candidate_id,target_lane,state,code,can_execute,created_at")
+        .select("event_id,job_id,candidate_id,target_lane,state,code,can_execute,created_at")
         .eq("source_run_id", source_run_id)
         .order("created_at")
         .order("event_id")

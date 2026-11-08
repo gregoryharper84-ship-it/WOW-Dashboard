@@ -612,3 +612,118 @@ def test_read_run_summary_paginates_state_events_past_postgrest_default_row_limi
     assert poll_summary["state_event_coverage_pass"] is None
     assert poll_summary["worker_processing_event_gap_jobs"] is None
     assert poll_db.queries["wow_scout_handoff_state_events"].range_calls == [(0, 999)]
+
+
+def test_state_event_pagination_carries_event_id_for_page_boundary_integrity():
+    """Offset pagination is not a snapshot.
+
+    PostgREST range pagination advances a window, so an insert during the scan
+    shifts rows across the boundary. The projection must therefore carry
+    ``event_id`` -- the ordering tiebreak key -- or the caller cannot detect a
+    duplicated or skipped event after the fact.
+    """
+    outcome = {"terminal_status": "HELD", "code": "MODEL_UNAVAILABLE", "can_execute": False}
+    job_rows = [{
+        "job_id": "job-boundary",
+        "source_run_id": "run-boundary",
+        "research_run_id": "research-boundary",
+        "candidate_id": "candidate-boundary",
+        "target_lane": "LLP_TEAM_BETTING_ENGINE",
+        "research_priority": "HIGH",
+        "current_state": "MODEL_EVALUATED",
+        "terminal": True,
+        "attempt_count": 1,
+        "specialist_receipt": {
+            "can_execute": False,
+            "result": {"can_execute": False, "rows": [outcome]},
+        },
+        "last_error_code": None,
+        "created_at": "2026-11-07T16:00:00Z",
+    }]
+    event_rows = [
+        {
+            "event_id": "event-0001",
+            "job_id": "job-boundary",
+            "candidate_id": "candidate-boundary",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_PROCESSING",
+            "code": "SPECIALIST_WORKER_CLAIMED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:01Z",
+        },
+        {
+            "event_id": "event-0002",
+            "job_id": "job-boundary",
+            "candidate_id": "candidate-boundary",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "MODEL_EVALUATED",
+            "code": "SPECIALIST_MODEL_EVALUATED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+    ]
+
+    class _Response:
+        def __init__(self, data):
+            self.data = data
+
+        def execute(self):
+            return self
+
+    class _RecordingQuery:
+        def __init__(self, rows):
+            self.rows = rows
+            self.select_columns = []
+            self.range_calls = []
+
+        def select(self, columns):
+            self.select_columns.append(columns)
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args):
+            return self
+
+        def range(self, start, end):
+            self.range_calls.append((start, end))
+            return _Response(self.rows[start:end + 1])
+
+    class _RecordingDB:
+        def __init__(self):
+            self.queries = {}
+
+        def table(self, name):
+            rows = job_rows if name == "wow_scout_handoff_jobs" else event_rows
+            query = _RecordingQuery(rows)
+            self.queries[name] = query
+            return query
+
+    db = _RecordingDB()
+    summary = queue.read_run_summary(db, "run-boundary", include_receipts=True)
+
+    assert summary["state_event_read_complete"] is True
+    projected = db.queries["wow_scout_handoff_state_events"].select_columns[0].split(",")
+    assert "event_id" in projected, f"state-event projection must carry the tiebreak key, got {projected}"
+
+    # A concurrent insert shifts the offset window, so event-0999 reappears on page 2.
+    pages = [
+        [{"event_id": f"event-{index:04d}"} for index in range(1000)],
+        [{"event_id": "event-0999"}, {"event_id": "event-1000"}],
+    ]
+
+    class _BoundaryQuery:
+        def __init__(self):
+            self.calls = []
+
+        def range(self, start, end):
+            self.calls.append((start, end))
+            return _Response(pages[len(self.calls) - 1])
+
+    boundary_query = _BoundaryQuery()
+    paged = queue._paginate_query(boundary_query, page_size=1000)
+
+    assert boundary_query.calls == [(0, 999), (1000, 1999)]
+    event_ids = [row["event_id"] for row in paged]
+    assert len(event_ids) > len(set(event_ids)), "a shifted page boundary must remain detectable to the caller"
