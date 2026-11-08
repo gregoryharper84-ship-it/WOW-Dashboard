@@ -15,7 +15,7 @@ function appendTail(current, chunk, max = 5000) {
 }
 
 export function sanitizeWorkerOutput(value, env = {}) {
-  let output = String(value ?? "").replace(/\\u001b\\[[0-9;]*m/g, "");
+  let output = String(value ?? "").replace(/\u001b\[[0-9;]*m/g, "");
   if (env.TRIGGER_SECRET_KEY) {
     output = output.split(env.TRIGGER_SECRET_KEY).join("[REDACTED_TRIGGER_KEY]");
   }
@@ -23,9 +23,9 @@ export function sanitizeWorkerOutput(value, env = {}) {
     output = output.split(env.TRIGGER_PROJECT_REF).join("[REDACTED_PROJECT_REF]");
   }
   return output
-    .replace(/\\btr_(?:dev|prod|stg|preview)_[A-Za-z0-9_-]+\\b/gi, "[REDACTED_TRIGGER_KEY]")
-    .replace(/(Bearer\\s+)[^\\s]+/gi, "$1[REDACTED]")
-    .replace(/(authorization\\s*[:=]\\s*)[^\\r\\n]+/gi, "$1[REDACTED]")
+    .replace(/\btr_(?:dev|prod|stg|preview)_[A-Za-z0-9_-]+\b/gi, "[REDACTED_TRIGGER_KEY]")
+    .replace(/(Bearer\s+)[^\s]+/gi, "$1[REDACTED]")
+    .replace(/(authorization\s*[:=]\s*)[^\r\n]+/gi, "$1[REDACTED]")
     .slice(-2500);
 }
 
