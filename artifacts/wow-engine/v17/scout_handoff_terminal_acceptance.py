@@ -140,6 +140,17 @@ def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
         blockers.append("SCOUT_TERMINAL_ACCEPTANCE_WORKER_PATH_NOT_PROVEN")
 
     blockers = list(dict.fromkeys(blockers))
+    worker_processing_event_gap_jobs = int(summary.get("worker_processing_event_gap_jobs") or 0)
+    model_evaluated_event_gap_jobs = int(summary.get("model_evaluated_event_gap_jobs") or 0)
+    v17_qualified_event_gap_jobs = int(summary.get("v17_qualified_event_gap_jobs") or 0)
+    warnings: list[str] = []
+    if (
+        worker_processing_event_gap_jobs > 0
+        or model_evaluated_event_gap_jobs > 0
+        or v17_qualified_event_gap_jobs > 0
+        or summary.get("state_event_coverage_pass") is False
+    ):
+        warnings.append("SCOUT_STATE_EVENT_WORKER_TRANSITIONS_MISSING")
     return {
         "schema_version": "wow.v17.scout-handoff-terminal-acceptance.v1",
         "status": "PASS" if not blockers else "BLOCKED_WITH_EXACT_REASON",
@@ -154,6 +165,11 @@ def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "reconciliation_pass": summary.get("reconciliation_pass") is True,
         "terminal_code_counts": summary.get("terminal_code_counts") or {},
         "blockers": blockers,
+        "warnings": warnings,
+        "worker_processing_event_gap_jobs": worker_processing_event_gap_jobs,
+        "model_evaluated_event_gap_jobs": model_evaluated_event_gap_jobs,
+        "v17_qualified_event_gap_jobs": v17_qualified_event_gap_jobs,
+        "state_event_coverage_pass": summary.get("state_event_coverage_pass"),
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
     }
@@ -277,6 +293,7 @@ def main() -> int:
         "rows_completed": result.get("rows_completed"),
         "rows_rejected": result.get("rows_rejected"),
         "blockers": result.get("blockers"),
+        "warnings": result.get("warnings"),
         "can_execute": False,
     }))
     return 0 if result.get("status") == "PASS" else 3
