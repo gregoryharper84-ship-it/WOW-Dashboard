@@ -443,6 +443,88 @@ def test_canonical_insert_race_cannot_rewrite_settled_observation_or_count_as_ne
     assert count == 0
 
 
+def test_canonical_confirmation_cannot_count_a_preexisting_id_as_new():
+    """Echoing an already-present ID back as confirmation must fail closed."""
+    original = settled_row()
+    new_row = settled_row(game_id="espn-401000099")
+
+    class EchoingQuery(Query):
+        def execute(self):
+            if self.incoming is not None:
+                for row in self.incoming:
+                    self.store.rows.append(dict(row))
+                return SimpleNamespace(data=[dict(original)])
+            return super().execute()
+
+    class EchoingStore(Store):
+        def table(self, _name):
+            return EchoingQuery(self)
+
+    store = EchoingStore([original])
+    with pytest.raises(hydration.BasketballHydrationPartialWriteError) as caught:
+        hydration._persist_rows(
+            store, "NBA", [dict(original, home_score=112), new_row],
+        )
+    # A write was attempted, so the boundary must surface an ambiguous/partial
+    # write and never report the pre-existing ID as a newly persisted game.
+    assert str(caught.value) == "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+    assert isinstance(caught.value.__cause__, hydration.BasketballHydrationError)
+    assert str(caught.value.__cause__) == "BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED"
+    assert len(store.rows) == 2
+
+
+def test_canonical_confirmation_rejects_a_duplicated_new_id():
+    original = settled_row()
+    new_row = settled_row(game_id="espn-401000098")
+
+    class DuplicatingQuery(Query):
+        def execute(self):
+            if self.incoming is not None:
+                self.store.rows.append(dict(self.incoming[0]))
+                return SimpleNamespace(data=[dict(self.incoming[0]), dict(self.incoming[0])])
+            return super().execute()
+
+    class DuplicatingStore(Store):
+        def table(self, _name):
+            return DuplicatingQuery(self)
+
+    with pytest.raises(hydration.BasketballHydrationPartialWriteError) as caught:
+        hydration._persist_rows(DuplicatingStore([original]), "NBA", [new_row])
+    assert isinstance(caught.value.__cause__, hydration.BasketballHydrationError)
+    assert str(caught.value.__cause__) == "BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED"
+
+
+@pytest.mark.parametrize("malformed_rows", [
+    ["espn-401000001"],
+    [{"game_date": "2026-11-05"}],
+    [{"game_id": ""}],
+    [settled_row(), {"game_id": ""}],
+])
+def test_canonical_existing_id_read_must_be_complete_before_write(malformed_rows):
+    """A malformed existing-ID read cannot be mistaken for 'not present'."""
+    original = settled_row()
+
+    class MalformedReadEchoingQuery(Query):
+        def execute(self):
+            if self.incoming is not None:
+                # Adversarial boundary echoes the pre-existing row back as if
+                # it had just been inserted.
+                return SimpleNamespace(data=[dict(original)])
+            return SimpleNamespace(data=list(malformed_rows))
+
+    class MalformedReadStore(Store):
+        def table(self, _name):
+            return MalformedReadEchoingQuery(self)
+
+    store = MalformedReadStore([original])
+    with pytest.raises(hydration.BasketballHydrationError) as caught:
+        hydration._persist_rows(store, "NBA", [dict(original, home_score=112)])
+    # This is a pre-write identity failure, not an ambiguous post-write hold.
+    assert type(caught.value) is hydration.BasketballHydrationError
+    assert str(caught.value) == "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED"
+    assert store.rows == [original]
+
+
 def test_canonical_empty_day_readback_fills_a_whole_older_missing_day(monkeypatch):
     newer = source_row(
         game_id="401000002", game_date="2026-11-06",
