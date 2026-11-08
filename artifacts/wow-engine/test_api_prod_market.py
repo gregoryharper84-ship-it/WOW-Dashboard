@@ -949,6 +949,44 @@ def test_canonical_stat_request_keeps_route_and_caller_fields_aligned(monkeypatc
     assert called["score"] is False
 
 
+def test_missing_specialist_reports_attempted_canonical_route(monkeypatch):
+    """A missing specialist still names the route it tried to resolve."""
+    called = {"score": False, "specialist_args": None, "artifact_args": None}
+    _install_blocked_route(
+        monkeypatch,
+        called,
+        artifact={
+            "ok": False,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            "can_execute": False,
+        },
+        specialist=None,
+    )
+
+    response = client.post(
+        "/score-prop", json=_preflight_payload("MLB", "K"), headers=AUTH
+    )
+
+    assert response.status_code == 503
+    body = response.json()["detail"]
+    assert body["code"] == "SPECIALIST_ROUTING_UNAVAILABLE"
+    assert body["requested_route"] == {
+        "sport": "MLB",
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "feature_schema_version": "PROP_FEATURES_V1",
+    }
+    assert body["caller_request_stat_type"] == "K"
+    assert body["evidence_hydration"] == "NOT_ATTEMPTED_ROUTE_BLOCKED"
+    assert body["specialist_invoked"] is False
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+    # The payload describes the resolved route the lookup actually attempted.
+    assert called["specialist_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    # Nothing downstream follows a missing specialist.
+    assert called["artifact_args"] is None
+    assert called["score"] is False
+
+
 # --- Cross-sport preflight identity matrix --------------------------------
 #
 # ``_preflight_prop_route`` resolves sport and stat through the governed

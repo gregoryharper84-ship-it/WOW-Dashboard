@@ -807,6 +807,12 @@ def _preflight_prop_route(
             status_code=503,
             detail={
                 "code": "SPECIALIST_ROUTING_UNAVAILABLE",
+                "requested_route": {
+                    "sport": route_sport,
+                    "stat_type": route_stat,
+                    "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
+                },
+                "caller_request_stat_type": str(req.stat_type),
                 "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
                 "specialist_invoked": False,
                 "probability_publishable": False,
