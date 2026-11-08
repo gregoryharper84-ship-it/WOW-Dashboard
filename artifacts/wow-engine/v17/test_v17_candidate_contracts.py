@@ -309,6 +309,7 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
 
 
 def test_wow_prop_action_stays_on_render_and_llp_gateways_do_not_forward_it():
+    """Keep prop scoring on Render and verify both LLP gateway boundaries."""
     wow = yaml.safe_load(WOW_SCHEMA.read_text(encoding="utf-8"))
     edge = LLP_GATEWAY.read_text(encoding="utf-8")
     vercel_dir = HERE / "vercel/llp-action-gateway"
