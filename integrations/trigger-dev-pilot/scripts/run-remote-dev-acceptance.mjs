@@ -9,6 +9,37 @@ import { patchTriggerCli } from "./patch-trigger-cli.mjs";
 import { enqueueReadOnlyProbe } from "../src/lib/submit-readonly.mjs";
 
 export const DEV_BRANCH = "wow-v17-github-actions-acceptance";
+
+function appendTail(current, chunk, max = 5000) {
+  return (current + String(chunk)).slice(-max);
+}
+
+export function sanitizeWorkerOutput(value, env = {}) {
+  let output = String(value ?? "").replace(/\\u001b\\[[0-9;]*m/g, "");
+  if (env.TRIGGER_SECRET_KEY) {
+    output = output.split(env.TRIGGER_SECRET_KEY).join("[REDACTED_TRIGGER_KEY]");
+  }
+  if (env.TRIGGER_PROJECT_REF) {
+    output = output.split(env.TRIGGER_PROJECT_REF).join("[REDACTED_PROJECT_REF]");
+  }
+  return output
+    .replace(/\\btr_(?:dev|prod|stg|preview)_[A-Za-z0-9_-]+\\b/gi, "[REDACTED_TRIGGER_KEY]")
+    .replace(/(Bearer\\s+)[^\\s]+/gi, "$1[REDACTED]")
+    .replace(/(authorization\\s*[:=]\\s*)[^\\r\\n]+/gi, "$1[REDACTED]")
+    .slice(-2500);
+}
+
+export function workerDiagnostic(worker, env = {}) {
+  return {
+    spawn_failed: Boolean(worker?.spawnFailed),
+    spawn_error: sanitizeWorkerOutput(worker?.spawnError, env) || null,
+    exit_code: worker?.exitCode ?? null,
+    signal_code: worker?.signalCode ?? null,
+    stdout_tail: sanitizeWorkerOutput(worker?.stdoutTail, env),
+    stderr_tail: sanitizeWorkerOutput(worker?.stderrTail, env),
+  };
+}
+
 const TERMINAL = new Set([
   "COMPLETED", "FAILED", "CANCELED", "CANCELLED", "CRASHED",
   "INTERRUPTED", "SYSTEM_FAILURE", "EXPIRED", "TIMED_OUT",
@@ -116,6 +147,7 @@ export async function pollRun(runId, {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (worker && (worker.spawnFailed || worker.exitCode !== null || worker.signalCode !== null)) {
+      console.error("TRIGGER_DEV_WORKER_EXIT_DIAGNOSTIC", JSON.stringify(workerDiagnostic(worker)));
       throw new Error("DEV_WORKER_EXITED_EARLY");
     }
     const run = await retrieveRun(runId);
@@ -142,11 +174,20 @@ function startWorker() {
   });
 
   child.spawnFailed = false;
-  child.on("error", () => { child.spawnFailed = true; });
-  // Consume output so pipes cannot block the worker. Do not echo CLI output,
-  // which could contain provider diagnostics; task receipts are emitted below.
-  child.stdout?.on("data", () => {});
-  child.stderr?.on("data", () => {});
+  child.spawnError = null;
+  child.stdoutTail = "";
+  child.stderrTail = "";
+  child.on("error", error => {
+    child.spawnFailed = true;
+    child.spawnError = error instanceof Error ? error.message : "unknown spawn error";
+  });
+  // Retain only bounded tails for redacted diagnostics if startup fails.
+  child.stdout?.on("data", chunk => {
+    child.stdoutTail = appendTail(child.stdoutTail, chunk);
+  });
+  child.stderr?.on("data", chunk => {
+    child.stderrTail = appendTail(child.stderrTail, chunk);
+  });
   return child;
 }
 
@@ -194,6 +235,7 @@ async function main() {
   try {
     await delay(10000);
     if (worker.spawnFailed || worker.exitCode !== null || worker.signalCode !== null) {
+      console.error("TRIGGER_DEV_WORKER_EXIT_DIAGNOSTIC", JSON.stringify(workerDiagnostic(worker)));
       throw new Error("DEV_WORKER_EXITED_EARLY");
     }
 
