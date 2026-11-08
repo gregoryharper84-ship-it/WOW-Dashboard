@@ -62,9 +62,9 @@ CREATE INDEX IF NOT EXISTS idx_wse_expires ON wow_session_exposure (expires_at);
 # retaining the original host name for TLS verification and diagnostics.
 DNS_RESOLUTION_TIMEOUT_SECONDS = 2.0
 MAX_DNS_HOSTS = 8
-# A resolver call may outlive its request-thread deadline. Permit only one
-# daemon resolver in flight per process so repeated warmups cannot leak an
-# unbounded number of blocked threads when the system resolver is unhealthy.
+# A DNS batch may outlive its request-thread deadline. Permit only one
+# bounded batch (at most MAX_DNS_HOSTS daemon resolvers) in flight per process,
+# so repeated warmups cannot leak unbounded blocked threads.
 _DNS_RESOLUTION_SLOT = threading.BoundedSemaphore(1)
 
 
