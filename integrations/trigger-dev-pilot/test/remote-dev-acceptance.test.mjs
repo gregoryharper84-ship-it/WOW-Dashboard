@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   assertCompletedRun,
+  assertRemoteCliAuth,
   sanitizeWorkerOutput,
   workerDiagnostic,
   healthReceipt,
@@ -152,4 +153,22 @@ test("worker diagnostic is bounded and reports exit metadata without environment
   assert.equal(diagnostic.stderr_tail, "startup failed");
   assert.equal(JSON.stringify(diagnostic).includes("tr_dev_hidden"), false);
   assert.equal(JSON.stringify(diagnostic).includes("proj_hidden"), false);
+});
+
+
+test("remote CLI preflight requires a Trigger.dev Personal Access Token, not an environment API key", () => {
+  assert.equal(assertRemoteCliAuth({ TRIGGER_ACCESS_TOKEN: "tr_pat_test_only" }), true);
+  for (const value of [
+    undefined,
+    "",
+    "tr_dev_sk_environment_key",
+    "tr_prod_sk_environment_key",
+    "tr_preview_sk_environment_key",
+    "tr_oat_internal_token",
+  ]) {
+    assert.throws(
+      () => assertRemoteCliAuth({ TRIGGER_ACCESS_TOKEN: value }),
+      /TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED/,
+    );
+  }
 });
