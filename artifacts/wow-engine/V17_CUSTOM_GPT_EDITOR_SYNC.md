@@ -39,7 +39,7 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - Authentication remains API Key -> Bearer using the existing `WOW_ACTION_API_KEY`.
 - `can_execute=false`, dry-run-only behavior, and `V17_TERMINAL_REDUCER` authority remain binding.
 - The LLP Supabase Edge and Vercel gateways are separate team-event ingress surfaces. Their explicit allowlists intentionally exclude WOW prop routes `/score-pick-request` and `/score-prop`; do not add those routes to either gateway.
-- WOW prop scoring uses the direct Render Action origin above. A Supabase LLP gateway path rejection returns HTTP 404 `LLP_GATEWAY_PATH_NOT_ALLOWED` with `x-wow-gateway: supabase-edge` and `x-wow-request-id`; Vercel returns `LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED` with `x-wow-gateway: vercel-action-ingress`. Both reject before upstream dispatch, so no Render invocation receipt is created.
+- WOW prop scoring uses the direct Render Action origin above. A Supabase LLP gateway path rejection returns HTTP 404 `LLP_GATEWAY_PATH_NOT_ALLOWED` with `x-wow-gateway: supabase-edge` and `x-wow-request-id`; it rejects before upstream dispatch, so no Render invocation receipt is created. The Vercel challenger has no `vercel.json` rewrite for either prop path, so those requests receive a Vercel platform 404 before `api/gateway.js`; do not attribute the handler's `LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED` code or `x-wow-gateway: vercel-action-ingress` header to those prop-path requests.
 - `artifacts/wow-engine/openapi.pick-request-action.yaml` is a four-operation subset, not the production editor's complete Action set. Do not replace the single 29-operation canonical schema with that subset.
 
 ## PR #766 host-contract behavior
