@@ -12,6 +12,7 @@ certifies a profile, publishes a probability, or authorizes execution.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta, timezone
 from statistics import mean, stdev
 from typing import Any, Iterable, Mapping
 
@@ -66,21 +67,23 @@ def build_forward_validation_scorecard(
     rows = [row for row in residuals if isinstance(row, ForecastResidual)]
 
     blockers: list[str] = []
-    usable: list[ForecastResidual] = []
+    usable: list[tuple[datetime, datetime, ForecastResidual]] = []
     lookahead = 0
     unnormalized = 0
     non_finite = 0
     for row in rows:
-        if not (row.forecast_as_of.endswith("Z") and row.settlement_time.endswith("Z")):
+        forecast_as_of = _parse_utc_instant(row.forecast_as_of)
+        settlement_time = _parse_utc_instant(row.settlement_time)
+        if forecast_as_of is None or settlement_time is None:
             unnormalized += 1
             continue
         if not (math.isfinite(row.forecast_value_f) and math.isfinite(row.settled_value_f)):
             non_finite += 1
             continue
-        if row.forecast_as_of >= row.settlement_time:
+        if forecast_as_of >= settlement_time:
             lookahead += 1
             continue
-        usable.append(row)
+        usable.append((settlement_time, forecast_as_of, row))
 
     if lookahead:
         blockers.append(f"LOOKAHEAD_RESIDUALS_EXCLUDED:{lookahead}")
@@ -89,7 +92,9 @@ def build_forward_validation_scorecard(
     if non_finite:
         blockers.append(f"NON_FINITE_RESIDUALS_EXCLUDED:{non_finite}")
 
-    ordered = sorted(usable, key=lambda row: (row.settlement_time, row.forecast_as_of))
+    # Compare parsed UTC instants, never ISO strings: mixed fractional-second
+    # precision is not lexically chronological (e.g. ...:00.5Z vs ...:00Z).
+    ordered = sorted(usable, key=lambda item: (item[0], item[1]))
     total_n = len(ordered)
 
     result: dict[str, Any] = {
@@ -150,9 +155,9 @@ def build_forward_validation_scorecard(
         return result
 
     boundary_index = total_n - MINIMUM_HOLDOUT_RESIDUALS
-    boundary_time = ordered[boundary_index].settlement_time
-    train = [row for row in ordered if row.settlement_time < boundary_time]
-    holdout = [row for row in ordered if row.settlement_time >= boundary_time]
+    boundary_time = ordered[boundary_index][0]
+    train = [row for settled_at, _forecast_at, row in ordered if settled_at < boundary_time]
+    holdout = [row for settled_at, _forecast_at, row in ordered if settled_at >= boundary_time]
     train_n, holdout_n = len(train), len(holdout)
 
     count_gates.extend(
@@ -283,6 +288,19 @@ def _identity_bases(predictions: Iterable[Mapping[str, Any]]) -> dict[str, str]:
         for station_id, values in bases.items()
     }
 
+
+
+def _parse_utc_instant(value: Any) -> datetime | None:
+    """Parse a normalized Z timestamp as an instant, including fractional seconds."""
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        return None
+    return parsed.astimezone(timezone.utc)
 
 def _gate(name: str, requirement: str, observed: Any, passed: bool) -> dict[str, Any]:
     return {
