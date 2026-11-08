@@ -12,34 +12,44 @@ from gate_engine import pg_session_ledger
 
 
 class _FakeConnection:
+    """Minimal psycopg2 connection/cursor double for warmup unit tests."""
+
     def __init__(self, *, reject_ddl=False):
+        """Capture SQL and optionally fail the DDL statement."""
         self.calls = []
         self.commit_calls = 0
         self.reject_ddl = reject_ddl
 
     def __enter__(self):
+        """Return the fake connection as a context manager."""
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        """Leave exception propagation unchanged."""
         return False
 
     def cursor(self):
+        """Use the connection itself as its recording cursor."""
         return self
 
     def execute(self, query):
+        """Record SQL and optionally emulate a DDL lock timeout."""
         self.calls.append(query)
         if self.reject_ddl and query == pg_session_ledger._DDL:
             raise RuntimeError("synthetic lock timeout")
 
     def commit(self):
+        """Record a successful transaction commit."""
         self.commit_calls += 1
 
 
 def _install_fake_psycopg2(monkeypatch, *, reject_ddl=False):
+    """Install a minimal psycopg2 module and return its observed connections."""
     observed = []
     conn = _FakeConnection(reject_ddl=reject_ddl)
 
     def connect(*args, **kwargs):
+        """Record libpq connection arguments and return the fake connection."""
         observed.append((args, kwargs))
         return conn
 
@@ -55,6 +65,7 @@ def _install_fake_psycopg2(monkeypatch, *, reject_ddl=False):
 
 
 def test_startup_schema_uses_connection_and_transaction_local_ddl_deadlines(monkeypatch):
+    """Apply connect, lock and statement deadlines to startup DDL."""
     observed, conn = _install_fake_psycopg2(monkeypatch)
     pg_session_ledger.ensure_table_exists("postgresql://fake/safety-test")
 
@@ -68,6 +79,7 @@ def test_startup_schema_uses_connection_and_transaction_local_ddl_deadlines(monk
 
 
 def test_startup_schema_uses_configured_url_without_disabling_deadlines(monkeypatch):
+    """Use DATABASE_URL when no explicit DSN is passed."""
     observed, conn = _install_fake_psycopg2(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "postgresql://configured/ci")
     pg_session_ledger.ensure_table_exists()
@@ -240,6 +252,7 @@ def test_ip_literal_and_unix_socket_hosts_skip_dns(monkeypatch, host, expected_k
 
 
 def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
+    """Propagate failed DDL and never record a commit."""
     observed, conn = _install_fake_psycopg2(monkeypatch, reject_ddl=True)
     with pytest.raises(RuntimeError, match="synthetic lock timeout"):
         pg_session_ledger.ensure_table_exists("postgresql://fake/locked")
@@ -310,6 +323,7 @@ def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
         errors = []
 
         def attempt_warmup():
+            """Run the warmup from a worker while another session holds the lock."""
             try:
                 pg_session_ledger.ensure_table_exists(schema_dsn)
             except Exception as exc:
