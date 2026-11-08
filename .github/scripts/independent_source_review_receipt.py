@@ -1159,6 +1159,7 @@ def resolve_qa_review_policy(
     get_json: Any = None,
     download_artifact: Any = None,
     allow_superseded_target: bool = False,
+    neutralize_draft_target: bool = False,
 ) -> dict[str, Any]:
     _require(repository == CANONICAL_REPOSITORY, "QA_POLICY_REPOSITORY_MISMATCH")
     _positive_int(run_id, "QA_POLICY_RUN_ID")
@@ -1272,11 +1273,30 @@ def resolve_qa_review_policy(
             or (pr.get("state") == "open" and isinstance(pr.get("draft"), bool)
                 and not pr.get("merged_at") and live_sha != head_sha)
         )
+        # A draft source at the exact policy head is not "current live work"
+        # that a merge could release: GitHub cannot merge a draft. Without this
+        # branch every QA run on a draft PR publishes a failing admission check
+        # on the unrelated protected-main commit Render's checksPass trigger is
+        # evaluating. Opt-in only, so the strict default is unchanged and a
+        # draft can never become Release evidence.
+        draft_target = (
+            neutralize_draft_target
+            and pr.get("state") == "open"
+            and pr.get("draft") is True
+            and not pr.get("merged_at")
+            and live_sha == head_sha
+        )
         if same_origin and superseded:
             return {
                 "artifact_id": artifact_id, "policy": policy, "run": run,
                 "disposition": "neutral",
                 "reason": "RELEASE_QA_SOURCE_PR_SUPERSEDED",
+            }
+        if same_origin and draft_target:
+            return {
+                "artifact_id": artifact_id, "policy": policy, "run": run,
+                "disposition": "neutral",
+                "reason": "RELEASE_QA_DRAFT_TARGET_NOT_RELEASABLE",
             }
     _require(
         isinstance(pr, Mapping)
