@@ -489,9 +489,14 @@ def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch):
     )
     overrides = pg_session_ledger._resolve_hostaddr(failover_dsn, psycopg2)
     assert overrides is not None
-    assert overrides["hostaddr"].split(",")[0] == "127.0.0.2"
-    assert len(overrides["hostaddr"].split(",")) >= 2
-    assert "host" not in overrides
+    resolved_hosts = overrides["host"].split(",")
+    resolved_addrs = overrides["hostaddr"].split(",")
+    resolved_ports = overrides["port"].split(",")
+    assert resolved_hosts[0] == "127.0.0.2"
+    assert resolved_hosts[1:] == ["localhost"] * (len(resolved_hosts) - 1)
+    assert resolved_addrs[0] == "127.0.0.2"
+    assert "127.0.0.1" in resolved_addrs
+    assert len(resolved_hosts) == len(resolved_addrs) == len(resolved_ports)
     with psycopg2.connect(failover_dsn, connect_timeout=2, **overrides) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
