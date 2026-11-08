@@ -27,15 +27,25 @@ export function assertPilotSafety(env = process.env) {
   }
 }
 
+/** Require Trigger.dev's provider-reported run environment to be DEVELOPMENT. */
+export function assertTriggerDevEnvironment(environmentType) {
+  if (environmentType !== "DEVELOPMENT") {
+    throw new ProbeError("TRIGGER_ENVIRONMENT_NOT_DEVELOPMENT", false);
+  }
+}
+
 /**
  * Perform exactly one fixed GET and return reachability-only evidence.
  * Trigger.dev owns retries; redirects and permanent HTTP failures are never retried.
+ * The provider-reported environment type is mandatory; a user-set env flag is not enough.
  */
 export async function observeWowHealth({
+  triggerEnvironmentType,
   fetchImpl = globalThis.fetch,
   env = process.env,
   now = () => new Date().toISOString(),
 } = {}) {
+  assertTriggerDevEnvironment(triggerEnvironmentType);
   assertPilotSafety(env);
   if (typeof fetchImpl !== "function") {
     throw new ProbeError("FETCH_UNAVAILABLE", false);

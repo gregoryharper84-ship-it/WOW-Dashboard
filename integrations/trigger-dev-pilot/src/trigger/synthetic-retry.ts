@@ -1,5 +1,5 @@
 import { task, AbortTaskRunError } from "@trigger.dev/sdk";
-import { assertPilotSafety } from "../lib/read-only-health.mjs";
+import { assertPilotSafety, assertTriggerDevEnvironment } from "../lib/read-only-health.mjs";
 import { idempotencyKeyFor } from "../lib/submit-readonly.mjs";
 
 /**
@@ -20,6 +20,7 @@ export const wowV17SyntheticRetryPilot = task({
   },
   run: async (payload: { probeId: string }, { ctx }) => {
     try {
+      assertTriggerDevEnvironment(ctx.environment.type);
       assertPilotSafety();
       idempotencyKeyFor(payload?.probeId);
     } catch {

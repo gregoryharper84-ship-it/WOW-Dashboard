@@ -17,7 +17,7 @@ export const wowV17ReadonlyHealthPilot = task({
     factor: 2,
     randomize: false,
   },
-  run: async (payload: { probeId: string }) => {
+  run: async (payload: { probeId: string }, { ctx }) => {
     // Bad payloads cannot be retried. Separate validation from network errors
     // so unrelated TypeErrors are not mislabeled INVALID_PROBE_ID.
     try {
@@ -26,7 +26,7 @@ export const wowV17ReadonlyHealthPilot = task({
       throw new AbortTaskRunError("INVALID_PROBE_ID");
     }
     try {
-      return await observeWowHealth();
+      return await observeWowHealth({ triggerEnvironmentType: ctx.environment.type });
     } catch (error) {
       // Non-transient failures must never retry or be mistaken for recovery.
       if (error instanceof ProbeError && !error.retryable) {

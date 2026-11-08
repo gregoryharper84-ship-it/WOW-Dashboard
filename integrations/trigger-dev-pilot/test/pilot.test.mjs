@@ -6,25 +6,41 @@ import { TASK_ID, idempotencyKeyFor, enqueueReadOnlyProbe } from "../src/lib/sub
 
 const safe = Object.freeze({ WOW_TRIGGER_PILOT_ENABLED: "true", WOW_TRIGGER_PILOT_ENV: "dev", WOW_CAN_EXECUTE: "false", WOW_DRY_RUN_ONLY: "true" });
 const okResponse = { status: 200 };
+const observeDev = options => observeDev({ triggerEnvironmentType: "DEVELOPMENT", ...options });
 
 test("fails closed when disabled: no network call", async () => {
   let calls = 0;
-  await assert.rejects(observeWowHealth({ env: {}, fetchImpl: async () => { calls++; return okResponse; } }),
+  await assert.rejects(observeDev({ env: {}, fetchImpl: async () => { calls++; return okResponse; } }),
     (err) => err instanceof ProbeError && err.code === "PILOT_DISABLED" && !err.retryable);
   assert.equal(calls, 0);
 });
 
 test("refuses non-development environments before any request", async () => {
   let calls = 0;
-  await assert.rejects(observeWowHealth({ env: {...safe, WOW_TRIGGER_PILOT_ENV: "prod"}, fetchImpl: async () => { calls++; return okResponse; } }),
+  await assert.rejects(observeDev({ env: {...safe, WOW_TRIGGER_PILOT_ENV: "prod"}, fetchImpl: async () => { calls++; return okResponse; } }),
     err => err.code === "NOT_DEV_PILOT" && !err.retryable);
   assert.equal(calls, 0);
+});
+
+test("provider-reported Trigger environment must be DEVELOPMENT before any request", async () => {
+  for (const triggerEnvironmentType of ["PRODUCTION", "STAGING", "PREVIEW", undefined]) {
+    let calls = 0;
+    await assert.rejects(
+      observeWowHealth({
+        triggerEnvironmentType,
+        env: safe,
+        fetchImpl: async () => { calls++; return okResponse; },
+      }),
+      err => err instanceof ProbeError && err.code === "TRIGGER_ENVIRONMENT_NOT_DEVELOPMENT" && err.retryable === false,
+    );
+    assert.equal(calls, 0);
+  }
 });
 
 test("requires permanent no-execution governance", async () => {
   for (const env of [ { ...safe, WOW_CAN_EXECUTE: "true" }, { ...safe, WOW_DRY_RUN_ONLY: "false" } ]) {
     let calls = 0;
-    await assert.rejects(observeWowHealth({ env, fetchImpl: async () => { calls++; return okResponse; } }),
+    await assert.rejects(observeDev({ env, fetchImpl: async () => { calls++; return okResponse; } }),
       (err) => err.code === "EXECUTION_GUARD_NOT_PROVEN" && err.retryable === false);
     assert.equal(calls, 0);
   }
@@ -32,7 +48,7 @@ test("requires permanent no-execution governance", async () => {
 
 test("fixed read-only GET with no token or redirection", async () => {
   const called = [];
-  const result = await observeWowHealth({
+  const result = await observeDev({
     env: safe,
     now: () => "2026-11-07T13:00:00.000Z",
     fetchImpl: async (url, options) => {
@@ -54,14 +70,14 @@ test("fixed read-only GET with no token or redirection", async () => {
 
 test("transient network / rate limit / server errors are eligible for retry", async () => {
   for (const scenario of [async () => { throw Error("timeout"); }, async () => ({status:429}), async () => ({status:503})]) {
-    await assert.rejects(observeWowHealth({ env:safe, fetchImpl:scenario }),
+    await assert.rejects(observeDev({ env:safe, fetchImpl:scenario }),
       err => err instanceof ProbeError && err.retryable === true);
   }
 });
 
 test("permanent HTTP 4xx is never marked retryable", async () => {
   for (const code of [400,401,403,404]) {
-    await assert.rejects(observeWowHealth({ env:safe, fetchImpl:async()=>({status:code}) }),
+    await assert.rejects(observeDev({ env:safe, fetchImpl:async()=>({status:code}) }),
       err => err instanceof ProbeError && err.code === `HEALTH_HTTP_${code}` && !err.retryable);
   }
 });
@@ -70,7 +86,7 @@ test("recovery simulation: exactly one GET per attempt, 2 retries then success",
   let n=0; let outcome;
   const mock = async () => ({status: ++n <= 2 ? 503 : 200});
   for (let attempt=1;attempt<=3;attempt++) {
-    try {outcome=await observeWowHealth({env:safe,fetchImpl:mock});break;}
+    try {outcome=await observeDev({env:safe,fetchImpl:mock});break;}
     catch(e){assert.equal(e.retryable,true);}
   }
   assert.equal(n,3); assert.equal(outcome.http_status,200);
@@ -117,6 +133,7 @@ test("actual Trigger DEV config enables retries and stays isolated", () => {
 test("synthetic retry task is DEV-only and has no external side effects", () => {
   const source = readFileSync(new URL("../src/trigger/synthetic-retry.ts", import.meta.url), "utf8");
   assert.match(source, /assertPilotSafety\(\)/);
+  assert.match(source, /assertTriggerDevEnvironment\(ctx\.environment\.type\)/);
   assert.match(source, /idempotencyKeyFor\(payload\?\.probeId\)/);
   assert.match(source, /ctx\.attempt\.number/);
   assert.match(source, /attempt === 1 \|\| attempt === 2/);
@@ -131,7 +148,7 @@ test("redirect responses are never followed and are permanent failures", async (
   let requestOptions;
   let cancelled = 0;
   await assert.rejects(
-    observeWowHealth({
+    observeDev({
       env: safe,
       fetchImpl: async (_url, options) => {
         requestOptions = options;
@@ -146,25 +163,25 @@ test("redirect responses are never followed and are permanent failures", async (
 
 test("missing fetch implementation is a non-retryable configuration error", async () => {
   await assert.rejects(
-    observeWowHealth({ env: safe, fetchImpl: null }),
+    observeDev({ env: safe, fetchImpl: null }),
     err => err instanceof ProbeError && err.code === "FETCH_UNAVAILABLE" && err.retryable === false,
   );
 });
 
 test("invalid response status is rejected and body cancellation failure is retryable", async () => {
   await assert.rejects(
-    observeWowHealth({ env: safe, fetchImpl: async () => ({ status: 700 }) }),
+    observeDev({ env: safe, fetchImpl: async () => ({ status: 700 }) }),
     err => err instanceof ProbeError && err.code === "INVALID_HEALTH_RESPONSE" && err.retryable === false,
   );
   await assert.rejects(
-    observeWowHealth({ env: safe, fetchImpl: async () => ({ status: 200, body: { cancel: async () => { throw Error("cancel failed"); } } }) }),
+    observeDev({ env: safe, fetchImpl: async () => ({ status: 200, body: { cancel: async () => { throw Error("cancel failed"); } } }) }),
     err => err instanceof ProbeError && err.code === "HEALTH_BODY_CANCEL_FAILED" && err.retryable === true,
   );
 });
 
 test("timeout is classified distinctly from other transport errors", async () => {
   await assert.rejects(
-    observeWowHealth({ env:safe, fetchImpl: async () => { const e = new Error("timed out"); e.name = "TimeoutError"; throw e; } }),
+    observeDev({ env:safe, fetchImpl: async () => { const e = new Error("timed out"); e.name = "TimeoutError"; throw e; } }),
     e => e instanceof ProbeError && e.code === "HEALTH_TIMEOUT" && e.retryable === true,
   );
 });
