@@ -85,7 +85,8 @@ begin
   -- allowlist would also trust another Render service whose name merely begins
   -- with this string. Reject HTTP, ports, paths, credentials, suffixes, and all
   -- other hosts before attaching the cohort key.
-  if v_base_url !~* '^https://wow-kalshi-weather-v2\.onrender\.com    return jsonb_build_object(
+  if v_base_url !~* '^https://wow-kalshi-weather-v2\.onrender\.com$' then
+    return jsonb_build_object(
       'status','BLOCKED',
       'reason','KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED',
       'probability_publishable',false,
