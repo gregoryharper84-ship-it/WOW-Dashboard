@@ -50,8 +50,7 @@ _ROW_COLUMNS = (
     "hydration_status,blockers,game_log,box_score_log,role_status,role_timestamp"
 )
 _CANDIDATE_COLUMNS = (
-    "source_snapshot_id,captured_at,event_id,sport,player,stat_type,line,"
-    "hydration_status,blockers,game_log,box_score_log,role_status,role_timestamp"
+    "source_snapshot_id,captured_at,event_id,sport,player,stat_type,line"
 )
 _RECEIPT_COLUMNS = (
     "invocation_id,occurred_at,route,http_status,validation_code,"
@@ -416,8 +415,14 @@ def classify_evidence_state(
     row: Mapping[str, Any],
     candidate_status: str,
     other_snapshot_ids: list[str],
+    raw_stat_differs: bool,
 ) -> tuple[str, str]:
-    """Classify the readback without converting infrastructure into absence."""
+    """Classify the readback without converting infrastructure into absence.
+
+    ``raw_stat_differs`` is true only when the caller's stat label differs from
+    the canonical identity. It prevents a player/event comparison mismatch from
+    being mislabeled as a stat-alias boundary.
+    """
     if rpc.get("status") != "OK":
         if rpc.get("status") == "INVALID_RESPONSE":
             return (
@@ -448,12 +453,20 @@ def classify_evidence_state(
         if row.get("present") is True:
             summary = row.get("summary")
             if isinstance(summary, Mapping) and summary.get("identity_matches") is True:
+                if raw_stat_differs:
+                    return (
+                        "PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH",
+                        "The snapshot id resolves to the requested row under the writer's "
+                        "canonical stat alias, but the primary RPC compared the raw request "
+                        "label and returned an identity mismatch. This is a stat-label "
+                        "normalization boundary, not a different identity.",
+                    )
                 return (
-                    "PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH",
-                    "The snapshot id resolves to the requested row under the writer's "
-                    "canonical stat alias, but the primary RPC compared the raw request "
-                    "label and returned an identity mismatch. This is a stat-label "
-                    "normalization boundary, not a different identity.",
+                    "PRIMARY_LOOKUP_CANONICAL_IDENTITY_MISMATCH",
+                    "The snapshot id resolves to the requested row under canonical "
+                    "identity, but the primary RPC returned an identity mismatch for a "
+                    "non-stat field. This is a primary identity-comparison boundary, not "
+                    "a different identity.",
                 )
             return (
                 "SNAPSHOT_ID_POINTS_TO_OTHER_IDENTITY",
@@ -521,6 +534,8 @@ def _cause_assessment(attribution: str, diagnosis: str) -> tuple[Optional[bool],
         return True, "LIVE_ACTION_422_MATCHES_EVIDENCE_STATE"
     if diagnosis == "PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH":
         return False, "GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_STAT_ALIAS_MISMATCH"
+    if diagnosis == "PRIMARY_LOOKUP_CANONICAL_IDENTITY_MISMATCH":
+        return False, "GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_IDENTITY_MISMATCH"
     if diagnosis in {
         "SNAPSHOT_EXISTS_UNDER_OTHER_ID",
         "SNAPSHOT_ID_POINTS_TO_OTHER_IDENTITY",
@@ -613,11 +628,15 @@ def diagnose_prop_evidence(
     row = _lookup_row(client, identity)
     candidates = _lookup_candidates(client, identity)
     other_ids = list(candidates.get("other_snapshot_ids") or [])
+    raw_stat_differs = (
+        str(_get(request, "stat_type") or "").strip() != identity["stat_type"]
+    )
     diagnosis, interpretation = classify_evidence_state(
         rpc=rpc,
         row=row,
         candidate_status=str(candidates.get("status") or "UNAVAILABLE"),
         other_snapshot_ids=other_ids,
+        raw_stat_differs=raw_stat_differs,
     )
     attribution = str(receipt.get("attribution") or "UNATTRIBUTED")
     supported, basis = _cause_assessment(attribution, diagnosis)

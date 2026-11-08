@@ -641,6 +641,7 @@ def _readback_payload():
 
 
 def test_readback_endpoint_requires_authentication():
+    """Reject missing credentials before any evidence lookup."""
     response = client.post("/v17/prop-evidence-readback", json=_readback_payload())
     assert response.status_code == 401
     assert READBACK_PLAYER not in response.text
@@ -648,6 +649,7 @@ def test_readback_endpoint_requires_authentication():
 
 
 def test_readback_endpoint_rejects_empty_and_partial_identity():
+    """Reject empty and partial identities with a validation error."""
     empty = client.post("/v17/prop-evidence-readback", json={}, headers=AUTH)
     partial = client.post(
         "/v17/prop-evidence-readback",
@@ -659,6 +661,7 @@ def test_readback_endpoint_rejects_empty_and_partial_identity():
 
 
 def test_readback_endpoint_sanitizes_database_unavailability(monkeypatch):
+    """Return a sanitized 503 when the database client is unavailable."""
     def unavailable():
         raise RuntimeError("postgres://reader:super-secret-password@db.internal:5432/wow")
 
@@ -679,6 +682,7 @@ def test_readback_endpoint_sanitizes_database_unavailability(monkeypatch):
 
 
 def test_readback_endpoint_sanitizes_unexpected_diagnosis_failure(monkeypatch):
+    """Return a sanitized 503 when diagnosis raises unexpectedly."""
     monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: object())
 
     def broken(*_args, **_kwargs):
@@ -697,6 +701,7 @@ def test_readback_endpoint_sanitizes_unexpected_diagnosis_failure(monkeypatch):
 
 
 def test_readback_endpoint_is_read_only_and_does_not_leak_evidence(monkeypatch):
+    """Return a bounded read-only result without evidence leakage."""
     fake_client = _ReadbackClient()
     monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: fake_client)
 

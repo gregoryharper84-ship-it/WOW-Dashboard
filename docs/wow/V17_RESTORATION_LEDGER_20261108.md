@@ -392,3 +392,30 @@ independent authority remain blocked or absent.
   `prop_evidence_readback.py` and `prop_evidence_repair.py`; `git diff --check`
   clean.
 - `can_execute=false`; no merge or deployment.
+
+### Session 3 readback diagnostics hardening
+
+- CodeRabbit's next exact-head pass found two remaining readback issues. The
+  stat-alias diagnosis was emitted even when the primary RPC mismatch was not
+  the stat (for example, a player spelling difference), and the candidate query
+  selected game-log payloads it never used.
+- `classify_evidence_state` now receives `raw_stat_differs`. Only a real raw
+  stat-label difference can produce `PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH`; a
+  canonical row with a non-stat primary mismatch produces
+  `PRIMARY_LOOKUP_CANONICAL_IDENTITY_MISMATCH` and the distinct
+  `GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_IDENTITY_MISMATCH` basis. A focused
+  counterexample test covers the player/event case.
+- `_CANDIDATE_COLUMNS` now selects only the identity fields, not game logs, box
+  scores or role payloads. The end-to-end regression's primary-fetch double now
+  requires exact canonical event, sport, player and stat values, so it can no
+  longer hide a fallback that stops carrying canonical identity.
+- **Final local rerun:** focused affected set **55 passed, 8 skipped**; shard 0
+  **2299 passed, 39 skipped**; shard 1 **2870 passed, 7 skipped**; shard 2
+  **1846 passed, 9 skipped**; shard 3 **2183 passed, 1 skipped**. All skips
+  require the ephemeral Postgres integration service.
+- **Docstring disposition:** all 56 functions in the three changed production
+  modules are documented. New acceptance tests are documented. Docstrings were
+  deliberately not added to trivial test protocol doubles; if CodeRabbit's
+  threshold still counts those, a review-authority waiver is required rather
+  than boilerplate. This is not self-approved.
+- `can_execute=false`; no merge or deployment.

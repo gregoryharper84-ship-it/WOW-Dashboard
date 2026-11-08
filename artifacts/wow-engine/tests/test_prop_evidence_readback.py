@@ -423,6 +423,22 @@ def test_mlb_alias_matches_row_and_candidate_but_keeps_primary_rpc_raw():
     assert requested_row["snapshot_row"]["mismatch_fields"] == []
 
 
+def test_non_stat_primary_mismatch_does_not_blame_stat_alias():
+    """Keep a player/event mismatch out of the stat-alias diagnosis."""
+    diagnosis, _ = readback.classify_evidence_state(
+        rpc={"status": "OK", "code": readback.EVIDENCE_IDENTITY_MISMATCH},
+        row={"present": True, "summary": {"identity_matches": True}},
+        candidate_status="OK",
+        other_snapshot_ids=[],
+        raw_stat_differs=False,
+    )
+
+    assert diagnosis == "PRIMARY_LOOKUP_CANONICAL_IDENTITY_MISMATCH"
+    assert readback._cause_assessment(
+        "LIVE_ACTION_EVIDENCE_FAILURE", diagnosis
+    ) == (False, "GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_IDENTITY_MISMATCH")
+
+
 def test_candidate_window_at_limit_without_other_id_is_partial():
     rows = [
         _row(source_snapshot_id=REQUESTED_ID, captured_at=datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc))

@@ -94,6 +94,7 @@ _INFERENCE = CertifiedInference(
 
 
 def _calibrator(_inference, raw_probability, _line_probs, _features, _seed):
+    """Return deterministic calibrator output for the test bundle."""
     assert raw_probability == pytest.approx(0.50)
     return PropCalibrationOutput(
         calibration_status=CalibrationStatus.PLATT_TIME_SPLIT_V1,
@@ -124,6 +125,7 @@ def _registered_calibration_adapter():
 
 
 def _infer(_client, *, request, line, features):
+    """Assert the canonical inference request and return the test bundle."""
     assert request.event_id == EVENT_ID
     assert request.sport == "MLB"
     assert request.stat_type == STAT
@@ -135,6 +137,7 @@ def _infer(_client, *, request, line, features):
 
 
 def _evidence():
+    """Build a complete, immutable evidence snapshot."""
     now = datetime.now(timezone.utc)
     return {
         "ok": True,
@@ -276,6 +279,7 @@ class _PredictionClient:
 
 
 def _payload(*, source_snapshot_id, noncanonical=False):
+    """Build canonical or alias-spelled score payloads."""
     payload = {
         "event_id": EVENT_ID,
         "event_start_time": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
@@ -300,6 +304,7 @@ def _payload(*, source_snapshot_id, noncanonical=False):
 
 
 def _install_route(monkeypatch):
+    """Install route doubles and return captured requests and insert counters."""
     repair_client = _RepairClient()
     prediction_store: dict[str, dict] = {}
     counters = {"inserts": 0}
@@ -307,12 +312,13 @@ def _install_route(monkeypatch):
     captured_requests: list = []
 
     def primary_fetch(req):
+        """Return evidence only for the exact canonical fallback request."""
         canonical = (
             str(req.source_snapshot_id) == SNAPSHOT_ID
-            and str(req.event_id).strip() == EVENT_ID
-            and str(req.sport).strip().upper() == "MLB"
-            and " ".join(str(req.player or "").split()) == PLAYER
-            and str(req.stat_type).strip().upper() in {STAT, "K"}
+            and req.event_id == EVENT_ID
+            and req.sport == "MLB"
+            and req.player == PLAYER
+            and req.stat_type == STAT
         )
         if canonical:
             return _evidence()
@@ -324,6 +330,7 @@ def _install_route(monkeypatch):
         }
 
     def fake_score(**kwargs):
+        """Capture the effective request and delegate to the real scorer."""
         captured_requests.append(kwargs["request"])
         return real_score_discrete_prop_end_to_end(**kwargs, infer_fn=_infer)
 
@@ -412,6 +419,7 @@ def _install_route(monkeypatch):
 
 
 def test_equivalent_canonical_and_alias_requests_share_one_identity(monkeypatch):
+    """Prove canonical and alias requests share one governed identity."""
     captured_requests, prediction_store, counters = _install_route(monkeypatch)
 
     canonical = CLIENT.post(
@@ -473,6 +481,7 @@ def test_equivalent_canonical_and_alias_requests_share_one_identity(monkeypatch)
 
 
 def test_equivalent_retry_reuses_the_immutable_prediction(monkeypatch):
+    """Prove an equivalent retry reuses the immutable prediction."""
     _captured, prediction_store, counters = _install_route(monkeypatch)
 
     first = CLIENT.post(
