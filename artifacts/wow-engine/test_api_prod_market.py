@@ -437,6 +437,9 @@ def test_runtime_has_no_legacy_fitted_params_fallback(monkeypatch):
 
 
 def test_missing_exact_route_artifact_blocks_before_model_invocation(monkeypatch):
+    """Report the canonical stat attempted while preserving the caller label."""
+    # Pin the governed writer alias so the canonical route is deterministic.
+    monkeypatch.setitem(PROP_STAT_ALIASES, ("WNBA", "REB"), "REBOUNDS")
     called = {"score": False}
 
     def should_not_score(**_kwargs):
@@ -464,9 +467,10 @@ def test_missing_exact_route_artifact_blocks_before_model_invocation(monkeypatch
     assert body["aggregate_prop_capability_status"] == "AVAILABLE"
     assert body["requested_route"] == {
         "sport": "WNBA",
-        "stat_type": "REB",
+        "stat_type": "REBOUNDS",
         "feature_schema_version": "PROP_FEATURES_V1",
     }
+    assert body["caller_request_stat_type"] == "REB"
     assert body["backend_traversal"]["exact_route_artifact"] == "BLOCKED"
     assert body["backend_traversal"]["governed_model"] == "NOT_INVOKED"
     assert body["probability_publishable"] is False
@@ -793,3 +797,152 @@ def test_readback_endpoint_is_read_only_and_does_not_leak_evidence(monkeypatch):
     assert "probability_more" not in text
     assert "probability_less" not in text
     assert "calibrated_probability" not in text
+
+
+def _forbidden_evidence_hydration(*_args, **_kwargs):
+    """Evidence hydration must not run when route preflight rejects the row."""
+    raise AssertionError("route preflight must block before evidence hydration")
+
+
+def _preflight_payload(sport, stat_type):
+    payload = _request_payload()
+    payload.update(
+        {
+            "sport": sport,
+            "stat_type": stat_type,
+            "event_id": f"{sport}:TEST:PREFLIGHT:1",
+        }
+    )
+    return payload
+
+
+def _install_blocked_route(monkeypatch, called, *, artifact, specialist):
+    """Install a blocked route plus spies that forbid downstream work."""
+
+    def should_not_score(**_kwargs):
+        called["score"] = True
+        raise AssertionError("model must not be invoked for a blocked route")
+
+    def spy_specialist(sport, stat):
+        called["specialist_args"] = (sport, stat)
+        return specialist
+
+    def spy_artifact(sport, stat):
+        called["artifact_args"] = (sport, stat)
+        return artifact
+
+    _install_common(monkeypatch, should_not_score)
+    monkeypatch.setattr(
+        api_prod_market.prod.base_api,
+        "_controlling_specialist_provider",
+        spy_specialist,
+    )
+    monkeypatch.setattr(api_prod_market, "_prop_route_artifact", spy_artifact)
+    monkeypatch.setattr(
+        api_prod_market, "repair_prop_evidence", _forbidden_evidence_hydration
+    )
+
+
+def test_artifact_not_ready_reports_attempted_canonical_route(monkeypatch):
+    """An MLB K alias reports the canonical route the lookup attempted."""
+    called = {"score": False, "specialist_args": None, "artifact_args": None}
+    _install_blocked_route(
+        monkeypatch,
+        called,
+        artifact={
+            "ok": False,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            "can_execute": False,
+        },
+        specialist={
+            "sport": "MLB",
+            "canonical_prop_type": "PITCHER_STRIKEOUTS",
+            "controlling_specialist": "wow.mlb-pitcher-failure-path-expert",
+        },
+    )
+
+    response = client.post(
+        "/score-prop", json=_preflight_payload("MLB", "K"), headers=AUTH
+    )
+
+    assert response.status_code == 409
+    body = response.json()["detail"]
+    assert body["code"] == "MODEL_UNAVAILABLE"
+    assert body["requested_route"]["stat_type"] == "PITCHER_STRIKEOUTS"
+    assert body["caller_request_stat_type"] == "K"
+    assert body["governed_probability_status"] == "NOT_PRODUCED"
+    assert body["evidence_hydration"] == "NOT_ATTEMPTED_ROUTE_BLOCKED"
+    assert body["backend_traversal"]["governed_model"] == "NOT_INVOKED"
+    assert body["backend_traversal"]["prediction_ledger_write"] == "NOT_ATTEMPTED"
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+    assert called["specialist_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert called["artifact_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert called["score"] is False
+
+
+def test_registry_infrastructure_failure_reports_attempted_canonical_route(monkeypatch):
+    """A registry failure must not misreport the caller's stat alias."""
+    called = {"score": False, "specialist_args": None, "artifact_args": None}
+    _install_blocked_route(
+        monkeypatch,
+        called,
+        artifact={"ok": False, "code": "PROP_MODEL_REGISTRY_UNAVAILABLE"},
+        specialist={
+            "sport": "MLB",
+            "canonical_prop_type": "PITCHER_STRIKEOUTS",
+            "controlling_specialist": "wow.mlb-pitcher-failure-path-expert",
+        },
+    )
+
+    response = client.post(
+        "/score-prop", json=_preflight_payload("MLB", "K"), headers=AUTH
+    )
+
+    assert response.status_code == 503
+    body = response.json()["detail"]
+    assert body["code"] == "PROP_MODEL_REGISTRY_UNAVAILABLE"
+    assert body["requested_route"]["stat_type"] == "PITCHER_STRIKEOUTS"
+    assert body["caller_request_stat_type"] == "K"
+    assert body["governed_probability_status"] == "NOT_PRODUCED"
+    assert body["evidence_hydration"] == "NOT_ATTEMPTED_ROUTE_BLOCKED"
+    assert body["backend_traversal"]["exact_route_artifact"] == "REGISTRY_FAILED"
+    assert body["backend_traversal"]["governed_model"] == "NOT_INVOKED"
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+    assert called["specialist_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert called["artifact_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert called["score"] is False
+
+
+def test_canonical_stat_request_keeps_route_and_caller_fields_aligned(monkeypatch):
+    """A canonical request keeps its own spelling in both route fields."""
+    called = {"score": False, "specialist_args": None, "artifact_args": None}
+    _install_blocked_route(
+        monkeypatch,
+        called,
+        artifact={
+            "ok": False,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            "can_execute": False,
+        },
+        specialist={
+            "sport": "MLB",
+            "canonical_prop_type": "PITCHER_STRIKEOUTS",
+            "controlling_specialist": "wow.mlb-pitcher-failure-path-expert",
+        },
+    )
+
+    response = client.post(
+        "/score-prop",
+        json=_preflight_payload("MLB", "PITCHER_STRIKEOUTS"),
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409
+    body = response.json()["detail"]
+    assert body["requested_route"]["stat_type"] == "PITCHER_STRIKEOUTS"
+    assert body["caller_request_stat_type"] == "PITCHER_STRIKEOUTS"
+    assert called["artifact_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert body["can_execute"] is False
+    assert called["score"] is False

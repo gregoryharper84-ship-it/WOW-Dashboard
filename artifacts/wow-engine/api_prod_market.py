@@ -785,7 +785,9 @@ def _preflight_prop_route(
     Route lookups use the writer's canonical sport and stat alias, so an MLB
     ``K`` request with padded sport casing resolves the same specialist and
     artifact as ``PITCHER_STRIKEOUTS`` before evidence hydration. The caller
-    request itself is never mutated here.
+    request itself is never mutated here. Blocked-route payloads describe the
+    route actually attempted in ``requested_route`` and keep the caller's
+    original spelling in ``caller_request_stat_type`` for audit.
     """
     from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
 
@@ -857,9 +859,10 @@ def _preflight_prop_route(
                 "governed_probability_status": "NOT_PRODUCED",
                 "requested_route": {
                     "sport": route_sport,
-                    "stat_type": str(req.stat_type).upper(),
+                    "stat_type": route_stat,
                     "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
                 },
+                "caller_request_stat_type": str(req.stat_type),
                 "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
                 "controlling_specialist": specialist.get("controlling_specialist"),
                 "specialist_invoked": False,
@@ -888,9 +891,10 @@ def _preflight_prop_route(
                 "aggregate_prop_capability_status": lane.get("capability_status"),
                 "requested_route": {
                     "sport": route_sport,
-                    "stat_type": str(req.stat_type).upper(),
+                    "stat_type": route_stat,
                     "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
                 },
+                "caller_request_stat_type": str(req.stat_type),
                 "route_artifact_evidence": route_artifact,
                 "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
                 "controlling_specialist": specialist.get("controlling_specialist"),
