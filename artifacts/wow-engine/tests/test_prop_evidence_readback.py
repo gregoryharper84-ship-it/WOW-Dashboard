@@ -221,6 +221,25 @@ def test_identity_mismatch_is_not_absent_evidence_and_hides_other_player():
     assert BASE["player"] not in serialized
 
 
+def test_primary_rpc_alias_mismatch_is_not_reported_as_other_identity():
+    request = {**BASE, "sport": "MLB", "stat_type": "K"}
+    client = _Client(
+        rpc={"ok": False, "code": readback.EVIDENCE_IDENTITY_MISMATCH},
+        rows=[_row(sport="MLB", stat_type="PITCHER_STRIKEOUTS")],
+        receipts=[_receipt(caller_class="CHATGPT_ACTION", request_id="req-alias")],
+    )
+    result = readback.diagnose_prop_evidence(client, request, request_id="req-alias")
+
+    assert result["diagnosis"] == "PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH"
+    assert result["snapshot_row"]["identity_matches"] is True
+    assert client.rpc_calls[0][1]["p_stat_type"] == "K"
+    assert result["reported_failure_attribution"] == "LIVE_ACTION_EVIDENCE_FAILURE"
+    assert result["reported_cause_supported"] is False
+    assert result["reported_cause_basis"] == (
+        "GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_STAT_ALIAS_MISMATCH"
+    )
+
+
 def test_incomplete_row_is_not_ready():
     client = _Client(
         rpc={"ok": False, "code": readback.EVIDENCE_INCOMPLETE},

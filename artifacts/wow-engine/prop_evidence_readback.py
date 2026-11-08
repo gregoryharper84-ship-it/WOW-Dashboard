@@ -428,6 +428,15 @@ def classify_evidence_state(
         )
     if code == EVIDENCE_IDENTITY_MISMATCH:
         if row.get("present") is True:
+            summary = row.get("summary")
+            if isinstance(summary, Mapping) and summary.get("identity_matches") is True:
+                return (
+                    "PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH",
+                    "The snapshot id resolves to the requested row under the writer's "
+                    "canonical stat alias, but the primary RPC compared the raw request "
+                    "label and returned an identity mismatch. This is a stat-label "
+                    "normalization boundary, not a different identity.",
+                )
             return (
                 "SNAPSHOT_ID_POINTS_TO_OTHER_IDENTITY",
                 "The snapshot id resolves to a row with a different identity. The 422 "
@@ -491,6 +500,8 @@ def _cause_assessment(attribution: str, diagnosis: str) -> tuple[Optional[bool],
         return None, "UNATTRIBUTED"
     if diagnosis in {"SNAPSHOT_ROW_MISSING", "EVIDENCE_NOT_READY"}:
         return True, "LIVE_ACTION_422_MATCHES_EVIDENCE_STATE"
+    if diagnosis == "PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH":
+        return False, "GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_STAT_ALIAS_MISMATCH"
     if diagnosis in {
         "SNAPSHOT_EXISTS_UNDER_OTHER_ID",
         "SNAPSHOT_ID_POINTS_TO_OTHER_IDENTITY",

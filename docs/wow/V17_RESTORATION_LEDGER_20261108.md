@@ -40,7 +40,7 @@ acceptance. It must not be treated as NBA restoration.
 | D NHL restoration | BLOCKED | Registered candidate path is not a certified operational model; goalie/rest/Elo/PP/PK/calibration inputs and an active certification were not proven | — | — | Repo inspection | Certified artifact + calibration + full evidence hydration | Keep typed `MODEL_INPUTS_INSUFFICIENT` until real evidence exists |
 | E NCAAF restoration | BLOCKED | No fitted NCAAF artifact, feature rows, calibrator, or predictions were proven; discovery returned zero events | — | — | Repo inspection | Historical feature pipeline, reproducible fit, calibration, discovery diagnosis | Build pipeline only from validated historical source data |
 | F Cross-sport discovery | UNPROVEN | `rundown_sport_registry` does include NCAAF id 1 and NFL id 2, so a missing provider id is not supported by code inspection; zero-event results need live diagnostics | — | — | Code inspection | Live provider/acquisition receipts | Diagnose date/timezone/feed coverage on production evidence |
-| G Engineering autonomy | UNVERIFIED | Workflow status counts are not execution receipts; no dispatch or lease proof was inspected | — | — | None | GitHub Actions and production queue access | Prove one bounded repair dispatched and receipted |
+| G Engineering autonomy | DISPATCHED_BLOCKED | The canonical provider dispatcher is disabled at repository level, so a `workflow_dispatch` there returned 422. The existing ChatGPT worker accepted a manual recovery dispatch for #1688 / `P0_AUTONOMY_RESTORE` at `main` `db5e6b7c`, but failed at `Recheck openai provider breaker under the global writer mutex` before any implementation step. Auto-repair run `42486632353` completed with no eligible HOLD target | — | `main` `db5e6b7c`; no worker branch created | ChatGPT worker run `42487106043`; job failed before Engineering Lead/implementation; no tests ran | OpenAI provider breaker is open; canonical dispatcher is disabled | Reset/recover the breaker and enable the existing dispatcher; then re-dispatch the same bounded objective |
 | H Repository governance | BLOCKED | Protected merge and independent QA/Release Authority are external authorities; engineering cannot self-certify | #2504, #2512, #2522, #2523 | — | PR metadata read | Authorized independent review and merge | Complete exact-head review on each PR; never merge on stale green |
 | I Model calibration/learning | SAFE_HOLD | No model weight, calibration coefficient, threshold, or bound was changed | — | — | Diff review | Genuine forward cohorts | Preserve baseline; no isolated-outcome tuning |
 
@@ -274,6 +274,30 @@ findings resolved until that run and independent review complete.
 `MINIMUM_ACTION_NEEDED`: Save/reload the canonical Action schema and run a fresh production chat.
 `WORKAROUND_ATTEMPTED`: None.
 `OTHER_WORK_CONTINUING`: Code and contract repair.
+
+## Session 2 final review correction and autonomy receipt
+
+- A further semantic review finding showed that a requested snapshot id can point
+  to the requested row under the writer's canonical stat alias while the primary
+  RPC returns `PROP_EVIDENCE_IDENTITY_MISMATCH` because it compares the raw
+  request label. `classify_evidence_state` now reports
+  `PRIMARY_LOOKUP_STAT_ALIAS_MISMATCH` with
+  `GOVERNED_EVIDENCE_EXISTS_BUT_PRIMARY_STAT_ALIAS_MISMATCH` instead of falsely
+  claiming the id points to a different identity. The new regression covers an
+  MLB `K` request against a stored `PITCHER_STRIKEOUTS` row and asserts the raw
+  RPC argument remains `K`.
+- Focused readback, score-route and repair identity suites: **45 passed** after
+  this correction; `git diff --check` clean.
+- Objective G receipt: the canonical provider dispatcher refused dispatch with
+  422 because the workflow is disabled. The existing ChatGPT worker accepted a
+  manual recovery dispatch for #1688 (`P0_AUTONOMY_RESTORE`) at `main`
+  `db5e6b7c`, run
+  [42487106043](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42487106043).
+  The job failed at `Recheck openai provider breaker under the global writer
+  mutex` before the Engineering Lead or implementation steps; no worker branch,
+  commit, or test result exists. The existing auto-repair controller run
+  `42486632353` completed successfully with no eligible HOLD target. No
+  competing controller was created.
 
 ## Honest completion statement
 
