@@ -33,25 +33,32 @@ class Test24x7(unittest.TestCase):
         result = mod.plan([issue(8, "approved-improvement"), issue(9, "P0")], [])
         self.assertEqual((result["action"], result["incident"]), ("BUILD", 9))
 
-    def test_sirt_intake_is_not_coding_work_even_when_labeled_p0(self):
-        result = mod.plan([
-            issue(2422, "P0", title="P0 V17 release deadlock",
-                  updated_at="2026-11-07T16:58:19Z"),
+    def test_sirt_owned_review_issues_are_not_coding_work(self):
+        sirt_issues = [
             issue(2467, "P0", "RESTORATION_SURGE",
-                  title="[SIRT Intake][P0] Independent semantic acceptance",
-                  updated_at="2026-11-07T23:09:37Z"),
-            issue(2469, "P0", "RESTORATION_SURGE",
-                  title="[SIRT Intake][P0 NBA] Independent Class C acceptance",
-                  updated_at="2026-11-07T23:43:20Z"),
-            issue(2484, "P1", title="[SIRT Intake][P1] Senior reviewer acceptance",
-                  updated_at="2026-11-06T01:09:51Z"),
-        ], [])
-        self.assertEqual((result["action"], result["incident"]), ("BUILD", 2422))
-        only_sirt = mod.plan([
+                  title="[SIRT Intake][P0] Independent semantic acceptance"),
             issue(2469, "P0", "RESTORATION_SURGE",
                   title="[SIRT Intake][P0 NBA] Independent Class C acceptance"),
-        ], [])
-        self.assertEqual(only_sirt["action"], "IDLE")
+            issue(2484, "P1", title="[SIRT Intake][P1] Senior reviewer acceptance"),
+            issue(1563, "P0", "RESTORATION_SURGE",
+                  title="P0 SIRT — Independent ML/spread/prop capability assurance"),
+            issue(1922, "P0", title="[P0 SIRT] Independent security acceptance"),
+            issue(2175, "P0", title="[SIRT / Security Review] Independent bootstrap assessment"),
+            issue(1883, "P2", title="[P2 CRM / SIRT + QA] Independent certification"),
+            issue(1521, "P0", title="SIRT Class A: NFL Pick'em accuracy assurance"),
+            issue(1514, "P1", title="SIRT P1: independently verify sentinel deployment"),
+            issue(1936, "P0", title="[P0 SIRT] Independent security decision"),
+        ]
+        self.assertEqual(mod.plan(sirt_issues, [])["action"], "IDLE")
+        # An engineering repair may mention SIRT without being SIRT-owned.
+        engineering = issue(
+            1527, "P1",
+            title="P1: autonomous same-PR CI/SIRT failure remediation",
+        )
+        self.assertEqual(
+            (mod.plan([engineering], [])["action"], mod.plan([engineering], [])["incident"]),
+            ("BUILD", 1527),
+        )
 
     def test_resume_same_incident_without_duplicate(self):
         result = mod.plan([issue(9, "P0")], [pr(40, 9)])
