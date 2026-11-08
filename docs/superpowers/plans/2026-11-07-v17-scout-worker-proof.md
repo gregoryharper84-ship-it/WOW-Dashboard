@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Execute inline with superpowers:executing-plans and superpowers:test-driven-development. Each implementation step is test-first and must be verified on the isolated branch.
 
-**Goal:** Correct false-negative terminal acceptance when durable Scout job rows prove specialist processing but the state-event ledger is missing worker-transition events.
+**Goal:** Correct false-negative terminal acceptance when PostgREST truncates the Scout state-event read at 1,000 rows, while retaining durable job receipts as independent worker proof.
 
 **Architecture:** Keep the existing Render/Supabase durable Scout queue, its single in-process worker, and the GitHub Actions OIDC scheduler as the only production orchestration path. Derive worker-path evidence from durable job attempt/receipt fields while separately reporting missing state-event transitions. Trigger.dev remains a DEV-only experiment; no second production scheduler or worker is introduced.
 
@@ -36,13 +36,14 @@
 - Test: `artifacts/wow-engine/test_v17_scout_handoff_queue.py`
 
 **Interfaces:**
-- Add a private helper that receives persisted job rows and state events and returns job-scoped worker evidence counts.
+- Paginate job and event reads in stable order; derive job-scoped worker evidence from attempt counters/receipts and compare it with the fully paginated event ledger.
 - `read_run_summary(db, source_run_id, include_receipts=False)` exposes `specialist_processing_seen`, `model_evaluated`, `v17_qualified`, and explicit worker-event-gap counts.
 
-- [ ] Write a regression test for terminal `MODEL_EVALUATED` jobs with `attempt_count=1` and valid specialist receipts but no `SPECIALIST_PROCESSING` / `MODEL_EVALUATED` events; expect worker proof and evaluation counts from durable job rows, plus explicit event gaps.
+- [ ] Write a regression test for more than 1,000 state events where the worker transitions are on page 2; expect complete lifecycle counts and no false event-gap warning.
+- [ ] Write a regression test for terminal `MODEL_EVALUATED` jobs with `attempt_count=1` and valid specialist receipts but no worker events; expect worker proof from durable job rows plus explicit event gaps.
 - [ ] Write boundary tests proving attempt_count 0 and malformed/governance-invalid receipts do not prove worker execution.
 - [ ] Run the focused tests and confirm they fail for the missing derived evidence.
-- [ ] Implement the smallest helper and wire it into `read_run_summary`; retain event-derived lifecycle counts and expose missing transition events.
+- [ ] Implement bounded `.range(start, start + page_size - 1)` pagination for job and event reads, ordered by stable unique keys; retain durable job-row evidence and expose genuine event gaps.
 - [ ] Re-run focused tests and the complete Scout queue unit tests.
 
 ### Task 2: Preserve the evidence distinction in terminal acceptance
