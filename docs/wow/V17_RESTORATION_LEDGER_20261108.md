@@ -183,6 +183,33 @@ production readback and an external reviewer respectively.
   check runs are durable receipts for authored work, not a substitute for a
   `wow-engineering` App dispatch. Objective G remains UNVERIFIED.
 
+### Session 2 review correction — readback identity and boundary capture
+
+The ready-for-review head `2794fbad` exposed five unresolved review findings.
+All five were addressed in code; none was dismissed as stale:
+
+- `prop_evidence_readback.normalize_identity` now delegates stat canonicalization
+  to the writer's governed `PROP_STAT_ALIASES` resolver instead of a local
+  uppercase/hyphen transform, so NFL `PASS_YARDS` resolves to `PASSING_YARDS`
+  and runtime-registered aliases (WNBA `PTS` → `POINTS`) resolve identically.
+- The candidate lookup applies canonical sport/player/stat filters in the
+  database before its 25-row bound, so distractor rows cannot hide an exact
+  identity and produce a false `SNAPSHOT_ROW_MISSING`.
+- Live Action 422s are attributed to evidence only for explicit evidence failure
+  codes; non-evidence and null codes return `LIVE_ACTION_OTHER_422` with
+  `reported_cause_supported=null`.
+- The readback route no longer chains an exception into its 503 response
+  (CodeQL stack-trace exposure).
+- `score_prop` now captures the non-PII identity/request/caller correlation and
+  re-raises the original `HTTPException` unchanged when the primary evidence RPC
+  fails with 422/503; infrastructure failures are not relabeled as absence.
+
+Regression coverage: **42 passed** across the readback, score-route and repair
+identity suites, including >25 distractor rows, both primary exception paths, and
+both alias cases. A new exact-head CI/CodeRabbit run is required; this entry does
+not certify the findings resolved until that run and independent review complete.
+`can_execute=false` is unchanged.
+
 ## Escalation blockers
 
 `BLOCKER-001`

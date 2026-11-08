@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import logging
 import os
 import uuid
 
@@ -486,6 +487,38 @@ def test_score_stage_timer_preserves_exception_and_redacts_payload(caplog):
     assert "status=FAILED" in log_text
     assert "can_execute=false" in log_text
     assert secret not in log_text
+
+
+def test_primary_evidence_http_exception_is_logged_and_preserved(monkeypatch, caplog):
+    _install_common(monkeypatch, lambda **_: None)
+
+    for status_code, code in (
+        (422, "PROP_PLAYER_IDENTITY_REQUIRED"),
+        (503, "PROP_EVIDENCE_BRIDGE_UNAVAILABLE"),
+    ):
+        def raise_primary(
+            _req, *_args, _status=status_code, _code=code, **_kwargs
+        ):
+            raise api_prod_market.HTTPException(
+                status_code=_status,
+                detail={
+                    "code": _code,
+                    "probability_publishable": False,
+                    "can_execute": False,
+                },
+            )
+
+        monkeypatch.setattr(api_prod_market, "repair_prop_evidence", raise_primary)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="wow.v17.prop_evidence.readback"):
+            response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
+
+        assert response.status_code == status_code
+        assert response.json()["detail"]["code"] == code
+        assert "WOW_V17_PROP_EVIDENCE_FAILURE" in caplog.text
+        assert f"code={code}" in caplog.text
+        assert "can_execute=false" in caplog.text
+        assert "Test Player" not in caplog.text
 
 
 def test_score_stage_timer_success_is_timing_only(caplog):

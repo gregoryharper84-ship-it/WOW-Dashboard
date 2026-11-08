@@ -307,3 +307,74 @@ def test_failure_log_captures_join_key_without_player_name(caplog):
 def test_invalid_snapshot_id_is_rejected():
     with pytest.raises(ValueError):
         readback.normalize_identity({**BASE, "source_snapshot_id": "not-a-uuid"})
+
+
+def test_stat_identity_reuses_writer_alias_map():
+    assert readback.normalize_identity(
+        {**BASE, "stat_type": "PASS_YARDS"}
+    )["stat_type"] == "PASSING_YARDS"
+
+    # The WNBA aliases are registered by the runtime facade against the same
+    # governed map the writer uses. The readback must resolve them too.
+    import pick_request_runtime  # noqa: F401
+
+    assert readback.normalize_identity(
+        {**BASE, "sport": "WNBA", "stat_type": "PTS"}
+    )["stat_type"] == "POINTS"
+
+
+def test_candidate_search_filters_identity_before_bounded_limit():
+    distractors = [
+        _row(
+            source_snapshot_id=f"99999999-9999-4999-8999-{index:012d}",
+            player=f"Distractor {index}",
+            captured_at=datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc),
+        )
+        for index in range(30)
+    ]
+    exact = _row(
+        source_snapshot_id=OTHER_ID,
+        captured_at=datetime(2026, 11, 7, 8, 0, tzinfo=timezone.utc),
+    )
+    client = _Client(rpc=_not_found_rpc(), rows=[*distractors, exact])
+    result = readback.diagnose_prop_evidence(client, BASE)
+
+    assert result["diagnosis"] == "SNAPSHOT_EXISTS_UNDER_OTHER_ID"
+    assert result["identity_candidates"]["other_snapshot_ids"] == [OTHER_ID]
+
+
+def test_non_evidence_live_action_422_is_not_attributed_to_evidence():
+    client = _Client(
+        rpc=_not_found_rpc(),
+        rows=[],
+        receipts=[
+            _receipt(
+                caller_class="CHATGPT_ACTION",
+                validation_code="REQUEST_SCHEMA_INVALID",
+                request_id="req-schema",
+            )
+        ],
+    )
+    result = readback.diagnose_prop_evidence(client, BASE, request_id="req-schema")
+
+    assert result["reported_failure_attribution"] == "LIVE_ACTION_OTHER_422"
+    assert result["reported_cause_supported"] is None
+    assert result["reported_cause_basis"] == "UNATTRIBUTED"
+
+
+def test_live_action_422_without_validation_code_is_unattributed():
+    client = _Client(
+        rpc=_not_found_rpc(),
+        rows=[],
+        receipts=[
+            _receipt(
+                caller_class="ACTION_API_KEY",
+                validation_code=None,
+                request_id="req-null-code",
+            )
+        ],
+    )
+    result = readback.diagnose_prop_evidence(client, BASE, request_id="req-null-code")
+
+    assert result["reported_failure_attribution"] == "LIVE_ACTION_OTHER_422"
+    assert result["reported_cause_supported"] is None

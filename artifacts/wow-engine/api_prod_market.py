@@ -833,11 +833,24 @@ def score_prop(
         )
 
     with _score_stage_timer("evidence_revalidation", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
-        evidence = repair_prop_evidence(
-            req,
-            primary_fetch=prod._prop_evidence,
-            client=prod.get_client(),
-        )
+        try:
+            evidence = repair_prop_evidence(
+                req,
+                primary_fetch=prod._prop_evidence,
+                client=prod.get_client(),
+            )
+        except HTTPException as exc:
+            # The primary RPC can fail before the evidence result branch below.
+            # Capture only the non-PII correlation identity, then preserve the
+            # original status and typed detail unchanged.
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            log_prop_evidence_failure(
+                req,
+                code=str(detail.get("code") or f"HTTP_{exc.status_code}"),
+                request_id=x_wow_request_id,
+                caller_class=x_wow_caller_class,
+            )
+            raise
     if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
         detail = dict(evidence)
         detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
@@ -1051,7 +1064,7 @@ def prop_evidence_readback(
     """
     try:
         client = prod.get_client()
-    except Exception as exc:
+    except Exception:
         raise HTTPException(
             status_code=503,
             detail={
@@ -1059,7 +1072,7 @@ def prop_evidence_readback(
                 "probability_publishable": False,
                 "can_execute": False,
             },
-        ) from exc
+        ) from None
     return diagnose_prop_evidence(
         client,
         req.model_dump(),

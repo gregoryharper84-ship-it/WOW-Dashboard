@@ -32,6 +32,15 @@ EVIDENCE_READY = "PROP_EVIDENCE_READY"
 EVIDENCE_NOT_FOUND = "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"
 EVIDENCE_IDENTITY_MISMATCH = "PROP_EVIDENCE_IDENTITY_MISMATCH"
 EVIDENCE_INCOMPLETE = "RUN_INVALID_ACQUISITION_INCOMPLETE"
+EVIDENCE_FAILURE_CODES = frozenset(
+    {
+        EVIDENCE_NOT_FOUND,
+        EVIDENCE_IDENTITY_MISMATCH,
+        EVIDENCE_INCOMPLETE,
+        "PROP_EVIDENCE_INCOMPLETE",
+        "PROP_EVIDENCE_STALE",
+    }
+)
 
 SELF_ACCEPTANCE = "SELF_ACCEPTANCE"
 LIVE_ACTION_CALLERS = frozenset({"CHATGPT_ACTION", "ACTION_API_KEY"})
@@ -97,8 +106,16 @@ def _get(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
-def _canonical_stat(value: Any) -> str:
-    return "_".join(str(value or "").strip().upper().replace("-", " ").split())
+def _canonical_stat(sport: Any, value: Any) -> str:
+    """Resolve stat identity through the governed writer's alias map.
+
+    Imported lazily because the governed runtime imports this readback layer
+    indirectly through api_prod_market. Runtime-registered aliases mutate the
+    same map, so this stays aligned with what the snapshot writer persisted.
+    """
+    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+
+    return writer_canonical_stat(str(sport or "").strip().upper(), str(value or ""))
 
 
 def _canonical_player(value: Any) -> str:
@@ -116,7 +133,7 @@ def normalize_identity(value: Any) -> dict[str, Any]:
     event_id = str(_get(value, "event_id") or "").strip()
     sport = str(_get(value, "sport") or "").strip().upper()
     player = _canonical_player(_get(value, "player"))
-    stat_type = _canonical_stat(_get(value, "stat_type"))
+    stat_type = _canonical_stat(sport, _get(value, "stat_type"))
     if not event_id or not sport or not player or not stat_type:
         raise ValueError("event_id, sport, player and stat_type are required")
 
@@ -185,7 +202,8 @@ def _mismatch_fields(row: Mapping[str, Any], identity: Mapping[str, Any]) -> lis
         mismatches.append("sport")
     if _canonical_player(row.get("player")) != identity["player"]:
         mismatches.append("player")
-    if _canonical_stat(row.get("stat_type")) != identity["stat_type"]:
+    row_sport = str(row.get("sport") or identity["sport"] or "").strip().upper()
+    if _canonical_stat(row_sport, row.get("stat_type")) != identity["stat_type"]:
         mismatches.append("stat_type")
     try:
         row_line: Optional[float] = float(row.get("line"))
@@ -239,6 +257,12 @@ def _lookup_candidates(client: Any, identity: Mapping[str, Any]) -> dict[str, An
             .select(_CANDIDATE_COLUMNS)
             .eq("event_id", identity["event_id"])
             .eq("line", identity["line"])
+            # The writer persists these canonical values. Filtering in the
+            # database before the bounded limit prevents >25 distractor rows
+            # from hiding an exact identity and creating a false absence.
+            .eq("sport", identity["sport"])
+            .eq("player", identity["player"])
+            .eq("stat_type", identity["stat_type"])
             .order("captured_at", desc=True)
             .limit(25)
             .execute()
@@ -317,7 +341,9 @@ def _receipt_attribution(latest: Optional[Mapping[str, Any]]) -> str:
     if caller == SELF_ACCEPTANCE and http_status == 422 and code == EVIDENCE_NOT_FOUND:
         return "EXPECTED_SELF_ACCEPTANCE_PROBE"
     if caller in LIVE_ACTION_CALLERS and http_status == 422:
-        return "LIVE_ACTION_EVIDENCE_FAILURE"
+        if code in EVIDENCE_FAILURE_CODES:
+            return "LIVE_ACTION_EVIDENCE_FAILURE"
+        return "LIVE_ACTION_OTHER_422"
     if caller == SELF_ACCEPTANCE:
         return "SELF_ACCEPTANCE_PROBE_OTHER_TERMINAL"
     return "OTHER_CALLER"
@@ -607,7 +633,10 @@ def log_prop_evidence_failure(
             "source_snapshot_id=UNAVAILABLE request_id=%s caller_class=%s "
             "code=%s error_type=%s can_execute=false",
             str(_get(request, "sport") or "UNKNOWN").upper(),
-            _canonical_stat(_get(request, "stat_type")) or "UNKNOWN",
+            _canonical_stat(
+                _get(request, "sport"), _get(request, "stat_type")
+            )
+            or "UNKNOWN",
             request_id or "NONE",
             caller_class or "UNKNOWN",
             code or "UNKNOWN",
