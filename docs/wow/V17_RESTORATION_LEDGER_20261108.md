@@ -169,9 +169,12 @@ production readback and an external reviewer respectively.
 - #2504: merged protected main `db5e6b7c` into the NBA candidate. The only
   conflict was `wow-engine-verify.yml`; the resolution keeps main's live-SHA
   ancestry observation and both NBA real-Postgres contract jobs, with all five
-  governed-backend prerequisites unchanged. Pushed as `f50cc5de`. This resolves
-  the conflict only; the PR remains an uncertified Class C candidate with no
-  certified NBA artifact, calibration, or current-season pregame corpus.
+  governed-backend prerequisites unchanged. Pushed as `f50cc5de`. Exact head
+  `f50cc5de` is fully **SUCCESS**, including CodeRabbit, both NBA real-Postgres
+  contracts, `WOW governed probability backend`, `WOW Independent QA exact-head`
+  and `WOW Release Authority exact-head`. This proves the conflict resolution and
+  the exact-head gates only; the PR remains an uncertified Class C candidate with
+  no certified NBA artifact, calibration, or current-season pregame corpus.
 - NHL and NCAAF maintenance lanes: their fail-closed contract suites pass
   (**44 passed**), but neither proves a certified operational model or real
   historical training corpus. No generic output or training row was created.
@@ -194,7 +197,12 @@ All five were addressed in code; none was dismissed as stale:
   and runtime-registered aliases (WNBA `PTS` → `POINTS`) resolve identically.
 - The candidate lookup applies canonical sport/player/stat filters in the
   database before its 25-row bound, so distractor rows cannot hide an exact
-  identity and produce a false `SNAPSHOT_ROW_MISSING`.
+  identity and produce a false `SNAPSHOT_ROW_MISSING`. A window that reaches the
+  bound without a different id is `PARTIAL`, never proof of absence.
+- The primary readback RPC keeps the caller's raw stat label; only row/candidate
+  matching and the fingerprint alias-resolve. The MLB `K` →
+  `PITCHER_STRIKEOUTS` regression checks the raw RPC argument, fingerprint, row
+  match and candidate match.
 - Live Action 422s are attributed to evidence only for explicit evidence failure
   codes; non-evidence and null codes return `LIVE_ACTION_OTHER_422` with
   `reported_cause_supported=null`.
@@ -204,10 +212,11 @@ All five were addressed in code; none was dismissed as stale:
   re-raises the original `HTTPException` unchanged when the primary evidence RPC
   fails with 422/503; infrastructure failures are not relabeled as absence.
 
-Regression coverage: **42 passed** across the readback, score-route and repair
-identity suites, including >25 distractor rows, both primary exception paths, and
-both alias cases. A new exact-head CI/CodeRabbit run is required; this entry does
-not certify the findings resolved until that run and independent review complete.
+Regression coverage: **44 passed** across the readback, score-route and repair
+identity suites, including >25 distractor rows, the partial-window case, the MLB
+raw-RPC alias case, both primary exception paths, and the NFL/WNBA alias cases. A
+new exact-head CI/CodeRabbit run is required; this entry does not certify the
+findings resolved until that run and independent review complete.
 `can_execute=false` is unchanged.
 
 ## Escalation blockers

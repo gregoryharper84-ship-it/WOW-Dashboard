@@ -270,14 +270,18 @@ def _lookup_candidates(client: Any, identity: Mapping[str, Any]) -> dict[str, An
     except Exception as exc:
         return {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "other_snapshot_ids": []}
 
+    rows = _rows(response)
     other_ids: list[str] = []
-    for row in _rows(response):
+    for row in rows:
         if _mismatch_fields(row, identity):
             continue
         source_snapshot_id = str(row.get("source_snapshot_id") or "")
         if source_snapshot_id and source_snapshot_id != identity["source_snapshot_id"]:
             other_ids.append(source_snapshot_id)
-    return {"status": "OK", "other_snapshot_ids": other_ids[:10]}
+    # Reaching the bound with no different id cannot prove that no other
+    # snapshot exists. Treat it as partial rather than absent evidence.
+    status = "PARTIAL" if len(rows) >= 25 and not other_ids else "OK"
+    return {"status": status, "other_snapshot_ids": other_ids[:10]}
 
 
 def _receipt_summary(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -349,7 +353,9 @@ def _receipt_attribution(latest: Optional[Mapping[str, Any]]) -> str:
     return "OTHER_CALLER"
 
 
-def _rpc_lookup(client: Any, identity: Mapping[str, Any]) -> dict[str, Any]:
+def _rpc_lookup(
+    client: Any, identity: Mapping[str, Any], request: Any
+) -> dict[str, Any]:
     try:
         response = client.rpc(
             "wow_prop_evidence_snapshot",
@@ -358,7 +364,9 @@ def _rpc_lookup(client: Any, identity: Mapping[str, Any]) -> dict[str, Any]:
                 "p_event_id": identity["event_id"],
                 "p_sport": identity["sport"],
                 "p_player": identity["player"],
-                "p_stat_type": identity["stat_type"],
+                # The primary RPC compares the request label as supplied; only
+                # row/candidate matching and the fingerprint alias-resolve.
+                "p_stat_type": _get(request, "stat_type"),
                 "p_line": identity["line"],
             },
         ).execute()
@@ -566,7 +574,7 @@ def diagnose_prop_evidence(
         return result
 
     fingerprint = identity_fingerprint(identity)
-    rpc = _rpc_lookup(client, identity)
+    rpc = _rpc_lookup(client, identity, request)
     row = _lookup_row(client, identity)
     candidates = _lookup_candidates(client, identity)
     other_ids = list(candidates.get("other_snapshot_ids") or [])

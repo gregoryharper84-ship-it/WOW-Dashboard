@@ -362,6 +362,61 @@ def test_non_evidence_live_action_422_is_not_attributed_to_evidence():
     assert result["reported_cause_basis"] == "UNATTRIBUTED"
 
 
+def test_mlb_alias_matches_row_and_candidate_but_keeps_primary_rpc_raw():
+    mlb = {
+        **BASE,
+        "sport": "MLB",
+        "player": "Test Pitcher",
+        "stat_type": "K",
+        "line": 5.5,
+    }
+    stored = _row(
+        source_snapshot_id=OTHER_ID,
+        sport="MLB",
+        player="Test Pitcher",
+        stat_type="PITCHER_STRIKEOUTS",
+        line=5.5,
+    )
+    client = _Client(rpc=_not_found_rpc(), rows=[stored])
+    result = readback.diagnose_prop_evidence(client, mlb)
+
+    assert result["requested_identity"]["stat_type"] == "PITCHER_STRIKEOUTS"
+    assert result["diagnosis"] == "SNAPSHOT_EXISTS_UNDER_OTHER_ID"
+    assert result["identity_candidates"]["other_snapshot_ids"] == [OTHER_ID]
+    assert result["identity_fingerprint"] == readback.identity_fingerprint(
+        {**mlb, "stat_type": "PITCHER_STRIKEOUTS"}
+    )
+    assert client.rpc_calls[0][1]["p_stat_type"] == "K"
+
+    requested_row_client = _Client(
+        rpc=_ready_rpc(),
+        rows=[
+            _row(
+                sport="MLB",
+                player="Test Pitcher",
+                stat_type="PITCHER_STRIKEOUTS",
+                line=5.5,
+            )
+        ],
+    )
+    requested_row = readback.diagnose_prop_evidence(requested_row_client, mlb)
+    assert requested_row["snapshot_row"]["identity_matches"] is True
+    assert requested_row["snapshot_row"]["mismatch_fields"] == []
+
+
+def test_candidate_window_at_limit_without_other_id_is_partial():
+    rows = [
+        _row(source_snapshot_id=REQUESTED_ID, captured_at=datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc))
+        for _ in range(25)
+    ]
+    client = _Client(rows=rows)
+    identity = readback.normalize_identity(BASE)
+    candidates = readback._lookup_candidates(client, identity)
+
+    assert candidates["status"] == "PARTIAL"
+    assert candidates["other_snapshot_ids"] == []
+
+
 def test_live_action_422_without_validation_code_is_unattributed():
     client = _Client(
         rpc=_not_found_rpc(),
