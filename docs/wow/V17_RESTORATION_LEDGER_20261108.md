@@ -419,3 +419,30 @@ independent authority remain blocked or absent.
   threshold still counts those, a review-authority waiver is required rather
   than boilerplate. This is not self-approved.
 - `can_execute=false`; no merge or deployment.
+
+### Session 5 — CodeRabbit exact-head reconciliation
+
+- CodeRabbit completed successfully at `48940fa5` but still flagged one
+  actionable test gap and a docstring warning at 73.97% against the 80%
+  threshold. Its final review also noted that padded sport casing could still
+  reach route lookup before evidence repair.
+- `_preflight_prop_route` now strips and upper-cases the route sport before
+  calling the writer's canonical stat resolver and before specialist/artifact
+  lookup. The caller request remains unchanged for audit, and the error payload
+  still reports the caller's raw stat label.
+- The noncanonical regression payload now includes `"  mlb  "` as well as the
+  padded event, player and `K` alias, so the route stubs can only succeed after
+  sport and stat canonicalization.
+- Added a negative two-way market regression using a different event and
+  participant on each side. It proves both sides are withheld from the scorer,
+  the market lane holds with `WOW_HOLD_MARKET_IDENTITY_MISMATCH`, the model
+  probability is preserved, and `can_execute` remains false.
+- Added eight substantive test docstrings covering fingerprint stability,
+  ready/absent/partial classification, identity and alias attribution, and
+  sanitized infrastructure failure. Production module docstrings remain
+  complete; no boilerplate was added to protocol doubles.
+- **Local rerun:** focused affected set **56 passed, 8 skipped**; shard 0
+  **2299 passed, 39 skipped**; shard 1 **2871 passed, 7 skipped**; shard 2
+  **1846 passed, 9 skipped**; shard 3 **2183 passed, 1 skipped**. All skips
+  require the ephemeral Postgres integration service.
+- `can_execute=false`; no merge or deployment.

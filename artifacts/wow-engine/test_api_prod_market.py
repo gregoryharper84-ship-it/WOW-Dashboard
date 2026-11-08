@@ -220,6 +220,57 @@ def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
     assert captured["market_side_b"].event_id == payload["event_id"]
 
 
+def test_mismatched_quote_identities_hold_market_but_preserve_model_probability(monkeypatch):
+    """Reject both quote sides when either side's event or participant differs."""
+    captured = {}
+
+    def fake_score(**kwargs):
+        captured.update(kwargs)
+        return _result(market_available=False, market_quality="NO_QUALIFYING_MARKET")
+
+    _install_common(monkeypatch, fake_score)
+    payload = _request_payload()
+    now = datetime.now(timezone.utc).isoformat()
+    common = {
+        "line": 10.5,
+        "settlement_basis": "FULL_GAME_PLAYER_STAT",
+        "retrieved_at": now,
+        "stat": "REB",
+        "period": "FULL_GAME",
+    }
+    payload["market_side_a"] = {
+        **common,
+        "side": "MORE",
+        "american_odds": -135,
+        "participant": "Test Player",
+        "event_id": payload["event_id"],
+    }
+    payload["market_side_b"] = {
+        **common,
+        "side": "LESS",
+        "american_odds": 105,
+        "participant": "Other Player",
+        "event_id": "WNBA:TEST:MARKET:2",
+    }
+
+    response = client.post("/score-prop", json=payload, headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["probability_publishable"] is True
+    assert body["objective_lanes"]["MODEL"]["status"] == "PASS"
+    assert body["objective_lanes"]["MARKET"]["status"] == "HOLD"
+    assert body["objective_lanes"]["MARKET"]["candidate_audit_status"] == "HOLD"
+    assert body["objective_lanes"]["MARKET"]["candidate_audit_blocker"] == (
+        "WOW_HOLD_MARKET_IDENTITY_MISMATCH"
+    )
+    assert body["objective_lanes"]["MARKET"]["blocks_model_probability"] is False
+    assert body["can_execute"] is False
+    assert captured["market_side_a"] is None
+    assert captured["market_side_b"] is None
+    assert captured["request"].stat_type == "REBOUNDS"
+
+
 def test_python_verification_conflict_holds_economics_without_erasing_model_probability(monkeypatch):
     def fake_score(**_kwargs):
         return _result(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")

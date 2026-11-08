@@ -160,6 +160,7 @@ def _not_found_rpc():
 
 
 def test_fingerprint_is_stable_across_snapshot_id_and_whitespace():
+    """Fingerprint canonical identity, not snapshot id or raw whitespace."""
     first = dict(BASE)
     second = {
         **BASE,
@@ -175,6 +176,7 @@ def test_fingerprint_is_stable_across_snapshot_id_and_whitespace():
 
 
 def test_ready_row_is_reported_ready_without_leaking_player_or_logs():
+    """A ready row is summarized without exposing PII or raw evidence."""
     client = _Client(rpc=_ready_rpc(), rows=[_row()])
     result = readback.diagnose_prop_evidence(client, BASE, request_id="req-1")
 
@@ -190,6 +192,7 @@ def test_ready_row_is_reported_ready_without_leaking_player_or_logs():
 
 
 def test_missing_row_and_no_candidates_is_absent_evidence():
+    """Only an empty bounded candidate search supports absence."""
     client = _Client(rpc=_not_found_rpc(), rows=[])
     result = readback.diagnose_prop_evidence(client, BASE)
 
@@ -199,6 +202,7 @@ def test_missing_row_and_no_candidates_is_absent_evidence():
 
 
 def test_row_under_other_id_is_not_absent_evidence():
+    """A row under another snapshot id is a distinct, non-absence state."""
     client = _Client(rpc=_not_found_rpc(), rows=[_row(source_snapshot_id=OTHER_ID)])
     result = readback.diagnose_prop_evidence(client, BASE)
 
@@ -208,6 +212,7 @@ def test_row_under_other_id_is_not_absent_evidence():
 
 
 def test_identity_mismatch_is_not_absent_evidence_and_hides_other_player():
+    """Identity mismatch is reported without disclosing the other player."""
     client = _Client(
         rpc={"ok": False, "code": readback.EVIDENCE_IDENTITY_MISMATCH},
         rows=[_row(player="Other Player")],
@@ -222,6 +227,7 @@ def test_identity_mismatch_is_not_absent_evidence_and_hides_other_player():
 
 
 def test_primary_rpc_alias_mismatch_is_not_reported_as_other_identity():
+    """An alias-only primary mismatch is attributed to the stat alias."""
     request = {**BASE, "sport": "MLB", "stat_type": "K"}
     client = _Client(
         rpc={"ok": False, "code": readback.EVIDENCE_IDENTITY_MISMATCH},
@@ -241,6 +247,7 @@ def test_primary_rpc_alias_mismatch_is_not_reported_as_other_identity():
 
 
 def test_incomplete_row_is_not_ready():
+    """A present but incomplete row must not be classified as ready."""
     client = _Client(
         rpc={"ok": False, "code": readback.EVIDENCE_INCOMPLETE},
         rows=[_row(hydration_status="FAILED", blockers=["ROLE_STATUS_UNAVAILABLE"])],
@@ -252,6 +259,7 @@ def test_incomplete_row_is_not_ready():
 
 
 def test_rpc_infrastructure_failure_is_never_absence():
+    """Transport failure is unavailable evidence, never proof of absence."""
     client = _Client(rpc_error=TimeoutError("db unavailable"), rows=[_row()])
     result = readback.diagnose_prop_evidence(client, BASE)
 

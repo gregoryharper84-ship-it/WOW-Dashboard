@@ -782,14 +782,16 @@ def _preflight_prop_route(
     hydrator. This keeps unsupported rows from consuming acquisition work and
     prevents their failures from masquerading as evidence-contract failures.
 
-    Route lookups use the writer's canonical stat alias, so an MLB ``K`` request
-    resolves the same specialist and artifact as ``PITCHER_STRIKEOUTS`` before
-    evidence hydration. The caller request itself is never mutated here.
+    Route lookups use the writer's canonical sport and stat alias, so an MLB
+    ``K`` request with padded sport casing resolves the same specialist and
+    artifact as ``PITCHER_STRIKEOUTS`` before evidence hydration. The caller
+    request itself is never mutated here.
     """
     from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
 
-    route_stat = writer_canonical_stat(req.sport, req.stat_type)
-    specialist = prod.base_api._controlling_specialist_provider(req.sport, route_stat)
+    route_sport = str(req.sport or "").strip().upper()
+    route_stat = writer_canonical_stat(route_sport, req.stat_type)
+    specialist = prod.base_api._controlling_specialist_provider(route_sport, route_stat)
     if specialist is None:
         raise HTTPException(
             status_code=503,
@@ -843,7 +845,7 @@ def _preflight_prop_route(
             },
         )
 
-    route_artifact = _prop_route_artifact(req.sport, route_stat)
+    route_artifact = _prop_route_artifact(route_sport, route_stat)
     route_code = str(route_artifact.get("code") or "")
     if route_code in PROP_ROUTE_REGISTRY_INFRA_CODES:
         # Registry transport/shape failure is infrastructure, not proof that the
@@ -854,7 +856,7 @@ def _preflight_prop_route(
                 "code": route_code,
                 "governed_probability_status": "NOT_PRODUCED",
                 "requested_route": {
-                    "sport": str(req.sport).upper(),
+                    "sport": route_sport,
                     "stat_type": str(req.stat_type).upper(),
                     "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
                 },
@@ -885,7 +887,7 @@ def _preflight_prop_route(
                 "governed_probability_status": "NOT_PRODUCED",
                 "aggregate_prop_capability_status": lane.get("capability_status"),
                 "requested_route": {
-                    "sport": str(req.sport).upper(),
+                    "sport": route_sport,
                     "stat_type": str(req.stat_type).upper(),
                     "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
                 },

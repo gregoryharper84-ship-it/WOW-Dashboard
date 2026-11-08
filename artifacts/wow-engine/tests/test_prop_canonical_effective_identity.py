@@ -296,6 +296,7 @@ def _payload(*, source_snapshot_id, noncanonical=False):
         payload.update(
             {
                 "event_id": f"  {EVENT_ID}  ",
+                "sport": "  mlb  ",
                 "player": "  Test   Pitcher ",
                 "stat_type": "K",
             }
