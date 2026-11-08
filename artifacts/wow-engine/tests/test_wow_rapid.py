@@ -126,3 +126,12 @@ def test_invalid_shard_parameters_fail_closed() -> None:
         assert "0 <= index < total" in str(exc)
     else:
         raise AssertionError("invalid shard index must fail")
+
+def test_setup_python_cache_restore_is_bounded_and_cache_remains_enabled() -> None:
+    workflow = yaml.load(RAPID_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["rapid-gate"]
+    setup_python = next(step for step in job["steps"] if step.get("uses") == "actions/setup-python@v5")
+
+    assert setup_python["with"]["cache"] == "pip"
+    assert setup_python["env"]["SEGMENT_DOWNLOAD_TIMEOUT_MINS"] == "2"
+    assert job["timeout-minutes"] == "12"
