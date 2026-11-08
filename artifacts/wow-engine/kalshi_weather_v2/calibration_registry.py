@@ -407,8 +407,9 @@ def _group_key(prediction: Mapping[str, Any]) -> tuple[str, str, str]:
     payload = payload if isinstance(payload, Mapping) else {}
     contract = payload.get("contract")
     contract = contract if isinstance(contract, Mapping) else {}
+    grouping_id, _identity_basis = settlement_identity(contract)
     return (
-        str(contract.get("settlement_location_code") or "").strip(),
+        grouping_id,
         str(contract.get("lane") or "").strip().upper(),
         str(payload.get("lead_time_bucket") or "").strip().upper(),
     )
