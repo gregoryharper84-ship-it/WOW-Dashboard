@@ -86,3 +86,14 @@ A separate opt-in workflow, `.github/workflows/wow-trigger-remote-dev-acceptance
 - Remote DEV workflow [#42523475026](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42523475026): SKIPPED by its explicit opt-in guard. The job did not start, no Trigger key was consumed, and no cloud task receipt was produced.
 - The tests validate receipt-shape assertions and workflow safety conditions only. They do not validate a connected GitHub-hosted worker, provider-reported DEVELOPMENT, actual health/retry/checkpoint runs, or secret configuration.
 - **Disposition remains WORKING_NOT_COMPLETE / UNVERIFIED for live DEV acceptance.** The operator must configure the repository opt-in variable, actual project reference variable, and a new short-lived Development-only key in the GitHub environment before the workflow can run. Formal non-author SIRT review remains pending.
+
+
+### Live runner authentication finding — Nov 8, 2026
+
+The first GitHub-hosted worker attempt reached the guarded job with the configured project reference and masked Development API key. The CLI process exited before worker registration and reported: `Authentication required in CI environment. Please set the TRIGGER_ACCESS_TOKEN environment variable with a Personal Access Token.` This is the Trigger.dev CLI's explicit CI authentication contract, not a project-ref or API-key failure.
+
+Source inspection of Trigger.dev CLI v4.8.3 `packages/cli-v3/src/commands/login.ts` confirms that CI requires `TRIGGER_ACCESS_TOKEN` and validates it as a `tr_pat_...` Personal Access Token (or internal organization token). A Development environment API key (`tr_dev_sk_...`) is not accepted for CLI login. The CLI error is distinct from the SDK's `TRIGGER_SECRET_KEY` used by the task-triggering code.
+
+The workflow now preflights `TRIGGER_ACCESS_TOKEN` before starting a worker and expects it as a separate GitHub Actions environment secret. This is a user-level PAT and has a broader potential blast radius than a single Development API key. Do not add it until the GitHub environment has a required reviewer / prevent-self-review protection and a branch deployment restriction. Use a new short-lived PAT, run once, then revoke it. No PAT was present in the first attempt; no task run was triggered and no task receipt exists.
+
+**Current state:** Root cause CONFIRMED; remediation code/docs added; live worker acceptance remains BLOCKED on protected, short-lived PAT provisioning. Production/Staging access remains prohibited.
