@@ -68,6 +68,8 @@ class Test24x7(unittest.TestCase):
             "restoration": [
                 {"issue_number": 823, "severity": "P0", "lease_group": "P0_LLP_RESTORE"},
                 {"issue_number": 1950, "severity": "P0", "lease_group": "P0_NBA_RESTORE"},
+                {"issue_number": 1952, "severity": "P0", "lease_group": "P0_NHL_RESTORE"},
+                {"issue_number": 1951, "severity": "P0", "lease_group": "P0_NCAAF_RESTORE"},
                 {"issue_number": 1527, "severity": "P1"},
             ]
         }
@@ -78,6 +80,18 @@ class Test24x7(unittest.TestCase):
         ], [], manifest=manifest)
         self.assertEqual((result["incident"], result["lease_group"]),
                          (823, "P0_LLP_RESTORE"))
+        # Every supported P0 sport/lane receives its exact domain lease.
+        for incident, group in (
+            (823, "P0_LLP_RESTORE"),
+            (1950, "P0_NBA_RESTORE"),
+            (1952, "P0_NHL_RESTORE"),
+            (1951, "P0_NCAAF_RESTORE"),
+        ):
+            with self.subTest(incident=incident):
+                routed = mod.plan([issue(incident, "P0")], [],
+                                  target=incident, manifest=manifest)
+                self.assertEqual((routed["action"], routed["lease_group"]),
+                                 ("BUILD", group))
         # An exact P0 target absent from the approved lease manifest is held.
         held = mod.plan([issue(1767, "P0")], [], target=1767, manifest=manifest)
         self.assertEqual((held["action"], held["reason"]),
