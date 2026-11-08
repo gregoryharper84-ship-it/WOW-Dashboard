@@ -107,3 +107,8 @@ The remote acceptance workflow [#42525441271](https://github.com/gregoryharper84
 **Environment approval is not independently verified.** The workflow job did not expose a reviewer-approval receipt in the available readback, and the GitHub integration here cannot inspect environment protection settings. Treat required-reviewer and branch-restriction settings as UNVERIFIED. Before adding the user-level PAT, configure a required reviewer for `wow-trigger-dev` and restrict deployments to the fixed recovery branch. Use a new short-lived PAT, execute the bounded run once, then revoke it. Never paste it into chat.
 
 Current disposition: implementation source validated; live task acceptance BLOCKED on protected PAT provisioning. PR #2529 remains DRAFT / UNMERGED. No Production/Staging, model scoring, coding dispatch or betting authority has been used.
+
+
+### Credential-readiness guard — Nov 8, 2026
+
+The remote job now requires repository variable `WOW_TRIGGER_CLI_AUTH_READY=true` in addition to the existing remote-worker opt-in. Set this only after the `wow-trigger-dev` environment has a required reviewer / branch restriction and both separate secrets are installed. This prevents automatic PR synchronization from repeatedly starting a runner while the CLI PAT is absent. The variable is an operator acknowledgement, not proof of environment protection; actual run receipts remain the evidence.
