@@ -4,30 +4,34 @@ import { pathToFileURL } from "node:url";
 
 const EXPECTED_CLI_VERSION = "4.8.3";
 const EXPECTED_MINIMATCH_VERSION = "11.0.1";
+const EXPECTED_PICOMATCH_VERSION = "2.3.2";
 const OLD_IMPORT = 'import { makeRe } from "minimatch";';
-const NEW_IMPORT = 'import { Minimatch } from "minimatch";';
+const NEW_IMPORT = 'import picomatch from "picomatch";';
 const OLD_CALL = "const externalRegex = makeRe(externalName);";
-const NEW_CALL = "const externalRegex = new Minimatch(externalName).makeRe();";
+const NEW_CALL = "const externalRegex = picomatch.makeRe(externalName);";
 
 /**
  * Apply a narrow, version-pinned compatibility patch to Trigger.dev CLI 4.8.3.
  *
- * minimatch 11 removed the top-level makeRe export but retains the equivalent
- * Minimatch class method. This changes only the installed DEV CLI file, never
- * the application SDK or production runtime. Fail closed on any upstream drift.
+ * minimatch 11 removed makeRe() entirely. The CLI's only use is to compile
+ * package-glob patterns into a RegExp for esbuild. picomatch 2.3.2 provides
+ * makeRe() for that purpose. Pin and verify both package versions and the
+ * exact upstream source shape; fail closed on any drift.
+ *
+ * This modifies only the local DEVELOPMENT CLI file under node_modules.
  */
 export function patchTriggerCli(rootDir = process.cwd()) {
-  const packageJsonPath = join(rootDir, "node_modules", "trigger.dev", "package.json");
+  const cliPackageJsonPath = join(rootDir, "node_modules", "trigger.dev", "package.json");
   const minimatchPackageJsonPath = join(rootDir, "node_modules", "minimatch", "package.json");
+  const picomatchPackageJsonPath = join(rootDir, "node_modules", "picomatch", "package.json");
   const externalsPath = join(rootDir, "node_modules", "trigger.dev", "dist", "esm", "build", "externals.js");
 
   let cliPackage;
   try {
-    cliPackage = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    cliPackage = JSON.parse(readFileSync(cliPackageJsonPath, "utf8"));
   } catch (error) {
     throw new Error("TRIGGER_CLI_PACKAGE_NOT_INSTALLED", { cause: error });
   }
-
   if (cliPackage.version !== EXPECTED_CLI_VERSION) {
     throw new Error(`UNSUPPORTED_TRIGGER_CLI_VERSION:${String(cliPackage.version)}`);
   }
@@ -42,6 +46,16 @@ export function patchTriggerCli(rootDir = process.cwd()) {
     throw new Error(`UNSUPPORTED_MINIMATCH_VERSION:${String(minimatchPackage.version)}`);
   }
 
+  let picomatchPackage;
+  try {
+    picomatchPackage = JSON.parse(readFileSync(picomatchPackageJsonPath, "utf8"));
+  } catch (error) {
+    throw new Error("PICOMATCH_PACKAGE_NOT_INSTALLED", { cause: error });
+  }
+  if (picomatchPackage.version !== EXPECTED_PICOMATCH_VERSION) {
+    throw new Error(`UNSUPPORTED_PICOMATCH_VERSION:${String(picomatchPackage.version)}`);
+  }
+
   let source;
   try {
     source = readFileSync(externalsPath, "utf8");
@@ -54,7 +68,6 @@ export function patchTriggerCli(rootDir = process.cwd()) {
     source.includes(NEW_CALL) &&
     !source.includes(OLD_IMPORT) &&
     !source.includes(OLD_CALL);
-
   if (alreadyPatched) {
     return { status: "already-patched", version: cliPackage.version };
   }
