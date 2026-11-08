@@ -30,6 +30,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 def _archetype(prop_type: str) -> str:
+    """Map a prop label to its stable exposure-limit family."""
     pt = prop_type.lower()
     if "point" in pt:                                  return "scoring"
     if "rebound" in pt:                                return "rebound"
@@ -74,6 +75,10 @@ def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
     host = str(parsed.get("host") or "").strip()
     if not host or parsed.get("hostaddr"):
         return None
+    # libpq treats a path-valued host as a Unix-domain socket directory.
+    # It is not a DNS name and must be left for libpq to resolve locally.
+    if "/" in host or "\\" in host:
+        return None
     if "," in host:
         raise ValueError("SESSION_LEDGER_DNS_MULTIHOST_UNSUPPORTED")
     try:
@@ -86,7 +91,9 @@ def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
     except (TypeError, ValueError):
         raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID") from None
 
-    if not _DNS_RESOLUTION_SLOT.acquire(blocking=False):
+    # Concurrent warmups wait no longer than the same DNS deadline. This
+    # bounds request latency while preventing a second stuck resolver thread.
+    if not _DNS_RESOLUTION_SLOT.acquire(timeout=DNS_RESOLUTION_TIMEOUT_SECONDS):
         raise TimeoutError("SESSION_LEDGER_DNS_BUSY")
     outcome: dict[str, Any] = {}
     completed = threading.Event()
@@ -185,6 +192,7 @@ class PgSessionLedger:
         max_archetype: int = MAX_ARCHETYPE,
         ttl_hours: int     = SESSION_TTL_HOURS,
     ) -> None:
+        """Bind the ledger to one session and its configured exposure limits."""
         self.session_id    = session_id
         self._conn_string  = conn_string or os.environ.get("DATABASE_URL", "")
         self.max_player    = max_player
