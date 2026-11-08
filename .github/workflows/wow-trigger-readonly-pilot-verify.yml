@@ -80,6 +80,26 @@ jobs:
           if (missing.length) throw new Error("INCOMPLETE_CROSS_PLATFORM_LOCK: " + missing.join(", "));
           console.log("Cross-platform optional lock entries present:", required.length);
           NODE
+      - name: Resolve patched dependency lockfile (temporary transfer)
+        run: |
+          npm install --package-lock-only --include=dev --include=optional --ignore-scripts --no-audit --no-fund
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const expected = { "deepmerge-ts": "8.0.2", "esbuild": "0.25.0", "minimatch": "11.0.1", "tar": "7.5.22", "zod": "4.6.7" };
+          const resolved = {};
+          for (const name of Object.keys(expected)) {
+            const entries = Object.entries(lock.packages).filter(([path]) => path === "node_modules/" + name || path.endsWith("/node_modules/" + name));
+            resolved[name] = [...new Set(entries.map(([, value]) => value.version))];
+          }
+          console.log("PATCHED_DEPENDENCY_RESOLUTION", JSON.stringify(resolved));
+          for (const [name, version] of Object.entries(expected)) {
+            if (!resolved[name].includes(version)) throw new Error("PATCHED_DEPENDENCY_MISSING: " + name + "@" + version);
+          }
+          const b64 = fs.readFileSync("package-lock.json").toString("base64");
+          for (let i = 0; i < b64.length; i += 1024) console.log("PATCHED_LOCK_CHUNK " + (i / 1024) + " " + b64.slice(i, i + 1024));
+          console.log("PATCHED_LOCK_END " + b64.length);
+          NODE
       - name: Build-time SDK compatibility (isolated, no deploy)
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
