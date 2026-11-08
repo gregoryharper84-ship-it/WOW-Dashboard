@@ -56,6 +56,7 @@ def _bulky_base():
 
 
 def test_compact_governance_response_stays_action_safe_without_changing_authority():
+    """Keep the exact deployment identity in the compact safe response."""
     bridge_health = {
         "MLB": {"registered": True, "debug": "x" * 1200},
         "NFL": {"registered": True, "debug": "x" * 1200},
