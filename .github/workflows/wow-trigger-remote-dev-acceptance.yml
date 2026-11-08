@@ -30,6 +30,7 @@ jobs:
     if: >-
       ${{
         vars.WOW_TRIGGER_REMOTE_DEV_ENABLED == 'true' &&
+        vars.WOW_TRIGGER_CLI_AUTH_READY == 'true' &&
         (
           (
             github.event_name == 'pull_request' &&
