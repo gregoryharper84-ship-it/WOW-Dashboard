@@ -96,6 +96,8 @@ def test_editor_sync_docs_match_the_current_29_operation_schema_and_gateway_boun
     assert "single canonical 29-operation WOW Action schema" in attestation
     assert "LLP_GATEWAY_PATH_NOT_ALLOWED" in sync_doc
     assert "x-wow-gateway: supabase-edge" in sync_doc
+    assert "Vercel platform 404" in sync_doc
+    assert "do not attribute the handler" in sync_doc
     assert "four-operation subset" in sync_doc
     assert subset_schema.count("operationId:") == 4
     assert module.ACTION_SCHEMA.read_text(encoding="utf-8").count("operationId:") == 29
