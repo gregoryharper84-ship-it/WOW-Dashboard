@@ -120,7 +120,7 @@ test("task source tripwire: no obvious schedules or direct network calls; this i
   assert.match(source,/maxAttempts:\s*3/);
   const imports = [...source.matchAll(/from ["']([^"']+)["']/g)].map(match => match[1]).sort();
   assert.deepEqual(imports, ["../lib/read-only-health.mjs", "../lib/submit-readonly.mjs", "@trigger.dev/sdk"].sort());
-  assert.match(source, /observeWowHealth\\(\\{\\s*triggerEnvironmentType:\\s*ctx\\.environment\\.type\\s*\\}\\)/);
+  assert.match(source, /observeWowHealth\(\{\s*triggerEnvironmentType:\s*ctx\.environment\.type\s*\}\)/);
   assert.doesNotMatch(source,/schedules\.task|cron\s*\(|\bfetch\s*\(/i);
 });
 
