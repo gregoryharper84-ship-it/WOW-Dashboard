@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: "22"
+          node-version: "26"
       - name: Install dependencies and smoke-test patched CLI imports (no credentials)
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
