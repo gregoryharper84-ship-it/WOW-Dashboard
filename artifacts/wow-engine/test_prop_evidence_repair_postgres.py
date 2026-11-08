@@ -246,7 +246,7 @@ def test_repair_recovers_exact_writer_identity_through_the_real_rpc(repair_db):
     assert _count(conn, schema) == 1, "repair must not fabricate evidence"
     # The caller's own request is never rewritten.
     assert req.event_id == " 2026020276 "
-    assert req.stat_type == "pass-yds"
+    assert req.stat_type == "pass-yards"
 
 
 @pytest.mark.parametrize(
