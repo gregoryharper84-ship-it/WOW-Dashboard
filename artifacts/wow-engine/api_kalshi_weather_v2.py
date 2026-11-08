@@ -32,7 +32,8 @@ app = FastAPI(
 # Attach the existing bounded cohort controller only when this isolated runtime
 # explicitly owns acquisition. Default is OFF, including when a global
 # empirical-cohort flag is accidentally inherited from the shared V17 service.
-# Deployment must separately verify that no other live collector is writing.
+# The durable queue claim fences concurrent queue consumers; deployment must
+# still verify that no separate legacy or external collector is writing.
 ISOLATED_CAPTURE = install_isolated_capture_if_owned(
     app,
     db_client_fn=get_client,
