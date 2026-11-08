@@ -6,9 +6,10 @@
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc --noEmit",
-    "predev": "node ./scripts/patch-trigger-cli.mjs",
+    "predev": "node ./scripts/start-dev-preflight.mjs",
     "dev": "trigger dev",
-    "cli:smoke": "node --input-type=module -e \"await import('./node_modules/trigger.dev/dist/esm/build/externals.js')\""
+    "cli:smoke": "node --input-type=module -e \"await import('./node_modules/trigger.dev/dist/esm/build/externals.js')\"",
+    "patch:cli": "node ./scripts/patch-trigger-cli.mjs"
   },
   "dependencies": {
     "@trigger.dev/sdk": "^4.8.3"
