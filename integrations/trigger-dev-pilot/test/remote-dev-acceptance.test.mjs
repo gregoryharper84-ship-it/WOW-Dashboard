@@ -103,7 +103,7 @@ test("remote runner uses only DEV worker and three explicitly bounded pilot task
 });
 
 test("remote worker workflow is opt-in, same-repository PR only and read-only", () => {
-  const workflow = readFileSync(new URL("../../.github/workflows/wow-trigger-remote-dev-acceptance.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../../../.github/workflows/wow-trigger-remote-dev-acceptance.yml", import.meta.url), "utf8");
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /vars\.WOW_TRIGGER_REMOTE_DEV_ENABLED == 'true'/);
