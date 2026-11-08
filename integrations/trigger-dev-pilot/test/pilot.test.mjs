@@ -40,7 +40,7 @@ test("fixed read-only GET with no token or redirection", async () => {
       return { ...okResponse, body: { cancel: async () => { called.push(["body-cancelled"]); } } };
     },
   });
-  assert.equal(called.length, 1);
+  assert.equal(called.length, 2); // one request plus the explicit body-cancel observation
   assert.equal(called[0][0], HEALTH_URL);
   assert.equal(called[0][1].method, "GET");
   assert.equal(called[0][1].redirect, "manual");
