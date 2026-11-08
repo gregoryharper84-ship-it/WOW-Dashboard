@@ -272,6 +272,19 @@ def test_below_minimum_sample_never_produces_a_candidate_profile():
     assert "CALIBRATION_SAMPLE_INSUFFICIENT" in fitted[0]["fit"].blockers
 
 
+
+def test_candidate_sample_minimum_cannot_be_lowered_by_a_caller():
+    predictions, outcomes = _evidence_rows(MINIMUM_CANDIDATE_SAMPLES)
+    with pytest.raises(ValueError, match="precommitted constant"):
+        fit_candidate_profile_sets(predictions, outcomes, minimum_n=1)
+    with pytest.raises(ValueError, match="precommitted constant"):
+        persist_candidate_calibration_profiles(
+            _Client(),
+            model_version="TEST_MODEL_V1",
+            fitted_as_of=FITTED_AT,
+            minimum_n=1,
+        )
+
 def test_candidate_profile_is_persisted_uncertified_and_non_executable():
     client = _Client()
     predictions, outcomes = _evidence_rows(MINIMUM_CANDIDATE_SAMPLES)
