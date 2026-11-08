@@ -27,7 +27,7 @@ STOP_LABELS = {
     "no-autobuild", "no-auto-build", "duplicate", "wontfix",
 }
 SIRT_REVIEW_TITLE = re.compile(
-    r"^(?=.*\b(?:review|intake|assurance|acceptance|certification|class|security|independent\w*|verif\w*|audit)\b)"
+    r"^(?=.*\b(?:review|intake|assurance|acceptance|certification|class|independent\w*|verif\w*|audit)\b)"
     r"(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)",
     re.IGNORECASE,
 )
