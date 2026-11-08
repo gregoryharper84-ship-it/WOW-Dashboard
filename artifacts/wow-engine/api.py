@@ -231,6 +231,7 @@ def _render_deployed_sha() -> str | None:
 
 @app.get("/health")
 def health():
+    """Expose public runtime health and immutable deployment identity."""
     return {
         "status": "ok",
         "deployed_sha": _render_deployed_sha(),
