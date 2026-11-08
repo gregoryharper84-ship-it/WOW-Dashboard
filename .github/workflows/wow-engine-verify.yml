@@ -327,6 +327,42 @@ jobs:
           print("release contracts valid")
           PY
 
+  deployment-truth:
+    name: WOW live deployed-SHA ancestry (observation, never a deploy gate)
+    # Protected-main only: a pull_request head can never be live, and asserting
+    # otherwise here would deny the deploy this workflow authorises.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Assert live web/worker SHA is contained in protected main
+        id: ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          ANCESTRY_RECEIPT: live-deploy-ancestry.json
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          # Render's native checksPass trigger deploys this very commit. A
+          # lagging production SHA is therefore expected and reported, never a
+          # failure: the check asserts containment in main, not equality.
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::notice::LIVE_SHA_ANCESTRY_UNVERIFIED: RENDER_API_KEY is not configured; no live readback was performed."
+            exit 0
+          fi
+          python -m v17.live_deploy_ancestry
+          python -c 'import json; b=json.load(open("live-deploy-ancestry.json")); print("live_ancestry", b["status"], "lag", b.get("observed_lag_commits"), "production_verified", b["production_verified"])'
+
   governed-probability-backend:
     name: WOW governed probability backend
     if: always()

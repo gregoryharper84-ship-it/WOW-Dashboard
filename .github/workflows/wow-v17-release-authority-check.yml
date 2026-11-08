@@ -106,7 +106,18 @@ jobs:
             # the existing fail-closed policy resolution.
             args+=(--neutral-if-superseded)
           fi
-          bundle=$(python "$tool" "${args[@]}")
+          # A refusal is a typed admission decision, not an opaque shell
+          # failure. Surface the exact reason so a main-scoped callback can be
+          # diagnosed from the check annotation alone. The disposition is
+          # unchanged: exit 1 and no Release check is published either way.
+          err="$RUNNER_TEMP/resolve-qa-policy.err"
+          if ! bundle=$(python "$tool" "${args[@]}" 2>"$err"); then
+            reason=$(head -n 1 "$err" | tr -d '\r')
+            reason=${reason:-RELEASE_QA_POLICY_UNRESOLVED}
+            echo "::error::${reason}"
+            echo "Release admission refused: ${reason} (no Release check published)." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<< "$bundle")" = "neutral" ]; then
             echo "::notice::RELEASE_NEUTRAL_BEFORE_PR_LOCK:$(jq -r .reason <<< "$bundle")"
             exit 0
