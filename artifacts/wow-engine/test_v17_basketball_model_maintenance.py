@@ -132,6 +132,12 @@ def test_public_failure_code_returns_only_allowlisted_literal_codes():
         maintenance.BasketballHydrationError("unknown-provider-payload secret=token"),
     ):
         assert maintenance._public_failure_code(error, fallback) == fallback
+    for error in (
+        RuntimeError(""),
+        RuntimeError(":details"),
+        maintenance.BasketballHydrationError("   "),
+    ):
+        assert maintenance._public_failure_code(error, fallback) == fallback
 
 
 
