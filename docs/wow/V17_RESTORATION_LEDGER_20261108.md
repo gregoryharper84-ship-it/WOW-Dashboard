@@ -31,7 +31,7 @@ acceptance. It must not be treated as NBA restoration.
 | Objective | Status | Root cause / exact blocker | Existing PR | Branch / commit | Verification | Remaining blocker | Next action |
 |---|---|---|---|---|---|---|---|
 | A1 Production environment identity | BLOCKED | No Render or production Supabase credentials/readback available in this environment; connected Supabase project is the validation project, not production | — | — | Read-only repo inspection only | Production access / owner-provided credentials | Bind production secrets and prove web+worker deployed SHA and database project |
-| A2 Action-to-backend evidence ingestion | WORKING_NOT_COMPLETE | Found and fixed one concrete identity defect: fallback snapshot lookup used raw caller sport/stat/player while the governed writer persists uppercase sport, canonical uppercase stat, whitespace-collapsed player | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft) | `fix/prop-evidence-fallback-canonical-identity-20261108` / `21f930b608ba0a568df55a8828ee81354df1f102` | 4 focused tests pass | The reported live 422 cannot be attributed without production readback; `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` also legitimately means no snapshot row exists | Run the production Action and query the evidence ledger read-only |
+| A2 Action-to-backend evidence ingestion | WORKING_NOT_COMPLETE | Fallback identity defect fixed; exact-identity readback and receipt audit added. Validation-ledger receipt audit shows the reported 422 pair was `SELF_ACCEPTANCE`, not a live Action call | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft) | `fix/prop-evidence-fallback-canonical-identity-20261108` / `8c9217af001674d0e4aa4ee5a8ea48084b9df5e0` | 17 focused tests + 4 acceptance + 4 synthetic tests pass; readback executed on both actual validation receipts | Production readback/deployment not executed (no production credentials); live Action parity and production evidence remain unproven | Deploy the readback and run it with a production request id/identity |
 | A3 Worker processing | BLOCKED | No production queue/worker access; queue admission was not accepted as scoring | — | — | None | Production Render worker + DB access | Prove claim, specialist invocation, retry idempotency and durable receipt |
 | A4 Immutable receipts | BLOCKED | Depends on A1–A3 and a certified specialist | — | — | None | Production evidence | Verify receipt fields end-to-end |
 | B NBA restoration | BLOCKED | `CERTIFIED_TEAM_EVENT_SPORTS` contains only MLB; `TEAM_EVENT_BRIDGES` registers MLB and NFL at bootstrap; `nba_current_pregame_scorer.py` is explicitly unregistered and stops at `NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED`; no certified NBA artifact or current-season data was proven | #2504 (conflicted, uncertified) | — | Code inspection | Certified fitted artifact, calibration, current pregame data, independent acceptance | Do not register an uncertified seam; complete artifact promotion and certification first |
@@ -54,13 +54,67 @@ acceptance. It must not be treated as NBA restoration.
 | Commit | code `21f930b608ba0a568df55a8828ee81354df1f102`; ledger `e6a51ddd129af21e764745c7da83060af59e539d` |
 | Defect | The primary `wow_prop_evidence_snapshot` RPC compares sport/stat case-insensitively, but the fallback locator queried the table with raw caller strings. The writer persists uppercase sport, canonical uppercase `stat_type`, and whitespace-collapsed player identity, so a valid snapshot could be missed and reported as `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`. |
 | Change | `_canonical_identity()` normalizes only the fallback lookup keys. Event id, line, `captured_at < event_start_time`, `hydration_status='PASS'`, the primary RPC, calibration, publication, and execution gates are unchanged. |
-| Tests | `.venv/bin/python -m pytest -q tests/test_prop_evidence_repair_identity.py` → **4 passed** |
+| Tests | Fallback: `tests/test_prop_evidence_repair_identity.py` → **4 passed**. Readback: `tests/test_prop_evidence_readback.py` → **13 passed**. Combined → **17 passed**. Acceptance: `test_api_prod_market_acceptance.py` → **4 passed**; synthetic: `test_v17_synthetic_self_acceptance_latest_snapshot.py` → **4 passed**. |
+| Readback commit | `8c9217af001674d0e4aa4ee5a8ea48084b9df5e0` |
 | CI | Not run (no exact-head workflow result at this branch head) |
 | Independent QA | Not obtained |
 | Deployment | None |
-| Production verification | None |
-| Rollback | Revert `21f930b6`; the change is isolated to the fallback query and has no data migration |
-| Remaining blocker | A production Action call plus read-only evidence-ledger inspection is required to prove the live 422 cause |
+| Production verification | None. The hidden readback route was exercised locally: unauthenticated 401, authenticated 200, `EXPECTED_SELF_ACCEPTANCE_PROBE`, `can_execute=false`. No production database or Render service was reached. |
+| Rollback | Revert `8c9217af` and `21f930b6`; both changes are isolated and have no data migration. |
+| Remaining blocker | Production credentials/deployment and a live Action request id are required to exercise the readback against production; the validation receipt audit already disproves the reported pair as a live Action failure. |
+
+## PROP_EVIDENCE_SNAPSHOT_NOT_FOUND attribution result (2026-11-08)
+
+Read-only query of the connected **validation** ledger
+`iczfhsmjrrafhvcpmqhr` (not the production database):
+
+- 4,089 `wow_action_invocation_receipts`; 2,256 are `/score-prop`.
+- The 20 most recent `/score-prop` 422s all have
+  `caller_class=SELF_ACCEPTANCE` and
+  `validation_code=PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`.
+- The pair at `2026-11-08 05:37:03.835693Z`
+  (`d649a460-5888-48b4-835b-5a454c762309`) and
+  `2026-11-08 05:37:07.145400Z`
+  (`b4ed2527-c112-4b31-85c5-a62ca34555d6`) is the MORE/LESS pair from
+  `api_prod_market_acceptance._run_prop_live_self_acceptance`.
+- That probe deliberately uses a random `source_snapshot_id`, event id
+  `WOW:PROP:LIVE:SELF_ACCEPTANCE:NO_EVIDENCE`, and
+  `X-WOW-Caller-Class: SELF_ACCEPTANCE`. Its `_validate_probe_response`
+  requires exactly 422 / `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` /
+  `specialist_invoked=false` / no numeric probability fields.
+
+Readback result for both actual receipts:
+`reported_failure_attribution=EXPECTED_SELF_ACCEPTANCE_PROBE`,
+`reported_cause_supported=false`,
+`reported_cause_basis=SELF_ACCEPTANCE_PROBE_EXPECTS_422`,
+`can_execute=false`.
+
+Conclusion: **the reported cause is disproved as a live Action/scoring
+evidence failure** for the recorded pair. The 422 is the expected fail-closed
+response to a deliberately nonexistent snapshot id. This does not prove an
+Action call cannot hit a real evidence gap; it proves these receipts are not
+that call. Production receipts were not available, so the production half
+remains unproven.
+
+### Readback path
+
+- `prop_evidence_readback.py` exposes `diagnose_prop_evidence`,
+  `identity_fingerprint`, `classify_evidence_state`, and
+  `log_prop_evidence_failure`.
+- `POST /v17/prop-evidence-readback` is authentication-gated and
+  `include_in_schema=False`.
+- CLI: `python -m prop_evidence_readback --request-json @request.json` or
+  `--request-id <id>`.
+- Classifications: `EVIDENCE_READY`, `EVIDENCE_NOT_READY`,
+  `SNAPSHOT_ROW_MISSING`, `SNAPSHOT_EXISTS_UNDER_OTHER_ID`,
+  `SNAPSHOT_ID_POINTS_TO_OTHER_IDENTITY`, `SNAPSHOT_ROW_MISSING_LOOKUP_PARTIAL`,
+  `PRIMARY_LOOKUP_INFRA_UNAVAILABLE`, `PRIMARY_LOOKUP_TYPED_FAILURE`.
+- The failure boundary logs
+  `WOW_V17_PROP_EVIDENCE_FAILURE identity_fingerprint=... event_id=...
+  sport=... stat_type=... line=... source_snapshot_id=... request_id=...
+  caller_class=... code=... can_execute=false`; player names are excluded.
+- The endpoint returns no player names, game logs, box scores, or
+  probabilities.
 
 ## Escalation blockers
 
@@ -71,7 +125,7 @@ acceptance. It must not be treated as NBA restoration.
 `OWNER_REQUIRED`: Repository owner / release authority.
 `MINIMUM_ACTION_NEEDED`: Provide production read access (or run the documented readback) for web/worker SHA, database project, and evidence/receipt rows.
 `WORKAROUND_ATTEMPTED`: Repo/build inspection and validation of the shared contract only.
-`OTHER_WORK_CONTINUING`: The A2 identity repair and its regression test.
+`OTHER_WORK_CONTINUING`: The A2 identity repair, readback path and regression tests; production execution remains unavailable.
 
 `BLOCKER-002`
 `EXACT_FAILURE`: Independent certification and protected release authority are absent.
@@ -122,7 +176,9 @@ acceptance. It must not be treated as NBA restoration.
 
 The overall restoration is **WORKING_NOT_COMPLETE**. No sports model was
 certified, no protected merge was performed, no deployment was made, and no
-production scoring receipt was verified. The only executed engineering result is
-the bounded A2 fallback-identity repair with 4 passing focused tests. Everything
-else above remains blocked on production access, real model evidence, or
-independent authority — none of which can be produced by this environment.
+production scoring receipt was verified. The executed engineering results are
+the bounded A2 fallback-identity repair and the read-only evidence readback
+(17 focused tests, 4 acceptance tests, 4 synthetic self-acceptance tests). The
+validation ledger disproves the reported 422 as a live Action failure: it is the
+expected self-acceptance probe. Production readback, real model evidence, and
+independent authority remain blocked or absent.
