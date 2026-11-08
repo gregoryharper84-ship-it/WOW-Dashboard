@@ -20,6 +20,7 @@ independent acceptance was available or claimed.
 | PR #2512 | Open, head `e86710587512e2f4a5af48196bf65b185782f944`, 4 files | GitHub integration read |
 | PR #2522 | Open, head `27a32a54f8ecc33a386059cabe46321a54e02262`, 5 docs/test files for Action origin and gateway boundaries | GitHub integration read |
 | PR #2523 | Merged into main (`db5e6b7c8`) | `git log origin/main` |
+| PR #2526 (session 2 start) | Open draft, head `e6ddf3d3e66eeecf3a287ed9816ed0f5e526eecd`, 3 files | GitHub integration read |
 
 PR #2504's own body states it is a Class C candidate, not certified or merged,
 with zero persisted NBA `SCHEDULED` source projections, `timestamp_attestation=UNVERIFIED`,
@@ -31,7 +32,7 @@ acceptance. It must not be treated as NBA restoration.
 | Objective | Status | Root cause / exact blocker | Existing PR | Branch / commit | Verification | Remaining blocker | Next action |
 |---|---|---|---|---|---|---|---|
 | A1 Production environment identity | BLOCKED | No Render or production Supabase credentials/readback available in this environment; connected Supabase project is the validation project, not production | — | — | Read-only repo inspection only | Production access / owner-provided credentials | Bind production secrets and prove web+worker deployed SHA and database project |
-| A2 Action-to-backend evidence ingestion | WORKING_NOT_COMPLETE | Found and fixed one concrete identity defect: fallback snapshot lookup used raw caller sport/stat/player while the governed writer persists uppercase sport, canonical uppercase stat, whitespace-collapsed player | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft) | `fix/prop-evidence-fallback-canonical-identity-20261108` / `21f930b608ba0a568df55a8828ee81354df1f102` | 4 focused tests pass | The reported live 422 cannot be attributed without production readback; `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` also legitimately means no snapshot row exists | Run the production Action and query the evidence ledger read-only |
+| A2 Action-to-backend evidence ingestion | WORKING_NOT_COMPLETE | Fallback acquisition used raw caller identity. Session 2 reconciled it to the actual writer: stripped `event_id`, uppercase sport, whitespace-collapsed player, alias-resolved canonical stat, and revalidation of the fallback copy through the original RPC. Event/line/freshness/hydration/identity checks unchanged | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft) | `fix/prop-evidence-fallback-canonical-identity-20261108` | 123 focused/adjacent tests pass, 15 integration-gated skips; Postgres end-to-end test added to `wow-engine-verify` | The reported live 422 cannot be attributed without production readback; `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` also legitimately means no snapshot row exists | Run the production Action and query the evidence ledger read-only |
 | A3 Worker processing | BLOCKED | No production queue/worker access; queue admission was not accepted as scoring | — | — | None | Production Render worker + DB access | Prove claim, specialist invocation, retry idempotency and durable receipt |
 | A4 Immutable receipts | BLOCKED | Depends on A1–A3 and a certified specialist | — | — | None | Production evidence | Verify receipt fields end-to-end |
 | B NBA restoration | BLOCKED | `CERTIFIED_TEAM_EVENT_SPORTS` contains only MLB; `TEAM_EVENT_BRIDGES` registers MLB and NFL at bootstrap; `nba_current_pregame_scorer.py` is explicitly unregistered and stops at `NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED`; no certified NBA artifact or current-season data was proven | #2504 (conflicted, uncertified) | — | Code inspection | Certified fitted artifact, calibration, current pregame data, independent acceptance | Do not register an uncertified seam; complete artifact promotion and certification first |
@@ -48,19 +49,42 @@ acceptance. It must not be treated as NBA restoration.
 | Field | Value |
 |---|---|
 | Objective | A2 — governed prop evidence fallback identity |
-| Files | `artifacts/wow-engine/prop_evidence_repair.py`, `artifacts/wow-engine/tests/test_prop_evidence_repair_identity.py` |
+| Files | `artifacts/wow-engine/prop_evidence_repair.py`, `artifacts/wow-engine/tests/test_prop_evidence_repair_identity.py`, `artifacts/wow-engine/test_prop_evidence_repair_postgres.py`, `.github/workflows/wow-engine-verify.yml` |
 | Branch | `fix/prop-evidence-fallback-canonical-identity-20261108` |
 | PR | [#2526](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2526) (draft; no merge/certification claimed) |
 | Commit | code `21f930b608ba0a568df55a8828ee81354df1f102`; ledger `e6a51ddd129af21e764745c7da83060af59e539d` |
-| Defect | The primary `wow_prop_evidence_snapshot` RPC compares sport/stat case-insensitively, but the fallback locator queried the table with raw caller strings. The writer persists uppercase sport, canonical uppercase `stat_type`, and whitespace-collapsed player identity, so a valid snapshot could be missed and reported as `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`. |
-| Change | `_canonical_identity()` normalizes only the fallback lookup keys. Event id, line, `captured_at < event_start_time`, `hydration_status='PASS'`, the primary RPC, calibration, publication, and execution gates are unchanged. |
-| Tests | `.venv/bin/python -m pytest -q tests/test_prop_evidence_repair_identity.py` → **4 passed** |
-| CI | Not run (no exact-head workflow result at this branch head) |
+| Defect | The primary `wow_prop_evidence_snapshot` RPC compares sport/stat case-insensitively but event id and player exactly. The fallback locator queried the table with raw caller strings, while `pick_request_runtime_core._validate_evidence` / `_snapshot_payload` persist stripped `event_id`, uppercase `sport`, whitespace-collapsed `player`, and the alias-resolved canonical `stat_type`. A padded/lowercase/alias caller could therefore miss the row it wrote and be reported as `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`. |
+| Change | `_canonical_identity()` now mirrors the writer, reuses the live `_canonical_stat` alias map, covers the trimmed event id, and supplies the same canonical keys to the fallback revalidation copy (the caller's request object is not mutated). Event/line identity, `captured_at < event_start_time`, `hydration_status='PASS'`, the primary RPC, calibration, publication, and execution gates are unchanged. |
+| Caller audit | 5 callers use `repair_prop_evidence`. `score_prop` and `calibration_publication_api` consume `effective_source_snapshot_id`; the NBA scalar and WNBA composite bridges are research-only; the fantasy forward-capture bridge keys on the requested frozen snapshot and holds with `HELD_SOURCE_SNAPSHOT_NOT_FOUND` if a different fallback was used, consistent with `PROP_RESEARCH_FROZEN_SNAPSHOT_MISMATCH`. |
+| Tests | `.venv/bin/python -m pytest -q tests/test_prop_evidence_repair_identity.py test_pick_request_publication_research.py test_pick_request_runtime.py test_v17_nfl_prop_canonical_identity_proof.py v17/test_fantasy_score_candidate_bridge.py v17/test_fantasy_score_forward_cohort_runtime.py v17/test_mlb_pitcher_fantasy_score_forward_loop.py test_prop_snapshot_min3_postgres.py` → **123 passed, 15 skipped** (Postgres tests require `WOW_AGENT_RUNTIME_INTEGRATION=1`) |
+| Integration coverage | `test_prop_evidence_repair_postgres.py` runs the real `wow_prop_evidence_snapshot` function against the real evidence table in an ephemeral schema: missing requested snapshot → canonical fallback → RPC revalidation → exact event/player/sport/stat/line; pregame, hydration, identity and incomplete-evidence violations fail closed; row count proves no fabrication. Wired into `wow-engine-verify`. |
+| CI | Exact-head run requested after push; result recorded below |
 | Independent QA | Not obtained |
 | Deployment | None |
 | Production verification | None |
 | Rollback | Revert `21f930b6`; the change is isolated to the fallback query and has no data migration |
 | Remaining blocker | A production Action call plus read-only evidence-ledger inspection is required to prove the live 422 cause |
+
+## Session 2 — PR #2526 completion
+
+- Corrected the regression that asserted a padded event id was preserved. The
+  writer strips it, so the fallback lookup now asserts the trimmed value.
+- The writer-contract test derives the persisted snapshot with the real
+  `_validate_evidence` / `_snapshot_payload` functions and asserts that
+  `_canonical_identity` returns exactly the persisted event id, sport, player and
+  stat type, including the live alias map (`pass-yards` → `PASSING_YARDS`).
+- Full-loop unit coverage: requested snapshot absent → canonical fallback found →
+  revalidated through the injected original validator → exact identity asserted;
+  a fallback the validator rejects is not upgraded; lookup failure preserves the
+  original blocker; non-repairable primary failures never query the ledger.
+- Real-Postgres coverage as described above. It is the semantic acceptance
+  evidence for the fallback path and is skipped locally without the CI service.
+- `can_execute=false` remains enforced by the repair annotation and by every
+  assertion. No model, calibration, bound, threshold or terminal authority changed.
+
+Still not claimed: the live 422 cause, production evidence, deployment,
+independent semantic acceptance, or merge. Those require production readback and
+an external reviewer respectively.
 
 ## Escalation blockers
 

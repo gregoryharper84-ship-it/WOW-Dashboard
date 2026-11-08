@@ -56,36 +56,39 @@ def _annotate(
     return result
 
 
-def _canonical_identity(req: Any) -> tuple[str, str, str]:
+def _canonical_identity(req: Any) -> tuple[str, str, str, str]:
     """Normalize lookup keys exactly as the governed snapshot writer stores them.
 
-    The primary ``wow_prop_evidence_snapshot`` RPC resolves the row by primary
-    key and only compares sport/stat case-insensitively, so a caller using a
-    lowercase sport or alias casing can still read a valid snapshot there. The
-    fallback locator queries the table directly, and the writer persists an
-    uppercase sport, an uppercase canonical stat type and whitespace-collapsed
-    player identity. Without this normalization the fallback silently misses a
-    governed snapshot that exists and reports ``PROP_EVIDENCE_SNAPSHOT_NOT_FOUND``.
+    ``pick_request_runtime_core._validate_evidence`` / ``_snapshot_payload``
+    persist ``event_id`` stripped, ``sport`` uppercase, ``player``
+    whitespace-collapsed and ``stat_type`` as the canonical alias-resolved
+    label. The primary ``wow_prop_evidence_snapshot`` RPC compares event id and
+    player exactly, so a padded caller identity could never read the row it
+    wrote. The same canonical keys are therefore used for both the fallback
+    lookup and the fallback revalidation request.
 
     This changes identity comparison only. It cannot create evidence, relax
     calibration, or publish a probability.
     """
+    # Reuse the writer's own alias resolution. Imported lazily because the
+    # governed runtime module loads the full agent graph and imports this
+    # repair layer indirectly through api_prod_market.
+    from pick_request_runtime_core import _canonical_stat
+
+    event_id = str(getattr(req, "event_id", "") or "").strip()
     sport = str(getattr(req, "sport", "") or "").strip().upper()
     player = " ".join(str(getattr(req, "player", "") or "").split())
-    raw_stat = str(getattr(req, "stat_type", "") or "").strip()
-    # Mirror pick_request_runtime_core._canonical_stat's raw normalization;
-    # ingress already resolves the alias map before this repair layer runs.
-    stat_type = "_".join(raw_stat.upper().replace("-", " ").split())
-    return sport, player, stat_type
+    stat_type = _canonical_stat(sport, str(getattr(req, "stat_type", "") or ""))
+    return event_id, sport, player, stat_type
 
 
 def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
     """Return newest exact-identity snapshots captured strictly before start."""
-    sport, player, stat_type = _canonical_identity(req)
+    event_id, sport, player, stat_type = _canonical_identity(req)
     query = (
         client.table("wow_prop_evidence_snapshots")
         .select("source_snapshot_id,captured_at")
-        .eq("event_id", req.event_id)
+        .eq("event_id", event_id)
         .eq("sport", sport)
         .eq("player", player)
         .eq("stat_type", stat_type)
@@ -165,12 +168,24 @@ def repair_prop_evidence(
             repair_status="FALLBACK_LOOKUP_FAILED",
         )
 
+    event_id, sport, player, stat_type = _canonical_identity(req)
     attempted_ids = {requested_id}
     for fallback_id in fallback_ids:
         if fallback_id in attempted_ids:
             continue
         attempted_ids.add(fallback_id)
-        fallback_req = req.model_copy(update={"source_snapshot_id": fallback_id})
+        # The RPC revalidates against the persisted identity, so the fallback
+        # request must carry the same canonical keys used to locate the row.
+        # ``model_copy`` leaves the caller's request object untouched.
+        fallback_req = req.model_copy(
+            update={
+                "source_snapshot_id": fallback_id,
+                "event_id": event_id,
+                "sport": sport,
+                "player": player,
+                "stat_type": stat_type,
+            }
+        )
         try:
             candidate = primary_fetch(fallback_req)
         except HTTPException as exc:
