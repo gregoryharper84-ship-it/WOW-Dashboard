@@ -111,6 +111,7 @@ test("remote worker workflow is opt-in, same-repository PR only and read-only", 
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /vars\.WOW_TRIGGER_REMOTE_DEV_ENABLED == 'true'/);
+  assert.match(workflow, /vars\.WOW_TRIGGER_CLI_AUTH_READY == 'true'/);
   assert.match(workflow, /pull_request\.head\.repo\.full_name == github\.repository/);
   assert.match(workflow, /environment: wow-trigger-dev/);
   assert.match(workflow, /secrets\.TRIGGER_SECRET_KEY/);
