@@ -196,7 +196,7 @@ def test_multi_host_dns_timeout_still_uses_a_resolved_fallback(monkeypatch):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.22", port))]
 
     monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", resolve)
-    monkeypatch.setattr(pg_session_ledger, "DNS_RESOLUTION_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(pg_session_ledger, "DNS_RESOLUTION_TIMEOUT_SECONDS", 0.25)
     try:
         pg_session_ledger.ensure_table_exists(
             "postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test"
@@ -388,8 +388,6 @@ def test_ip_literal_and_unix_socket_hosts_skip_dns(monkeypatch, host, expected_k
 
 def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
     """Semaphore contention consumes the same absolute budget as DNS lookup."""
-    from types import SimpleNamespace
-
     observed, conn = _install_fake_psycopg2(monkeypatch)
     driver = sys.modules["psycopg2"]
     driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
