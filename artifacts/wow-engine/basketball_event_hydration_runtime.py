@@ -555,12 +555,23 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
                 client.table(TABLES[sport]).select("game_id")
                 .in_("game_id", ids).execute()
             )
-            if not isinstance(getattr(result, "data", None), list):
+            existing_rows = getattr(result, "data", None)
+            if not isinstance(existing_rows, list):
                 raise BasketballHydrationError("BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED")
-            existing = {
-                str(row.get("game_id") or "") for row in result.data
-                if isinstance(row, dict)
-            }
+            existing: set[str] = set()
+            for existing_row in existing_rows:
+                # A boundary that drops or malforms an existing row can make an
+                # already-present ID look absent, which is the false-new count
+                # this write attestation exists to prevent. Fail before writing.
+                existing_id = (
+                    str(existing_row.get("game_id") or "")
+                    if isinstance(existing_row, dict) else ""
+                )
+                if not existing_id:
+                    raise BasketballHydrationError(
+                        "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED"
+                    )
+                existing.add(existing_id)
             canonical_nba = sport == "NBA" and all(
                 row.get("source_provider") == "SPORTSDATAVERSE_ESPN" for row in batch
             )

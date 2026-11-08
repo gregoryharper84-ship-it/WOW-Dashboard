@@ -494,6 +494,37 @@ def test_canonical_confirmation_rejects_a_duplicated_new_id():
     assert str(caught.value.__cause__) == "BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED"
 
 
+@pytest.mark.parametrize("malformed_rows", [
+    ["espn-401000001"],
+    [{"game_date": "2026-11-05"}],
+    [{"game_id": ""}],
+    [settled_row(), {"game_id": ""}],
+])
+def test_canonical_existing_id_read_must_be_complete_before_write(malformed_rows):
+    """A malformed existing-ID read cannot be mistaken for 'not present'."""
+    original = settled_row()
+
+    class MalformedReadEchoingQuery(Query):
+        def execute(self):
+            if self.incoming is not None:
+                # Adversarial boundary echoes the pre-existing row back as if
+                # it had just been inserted.
+                return SimpleNamespace(data=[dict(original)])
+            return SimpleNamespace(data=list(malformed_rows))
+
+    class MalformedReadStore(Store):
+        def table(self, _name):
+            return MalformedReadEchoingQuery(self)
+
+    store = MalformedReadStore([original])
+    with pytest.raises(hydration.BasketballHydrationError) as caught:
+        hydration._persist_rows(store, "NBA", [dict(original, home_score=112)])
+    # This is a pre-write identity failure, not an ambiguous post-write hold.
+    assert type(caught.value) is hydration.BasketballHydrationError
+    assert str(caught.value) == "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED"
+    assert store.rows == [original]
+
+
 def test_canonical_empty_day_readback_fills_a_whole_older_missing_day(monkeypatch):
     newer = source_row(
         game_id="401000002", game_date="2026-11-06",
