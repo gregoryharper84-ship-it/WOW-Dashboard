@@ -302,7 +302,7 @@ def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
         ],
     )
 
-    pg_session_ledger.DNS_RESOLUTION_TIMEOUT_SECONDS = 1.0
+    monkeypatch.setattr(pg_session_ledger, "DNS_RESOLUTION_TIMEOUT_SECONDS", 1.0)
     pg_session_ledger.ensure_table_exists(
         "postgresql://user:secret@db.example.invalid:5432/safety-test"
     )
