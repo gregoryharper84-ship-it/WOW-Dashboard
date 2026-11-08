@@ -233,7 +233,12 @@ def test_health_route_exposes_render_deployed_sha(monkeypatch):
     monkeypatch.setattr(
         repair,
         "mlb_team_event_bridge_readiness",
-        lambda **_kwargs: {"status": "READY"},
+        lambda **_kwargs: {
+            "adapter_importable": True,
+            "scorer_resolvable": True,
+            "canonical_snapshot_provider_ready": True,
+            "status": "READY",
+        },
     )
 
     repair._install_health_route(app, event_api=event_api)
