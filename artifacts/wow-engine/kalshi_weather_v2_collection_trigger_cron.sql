@@ -18,9 +18,15 @@
 --   WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED=0 in-process loop stays off;
 --                                                  this scheduler is the writer
 --
--- Missing secrets fail closed: the function returns BLOCKED and dispatches no
--- HTTP request. This job can collect calibration evidence only. It cannot
--- certify calibration, publish a probability, or execute a trade.
+-- Missing or non-approved configuration fails closed: the function returns
+-- BLOCKED and dispatches no HTTP request. The destination must be TLS on the
+-- isolated Render origin, so the cohort key cannot be sent to another host.
+-- This job can collect calibration evidence only. It cannot certify
+-- calibration, publish a probability, or execute a trade.
+--
+-- Status: IMPLEMENTED_IN_PR. Applying this file is a separate, authorized step;
+-- until it is applied and a scheduled cycle is read back, production still runs
+-- the health-only wake.
 
 create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron with schema pg_catalog;
@@ -68,8 +74,25 @@ begin
     );
   end if;
 
+  v_base_url := rtrim(btrim(v_base_url), '/');
+
+  -- Destination guard. This runs before the cohort key is attached to a
+  -- request, so a mistyped or tampered Vault value cannot leak the credential
+  -- to an arbitrary host or over cleartext. Plain http, an explicit port, a
+  -- path, embedded credentials and any other domain are all rejected. The
+  -- pattern pins the isolated service identity prefix and TLS; it tolerates the
+  -- uniqueness suffix Render may append to a generated hostname.
+  if v_base_url !~* '^https://wow-kalshi-weather-v2[a-z0-9-]*\.onrender\.com$' then
+    return jsonb_build_object(
+      'status','BLOCKED',
+      'reason','KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED',
+      'probability_publishable',false,
+      'can_execute',false
+    );
+  end if;
+
   v_request_id := net.http_post(
-    url := rtrim(v_base_url, '/') || '/internal/kalshi-weather/v17/empirical-cohort/cron-run',
+    url := v_base_url || '/internal/kalshi-weather/v17/empirical-cohort/cron-run',
     headers := jsonb_build_object(
       'Content-Type','application/json',
       'Accept','application/json',
@@ -83,6 +106,7 @@ begin
   return jsonb_build_object(
     'status','DISPATCHED',
     'request_id',v_request_id,
+    'destination_host',split_part(v_base_url, '/', 3),
     'collection_mode','BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW',
     'probability_publishable',false,
     'can_execute',false
@@ -98,8 +122,9 @@ revoke all privileges on function public.wow_kalshi_weather_trigger_collection()
 comment on function public.wow_kalshi_weather_trigger_collection() is
   'Research-only Kalshi Weather empirical-cohort collection dispatch. SECURITY INVOKER; not Data API callable; no probability publication or trading authority.';
 
--- Retire the health-only wake. It cannot start collection, so keeping it would
--- only add unauthenticated read traffic against the isolated service.
+-- Retire the health-only wake once this file is applied. It cannot start
+-- collection, so keeping it would only add unauthenticated read traffic against
+-- the isolated service.
 do $retire$
 begin
   if exists (
@@ -109,6 +134,23 @@ begin
   end if;
 end;
 $retire$;
+
+-- Installs must be idempotent. cron.schedule has no unique-name constraint, so
+-- re-running this migration without this block would install a second job and
+-- therefore a second writer. Unschedule every existing row with this name
+-- first, then install exactly one replacement below.
+do $dedupe$
+declare
+  v_job_id bigint;
+begin
+  for v_job_id in
+    select jobid from cron.job
+    where jobname = 'kalshi-weather-v2-authenticated-collection-trigger'
+  loop
+    perform cron.unschedule(v_job_id);
+  end loop;
+end;
+$dedupe$;
 
 -- Same cost-constrained cadence as the job it replaces. Kept at */30 rather
 -- than tightened so this change cannot increase the isolated service's shared

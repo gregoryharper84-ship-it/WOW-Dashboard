@@ -12,6 +12,10 @@ SQL = Path(__file__).with_name(
 
 FUNCTION_BODY = SQL.split("create or replace function", 1)[1]
 
+RUNBOOK = Path(__file__).parents[2] / "docs" / "kalshi-weather" / (
+    "SUPABASE_SHADOW_WAKE_AND_CALIBRATION_READINESS.md"
+)
+
 
 def test_health_only_wake_is_retired_and_cannot_survive_the_migration():
     assert "cron.unschedule('kalshi-weather-v2-shadow-read-only-wake')" in SQL
@@ -72,3 +76,39 @@ def test_internal_function_is_not_reachable_through_the_data_api():
     assert "set search_path to ''" in SQL
     assert "revoke all privileges on function public.wow_kalshi_weather_trigger_collection()" in SQL
     assert "from public, anon, authenticated, service_role" in SQL
+
+
+def test_service_url_must_be_tls_on_the_approved_origin_before_dispatch():
+    assert "'kalshi_weather_service_url_not_approved'" in SQL
+    assert "^https://wow-kalshi-weather-v2" in SQL
+    assert r"\.onrender\.com$" in SQL
+    # The destination guard must precede the request that carries the key.
+    assert SQL.index("kalshi_weather_service_url_not_approved") < SQL.index("net.http_post(")
+    after_guard = SQL.split("kalshi_weather_service_url_not_approved", 1)[1]
+    assert "'x-wow-weather-cohort-key'" in after_guard
+    assert "'destination_host',split_part" in after_guard
+
+
+def test_repeated_migration_cannot_install_a_duplicate_scheduler():
+    assert SQL.count("select cron.schedule(") == 1
+    assert "$dedupe$" in SQL
+    assert "perform cron.unschedule(v_job_id)" in SQL
+    assert "where jobname = 'kalshi-weather-v2-authenticated-collection-trigger'" in SQL
+    assert SQL.index("$dedupe$") < SQL.index("select cron.schedule(")
+
+
+def test_runbook_distinguishes_implemented_merged_applied_and_verified():
+    doc = RUNBOOK.read_text(encoding="utf-8")
+    for state in (
+        "IMPLEMENTED_IN_PR",
+        "APPROVED_AND_MERGED",
+        "MIGRATION_APPLIED",
+        "PRODUCTION_VERIFIED",
+    ):
+        assert state in doc
+    # No false-green: the document must not describe intent as live production.
+    assert "**2026-11-08: the read-only wake was retired.**" not in doc
+    assert "two times per hour), active." not in doc
+    assert "Current production state (2026-11-08): `IMPLEMENTED_IN_PR` only." in doc
+    assert "**Not applied.**" in doc
+    assert "Render currently runs `8857e488`" in doc
