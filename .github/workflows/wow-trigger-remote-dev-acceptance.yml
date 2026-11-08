@@ -2,6 +2,7 @@ name: wow-trigger-remote-dev-acceptance
 
 # A bounded, opt-in DEV worker hosted on GitHub Actions.
 # This is not a Trigger Preview deployment, production worker, scheduler or coding dispatcher.
+# Operator reported the one-time GitHub DEV settings complete; this guarded PR sync is the acceptance attempt.
 on:
   pull_request:
     types: [opened, reopened, synchronize]
