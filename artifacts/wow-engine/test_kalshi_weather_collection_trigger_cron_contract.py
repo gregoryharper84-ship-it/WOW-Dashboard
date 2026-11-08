@@ -118,4 +118,4 @@ def test_runbook_distinguishes_implemented_merged_applied_and_verified():
     assert "https://wow-kalshi-weather-v2.onrender.com" in doc
     assert "50 total" in doc
     assert "30 chronologically earlier training residuals" in doc
-    assert "20 chronological holdout" in doc
+    assert "20 later holdout residuals" in doc
