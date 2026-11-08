@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import picomatch from "picomatch";
 import { patchTriggerCli } from "../scripts/patch-trigger-cli.mjs";
+import { assertDevPreflight } from "../scripts/start-dev-preflight.mjs";
 
 const ORIGINAL_SOURCE = `import { makeRe } from "minimatch";
 export function discoverMaybeExternals(forcedExternal = []) {
@@ -13,6 +14,15 @@ export function discoverMaybeExternals(forcedExternal = []) {
     if (!externalRegex) continue;
   }
 }`;
+
+const SAFE_ENV = Object.freeze({
+  TRIGGER_PROJECT_REF: "proj_local_dev_test",
+  TRIGGER_SECRET_KEY: "tr_dev_test_only",
+  WOW_TRIGGER_PILOT_ENABLED: "true",
+  WOW_TRIGGER_PILOT_ENV: "dev",
+  WOW_CAN_EXECUTE: "false",
+  WOW_DRY_RUN_ONLY: "true",
+});
 
 function fixture(cliVersion = "4.8.3", minimatchVersion = "11.0.1", picomatchVersion = "2.3.2", source = ORIGINAL_SOURCE) {
   const root = mkdtempSync(join(tmpdir(), "wow-trigger-cli-compat-"));
@@ -29,6 +39,33 @@ function fixture(cliVersion = "4.8.3", minimatchVersion = "11.0.1", picomatchVer
   writeFileSync(join(buildDir, "externals.js"), source);
   return { root, externalsPath: join(buildDir, "externals.js") };
 }
+
+test("DEV preflight accepts a valid project ref, tr_dev key and all non-execution flags", () => {
+  assert.equal(assertDevPreflight(SAFE_ENV), true);
+});
+
+test("DEV preflight rejects missing or malformed project references", () => {
+  for (const TRIGGER_PROJECT_REF of [undefined, "", "proj", "dashboard-slug"]) {
+    assert.throws(() => assertDevPreflight({ ...SAFE_ENV, TRIGGER_PROJECT_REF }), /TRIGGER_PROJECT_REF_REQUIRED/);
+  }
+});
+
+test("DEV preflight rejects non-development Trigger keys", () => {
+  for (const TRIGGER_SECRET_KEY of [undefined, "", "tr_prod_not-a-real-key", "tr_stg_not-a-real-key"]) {
+    assert.throws(() => assertDevPreflight({ ...SAFE_ENV, TRIGGER_SECRET_KEY }), /DEV_TRIGGER_SECRET_KEY_REQUIRED/);
+  }
+});
+
+test("DEV preflight requires every explicit no-execution pilot flag", () => {
+  for (const [name, value] of [
+    ["WOW_TRIGGER_PILOT_ENABLED", "false"],
+    ["WOW_TRIGGER_PILOT_ENV", "prod"],
+    ["WOW_CAN_EXECUTE", "true"],
+    ["WOW_DRY_RUN_ONLY", "false"],
+  ]) {
+    assert.throws(() => assertDevPreflight({ ...SAFE_ENV, [name]: value }), new RegExp(`DEV_PILOT_GUARD_REQUIRED:${name}`));
+  }
+});
 
 test("picomatch makeRe compiles package glob patterns into matching RegExp objects", () => {
   const scoped = picomatch.makeRe("@scope/*");
