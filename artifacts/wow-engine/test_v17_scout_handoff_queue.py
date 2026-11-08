@@ -357,3 +357,142 @@ def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
     ))
 
     assert stop.is_set()
+
+
+def test_read_run_summary_derives_worker_proof_from_claimed_jobs_when_transition_events_are_missing():
+    def specialist_receipt(status, code):
+        return {
+            "can_execute": False,
+            "result": {
+                "can_execute": False,
+                "rows": [{
+                    "terminal_status": status,
+                    "code": code,
+                    "probability_publishable": status == "COMPLETED",
+                    "rank_eligible": status == "COMPLETED",
+                    "card_admission_eligible": status == "COMPLETED",
+                    "can_execute": False,
+                }],
+            },
+        }
+
+    jobs = [
+        {
+            "job_id": "job-evaluated",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "shared-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "research_priority": "HIGH",
+            "current_state": "MODEL_EVALUATED",
+            "terminal": True,
+            "attempt_count": 1,
+            "specialist_receipt": specialist_receipt("HELD", "MODEL_UNAVAILABLE"),
+            "last_error_code": None,
+            "created_at": "2026-11-07T16:00:00Z",
+        },
+        {
+            "job_id": "job-qualified",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "shared-candidate",
+            "target_lane": "WOW_PROP_LANE",
+            "research_priority": "HIGH",
+            "current_state": "V17_QUALIFIED",
+            "terminal": True,
+            "attempt_count": 1,
+            "specialist_receipt": specialist_receipt("COMPLETED", "V17_QUALIFIED"),
+            "last_error_code": None,
+            "created_at": "2026-11-07T16:00:01Z",
+        },
+        {
+            "job_id": "job-retried",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "retry-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "research_priority": "LOW",
+            "current_state": "SPECIALIST_HANDOFF_QUEUED",
+            "terminal": False,
+            "attempt_count": 1,
+            "specialist_receipt": None,
+            "last_error_code": "PROVIDER_UNAVAILABLE",
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+        {
+            "job_id": "job-unclaimed",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "unclaimed-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "research_priority": "LOW",
+            "current_state": "MODEL_EVALUATED",
+            "terminal": True,
+            "attempt_count": 0,
+            "specialist_receipt": specialist_receipt("HELD", "MODEL_UNAVAILABLE"),
+            "last_error_code": None,
+            "created_at": "2026-11-07T16:00:03Z",
+        },
+    ]
+    events = [
+        {
+            "job_id": "job-evaluated",
+            "candidate_id": "shared-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_PROCESSING",
+            "code": "SPECIALIST_WORKER_CLAIMED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:00Z",
+        },
+        {
+            "job_id": "job-qualified",
+            "candidate_id": "shared-candidate",
+            "target_lane": "WOW_PROP_LANE",
+            "state": "SPECIALIST_HANDOFF_QUEUED",
+            "code": "SPECIALIST_HANDOFF_ENQUEUED",
+            "can_execute": False,
+            "created_at": "2026-11-07T15:59:00Z",
+        },
+        {
+            "job_id": "job-retried",
+            "candidate_id": "retry-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_HANDOFF_QUEUED",
+            "code": "PROVIDER_UNAVAILABLE",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+    ]
+
+    class _ReadQuery:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args):
+            return self
+
+        def execute(self):
+            return _Response(self.rows)
+
+    class _ReadDB:
+        def table(self, name):
+            if name == "wow_scout_handoff_jobs":
+                return _ReadQuery(jobs)
+            if name == "wow_scout_handoff_state_events":
+                return _ReadQuery(events)
+            raise AssertionError(f"unexpected table: {name}")
+
+    summary = queue.read_run_summary(_ReadDB(), "run-1")
+
+    assert summary["specialist_processing_seen"] == 3
+    assert summary["model_evaluated"] == 2
+    assert summary["v17_qualified"] == 1
+    assert summary["worker_processing_event_gap_jobs"] == 2
+    assert summary["model_evaluated_event_gap_jobs"] == 2
+    assert summary["state_event_coverage_pass"] is False
