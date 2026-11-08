@@ -35,13 +35,17 @@ test("fixed read-only GET with no token or redirection", async () => {
   const result = await observeWowHealth({
     env: safe,
     now: () => "2026-11-07T13:00:00.000Z",
-    fetchImpl: async (url, options) => { called.push([url, options]); return okResponse; },
+    fetchImpl: async (url, options) => {
+      called.push([url, options]);
+      return { ...okResponse, body: { cancel: async () => { called.push(["body-cancelled"]); } } };
+    },
   });
   assert.equal(called.length, 1);
   assert.equal(called[0][0], HEALTH_URL);
   assert.equal(called[0][1].method, "GET");
-  assert.equal(called[0][1].redirect, "error");
+  assert.equal(called[0][1].redirect, "manual");
   assert.deepEqual(called[0][1].headers, { accept: "application/json" });
+  assert.deepEqual(called[1], ["body-cancelled"]);
   assert.equal(result.production_verified, false);
   assert.equal(result.model_qualified, false);
   assert.equal(result.can_execute, false);
@@ -94,7 +98,7 @@ test("unsafe IDs are rejected before any API calls", async () => {
   assert.equal(calls,0);
 });
 
-test("task contains no schedule, no POST calls, and bounded retries/concurrency", () => {
+test("task source tripwire: no obvious schedules or direct network calls; this is not proof of isolation", () => {
   const source=readFileSync(new URL("../src/trigger/read-only-health.ts",import.meta.url),"utf8");
   assert.match(source,/concurrency:\s*\{\s*total:\s*1\s*\}/);
   assert.match(source,/maxAttempts:\s*3/);
@@ -118,6 +122,42 @@ test("synthetic retry task is DEV-only and has no external side effects", () => 
   assert.match(source, /maxAttempts:\s*3/);
   assert.match(source, /concurrency:\s*\{\s*total:\s*1\s*\}/);
   assert.doesNotMatch(source, /fetch\s*\(|https?:\/\/|POST|supabase|cron\s*\(|schedules\.task/i);
+});
+
+
+test("redirect responses are never followed and are permanent failures", async () => {
+  let requestOptions;
+  let cancelled = 0;
+  await assert.rejects(
+    observeWowHealth({
+      env: safe,
+      fetchImpl: async (_url, options) => {
+        requestOptions = options;
+        return { status: 302, body: { cancel: async () => { cancelled++; } } };
+      },
+    }),
+    err => err instanceof ProbeError && err.code === "HEALTH_HTTP_302" && err.retryable === false,
+  );
+  assert.equal(requestOptions.redirect, "manual");
+  assert.equal(cancelled, 1);
+});
+
+test("missing fetch implementation is a non-retryable configuration error", async () => {
+  await assert.rejects(
+    observeWowHealth({ env: safe, fetchImpl: null }),
+    err => err instanceof ProbeError && err.code === "FETCH_UNAVAILABLE" && err.retryable === false,
+  );
+});
+
+test("invalid response status is rejected and body cancellation failure is retryable", async () => {
+  await assert.rejects(
+    observeWowHealth({ env: safe, fetchImpl: async () => ({ status: 700 }) }),
+    err => err instanceof ProbeError && err.code === "INVALID_HEALTH_RESPONSE" && err.retryable === false,
+  );
+  await assert.rejects(
+    observeWowHealth({ env: safe, fetchImpl: async () => ({ status: 200, body: { cancel: async () => { throw Error("cancel failed"); } } }) }),
+    err => err instanceof ProbeError && err.code === "HEALTH_BODY_CANCEL_FAILED" && err.retryable === true,
+  );
 });
 
 test("timeout is classified distinctly from other transport errors", async () => {
