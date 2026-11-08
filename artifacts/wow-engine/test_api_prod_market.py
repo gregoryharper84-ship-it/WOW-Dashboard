@@ -946,3 +946,127 @@ def test_canonical_stat_request_keeps_route_and_caller_fields_aligned(monkeypatc
     assert called["artifact_args"] == ("MLB", "PITCHER_STRIKEOUTS")
     assert body["can_execute"] is False
     assert called["score"] is False
+
+
+# --- Cross-sport preflight identity matrix --------------------------------
+#
+# ``_preflight_prop_route`` resolves sport and stat through the governed
+# writer's canonical alias before specialist and certified-artifact lookup.
+# These rows pin that an alias request and its canonical spelling are
+# indistinguishable to routing, so a resolver change cannot silently split
+# two spellings of one governed market.
+#
+# The matrix is derived from ``PROP_STAT_ALIASES`` so every alias the resolver
+# actually declares is covered, and a new alias extends coverage
+# automatically. Manifest-only aliases (WNBA / NBA / NCAAF) are deliberately
+# absent: they are not in this resolver, so asserting a canonical key for them
+# would require a production routing change rather than a regression test.
+
+_CANONICAL_ROUTE_MATRIX = tuple(
+    sorted(
+        {
+            (sport, alias, canonical)
+            for (sport, alias), canonical in PROP_STAT_ALIASES.items()
+        }
+    )
+)
+
+_FORMATTED_ROUTE_MATRIX = (
+    # Casing, padding and hyphenation must not change the resolved route.
+    ("MLB", " k ", "PITCHER_STRIKEOUTS"),
+    ("MLB", "pitcher-k", "PITCHER_STRIKEOUTS"),
+    ("NFL", "passing yards", "PASSING_YARDS"),
+)
+
+
+def _preflight_lookup(monkeypatch, sport, stat_type):
+    """Post one blocked-route request and return both lookup boundaries."""
+    called = {"score": False, "specialist_args": None, "artifact_args": None}
+    _install_blocked_route(
+        monkeypatch,
+        called,
+        artifact={
+            "ok": False,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            "can_execute": False,
+        },
+        specialist={
+            "sport": str(sport).strip().upper(),
+            "canonical_prop_type": "GENERIC_TEST_ROUTE",
+            "controlling_specialist": "wow.test-specialist",
+        },
+    )
+    response = client.post(
+        "/score-prop", json=_preflight_payload(sport, stat_type), headers=AUTH
+    )
+    assert response.status_code == 409, response.text
+    return called, response.json()["detail"]
+
+
+def _assert_route_identity(monkeypatch, sport, alias, canonical):
+    """Prove alias and canonical spellings produce one routing identity."""
+    alias_lookup, alias_detail = _preflight_lookup(monkeypatch, sport, alias)
+    canonical_lookup, canonical_detail = _preflight_lookup(
+        monkeypatch, sport, canonical
+    )
+    expected = (sport, canonical)
+
+    # The alias request reaches both boundaries under the canonical key.
+    assert alias_lookup["specialist_args"] == expected
+    assert alias_lookup["artifact_args"] == expected
+    assert alias_lookup["specialist_args"] == alias_lookup["artifact_args"]
+
+    # The canonical request reaches the same keys.
+    assert canonical_lookup["specialist_args"] == expected
+    assert canonical_lookup["artifact_args"] == expected
+    assert canonical_lookup["specialist_args"] == canonical_lookup["artifact_args"]
+
+    # Alias and canonical requests are indistinguishable to routing.
+    assert alias_lookup["specialist_args"] == canonical_lookup["specialist_args"]
+    assert alias_lookup["artifact_args"] == canonical_lookup["artifact_args"]
+
+    # The caller's own spelling stays available for audit in both cases.
+    for detail, requested in ((alias_detail, alias), (canonical_detail, canonical)):
+        assert detail["requested_route"]["sport"] == sport
+        assert detail["requested_route"]["stat_type"] == canonical
+        assert detail["caller_request_stat_type"] == requested
+        assert detail["evidence_hydration"] == "NOT_ATTEMPTED_ROUTE_BLOCKED"
+        assert detail["specialist_invoked"] is False
+        assert detail["probability_publishable"] is False
+        assert detail["can_execute"] is False
+
+    # A blocked route must never reach scoring.
+    assert alias_lookup["score"] is False
+    assert canonical_lookup["score"] is False
+
+
+@pytest.mark.parametrize("sport, alias, canonical", _CANONICAL_ROUTE_MATRIX)
+def test_declared_alias_and_canonical_request_share_one_preflight_route(
+    monkeypatch, sport, alias, canonical
+):
+    """Every alias the resolver declares routes as its canonical stat."""
+    _assert_route_identity(monkeypatch, sport, alias, canonical)
+
+
+@pytest.mark.parametrize("sport, alias, canonical", _FORMATTED_ROUTE_MATRIX)
+def test_formatted_alias_and_canonical_request_share_one_preflight_route(
+    monkeypatch, sport, alias, canonical
+):
+    """Formatting variants resolve to the same route as the canonical stat."""
+    _assert_route_identity(monkeypatch, sport, alias, canonical)
+
+
+@pytest.mark.parametrize("sport_variant", ["MLB", "mlb", " mlb ", " MLB "])
+def test_padded_or_lowercase_sport_resolves_the_same_preflight_route(
+    monkeypatch, sport_variant
+):
+    """Sport casing and padding cannot change the attempted route."""
+    lookup, detail = _preflight_lookup(monkeypatch, sport_variant, "k")
+
+    assert lookup["specialist_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert lookup["artifact_args"] == ("MLB", "PITCHER_STRIKEOUTS")
+    assert lookup["specialist_args"] == lookup["artifact_args"]
+    assert detail["requested_route"]["sport"] == "MLB"
+    assert detail["requested_route"]["stat_type"] == "PITCHER_STRIKEOUTS"
+    assert detail["caller_request_stat_type"] == "k"
+    assert lookup["score"] is False
