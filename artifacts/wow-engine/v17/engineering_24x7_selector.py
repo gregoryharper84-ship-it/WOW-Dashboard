@@ -27,7 +27,7 @@ STOP_LABELS = {
     "no-autobuild", "no-auto-build", "duplicate", "wontfix",
 }
 SIRT_REVIEW_TITLE = re.compile(
-    r"^\\s*(?:\\[[^\\]]*\\bSIRT\\b[^\\]]*\\]|(?:P[0-3]\\s+)?SIRT\\b|P[0-3]\\s*:\\s*SIRT\\b)",
+    r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)",
     re.IGNORECASE,
 )
 PRIORITY = {
