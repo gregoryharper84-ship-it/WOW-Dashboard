@@ -727,6 +727,7 @@ def _install_health_route(app: Any, *, event_api: Any) -> None:
             "batch_provider": "COLAB",
             "deployment_tier": "FREE",
             "runtime_generation": "V17_ACTIVE",
+            "deployed_sha": event_api.base_api._render_deployed_sha(),
             "team_event_bridges": {
                 "MLB": mlb_team_event_bridge_readiness(event_api=event_api),
             },
