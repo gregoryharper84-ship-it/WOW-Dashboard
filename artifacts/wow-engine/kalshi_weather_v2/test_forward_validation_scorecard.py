@@ -36,6 +36,7 @@ def _scorecard(residuals):
         station_id=STATION,
         lane=LANE,
         lead_time_bucket=BUCKET,
+        settlement_identity_basis="INDEX_CITY",
     )
 
 
@@ -93,6 +94,63 @@ def test_boundary_timestamp_ties_cannot_leak_into_training():
     ordered = card["train"]["bias_f"]
     assert ordered == pytest.approx(0.0)
 
+
+
+
+def test_boundary_ties_that_leave_training_short_are_insufficient():
+    train = [_residual(0.5, settle_day=d) for d in range(1, 13)]
+    train += [_residual(-0.5, settle_day=d) for d in range(13, 26)]
+    # The 25 boundary ties must all remain in holdout, leaving only 25 train rows.
+    holdout = [_residual(0.5, settle_day=26) for _ in range(25)]
+    card = _scorecard(train + holdout)
+    assert card["counts"]["total"] == MINIMUM_TOTAL_RESIDUALS
+    assert card["counts"]["train"] == 25
+    assert card["counts"]["holdout"] == 25
+    assert card["status"] == "FORWARD_VALIDATION_INSUFFICIENT"
+    assert "CHRONOLOGICAL_SPLIT_INSUFFICIENT" in card["blockers"]
+    assert card["holdout"]["mae_f"] is None
+
+
+def test_fractional_second_lookahead_is_rejected_as_an_instant():
+    rows = _passing_residuals()
+    rows.append(
+        ForecastResidual(
+            forecast_value_f=0.5,
+            settled_value_f=0.0,
+            forecast_as_of="2026-10-01T00:00:00.500000Z",
+            settlement_time="2026-10-01T00:00:00Z",
+        )
+    )
+    card = _scorecard(rows)
+    assert card["counts"]["excluded_lookahead"] == 1
+    assert card["status"] == "FORWARD_VALIDATION_BLOCKED"
+    assert "LOOKAHEAD_RESIDUALS_EXCLUDED:1" in card["blockers"]
+
+
+def test_report_marks_mixed_station_and_index_city_identity_as_mixed():
+    city_prediction = _prediction(
+        "city-pred",
+        "2026-10-01T00:00:00Z",
+        "2026-10-01T12:00:00Z",
+        threshold=70,
+        residual_value=0.0,
+    )
+    station_prediction = _prediction(
+        "station-pred",
+        "2026-10-01T00:00:00Z",
+        "2026-10-01T12:00:00Z",
+        threshold=70,
+        residual_value=0.0,
+    )
+    station_prediction["model_payload"]["contract"]["settlement_station_id"] = "KMIA"
+    report = build_forward_validation_report(
+        [city_prediction, station_prediction],
+        [_outcome("city-pred", "2026-10-01T23:00:00Z")],
+    )
+    group = report["groups"][0]
+    assert group["settlement_identity"]["basis"] == "MIXED"
+    assert group["settlement_identity"]["exact_station_verified"] is False
+    assert "STATION_IDENTITY_UNVERIFIED" in group["settlement_identity"]["promotion_blockers"]
 
 def test_mae_gate_fails_above_the_precommitted_limit():
     train = [_residual(0.5, settle_day=d) for d in range(1, 16)]
@@ -254,7 +312,7 @@ def test_forward_validation_route_is_installed_on_the_authenticated_surface():
 def test_city_index_identity_is_not_treated_as_an_exact_station():
     card = _scorecard(_passing_residuals())
     assert card["residual_gates_passed"] is True
-    assert card["settlement_identity"]["basis"] == "UNVERIFIED"
+    assert card["settlement_identity"]["basis"] == "INDEX_CITY"
     assert card["settlement_identity"]["exact_station_verified"] is False
     assert "STATION_IDENTITY_UNVERIFIED" in card["settlement_identity"]["promotion_blockers"]
     assert "STATION_IDENTITY_UNVERIFIED" in card["certification_blockers"]
