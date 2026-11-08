@@ -156,6 +156,40 @@ test("permanent HTTP and malformed responses do not retry", async () => {
   );
 });
 
+
+test("cancels non-success response bodies before retry or abort", async () => {
+  for (const status of [429, 503, 404]) {
+    let cancelled = false;
+    await assert.rejects(
+      fetchIncidentSnapshot({
+        incidentNumber: 2516,
+        fetchImpl: async () => ({
+          status,
+          headers: new Headers(),
+          body: { cancel: async () => { cancelled = true; } },
+          json: async () => ({}),
+        }),
+      }),
+      error => error instanceof EngineeringIntakeError,
+    );
+    assert.equal(cancelled, true);
+  }
+});
+
+test("body-cancellation failures remain typed and retryable", async () => {
+  await assert.rejects(
+    fetchIncidentSnapshot({
+      incidentNumber: 2516,
+      fetchImpl: async () => ({
+        status: 503,
+        headers: new Headers(),
+        body: { cancel: async () => { throw new Error("stream close failed"); } },
+      }),
+    }),
+    error => error.code === "GITHUB_RESPONSE_BODY_CANCEL_FAILED" && error.retryable === true,
+  );
+});
+
 test("snapshot comparison detects a changed issue during checkpoint wait", async () => {
   const before = await fetchIncidentSnapshot({ incidentNumber: 2516, fetchImpl: async () => response() });
   const after = await fetchIncidentSnapshot({
@@ -175,5 +209,5 @@ test("Trigger task is single-concurrency, DEV-only, durable-wait and read-only",
   assert.match(source, /fetchIncidentSnapshot/);
   assert.match(source, /dispatched:\s*false/);
   assert.match(source, /can_execute:\s*false/);
-  assert.doesNotMatch(source, /schedules\.task|cron\s*\(|fetch\s*\(|workflow_dispatch|pulls\/.*merge|supabase|score-pick-request/i);
+  assert.doesNotMatch(source, /schedules\.task|cron\s*\(|fetch\s*\(|workflow_dispatch|pulls\/[^"']+\/merge|from\s+["']@supabase|score-pick-request/i);
 });

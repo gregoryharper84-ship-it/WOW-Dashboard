@@ -43,6 +43,14 @@ function sha256(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+async function cancelResponseBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    throw new EngineeringIntakeError("GITHUB_RESPONSE_BODY_CANCEL_FAILED", true);
+  }
+}
+
 /**
  * Read one public GitHub issue from a fixed repository and return metadata only.
  * The issue body is hashed but never copied into task output or logs.
@@ -81,11 +89,12 @@ export async function fetchIncidentSnapshot({ incidentNumber, fetchImpl = global
     throw new EngineeringIntakeError("GITHUB_RESPONSE_INVALID");
   }
 
-  const remaining = response.headers?.get?.("x-ratelimit-remaining");
-  if (response.status === 429 || response.status >= 500 || (response.status === 403 && remaining === "0")) {
-    throw new EngineeringIntakeError("GITHUB_READ_TRANSIENT_HTTP_" + response.status, true);
-  }
   if (response.status < 200 || response.status >= 300) {
+    await cancelResponseBody(response);
+    const remaining = response.headers?.get?.("x-ratelimit-remaining");
+    if (response.status === 429 || response.status >= 500 || (response.status === 403 && remaining === "0")) {
+      throw new EngineeringIntakeError("GITHUB_READ_TRANSIENT_HTTP_" + response.status, true);
+    }
     throw new EngineeringIntakeError("GITHUB_READ_PERMANENT_HTTP_" + response.status);
   }
 
