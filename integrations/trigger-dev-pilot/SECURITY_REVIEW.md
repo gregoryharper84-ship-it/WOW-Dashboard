@@ -97,3 +97,13 @@ Source inspection of Trigger.dev CLI v4.8.3 `packages/cli-v3/src/commands/login.
 The workflow now preflights `TRIGGER_ACCESS_TOKEN` before starting a worker and expects it as a separate GitHub Actions environment secret. This is a user-level PAT and has a broader potential blast radius than a single Development API key. Do not add it until the GitHub environment has a required reviewer / prevent-self-review protection and a branch deployment restriction. Use a new short-lived PAT, run once, then revoke it. No PAT was present in the first attempt; no task run was triggered and no task receipt exists.
 
 **Current state:** Root cause CONFIRMED; remediation code/docs added; live worker acceptance remains BLOCKED on protected, short-lived PAT provisioning. Production/Staging access remains prohibited.
+
+### Latest exact-head state and remaining user-only action — Nov 8, 2026
+
+Exact child head: `4adac19878272f76fda20c9b4c03e849e285fc16`. No-credential pilot verification [#42525441419](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42525441419) completed SUCCESS: 51/51 tests, TypeScript passed, patched CLI import smoke passed, 33 cross-platform lock entries present, and npm audit reported 0 vulnerabilities.
+
+The remote acceptance workflow [#42525441271](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42525441271) reached its explicit CLI credential preflight and failed closed with `TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED`. The environment secret `TRIGGER_SECRET_KEY` is present (masked in logs); `TRIGGER_ACCESS_TOKEN` was empty. The worker did not start and no task run was created. This is expected until the additional CLI PAT is configured.
+
+**Environment approval is not independently verified.** The workflow job did not expose a reviewer-approval receipt in the available readback, and the GitHub integration here cannot inspect environment protection settings. Treat required-reviewer and branch-restriction settings as UNVERIFIED. Before adding the user-level PAT, configure a required reviewer for `wow-trigger-dev` and restrict deployments to the fixed recovery branch. Use a new short-lived PAT, execute the bounded run once, then revoke it. Never paste it into chat.
+
+Current disposition: implementation source validated; live task acceptance BLOCKED on protected PAT provisioning. PR #2529 remains DRAFT / UNMERGED. No Production/Staging, model scoring, coding dispatch or betting authority has been used.
