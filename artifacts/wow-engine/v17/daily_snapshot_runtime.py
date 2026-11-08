@@ -348,6 +348,7 @@ ACTIVE_DAILY_DISCOVERY_SPORTS = ("NBA", "NFL", "NHL", "NCAAF")
 
 
 def _daily_discovery_sports() -> tuple[str, ...]:
+    """Return the complete discovery catalog with active Daily sports first."""
     catalog = tuple(discovery.SUPPORTED_DISCOVERY_SPORTS)
     primary = tuple(sport for sport in ACTIVE_DAILY_DISCOVERY_SPORTS if sport in catalog)
     return primary + tuple(sport for sport in catalog if sport not in primary)
@@ -380,9 +381,11 @@ def _cross_sport_moneyline_rows(
         )
 
     def resolve_model(event: discovery.DiscoveredEvent) -> Any:
+        """Return only the registered bridge for the discovered sport."""
         return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
     def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
+        """Deduplicate by sport-scoped identity, then invoke that sport's scorer."""
         if (event.sport, str(event.official_event_id or "")) in covered_event_ids:
             return {
                 "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
