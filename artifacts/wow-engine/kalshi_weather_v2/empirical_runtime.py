@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import asdict, replace
+from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Callable
 
 from fastapi import FastAPI
@@ -165,12 +165,20 @@ def _dispatch_result_summary(result: object) -> dict[str, object]:
         "contracts_discovered": int(getattr(result, "contracts_discovered", 0)),
         "samples_captured": int(getattr(result, "samples_captured", 0)),
         "samples_skipped_existing": int(getattr(result, "samples_skipped_existing", 0)),
-        "supplemental_snapshots_captured": int(getattr(result, "supplemental_snapshots_captured", 0)),
-        "market_microstructure_snapshots_captured": int(getattr(result, "market_microstructure_snapshots_captured", 0)),
+        "supplemental_snapshots_captured": int(
+            getattr(result, "supplemental_snapshots_captured", 0)
+        ),
+        "market_microstructure_snapshots_captured": int(
+            getattr(result, "market_microstructure_snapshots_captured", 0)
+        ),
         "predictions_settled": int(getattr(result, "predictions_settled", 0)),
         "capture_failure_count": len(getattr(result, "capture_failures", ()) or ()),
-        "supplemental_failure_count": len(getattr(result, "supplemental_failures", ()) or ()),
-        "market_microstructure_failure_count": len(getattr(result, "market_microstructure_failures", ()) or ()),
+        "supplemental_failure_count": len(
+            getattr(result, "supplemental_failures", ()) or ()
+        ),
+        "market_microstructure_failure_count": len(
+            getattr(result, "market_microstructure_failures", ()) or ()
+        ),
         "settlement_failure_count": len(getattr(result, "settlement_failures", ()) or ()),
         "probability_publishable": False,
         "can_execute": False,
@@ -247,7 +255,10 @@ async def _process_dispatch_once(db_client_fn: Callable[[], object]) -> bool:
         return True
 
     try:
-        result = await asyncio.to_thread(_run_bounded_shadow_cycle, db_client_fn=db_client_fn)
+        result = await asyncio.to_thread(
+            _run_bounded_shadow_cycle,
+            db_client_fn=db_client_fn,
+        )
         summary = _dispatch_result_summary(result)
         await asyncio.to_thread(
             _finish_dispatch, db_client_fn, dispatch_id, "COMPLETED", result=summary
@@ -310,8 +321,12 @@ def install_empirical_cohort_scheduler(
 
     @app.on_event("startup")
     async def _schedule_empirical_cohort() -> None:
-        queue_enabled = os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_QUEUE_ENABLED", "0") == "1"
-        loop_enabled = os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED", "0") == "1"
+        queue_enabled = (
+            os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_QUEUE_ENABLED", "0") == "1"
+        )
+        loop_enabled = (
+            os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED", "0") == "1"
+        )
         if queue_enabled and loop_enabled:
             _logger.error(
                 "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=BLOCKED_MULTIPLE_WRITERS probability_publishable=false can_execute=false"
@@ -325,7 +340,9 @@ def install_empirical_cohort_scheduler(
 
         if queue_enabled:
             try:
-                interval_seconds = int(os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_POLL_SECONDS", "60"))
+                interval_seconds = int(
+                    os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_POLL_SECONDS", "60")
+                )
             except ValueError:
                 interval_seconds = 60
             interval_seconds = max(15, min(interval_seconds, 300))
@@ -337,12 +354,16 @@ def install_empirical_cohort_scheduler(
             )
         else:
             try:
-                interval_seconds = int(os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_INTERVAL_SECONDS", "900"))
+                interval_seconds = int(
+                    os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_INTERVAL_SECONDS", "900")
+                )
             except ValueError:
                 interval_seconds = 900
             interval_seconds = max(300, interval_seconds)
             try:
-                initial_delay_seconds = int(os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_INITIAL_DELAY_SECONDS", "45"))
+                initial_delay_seconds = int(
+                    os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_INITIAL_DELAY_SECONDS", "45")
+                )
             except ValueError:
                 initial_delay_seconds = 45
             initial_delay_seconds = max(0, min(initial_delay_seconds, 300))
