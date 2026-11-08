@@ -633,23 +633,35 @@ def _specialist_receipt_outcome(row: dict[str, Any]) -> dict[str, Any] | None:
     return outcome
 
 
+def _paginate_query(query: Any, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        response = query.range(start, start + page_size - 1).execute()
+        batch = getattr(response, "data", None) or []
+        rows.extend(dict(row) for row in batch if isinstance(row, dict))
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
-    result = (
+    job_query = (
         db.table("wow_scout_handoff_jobs")
         .select("*")
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("job_id")
     )
-    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
-    event_result = (
+    rows = _paginate_query(job_query)
+    event_query = (
         db.table("wow_scout_handoff_state_events")
         .select("job_id,candidate_id,target_lane,state,code,can_execute,created_at")
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("event_id")
     )
-    events = [dict(row) for row in (getattr(event_result, "data", None) or [])]
+    events = _paginate_query(event_query)
 
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
