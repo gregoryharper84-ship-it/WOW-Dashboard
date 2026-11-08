@@ -251,6 +251,67 @@ def test_ip_literal_and_unix_socket_hosts_skip_dns(monkeypatch, host, expected_k
     assert conn.commit_calls == 1
 
 
+
+def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
+    """Semaphore contention consumes the same absolute budget as DNS lookup."""
+    from types import SimpleNamespace
+
+    observed, conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
+    clock = [0.0]
+    slot_waits = []
+    resolver_waits = []
+
+    class Slot:
+        def acquire(self, *, timeout):
+            slot_waits.append(timeout)
+            clock[0] += 0.75
+            return True
+
+        def release(self):
+            return None
+
+    class Completion:
+        def set(self):
+            return None
+
+        def wait(self, timeout):
+            resolver_waits.append(timeout)
+            return True
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(
+        pg_session_ledger, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    monkeypatch.setattr(pg_session_ledger, "_DNS_RESOLUTION_SLOT", Slot())
+    monkeypatch.setattr(
+        pg_session_ledger, "threading",
+        SimpleNamespace(Event=Completion, Thread=ImmediateThread),
+    )
+    monkeypatch.setattr(
+        pg_session_ledger.socket, "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (2, 1, 6, "", ("192.0.2.40", port))
+        ],
+    )
+
+    pg_session_ledger.DNS_RESOLUTION_TIMEOUT_SECONDS = 1.0
+    pg_session_ledger.ensure_table_exists(
+        "postgresql://user:secret@db.example.invalid:5432/safety-test"
+    )
+
+    assert slot_waits == [1.0]
+    assert resolver_waits == [0.25]
+    assert observed and conn.commit_calls == 1
+
+
 def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
     """Propagate failed DDL and never record a commit."""
     observed, conn = _install_fake_psycopg2(monkeypatch, reject_ddl=True)
