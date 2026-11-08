@@ -12,6 +12,9 @@ export class EngineeringIntakeError extends Error {
   }
 }
 
+/**
+ * @param {{triggerEnvironmentType?:string, env?:NodeJS.ProcessEnv}} options
+ */
 export function assertEngineeringAgentSafety({ triggerEnvironmentType, env = process.env } = {}) {
   if (triggerEnvironmentType !== "DEVELOPMENT") {
     throw new EngineeringIntakeError("TRIGGER_ENVIRONMENT_NOT_DEVELOPMENT");
