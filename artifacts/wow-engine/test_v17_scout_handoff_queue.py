@@ -491,7 +491,7 @@ def test_read_run_summary_derives_worker_proof_from_claimed_jobs_when_transition
                 return _ReadQuery(events)
             raise AssertionError(f"unexpected table: {name}")
 
-    summary = queue.read_run_summary(_ReadDB(), "run-1")
+    summary = queue.read_run_summary(_ReadDB(), "run-1", include_receipts=True)
 
     assert summary["specialist_processing_seen"] == 3
     assert summary["model_evaluated"] == 2
@@ -590,7 +590,7 @@ def test_read_run_summary_paginates_state_events_past_postgrest_default_row_limi
             return query
 
     db = _PagedReadDB()
-    summary = queue.read_run_summary(db, "run-paged")
+    summary = queue.read_run_summary(db, "run-paged", include_receipts=True)
 
     assert summary["specialist_processing_seen"] == 1
     assert summary["model_evaluated"] == 1
@@ -601,3 +601,14 @@ def test_read_run_summary_paginates_state_events_past_postgrest_default_row_limi
         (0, 999),
         (1000, 1999),
     ]
+
+    # Frequent status polls must not fetch every event page on every 2-second
+    # poll. The detailed terminal read above is the one complete event scan.
+    poll_db = _PagedReadDB()
+    poll_summary = queue.read_run_summary(poll_db, "run-paged")
+    assert poll_summary["specialist_processing_seen"] == 1
+    assert poll_summary["model_evaluated"] == 1
+    assert poll_summary["state_event_read_complete"] is False
+    assert poll_summary["state_event_coverage_pass"] is None
+    assert poll_summary["worker_processing_event_gap_jobs"] is None
+    assert poll_db.queries["wow_scout_handoff_state_events"].range_calls == [(0, 999)]
