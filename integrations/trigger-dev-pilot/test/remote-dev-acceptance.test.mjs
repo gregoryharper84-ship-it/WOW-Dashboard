@@ -95,6 +95,7 @@ test("failed or incomplete Trigger runs are never accepted", () => {
 test("remote runner uses only DEV worker and three explicitly bounded pilot tasks", () => {
   const source = readFileSync(new URL("../scripts/run-remote-dev-acceptance.mjs", import.meta.url), "utf8");
   assert.match(source, /assertDevPreflight\(process\.env\)/);
+  assert.match(source, /assertRemoteCliAuth\(process\.env\)/);
   assert.match(source, /patchTriggerCli\(\)/);
   assert.match(source, /\["dev", "--branch", DEV_BRANCH\]/);
   assert.match(source, /TRIGGER_PREVIEW_BRANCH = DEV_BRANCH/);
@@ -102,7 +103,7 @@ test("remote runner uses only DEV worker and three explicitly bounded pilot task
   assert.match(source, /wow-v17-synthetic-retry-pilot/);
   assert.match(source, /wow-v17-engineering-recovery-intake/);
   assert.match(source, /timeoutMs: 240000/);
-  assert.doesNotMatch(source, /TRIGGER_ACCESS_TOKEN|deploy\s+--env|schedules\.task|cron\s*\(/i);
+  assert.doesNotMatch(source, /deploy\s+--env|schedules\.task|cron\s*\(/i);
 });
 
 test("remote worker workflow is opt-in, same-repository PR only and read-only", () => {
@@ -113,6 +114,7 @@ test("remote worker workflow is opt-in, same-repository PR only and read-only", 
   assert.match(workflow, /pull_request\.head\.repo\.full_name == github\.repository/);
   assert.match(workflow, /environment: wow-trigger-dev/);
   assert.match(workflow, /secrets\.TRIGGER_SECRET_KEY/);
+  assert.match(workflow, /secrets\.TRIGGER_ACCESS_TOKEN/);
   assert.match(workflow, /permissions:\s*contents: read/);
   assert.doesNotMatch(workflow, /pull_request_target:|schedule:|contents:\s*write/i);
 });
