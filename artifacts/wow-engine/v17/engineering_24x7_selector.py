@@ -225,7 +225,7 @@ def _lease_group_for(number: int, tier: int, records: dict | None) -> str | None
         if not record or record["severity"] != "P0":
             return None
         group = record["lease_group"]
-        return group if group and group != "GLOBAL" else None
+        return group if group and group.startswith("P0_") and group != "P0_" else None
     if record and record["severity"] and record["severity"] != f"P{tier}":
         return None
     return "GLOBAL"
