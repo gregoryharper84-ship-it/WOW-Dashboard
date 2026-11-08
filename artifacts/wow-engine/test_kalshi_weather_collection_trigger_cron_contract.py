@@ -55,9 +55,15 @@ def test_queue_is_rls_protected_and_service_role_has_only_consumer_access():
     """The public table is inaccessible to Data API user roles."""
     assert "alter table public.wow_kalshi_weather_collection_dispatch_queue" in COMMENT_FREE_SQL
     assert "enable row level security" in COMMENT_FREE_SQL
-    assert "revoke all privileges on table public.wow_kalshi_weather_collection_dispatch_queue" in COMMENT_FREE_SQL
+    assert (
+        "revoke all privileges on table public.wow_kalshi_weather_collection_dispatch_queue"
+        in COMMENT_FREE_SQL
+    )
     assert "from public, anon, authenticated" in COMMENT_FREE_SQL
-    assert "grant select, update on table public.wow_kalshi_weather_collection_dispatch_queue" in COMMENT_FREE_SQL
+    assert (
+        "grant select, update on table public.wow_kalshi_weather_collection_dispatch_queue"
+        in COMMENT_FREE_SQL
+    )
     assert "to service_role" in COMMENT_FREE_SQL
 
 
@@ -76,7 +82,10 @@ def test_claim_rpc_is_atomic_service_role_only_and_recovers_stale_claims():
     assert "interval '15 minutes'" in body
     assert "attempts >= 3" in body
     assert "dispatch_max_attempts_exceeded" in body
-    assert "grant execute on function public.claim_wow_kalshi_weather_collection_dispatch()" in COMMENT_FREE_SQL
+    assert (
+        "grant execute on function public.claim_wow_kalshi_weather_collection_dispatch()"
+        in COMMENT_FREE_SQL
+    )
     assert "to service_role" in COMMENT_FREE_SQL
 
 
