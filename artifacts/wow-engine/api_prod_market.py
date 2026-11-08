@@ -782,17 +782,25 @@ def _preflight_prop_route(
     hydrator. This keeps unsupported rows from consuming acquisition work and
     prevents their failures from masquerading as evidence-contract failures.
 
-    Route lookups use the writer's canonical sport and stat alias, so an MLB
-    ``K`` request with padded sport casing resolves the same specialist and
-    artifact as ``PITCHER_STRIKEOUTS`` before evidence hydration. The caller
+    Route lookups resolve sport and stat through the union of the writer's
+    alias table and the V17 capability manifest's alias table, so an MLB ``K``
+    request and a WNBA ``PTS`` request each resolve the same specialist and
+    certified artifact as their canonical spelling before evidence hydration.
+    The union is required because the certified-artifact RPC compares stat text
+    exactly: neither table alone covers every declared route. Evidence identity
+    is deliberately unchanged -- the snapshot writer still keys on its own
+    table, so historical rows are not split by this routing repair. The caller
     request itself is never mutated here. Blocked-route payloads describe the
     route actually attempted in ``requested_route`` and keep the caller's
     original spelling in ``caller_request_stat_type`` for audit.
     """
     from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+    from v17.prop_capability_manifest import normalize_prop_sport, normalize_prop_stat
 
-    route_sport = str(req.sport or "").strip().upper()
-    route_stat = writer_canonical_stat(route_sport, req.stat_type)
+    route_sport = normalize_prop_sport(req.sport)
+    route_stat = normalize_prop_stat(
+        route_sport, writer_canonical_stat(route_sport, req.stat_type)
+    )
     specialist = prod.base_api._controlling_specialist_provider(route_sport, route_stat)
     if specialist is None:
         raise HTTPException(

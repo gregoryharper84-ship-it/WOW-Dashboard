@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import api_prod_market
 from pick_request_runtime_core import PROP_STAT_ALIASES
+from v17.prop_capability_manifest import STAT_ALIASES as MANIFEST_STAT_ALIASES
 from prop_distribution_contract import CoverageDecision
 
 
@@ -956,11 +957,11 @@ def test_canonical_stat_request_keeps_route_and_caller_fields_aligned(monkeypatc
 # indistinguishable to routing, so a resolver change cannot silently split
 # two spellings of one governed market.
 #
-# The matrix is derived from ``PROP_STAT_ALIASES`` so every alias the resolver
-# actually declares is covered, and a new alias extends coverage
-# automatically. Manifest-only aliases (WNBA / NBA / NCAAF) are deliberately
-# absent: they are not in this resolver, so asserting a canonical key for them
-# would require a production routing change rather than a regression test.
+# The first matrix is derived from ``PROP_STAT_ALIASES`` so every alias the
+# writer declares is covered, and a new alias extends coverage automatically.
+# The manifest-only matrices below cover the cross-sport spellings the writer
+# table does not carry; preflight resolves the union of both tables because the
+# certified-artifact RPC compares stat text exactly.
 
 _CANONICAL_ROUTE_MATRIX = tuple(
     sorted(
@@ -1069,4 +1070,50 @@ def test_padded_or_lowercase_sport_resolves_the_same_preflight_route(
     assert detail["requested_route"]["sport"] == "MLB"
     assert detail["requested_route"]["stat_type"] == "PITCHER_STRIKEOUTS"
     assert detail["caller_request_stat_type"] == "k"
+    assert lookup["score"] is False
+
+
+_MANIFEST_ROUTE_MATRIX = tuple(
+    sorted(
+        {
+            (sport, alias, canonical)
+            for (sport, alias), canonical in MANIFEST_STAT_ALIASES.items()
+            if sport in {"WNBA", "NBA", "NCAAF"}
+        }
+    )
+)
+
+_MANIFEST_ONLY_ROUTE_MATRIX = (
+    # Declared only by the capability manifest; the writer table lacks them.
+    ("NFL", "PASS_YDS", "PASSING_YARDS"),
+    ("NFL", "PASS_TDS", "PASSING_TOUCHDOWNS"),
+)
+
+
+@pytest.mark.parametrize("sport, alias, canonical", _MANIFEST_ROUTE_MATRIX)
+def test_manifest_alias_and_canonical_request_share_one_preflight_route(
+    monkeypatch, sport, alias, canonical
+):
+    """Manifest-declared cross-sport aliases resolve to their canonical route."""
+    _assert_route_identity(monkeypatch, sport, alias, canonical)
+
+
+@pytest.mark.parametrize("sport, alias, canonical", _MANIFEST_ONLY_ROUTE_MATRIX)
+def test_manifest_only_nfl_alias_resolves_to_the_canonical_route(
+    monkeypatch, sport, alias, canonical
+):
+    """An NFL alias absent from the writer table still reaches one route."""
+    _assert_route_identity(monkeypatch, sport, alias, canonical)
+
+
+def test_sport_alias_resolves_to_its_canonical_route(monkeypatch):
+    """A declared sport alias cannot produce a non-canonical route key."""
+    lookup, detail = _preflight_lookup(monkeypatch, "CFB", "RUSH_YDS")
+
+    assert lookup["specialist_args"] == ("NCAAF", "RUSHING_YARDS")
+    assert lookup["artifact_args"] == ("NCAAF", "RUSHING_YARDS")
+    assert lookup["specialist_args"] == lookup["artifact_args"]
+    assert detail["requested_route"]["sport"] == "NCAAF"
+    assert detail["requested_route"]["stat_type"] == "RUSHING_YARDS"
+    assert detail["caller_request_stat_type"] == "RUSH_YDS"
     assert lookup["score"] is False
