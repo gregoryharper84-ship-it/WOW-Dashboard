@@ -177,6 +177,7 @@ def test_complete_model_missing_market_keeps_probability_and_holds_market(monkey
 def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
     # Force the governed writer's WNBA alias path regardless of which test
     # modules happened to import the runtime alias registration first.
+    """Prove exact two-way quotes pass the market lane without changing model probability."""
     monkeypatch.setitem(PROP_STAT_ALIASES, ("WNBA", "REB"), "REBOUNDS")
     captured = {}
 
@@ -550,6 +551,7 @@ def test_score_stage_timer_preserves_exception_and_redacts_payload(caplog):
 
 
 def test_primary_evidence_http_exception_is_logged_and_preserved(monkeypatch, caplog):
+    """A primary evidence HTTP failure is logged with correlation and re-raised unchanged."""
     _install_common(monkeypatch, lambda **_: None)
 
     for status_code, code in (

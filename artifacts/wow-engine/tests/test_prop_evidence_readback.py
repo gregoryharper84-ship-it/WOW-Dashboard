@@ -269,6 +269,7 @@ def test_rpc_infrastructure_failure_is_never_absence():
 
 
 def test_failed_candidate_lookup_does_not_claim_row_missing():
+    """Candidate lookup failure is unavailable evidence, not absence."""
     client = _CandidateFailClient(rpc=_not_found_rpc(), rows=[])
     result = readback.diagnose_prop_evidence(client, BASE)
 
@@ -277,6 +278,7 @@ def test_failed_candidate_lookup_does_not_claim_row_missing():
 
 
 def test_self_acceptance_receipt_disproves_live_action_attribution():
+    """Self-acceptance provenance defeats live-action attribution."""
     client = _Client(
         rpc=_not_found_rpc(),
         rows=[],
@@ -291,6 +293,7 @@ def test_self_acceptance_receipt_disproves_live_action_attribution():
 
 
 def test_live_action_422_matching_missing_evidence_supports_cause():
+    """A matching live-action 422 supports the missing-evidence cause."""
     client = _Client(
         rpc=_not_found_rpc(),
         rows=[],
@@ -304,6 +307,7 @@ def test_live_action_422_matching_missing_evidence_supports_cause():
 
 
 def test_request_id_only_receipt_audit_needs_no_identity():
+    """Request-id-only receipt audit does not require identity."""
     client = _Client(receipts=[_receipt()])
     result = readback.diagnose_prop_evidence(client, None, request_id="req-probe")
 
@@ -316,6 +320,7 @@ def test_request_id_only_receipt_audit_needs_no_identity():
 
 
 def test_failure_log_captures_join_key_without_player_name(caplog):
+    """Failure logs capture the join key without player names."""
     with caplog.at_level(logging.WARNING, logger=readback.LOGGER.name):
         readback.log_prop_evidence_failure(
             BASE,
@@ -337,6 +342,7 @@ def test_invalid_snapshot_id_is_rejected():
 
 
 def test_stat_identity_reuses_writer_alias_map():
+    """Stat identity uses the writer's alias map."""
     assert readback.normalize_identity(
         {**BASE, "stat_type": "PASS_YARDS"}
     )["stat_type"] == "PASSING_YARDS"
@@ -351,6 +357,7 @@ def test_stat_identity_reuses_writer_alias_map():
 
 
 def test_candidate_search_filters_identity_before_bounded_limit():
+    """Candidate search filters identity before applying its bound."""
     distractors = [
         _row(
             source_snapshot_id=f"99999999-9999-4999-8999-{index:012d}",
@@ -371,6 +378,7 @@ def test_candidate_search_filters_identity_before_bounded_limit():
 
 
 def test_non_evidence_live_action_422_is_not_attributed_to_evidence():
+    """Non-evidence 422s are not attributed to evidence."""
     client = _Client(
         rpc=_not_found_rpc(),
         rows=[],
@@ -390,6 +398,7 @@ def test_non_evidence_live_action_422_is_not_attributed_to_evidence():
 
 
 def test_mlb_alias_matches_row_and_candidate_but_keeps_primary_rpc_raw():
+    """MLB alias matching preserves the raw primary RPC input."""
     mlb = {
         **BASE,
         "sport": "MLB",
@@ -448,6 +457,7 @@ def test_non_stat_primary_mismatch_does_not_blame_stat_alias():
 
 
 def test_candidate_window_at_limit_without_other_id_is_partial():
+    """An exhausted candidate window without a match is PARTIAL."""
     rows = [
         _row(source_snapshot_id=REQUESTED_ID, captured_at=datetime(2026, 11, 8, 8, 0, tzinfo=timezone.utc))
         for _ in range(25)
@@ -461,6 +471,7 @@ def test_candidate_window_at_limit_without_other_id_is_partial():
 
 
 def test_live_action_422_without_validation_code_is_unattributed():
+    """A 422 without an evidence validation code is unattributed."""
     client = _Client(
         rpc=_not_found_rpc(),
         rows=[],
@@ -479,6 +490,7 @@ def test_live_action_422_without_validation_code_is_unattributed():
 
 
 def test_invalid_identity_does_not_echo_exception_text():
+    """Invalid identity responses do not echo exception text."""
     result = readback.diagnose_prop_evidence(
         _Client(),
         {**BASE, "source_snapshot_id": "not-a-uuid"},
@@ -493,6 +505,7 @@ def test_invalid_identity_does_not_echo_exception_text():
 
 
 def test_rpc_error_message_never_enters_readback_response():
+    """RPC error text never enters the readback response."""
     client = _Client(rpc_error=RuntimeError("postgres://reader:super-secret@db"))
     result = readback.diagnose_prop_evidence(client, BASE)
 

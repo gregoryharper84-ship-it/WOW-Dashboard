@@ -50,6 +50,7 @@ class _Request(BaseModel):
 
 @pytest.fixture
 def repair_db():
+    """Provide an isolated PostgreSQL client for repair integration tests."""
     schema = "repair_" + uuid.uuid4().hex
     dsn = os.environ["AGENT_RUNTIME_POSTGRES_DSN"]
     target = urlparse(dsn)
@@ -155,6 +156,7 @@ def _primary_fetch(conn, schema):
 
 
 def _insert(conn, schema, **overrides):
+    """Insert one evidence row and return its canonical columns."""
     now = datetime.now(timezone.utc)
     row = {
         "source_snapshot_id": str(uuid.uuid4()),
@@ -216,6 +218,7 @@ def _count(conn, schema):
 
 
 def test_repair_recovers_exact_writer_identity_through_the_real_rpc(repair_db):
+    """Recover a padded caller identity through the real writer RPC."""
     conn, schema = repair_db
     persisted = _insert(conn, schema)
     req = _request()
@@ -261,6 +264,7 @@ def test_repair_recovers_exact_writer_identity_through_the_real_rpc(repair_db):
     ],
 )
 def test_repair_fallback_keeps_pregame_hydration_and_identity_filters(repair_db, overrides):
+    """Fallback lookup preserves pregame hydration and identity filters."""
     conn, schema = repair_db
     _insert(conn, schema, **overrides)
     req = _request()
@@ -279,6 +283,7 @@ def test_repair_fallback_keeps_pregame_hydration_and_identity_filters(repair_db,
 
 
 def test_repair_never_accepts_a_snapshot_the_real_rpc_deems_incomplete(repair_db):
+    """Refuse a fallback row the real RPC classifies as incomplete."""
     conn, schema = repair_db
     persisted = _insert(conn, schema, game_log=[270.0, 271.0, 272.0])
     req = _request()

@@ -119,6 +119,7 @@ def _writer_row(
 
 
 def _governed_store(*snapshots):
+    """Return the canonical governed snapshot row used by identity tests."""
     return {str(snapshot["source_snapshot_id"]): dict(snapshot) for snapshot in snapshots}
 
 
@@ -177,6 +178,7 @@ def _governed_fetch(store):
 
 
 def test_fallback_lookup_normalizes_sport_stat_and_player_identity():
+    """Fallback lookup normalizes sport, stat alias and player whitespace."""
     client = _Client([{"source_snapshot_id": "snap-1", "captured_at": "2099-01-01T00:00:00+00:00"}])
 
     ids = _fallback_snapshot_ids(
@@ -193,6 +195,7 @@ def test_fallback_lookup_normalizes_sport_stat_and_player_identity():
 
 
 def test_fallback_lookup_preserves_already_canonical_identity():
+    """Canonical identity remains unchanged through fallback lookup."""
     client = _Client([])
 
     assert _fallback_snapshot_ids(client, _req(sport="NFL", stat_type="PASSING_YARDS")) == []
@@ -202,6 +205,7 @@ def test_fallback_lookup_preserves_already_canonical_identity():
 
 
 def test_fallback_lookup_applies_the_writer_stat_alias_map():
+    """Fallback lookup resolves the writer's stat alias map."""
     client = _Client([])
 
     _fallback_snapshot_ids(client, _req(sport="nfl", stat_type="pass-yards"))
@@ -211,6 +215,7 @@ def test_fallback_lookup_applies_the_writer_stat_alias_map():
 
 
 def test_fallback_lookup_matches_the_live_writer_alias_map_exactly():
+    """Fallback normalization agrees with the live writer alias map."""
     client = _Client([])
 
     _fallback_snapshot_ids(client, _req(sport="nfl", stat_type="pass-yds"))
@@ -221,6 +226,7 @@ def test_fallback_lookup_matches_the_live_writer_alias_map_exactly():
 
 
 def test_fallback_lookup_normalizes_hyphenated_stat_labels():
+    """Hyphenated stat labels normalize consistently."""
     client = _Client([])
 
     _fallback_snapshot_ids(client, _req(sport="NFL", stat_type="receiving-yards"))
@@ -230,6 +236,7 @@ def test_fallback_lookup_normalizes_hyphenated_stat_labels():
 
 
 def test_fallback_lookup_trims_event_id_and_never_rewrites_line():
+    """Fallback trims the event id while preserving the exact line."""
     client = _Client([])
 
     _fallback_snapshot_ids(client, _req(event_id=" 2026020276 ", line=6.5))
@@ -239,6 +246,7 @@ def test_fallback_lookup_trims_event_id_and_never_rewrites_line():
 
 
 def test_canonical_identity_matches_the_governed_writer_payload():
+    """Canonical identity matches the writer payload field for field."""
     persisted = _writer_row()
     canonical = _canonical_identity(
         SimpleNamespace(
@@ -259,6 +267,7 @@ def test_canonical_identity_matches_the_governed_writer_payload():
 
 
 def test_repair_recovers_and_revalidates_the_canonical_governed_snapshot():
+    """Repair recovers and revalidates the canonical governed snapshot."""
     persisted = _writer_row()
     store = _governed_store(persisted)
     requested_id = "11111111-1111-4111-8111-111111111111"
@@ -297,6 +306,7 @@ def test_repair_recovers_and_revalidates_the_canonical_governed_snapshot():
 
 
 def test_repair_does_not_accept_a_fallback_the_validator_rejects():
+    """Rejected fallback evidence never becomes ready."""
     persisted = _writer_row()
     persisted["game_log"] = persisted["game_log"][:3]
     store = _governed_store(persisted)
@@ -323,6 +333,7 @@ def test_repair_does_not_accept_a_fallback_the_validator_rejects():
 
 
 def test_repair_preserves_the_original_blocker_when_the_lookup_fails():
+    """Lookup failure preserves the original blocker."""
     class _FailingClient:
         def table(self, _name):
             raise RuntimeError("ledger unavailable")
@@ -350,6 +361,7 @@ def test_repair_preserves_the_original_blocker_when_the_lookup_fails():
 
 
 def test_repair_does_not_look_up_a_non_repairable_primary_failure():
+    """Non-repairable primary failures skip fallback lookup."""
     looked_up = []
 
     class _Client:
