@@ -30,6 +30,7 @@ CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
 LEASE_SECONDS = 900
 POLL_SECONDS = 2.0
+SCOUT_HANDOFF_READ_PAGE_SIZE = 1000
 
 def _release_process_memory() -> None:
     """Best-effort RSS reclamation after an in-process specialist job.
@@ -661,7 +662,17 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         .order("created_at")
         .order("event_id")
     )
-    events = _paginate_query(event_query)
+    if include_receipts:
+        events = _paginate_query(event_query, page_size=SCOUT_HANDOFF_READ_PAGE_SIZE)
+        state_event_read_complete = True
+    else:
+        event_page = event_query.range(0, SCOUT_HANDOFF_READ_PAGE_SIZE - 1).execute()
+        events = [
+            dict(row)
+            for row in (getattr(event_page, "data", None) or [])
+            if isinstance(row, dict)
+        ]
+        state_event_read_complete = len(events) < SCOUT_HANDOFF_READ_PAGE_SIZE
 
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
@@ -723,14 +734,22 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     evaluated_job_ids = receipt_evaluated_job_ids | event_evaluated_job_ids
     qualified_job_ids = receipt_qualified_job_ids | event_qualified_job_ids
     evaluated = len(evaluated_job_ids)
-    worker_processing_event_gap_jobs = len(worker_attempted_job_ids - event_processing_job_ids)
-    model_evaluated_event_gap_jobs = len(receipt_evaluated_job_ids - event_evaluated_job_ids)
-    v17_qualified_event_gap_jobs = len(receipt_qualified_job_ids - event_qualified_job_ids)
-    state_event_coverage_pass = not any((
-        worker_processing_event_gap_jobs,
-        model_evaluated_event_gap_jobs,
-        v17_qualified_event_gap_jobs,
-    ))
+    if include_receipts:
+        worker_processing_event_gap_jobs: int | None = len(worker_attempted_job_ids - event_processing_job_ids)
+        model_evaluated_event_gap_jobs: int | None = len(receipt_evaluated_job_ids - event_evaluated_job_ids)
+        v17_qualified_event_gap_jobs: int | None = len(receipt_qualified_job_ids - event_qualified_job_ids)
+        state_event_coverage_pass: bool | None = not any((
+            worker_processing_event_gap_jobs,
+            model_evaluated_event_gap_jobs,
+            v17_qualified_event_gap_jobs,
+        ))
+    else:
+        # Frequent progress polls intentionally read one bounded event page.
+        # The final include_receipts=True read fetches the complete event ledger.
+        worker_processing_event_gap_jobs = None
+        model_evaluated_event_gap_jobs = None
+        v17_qualified_event_gap_jobs = None
+        state_event_coverage_pass = None
     blocked = counts.get("HANDOFF_BLOCKED", 0)
     terminal = bool(rows) and all(bool(row.get("terminal")) for row in rows)
     rows_in = len(rows)
@@ -794,6 +813,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         "model_evaluated_event_gap_jobs": model_evaluated_event_gap_jobs,
         "v17_qualified_event_gap_jobs": v17_qualified_event_gap_jobs,
         "state_event_coverage_pass": state_event_coverage_pass,
+        "state_event_read_complete": state_event_read_complete,
         "handoff_blocked": blocked,
         "rows_in": rows_in,
         "rows_completed": rows_completed,
