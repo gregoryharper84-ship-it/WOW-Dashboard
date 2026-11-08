@@ -1155,3 +1155,83 @@ def test_sport_alias_resolves_to_its_canonical_route(monkeypatch):
     assert detail["requested_route"]["stat_type"] == "RUSHING_YARDS"
     assert detail["caller_request_stat_type"] == "RUSH_YDS"
     assert lookup["score"] is False
+
+
+# --- Evidence identity is separate from scoring identity ------------------
+#
+# A manifest-only alias passes preflight under its canonical route, but the
+# snapshot writer persists the caller's own spelling. Inference and market
+# identity therefore resolve through the same route union preflight used,
+# while evidence lookup deliberately keeps the writer identity.
+
+
+@pytest.mark.parametrize(
+    "sport, alias, canonical",
+    (
+        ("NFL", "PASS_YDS", "PASSING_YARDS"),
+        ("WNBA", "PTS", "POINTS"),
+    ),
+)
+def test_alias_request_reaches_inference_under_the_canonical_identity(
+    monkeypatch, sport, alias, canonical
+):
+    """The admitted route is the identity inference receives."""
+    seen = {"evidence_stat": None, "scorer_stat": None}
+
+    def spy_score(**kwargs):
+        seen["scorer_stat"] = kwargs["request"].stat_type
+        return _result(market_available=False, market_quality="NO_QUALIFYING_MARKET")
+
+    _install_common(monkeypatch, spy_score)
+
+    def evidence(req):
+        # The snapshot writer keys its rows on the caller's own spelling.
+        seen["evidence_stat"] = str(req.stat_type)
+        ready = _ready_evidence()
+        ready["stat_type"] = str(req.stat_type)
+        return ready
+
+    monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", evidence)
+
+    response = client.post(
+        "/score-prop", json=_preflight_payload(sport, alias), headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen["evidence_stat"] == alias
+    assert seen["scorer_stat"] == canonical
+    body = response.json()
+    assert body["request_identity_audit"]["effective_request"]["stat_type"] == canonical
+    assert body["request_identity_audit"]["canonicalized"] is True
+    assert body["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "sport, alias, canonical",
+    (
+        ("NFL", "PASS_YDS", "PASSING_YARDS"),
+        ("WNBA", "PTS", "POINTS"),
+    ),
+)
+def test_market_quote_identity_uses_the_same_route_union(sport, alias, canonical):
+    """An aliased quote compares in the route identity, not the raw spelling."""
+    payload = _preflight_payload(sport, alias)
+    payload["market_side_a"] = {
+        "line": payload["line"],
+        "settlement_basis": "FULL_GAME_PLAYER_STAT",
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "participant": "Test Player",
+        "stat": alias,
+        "period": "FULL_GAME",
+        "event_id": payload["event_id"],
+        "side": "MORE",
+        "american_odds": -135,
+    }
+    request = api_prod_market.ScorePropRequest(**payload)
+    quote = api_prod_market._canonical_market_quote(
+        api_prod_market._to_market_quote(request.market_side_a), sport
+    )
+
+    assert quote.stat == canonical
+    assert quote.line == payload["line"]
+    assert quote.american_odds == -135

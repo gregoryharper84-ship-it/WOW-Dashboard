@@ -159,25 +159,45 @@ def _to_market_quote(value: Optional[MarketQuoteInput]) -> Optional[MarketQuote]
     return MarketQuote(**value.model_dump())
 
 
+def _scoring_route_identity(sport: str, stat_type: str) -> tuple[str, str]:
+    """Resolve the governed route identity inference and market audit share.
+
+    The certified-artifact registry compares stat text exactly, so the route
+    preflight admitted is only reachable by a request that resolves through the
+    same union of the writer's alias table and the capability manifest's. The
+    union is order-safe: the manifest adds only keys the writer table does not
+    declare, and it never overrides an existing writer mapping.
+
+    Evidence snapshot rows are a separate identity. They stay keyed by the
+    writer's table alone, which the repair layer preserves, so historical
+    captures still resolve.
+    """
+    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+    from v17.prop_capability_manifest import normalize_prop_sport, normalize_prop_stat
+
+    route_sport = normalize_prop_sport(str(sport or "").strip().upper())
+    route_stat = normalize_prop_stat(
+        route_sport, writer_canonical_stat(route_sport, stat_type)
+    )
+    return route_sport, route_stat
+
+
 def _canonical_market_quote(quote: Optional[MarketQuote], sport: str) -> Optional[MarketQuote]:
-    """Return an audit-only quote with writer-normalized identity fields.
+    """Return an audit-only quote with route-normalized identity fields.
 
     Market quotes can use the same stat alias or padded labels as the caller
-    request. The evidence writer has already resolved those labels to one
-    canonical identity. Normalize only identity comparison fields here; line,
-    side, price, freshness and settlement basis remain exactly as supplied.
+    request. Normalize only identity comparison fields here; line, side,
+    price, freshness and settlement basis remain exactly as supplied.
     """
     if quote is None:
         return None
-    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+    _route_sport, quote_stat = _scoring_route_identity(sport, str(quote.stat or ""))
 
     return replace(
         quote,
         event_id=str(quote.event_id or "").strip(),
         participant=" ".join(str(quote.participant or "").split()),
-        stat=writer_canonical_stat(
-            str(sport or "").strip().upper(), str(quote.stat or "")
-        ),
+        stat=quote_stat,
         period=str(quote.period or "").strip().upper(),
     )
 
@@ -588,25 +608,25 @@ def _prop_route_artifact(sport: str, stat_type: str) -> dict[str, Any]:
 def _canonical_scoring_identity(
     req: ScorePropRequest, evidence: dict[str, Any]
 ) -> dict[str, str]:
-    """Return the exact identity the governed evidence writer persisted.
+    """Return the identity inference and market comparison must both use.
 
     Caller identity is untrusted formatting: stat aliases, case and padding
     can differ while naming the same governed market. The evidence row has
     already passed the acquisition validator, so its values are authoritative;
-    request values are a fallback only when a payload omits a field. This
-    normalizes identity comparison only. The offered line, direction, period
-    and settlement semantics are never rewritten here.
-    """
-    # Reuse the writer's own alias map so ``K`` and ``PITCHER_STRIKEOUTS``
-    # resolve to one identity. Imported lazily for the same reason as the
-    # repair layer: the governed runtime loads this module indirectly.
-    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+    request values are a fallback only when a payload omits a field. The
+    resolved stat is the route preflight gated on, so inference cannot address
+    a lane the registry was never asked for. This normalizes identity
+    comparison only. The offered line, direction, period and settlement
+    semantics are never rewritten here.
 
+    Evidence snapshot lookup is deliberately excluded: those rows are keyed by
+    the writer's own table, which ``prop_evidence_repair`` preserves.
+    """
     event_id = str(evidence.get("event_id") or req.event_id or "").strip()
-    sport = str(evidence.get("sport") or req.sport or "").strip().upper()
     player = " ".join(str(evidence.get("player") or req.player or "").split())
-    stat_type = writer_canonical_stat(
-        sport, str(evidence.get("stat_type") or req.stat_type or "")
+    sport, stat_type = _scoring_route_identity(
+        str(evidence.get("sport") or req.sport or "").strip().upper(),
+        str(evidence.get("stat_type") or req.stat_type or ""),
     )
     return {
         "event_id": event_id,
@@ -794,13 +814,7 @@ def _preflight_prop_route(
     route actually attempted in ``requested_route`` and keep the caller's
     original spelling in ``caller_request_stat_type`` for audit.
     """
-    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
-    from v17.prop_capability_manifest import normalize_prop_sport, normalize_prop_stat
-
-    route_sport = normalize_prop_sport(req.sport)
-    route_stat = normalize_prop_stat(
-        route_sport, writer_canonical_stat(route_sport, req.stat_type)
-    )
+    route_sport, route_stat = _scoring_route_identity(req.sport, req.stat_type)
     specialist = prod.base_api._controlling_specialist_provider(route_sport, route_stat)
     if specialist is None:
         raise HTTPException(
