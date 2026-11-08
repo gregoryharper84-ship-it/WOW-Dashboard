@@ -114,6 +114,15 @@ def test_public_failure_code_returns_only_allowlisted_literal_codes():
         ),
         fallback,
     ) == "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE"
+    for code in (
+        "NBA_CURRENT_SEASON_READBACK_INVALID",
+        "NBA_CURRENT_SEASON_READBACK_INCOMPLETE",
+        "NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID",
+        "NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH",
+    ):
+        assert maintenance._public_failure_code(
+            maintenance.BasketballHydrationError(code), fallback
+        ) == code
     assert maintenance._public_failure_code(
         RuntimeError("NBA_SOURCE_HTTP_503"), fallback
     ) == "NBA_SOURCE_HTTP_503"
