@@ -183,6 +183,16 @@ def pg(tmp_path_factory):
                 returns jsonb language plpgsql set search_path='' as $fn$
                 declare available boolean;
                 begin
+                  -- Test-only latency fixture proves the issuer rechecks event
+                  -- start AFTER the reducer returns. This function exists only
+                  -- in the disposable schema created by this test module.
+                  if exists (
+                    select 1 from public.wow_nfl_event_predictions
+                    where score_snapshot_id=p_score_snapshot_id
+                      and official_event_id='post-reducer-boundary-fixture'
+                  ) then
+                    perform pg_catalog.pg_sleep(4.0);
+                  end if;
                   select s.provenance_complete and s.model_package_valid and
                     s.model_probability_publishable and s.event_start_time_utc > clock_timestamp()
                     and (s.latest_material_update_timestamp is null or
@@ -253,8 +263,11 @@ def reset_postgresql_contract_state(pg):
         db.execute("delete from public.wow_team_event_specialist_certifications where verification_receipt ? 'test_fixture_only'")
         db.execute(
             "update public.wow_nfl_event_predictions "
-            "set provenance_complete=true, latest_material_update_timestamp=null "
-            "where score_snapshot_id=%s",(SCORE,)
+            "set official_event_id='official-fixture', event_start_time_utc=%s, "
+            "source_snapshot_timestamp=%s, model_timestamp=%s, "
+            "provenance_complete=true, latest_material_update_timestamp=null "
+            "where score_snapshot_id=%s",
+            (START, SNAP_AT, MODEL_AT, SCORE),
         )
         db.execute("""
             update public.wow_nfl_forward_calibration_health
@@ -410,6 +423,97 @@ def test_test_only_certificate_does_not_override_reducer_material_update_hold(pg
         ).fetchone()[0]
         assert control["status"]=="PERSISTED"
         assert control["can_execute"] is False
+
+
+
+def test_post_reducer_event_start_boundary_is_rechecked(pg):
+    """A passing test reducer cannot issue a receipt after the event starts."""
+    stage_test_only_qualifying_forward_cohort(pg)
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute("""
+            update public.wow_nfl_event_predictions
+            set official_event_id='post-reducer-boundary-fixture',
+                event_start_time_utc=clock_timestamp()+interval '3 seconds',
+                created_at=clock_timestamp()-interval '10 seconds',
+                source_snapshot_timestamp=clock_timestamp()-interval '11 seconds',
+                model_timestamp=clock_timestamp()-interval '10 seconds'
+            where score_snapshot_id=%s
+        """,(SCORE,))
+    assert call(pg,"wow_v17_nfl_receipt_certified",SCORE) is True
+    # The disposable reducer sleeps for this exact fixture and then returns
+    # PASS. The issuer's post-reducer clock check must still reject the receipt.
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute("select pg_catalog.set_config('wow_test.reducer_force_pass','on',false)")
+        issued=db.execute(
+            "select public.wow_v17_admit_nfl_event_receipt(%s::uuid)",(SCORE,)
+        ).fetchone()[0]
+    assert issued["status"]=="HOLD"
+    assert issued["code"]=="LLP_EVENT_PREDICTION_RECEIPT_MISMATCH"
+    assert "event_prediction_id" not in issued
+    assert issued["can_execute"] is False
+
+
+def test_conflicting_existing_receipt_is_held_and_readback_checks_identity(pg):
+    """A conflicting duplicate cannot be idempotently accepted or read back."""
+    stage_test_only_qualifying_forward_cohort(pg)
+    issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert issued["status"]=="PERSISTED"
+    with psycopg.connect(pg,autocommit=True) as db:
+        # Corruption is deliberately injected only in the disposable test DB;
+        # production immutability triggers remain unchanged.
+        db.execute(
+            "alter table public.wow_v17_multisport_event_prediction_receipts "
+            "disable trigger trg_v17_multisport_receipt_identity"
+        )
+        db.execute(
+            "alter table public.wow_v17_multisport_event_prediction_receipts "
+            "disable trigger trg_v17_multisport_receipt_immutable"
+        )
+        db.execute(
+            "update public.wow_v17_multisport_event_prediction_receipts "
+            "set official_event_id='tampered-duplicate-event' "
+            "where event_prediction_id=%s",
+            (issued["event_prediction_id"],),
+        )
+        db.execute(
+            "alter table public.wow_v17_multisport_event_prediction_receipts "
+            "enable trigger trg_v17_multisport_receipt_identity"
+        )
+        db.execute(
+            "alter table public.wow_v17_multisport_event_prediction_receipts "
+            "enable trigger trg_v17_multisport_receipt_immutable"
+        )
+    repeated=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert repeated["status"]=="HOLD"
+    assert repeated["code"]=="LLP_EVENT_PREDICTION_RECEIPT_MISMATCH"
+    assert "event_prediction_id" not in repeated
+    verified=call(pg,"wow_v17_verify_multisport_event_receipt",issued["event_prediction_id"])
+    assert verified["status"]=="HOLD"
+    assert verified["can_execute"] is False
+
+
+def test_receipt_readback_rejects_reducer_hash_tampering(pg):
+    """The independent verifier recomputes the reducer receipt digest."""
+    stage_test_only_qualifying_forward_cohort(pg)
+    issued=call(pg,"wow_v17_admit_nfl_event_receipt",SCORE)
+    assert issued["status"]=="PERSISTED"
+    with psycopg.connect(pg,autocommit=True) as db:
+        db.execute(
+            "alter table public.wow_v17_multisport_event_prediction_receipts "
+            "disable trigger trg_v17_multisport_receipt_immutable"
+        )
+        db.execute(
+            "update public.wow_v17_multisport_event_prediction_receipts "
+            "set reducer_receipt_sha256=%s where event_prediction_id=%s",
+            ("0"*64,issued["event_prediction_id"]),
+        )
+        db.execute(
+            "alter table public.wow_v17_multisport_event_prediction_receipts "
+            "enable trigger trg_v17_multisport_receipt_immutable"
+        )
+    verified=call(pg,"wow_v17_verify_multisport_event_receipt",issued["event_prediction_id"])
+    assert verified["status"]=="HOLD"
+    assert verified["can_execute"] is False
 
 
 @pytest.mark.parametrize("artifact_matches, grade_version", [
