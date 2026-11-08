@@ -53,3 +53,6 @@ probability_authority=NONE
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 \`\`\`
+## Exact-head validation note
+
+The first hosted attempt caught a TypeScript JSDoc parameter-shape error in the DEV guard; the helper signature was corrected. The latest branch head must pass a fresh hosted run before this pilot can be considered source-validated. The previous failed run is retained as evidence and is not relabeled.
