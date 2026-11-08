@@ -304,27 +304,37 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
     assert "req.headers" not in source.split('headers.set("user-agent"')[1]
 
 
-def test_wow_prop_action_stays_on_render_and_is_rejected_by_llp_gateways():
+def test_wow_prop_action_stays_on_render_and_llp_gateways_do_not_forward_it():
     wow = yaml.safe_load(WOW_SCHEMA.read_text(encoding="utf-8"))
     edge = LLP_GATEWAY.read_text(encoding="utf-8")
-    vercel = (HERE / "vercel/llp-action-gateway/api/gateway.js").read_text(encoding="utf-8")
+    vercel_dir = HERE / "vercel/llp-action-gateway"
+    vercel_config = json.loads((vercel_dir / "vercel.json").read_text(encoding="utf-8"))
+    vercel_handler = (vercel_dir / "api/gateway.js").read_text(encoding="utf-8")
+    vercel_sources = [rewrite["source"] for rewrite in vercel_config["rewrites"]]
 
     assert wow["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
     prop = wow["paths"]["/score-pick-request"]["post"]
     assert prop["operationId"] == "scoreWowPickRequest"
     assert prop["security"] == [{"actionBearer": []}]
 
-    # The LLP gateways intentionally expose team-event transport only. A prop
-    # request rejected here never reaches Render's invocation-receipt middleware.
-    for gateway in (edge, vercel):
-        assert "/score-pick-request" not in gateway
-        assert "/score-prop" not in gateway
+    # Supabase sends unmatched paths into its handler, which rejects before
+    # upstream dispatch and adds its explicit edge/request-id fingerprint.
+    assert "/score-pick-request" not in edge
+    assert "/score-prop" not in edge
     assert '"x-wow-gateway": "supabase-edge"' in edge
-    assert '"x-wow-gateway": "vercel-action-ingress"' in vercel
+    assert '"x-wow-request-id": requestId' in edge
     assert 'return jsonResponse(404, "LLP_GATEWAY_PATH_NOT_ALLOWED", requestId);' in edge
-    assert 'return fail(res, 404, "LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED", requestId);' in vercel
     assert edge.index("if (pathMatches.length === 0)") < edge.index('gatewayLog("UPSTREAM_DISPATCH"')
-    assert vercel.index("if (!route)") < vercel.index("const upstream = new URL(TARGET + path);")
+
+    # Vercel only rewrites explicitly enumerated paths. Neither WOW prop path
+    # reaches api/gateway.js, so its handler-specific error/header do not apply.
+    assert "/functions/v1/wow-llp-action-gateway/score-team-event" in vercel_sources
+    assert not any(source.endswith("/score-pick-request") for source in vercel_sources)
+    assert not any(source.endswith("/score-prop") for source in vercel_sources)
+    assert '"/score-pick-request"' not in vercel_handler
+    assert '"/score-prop"' not in vercel_handler
+    assert '"x-wow-gateway": "vercel-action-ingress"' in vercel_handler
+    assert 'LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED' in vercel_handler
 
 
 def test_llp_gateway_supabase_platform_jwt_check_is_disabled_for_wow_bearer():
