@@ -7,7 +7,7 @@ from v17.llp_selection_disposition import (
     classify_selection_disposition,
 )
 
-NOW = datetime(2026, 11, 8, 16, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 8, 16, 59, tzinfo=timezone.utc)
 START = datetime(2026, 11, 8, 22, 0, tzinfo=timezone.utc)
 MODEL_TIME = datetime(2026, 11, 8, 15, 30, tzinfo=timezone.utc)
 SNAPSHOT_TIME = datetime(2026, 11, 8, 15, 0, tzinfo=timezone.utc)
