@@ -104,7 +104,11 @@ jobs:
             # target; no check is published and this main-scoped callback
             # exits neutral. Current, malformed and foreign targets retain
             # the existing fail-closed policy resolution.
-            args+=(--neutral-if-superseded)
+            # A draft source cannot be merged, so it can never be a
+            # Release target; neutralizing it stops a PR-scoped callback
+            # from failing the unrelated protected-main commit that
+            # Render's checksPass trigger is evaluating.
+            args+=(--neutral-if-superseded --neutral-if-draft-target)
           fi
           # A refusal is a typed admission decision, not an opaque shell
           # failure. Surface the exact reason so a main-scoped callback can be
@@ -253,7 +257,10 @@ jobs:
             # A PR may move again while this job waits for its per-PR writer.
             # Re-authenticate the source policy; neutralize only a proven
             # superseded historical workflow_run, never a manual release.
-            policy_args+=(--neutral-if-superseded)
+            # A draft source cannot be merged, so it can never be a Release
+            # target: neutralizing it keeps a PR-scoped callback from failing
+            # the unrelated main commit Render's checksPass trigger evaluates.
+            policy_args+=(--neutral-if-superseded --neutral-if-draft-target)
           fi
           policy_bundle=$(python "$tool" "${policy_args[@]}")
           if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<<"$policy_bundle")" = "neutral" ]; then

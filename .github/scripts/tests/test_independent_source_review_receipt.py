@@ -1218,6 +1218,26 @@ def test_release_draft_pr_at_same_head_is_never_neutral():
         )
 
 
+def test_release_draft_target_at_policy_head_is_neutral_only_when_explicitly_enabled():
+    """A draft can never merge, so it can never be a Release target.
+
+    The strict default is unchanged: only the automatic workflow_run admission
+    opts in, and it publishes no Release check either way.
+    """
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["draft"] = True
+    routes["/pulls/1822"] = target
+    kwargs = _release_kwargs(routes, archive)
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
+    neutral = review.resolve_qa_review_policy(
+        **kwargs, allow_superseded_target=True, neutralize_draft_target=True,
+    )
+    assert neutral["disposition"] == "neutral"
+    assert neutral["reason"] == "RELEASE_QA_DRAFT_TARGET_NOT_RELEASABLE"
+
+
 def test_release_draft_pr_with_moved_head_from_foreign_repo_is_never_neutral():
     routes, archive = qa_policy_routes()
     target = pr()
