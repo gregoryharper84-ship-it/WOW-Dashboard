@@ -507,12 +507,15 @@ def test_canonical_existing_id_read_must_be_complete_before_write(malformed_rows
     class MalformedReadEchoingQuery(Query):
         def execute(self):
             if self.incoming is not None:
+                self.store.upsert_calls += 1
                 # Adversarial boundary echoes the pre-existing row back as if
                 # it had just been inserted.
                 return SimpleNamespace(data=[dict(original)])
             return SimpleNamespace(data=list(malformed_rows))
 
     class MalformedReadStore(Store):
+        upsert_calls = 0
+
         def table(self, _name):
             return MalformedReadEchoingQuery(self)
 
@@ -522,6 +525,7 @@ def test_canonical_existing_id_read_must_be_complete_before_write(malformed_rows
     # This is a pre-write identity failure, not an ambiguous post-write hold.
     assert type(caught.value) is hydration.BasketballHydrationError
     assert str(caught.value) == "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED"
+    assert store.upsert_calls == 0
     assert store.rows == [original]
 
 
