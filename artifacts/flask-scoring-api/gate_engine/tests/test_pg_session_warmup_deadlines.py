@@ -121,8 +121,11 @@ def test_startup_dns_timeout_fails_before_opening_database_connection(monkeypatc
             )
         assert observed == []
     finally:
-        # Let the daemon resolver exit promptly in this deterministic unit test.
+        # Let the daemon resolver exit promptly, then wait for its single-flight
+        # slot to be returned before another test can enter the resolver path.
         release.set()
+        assert pg_session_ledger._DNS_RESOLUTION_SLOT.acquire(timeout=1.0)
+        pg_session_ledger._DNS_RESOLUTION_SLOT.release()
 
 
 
@@ -160,6 +163,80 @@ def test_dns_timeout_allows_only_one_inflight_resolver(monkeypatch):
         release.set()
     assert pg_session_ledger._DNS_RESOLUTION_SLOT.acquire(timeout=1.0)
     pg_session_ledger._DNS_RESOLUTION_SLOT.release()
+
+
+
+@pytest.mark.parametrize(
+    "parsed,parse_error,expected_code",
+    [
+        ({"host": "db-a.example,db-b.example", "port": "5432"}, None,
+         "SESSION_LEDGER_DNS_MULTIHOST_UNSUPPORTED"),
+        ({"host": "db.example.invalid", "port": "not-a-port"}, None,
+         "SESSION_LEDGER_DSN_PORT_INVALID"),
+        (None, ValueError("secret DSN parse detail"), "SESSION_LEDGER_DSN_INVALID"),
+    ],
+)
+def test_invalid_dns_dsns_fail_before_connect(monkeypatch, parsed, parse_error, expected_code):
+    """Malformed, multi-host and invalid-port DSNs never open a DB connection."""
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    if parse_error is not None:
+        def parse_failed(_url):
+            """Simulate a libpq DSN parser rejection without exposing its detail."""
+            raise parse_error
+        driver.extensions.parse_dsn = parse_failed
+    else:
+        driver.extensions.parse_dsn = lambda _url: parsed
+
+    with pytest.raises(ValueError, match=expected_code):
+        pg_session_ledger.ensure_table_exists(
+            "postgresql://user:secret@db.example.invalid:5432/safety-test"
+        )
+    assert observed == []
+
+
+@pytest.mark.parametrize("resolver_mode", ["oserror", "empty"])
+def test_dns_resolution_failure_and_empty_results_fail_before_connect(monkeypatch, resolver_mode):
+    """Resolver errors and empty address sets fail closed before libpq connect."""
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": "db.example.invalid", "port": "5432"}
+
+    def resolve(*_args, **_kwargs):
+        """Return no address or simulate the operating-system resolver error."""
+        if resolver_mode == "oserror":
+            raise OSError("secret resolver diagnostic")
+        return []
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", resolve)
+    with pytest.raises(OSError, match="SESSION_LEDGER_DNS_FAILED"):
+        pg_session_ledger.ensure_table_exists(
+            "postgresql://user:secret@db.example.invalid:5432/safety-test"
+        )
+    assert observed == []
+
+
+@pytest.mark.parametrize(
+    "host,expected_kwargs",
+    [
+        ("192.0.2.55", {"connect_timeout": 5, "hostaddr": "192.0.2.55"}),
+        ("/var/run/postgresql", {"connect_timeout": 5}),
+    ],
+)
+def test_ip_literal_and_unix_socket_hosts_skip_dns(monkeypatch, host, expected_kwargs):
+    """IP literals bind directly and socket-directory hosts stay with libpq."""
+    observed, conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {"host": host, "port": "5432"}
+
+    def unexpected_dns(*_args, **_kwargs):
+        """Fail if a host that needs no DNS reaches the system resolver."""
+        pytest.fail("DNS must be skipped for IP literals and Unix socket paths")
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", unexpected_dns)
+    pg_session_ledger.ensure_table_exists("postgresql://local/safety-test")
+    assert observed == [(("postgresql://local/safety-test",), expected_kwargs)]
+    assert conn.commit_calls == 1
 
 
 def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
