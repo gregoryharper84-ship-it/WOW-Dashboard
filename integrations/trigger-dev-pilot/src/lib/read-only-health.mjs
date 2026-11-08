@@ -39,6 +39,14 @@ export function assertTriggerDevEnvironment(environmentType) {
  * Trigger.dev owns retries; redirects and permanent HTTP failures are never retried.
  * The provider-reported environment type is mandatory; a user-set env flag is not enough.
  */
+/**
+ * @param {{
+ *   triggerEnvironmentType?: "DEVELOPMENT" | "STAGING" | "PRODUCTION" | "PREVIEW",
+ *   fetchImpl?: typeof fetch,
+ *   env?: NodeJS.ProcessEnv,
+ *   now?: () => string
+ * }} options
+ */
 export async function observeWowHealth({
   triggerEnvironmentType,
   fetchImpl = globalThis.fetch,
