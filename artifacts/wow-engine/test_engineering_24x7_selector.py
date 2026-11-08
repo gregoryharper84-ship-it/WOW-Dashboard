@@ -33,6 +33,26 @@ class Test24x7(unittest.TestCase):
         result = mod.plan([issue(8, "approved-improvement"), issue(9, "P0")], [])
         self.assertEqual((result["action"], result["incident"]), ("BUILD", 9))
 
+    def test_sirt_intake_is_not_coding_work_even_when_labeled_p0(self):
+        result = mod.plan([
+            issue(2422, "P0", title="P0 V17 release deadlock",
+                  updated_at="2026-11-07T16:58:19Z"),
+            issue(2467, "P0", "RESTORATION_SURGE",
+                  title="[SIRT Intake][P0] Independent semantic acceptance",
+                  updated_at="2026-11-07T23:09:37Z"),
+            issue(2469, "P0", "RESTORATION_SURGE",
+                  title="[SIRT Intake][P0 NBA] Independent Class C acceptance",
+                  updated_at="2026-11-07T23:43:20Z"),
+            issue(2484, "P1", title="[SIRT Intake][P1] Senior reviewer acceptance",
+                  updated_at="2026-11-06T01:09:51Z"),
+        ], [])
+        self.assertEqual((result["action"], result["incident"]), ("BUILD", 2422))
+        only_sirt = mod.plan([
+            issue(2469, "P0", "RESTORATION_SURGE",
+                  title="[SIRT Intake][P0 NBA] Independent Class C acceptance"),
+        ], [])
+        self.assertEqual(only_sirt["action"], "IDLE")
+
     def test_resume_same_incident_without_duplicate(self):
         result = mod.plan([issue(9, "P0")], [pr(40, 9)])
         self.assertEqual((result["action"], result["pr"], result["head_sha"]),
