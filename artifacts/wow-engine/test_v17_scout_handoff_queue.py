@@ -477,6 +477,9 @@ def test_read_run_summary_derives_worker_proof_from_claimed_jobs_when_transition
         def order(self, *_args):
             return self
 
+        def range(self, *_args):
+            return self
+
         def execute(self):
             return _Response(self.rows)
 
