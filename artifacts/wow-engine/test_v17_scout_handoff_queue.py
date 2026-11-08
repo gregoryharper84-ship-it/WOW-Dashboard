@@ -496,3 +496,105 @@ def test_read_run_summary_derives_worker_proof_from_claimed_jobs_when_transition
     assert summary["worker_processing_event_gap_jobs"] == 2
     assert summary["model_evaluated_event_gap_jobs"] == 2
     assert summary["state_event_coverage_pass"] is False
+
+
+def test_read_run_summary_paginates_state_events_past_postgrest_default_row_limit():
+    outcome = {
+        "terminal_status": "HELD",
+        "code": "MODEL_UNAVAILABLE",
+        "can_execute": False,
+    }
+    jobs = [{
+        "job_id": "job-after-first-page",
+        "source_run_id": "run-paged",
+        "research_run_id": "research-paged",
+        "candidate_id": "candidate-after-first-page",
+        "target_lane": "LLP_TEAM_BETTING_ENGINE",
+        "research_priority": "HIGH",
+        "current_state": "MODEL_EVALUATED",
+        "terminal": True,
+        "attempt_count": 1,
+        "specialist_receipt": {
+            "can_execute": False,
+            "result": {"can_execute": False, "rows": [outcome]},
+        },
+        "last_error_code": None,
+        "created_at": "2026-11-07T16:00:00Z",
+    }]
+    events = [{
+        "job_id": f"filler-{index}",
+        "candidate_id": f"filler-{index}",
+        "target_lane": "LLP_TEAM_BETTING_ENGINE",
+        "state": "DISCOVERED",
+        "code": "DISCOVERED",
+        "can_execute": False,
+        "created_at": f"2026-11-07T15:{index // 60:02d}:{index % 60:02d}Z",
+    } for index in range(1000)]
+    events.extend([
+        {
+            "job_id": "job-after-first-page",
+            "candidate_id": "candidate-after-first-page",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_PROCESSING",
+            "code": "SPECIALIST_WORKER_CLAIMED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:01Z",
+        },
+        {
+            "job_id": "job-after-first-page",
+            "candidate_id": "candidate-after-first-page",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "MODEL_EVALUATED",
+            "code": "SPECIALIST_MODEL_EVALUATED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+    ])
+
+    class _PagedReadQuery:
+        def __init__(self, rows):
+            self.rows = rows
+            self.start = 0
+            self.end = 999
+            self.range_calls = []
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args):
+            return self
+
+        def range(self, start, end):
+            self.start = start
+            self.end = end
+            self.range_calls.append((start, end))
+            return self
+
+        def execute(self):
+            return _Response(self.rows[self.start:self.end + 1])
+
+    class _PagedReadDB:
+        def __init__(self):
+            self.queries = {}
+
+        def table(self, name):
+            rows = jobs if name == "wow_scout_handoff_jobs" else events
+            query = _PagedReadQuery(rows)
+            self.queries[name] = query
+            return query
+
+    db = _PagedReadDB()
+    summary = queue.read_run_summary(db, "run-paged")
+
+    assert summary["specialist_processing_seen"] == 1
+    assert summary["model_evaluated"] == 1
+    assert summary["worker_processing_event_gap_jobs"] == 0
+    assert summary["model_evaluated_event_gap_jobs"] == 0
+    assert summary["state_event_coverage_pass"] is True
+    assert db.queries["wow_scout_handoff_state_events"].range_calls == [
+        (0, 999),
+        (1000, 1999),
+    ]
