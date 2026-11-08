@@ -112,3 +112,10 @@ Current disposition: implementation source validated; live task acceptance BLOCK
 ### Credential-readiness guard — Nov 8, 2026
 
 The remote job now requires repository variable `WOW_TRIGGER_CLI_AUTH_READY=true` in addition to the existing remote-worker opt-in. Set this only after the `wow-trigger-dev` environment has a required reviewer / branch restriction and both separate secrets are installed. This prevents automatic PR synchronization from repeatedly starting a runner while the CLI PAT is absent. The variable is an operator acknowledgement, not proof of environment protection; actual run receipts remain the evidence.
+
+
+### Operator setup reported — Nov 8, 2026
+
+The operator reports that GitHub environment `wow-trigger-dev` now requires reviewer `gregoryharper84-ship-it`, deployment is restricted to protected branches, the short-lived Trigger.dev PAT is stored as environment secret `TRIGGER_ACCESS_TOKEN`, and repository variable `WOW_TRIGGER_CLI_AUTH_READY=true` is set. These settings are operator-reported until a new workflow run demonstrates that the environment releases the secret after its required approval.
+
+A guarded PR synchronization will now re-attempt the bounded Development-only worker. This does not authorize Production/Staging, model scoring, live trading, or coding dispatch.
