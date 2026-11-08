@@ -334,20 +334,23 @@ def _install_route(monkeypatch):
     )
     monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", primary_fetch)
     monkeypatch.setattr(api_prod_market.prod, "_reject_llp_prop_identity", lambda _identity: "TEST")
-    monkeypatch.setattr(
-        api_prod_market.prod.base_api,
-        "_controlling_specialist_provider",
-        lambda _sport, _stat: {
+
+    def specialist_provider(_sport, _stat):
+        """Return the route specialist and assert canonical route lookup."""
+        assert _sport == "MLB"
+        assert _stat == STAT
+        return {
             "sport": "MLB",
             "canonical_prop_type": STAT,
             "controlling_specialist": "wow.mlb-pitcher-strikeouts-expert@canonical-test",
             "min_event_tree_simulations": 0,
-        },
-    )
-    monkeypatch.setattr(
-        api_prod_market,
-        "_prop_route_artifact",
-        lambda _sport, _stat: {
+        }
+
+    def route_artifact(_sport, _stat):
+        """Return the exact-route artifact and assert canonical route lookup."""
+        assert _sport == "MLB"
+        assert _stat == STAT
+        return {
             "ok": True,
             "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
             "sport": "MLB",
@@ -358,7 +361,17 @@ def _install_route(monkeypatch):
             "lifecycle_state": _BUNDLE.lifecycle_state,
             "probability_publishable": False,
             "can_execute": False,
-        },
+        }
+
+    monkeypatch.setattr(
+        api_prod_market.prod.base_api,
+        "_controlling_specialist_provider",
+        specialist_provider,
+    )
+    monkeypatch.setattr(
+        api_prod_market,
+        "_prop_route_artifact",
+        route_artifact,
     )
     monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: repair_client)
     monkeypatch.setattr(api_prod_market, "score_discrete_prop_end_to_end", fake_score)

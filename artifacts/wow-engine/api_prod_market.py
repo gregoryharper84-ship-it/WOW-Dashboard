@@ -781,8 +781,15 @@ def _preflight_prop_route(
     certified fitted-model artifact must terminate without calling the evidence
     hydrator. This keeps unsupported rows from consuming acquisition work and
     prevents their failures from masquerading as evidence-contract failures.
+
+    Route lookups use the writer's canonical stat alias, so an MLB ``K`` request
+    resolves the same specialist and artifact as ``PITCHER_STRIKEOUTS`` before
+    evidence hydration. The caller request itself is never mutated here.
     """
-    specialist = prod.base_api._controlling_specialist_provider(req.sport, req.stat_type)
+    from pick_request_runtime_core import _canonical_stat as writer_canonical_stat
+
+    route_stat = writer_canonical_stat(req.sport, req.stat_type)
+    specialist = prod.base_api._controlling_specialist_provider(req.sport, route_stat)
     if specialist is None:
         raise HTTPException(
             status_code=503,
@@ -836,7 +843,7 @@ def _preflight_prop_route(
             },
         )
 
-    route_artifact = _prop_route_artifact(req.sport, req.stat_type)
+    route_artifact = _prop_route_artifact(req.sport, route_stat)
     route_code = str(route_artifact.get("code") or "")
     if route_code in PROP_ROUTE_REGISTRY_INFRA_CODES:
         # Registry transport/shape failure is infrastructure, not proof that the

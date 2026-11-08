@@ -367,3 +367,28 @@ independent authority remain blocked or absent.
   **2183 passed, 1 skipped**. Focused affected set **98 passed, 8 skipped**
   (all skips require the ephemeral Postgres integration service).
 - `can_execute=false`; no merge or deployment.
+
+### Session 3 route-preflight alias correction
+
+- CodeRabbit's exact-head review at `c5aa2e75` found a remaining production
+  alias gap: `_preflight_prop_route` looked up the caller's raw `stat_type`
+  (`K`) before evidence repair, while the specialist and certified-artifact
+  registries are keyed by `PITCHER_STRIKEOUTS`. A real MLB alias request could
+  therefore terminate as `MODEL_UNAVAILABLE` before canonical evidence was
+  ever consulted. The regression's permissive stubs had hidden this.
+- `_preflight_prop_route` now derives a canonical `route_stat` with the same
+  writer resolver used by repair and passes it to both
+  `_controlling_specialist_provider` and `_prop_route_artifact`. The caller
+  request and the blocked-route `requested_route` audit fields remain raw and
+  unchanged.
+- The end-to-end regression's specialist and artifact stubs now assert they
+  receive the canonical `PITCHER_STRIKEOUTS` value, so the alias request fails
+  if preflight regresses to raw `K`.
+- **Local rerun after the correction:** focused affected set **54 passed,
+  8 skipped**; shard 0 **2299 passed, 39 skipped**; shard 1 **2870 passed,
+  7 skipped**; shard 2 **1845 passed, 9 skipped**; shard 3 **2183 passed,
+  1 skipped**. All skips require the ephemeral Postgres integration service.
+  AST docstring coverage remains **100%** in `api_prod_market.py`,
+  `prop_evidence_readback.py` and `prop_evidence_repair.py`; `git diff --check`
+  clean.
+- `can_execute=false`; no merge or deployment.
