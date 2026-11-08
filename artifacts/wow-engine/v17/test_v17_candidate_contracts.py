@@ -322,15 +322,17 @@ def test_wow_prop_action_stays_on_render_and_llp_gateways_do_not_forward_it():
 
     # Evaluate the actual Supabase route regexes; a broad pattern must fail this.
     route_block = edge.split("const ROUTES: Route[] = [", 1)[1].split("];", 1)[0]
-    route_entries = re.findall(
-        r'\{\s*method:\s*"(GET|POST)",\s*pattern:\s*/((?:\\\\.|[^/])*)/([a-z]*),\s*auth:\s*(true|false)\s*\}',
-        route_block,
-    )
+    route_entries = []
+    for line in route_block.splitlines():
+        method_match = re.search(r'method:\s*"(GET|POST)"', line)
+        if method_match and "pattern: /" in line:
+            pattern = line.split("pattern: /", 1)[1].rsplit("/, auth:", 1)[0]
+            route_entries.append((method_match.group(1), pattern.replace(r"\\/", "/")))
     assert route_entries
     for prop_path in ("/score-pick-request", "/score-prop"):
         assert not any(
-            method == "POST" and re.fullmatch(pattern.replace(r"\\/", "/"), prop_path)
-            for method, pattern, _flags, _auth in route_entries
+            method == "POST" and re.fullmatch(pattern, prop_path)
+            for method, pattern in route_entries
         )
 
     # Vercel's public rewrites are a separate boundary from its handler map.
