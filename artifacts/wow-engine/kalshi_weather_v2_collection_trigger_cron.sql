@@ -57,6 +57,8 @@ begin
   limit 1;
 
   if nullif(trim(v_base_url), '') is null then
+    raise warning 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%',
+      'KALSHI_WEATHER_SERVICE_URL_SECRET_MISSING';
     return jsonb_build_object(
       'status','BLOCKED',
       'reason','KALSHI_WEATHER_SERVICE_URL_SECRET_MISSING',
@@ -66,6 +68,8 @@ begin
   end if;
 
   if nullif(trim(v_cohort_key), '') is null then
+    raise warning 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%',
+      'KALSHI_WEATHER_COHORT_KEY_SECRET_MISSING';
     return jsonb_build_object(
       'status','BLOCKED',
       'reason','KALSHI_WEATHER_COHORT_KEY_SECRET_MISSING',
@@ -76,13 +80,91 @@ begin
 
   v_base_url := rtrim(btrim(v_base_url), '/');
 
-  -- Destination guard. This runs before the cohort key is attached to a
-  -- request, so a mistyped or tampered Vault value cannot leak the credential
-  -- to an arbitrary host or over cleartext. Plain http, an explicit port, a
-  -- path, embedded credentials and any other domain are all rejected. The
-  -- pattern pins the isolated service identity prefix and TLS; it tolerates the
-  -- uniqueness suffix Render may append to a generated hostname.
-  if v_base_url !~* '^https://wow-kalshi-weather-v2[a-z0-9-]*\.onrender\.com$' then
+  -- The live Render service configuration has been independently verified as
+  -- https://wow-kalshi-weather-v2.onrender.com. Pin the exact origin: a prefix
+  -- allowlist would also trust another Render service whose name merely begins
+  -- with this string. Reject HTTP, ports, paths, credentials, suffixes, and all
+  -- other hosts before attaching the cohort key.
+  if v_base_url !~* '^https://wow-kalshi-weather-v2\.onrender\.com    return jsonb_build_object(
+      'status','BLOCKED',
+      'reason','KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED',
+      'probability_publishable',false,
+      'can_execute',false
+    );
+  end if;
+
+  v_request_id := net.http_post(
+    url := v_base_url || '/internal/kalshi-weather/v17/empirical-cohort/cron-run',
+    headers := jsonb_build_object(
+      'Content-Type','application/json',
+      'Accept','application/json',
+      'User-Agent','kalshi-supabase-cron-collection/1',
+      'X-WOW-Weather-Cohort-Key', trim(v_cohort_key)
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 90000
+  );
+
+  return jsonb_build_object(
+    'status','DISPATCHED',
+    'request_id',v_request_id,
+    'destination_host',split_part(v_base_url, '/', 3),
+    'collection_mode','BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW',
+    'probability_publishable',false,
+    'can_execute',false
+  );
+end;
+$function$;
+
+-- Internal maintenance only. Do not expose this RPC through Data API roles.
+-- pg_cron executes the scheduled SQL as its scheduling database role.
+revoke all privileges on function public.wow_kalshi_weather_trigger_collection()
+  from public, anon, authenticated, service_role;
+
+comment on function public.wow_kalshi_weather_trigger_collection() is
+  'Research-only Kalshi Weather empirical-cohort collection dispatch. SECURITY INVOKER; not Data API callable; no probability publication or trading authority.';
+
+-- Retire the health-only wake once this file is applied. It cannot start
+-- collection, so keeping it would only add unauthenticated read traffic against
+-- the isolated service.
+do $retire$
+begin
+  if exists (
+    select 1 from cron.job where jobname = 'kalshi-weather-v2-shadow-read-only-wake'
+  ) then
+    perform cron.unschedule('kalshi-weather-v2-shadow-read-only-wake');
+  end if;
+end;
+$retire$;
+
+-- Installs must be idempotent. cron.schedule has no unique-name constraint, so
+-- re-running this migration without this block would install a second job and
+-- therefore a second writer. Unschedule every existing row with this name
+-- first, then install exactly one replacement below.
+do $dedupe$
+declare
+  v_job_id bigint;
+begin
+  for v_job_id in
+    select jobid from cron.job
+    where jobname = 'kalshi-weather-v2-authenticated-collection-trigger'
+  loop
+    perform cron.unschedule(v_job_id);
+  end loop;
+end;
+$dedupe$;
+
+-- Same cost-constrained cadence as the job it replaces. Kept at */30 rather
+-- than tightened so this change cannot increase the isolated service's shared
+-- Render instance-hour consumption.
+select cron.schedule(
+  'kalshi-weather-v2-authenticated-collection-trigger',
+  '*/30 * * * *',
+  $$select public.wow_kalshi_weather_trigger_collection();$$
+);
+ then
+    raise warning 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%',
+      'KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED';
     return jsonb_build_object(
       'status','BLOCKED',
       'reason','KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED',
