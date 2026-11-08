@@ -9,7 +9,7 @@ from pathlib import Path
 SQL = Path(__file__).with_name(
     "kalshi_weather_v2_collection_trigger_cron.sql"
 ).read_text(encoding="utf-8").lower()
-COMMENT_FREE_SQL = re.sub(r"--[^\\n]*", "", SQL)
+COMMENT_FREE_SQL = re.sub(r"--[^\n]*", "", SQL)
 FUNCTION_BODY = COMMENT_FREE_SQL.split("create or replace function", 1)[1]
 
 RUNBOOK = Path(__file__).parents[2] / "docs" / "kalshi-weather" / (
