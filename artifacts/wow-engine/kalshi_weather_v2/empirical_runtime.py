@@ -128,8 +128,9 @@ def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
         )
     except Exception as exc:
         _logger.warning(
-            "WOW_KALSHI_WEATHER_CALIBRATION_CANDIDATES status=FAILED error_type=%s probability_publishable=false can_execute=false",
+            "WOW_KALSHI_WEATHER_CALIBRATION_CANDIDATES status=FAILED error_type=%s error_code=%s probability_publishable=false can_execute=false",
             type(exc).__name__,
+            getattr(exc, "code", ""),
         )
 
     if (
