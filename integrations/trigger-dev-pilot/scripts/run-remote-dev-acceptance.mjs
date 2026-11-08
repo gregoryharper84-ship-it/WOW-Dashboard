@@ -22,6 +22,7 @@ const SAFE_FAILURES = new Set([
   "DEV_WORKER_EXITED_EARLY",
   "TRIGGER_RUN_POLL_TIMEOUT",
   "TRIGGER_RUN_NOT_COMPLETED",
+  "TRIGGER_RUN_OUTPUT_MISSING",
   "HEALTH_IDEMPOTENCY_MISMATCH",
   "HEALTH_REACHABILITY_NOT_PROVED",
   "SYNTHETIC_RETRY_NOT_PROVED",
@@ -114,7 +115,7 @@ export async function pollRun(runId, {
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (worker && (worker.exitCode !== null || worker.signalCode !== null)) {
+    if (worker && (worker.spawnFailed || worker.exitCode !== null || worker.signalCode !== null)) {
       throw new Error("DEV_WORKER_EXITED_EARLY");
     }
     const run = await retrieveRun(runId);
@@ -140,7 +141,8 @@ function startWorker() {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  child.on("error", () => {});
+  child.spawnFailed = false;
+  child.on("error", () => { child.spawnFailed = true; });
   // Consume output so pipes cannot block the worker. Do not echo CLI output,
   // which could contain provider diagnostics; task receipts are emitted below.
   child.stdout?.on("data", () => {});
@@ -191,7 +193,7 @@ async function main() {
   const worker = startWorker();
   try {
     await delay(10000);
-    if (worker.exitCode !== null || worker.signalCode !== null) {
+    if (worker.spawnFailed || worker.exitCode !== null || worker.signalCode !== null) {
       throw new Error("DEV_WORKER_EXITED_EARLY");
     }
 
