@@ -84,6 +84,7 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
 
 def test_editor_sync_docs_match_the_current_29_operation_schema_and_gateway_boundary():
+    """Keep editor-sync documentation aligned with the canonical 29-operation schema."""
     sync_doc = (module.ENGINE / "V17_CUSTOM_GPT_EDITOR_SYNC.md").read_text(encoding="utf-8")
     attestation = (module.ACTION_SCHEMA.parent / "WOW_BETTING_ENGINE_EDITOR_ATTESTATION.md").read_text(encoding="utf-8")
     subset_schema = (module.ENGINE / "openapi.pick-request-action.yaml").read_text(encoding="utf-8")
