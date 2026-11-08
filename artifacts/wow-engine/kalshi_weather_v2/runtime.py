@@ -4,13 +4,14 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
+from .calibration_registry import MINIMUM_CANDIDATE_SAMPLES
 from .contract_rule_acquisition import FrozenContractRulePackage, KalshiContractRuleAcquirer
 from .hourly_forecast_fusion import build_hourly_weather_evidence, source_snapshot_id
 from .hourly_index import KalshiWeatherIndexAdapter, WeatherIndexError
 from .hourly_rule_semantics import ParsedHourlyTemperatureRule, parse_hourly_temperature_rule
 from .http_client import ReadOnlyJsonClient
 from .kalshi_market_data import KalshiPublicMarketAdapter
-from .models import MarketSnapshot, ProbabilityPackage
+from .models import ContractSnapshot, MarketSnapshot, ProbabilityPackage, WeatherEvidenceSnapshot
 from .orchestrator import evaluate_weather_contract
 from .persistence import KalshiWeatherPersistence, content_id
 from .probability_core import WeatherProbabilityCore
@@ -19,6 +20,7 @@ from .source_adapters import NwsAdapter, OpenMeteoAdapter
 
 
 MODEL_VERSION = "KALSHI_WEATHER_V2_HOURLY_SHADOW_R1"
+RESEARCH_PROBABILITY_STATUS = "SHADOW_RESEARCH_UNCERTIFIED"
 DEFAULT_OPEN_METEO_MODELS = ("gfs_seamless", "ecmwf_ifs025")
 ALLOWED_OPEN_METEO_MODELS = {
     "gfs_seamless",
@@ -170,25 +172,17 @@ def capture_hourly_shadow(
         persistence.persist_settlement_twin(settlement_twin)
 
         lead_bucket = lead_time_bucket(now, parsed.observation_time_utc)
-        calibration_row = persistence.load_latest_certified_calibration(
-            station_id=contract.settlement_location_code or f"KALSHI_WEATHER_INDEX:{index_city}",
-            lane=contract.lane,
-            lead_time_bucket=lead_bucket,
-            fitted_before=now,
-        )
         blockers: list[str] = []
         warnings: list[str] = []
-        calibration_profile_id: str | None = None
-        if calibration_row is None:
-            probability = _missing_probability("CALIBRATION_PROFILE_UNAVAILABLE")
-            blockers.append("CALIBRATION_PROFILE_UNAVAILABLE")
-        else:
-            calibration_profile_id, calibration = calibration_row
-            probability = WeatherProbabilityCore().build(
-                contract=contract,
-                evidence=evidence,
-                calibration=calibration,
-            )
+        probability, calibration_profile_id, calibration_scope, calibration_blockers = _resolve_probability(
+            contract=contract,
+            evidence=evidence,
+            persistence=persistence,
+            station_id=contract.settlement_location_code or f"KALSHI_WEATHER_INDEX:{index_city}",
+            lead_time_bucket=lead_bucket,
+            decision_time=now,
+        )
+        blockers.extend(calibration_blockers)
 
         capability = persistence.load_runtime_capability()
         capability_available = str(capability.get("capability_status") or "").upper() == "AVAILABLE"
@@ -234,6 +228,15 @@ def capture_hourly_shadow(
         )
         if not publishable:
             blockers.append("SHADOW_ONLY_NO_PUBLICATION")
+        probability_status = (
+            terminal.code
+            if publishable
+            else (
+                RESEARCH_PROBABILITY_STATUS
+                if probability.p_yes is not None
+                else "SHADOW_BLOCKED"
+            )
+        )
 
         prediction_payload = {
             "ticker": contract.ticker,
@@ -253,6 +256,7 @@ def capture_hourly_shadow(
             "settlement_twin_snapshot_id": settlement_twin_id,
             "lead_time_bucket": lead_bucket,
             "probability_source": probability.probability_source,
+            "calibration_scope": calibration_scope,
             "capability": dict(capability),
             "terminal": asdict(terminal),
             "market_price_used_as_model_input": False,
@@ -267,7 +271,7 @@ def capture_hourly_shadow(
             calibration_profile_id=calibration_profile_id,
             probability=probability,
             evidence=evidence,
-            probability_status=terminal.code if publishable else "SHADOW_BLOCKED",
+            probability_status=probability_status,
             probability_publishable=publishable,
             blockers=blockers,
             warnings=warnings,
@@ -314,9 +318,11 @@ def capture_hourly_shadow(
             "lead_time_bucket": lead_bucket,
             "central_estimate_f": evidence.central_estimate,
             "disagreement_f": evidence.disagreement_magnitude,
-            "p_yes": probability.p_yes if publishable else None,
-            "p_no": probability.p_no if publishable else None,
-            "probability_status": terminal.code if publishable else "SHADOW_BLOCKED",
+            "p_yes": probability.p_yes,
+            "p_no": probability.p_no,
+            "probability_status": probability_status,
+            "probability_scope": calibration_scope,
+            "calibration_profile_id": calibration_profile_id,
             "probability_publishable": publishable,
             "blockers": list(dict.fromkeys(blockers)),
             "warnings": list(dict.fromkeys(warnings)),
@@ -497,6 +503,90 @@ def _held_market(now: str) -> MarketSnapshot:
         executable_price_verified=False,
         fee_known=False,
         friction_model_verified=False,
+    )
+
+
+def _resolve_probability(
+    *,
+    contract: ContractSnapshot,
+    evidence: WeatherEvidenceSnapshot,
+    persistence: KalshiWeatherPersistence,
+    station_id: str,
+    lead_time_bucket: str,
+    decision_time: str,
+) -> tuple[ProbabilityPackage, str | None, str, list[str]]:
+    """Resolve the strongest available calibration tier for one capture.
+
+    A certified profile drives publication. An uncertified research candidate may
+    drive a numeric shadow probability so the model is measurable at all, but it
+    can never make a probability publishable: ``ProbabilityPackage.calibrated``
+    stays false and the terminal governor remains fail-closed.
+    """
+    certified = persistence.load_latest_certified_calibration(
+        station_id=station_id,
+        lane=contract.lane,
+        lead_time_bucket=lead_time_bucket,
+        fitted_before=decision_time,
+    )
+    if certified is not None:
+        profile_id, profile = certified
+        return (
+            WeatherProbabilityCore().build(
+                contract=contract,
+                evidence=evidence,
+                calibration=profile,
+            ),
+            profile_id,
+            "CERTIFIED",
+            [],
+        )
+
+    candidate = persistence.load_latest_candidate_calibration(
+        station_id=station_id,
+        lane=contract.lane,
+        lead_time_bucket=lead_time_bucket,
+        fitted_before=decision_time,
+        minimum_sample_n=MINIMUM_CANDIDATE_SAMPLES,
+    )
+    if candidate is None:
+        return (
+            _missing_probability("CALIBRATION_PROFILE_UNAVAILABLE"),
+            None,
+            "UNAVAILABLE",
+            ["CALIBRATION_PROFILE_UNAVAILABLE"],
+        )
+
+    profile_id, profile = candidate
+    probability = WeatherProbabilityCore().build(
+        contract=contract,
+        evidence=evidence,
+        calibration=profile,
+    )
+    if probability.p_yes is None:
+        return (
+            probability,
+            None,
+            "UNAVAILABLE",
+            [
+                "RESEARCH_CALIBRATION_PROFILE_UNUSABLE",
+                probability.probability_source or "UNKNOWN",
+            ],
+        )
+    if not (0.0 < probability.p_yes < 1.0):
+        # The governed probability domain is strictly open. An uncertified
+        # candidate that lands exactly on 0 or 1 is not allowed to write a
+        # boundary value into the immutable research ledger.
+        return (
+            _missing_probability("RESEARCH_PROBABILITY_DOMAIN_BOUNDARY"),
+            None,
+            "UNAVAILABLE",
+            ["RESEARCH_PROBABILITY_DOMAIN_BOUNDARY"],
+        )
+    return (
+        probability,
+        profile_id,
+        "RESEARCH_UNCERTIFIED",
+        ["RESEARCH_CALIBRATION_PROFILE_UNCERTIFIED"],
     )
 
 

@@ -289,19 +289,46 @@ class KalshiWeatherPersistence:
         if not rows:
             return None
         row = dict(rows[0])
-        profile = CalibrationProfile(
-            station_id=str(row["station_id"]),
-            lane=str(row["lane"]),
-            lead_time_bucket=str(row["lead_time_bucket"]),
-            bias_f=float(row["bias_f"]),
-            sigma_f=float(row["sigma_f"]),
-            lower_sigma_f=float(row["lower_sigma_f"]),
-            upper_sigma_f=float(row["upper_sigma_f"]),
-            sample_n=int(row["sample_n"]),
-            method=str(row["method"]),
-            certified=bool(row["certified"]),
-        )
-        return str(row["calibration_profile_id"]), profile
+        return str(row["calibration_profile_id"]), _calibration_profile(row)
+
+    def load_latest_candidate_calibration(
+        self,
+        *,
+        station_id: str,
+        lane: str,
+        lead_time_bucket: str,
+        fitted_before: str,
+        minimum_sample_n: int = 30,
+    ) -> tuple[str, CalibrationProfile] | None:
+        """Load the newest uncertified research candidate for the shadow lane.
+
+        Deliberately separate from ``load_latest_certified_calibration``: a
+        candidate can produce a numeric research probability but can never make
+        one publishable.
+        """
+        try:
+            rows = (
+                self.client.table("wow_kalshi_weather_calibration_profiles")
+                .select("*")
+                .eq("station_id", station_id)
+                .eq("lane", lane)
+                .eq("lead_time_bucket", lead_time_bucket)
+                .eq("certified", False)
+                .gte("sample_n", int(minimum_sample_n))
+                .lte("fitted_as_of", fitted_before)
+                .order("fitted_as_of", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise KalshiWeatherPersistenceError(
+                "KALSHI_WEATHER_CANDIDATE_CALIBRATION_READ_FAILED", type(exc).__name__
+            ) from exc
+        rows = rows.data or []
+        if not rows:
+            return None
+        row = dict(rows[0])
+        return str(row["calibration_profile_id"]), _calibration_profile(row)
 
     def outcome_exists_for_prediction(self, prediction_id: str) -> bool:
         return self._select_one("wow_kalshi_weather_outcomes", "prediction_id", prediction_id) is not None
@@ -336,6 +363,21 @@ class KalshiWeatherPersistence:
         if str(persisted.get(primary_key)) != str(row[primary_key]):
             raise KalshiWeatherPersistenceError("KALSHI_WEATHER_LEDGER_INSERT_IDENTITY_MISMATCH", table)
         return persisted
+
+
+def _calibration_profile(row: Mapping[str, Any]) -> CalibrationProfile:
+    return CalibrationProfile(
+        station_id=str(row["station_id"]),
+        lane=str(row["lane"]),
+        lead_time_bucket=str(row["lead_time_bucket"]),
+        bias_f=float(row["bias_f"]),
+        sigma_f=float(row["sigma_f"]),
+        lower_sigma_f=float(row["lower_sigma_f"]),
+        upper_sigma_f=float(row["upper_sigma_f"]),
+        sample_n=int(row["sample_n"]),
+        method=str(row["method"]),
+        certified=bool(row["certified"]),
+    )
 
 
 def content_id(prefix: str, payload: Mapping[str, Any]) -> str:

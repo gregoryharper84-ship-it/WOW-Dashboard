@@ -2,6 +2,13 @@
 
 from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherProbabilityAgent
 from .calibration_fit import CalibrationFitResult, ForecastResidual, fit_candidate_calibration_profile
+from .calibration_registry import (
+    MINIMUM_CANDIDATE_SAMPLES,
+    collect_unique_residual_samples,
+    fit_candidate_profile_sets,
+    persist_candidate_calibration_profiles,
+    probability_scoring_summary,
+)
 from .contract_resolver import ContractResolutionError, resolve_weather_contract
 from .contract_rule_acquisition import (
     ContractRuleAcquisitionError,
@@ -100,6 +107,11 @@ __all__ = [
     "ForecastResidual",
     "CalibrationFitResult",
     "fit_candidate_calibration_profile",
+    "MINIMUM_CANDIDATE_SAMPLES",
+    "collect_unique_residual_samples",
+    "fit_candidate_profile_sets",
+    "persist_candidate_calibration_profiles",
+    "probability_scoring_summary",
     "ObservationPoint",
     "ReconstructedExtreme",
     "reconstruct_temperature_series",
