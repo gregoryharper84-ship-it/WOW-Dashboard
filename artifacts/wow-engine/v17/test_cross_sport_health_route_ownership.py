@@ -45,6 +45,7 @@ def test_deferred_mlb_repair_restores_authoritative_cross_sport_health(monkeypat
 
 
 def test_cross_sport_health_overlay_preserves_render_deployed_sha(monkeypatch):
+    """Preserve the base deployment identity through the final health overlay."""
     app = FastAPI()
 
     @app.get("/health")
