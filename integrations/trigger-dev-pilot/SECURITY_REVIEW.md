@@ -77,3 +77,12 @@ A separate opt-in workflow, `.github/workflows/wow-trigger-remote-dev-acceptance
 **Credential trade-off:** Trigger.dev documents that Free/Hobby environments expose only the `No restrictions` API-key preset. A Development key stored in the GitHub Actions environment is therefore full access to the Trigger.dev DEVELOPMENT environment, even though the task code itself is read-only/synthetic. The new workflow requires a *new, short-lived Development-only key* in the GitHub environment secret `wow-trigger-dev / TRIGGER_SECRET_KEY`, never the previously used key and never a Production/Staging key. Set a short expiration, enable GitHub environment required-reviewer protection if available, and revoke the key after acceptance. The project reference is a non-secret Actions variable. The workflow is deliberately opt-in and does not run until the user configures the secret and variable.
 
 **Current disposition:** code and workflow design only. No GitHub environment secret/variable is configured or read by SIRT; no cloud worker has been started; no provider receipt exists for this workflow. The opt-in job must remain skipped until the operator explicitly configures the dedicated Development key and project reference. A successful source CI run is not a connected-worker receipt. Formal non-author SIRT review remains outstanding.
+
+
+### Exact-head no-credential CI readback for remote runner — Nov 8, 2026
+
+- Current exact head: `26752693593706c170975160307bb2fe00190766`.
+- Pilot verification [#42523475007](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42523475007): SUCCESS; 48/48 tests, TypeScript, patched CLI import smoke, 33 cross-platform lock entries and npm audit 0 vulnerabilities.
+- Remote DEV workflow [#42523475026](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42523475026): SKIPPED by its explicit opt-in guard. The job did not start, no Trigger key was consumed, and no cloud task receipt was produced.
+- The tests validate receipt-shape assertions and workflow safety conditions only. They do not validate a connected GitHub-hosted worker, provider-reported DEVELOPMENT, actual health/retry/checkpoint runs, or secret configuration.
+- **Disposition remains WORKING_NOT_COMPLETE / UNVERIFIED for live DEV acceptance.** The operator must configure the repository opt-in variable, actual project reference variable, and a new short-lived Development-only key in the GitHub environment before the workflow can run. Formal non-author SIRT review remains pending.
