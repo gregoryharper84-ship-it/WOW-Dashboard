@@ -50,15 +50,18 @@ class Test24x7(unittest.TestCase):
             issue(1936, "P0", title="[P0 SIRT] Independent security decision"),
         ]
         self.assertEqual(mod.plan(sirt_issues, [])["action"], "IDLE")
-        # An engineering repair may mention SIRT without being SIRT-owned.
-        engineering = issue(
-            1527, "P1",
-            title="P1: autonomous same-PR CI/SIRT failure remediation",
-        )
-        self.assertEqual(
-            (mod.plan([engineering], [])["action"], mod.plan([engineering], [])["incident"]),
-            ("BUILD", 1527),
-        )
+        # Normalize whitespace/case, but don't suppress ordinary engineering work.
+        for title in (" [SIRT Intake][P0] Review", "[sIrT iNtAkE][P0] Review"):
+            with self.subTest(title=title):
+                self.assertEqual(mod.plan([issue(2469, "P0", title=title)], [])["action"], "IDLE")
+        for title in (
+            "P1: autonomous same-PR CI/SIRT failure remediation",
+            "SIRT: restore production alerting",
+        ):
+            with self.subTest(title=title):
+                engineering = issue(1527, "P1", title=title)
+                result = mod.plan([engineering], [])
+                self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
 
     def test_p0_requires_manifest_domain_lease_and_p1_uses_global(self):
         manifest = {
