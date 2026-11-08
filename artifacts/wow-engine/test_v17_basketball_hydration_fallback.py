@@ -34,7 +34,7 @@ def _espn_event(*, event_id="401", game_date="2026-09-20", home_score="88", away
         "id": event_id,
         "date": f"{game_date}T23:00Z",
         "status": {"type": {"completed": True, "description": "Final"}},
-        "season": {"type": 2, "slug": "regular-season"},
+        "season": {"year": int(game_date[:4]), "type": 2, "slug": "regular-season"},
         "competitions": [{
             "competitors": [
                 {"homeAway": "home", "score": home_score, "team": {"id": "10"}},
@@ -59,6 +59,7 @@ def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="
         "status_type_state": "post",
         "status_type_description": "Final",
         "season": game_date[:4],
+        "season_type": 2,
     }
 
 
@@ -97,6 +98,23 @@ def test_normalize_sportsdataverse_game_creates_provenance_complete_settled_row(
     assert row["settled"] is True
 
 
+@pytest.mark.parametrize("field", ["game_date_time", "_wow_source_observed_at"])
+def test_sportsdataverse_missing_acquisition_provenance_is_rejected(field):
+    raw = _sportsdataverse_row()
+    raw.pop(field)
+    assert hydration.normalize_sportsdataverse_game(
+        raw, "WNBA", "2026-09-22T19:00:00+00:00"
+    ) is None
+
+
+def test_espn_missing_season_metadata_is_rejected():
+    raw = _espn_event()
+    raw.pop("season")
+    assert hydration.normalize_espn_game(
+        raw, "WNBA", "2026-09-22T19:00:00+00:00"
+    ) is None
+
+
 def test_sdv_completed_non_regular_season_games_never_enter_fitted_training():
     # SportsDataverse season_type=2 identifies the regular season. Missing
     # season_type on older snapshots retains the legacy normalization path.
@@ -116,6 +134,7 @@ def test_sdv_completed_non_regular_season_games_never_enter_fitted_training():
             assert normalized is not None, (sport, repr(value))
             assert normalized["settled"] is True
         legacy = _sportsdataverse_row()
+        legacy.pop("season_type")
         assert "season_type" not in legacy
         assert hydration.normalize_sportsdataverse_game(
             legacy, sport, "2026-09-22T19:00:00+00:00"
@@ -382,7 +401,7 @@ def test_hydrate_rejects_unentitled_raw_espn_when_sportsdataverse_is_unavailable
 
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: date(2022, 9, 18))
     persisted = []
-    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: (persisted.extend(rows), len(rows))[1])
 
     with pytest.raises(hydration.BasketballHydrationError, match="ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED"):
         hydration.hydrate("WNBA", [2026], client=object())
