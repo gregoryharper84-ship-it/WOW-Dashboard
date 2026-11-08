@@ -1,11 +1,11 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useState, useCallback, useMemo } from "react";
 import {
   RefreshCw, Trophy, TrendingUp, TrendingDown,
   AlertTriangle, BarChart2, Download,
 } from "lucide-react";
 
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
-const API  = BASE.replace("/final-lock", "/api");
+const API = API_ROOT;
 
 interface LeaderRow {
   player: string;
@@ -117,8 +117,8 @@ export default function LeaderboardPage() {
     setError(null);
     try {
       const [lbRes, statsRes] = await Promise.all([
-        fetch(`${API}/leaderboard`),
-        fetch(`${API}/stats`),
+        apiFetch(`${API}/leaderboard`),
+        apiFetch(`${API}/stats`),
       ]);
       if (!lbRes.ok) throw new Error(`Leaderboard HTTP ${lbRes.status}`);
       const lbData = await lbRes.json() as { leaderboard?: LeaderRow[]; data?: LeaderRow[] };
