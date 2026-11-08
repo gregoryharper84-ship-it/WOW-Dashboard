@@ -102,6 +102,7 @@ def _scheduled_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
 
 
 def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
+    """Run one bounded shadow capture pass and optional owned settlement."""
     # Capture and grading remain separate operations. Settlement can run only
     # on the explicitly owned singleton and is capped to avoid replay storms.
     result = run_bounded_capture_only_cohort_once(
@@ -248,7 +249,8 @@ async def _process_dispatch_once(db_client_fn: Callable[[], object]) -> bool:
             attempts=max(0, attempts - 1),
         )
         _logger.warning(
-            "WOW_KALSHI_WEATHER_DISPATCH status=DEFERRED_MEMORY_PRESSURE dispatch_id=%s memory_ratio=%s probability_publishable=false can_execute=false",
+            "WOW_KALSHI_WEATHER_DISPATCH status=DEFERRED_MEMORY_PRESSURE "
+            "dispatch_id=%s memory_ratio=%s probability_publishable=false can_execute=false",
             dispatch_id,
             memory_ratio,
         )
@@ -264,7 +266,8 @@ async def _process_dispatch_once(db_client_fn: Callable[[], object]) -> bool:
             _finish_dispatch, db_client_fn, dispatch_id, "COMPLETED", result=summary
         )
         _logger.warning(
-            "WOW_KALSHI_WEATHER_DISPATCH status=COMPLETED dispatch_id=%s capture_status=%s captured=%s failures=%s probability_publishable=false can_execute=false",
+            "WOW_KALSHI_WEATHER_DISPATCH status=COMPLETED dispatch_id=%s "
+            "capture_status=%s captured=%s failures=%s probability_publishable=false can_execute=false",
             dispatch_id,
             summary["status"],
             summary["samples_captured"],
@@ -290,7 +293,9 @@ async def _run_dispatch_queue_loop(
 ) -> None:
     """Consume durable database dispatches; no HTTP credential leaves Postgres."""
     _logger.warning(
-        "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=STARTED poll_interval_seconds=%s max_claims_per_poll=1 probability_publishable=false can_execute=false",
+        "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=STARTED "
+        "poll_interval_seconds=%s max_claims_per_poll=1 "
+        "probability_publishable=false can_execute=false",
         poll_interval_seconds,
     )
     while True:
@@ -298,7 +303,8 @@ async def _run_dispatch_queue_loop(
             await _process_dispatch_once(db_client_fn)
         except Exception as exc:
             _logger.exception(
-                "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=FAILED error_type=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=FAILED error_type=%s "
+                "probability_publishable=false can_execute=false",
                 type(exc).__name__,
             )
         await asyncio.sleep(poll_interval_seconds)
@@ -329,12 +335,14 @@ def install_empirical_cohort_scheduler(
         )
         if queue_enabled and loop_enabled:
             _logger.error(
-                "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=BLOCKED_MULTIPLE_WRITERS probability_publishable=false can_execute=false"
+                "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=BLOCKED_MULTIPLE_WRITERS "
+                "probability_publishable=false can_execute=false"
             )
             return
         if not queue_enabled and not loop_enabled:
             _logger.warning(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=DISABLED probability_publishable=false can_execute=false"
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=DISABLED "
+                "probability_publishable=false can_execute=false"
             )
             return
 
