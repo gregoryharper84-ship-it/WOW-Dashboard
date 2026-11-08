@@ -16,7 +16,7 @@ from statistics import mean, stdev
 from typing import Any, Iterable, Mapping
 
 from .calibration_fit import ForecastResidual
-from .calibration_registry import collect_unique_residual_samples
+from .calibration_registry import collect_unique_residual_samples, settlement_identity
 
 
 SCHEMA = "KALSHI_WEATHER_FORWARD_VALIDATION_SCORECARD_V1"
@@ -54,6 +54,7 @@ def build_forward_validation_scorecard(
     station_id: str,
     lane: str,
     lead_time_bucket: str,
+    settlement_identity_basis: str = "UNVERIFIED",
 ) -> dict[str, Any]:
     """Score one station/lane/lead-time group against the precommitted gates.
 
@@ -124,6 +125,19 @@ def build_forward_validation_scorecard(
         "capability_promotion_allowed": False,
         "can_execute": False,
     }
+
+    identity_basis = str(settlement_identity_basis or "UNVERIFIED").strip().upper()
+    exact_station_verified = identity_basis == "SETTLEMENT_STATION"
+    result["settlement_identity"] = {
+        "station_id": station_id,
+        "basis": identity_basis,
+        "exact_station_verified": exact_station_verified,
+        "promotion_blockers": [] if exact_station_verified else ["STATION_IDENTITY_UNVERIFIED"],
+    }
+    if not exact_station_verified:
+        # A city index proves settlement at the index, not at a physical
+        # station. Station-specific promotion must stay blocked.
+        result["certification_blockers"].insert(0, "STATION_IDENTITY_UNVERIFIED")
 
     count_gates = [
         ("TOTAL_RESIDUALS", f">= {MINIMUM_TOTAL_RESIDUALS}", total_n, total_n >= MINIMUM_TOTAL_RESIDUALS),
@@ -219,13 +233,16 @@ def build_forward_validation_report(
     outcomes: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Build one scorecard per station/lane/lead-time group from immutable rows."""
-    groups = collect_unique_residual_samples(predictions, outcomes)
+    prediction_rows = [row for row in predictions if isinstance(row, Mapping)]
+    groups = collect_unique_residual_samples(prediction_rows, outcomes)
+    identity_bases = _identity_bases(prediction_rows)
     scorecards = [
         build_forward_validation_scorecard(
             (sample.residual for sample in samples),
             station_id=station_id,
             lane=lane,
             lead_time_bucket=bucket,
+            settlement_identity_basis=identity_bases.get(station_id, "UNVERIFIED"),
         )
         for (station_id, lane, bucket), samples in sorted(groups.items())
     ]
@@ -237,10 +254,33 @@ def build_forward_validation_report(
         "groups_passing_residual_gates": sum(
             1 for card in scorecards if card["residual_gates_passed"]
         ),
+        "station_identity_verified_groups": sum(
+            1 for card in scorecards if card["settlement_identity"]["exact_station_verified"]
+        ),
+        "station_identity_blocked_groups": sum(
+            1 for card in scorecards if not card["settlement_identity"]["exact_station_verified"]
+        ),
         "certification_eligible": False,
         "probability_publishable": False,
         "capability_promotion_allowed": False,
         "can_execute": False,
+    }
+
+
+def _identity_bases(predictions: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """Resolve one identity basis per grouping id, marking mixed evidence."""
+    bases: dict[str, set[str]] = {}
+    for prediction in predictions:
+        payload = prediction.get("model_payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+        contract = payload.get("contract")
+        contract = contract if isinstance(contract, Mapping) else {}
+        station_id, basis = settlement_identity(contract)
+        if station_id:
+            bases.setdefault(station_id, set()).add(basis)
+    return {
+        station_id: (next(iter(values)) if len(values) == 1 else "MIXED")
+        for station_id, values in bases.items()
     }
 
 

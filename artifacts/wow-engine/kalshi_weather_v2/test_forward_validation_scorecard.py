@@ -249,3 +249,52 @@ def test_forward_validation_route_is_installed_on_the_authenticated_surface():
     assert "/internal/kalshi-weather/v17/forward-validation" in paths
     assert "/internal/kalshi-weather/v17/calibration-candidates" in paths
     assert "/internal/kalshi-weather/v17/probability-scoring" in paths
+
+
+def test_city_index_identity_is_not_treated_as_an_exact_station():
+    card = _scorecard(_passing_residuals())
+    assert card["residual_gates_passed"] is True
+    assert card["settlement_identity"]["basis"] == "UNVERIFIED"
+    assert card["settlement_identity"]["exact_station_verified"] is False
+    assert "STATION_IDENTITY_UNVERIFIED" in card["settlement_identity"]["promotion_blockers"]
+    assert "STATION_IDENTITY_UNVERIFIED" in card["certification_blockers"]
+    assert card["probability_publishable"] is False
+
+
+def test_explicit_settlement_station_clears_the_identity_blocker():
+    card = build_forward_validation_scorecard(
+        _passing_residuals(),
+        station_id=STATION,
+        lane=LANE,
+        lead_time_bucket=BUCKET,
+        settlement_identity_basis="SETTLEMENT_STATION",
+    )
+    assert card["settlement_identity"]["exact_station_verified"] is True
+    assert card["settlement_identity"]["promotion_blockers"] == []
+    assert "STATION_IDENTITY_UNVERIFIED" not in card["certification_blockers"]
+
+
+def test_report_labels_city_index_contracts_without_a_physical_station():
+    report = build_forward_validation_report(
+        [_prediction("p1", "2026-10-01T00:00:00Z", "2026-10-01T12:00:00Z", threshold=70, residual_value=0.0)],
+        [_outcome("p1", "2026-10-01T23:00:00Z")],
+    )
+    group = report["groups"][0]
+    assert group["settlement_identity"]["basis"] == "INDEX_CITY"
+    assert group["settlement_identity"]["exact_station_verified"] is False
+    assert report["station_identity_verified_groups"] == 0
+    assert report["station_identity_blocked_groups"] == 1
+
+
+def test_settlement_identity_distinguishes_index_city_from_station():
+    from kalshi_weather_v2.calibration_registry import settlement_identity
+
+    city, city_basis = settlement_identity({"settlement_location_code": "KALSHI_WEATHER_INDEX:MIAMI"})
+    assert city == "KALSHI_WEATHER_INDEX:MIAMI"
+    assert city_basis == "INDEX_CITY"
+
+    station, station_basis = settlement_identity(
+        {"settlement_location_code": "KALSHI_WEATHER_INDEX:MIAMI", "settlement_station_id": "KMIA"}
+    )
+    assert station == "KALSHI_WEATHER_INDEX:MIAMI"
+    assert station_basis == "SETTLEMENT_STATION"

@@ -29,6 +29,34 @@ MINIMUM_CANDIDATE_SAMPLES = 30
 ROW_LIMIT = 5000
 POINT_IN_TIME_PREFIX = "POINT_IN_TIME:"
 
+SETTLEMENT_IDENTITY_STATION = "SETTLEMENT_STATION"
+SETTLEMENT_IDENTITY_INDEX_CITY = "INDEX_CITY"
+SETTLEMENT_IDENTITY_UNVERIFIED = "UNVERIFIED"
+
+
+def settlement_identity(contract: Mapping[str, Any]) -> tuple[str, str]:
+    """Return ``(grouping_id, identity_basis)`` for one contract snapshot.
+
+    A Kalshi Weather Index city is the settlement *object* for these contracts;
+    it is not evidence of an exact physical station. The basis is carried with
+    the sample so a city-level code can never be read as station identity, and
+    station-specific promotion stays blocked until a real station id exists.
+    """
+    contract = contract if isinstance(contract, Mapping) else {}
+    station_id = str(contract.get("settlement_station_id") or "").strip()
+    location_code = str(contract.get("settlement_location_code") or "").strip()
+    if location_code:
+        if station_id:
+            basis = SETTLEMENT_IDENTITY_STATION
+        elif location_code.startswith("KALSHI_WEATHER_INDEX:"):
+            basis = SETTLEMENT_IDENTITY_INDEX_CITY
+        else:
+            basis = SETTLEMENT_IDENTITY_UNVERIFIED
+        return location_code, basis
+    if station_id:
+        return station_id, SETTLEMENT_IDENTITY_STATION
+    return "", SETTLEMENT_IDENTITY_UNVERIFIED
+
 
 @dataclass(frozen=True)
 class ResidualSample:
@@ -67,7 +95,7 @@ def collect_unique_residual_samples(
         contract = payload.get("contract")
         contract = contract if isinstance(contract, Mapping) else {}
         lane = str(contract.get("lane") or "").strip().upper()
-        station_id = str(contract.get("settlement_location_code") or "").strip()
+        station_id, _identity_basis = settlement_identity(contract)
         window = str(contract.get("observation_window") or "").strip()
         bucket = str(payload.get("lead_time_bucket") or "").strip().upper()
         if lane != "HOURLY_TEMPERATURE" or not station_id or not bucket:
