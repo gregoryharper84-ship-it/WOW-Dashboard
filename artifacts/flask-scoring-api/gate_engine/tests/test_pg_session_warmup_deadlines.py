@@ -172,6 +172,51 @@ def test_multi_host_dns_skips_unresolvable_primary_and_keeps_fallback(monkeypatc
     )]
 
 
+
+def test_multi_host_dns_timeout_still_uses_a_resolved_fallback(monkeypatch):
+    """A stalled primary cannot suppress a later host resolved within the deadline."""
+    import socket
+    import threading
+
+    observed, _conn = _install_fake_psycopg2(monkeypatch)
+    driver = sys.modules["psycopg2"]
+    driver.extensions.parse_dsn = lambda _url: {
+        "host": "db-primary.example.invalid,db-replica.example.invalid",
+        "port": "5432,6432",
+    }
+    release = threading.Event()
+    primary_started = threading.Event()
+
+    def resolve(host, port, **_kwargs):
+        """Hold the primary lookup while allowing the replica to resolve."""
+        if host.startswith("db-primary"):
+            primary_started.set()
+            release.wait(1.0)
+            return []
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.22", port))]
+
+    monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(pg_session_ledger, "DNS_RESOLUTION_TIMEOUT_SECONDS", 0.05)
+    try:
+        pg_session_ledger.ensure_table_exists(
+            "postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test"
+        )
+        assert primary_started.is_set()
+        assert observed == [(
+            ("postgresql://user:secret@db-primary.example.invalid:5432,db-replica.example.invalid:6432/safety-test",),
+            {
+                "connect_timeout": 5,
+                "host": "db-replica.example.invalid",
+                "hostaddr": "192.0.2.22",
+                "port": "6432",
+            },
+        )]
+    finally:
+        release.set()
+        assert pg_session_ledger._DNS_RESOLUTION_SLOT.acquire(timeout=1.0)
+        pg_session_ledger._DNS_RESOLUTION_SLOT.release()
+
+
 def test_one_hostname_retains_all_addresses_before_next_failover_host(monkeypatch):
     """Expand a multi-address hostname without changing its priority."""
     import socket
@@ -361,6 +406,17 @@ def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
         def release(self):
             return None
 
+    class Completion:
+        def __init__(self):
+            self.event = real_event()
+
+        def set(self):
+            self.event.set()
+
+        def wait(self, timeout):
+            resolver_waits.append(timeout)
+            return self.event.wait(timeout=0)
+
     class ImmediateThread:
         def __init__(self, *, target, **_kwargs):
             self.target = target
@@ -368,9 +424,11 @@ def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
         def start(self):
             self.target()
 
+    real_event = pg_session_ledger.threading.Event
     monkeypatch.setattr(pg_session_ledger.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(pg_session_ledger, "_DNS_RESOLUTION_SLOT", Slot())
     monkeypatch.setattr(pg_session_ledger.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(pg_session_ledger.threading, "Event", Completion)
     monkeypatch.setattr(
         pg_session_ledger.socket, "getaddrinfo",
         lambda host, port, **_kwargs: [
