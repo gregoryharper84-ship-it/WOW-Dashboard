@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies and smoke-test patched CLI imports (no credentials)
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm run predev
+          npm run patch:cli
           npm run cli:smoke
           npm run typecheck
       - name: Local no-network contracts
