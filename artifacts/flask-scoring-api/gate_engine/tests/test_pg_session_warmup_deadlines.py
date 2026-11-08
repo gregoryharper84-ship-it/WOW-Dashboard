@@ -416,11 +416,13 @@ def test_dns_slot_contention_and_lookup_share_one_deadline(monkeypatch):
             return self.event.wait(timeout=0)
 
     class ImmediateThread:
-        def __init__(self, *, target, **_kwargs):
+        def __init__(self, *, target, args=(), kwargs=None, **_kwargs):
             self.target = target
+            self.args = args
+            self.kwargs = kwargs or {}
 
         def start(self):
-            self.target()
+            self.target(*self.args, **self.kwargs)
 
     real_event = pg_session_ledger.threading.Event
     monkeypatch.setattr(pg_session_ledger.time, "monotonic", lambda: clock[0])
@@ -476,18 +478,21 @@ def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch):
     if local_host not in ("localhost", "127.0.0.1"):
         pytest.fail("multi-host DNS test must target loopback PostgreSQL")
     port = str(parsed.get("port") or "5432")
+    # 127.0.0.2 is loopback but has no PostgreSQL listener; localhost is the
+    # live CI database. This exercises actual resolver output and libpq
+    # failover without relying on external DNS behavior for the first host.
     failover_dsn = psycopg2.extensions.make_dsn(
         url,
-        host=f"wow-ledger-unresolvable.invalid,{local_host}",
+        host=f"127.0.0.2,localhost",
         port=f"{port},{port}",
         hostaddr="",
     )
     overrides = pg_session_ledger._resolve_hostaddr(failover_dsn, psycopg2)
     assert overrides is not None
-    assert overrides["host"] == local_host
-    assert overrides["hostaddr"]
-    assert overrides["port"] == port
-    with psycopg2.connect(failover_dsn, connect_timeout=5, **overrides) as conn:
+    assert overrides["hostaddr"].split(",")[0] == "127.0.0.2"
+    assert len(overrides["hostaddr"].split(",")) >= 2
+    assert "host" not in overrides
+    with psycopg2.connect(failover_dsn, connect_timeout=2, **overrides) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             assert cur.fetchone()[0] == 1
