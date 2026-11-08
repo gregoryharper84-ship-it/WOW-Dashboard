@@ -23,6 +23,7 @@ import ipaddress
 import os
 import socket
 import threading
+import time
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -91,9 +92,11 @@ def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
     except (TypeError, ValueError):
         raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID") from None
 
-    # Concurrent warmups wait no longer than the same DNS deadline. This
-    # bounds request latency while preventing a second stuck resolver thread.
-    if not _DNS_RESOLUTION_SLOT.acquire(timeout=DNS_RESOLUTION_TIMEOUT_SECONDS):
+    # Slot contention and the resolver itself share one absolute deadline;
+    # neither stage can consume a fresh timeout after the other has waited.
+    deadline = time.monotonic() + DNS_RESOLUTION_TIMEOUT_SECONDS
+    slot_wait = max(0.0, deadline - time.monotonic())
+    if not _DNS_RESOLUTION_SLOT.acquire(timeout=slot_wait):
         raise TimeoutError("SESSION_LEDGER_DNS_BUSY")
     outcome: dict[str, Any] = {}
     completed = threading.Event()
@@ -118,7 +121,8 @@ def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
     except Exception:
         _DNS_RESOLUTION_SLOT.release()
         raise RuntimeError("SESSION_LEDGER_DNS_WORKER_UNAVAILABLE") from None
-    if not completed.wait(DNS_RESOLUTION_TIMEOUT_SECONDS):
+    remaining = max(0.0, deadline - time.monotonic())
+    if not completed.wait(remaining):
         # The resolver thread may finish later and release the single-flight
         # slot. Until then, subsequent warmups fail fast instead of spawning
         # another thread that could remain blocked on the same system resolver.
