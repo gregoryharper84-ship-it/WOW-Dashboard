@@ -212,6 +212,7 @@ def test_available_prop_lane_can_never_reach_legacy_fitted_params_path(monkeypat
 
 
 def test_governance_reports_lane_split(monkeypatch):
+    """Expose lane state and the exact Render deployment identity."""
     monkeypatch.setenv("RENDER_GIT_COMMIT", "a" * 40)
     fake = _FakeClient(prop_status="UNAVAILABLE")
     monkeypatch.setattr(api_prod, "get_client", lambda: fake)
@@ -237,6 +238,7 @@ def test_governance_reports_lane_split(monkeypatch):
 
 
 def test_render_deployed_sha_rejects_missing_or_malformed_value(monkeypatch):
+    """Keep unknown or malformed Render commit metadata explicitly null."""
     monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
     assert api_prod.base_api._render_deployed_sha() is None
     monkeypatch.setenv("RENDER_GIT_COMMIT", "not-a-commit")
