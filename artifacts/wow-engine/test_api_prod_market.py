@@ -222,6 +222,8 @@ def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
 
 def test_mismatched_quote_identities_hold_market_but_preserve_model_probability(monkeypatch):
     """Reject both quote sides when either side's event or participant differs."""
+    # Pin the writer alias path so this test does not depend on module order.
+    monkeypatch.setitem(PROP_STAT_ALIASES, ("WNBA", "REB"), "REBOUNDS")
     captured = {}
 
     def fake_score(**kwargs):
