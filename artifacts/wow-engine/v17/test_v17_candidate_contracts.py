@@ -327,7 +327,7 @@ def test_wow_prop_action_stays_on_render_and_llp_gateways_do_not_forward_it():
         method_match = re.search(r'method:\s*"(GET|POST)"', line)
         if method_match and "pattern: /" in line:
             pattern = line.split("pattern: /", 1)[1].rsplit("/, auth:", 1)[0]
-            route_entries.append((method_match.group(1), pattern.replace(r"\\/", "/")))
+            route_entries.append((method_match.group(1), pattern.replace("\\/", "/")))
     assert route_entries
     for prop_path in ("/score-pick-request", "/score-prop"):
         assert not any(
