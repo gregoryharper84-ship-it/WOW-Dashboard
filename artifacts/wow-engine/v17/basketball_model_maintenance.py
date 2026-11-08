@@ -20,7 +20,6 @@ probability, and never enables execution.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-import re
 from typing import Any, Iterable
 
 from fastapi import FastAPI
@@ -81,40 +80,82 @@ def _blocked(
     return payload
 
 
-_PUBLIC_REASON_PREFIXES = (
-    "BASKETBALL_", "BALLDONTLIE_", "SPORTSDATAVERSE_",
-    "ESPN_", "NBA_", "WNBA_", "SOURCE_", "MODEL_", "CALIBRATION_",
-)
-_PUBLIC_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-_LEGACY_PUBLIC_REASONS = frozenset({
-    "BALLDONTLIE_API_KEY unavailable",
-    "SUPABASE service credential unavailable",
-})
+# Public failures are a literal allowlist. Never reflect exception-derived
+# tokens: even an uppercase prefix can contain a provider, host or secret name.
+_PUBLIC_FAILURE_CODE_MAP = {
+    code: code
+    for code in (
+        "BALLDONTLIE_API_KEY unavailable",
+        "SUPABASE service credential unavailable",
+        "BALLDONTLIE_RATE_LIMITED",
+        "BALLDONTLIE_AUTH_FAILED",
+        "BALLDONTLIE_INVALID_JSON",
+        "BALLDONTLIE_INVALID_RESPONSE",
+        "SPORTSDATAVERSE_ESPN_SOURCE_NOT_READY",
+        "SPORTSDATAVERSE_ESPN_REQUEST_FAILED",
+        "SPORTSDATAVERSE_ESPN_RATE_LIMITED",
+        "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT",
+        "ESPN_SCOREBOARD_REQUEST_FAILED",
+        "ESPN_SCOREBOARD_INVALID_JSON",
+        "ESPN_SCOREBOARD_INVALID_RESPONSE",
+        "ESPN_RECENT_SPORT_UNSUPPORTED",
+        "ESPN_RECENT_LOOKBACK_INVALID",
+        "ESPN_RECENT_CLOCK_INVALID",
+        "ESPN_RECENT_SOURCE_FETCH_FAILED",
+        "ESPN_RECENT_SOURCE_INVALID_JSON",
+        "ESPN_RECENT_SOURCE_INVALID_RESPONSE",
+        "ESPN_RECENT_EVENT_IDENTITY_MISSING",
+        "ESPN_RECENT_DUPLICATE_GAME_ID",
+        "ESPN_RECENT_EVENT_TIME_INVALID",
+        "ESPN_RECENT_SOURCE_EVENT_WRONG_DATE",
+        "ESPN_RECENT_WINDOW_GAP_NOT_COVERED",
+        "BASKETBALL_SETTLED_GAME_ID_INVALID",
+        "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED",
+        "BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED",
+        "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN",
+        "BASKETBALL_HYDRATION_CLOCK_INVALID",
+        "BALLDONTLIE_EMPTY_SEASON",
+        "NBA_CANONICAL_DAY_READBACK_FAILED",
+        "NBA_CANONICAL_DAY_READBACK_INCOMPLETE",
+        "NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED",
+        "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE",
+        "BASKETBALL_FRESH_SOURCE_UNAVAILABLE",
+        "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED",
+        "NBA_SOURCE_HTTP_503",
+        "SOURCE_HTTP_503",
+        "NBA_FAILURE",
+        "NBA_TRAINING_CORPUS_EMPTY",
+        "WNBA_TRAINING_CORPUS_EMPTY",
+        "NBA_TRAINING_PROVENANCE_INCOMPLETE",
+        "WNBA_TRAINING_PROVENANCE_INCOMPLETE",
+        "NBA_TRAINING_CORPUS_FUTURE_DATED",
+        "WNBA_TRAINING_CORPUS_FUTURE_DATED",
+        "NBA_TRAINING_CORPUS_STALE",
+        "WNBA_TRAINING_CORPUS_STALE",
+        "NBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
+        "WNBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
+        *(f"{prefix}{status}" for prefix in (
+            "BALLDONTLIE_HTTP_",
+            "SPORTSDATAVERSE_ESPN_HTTP_",
+            "ESPN_SCOREBOARD_HTTP_",
+            "ESPN_RECENT_SOURCE_HTTP_",
+            "NBA_SOURCE_HTTP_",
+        ) for status in range(400, 600)),
+    )
+}
 
 
 def _public_failure_code(exc: Exception, fallback: str) -> str:
-    """Preserve trusted typed failure families, never raw provider/DB details.
-
-    A source can nest its error under a colon or a prose description; only the
-    stable uppercase family is public. Arbitrary RuntimeError messages and
-    transport exceptions must not be forwarded into an authenticated response.
-    """
+    """Map known source errors to literal public codes; never echo raw details."""
     if not isinstance(exc, (BasketballHydrationError, RuntimeError)):
         return fallback
-    raw = str(exc).strip()
-    for legacy in _LEGACY_PUBLIC_REASONS:
-        if raw == legacy:
-            # Return the trusted constant, not the exception-derived string.
-            return legacy
-    token = re.split(r"[:\s]", raw, maxsplit=1)[0]
-    if (
-        token.startswith(_PUBLIC_REASON_PREFIXES)
-        and re.fullmatch(r"[A-Z][A-Z0-9_]{3,119}", token, flags=re.ASCII)
-    ):
-        # Rebuild the code character by character from a constant alphabet so
-        # no exception-derived string object reaches the HTTP response.
-        return "".join(_PUBLIC_CODE_ALPHABET[_PUBLIC_CODE_ALPHABET.index(ch)] for ch in token)
-    return fallback
+    raw = str(exc).strip()[:256]
+    token = raw.split(":", 1)[0].split(None, 1)[0]
+    # Both branches return values from this module's static allowlist. Unknown
+    # prefixes, arbitrary RuntimeError messages and transport details fall back.
+    return _PUBLIC_FAILURE_CODE_MAP.get(
+        raw, _PUBLIC_FAILURE_CODE_MAP.get(token, fallback)
+    )
 
 
 def _hydration_blocker(exc: Exception) -> dict[str, Any]:
