@@ -9,7 +9,7 @@ PR766 host-contract repair: 2026-09-23
 Editor 8k installation repair: 2026-09-24
 Single-domain Action-set constraint confirmed: 2026-09-24
 Issue #871 Action-contract expansion prepared: 2026-09-26
-Current reconciliation date: 2026-09-26
+Current repository-contract reconciliation date: 2026-11-08
 
 This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates later host-contract and Action-contract changes, so it cannot prove current instruction or Action parity. The stable machine-consumed resync status token is intentionally retained while issue #871 extends the Action surface.
 
@@ -31,7 +31,7 @@ WOW owns player/scalar props. Team/event winner/favorite/underdog/upset objectiv
 ```text
 schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
 run_control_reference_schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.run-control.yaml
-live_action_layout = SINGLE_DOMAIN_SINGLE_ACTION_SET_23_OPERATIONS
+live_action_layout = SINGLE_DOMAIN_SINGLE_ACTION_SET_29_OPERATIONS
 instructions = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt
 prizepicks_addendum_source = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt
 prizepicks_addendum_installation_surface = KNOWLEDGE_FILE
@@ -53,7 +53,11 @@ can_execute = false
 
 The Custom GPT editor rejects duplicate Action domains. Therefore the production WOW Render domain must be represented by exactly one installed Action group. Durable Daily submit/status, run-control, NFL pickem, and research-only spread-shadow operations share the canonical primary schema. Full current-board requests prefer durable Daily submit/poll; the standalone run-control schema remains repository reference only.
 
-The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters and <=7,500 UTF-8 bytes. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder fails closed when those limits, any required Action operation, or the exact 23-operation Action surface are violated.
+The LLP Supabase Edge and Vercel gateways are separate team-event ingress surfaces, not WOW prop Action origins. Their allowlists intentionally exclude `/score-pick-request` and `/score-prop`. Supabase rejects an unsupported path with `LLP_GATEWAY_PATH_NOT_ALLOWED`, and its response includes `x-wow-gateway: supabase-edge` plus `x-wow-request-id`; Vercel uses `LLP_VERCEL_GATEWAY_PATH_NOT_ALLOWED` and `x-wow-gateway: vercel-action-ingress`. Both reject before forwarding to Render, so the rejection cannot create a Render invocation receipt.
+
+The root-level `artifacts/wow-engine/openapi.pick-request-action.yaml` is a four-operation subset and is not a replacement for the complete 29-operation production Action schema.
+
+The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters and <=7,500 UTF-8 bytes. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder fails closed when those limits, any required Action operation, or the exact 29-operation Action surface are violated.
 
 The spread forward-shadow Action is a Class-B interface exposure to an existing research-only backend route. Its request contract is closed to `NCAAF` and requires event identity, event time, home/away teams, exact home spread, and season. It does not certify, promote, publish, or execute a spread probability.
 
@@ -78,7 +82,7 @@ A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after
 
 1. pasting the current canonical instructions into the Instructions field;
 2. attaching the current PrizePicks addendum as Knowledge;
-3. importing the single canonical 23-operation WOW Action schema for the Render domain with existing Bearer auth preserved; and
+3. importing the single canonical 29-operation WOW Action schema for the Render domain with existing Bearer auth preserved; and
 4. opening a fresh WOW chat after save/reload.
 
 Fresh-chat acceptance must prove:
