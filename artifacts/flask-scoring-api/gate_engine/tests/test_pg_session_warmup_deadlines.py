@@ -461,6 +461,40 @@ def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
 
 
 
+
+def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch):
+    """Resolve and connect through a real local PostgreSQL multi-host DSN in CI."""
+    if os.environ.get("WOW_CI") != "1":
+        pytest.skip("real multi-host DNS/DB test is CI-local only")
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.fail("CI-local DATABASE_URL is required for the multi-host DNS test")
+    try:
+        import psycopg2
+    except ImportError:
+        pytest.fail("psycopg2 is required for the CI PostgreSQL DNS test")
+    parsed = psycopg2.extensions.parse_dsn(url)
+    local_host = parsed.get("host")
+    if local_host not in ("localhost", "127.0.0.1"):
+        pytest.fail("multi-host DNS test must target loopback PostgreSQL")
+    port = str(parsed.get("port") or "5432")
+    failover_dsn = psycopg2.extensions.make_dsn(
+        url,
+        host=f"wow-ledger-unresolvable.invalid,{local_host}",
+        port=f"{port},{port}",
+        hostaddr="",
+    )
+    overrides = pg_session_ledger._resolve_hostaddr(failover_dsn, psycopg2)
+    assert overrides is not None
+    assert overrides["host"] == local_host
+    assert overrides["hostaddr"]
+    assert overrides["port"] == port
+    with psycopg2.connect(failover_dsn, connect_timeout=5, **overrides) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            assert cur.fetchone()[0] == 1
+
+
 def test_actual_postgres_conflicting_lock_times_out_and_recovery_succeeds():
     """CI-local PostgreSQL: 3s lock limit must stop stalled warmup DDL.
 
