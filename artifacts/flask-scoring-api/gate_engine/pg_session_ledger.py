@@ -19,7 +19,10 @@ exposure. The gate result includes "db_error" so callers can audit.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
+import threading
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -52,16 +55,82 @@ CREATE TABLE IF NOT EXISTS wow_session_exposure (
 CREATE INDEX IF NOT EXISTS idx_wse_expires ON wow_session_exposure (expires_at);
 """
 
+# DNS resolution is separate from libpq's connect_timeout on some platforms.
+# Bound it before connecting, then pass the resolved address as hostaddr while
+# retaining the original host name for TLS verification and diagnostics.
+DNS_RESOLUTION_TIMEOUT_SECONDS = 2.0
+
+
+def _resolve_hostaddr(conn_string: str, driver: Any) -> str | None:
+    """Resolve one DSN hostname under a strict deadline, or fail closed."""
+    try:
+        parsed = driver.extensions.parse_dsn(conn_string)
+    except Exception:
+        raise ValueError("SESSION_LEDGER_DSN_INVALID") from None
+    host = str(parsed.get("host") or "").strip()
+    if not host or parsed.get("hostaddr"):
+        return None
+    if "," in host:
+        raise ValueError("SESSION_LEDGER_DNS_MULTIHOST_UNSUPPORTED")
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        port = int(parsed.get("port") or 5432)
+    except (TypeError, ValueError):
+        raise ValueError("SESSION_LEDGER_DSN_PORT_INVALID") from None
+
+    outcome: dict[str, Any] = {}
+    completed = threading.Event()
+
+    def resolve() -> None:
+        """Perform the potentially blocking system resolver off the request thread."""
+        try:
+            outcome["records"] = socket.getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        except OSError:
+            outcome["failed"] = True
+        finally:
+            completed.set()
+
+    worker = threading.Thread(
+        target=resolve, name="pg-session-ledger-dns", daemon=True
+    )
+    worker.start()
+    if not completed.wait(DNS_RESOLUTION_TIMEOUT_SECONDS):
+        raise TimeoutError("SESSION_LEDGER_DNS_TIMEOUT")
+    records = outcome.get("records") or ()
+    addresses: list[str] = []
+    for family, _socktype, _proto, _canonname, sockaddr in records:
+        candidate = str(sockaddr[0])
+        if candidate not in addresses:
+            addresses.append(candidate)
+    if not addresses:
+        raise OSError("SESSION_LEDGER_DNS_FAILED")
+    # Prefer IPv4 for local service endpoints; otherwise use the resolver's
+    # first address. The original hostname remains in the DSN for TLS checks.
+    for candidate in addresses:
+        try:
+            if ipaddress.ip_address(candidate).version == 4:
+                return candidate
+        except ValueError:
+            continue
+    return addresses[0]
+
 
 def ensure_table_exists(conn_string: str | None = None) -> None:
     """Create the wow_session_exposure table if it doesn't exist."""
     import psycopg2
     url = conn_string or os.environ.get("DATABASE_URL", "")
-    # Startup schema checks must not hang indefinitely on DNS/connectivity
-    # problems or a conflicting ACCESS EXCLUSIVE PostgreSQL lock. These
-    # transaction-local limits apply only to warmup DDL, not to live ledger
-    # read/write operations or their normal transaction semantics.
-    with psycopg2.connect(url, connect_timeout=5) as conn:
+    hostaddr = _resolve_hostaddr(url, psycopg2)
+    connect_kwargs: dict[str, Any] = {"connect_timeout": 5}
+    if hostaddr is not None:
+        connect_kwargs["hostaddr"] = hostaddr
+    # DNS, TCP connection and DDL lock/statement waits have separate bounds.
+    with psycopg2.connect(url, **connect_kwargs) as conn:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL lock_timeout = '3000ms'")
             cur.execute("SET LOCAL statement_timeout = '10000ms'")
