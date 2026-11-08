@@ -83,6 +83,24 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
     assert "API_KEY_TO_BEARER_EXISTING_WOW_ACTION_API_KEY__SECRET_NOT_INCLUDED" == manifest["authentication_contract"]
 
 
+def test_editor_sync_docs_match_the_current_29_operation_schema_and_gateway_boundary():
+    sync_doc = (module.ENGINE / "V17_CUSTOM_GPT_EDITOR_SYNC.md").read_text(encoding="utf-8")
+    attestation = (module.ACTION_SCHEMA.parent / "WOW_BETTING_ENGINE_EDITOR_ATTESTATION.md").read_text(encoding="utf-8")
+    subset_schema = (module.ENGINE / "openapi.pick-request-action.yaml").read_text(encoding="utf-8")
+
+    assert "canonical Action operation count is not exactly **29**" in sync_doc
+    assert "exposes all **29** WOW operations" in sync_doc
+    assert "single canonical 29-operation Action schema" in sync_doc
+    assert "SINGLE_DOMAIN_SINGLE_ACTION_SET_29_OPERATIONS" in attestation
+    assert "exact 29-operation Action surface" in attestation
+    assert "single canonical 29-operation WOW Action schema" in attestation
+    assert "LLP_GATEWAY_PATH_NOT_ALLOWED" in sync_doc
+    assert "x-wow-gateway: supabase-edge" in sync_doc
+    assert "four-operation subset" in sync_doc
+    assert subset_schema.count("operationId:") == 4
+    assert module.ACTION_SCHEMA.read_text(encoding="utf-8").count("operationId:") == 29
+
+
 def test_spread_forward_shadow_action_is_closed_ncaaf_only_and_research_only():
     schema_text = SCHEMA.read_text(encoding="utf-8")
 
