@@ -15,5 +15,12 @@
     "trigger.dev": "^4.8.3",
     "typescript": "~5.9.2",
     "@types/node": "^22.16.0"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2",
+    "esbuild": "0.25.0",
+    "minimatch": "11.0.1",
+    "tar": "7.5.22",
+    "zod": "4.6.7"
   }
 }
