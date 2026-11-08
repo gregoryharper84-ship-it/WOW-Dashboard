@@ -5,7 +5,7 @@
 ## Evidence reviewed
 
 - PR #2507 head before hardening: `6708127ab8d4235035eed82022e05cf19c46385d`.
-- Main branch readback: `7b09f7528189abff7a64839e586d7a71be12cb9f`; four main commits were not yet present in the PR branch. Those commits touched unrelated source-review and post-deploy verification files, not the pilot paths. The branch is being reconciled with current main before final acceptance.
+- Main branch readback: `7b09f7528189abff7a64839e586d7a71be12cb9f`; the PR branch now includes this exact main commit as its second parent. A fresh compare reports the PR branch 14 commits ahead and zero behind; the four intervening main commits touched unrelated source-review and post-deploy verification files.
 - All 12 PR-added paths were inspected: the workflow, README, CLI, package manifests/lockfile, read-only probe, submit helper, two Trigger tasks, tests, Trigger config and tsconfig.
 - Exact-head CI at the pre-hardening head reported 8/8 workflows successful, including the pilot-specific test/typecheck job.
 - Live Trigger.dev Development evidence:
@@ -33,7 +33,7 @@
 - Exactly one fixed unauthenticated GET is issued per attempt; redirects are never followed and response bodies are cancelled.
 - The synthetic task has no HTTP, database, scoring, settlement, or scheduling side effects.
 
-## SIRT disposition
+## Preliminary engineering disposition
 
-**Conditional acceptance for the isolated, manually triggered Development pilot only, subject to the final exact-head checks and a non-author SIRT reviewer reading this report and the live run receipts. Not approved for Production, Staging, scheduler replacement, writable workflows, model qualification, or automatic promotion.**
+**Conditional technical readiness for the isolated, manually triggered Development pilot only, subject to final exact-head checks and formal non-author SIRT sign-off against this report and the live run receipts. This is not SIRT approval. Not approved for Production, Staging, scheduler replacement, writable workflows, model qualification, or automatic promotion.**
 
