@@ -1,5 +1,5 @@
 import { task, AbortTaskRunError } from "@trigger.dev/sdk";
-import { assertPilotSafety, assertTriggerDevEnvironment } from "../lib/read-only-health.mjs";
+import { assertPilotSafety, assertTriggerDevEnvironment, ProbeError } from "../lib/read-only-health.mjs";
 import { idempotencyKeyFor } from "../lib/submit-readonly.mjs";
 
 /**
@@ -23,7 +23,8 @@ export const wowV17SyntheticRetryPilot = task({
       assertTriggerDevEnvironment(ctx.environment.type);
       assertPilotSafety();
       idempotencyKeyFor(payload?.probeId);
-    } catch {
+    } catch (error) {
+      if (error instanceof ProbeError) throw new AbortTaskRunError(error.code);
       throw new AbortTaskRunError("SYNTHETIC_RETRY_DEV_GUARD_FAILED");
     }
     const attempt = ctx.attempt.number;
