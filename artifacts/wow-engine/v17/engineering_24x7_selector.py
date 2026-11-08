@@ -26,6 +26,10 @@ STOP_LABELS = {
     "needs-owner", "blocked", "security-hold", "do-not-automate",
     "no-autobuild", "no-auto-build", "duplicate", "wontfix",
 }
+SIRT_REVIEW_TITLE = re.compile(
+    r"^\\s*(?:\\[[^\\]]*\\bSIRT\\b[^\\]]*\\]|(?:P[0-3]\\s+)?SIRT\\b|P[0-3]\\s*:\\s*SIRT\\b)",
+    re.IGNORECASE,
+)
 PRIORITY = {
     "production-down": 0,
     "incident-p0": 0,
@@ -57,9 +61,9 @@ def eligible(issue: dict) -> tuple[int, int] | None:
         return None
     if issue.get("state") != "open":
         return None
-    # Independent semantic-review intake belongs to SIRT, never the coding queue.
+    # SIRT-owned review/assurance tickets are not implementation assignments.
     title = issue.get("title")
-    if isinstance(title, str) and title.strip().casefold().startswith("[sirt intake]"):
+    if isinstance(title, str) and SIRT_REVIEW_TITLE.match(title.strip()):
         return None
     number = issue.get("number")
     if type(number) is not int or number <= 0:
