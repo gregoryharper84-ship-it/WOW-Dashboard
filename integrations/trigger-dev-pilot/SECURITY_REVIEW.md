@@ -55,11 +55,11 @@ The lockfile and installed dependency tree showed `trigger.dev@4.8.3` with the s
 - Added `scripts/patch-trigger-cli.mjs`, restricted to CLI 4.8.3, minimatch 11.0.1, picomatch 2.3.2 and exactly one expected import/call pair.
 - The script rewrites only the local installed CLI import to `picomatch` and the call to `picomatch.makeRe(externalName)`.
 - It is idempotent and fails closed on an unexpected package version or source shape.
-- `npm run dev` invokes it through `predev`; `npm ci --ignore-scripts` remains lifecycle-script-free.
+- `npm run dev` invokes `start-dev-preflight.mjs` through `predev`; it refuses an invalid/missing `TRIGGER_PROJECT_REF`, a non-`tr_dev_` key, or any missing/weakened pilot flag before patching or starting the CLI. CI uses the separate `patch:cli` script and never needs credentials. `npm ci --ignore-scripts` remains lifecycle-script-free.
 - Added six compatibility tests for glob-to-RegExp behavior, exact patch behavior, idempotency, package-version rejection and source drift. A prior proposed `Minimatch.makeRe()` adaptation was disproved by a direct API test (22/23 tests); it was not accepted and was replaced with picomatch.
 - Added a no-credential CI smoke import of the patched CLI module.
 
-**Exact-head CI evidence:** commit `c26207f2d332bf59ecacab141cee8b9b1f9be5cc`, workflow run [#42493613765](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42493613765) completed successfully: 24/24 tests, picomatch-based patch applied, CLI module import smoke passed, TypeScript check passed, cross-platform lock entries present, and `npm audit` reported zero vulnerabilities.
+**Exact-head CI evidence:** commit `427e6616dda805676d6b77feeec0ee5d90099d5d`, workflow run [#42493964300](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42493964300) completed successfully on Node 26 (matching the operator local CLI runtime): 28/28 tests, picomatch-based patch applied, CLI module import smoke passed, TypeScript check passed, all 33 cross-platform lock entries present, and `npm audit` reported zero vulnerabilities.
 
 **Additional dependency limitation:** `tar@7.5.22` is outside `giget@1.2.5`’s declared `^6.2.1` range; `esbuild@0.25.0` is outside Trigger.dev CLI 4.8.3’s declared `^0.23.0` range. The current CLI import smoke does not exercise giget archive extraction or the full esbuild build pipeline. These compatibility paths remain UNVERIFIED and are a reason to keep the pilot local and DEVELOPMENT-only.
 
