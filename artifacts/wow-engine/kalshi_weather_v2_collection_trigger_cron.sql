@@ -59,18 +59,40 @@ security invoker
 set search_path to ''
 as $function$
 begin
+  -- Serialize claim transactions, then preserve one global active lease across
+  -- Render replicas. The transaction lock is released at RPC commit; the
+  -- durable CLAIMED row remains the lease until completion or expiry.
+  if not pg_try_advisory_xact_lock(
+    hashtextextended('wow-kalshi-weather-dispatch-queue', 0)
+  ) then
+    return;
+  end if;
+
+  if exists (
+    select 1
+    from public.wow_kalshi_weather_collection_dispatch_queue as active
+    where active.status = 'CLAIMED'
+      and active.claimed_at is not null
+      and active.claimed_at >= clock_timestamp() - interval '15 minutes'
+  ) then
+    return;
+  end if;
+
   -- A worker crash cannot strand a row forever. After three abandoned claims,
   -- stop retrying and leave a typed terminal record for operator review.
-  update public.wow_kalshi_weather_collection_dispatch_queue
+  update public.wow_kalshi_weather_collection_dispatch_queue as q
   set status = 'FAILED',
       completed_at = clock_timestamp(),
       last_error_code = 'DISPATCH_MAX_ATTEMPTS_EXCEEDED'
-  where attempts >= 3
+  where q.attempts >= 3
     and (
-      status = 'PENDING'
+      q.status = 'PENDING'
       or (
-        status = 'CLAIMED'
-        and claimed_at < clock_timestamp() - interval '15 minutes'
+        q.status = 'CLAIMED'
+        and (
+          q.claimed_at is null
+          or q.claimed_at < clock_timestamp() - interval '15 minutes'
+        )
       )
     );
 
@@ -83,7 +105,10 @@ begin
         q.status = 'PENDING'
         or (
           q.status = 'CLAIMED'
-          and q.claimed_at < clock_timestamp() - interval '15 minutes'
+          and (
+            q.claimed_at is null
+            or q.claimed_at < clock_timestamp() - interval '15 minutes'
+          )
         )
       )
     order by q.scheduled_slot, q.id
