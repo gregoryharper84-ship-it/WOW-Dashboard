@@ -56,3 +56,15 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 ## Exact-head validation note
 
 The first hosted attempt caught a TypeScript JSDoc parameter-shape error in the DEV guard; the helper signature was corrected. The latest branch head must pass a fresh hosted run before this pilot can be considered source-validated. The previous failed run is retained as evidence and is not relabeled.
+
+
+## GitHub-hosted DEVELOPMENT acceptance (no local terminal)
+
+For operators who do not want to run a local CLI, the repository includes an opt-in GitHub Actions workflow at `.github/workflows/wow-trigger-remote-dev-acceptance.yml`. It runs the existing Trigger.dev CLI inside an ephemeral GitHub-hosted runner, not on the operator's Mac. It starts a named DEVELOPMENT branch `wow-v17-github-actions-acceptance`, triggers the health, synthetic retry and this engineering-intake task, verifies the 65-second wait/resume plus second read, prints a sanitized receipt, and stops the worker.
+
+Before enabling it, configure:
+- Repository Actions variable `WOW_TRIGGER_REMOTE_DEV_ENABLED=true`.
+- Repository Actions variable `TRIGGER_PROJECT_REF` set to the actual project reference.
+- GitHub Actions environment `wow-trigger-dev` with a new temporary DEVELOPMENT-only `TRIGGER_SECRET_KEY` secret. Trigger.dev Free/Hobby only provides a no-restrictions key preset, so this key has full access to DEVELOPMENT. Use a short expiration and revoke after acceptance; never use Production/Staging keys.
+
+The workflow is restricted to same-repository PR #2529, is opt-in, read-only at GitHub permission level, has no schedule and a 12-minute timeout. It does not use Preview branches (which are unavailable on the Free plan), deploy to Staging/Production, or dispatch any coding worker. The workflow's actual task receipt—not CI green—is required for acceptance. The local DEV procedure remains available as a fallback.
