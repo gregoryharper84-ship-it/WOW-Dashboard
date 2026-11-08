@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc --noEmit",
-    "dev": "trigger dev"
+    "predev": "node ./scripts/patch-trigger-cli.mjs",
+    "dev": "trigger dev",
+    "cli:smoke": "node --input-type=module -e \"await import('./node_modules/trigger.dev/dist/esm/build/externals.js')\""
   },
   "dependencies": {
     "@trigger.dev/sdk": "^4.8.3"
