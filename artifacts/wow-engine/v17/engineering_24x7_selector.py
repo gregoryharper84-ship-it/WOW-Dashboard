@@ -57,6 +57,10 @@ def eligible(issue: dict) -> tuple[int, int] | None:
         return None
     if issue.get("state") != "open":
         return None
+    # Independent semantic-review intake belongs to SIRT, never the coding queue.
+    title = issue.get("title")
+    if isinstance(title, str) and title.strip().casefold().startswith("[sirt intake]"):
+        return None
     number = issue.get("number")
     if type(number) is not int or number <= 0:
         return None
