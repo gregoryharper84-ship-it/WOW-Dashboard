@@ -26,6 +26,9 @@ export function sanitizeWorkerOutput(value, env = {}) {
   if (env.TRIGGER_SECRET_KEY) {
     output = output.split(env.TRIGGER_SECRET_KEY).join("[REDACTED_TRIGGER_KEY]");
   }
+  if (env.TRIGGER_ACCESS_TOKEN) {
+    output = output.split(env.TRIGGER_ACCESS_TOKEN).join("[REDACTED_TRIGGER_PAT]");
+  }
   if (env.TRIGGER_PROJECT_REF) {
     output = output.split(env.TRIGGER_PROJECT_REF).join("[REDACTED_PROJECT_REF]");
   }
@@ -244,7 +247,7 @@ async function main() {
   try {
     await delay(10000);
     if (worker.spawnFailed || worker.exitCode !== null || worker.signalCode !== null) {
-      console.error("TRIGGER_DEV_WORKER_EXIT_DIAGNOSTIC", JSON.stringify(workerDiagnostic(worker)));
+      console.error("TRIGGER_DEV_WORKER_EXIT_DIAGNOSTIC", JSON.stringify(workerDiagnostic(worker, process.env)));
       throw new Error("DEV_WORKER_EXITED_EARLY");
     }
 
