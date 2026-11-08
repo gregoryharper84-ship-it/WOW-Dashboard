@@ -1,35 +1,115 @@
--- WOW V17 — Kalshi Weather authenticated empirical-cohort collection trigger
+-- WOW V17 — Kalshi Weather durable empirical-cohort dispatch queue
 --
--- Replaces the health-only read-only wake. The previous Supabase pg_cron job
--- (kalshi-weather-v2-shadow-read-only-wake) issued an unauthenticated GET to
--- the weather service's /health route, which can never start collection. The
--- only collection entrypoint is the authenticated POST below, so the empirical
--- cohort stayed at status=DISABLED and produced no new immutable shadow rows
--- regardless of how reliably the wake fired.
---
--- Required Supabase Vault secrets (created out of band; never committed):
---   wow_kalshi_weather_service_url   e.g. https://wow-kalshi-weather-v2.onrender.com
---   wow_kalshi_weather_cohort_key    must equal the isolated Render value of
---                                    WOW_KALSHI_WEATHER_COHORT_KEY
+-- The former pg_net POST attached a cohort credential to a redirect-following
+-- transport. pg_net v0.12.0 enables CURLOPT_FOLLOWLOCATION for POST and cannot
+-- disable it per request; custom headers can therefore reach a redirect target.
+-- This migration removes that network hop entirely. pg_cron writes one
+-- non-secret, idempotent dispatch row. The isolated Render service claims it
+-- with a service-role RPC using FOR UPDATE SKIP LOCKED and runs the existing
+-- bounded capture-only cycle locally. No URL, cohort key, bearer token, or
+-- provider credential leaves Postgres.
 --
 -- Required isolated Render configuration (out of band):
---   WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER=1   installs the trigger route
---   WOW_KALSHI_WEATHER_COHORT_KEY=<secret>        must match the Vault secret
---   WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED=0 in-process loop stays off;
---                                                  this scheduler is the writer
+--   WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER=1
+--   WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_QUEUE_ENABLED=1
+--   WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED=0
+--   WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_POLL_SECONDS=60 (optional; 15-300)
+-- The queue consumer and legacy in-process loop are mutually exclusive.
 --
--- Missing or non-approved configuration fails closed: the function returns
--- BLOCKED and dispatches no HTTP request. The destination must be TLS on the
--- isolated Render origin, so the cohort key cannot be sent to another host.
--- This job can collect calibration evidence only. It cannot certify
--- calibration, publish a probability, or execute a trade.
+-- This is research-only dispatch. It cannot certify calibration, publish a
+-- probability, or execute a trade. The queue is durable; claims are atomic;
+-- abandoned claims are retried at most three times.
 --
--- Status: IMPLEMENTED_IN_PR. Applying this file is a separate, authorized step;
--- until it is applied and a scheduled cycle is read back, production still runs
--- the health-only wake.
+-- Status: IMPLEMENTED_IN_PR. Applying this file is a separate authorized step.
+-- Until applied and a completed queue row is read back, production is unchanged.
 
-create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron with schema pg_catalog;
+
+create table if not exists public.wow_kalshi_weather_collection_dispatch_queue (
+  id bigint generated always as identity primary key,
+  scheduled_slot timestamptz not null unique,
+  status text not null default 'PENDING'
+    check (status in ('PENDING', 'CLAIMED', 'COMPLETED', 'FAILED')),
+  attempts integer not null default 0 check (attempts >= 0),
+  created_at timestamptz not null default clock_timestamp(),
+  claimed_at timestamptz,
+  completed_at timestamptz,
+  last_error_code text,
+  result jsonb
+);
+
+create index if not exists wow_kalshi_weather_dispatch_queue_claim_idx
+  on public.wow_kalshi_weather_collection_dispatch_queue (status, scheduled_slot);
+
+alter table public.wow_kalshi_weather_collection_dispatch_queue
+  enable row level security;
+
+revoke all privileges on table public.wow_kalshi_weather_collection_dispatch_queue
+  from public, anon, authenticated;
+grant select, update on table public.wow_kalshi_weather_collection_dispatch_queue
+  to service_role;
+
+comment on table public.wow_kalshi_weather_collection_dispatch_queue is
+  'Durable, non-secret research-only collection dispatch queue. Service-role consumer claims rows atomically; no HTTP credential is stored.';
+
+create or replace function public.claim_wow_kalshi_weather_collection_dispatch()
+returns table(dispatch_id bigint, scheduled_slot timestamptz, attempts integer)
+language plpgsql
+security invoker
+set search_path to ''
+as $function$
+begin
+  -- A worker crash cannot strand a row forever. After three abandoned claims,
+  -- stop retrying and leave a typed terminal record for operator review.
+  update public.wow_kalshi_weather_collection_dispatch_queue
+  set status = 'FAILED',
+      completed_at = clock_timestamp(),
+      last_error_code = 'DISPATCH_MAX_ATTEMPTS_EXCEEDED'
+  where attempts >= 3
+    and (
+      status = 'PENDING'
+      or (
+        status = 'CLAIMED'
+        and claimed_at < clock_timestamp() - interval '15 minutes'
+      )
+    );
+
+  return query
+  with candidate as (
+    select q.id
+    from public.wow_kalshi_weather_collection_dispatch_queue as q
+    where q.attempts < 3
+      and (
+        q.status = 'PENDING'
+        or (
+          q.status = 'CLAIMED'
+          and q.claimed_at < clock_timestamp() - interval '15 minutes'
+        )
+      )
+    order by q.scheduled_slot, q.id
+    for update skip locked
+    limit 1
+  )
+  update public.wow_kalshi_weather_collection_dispatch_queue as q
+  set status = 'CLAIMED',
+      claimed_at = clock_timestamp(),
+      attempts = q.attempts + 1,
+      completed_at = null,
+      last_error_code = null,
+      result = null
+  from candidate
+  where q.id = candidate.id
+  returning q.id, q.scheduled_slot, q.attempts;
+end;
+$function$;
+
+revoke all privileges on function public.claim_wow_kalshi_weather_collection_dispatch()
+  from public, anon, authenticated;
+grant execute on function public.claim_wow_kalshi_weather_collection_dispatch()
+  to service_role;
+
+comment on function public.claim_wow_kalshi_weather_collection_dispatch() is
+  'Atomically claims one durable Kalshi Weather shadow dispatch for the isolated service-role consumer; no publication or execution authority.';
 
 create or replace function public.wow_kalshi_weather_trigger_collection()
 returns jsonb
@@ -38,130 +118,70 @@ security invoker
 set search_path to ''
 as $function$
 declare
-  v_base_url text;
-  v_cohort_key text;
-  v_request_id bigint;
+  v_now timestamptz := clock_timestamp();
+  v_slot timestamptz;
+  v_dispatch_id bigint;
+  v_status text;
 begin
-  select decrypted_secret
-    into v_base_url
-  from vault.decrypted_secrets
-  where name = 'wow_kalshi_weather_service_url'
-  order by created_at desc
-  limit 1;
+  -- Coalesce retries within the same half-hour schedule slot.
+  v_slot := date_trunc('hour', v_now)
+    + make_interval(mins => (extract(minute from v_now)::integer / 30) * 30);
 
-  select decrypted_secret
-    into v_cohort_key
-  from vault.decrypted_secrets
-  where name = 'wow_kalshi_weather_cohort_key'
-  order by created_at desc
-  limit 1;
+  insert into public.wow_kalshi_weather_collection_dispatch_queue (scheduled_slot)
+  values (v_slot)
+  on conflict (scheduled_slot) do nothing
+  returning id into v_dispatch_id;
 
-  if nullif(trim(v_base_url), '') is null then
-    raise warning 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%',
-      'KALSHI_WEATHER_SERVICE_URL_SECRET_MISSING';
-    return jsonb_build_object(
-      'status','BLOCKED',
-      'reason','KALSHI_WEATHER_SERVICE_URL_SECRET_MISSING',
-      'probability_publishable',false,
-      'can_execute',false
-    );
+  if v_dispatch_id is null then
+    select q.id
+      into v_dispatch_id
+    from public.wow_kalshi_weather_collection_dispatch_queue as q
+    where q.scheduled_slot = v_slot;
+    v_status := 'ALREADY_QUEUED';
+  else
+    v_status := 'QUEUED';
   end if;
-
-  if nullif(trim(v_cohort_key), '') is null then
-    raise warning 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%',
-      'KALSHI_WEATHER_COHORT_KEY_SECRET_MISSING';
-    return jsonb_build_object(
-      'status','BLOCKED',
-      'reason','KALSHI_WEATHER_COHORT_KEY_SECRET_MISSING',
-      'probability_publishable',false,
-      'can_execute',false
-    );
-  end if;
-
-  v_base_url := rtrim(btrim(v_base_url), '/');
-
-  -- The live Render service configuration has been independently verified as
-  -- https://wow-kalshi-weather-v2.onrender.com. Pin the exact origin: a prefix
-  -- allowlist would also trust another Render service whose name merely begins
-  -- with this string. Reject HTTP, ports, paths, credentials, suffixes, and all
-  -- other hosts before attaching the cohort key.
-  if v_base_url !~* '^https://wow-kalshi-weather-v2\.onrender\.com$' then
-    raise warning 'KALSHI_WEATHER_COLLECTION_BLOCKED reason=%',
-      'KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED';
-    return jsonb_build_object(
-      'status','BLOCKED',
-      'reason','KALSHI_WEATHER_SERVICE_URL_NOT_APPROVED',
-      'probability_publishable',false,
-      'can_execute',false
-    );
-  end if;
-
-  v_request_id := net.http_post(
-    url := v_base_url || '/internal/kalshi-weather/v17/empirical-cohort/cron-run',
-    headers := jsonb_build_object(
-      'Content-Type','application/json',
-      'Accept','application/json',
-      'User-Agent','kalshi-supabase-cron-collection/1',
-      'X-WOW-Weather-Cohort-Key', trim(v_cohort_key)
-    ),
-    body := '{}'::jsonb,
-    timeout_milliseconds := 90000
-  );
 
   return jsonb_build_object(
-    'status','DISPATCHED',
-    'request_id',v_request_id,
-    'destination_host',split_part(v_base_url, '/', 3),
-    'collection_mode','BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW',
-    'probability_publishable',false,
-    'can_execute',false
+    'status', v_status,
+    'dispatch_id', v_dispatch_id,
+    'scheduled_slot', v_slot,
+    'dispatch_transport', 'DURABLE_DATABASE_QUEUE',
+    'probability_publishable', false,
+    'can_execute', false
   );
 end;
 $function$;
 
--- Internal maintenance only. Do not expose this RPC through Data API roles.
--- pg_cron executes the scheduled SQL as its scheduling database role.
+-- Internal maintenance only. The cron job runs as the database role that
+-- installed this migration; no Data API role may enqueue dispatches directly.
 revoke all privileges on function public.wow_kalshi_weather_trigger_collection()
   from public, anon, authenticated, service_role;
 
 comment on function public.wow_kalshi_weather_trigger_collection() is
-  'Research-only Kalshi Weather empirical-cohort collection dispatch. SECURITY INVOKER; not Data API callable; no probability publication or trading authority.';
+  'Idempotently enqueues one non-secret, research-only Kalshi Weather collection dispatch per half-hour slot. No outbound HTTP, probability publication, or trading authority.';
 
--- Retire the health-only wake once this file is applied. It cannot start
--- collection, so keeping it would only add unauthenticated read traffic against
--- the isolated service.
-do $retire$
-begin
-  if exists (
-    select 1 from cron.job where jobname = 'kalshi-weather-v2-shadow-read-only-wake'
-  ) then
-    perform cron.unschedule('kalshi-weather-v2-shadow-read-only-wake');
-  end if;
-end;
-$retire$;
-
--- Installs must be idempotent. cron.schedule has no unique-name constraint, so
--- re-running this migration without this block would install a second job and
--- therefore a second writer. Unschedule every existing row with this name
--- first, then install exactly one replacement below.
+-- Retire both former network wakes and deduplicate the durable queue schedule.
 do $dedupe$
 declare
   v_job_id bigint;
 begin
   for v_job_id in
-    select jobid from cron.job
-    where jobname = 'kalshi-weather-v2-authenticated-collection-trigger'
+    select jobid
+    from cron.job
+    where jobname in (
+      'kalshi-weather-v2-shadow-read-only-wake',
+      'kalshi-weather-v2-authenticated-collection-trigger',
+      'kalshi-weather-v2-durable-collection-dispatch'
+    )
   loop
     perform cron.unschedule(v_job_id);
   end loop;
 end;
 $dedupe$;
 
--- Same cost-constrained cadence as the job it replaces. Kept at */30 rather
--- than tightened so this change cannot increase the isolated service's shared
--- Render instance-hour consumption.
 select cron.schedule(
-  'kalshi-weather-v2-authenticated-collection-trigger',
+  'kalshi-weather-v2-durable-collection-dispatch',
   '*/30 * * * *',
   $$select public.wow_kalshi_weather_trigger_collection();$$
 );
