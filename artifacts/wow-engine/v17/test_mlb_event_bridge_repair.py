@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from v17 import mlb_event_bridge_repair as repair
 
@@ -222,3 +223,23 @@ def test_governance_stage_audit_marks_probability_and_event_governor_pass():
     assert result["rank_eligible"] is True
     assert result["last_completed_stage"] == "EVENT_GOVERNOR"
     assert result["can_execute"] is False
+
+
+def test_health_route_exposes_render_deployed_sha(monkeypatch):
+    app = FastAPI()
+    event_api = SimpleNamespace(
+        base_api=SimpleNamespace(_render_deployed_sha=lambda: "a" * 40),
+    )
+    monkeypatch.setattr(
+        repair,
+        "mlb_team_event_bridge_readiness",
+        lambda **_kwargs: {"status": "READY"},
+    )
+
+    repair._install_health_route(app, event_api=event_api)
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["deployed_sha"] == "a" * 40
+    assert response.json()["can_execute"] is False
