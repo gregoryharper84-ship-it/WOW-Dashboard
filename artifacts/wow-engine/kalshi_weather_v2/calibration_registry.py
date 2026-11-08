@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from .calibration_fit import ForecastResidual, fit_candidate_calibration_profile
-from .persistence import KalshiWeatherPersistence, content_id
+from .persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError, content_id
 
 
 MINIMUM_CANDIDATE_SAMPLES = 30
@@ -189,8 +189,7 @@ def persist_candidate_calibration_profiles(
     if not str(model_version).strip():
         raise ValueError("model_version is required")
 
-    predictions = _select_rows(client, "wow_kalshi_weather_predictions")
-    outcomes = _select_rows(client, "wow_kalshi_weather_outcomes")
+    predictions, outcomes = load_scoring_evidence_rows(client)
     store = KalshiWeatherPersistence(client)
 
     persisted: list[dict[str, Any]] = []
@@ -222,7 +221,15 @@ def persist_candidate_calibration_profiles(
             continue
 
         profile = fit.profile
-        residual_values = [round(sample.residual.residual_f, 9) for sample in samples]
+        sample_evidence = [
+            {
+                "sample_key": sample.sample_key,
+                "decision_time": sample.decision_time,
+                "settlement_time": sample.settlement_time,
+                "residual_f": round(sample.residual.residual_f, 9),
+            }
+            for sample in samples
+        ]
         profile_id = content_id(
             "kalshi-weather-calibration-candidate",
             {
@@ -231,7 +238,7 @@ def persist_candidate_calibration_profiles(
                 "lead_time_bucket": profile.lead_time_bucket,
                 "model_version": str(model_version),
                 "method": profile.method,
-                "residuals_f": residual_values,
+                "samples": sample_evidence,
             },
         )
         evidence = {
@@ -239,7 +246,7 @@ def persist_candidate_calibration_profiles(
             "certified": False,
             "certification_required": True,
             "minimum_candidate_samples": minimum_n,
-            "minimum_forward_validation_samples": 40,
+            "minimum_forward_validation_samples": 50,
             "unique_sample_n": len(samples),
             "latest_sample_decision_time": samples[-1].decision_time,
             "earliest_sample_decision_time": samples[0].decision_time,
@@ -252,13 +259,57 @@ def persist_candidate_calibration_profiles(
             "capability_promotion_allowed": False,
             "can_execute": False,
         }
-        row = store.persist_calibration_profile(
-            calibration_profile_id=profile_id,
-            profile=profile,
-            model_version=str(model_version),
-            fitted_as_of=as_of,
-            certification_evidence=evidence,
-        )
+        existing = store.load_calibration_profile_by_id(profile_id)
+        reused_existing = existing is not None
+        if existing is not None:
+            expected_identity = {
+                "calibration_profile_id": profile_id,
+                "station_id": profile.station_id,
+                "lane": profile.lane,
+                "lead_time_bucket": profile.lead_time_bucket,
+                "model_version": str(model_version),
+                "method": profile.method,
+                "bias_f": profile.bias_f,
+                "sigma_f": profile.sigma_f,
+                "lower_sigma_f": profile.lower_sigma_f,
+                "upper_sigma_f": profile.upper_sigma_f,
+                "sample_n": profile.sample_n,
+                "certified": False,
+                "can_execute": False,
+            }
+            for key, expected_value in expected_identity.items():
+                actual_value = existing.get(key)
+                if isinstance(expected_value, float):
+                    actual_number = _finite_float(actual_value)
+                    matches = actual_number is not None and math.isclose(
+                        actual_number, expected_value, rel_tol=1e-12, abs_tol=1e-12
+                    )
+                else:
+                    matches = actual_value == expected_value
+                if not matches:
+                    raise KalshiWeatherPersistenceError(
+                        "KALSHI_WEATHER_IDENTITY_COLLISION",
+                        f"wow_kalshi_weather_calibration_profiles:{profile_id}:{key}",
+                    )
+            existing_evidence = existing.get("certification_evidence")
+            if (
+                not isinstance(existing_evidence, Mapping)
+                or existing_evidence.get("profile_scope") != "RESEARCH_CANDIDATE_UNCERTIFIED"
+                or existing_evidence.get("probability_publishable") is not False
+            ):
+                raise KalshiWeatherPersistenceError(
+                    "KALSHI_WEATHER_IDENTITY_COLLISION",
+                    f"wow_kalshi_weather_calibration_profiles:{profile_id}:certification_evidence",
+                )
+            row = dict(existing)
+        else:
+            row = store.persist_calibration_profile(
+                calibration_profile_id=profile_id,
+                profile=profile,
+                model_version=str(model_version),
+                fitted_as_of=as_of,
+                certification_evidence=evidence,
+            )
 
         scoring = _score_group(predictions, outcomes, group["station_id"], group["lane"], group["lead_time_bucket"])
         persisted.append(
@@ -271,6 +322,7 @@ def persist_candidate_calibration_profiles(
                 "bias_f": profile.bias_f,
                 "sigma_f": profile.sigma_f,
                 "certified": False,
+                "reused_existing": reused_existing,
                 "scoring": scoring,
             }
         )
@@ -400,12 +452,43 @@ def _score(rows: Sequence[tuple[str, float, float]]) -> dict[str, Any]:
     }
 
 
+def load_scoring_evidence_rows(
+    client,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Load complete, deterministically ordered immutable scoring inputs."""
+    return (
+        _select_rows(client, "wow_kalshi_weather_predictions"),
+        _select_rows(client, "wow_kalshi_weather_outcomes"),
+    )
+
+
 def _select_rows(client, table: str) -> list[Mapping[str, Any]]:
+    primary_key = {
+        "wow_kalshi_weather_predictions": "prediction_id",
+        "wow_kalshi_weather_outcomes": "outcome_id",
+    }.get(table)
+    if primary_key is None:
+        raise ValueError(f"unsupported calibration evidence table: {table}")
     try:
-        result = client.table(table).select("*").limit(ROW_LIMIT).execute()
-    except Exception:
-        return []
-    return [dict(row) for row in (result.data or []) if isinstance(row, Mapping)]
+        result = (
+            client.table(table)
+            .select("*")
+            .order(primary_key)
+            .limit(ROW_LIMIT)
+            .execute()
+        )
+    except Exception as exc:
+        raise KalshiWeatherPersistenceError(
+            "KALSHI_WEATHER_CALIBRATION_LEDGER_READ_FAILED",
+            f"{table}:{type(exc).__name__}",
+        ) from exc
+    rows = [dict(row) for row in (result.data or []) if isinstance(row, Mapping)]
+    if len(rows) >= ROW_LIMIT:
+        raise KalshiWeatherPersistenceError(
+            "KALSHI_WEATHER_CALIBRATION_INPUT_TRUNCATED",
+            f"{table}:row_limit={ROW_LIMIT}",
+        )
+    return rows
 
 
 def _finite_float(value: Any) -> float | None:
@@ -429,4 +512,4 @@ def _utc_z(value: Any) -> str | None:
         return None
     if parsed.tzinfo is None:
         return None
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
