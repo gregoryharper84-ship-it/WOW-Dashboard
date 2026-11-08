@@ -30,6 +30,12 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
+      - name: Install dependencies and smoke-test patched CLI imports (no credentials)
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run predev
+          npm run cli:smoke
+          npm run typecheck
       - name: Local no-network contracts
         run: |
           node --check src/lib/read-only-health.mjs
@@ -81,11 +87,5 @@ jobs:
           if (missing.length) throw new Error("INCOMPLETE_CROSS_PLATFORM_LOCK: " + missing.join(", "));
           console.log("Cross-platform optional lock entries present:", required.length);
           NODE
-      - name: Install, apply guarded CLI compatibility, and smoke-test CLI imports
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          npm run predev
-          npm run cli:smoke
-          npm run typecheck
       - name: Audit dependency tree (high and critical advisories fail)
         run: npm audit --audit-level=high
