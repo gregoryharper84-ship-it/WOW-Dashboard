@@ -69,6 +69,9 @@ def test_claim_rpc_is_atomic_service_role_only_and_recovers_stale_claims():
     )[1].split("$function$;", 1)[0]
     assert "security invoker" in body
     assert "set search_path to ''" in body
+    assert "pg_try_advisory_xact_lock" in body
+    assert "hashtextextended('wow-kalshi-weather-dispatch-queue', 0)" in body
+    assert "active.status = 'claimed'" in body
     assert "for update skip locked" in body
     assert "interval '15 minutes'" in body
     assert "attempts >= 3" in body
