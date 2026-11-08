@@ -100,6 +100,32 @@ def test_hydration_and_persisted_replay_failure_remain_blocked(monkeypatch):
     assert row["can_execute"] is False
 
 
+
+def test_public_failure_code_returns_only_allowlisted_literal_codes():
+    """Known source codes survive while exception-derived identifiers are rejected."""
+    fallback = "BASKETBALL_HYDRATION_FAILED"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable"),
+        fallback,
+    ) == "BALLDONTLIE_API_KEY unavailable"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError(
+            "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:postgres://secret-host"
+        ),
+        fallback,
+    ) == "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE"
+    assert maintenance._public_failure_code(
+        RuntimeError("NBA_SOURCE_HTTP_503"), fallback
+    ) == "NBA_SOURCE_HTTP_503"
+    for error in (
+        RuntimeError("NBA_SECRET_DATABASE_PASSWORD"),
+        RuntimeError("postgres://secret-provider-host"),
+        maintenance.BasketballHydrationError("unknown-provider-payload secret=token"),
+    ):
+        assert maintenance._public_failure_code(error, fallback) == fallback
+
+
+
 def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
     app = FastAPI()
     monkeypatch.setattr(maintenance, "scout_route_auth_dependency", lambda dep: dep)
