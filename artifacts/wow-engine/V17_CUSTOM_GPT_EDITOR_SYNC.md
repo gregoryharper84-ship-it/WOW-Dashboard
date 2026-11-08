@@ -1,6 +1,6 @@
 # WOW V17 Custom GPT editor synchronization
 
-Updated: 2026-10-01
+Updated: 2026-11-08
 
 Status: **RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED**
 
@@ -14,9 +14,9 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - Custom GPT Instructions field hard limit: **8,000 characters**; repository safety ceiling: **7,500 UTF-8 bytes**.
 - The canonical host-instructions file must satisfy both limits and is pasted into the Instructions field verbatim.
 - The PrizePicks addendum is installed as a **Knowledge file**, not appended to the Instructions field.
-- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **24**, or if a required Action operation is missing.
+- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **29**, or if a required Action operation is missing.
 - ChatGPT Custom GPT editor constraint observed 2026-09-24: **Action sets cannot have duplicate domains**. Therefore the production WOW Render domain may appear in only one Action group.
-- The canonical live Action schema exposes all **24** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
+- The canonical live Action schema exposes all **29** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
   - `getWowV17PickRequestRunState`
   - `runWowV17ResumablePickRequest`
   - `closeWowV17PickRequestRun`
@@ -39,6 +39,21 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - Authentication remains API Key -> Bearer using the existing `WOW_ACTION_API_KEY`.
 - `can_execute=false`, dry-run-only behavior, and `V17_TERMINAL_REDUCER` authority remain binding.
 
+## Separate WOW and LLP Action transport boundaries — verified 2026-11-08
+
+These are two different Custom GPTs and two different Action contracts. Never install one GPT's schema into the other.
+
+| Custom GPT | Canonical schema | Action server | Operations | Scope |
+|---|---|---|---:|---|
+| WOW Betting Engine | `v17/openapi.wow-betting-engine.v17.yaml` | `https://wow-governed-probability-engine.onrender.com` | 29 | Props/scalar picks and team-event delegation; includes `/score-pick-request` and `/score-prop` |
+| LLP Team Betting Engine | `v17/openapi.llp-team-engine.v17.yaml` | `https://iczfhsmjrrafhvcpmqhr.supabase.co` | 17 | Team/game/event and spread operations under `/functions/v1/wow-llp-action-gateway`; no player props or `/score-pick-request` |
+
+The LLP Supabase Edge gateway has a closed 17-route allowlist and forwards approved LLP routes to Render. Its rejection of `/score-pick-request` or `/score-prop` is intentional. Do not widen that allowlist and do not repoint the LLP Action to Render merely to make a WOW-only operation work.
+
+The current canonical WOW schema and deterministic packet builder both verify **29** operations. Historical references to 24 or 23 operations are stale and must not be used for import.
+
+A gateway 404 produced by a diagnostic probe is not proof that the live WOW GPT is misbound. Prove live binding only through a fresh production WOW chat after editor save/reload, with a real authenticated Action call and matching Render invocation receipt.
+
 ## PR #766 host-contract behavior
 
 The PrizePicks Knowledge contract requires the live host to:
@@ -50,7 +65,7 @@ The PrizePicks Knowledge contract requires the live host to:
 - treat unreadable source pages as source-ingestion blockers, not `MODEL_UNAVAILABLE`; and
 - render distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
-Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 24-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
+Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 29-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
 
 ## Acceptance required to re-attest VERIFIED
 
@@ -58,7 +73,7 @@ The production WOW editor must be saved/reloaded with:
 
 1. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` in the Instructions field;
 2. the PrizePicks addendum attached as Knowledge (`WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
-3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 24 operations with existing Bearer authentication preserved.
+3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 29 operations with existing Bearer authentication preserved.
 
 Then a fresh production WOW chat must prove:
 
