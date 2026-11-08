@@ -699,6 +699,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
         covered_event_ids: set[tuple[str, str]],
         fetch_sport_events: Any = None,
     ):
+        """Run the installed sport-prioritized discovery and evidence handoff."""
         if not daily.discovery_feed.enabled():
             return None
 
@@ -712,6 +713,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             )
 
         def canonicalize_identity(event: Any) -> Any:
+            """Resolve provider aliases through the canonical owner for each sport."""
             sport = str(getattr(event, "sport", "") or "").upper()
             if sport == "MLB":
                 return canonicalize_mlb_discovery_identity(
@@ -737,9 +739,11 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             return event
 
         def resolve_model(event: Any) -> Any:
+            """Return the registered bridge without inferring model readiness."""
             return daily.bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
         def score(event: Any, model: Any) -> dict[str, Any]:
+            """Apply sport-scoped canonical dedup before exact bridge scoring."""
             if (str(event.sport or ""), str(event.official_event_id or "")) in covered_event_ids:
                 return {
                     "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
