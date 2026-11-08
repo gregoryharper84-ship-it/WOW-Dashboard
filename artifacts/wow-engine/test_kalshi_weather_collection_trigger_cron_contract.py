@@ -87,7 +87,7 @@ def test_internal_function_is_not_reachable_through_the_data_api():
 
 
 def test_service_url_is_pinned_to_the_exact_verified_render_origin():
-    assert r"^https://wow-kalshi-weather-v2\\.onrender\\.com$" in COMMENT_FREE_SQL
+    assert r"^https://wow-kalshi-weather-v2\.onrender\.com$" in COMMENT_FREE_SQL
     assert "a-z0-9-" not in COMMENT_FREE_SQL
     block = _guard_block("if v_base_url !~*")
     assert "raise warning 'kalshi_weather_collection_blocked reason=%'" in block
