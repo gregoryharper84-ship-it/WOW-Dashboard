@@ -144,6 +144,7 @@ def test_swapped_or_unknown_teams_fail_closed():
 def test_two_schedule_ids_for_the_same_teams_stay_ambiguous():
     """Reject overlapping schedule IDs when uniqueness cannot be proved."""
     def duplicate(_year):
+        """Expose conflicting same-team games to prove ambiguity remains held."""
         return [
             {"game_id": "1", "game_date": "2026-11-09", "game_date_time": "2026-11-09 19:00:00-05:00", "time_valid": True, "home_id": "2633", "away_id": "2515"},
             {"game_id": "2", "game_date": "2026-11-10", "game_date_time": "2026-11-09 19:10:00-05:00", "time_valid": True, "home_id": "2633", "away_id": "2515"},
@@ -414,6 +415,7 @@ def test_rate_limit_is_typed_and_negatively_cached(monkeypatch):
     identity.reset_cache()
     calls = []
     def failed(_year):
+        """Count upstream 429 attempts for the negative-cache test."""
         calls.append(True)
         raise identity.NCAABEventIdentityError("NCAAB_SCHEDULE_SOURCE_RATE_LIMITED")
     monkeypatch.setattr(identity, "fetch_ncaab_schedule", failed)
@@ -456,6 +458,7 @@ def test_typed_negative_cache_expires_and_source_can_recover(monkeypatch):
     clock = [100.0]
     calls = []
     def fetch(_year):
+        """Fail the first scheduled fetch, then return source rows on recovery."""
         calls.append(clock[0])
         if len(calls) == 1:
             raise identity.NCAABEventIdentityError("NCAAB_SCHEDULE_SOURCE_RATE_LIMITED")
@@ -545,6 +548,7 @@ def test_held_ncaab_routed_identity_survives_daily_persisted_detail(monkeypatch)
         def range(self, *_args):
             return self
         def execute(self):
+            """Return readback indices only after selecting persisted rows."""
             return SimpleNamespace(
                 data=[{"row_index": r["row_index"]} for r in self.rows]
                 if self.selecting else []
