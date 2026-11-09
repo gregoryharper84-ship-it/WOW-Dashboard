@@ -78,10 +78,12 @@ NOV9_SCHEDULE = [
 
 
 def _fetch(_year):
+    """Return deterministic NCAAB schedule rows without an HTTP call."""
     return list(NOV9_SCHEDULE)
 
 
 def test_schedule_asset_uses_season_ending_year():
+    """Check season-ending-year conversion across November and spring."""
     assert identity.schedule_season_year(datetime(2026, 11, 9, tzinfo=timezone.utc)) == 2027
     assert identity.schedule_season_year(datetime(2027, 3, 7, tzinfo=timezone.utc)) == 2027
     assert identity.schedule_season_year(datetime(2026, 4, 6, tzinfo=timezone.utc)) == 2026
@@ -98,6 +100,7 @@ def test_schedule_asset_uses_season_ending_year():
     ],
 )
 def test_diagnostic_matchups_resolve_through_schedule_not_discovery_alias(home_id, away_id, game_id):
+    """Confirm all five schedule IDs, never an unverified provider event alias."""
     # 00:00Z on Nov 10 is still the Nov 9 local slate. The discovery alias is a
     # different id and must not be adopted.
     out = identity.resolve_ncaab_current_event_identity(
@@ -118,6 +121,7 @@ def test_diagnostic_matchups_resolve_through_schedule_not_discovery_alias(home_i
 
 
 def test_swapped_or_unknown_teams_fail_closed():
+    """Hold swapped ordered teams or incomplete ESPN team aliases."""
     with pytest.raises(identity.NCAABEventIdentityError) as swapped:
         identity.resolve_ncaab_current_event_identity(
             event_start_time="2026-11-10T00:00:00Z",
@@ -138,6 +142,7 @@ def test_swapped_or_unknown_teams_fail_closed():
 
 
 def test_two_schedule_ids_for_the_same_teams_stay_ambiguous():
+    """Reject overlapping schedule IDs when uniqueness cannot be proved."""
     def duplicate(_year):
         return [
             {"game_id": "1", "game_date": "2026-11-09", "game_date_time": "2026-11-09 19:00:00-05:00", "time_valid": True, "home_id": "2633", "away_id": "2515"},
@@ -155,6 +160,7 @@ def test_two_schedule_ids_for_the_same_teams_stay_ambiguous():
 
 
 def test_schedule_fetch_parses_required_columns_and_rejects_drift(monkeypatch):
+    """Distinguish valid CSV, missing mandatory columns and source outage."""
     class Response:
         def __init__(self, status, text):
             self.status_code = status
@@ -193,6 +199,7 @@ def test_schedule_fetch_parses_required_columns_and_rejects_drift(monkeypatch):
 
 
 def test_unready_schedule_source_fails_closed(monkeypatch):
+    """Do not fetch schedule bytes if the source entitlement is unready."""
     monkeypatch.setattr(
         identity,
         "source_readiness",
@@ -212,6 +219,7 @@ def test_unready_schedule_source_fails_closed(monkeypatch):
 
 
 def _alias_event(*, home_id="2633", away_id="2515", provider_event_id="999999999"):
+    """Build an alias-only pregame NCAAB event with no publication authority."""
     return DiscoveredEvent(
         sport="NCAAB",
         league="NCAAB",
@@ -235,6 +243,7 @@ def _alias_event(*, home_id="2633", away_id="2515", provider_event_id="999999999
 
 
 def test_discovery_alias_is_rewritten_only_after_schedule_match(monkeypatch):
+    """Prove source-schedule canonicalization retains the discovery alias."""
     original = identity.resolve_ncaab_current_event_identity
 
     def offline(**kwargs):
@@ -257,6 +266,7 @@ def test_discovery_alias_is_rewritten_only_after_schedule_match(monkeypatch):
 
 
 def test_missing_team_alias_stays_unresolved_even_when_names_are_present():
+    """Never infer team IDs from unsourced display names."""
     event = _alias_event()
     event = DiscoveredEvent(
         sport=event.sport,
@@ -277,6 +287,7 @@ def test_missing_team_alias_stays_unresolved_even_when_names_are_present():
 
 
 def test_resolved_identity_can_reach_model_routing_without_becoming_a_pick(monkeypatch):
+    """Preserve a MODEL_UNAVAILABLE hold after legitimate identity resolution."""
     original = identity.resolve_ncaab_current_event_identity
 
     def offline(**kwargs):
@@ -305,6 +316,7 @@ def test_resolved_identity_can_reach_model_routing_without_becoming_a_pick(monke
 
 
 def test_unmatched_alias_remains_identity_unresolved_and_unscored():
+    """An unresolved alias must not invoke even a supplied scorer."""
     identity_event = DiscoveredEvent(
         sport="NCAAB",
         league="NCAAB",
@@ -350,6 +362,7 @@ def test_unmatched_alias_remains_identity_unresolved_and_unscored():
     assert rows[0].rank_eligible is False
 
 def test_wrong_tip_and_wrong_date_cannot_establish_identity():
+    """Reject schedule rows with wrong tip, date, season or validity flags."""
     for patch in (
         {"game_date_time": "2026-11-09 15:00:00-05:00"},
         {"game_date": "2026-11-11", "game_date_time": "2026-11-11 19:00:00-05:00"},
@@ -369,6 +382,7 @@ def test_wrong_tip_and_wrong_date_cannot_establish_identity():
 
 @pytest.mark.parametrize("value", ["2026-11-10T00:00:00", "not-a-time"])
 def test_discovery_tip_without_utc_is_invalid(value):
+    """Fail closed on malformed or timezone-naive discovery tips."""
     with pytest.raises(identity.NCAABEventIdentityError) as exc:
         identity.resolve_ncaab_current_event_identity(
             event_start_time=value, home_team_alias="2633",
@@ -378,6 +392,7 @@ def test_discovery_tip_without_utc_is_invalid(value):
 
 
 def test_schedule_naive_datetime_uses_documented_new_york_timezone():
+    """Normalize the source's offset-free Eastern tip to UTC."""
     row = {**NOV9_SCHEDULE[0], "game_date_time": "2026-11-09 19:00:00"}
     out = identity.resolve_ncaab_current_event_identity(
         event_start_time="2026-11-10T00:00:00Z",
@@ -389,6 +404,7 @@ def test_schedule_naive_datetime_uses_documented_new_york_timezone():
 
 
 def test_rate_limit_is_typed_and_negatively_cached(monkeypatch):
+    """Typed 429 failures must be cached without obscuring their blocker."""
     class Session:
         def get(self, *_args, **_kwargs):
             return type("Response", (), {"status_code": 429, "text": ""})()
