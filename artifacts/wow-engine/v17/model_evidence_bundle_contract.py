@@ -44,6 +44,16 @@ class ModelBundleScope:
     prediction_timestamp: str
     market_family: str | None = None
     latest_material_update_timestamp: str | None = None
+    # Exact selectable prop: the line is a literal string (e.g. "7+") and
+    # must never be silently normalized into an adjacent 6.5/7.5 line.
+    player_id: str | None = None
+    stat_type: str | None = None
+    period: str | None = None
+    line: str | None = None
+    direction: str | None = None
+    # Weather settlement identity cannot borrow a nearby station/contract.
+    contract_id: str | None = None
+    station_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +208,20 @@ def _pregame_valid(
         and bool(_text(corpus.get("source_snapshot_id")))
         and bool(_text(corpus.get("feature_snapshot_id")))
         and _text(corpus.get("official_event_id")) == scope.official_event_id
+        and (
+            scope.model_kind != "PLAYER_PROP"
+            or all(
+                _text(corpus.get(field)) == _text(getattr(scope, field))
+                for field in ("player_id", "stat_type", "period", "line", "direction")
+            )
+        )
+        and (
+            scope.model_kind != "WEATHER_CONTRACT"
+            or all(
+                _text(corpus.get(field)) == _text(getattr(scope, field))
+                for field in ("contract_id", "station_id")
+            )
+        )
         and _sha256(corpus.get("source_payload_sha256"))
         and _sha256(corpus.get("feature_snapshot_sha256"))
         and corpus.get("source_payload_independently_verified") is True
@@ -244,6 +268,19 @@ def assess_model_bundle(
         and (
             scope.model_kind == "TEAM_EVENT"
             or bool(_text(scope.market_family))
+        )
+        and (
+            scope.model_kind != "PLAYER_PROP"
+            or all(_text(value) for value in (
+                scope.player_id, scope.stat_type, scope.period,
+                scope.line, scope.direction,
+            ))
+        )
+        and (
+            scope.model_kind != "WEATHER_CONTRACT"
+            or all(_text(value) for value in (
+                scope.contract_id, scope.station_id,
+            ))
         )
     )
     if not supported:
