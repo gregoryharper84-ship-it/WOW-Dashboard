@@ -15,6 +15,7 @@ from v17.team_event_capability_manifest import (
     EXPECTED_TEAM_EVENT_SPORTS,
     normalize_team_event_sport,
 )
+from v17.model_evidence_bundle_contract import COMPONENTS
 
 CAN_EXECUTE = False
 
@@ -267,6 +268,9 @@ def audit_table(
                 "certification_status": certification,
                 "certification_id": certification_id,
                 "fitted_artifact_backed": bool(probe.fitted_module and probe.model_artifact_loader),
+                "required_evidence_components": list(COMPONENTS),
+                "triad_source_provenance_verified": None,
+                "triad_verification_status": "NOT_EVALUATED_BY_REPOSITORY_PROBE",
                 "safe_to_register": bool(probe.scorer_resolvable),
                 "reason_if_not_registered": None if registered else probe.notes,
                 "probability_publishable": False,
