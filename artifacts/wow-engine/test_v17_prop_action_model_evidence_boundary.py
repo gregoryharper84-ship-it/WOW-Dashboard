@@ -204,7 +204,7 @@ def test_request_bound_wrapper_does_not_rewrite_preinference_hold_as_invoked():
         proxy._invoke_score(preflight_held)
     assert exc.value.detail["specialist_invoked"] is False
     assert exc.value.detail["scoring_attempted"] is False
-    assert exc.value.detail["specialist_scoring_attempted"] is True  # until next fix
+    assert exc.value.detail["specialist_scoring_attempted"] is False
 
 
 def test_direct_action_scoring_stops_before_fitted_model(monkeypatch):
