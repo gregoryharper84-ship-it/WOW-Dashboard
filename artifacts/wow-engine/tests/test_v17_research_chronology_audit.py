@@ -152,7 +152,7 @@ def test_timestamp_overflow_reports_typed_row_hold(tmp_path):
 
 def test_embedded_nul_path_gets_typed_hold_not_exception(tmp_path):
     rows = _example(tmp_path)
-    rows[0]["source_file"] = "bad\\u0000file".replace("\\u0000", "\\x00")
+    rows[0]["source_file"] = "bad" + chr(0) + "file"
     report = audit_chronological_corpus(rows, source_root=tmp_path)
     assert report["status"] == "RESEARCH_AUDIT_HOLD"
     assert report["row_results"][0]["status"] == "ROW_HOLD"
@@ -182,7 +182,7 @@ def test_calibration_label_after_holdout_freeze_blocks(tmp_path):
 
 def test_calibration_holdout_event_overlap_blocks(tmp_path):
     rows = _example(tmp_path)
-    shift = timedelta(days=20)
+    shift = timedelta(days=40)
     for field in (
         "source_published_at", "source_captured_at", "feature_frozen_at",
         "event_start_at", "label_available_at",
