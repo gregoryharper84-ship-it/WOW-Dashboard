@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from basketball_team_event_specialist import (
     FEATURE_NAMES, FEATURE_SCHEMA_VERSION, MIN_PRIOR_GAMES, TrainingGame, build_pregame_features, _sport,
@@ -59,6 +59,72 @@ def _sha(obj: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canon(obj).encode()).hexdigest()
 
 
+# --- Authoritative event / source-identity verification ------------------------------------
+# The caller-supplied event fields (id, teams, start, status) are CLAIMS. They are accepted only
+# when the raw source payload, whose sha256 and obtained-at time are bound to the claim, itself
+# states the same identity, start time and still-scheduled status. No payload -> no capture.
+SOURCE_AUTHORITY_BDL = "BALLDONTLIE_GAME_V1"
+
+
+def _bdl_extract(payload: Mapping[str, Any]) -> dict[str, Any]:
+    home, away = payload.get("home_team") or {}, payload.get("visitor_team") or payload.get("away_team") or {}
+    if not isinstance(home, Mapping) or not isinstance(away, Mapping):
+        raise ForwardCaptureError("CAPTURE_SOURCE_PAYLOAD_MALFORMED", "team_identity")
+    status = str(payload.get("status") or "").strip()
+    scheduled = status.lower() in SCHEDULED_STATUSES
+    if not scheduled:  # BallDontLie reports an upcoming game's status as its ISO start time
+        try:
+            datetime.fromisoformat(status.replace("Z", "+00:00"))
+            scheduled = True
+        except ValueError:
+            pass
+    return {"official_event_id": str(payload.get("id") or "").strip(), "home_team_id": str(home.get("id") or "").strip(),
+            "away_team_id": str(away.get("id") or "").strip(), "event_start_time": payload.get("datetime"),
+            "scheduled": scheduled}
+
+
+SOURCE_ADAPTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {SOURCE_AUTHORITY_BDL: _bdl_extract}
+
+
+@dataclass(frozen=True)
+class VerifiedEventSource:
+    authority: str
+    payload_sha256: str
+    obtained_at: str
+    official_event_id: str
+    event_start_time: str
+
+
+def verify_event_source(event: Mapping[str, Any], payload: bytes, authority: str) -> VerifiedEventSource:
+    """Fail closed unless `payload` (raw bytes) authoritatively establishes the claimed event."""
+    adapter = SOURCE_ADAPTERS.get(str(authority))
+    if adapter is None:
+        raise ForwardCaptureError("CAPTURE_SOURCE_AUTHORITY_UNVERIFIED", str(authority))
+    if not isinstance(payload, (bytes, bytearray)) or not payload:
+        raise ForwardCaptureError("CAPTURE_SOURCE_PAYLOAD_MISSING")
+    digest = hashlib.sha256(bytes(payload)).hexdigest()
+    if digest != str(event.get("source_payload_sha256") or ""):
+        raise ForwardCaptureError("CAPTURE_SOURCE_PAYLOAD_HASH_MISMATCH")
+    try:
+        parsed = json.loads(bytes(payload).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ForwardCaptureError("CAPTURE_SOURCE_PAYLOAD_MALFORMED", "json") from exc
+    if not isinstance(parsed, Mapping):
+        raise ForwardCaptureError("CAPTURE_SOURCE_PAYLOAD_MALFORMED", "not_object")
+    got = adapter(parsed.get("data") if isinstance(parsed.get("data"), Mapping) else parsed)
+    for field in ("official_event_id", "home_team_id", "away_team_id"):
+        if not got[field] or got[field] != str(event.get(field) or "").strip():
+            raise ForwardCaptureError(f"CAPTURE_SOURCE_EVENT_MISMATCH_{field.upper()}")
+    if not got["event_start_time"]:
+        raise ForwardCaptureError("CAPTURE_SOURCE_EVENT_MISMATCH_EVENT_START_TIME", "absent_in_source")
+    if _utc(got["event_start_time"], "source.event_start_time") != _utc(event["event_start_time"], "event_start_time"):
+        raise ForwardCaptureError("CAPTURE_SOURCE_EVENT_MISMATCH_EVENT_START_TIME")
+    if not got["scheduled"]:
+        raise ForwardCaptureError("CAPTURE_SOURCE_EVENT_NOT_SCHEDULED")
+    return VerifiedEventSource(str(authority), digest, _utc(event["source_snapshot_timestamp"], "source_snapshot_timestamp").isoformat(),
+                               got["official_event_id"], _utc(got["event_start_time"], "source.event_start_time").isoformat())
+
+
 @dataclass(frozen=True)
 class ForwardCaptureRecord:
     sport: str
@@ -72,9 +138,13 @@ class ForwardCaptureRecord:
     feature_schema_version: str
     feature_payload: dict
     feature_snapshot_sha256: str
+    feature_payload_canonical: str
+    source_authority: str
+    source_payload_text: str
     history_through_date: str
     supersedes_feature_snapshot_sha256: str | None
     capture_version: str = CAPTURE_VERSION
+    source_event_identity_verified: bool = True
     can_execute: bool = False
     probability_publishable: bool = False
 
@@ -88,6 +158,8 @@ def capture_forward_pregame(
     history: Iterable[TrainingGame],
     captured_at: Any,
     *,
+    source_payload: bytes,
+    source_authority: str = SOURCE_AUTHORITY_BDL,
     prior_feature_snapshot_sha256: str | None = None,
     max_history_age_days: int = MAX_HISTORY_AGE_DAYS,
 ) -> ForwardCaptureRecord:
@@ -107,6 +179,7 @@ def capture_forward_pregame(
         raise ForwardCaptureError("CAPTURE_AT_OR_AFTER_EVENT_START")
     if snap > cap:
         raise ForwardCaptureError("CAPTURE_SOURCE_SNAPSHOT_AFTER_CAPTURE")
+    verified = verify_event_source(event, source_payload, source_authority)  # claims must match the bound source
     game_date = date.fromisoformat(str(event["game_date"])[:10])
     hist = sorted((g for g in history if g.sport == s and g.game_date < game_date), key=lambda g: (g.game_date, g.game_id))
     if not hist:
@@ -134,6 +207,8 @@ def capture_forward_pregame(
         event_status=str(event["event_status"]).strip().lower(), captured_at=cap.isoformat(),
         source_snapshot_id=str(event["source_snapshot_id"]), source_snapshot_timestamp=snap.isoformat(),
         source_payload_sha256=str(event["source_payload_sha256"]), feature_schema_version=FEATURE_SCHEMA_VERSION,
-        feature_payload=payload, feature_snapshot_sha256=digest, history_through_date=through.isoformat(),
+        feature_payload=payload, feature_snapshot_sha256=digest, feature_payload_canonical=_canon(payload),
+        source_authority=verified.authority, source_payload_text=bytes(source_payload).decode("utf-8"),
+        history_through_date=through.isoformat(),
         supersedes_feature_snapshot_sha256=(prior_feature_snapshot_sha256 if prior_feature_snapshot_sha256 and prior_feature_snapshot_sha256 != digest else None),
     )
