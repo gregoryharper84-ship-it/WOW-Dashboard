@@ -19,6 +19,7 @@ from v17.model_evidence_registry_readers import (
     MISSING,
     NOT_CONFIGURED,
     READ_FAILED,
+    _read_verification,
     assess_registry_model_bundle,
     read_model_evidence_bundle,
 )
@@ -386,3 +387,85 @@ def test_missing_database_is_typed_and_never_raises():
 def test_component_field_contract_covers_every_required_component():
     assert set(COMPONENT_REQUIRED_FIELDS) == {"artifact", "calibrator", "pregame_corpus"}
     assert all(COMPONENT_REQUIRED_FIELDS.values())
+
+
+
+def test_artifact_level_receipt_cannot_auto_verify_an_event_or_calibrator():
+    receipt = _receipt({
+        "artifact_payload_checksum_verified": True,
+        "training_provenance_verified": True,
+        "calibrator_chronological_replay_verified": True,
+        "calibrated_lower_bound_verified": True,
+        "pregame_source_payload_verified": True,
+        "pregame_feature_replay_verified": True,
+        "pregame_official_event_identity_verified": True,
+        "pregame_settlement_basis_verified": True,
+    })
+    db = _FakeDb({
+        "wow_team_event_specialist_certifications": [receipt],
+    })
+    verification, blocker = _read_verification(
+        db,
+        _scope(),
+        {"artifact_checksum": ARTIFACT_SHA},
+        {"calibrator_id": "calibrator-1", "calibrator_checksum": "e" * 64},
+        {
+            "official_event_id": "official-event-1",
+            "feature_snapshot_id": "feature-1",
+            "feature_snapshot_sha256": PREGAME_SHA,
+            "source_snapshot_id": "source-1",
+            "source_payload_sha256": "f" * 64,
+        },
+    )
+
+    assert blocker is None
+    assert verification["artifact"]["payload_checksum_verified"] is True
+    assert not any(verification["calibrator"].values())
+    assert not any(verification["pregame_corpus"].values())
+
+
+def test_exact_component_receipt_binding_cannot_be_replayed_for_adjacent_event():
+    receipt = _receipt({
+        "artifact_payload_checksum_verified": True,
+        "training_provenance_verified": True,
+        "calibrator_chronological_replay_verified": True,
+        "calibrated_lower_bound_verified": True,
+        "pregame_source_payload_verified": True,
+        "pregame_feature_replay_verified": True,
+        "pregame_official_event_identity_verified": True,
+        "pregame_settlement_basis_verified": True,
+        "calibrator_id": "calibrator-1",
+        "calibrator_sha256": "e" * 64,
+        "official_event_id": "official-event-1",
+        "event_start_time": TEAM_EVENT_START,
+        "feature_snapshot_id": "feature-1",
+        "feature_snapshot_sha256": PREGAME_SHA,
+        "source_snapshot_id": "source-1",
+        "source_payload_sha256": "f" * 64,
+    }, calibration_artifact_id="calibrator-1", calibration_sha256="e" * 64)
+    db = _FakeDb({"wow_team_event_specialist_certifications": [receipt]})
+    artifact = {"artifact_checksum": ARTIFACT_SHA}
+    calibrator = {"calibrator_id": "calibrator-1", "calibrator_checksum": "e" * 64}
+    pregame = {
+        "official_event_id": "official-event-1",
+        "feature_snapshot_id": "feature-1",
+        "feature_snapshot_sha256": PREGAME_SHA,
+        "source_snapshot_id": "source-1",
+        "source_payload_sha256": "f" * 64,
+    }
+
+    flags, blocker = _read_verification(db, _scope(), artifact, calibrator, pregame)
+    assert blocker is None
+    assert all(flags["calibrator"].values())
+    assert all(flags["pregame_corpus"].values())
+
+    pregame["official_event_id"] = "adjacent-event-2"
+    adjacent, _ = _read_verification(db, _scope(), artifact, calibrator, pregame)
+    assert not any(adjacent["pregame_corpus"].values())
+    assert all(adjacent["calibrator"].values())
+
+    pregame["official_event_id"] = "official-event-1"
+    calibrator["calibrator_checksum"] = "0" * 64
+    wrong_calibrator, _ = _read_verification(db, _scope(), artifact, calibrator, pregame)
+    assert not any(wrong_calibrator["calibrator"].values())
+    assert all(wrong_calibrator["pregame_corpus"].values())
