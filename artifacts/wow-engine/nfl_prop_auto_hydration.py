@@ -735,10 +735,15 @@ def _athlete_availability(
         }
     entries = _injury_entries(payload)
     if not entries:
+        # No active designation on the official athlete record is a participation
+        # basis, not a missing one: the record was read and is complete, and it
+        # names no restriction. It is still only the reported-injury dimension.
         return {
             **base,
             "status": "AVAILABLE",
             "designation": None,
+            "basis": "FRESH_OFFICIAL_REPORT_UNLISTED",
+            "report_complete": True,
             "reason": "NO_ACTIVE_DESIGNATION_ON_OFFICIAL_REPORT",
         }
     latest = max(entries, key=lambda entry: str(entry.get("date") or ""))

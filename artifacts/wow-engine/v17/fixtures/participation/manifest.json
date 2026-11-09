@@ -1,0 +1,68 @@
+{
+  "corpus": "pregame-participation-contracts-v1",
+  "captured": false,
+  "capture_note": "Reconstructed documented response shapes, not a network capture: no archived official responses existed and MLB/WNBA were out of season on 2026-11-09. Do not report replay over this corpus as live pregame verification.",
+  "generated_at": "2026-11-09T18:45:00Z",
+  "files": {
+    "mlb_schedule_probable_pitcher_20260801.json": {
+      "sha256": "3fbf177be8b66600abb4d991502994918bc6bcb5553e67d0550e323a479264db",
+      "bytes": 1828,
+      "endpoint": "https://statsapi.mlb.com/api/v1/schedule?hydrate=probablePitcher,team,venue",
+      "kind": "MLB_SCHEDULE_PROBABLE_PITCHER"
+    },
+    "mlb_boxscore_posted_order_823001.json": {
+      "sha256": "d52d84f6f72b188e84fee98d84ca2fa25682c36ec1fe4a3bb82f2c7233aaf120",
+      "bytes": 1035,
+      "endpoint": "https://statsapi.mlb.com/api/v1/game/823001/boxscore",
+      "kind": "MLB_BOXSCORE_POSTED_BATTING_ORDER"
+    },
+    "mlb_boxscore_unposted_order_823001.json": {
+      "sha256": "0aa3644503e1ff1db868aa0676970465b7dcb96aacdd76d7013bb8e2250d932f",
+      "bytes": 692,
+      "endpoint": "https://statsapi.mlb.com/api/v1/game/823001/boxscore",
+      "kind": "MLB_BOXSCORE_UNPOSTED_BATTING_ORDER"
+    },
+    "mlb_boxscore_late_scratch_823001.json": {
+      "sha256": "26d0cfdb7cb1fbeded984dde01f16eeba8ce91b97028e0ab1e1bbc35df26bc6b",
+      "bytes": 867,
+      "endpoint": "https://statsapi.mlb.com/api/v1/game/823001/boxscore",
+      "kind": "MLB_BOXSCORE_LATE_SCRATCH"
+    },
+    "mlb_people_current_team_592450.json": {
+      "sha256": "d376d2c9953ee2fd22bacc80182c7fa68f7ad8cc199c8d7464c45be9f9288f95",
+      "bytes": 425,
+      "endpoint": "https://statsapi.mlb.com/api/v1/people/592450?hydrate=currentTeam",
+      "kind": "MLB_PEOPLE_CURRENT_TEAM"
+    },
+    "wnba_injury_report_20260801.txt": {
+      "sha256": "32bcf913c16a05d27a80fdba92b4d6b5e8ef487a55617e798e606398cfa1aed8",
+      "bytes": 233,
+      "endpoint": "https://ak-static.cms.nba.com/referee/wnba_injury/Injury-Report_2026-08-01_01_00PM.pdf",
+      "kind": "WNBA_OFFICIAL_INJURY_REPORT"
+    },
+    "wnba_injury_report_not_submitted_20260801.txt": {
+      "sha256": "51d8aef92c433500d9aa42be6f120325259c6ad090e0115d93a8c7c8df34a721",
+      "bytes": 134,
+      "endpoint": "https://ak-static.cms.nba.com/referee/wnba_injury/Injury-Report_2026-08-01_01_00PM.pdf",
+      "kind": "WNBA_OFFICIAL_INJURY_REPORT_NOT_SUBMITTED"
+    },
+    "espn_nfl_athlete_injuries_2026.json": {
+      "sha256": "5cf2e815731bf434cc7e58fccc419ae8404be6347b332b116f79a456ea7855a5",
+      "bytes": 552,
+      "endpoint": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241457",
+      "kind": "ESPN_NFL_ATHLETE_INJURY"
+    },
+    "espn_nfl_athlete_unparsed_2026.json": {
+      "sha256": "9c3218fb85485d81a923a8dbcd8ca30052fa933bc7d7525375770b14b3310962",
+      "bytes": 222,
+      "endpoint": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241458",
+      "kind": "ESPN_NFL_ATHLETE_INJURY_UNPARSED"
+    },
+    "espn_nfl_athlete_clear_2026.json": {
+      "sha256": "04e711d6172789acc21e0bd7718f772df29287e8e8613549f859fac03cb6287d",
+      "bytes": 207,
+      "endpoint": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241459",
+      "kind": "ESPN_NFL_ATHLETE_CLEAR"
+    }
+  }
+}

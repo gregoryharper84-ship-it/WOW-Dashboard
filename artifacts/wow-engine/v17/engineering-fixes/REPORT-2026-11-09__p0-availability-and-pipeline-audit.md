@@ -85,6 +85,56 @@ source. `fresh=False` (stale), `report_complete=False` (incomplete/not-submitted
 report) and any failed retrieval resolve to `UNVERIFIED` even when a playable
 basis is present. An explicit `OUT` designation still wins over any basis.
 
+### Phase 1 — source-backed participation contracts (2026-11-09)
+
+`v17/test_real_source_participation_contracts.py` drives the providers against a
+pinned corpus in `v17/fixtures/participation/`. Together with the wiring, replay
+and gate suites it is **75 passed**.
+
+**Provenance, stated plainly:** the corpus reproduces each provider's documented
+response shape; it is *not* a network capture. No archived official responses
+exist in this repository, and MLB/WNBA were out of season on 2026-11-09.
+`manifest.json` sets `captured: false`, records the source endpoint per file and
+pins every SHA-256; editing a fixture without updating the manifest fails the
+suite. Replay over this corpus is contract evidence, never live pregame
+verification. Fresh-feed confirmation is deferred to the next eligible slate.
+
+| Check | Result |
+|---|---|
+| Official player/event identity binding | MLB schedule resolves `gamePk`/team/venue; WNBA resolves matchup+team section; NFL resolves athlete id |
+| Exact endpoint + response shape | recorded per file in `manifest.json` |
+| Report completeness + freshness | WNBA "not yet submitted" raises; `report_complete`/`fresh` gate to `UNVERIFIED` |
+| Explicit OUT / inactive / unavailable | MLB hydration refuses a non-probable starter, WNBA raises, NFL yields `PLAYER_RULED_OUT` |
+| Unlisted on a complete current report | WNBA/NFL `FRESH_OFFICIAL_REPORT_UNLISTED`, `risk=False` |
+| Missing / stale / incomplete / conflicting / failed | distinct `UNVERIFIED` reason per state |
+| Probable vs confirmed starter | `PROBABLE_STARTER` provisional (`risk=True`); `CONFIRMED_STARTER` not |
+| Posted vs unposted order | `POSTED_BATTING_ORDER` clears; unposted holds |
+| Late scratch / post-hydration change | `NOT_IN_POSTED_BATTING_ORDER` holds with its own reason |
+
+Two provider defects were found and fixed by this suite:
+
+- a hitter absent from a **posted** order produced the same evidence as an
+  unposted lineup, so a late scratch was indistinguishable from pending news;
+  `_batting_order_state()` now reports `PLAYER_NOT_IN_POSTED_ORDER`;
+- NFL "no active designation" carried `status=AVAILABLE` but no participation
+  basis, which the separated gate correctly held as `UNVERIFIED` for every
+  uninjured player; the athlete record now emits
+  `basis=FRESH_OFFICIAL_REPORT_UNLISTED, report_complete=True`.
+
+### Phase 4 — workstream status
+
+| Workstream | Status |
+|---|---|
+| Availability enforcement | local verified, PR #2551 open |
+| Fresh all-sports prop acquisition | not started |
+| Real platform-offer / exact-line verification | blocked: no licensed market feed |
+| Candidate coverage / Daily reconciliation | not started |
+| Market, payout, settlement binding | blocked: no licensed market feed |
+| Specialist certification (12 families) | blocked: no labeled corpora / Class C certification |
+| Arithmetic audit persistence | not started |
+| Response pagination | not started |
+| Recommendation-ledger authorization | not started |
+
 ## 4. November 9 replay
 
 `v17/test_nov9_availability_incident_replay.py` replays the three historical
@@ -106,13 +156,16 @@ The control row proves the block is the availability fact, not a broken scorer.
 
 Run from `artifacts/wow-engine` with the project virtualenv:
 
-- Availability set (replay, gate, runtime binding, MLB/WNBA wiring, Daily
-  reduction, pick-request runtime): **83 passed**.
+- Availability + source-contract set (replay, gate, runtime binding, MLB/WNBA
+  wiring, source contracts, Daily reduction, pick-request runtime): **83 passed**
+  before the corpus landed; **75 passed** in the focused run that includes the
+  corpus suite.
 - Whole prop + WNBA surface (`test_*prop*.py`, `test_*wnba*.py` in root, `v17/`,
-  `tests/`): **852 passed, 15 skipped**. All 15 skips are
-  `test_prop_snapshot_min3_postgres.py`, which requires an ephemeral Postgres
-  integration service that is not provisioned here; they are database-write
-  acceptance cases, not availability or terminal-publication gates.
+  `tests/`, plus the source-contract suite): **873 passed, 15 skipped**. All 15
+  skips are `test_prop_snapshot_min3_postgres.py`, which requires an ephemeral
+  Postgres integration service that is not provisioned here; they are
+  database-write acceptance cases, not availability or terminal-publication
+  gates.
 - Action/editor schema compatibility: **33 passed**
   (`test_pick_request_action_contract.py`, `tests/test_v17_live_editor_compat.py`,
   `v17/test_v17_candidate_contracts.py`).
