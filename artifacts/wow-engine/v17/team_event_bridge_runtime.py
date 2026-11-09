@@ -36,6 +36,7 @@ from v17.team_event_capability_manifest import (
     normalize_team_event_sport,
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
+from v17.model_evidence_runtime_gate import assess_team_event_boundary
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
 from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 from v17.cross_sport_evidence_integrity import (
