@@ -539,8 +539,21 @@ def build_llp_learning_report(
     predictions: Iterable[Mapping[str, Any]],
     *,
     config: LearningThresholds | None = None,
+    research_card_picks: Sequence[Mapping[str, Any]] | None = None,
+    research_card_finals: Sequence[Mapping[str, Any]] | None = None,
+    research_card_official_slate: Sequence[Mapping[str, Any]] | None = None,
+    research_card_official_slate_verified: bool = False,
+    research_card_official_slate_receipt_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build the complete non-mutating LLP learning report."""
+    """Build separate, non-mutating fitted-model and research-card learnings.
+
+    Research-card accuracy never becomes a fitted probability, calibration
+    sample, rank, terminal decision, or submitted Pick'em entry. Only an
+    independently verified pregame research card and official result may be
+    descriptively graded by the optional research audit.
+    """
+    if (research_card_picks is None) != (research_card_finals is None):
+        raise ValueError("RESEARCH_CARD_INPUT_PAIR_REQUIRED")
     rows = list(predictions)
     before = [dict(row) for row in rows]
     calibration = calibration_report(rows, config=config)
@@ -549,7 +562,7 @@ def build_llp_learning_report(
     ranking_regret = ranking_regret_diagnostics(rows)
     refresh = final_refresh_diagnostics(rows)
     after = [dict(row) for row in rows]
-    return {
+    report = {
         "calibration": calibration,
         "market_prior": market_prior,
         "failure_paths": failure_paths,
@@ -560,6 +573,17 @@ def build_llp_learning_report(
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
     }
+    if research_card_picks is not None:
+        from v17.llp_research_card_retro import audit_research_card
+
+        report["research_card"] = audit_research_card(
+            research_card_picks,
+            research_card_finals or [],
+            official_slate=research_card_official_slate,
+            official_slate_verified=research_card_official_slate_verified,
+            official_slate_receipt_id=research_card_official_slate_receipt_id,
+        )
+    return report
 
 
 __all__ = [
