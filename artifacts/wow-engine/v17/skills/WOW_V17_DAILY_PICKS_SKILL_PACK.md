@@ -67,6 +67,12 @@ Use when a PrizePicks board/PDF/screenshots/pasted board is supplied and the use
 5. Preserve individual sporting probabilities exactly. Card-level independence estimates are portfolio math only and must never be relabeled governed sporting probability.
 6. Shrink the card rather than add filler or unresolved dependent legs.
 
+## Retrospective research winner-card discipline
+
+When reviewing yesterday's NFL/NBA/NHL research-only preferred winner card, run the read-only \`v17.llp_research_card_retro.audit_research_card\` contract with authentic frozen pregame receipts, an independently verified official slate, and independent settled results. Report \`PREFERRED\` and \`UPSET_WATCH\` cohorts separately; show missing receipts/results as HELD, and do not show an overall headline accuracy when slate reconciliation fails.
+
+The optional \`build_llp_learning_report(..., research_card_picks=..., research_card_finals=...)\` integration keeps those descriptive grades outside certified fitted-model Brier/log-loss and calibration. Every realized miss produces an unvalidated sport-specific review hypothesis (NFL QB/turnover, NBA availability/replacement/offensive volatility, NHL goalie/rest/travel/special-teams/late-game). No automatic probability edit, upset flip, model promotion, historical pick rewrite, or Pick'em sheet mutation is permitted. Independent forward replay must demonstrate an improvement before release.
+
 ## Universal V17 rules
 - WOW_BETTING_ENGINE owns player/scalar/prop rows.
 - LLP_TEAM_BETTING_ENGINE owns team/event winner, favorite, underdog, upset, match-winner, and fight-winner rows.
