@@ -45,3 +45,38 @@ Other sport or market families found in the registry must join the same audit, n
 - **Reducer:** V17_TERMINAL_REDUCER remains sole terminal authority. No wager or order execution. No automatic rank eligibility, certification, promotion or hold waiver.
 
 Until connected readers and independent acceptance prove each specific lane, the universal contract is **implemented as a reusable contract and development-lane declaration**, not as a claim that every production scorer is already protected by the new validator. Do not merge/deploy or mark COMPLETE on green CI alone.
+
+
+## Runtime enforcement candidate — stacked implementation (draft, not releasable)
+
+The follow-up branch `engineering/p0-2536-triad-boundary-preflight-20261108`
+adds a fail-closed scoring-boundary adapter and negative tests:
+
+- Team-event registered scorers and the authenticated `scoreWowTeamEvent` Action
+  resolve exactly one **server-owned CERTIFIED + independent PASS** specialist
+  identity, call the read-only triad reader and hold before model invocation
+  when the registry, identity, reader, calibrator or pregame corpus is missing.
+- The `scoreWowPickRequest` Action resolves exact fitted artifact fields from
+  the server route, not caller-provided model probabilities. Missing canonical
+  player ID, model/schema version or an exact route is a typed hold; a numeric
+  line cannot represent a literal `7+` and must not be substituted.
+- The existing prop terminal reducer preserves `MODEL_BUNDLE_*` causes as
+  `MODEL_EVIDENCE_TRIAD_BLOCKED`, with `model_evaluated=false`,
+  `probability_publishable=false` and `can_execute=false`.
+- Registry reads use the scoring service's already-authorized Supabase client.
+  Reader errors are held, never interpreted as proof that a fitted model is absent.
+
+**Integration dependency:** The Freebuff report describes
+`v17/model_evidence_registry_readers.py` and
+`test_v17_model_evidence_registry_readers.py` as **local uncommitted files**
+in `freebuff/a05655ae76a0cc229e6a1f7a`. At implementation time GitHub
+did not contain that branch or file. The boundary therefore deliberately
+returns `MODEL_BUNDLE_READER_UNAVAILABLE` rather than manufacturing evidence.
+This draft must NOT be merged until the actual reader source is pushed,
+reconciled against #2537 and independently tested.
+
+Other direct scorer/Action entrypoints, including weather contracts, must be
+inventoried and given the same exact family-specific read-only gate before
+publication; `scoreWowPickRequest` and the registered team-event path are
+the first independently testable integration sites. The current draft does
+not claim universal production coverage or certified probabilities.
