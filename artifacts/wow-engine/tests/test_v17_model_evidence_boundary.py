@@ -221,11 +221,27 @@ def test_official_publication_guard_blocks_an_incomplete_required_triad():
     assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
 
 
-def test_official_publication_guard_ignores_legacy_payloads_without_the_gate():
+def test_team_event_official_publication_never_exempts_an_unattributed_legacy_payload():
     payload = _served_result()
     decision = evaluate_team_event_official_publication(payload)
 
-    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" not in decision["blockers"]
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
+    assert decision["official_publication_allowed"] is False
+
+
+def test_upset_or_unknown_sport_cannot_turn_off_the_team_event_triad():
+    for overrides in (
+        {"sport": "MLB", "candidate_family": "UPSET"},
+        {"sport": "MLS", "candidate_family": "UNDERDOG"},
+        {"sport": None, "candidate_family": None},
+        {"sport": "UNKNOWN", "candidate_family": "TEAM_EVENT"},
+    ):
+        payload = _served_result(**overrides)
+        payload.pop("model_evidence_triad", None)
+        payload.pop("evidence_triad_required", None)
+        decision = evaluate_team_event_official_publication(payload)
+        assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
+        assert decision["official_publication_allowed"] is False
 
 
 def _complete_sealed(sport="MLB"):
