@@ -39,11 +39,11 @@ def _timestamp(value: object) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed.astimezone(timezone.utc)
 
 
 def _file_digest(path_value: object, root: Path, cache: dict[Path, str]) -> tuple[str | None, str | None]:
@@ -63,7 +63,7 @@ def _file_digest(path_value: object, root: Path, cache: dict[Path, str]) -> tupl
                     digest.update(chunk)
             cache[target] = digest.hexdigest()
         return cache[target], None
-    except (FileNotFoundError, PermissionError, OSError):
+    except (OSError, ValueError, RuntimeError):
         return None, "FILE_UNREADABLE"
 
 
