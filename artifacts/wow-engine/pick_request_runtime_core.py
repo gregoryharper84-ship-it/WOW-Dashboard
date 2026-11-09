@@ -40,16 +40,23 @@ from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
 from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS, PropAutoHydrationError
-from prop_auto_hydration_router import auto_hydrate_prop_evidence
+from prop_auto_hydration_router import auto_hydrate_prop_evidence, recheck_provisional_participation
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
 from v17.player_availability_gate import (
+    AVAILABILITY_AVAILABLE,
     AVAILABILITY_UNAVAILABLE,
     AVAILABILITY_UNVERIFIED,
     PLAYER_AVAILABILITY_UNVERIFIED,
     PLAYER_AVAILABILITY_RECHECK_REQUIRED,
     PLAYER_RULED_OUT,
     evaluate_player_availability,
+)
+from v17.provisional_availability_recheck import (
+    RECHECK_NOT_DUE,
+    RECHECK_SOURCE_UNAVAILABLE,
+    recheck_is_due,
+    resolve_provisional_recheck,
 )
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
 from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
@@ -270,6 +277,55 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     if availability.status == AVAILABILITY_UNAVAILABLE:
         raise ValueError(f"{PLAYER_RULED_OUT}:{availability.designation or 'UNSPECIFIED'}")
 
+    # A provisional official basis (MLB probable starter) carries an explicit
+    # recheck obligation. Inside the final-refresh window, re-read the same
+    # official source: a typed confirmation discharges the obligation, a
+    # rule-out becomes a normal rejection, and every other outcome (stale,
+    # unretrievable, identity mismatch, still probable) leaves the obligation
+    # in place. A recheck that fails never converts into clearance.
+    availability_recheck: dict[str, Any] | None = None
+    if availability.requires_revalidation:
+        availability_recheck = {
+            "status": RECHECK_NOT_DUE,
+            "checked_at": now.isoformat(),
+            "event_start_time": event_start.isoformat(),
+            "window_hours": 6,
+            "can_execute": False,
+        }
+        if recheck_is_due(event_start, now):
+            try:
+                observed = recheck_provisional_participation(
+                    sport=str(row.sport).strip().upper(),
+                    player=row.player,
+                    event_start_time=event_start.isoformat(),
+                    availability=availability.receipt(),
+                    now=now,
+                )
+            except Exception as exc:
+                availability_recheck = {
+                    "status": RECHECK_SOURCE_UNAVAILABLE,
+                    "error_type": type(exc).__name__,
+                    "checked_at": now.isoformat(),
+                    "can_execute": False,
+                }
+            else:
+                decision, availability_recheck = resolve_provisional_recheck(
+                    provisional=availability.receipt(),
+                    observed=observed,
+                )
+                if decision.status == AVAILABILITY_UNAVAILABLE:
+                    raise ValueError(
+                        f"{PLAYER_RULED_OUT}:{decision.designation or 'UNSPECIFIED'}"
+                    )
+                availability = decision
+                if decision.status == AVAILABILITY_AVAILABLE:
+                    # Freeze the confirming observation on the row so the
+                    # snapshot and every re-reader see the discharged
+                    # obligation, not the original probable listing.
+                    row.evidence.role_status = {
+                        **row.evidence.role_status,
+                        "availability": dict(observed),
+                    }
 
     opportunity = row.evidence.opportunity_ledger
     opportunity_status = str(
@@ -311,6 +367,7 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         "availability_status": availability.status,
         "availability_requires_revalidation": availability.requires_revalidation,
         "availability": availability.receipt(),
+        "availability_recheck": availability_recheck,
     }
 
 
@@ -1316,6 +1373,13 @@ def install_pick_request_routes(
                 # official source.
                 premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
                 acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
+
+            if normalized.get("availability_recheck") is not None:
+                acquisition["availability_recheck"] = normalized["availability_recheck"]
+                if normalized.get("availability_requires_revalidation") is False:
+                    # Only a discharged obligation changes the reported status;
+                    # a provisional row reports its recheck obligation instead.
+                    acquisition["availability_status"] = normalized.get("availability_status")
 
             snapshot_id, fingerprint, snapshot = _snapshot_payload(
                 row, normalized, premodel_blockers

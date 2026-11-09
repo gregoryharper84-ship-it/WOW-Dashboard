@@ -183,6 +183,45 @@ that rebuilds the verdict from a snapshot are still not exercised, and no
 production replay has happened. Status therefore remains
 `PARTIALLY_REMEDIATED`.
 
+### Final provisional recheck (discharges the obligation)
+
+`PLAYER_AVAILABILITY_RECHECK_REQUIRED` was previously an undischargeable hold:
+the row could never become rank eligible no matter how clearly the official
+source confirmed the start. The recheck is now implemented end to end.
+
+- `v17/provisional_availability_recheck.py` adjudicates one fresh official
+  observation against the provisional receipt. Only a typed
+  `CONFIRMED_STARTER` basis with complete provenance clears it. A still
+  `PROBABLE_STARTER` re-read, stale evidence, an identity mismatch on player,
+  event, or club, or an unparsable observation all keep the blocker; an
+  explicit rule-out becomes the normal `PLAYER_RULED_OUT` terminal.
+- `prop_auto_hydration.recheck_mlb_probable_starter` performs the official
+  recheck. It re-reads the MLB StatsAPI schedule and the official game
+  boxscore. Confirmation requires posted batting orders for both clubs and the
+  player named first among his side's pitchers; anything else leaves the
+  observation explicitly provisional. A retrieval failure returns
+  `RETRIEVAL_FAILED`, which cannot clear.
+- The router dispatches by sport and fails closed for sports with no certified
+  final-recheck source. `pick_request_runtime_core` triggers the recheck only
+  inside a six-hour pregame window, so an ordinary research score days out is
+  unchanged, and it persists the outcome as `acquisition.availability_recheck`.
+  A cleared row loses the blocker and the persisted snapshot records the
+  confirming basis; a failed recheck records `SOURCE_UNAVAILABLE` and keeps the
+  hold.
+
+Evidence: 6 adjudicator tests, 6 official-fetch tests with injected payloads,
+and 3 route-level tests (confirmation completes the row with an empty blocker
+list, a rule-out rejects before the scorer, an unavailable source keeps the
+hold). The pre-existing provisional route test now asserts `NOT_DUE` outside
+the window.
+
+Honest limitation: MLB is out of season here and no live pregame game feed was
+available, so the `CONFIRMED_STARTER` branch is proven against injected official
+payloads, not a live pregame capture. If a real game feed does not expose the
+confirmed starter before first pitch, the recheck will correctly keep the row
+held rather than clear it; that behavior is unverified against live data and
+must be confirmed during the production replay.
+
 ### Phase 4 — workstream status
 
 | Workstream | Status |
@@ -218,10 +257,10 @@ The control row proves the block is the availability fact, not a broken scorer.
 
 Run from `artifacts/wow-engine` with the project virtualenv:
 
-- Availability, route and snapshot-durability suites in a focused run:
-  **51 passed**.
+- Availability, recheck, route and snapshot-durability suites in a focused
+  run: **121 passed**.
 - Prop + WNBA + snapshot surface, source contracts, pick-request and schema
-  suites with the ephemeral Postgres enabled: **1103 passed, 0 skipped**.
+  suites with the ephemeral Postgres enabled: **1114 passed, 0 skipped**.
   Without a database the same set is **880 passed, 15 skipped**; the 15 are the
   `test_prop_snapshot_min3_postgres.py` acceptance cases.
 - Action/editor schema compatibility: **33 passed**
