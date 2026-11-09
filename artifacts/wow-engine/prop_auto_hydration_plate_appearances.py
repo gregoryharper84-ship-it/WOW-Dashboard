@@ -15,6 +15,8 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from v17.player_availability_gate import participation_evidence
+
 
 PA_STAT = "PLATE_APPEARANCES"
 
@@ -426,6 +428,20 @@ def hydrate_mlb_plate_appearance_evidence(
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
             "source": "MLB StatsAPI official player/schedule/battingOrder",
+            # A posted official batting order is MLB's pregame participation
+            # fact for a hitter. Before it posts, availability is unverified and
+            # the row is held rather than assumed.
+            "availability": participation_evidence(
+                basis="POSTED_BATTING_ORDER" if lineup_confirmed else None,
+                confirmation="CONFIRMED" if lineup_confirmed else None,
+                source="MLB_STATS_API_OFFICIAL_BATTING_ORDER",
+                captured_at=timestamp,
+                evidence_status="RETRIEVED" if lineup_confirmed else "OFFICIAL_BATTING_ORDER_NOT_POSTED",
+                fresh=True,
+                athlete_id=player_id,
+                event_id=schedule["official_game_pk"],
+                team=schedule["team"],
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {

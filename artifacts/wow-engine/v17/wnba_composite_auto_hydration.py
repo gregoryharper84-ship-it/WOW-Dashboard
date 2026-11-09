@@ -200,7 +200,22 @@ def hydrate_wnba_composite_evidence(
             "official_game_id": str(game.get("gameId") or ""),
             "official_game_start_utc": str(game.get("gameDateTimeUTC") or ""),
             "schedule_status": str(game.get("gameStatusText") or "Scheduled"),
-            "availability": availability["availability"],
+            "availability": base.participation_evidence(
+                designation=availability["designation"],
+                basis=(
+                    "FRESH_OFFICIAL_REPORT_UNLISTED"
+                    if availability["availability"] == "NOT_LISTED_ON_FRESH_OFFICIAL_INJURY_REPORT"
+                    else ("FRESH_OFFICIAL_REPORT_CLEARED" if availability["designation"] else None)
+                ),
+                source="WNBA_OFFICIAL_INJURY_REPORT",
+                captured_at=injury_ts.astimezone(timezone.utc).isoformat(),
+                fresh=True,
+                report_complete=True,
+                athlete_id=player_id,
+                event_id=str(game.get("gameId") or "") or None,
+                team=team_name,
+            ),
+            "availability_report_state": availability["availability"],
             "injury_designation": availability["designation"],
             "injury_report_url": injury_url,
             "source": "WNBA official CDN schedule + WNBA Stats roster/log + official WNBA injury report",

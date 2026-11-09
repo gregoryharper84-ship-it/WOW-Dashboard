@@ -13,6 +13,7 @@ import time
 import httpx
 
 from prop_auto_hydration_workload import WORKLOAD_STATS, hydrate_mlb_workload_evidence
+from v17.player_availability_gate import participation_evidence
 from prop_hydration_resilience import (
     fetch_cross_season_pitching_splits,
     normalized_name,
@@ -516,6 +517,19 @@ def auto_hydrate_prop_evidence(
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
             "source": "MLB StatsAPI official schedule/probablePitcher",
+            # Official pregame participation: MLB listed this player as the
+            # probable starting pitcher for the matched game. Absence of that
+            # listing fails earlier, so this is positive official evidence.
+            "availability": participation_evidence(
+                basis="PROBABLE_STARTER",
+                confirmation="PROBABLE",
+                source="MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER",
+                captured_at=timestamp,
+                fresh=True,
+                athlete_id=player_id,
+                event_id=schedule["official_game_pk"],
+                team=schedule["team"],
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {

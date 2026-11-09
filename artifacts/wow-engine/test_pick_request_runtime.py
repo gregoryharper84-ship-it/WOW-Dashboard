@@ -45,7 +45,20 @@ def _evidence(*, l10=True, opponent_context=None):
         "captured_at": now.isoformat(),
         "game_log": list(range(1, n + 1)),
         "box_score_log": [{"minutes": 30 + i, "stat": i, "outs": 15 + i} for i in range(n)],
-        "role_status": {"status": "ACTIVE", "role": "STARTER"},
+        "role_status": {
+            "status": "ACTIVE",
+            "role": "STARTER",
+            # Verified pregame participation. These rows represent a player the
+            # official report does not rule out; without this evidence the
+            # availability gate holds the row out of the Verified Pool.
+            "availability": {
+                "status": "AVAILABLE",
+                "designation": None,
+                "source": "TEST_OFFICIAL_INJURY_REPORT",
+                "captured_at": now.isoformat(),
+                "evidence_status": "RETRIEVED",
+            },
+        },
         "role_timestamp": now.isoformat(),
         "opportunity_ledger": {"status": "PASS", "minutes_projection": 34},
         "source_timestamps": {

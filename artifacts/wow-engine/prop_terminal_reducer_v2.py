@@ -63,6 +63,16 @@ INPUT_BLOCKERS = {
 SCORER_FAILURE_BLOCKERS = {"MODEL_SCORER_FAILED", "ROW_SCORING_FAILED", "ROW_SCORING_UNAVAILABLE", "PROP_SCORER_EXCEPTION"}
 OUTPUT_INVALID_BLOCKERS = {"MODEL_OUTPUT_INVALID", "CALIBRATED_PROBABILITY_OR_BOUND_MISSING", "PROBABILITY_INVALID", "REJECTION_WITHOUT_MODEL_EVALUATION"}
 MARKET_BLOCKERS = {"EXACT_MARKET_IDENTITY_UNAVAILABLE", "MARKET_DATA_UNAVAILABLE", "PAYOUT_UNRESOLVED", "SETTLEMENT_RULE_UNRESOLVED", "PRICE_STALE"}
+# Official participation evidence outranks probabilistic assessment. A player the
+# club has ruled out is not a sporting outcome to be modelled: the row is
+# invalidated with its own typed terminal and can never surface as
+# NO_LOW_PROBABILITY or any other model-judgment label.
+PARTICIPATION_BLOCKERS = {"PLAYER_RULED_OUT", "PLAYER_PARTICIPATION_UNAVAILABLE", "PLAYER_AVAILABILITY_NOT_ELIGIBLE"}
+# Unverified availability is not a rule-out: the player may well participate. It
+# is a Verified-Pool admission block, so it must outrank a model-supported or
+# market-blocked label but never overwrite a genuine model rejection or a typed
+# capability/input terminal.
+PARTICIPATION_UNVERIFIED_BLOCKERS = {"PLAYER_AVAILABILITY_UNVERIFIED"}
 EVENT_BLOCKERS = {"EVENT_NOT_PREGAME", "EVENT_ALREADY_STARTED", "EVENT_STARTED", "EVENT_FINAL", "EVENT_CANCELLED", "EVENT_POSTPONED"}
 TRUE_MODEL_REJECTION_LABELS = {"NO_LOW_PROBABILITY", "REJECT_PROBABILITY", "REJECT_FAILURE_PATH", "REJECT_OOD", "REJECT_CALIBRATED_LOWER_BOUND"}
 PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS = {"MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT", "LINE_OUTSIDE_CERTIFIED_SUPPORT"}
@@ -80,6 +90,8 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
 
     concurrent_market = tuple(b for b in bs if b in MARKET_BLOCKERS)
 
+    if bset & PARTICIPATION_BLOCKERS:
+        return PropTerminalDecision("PLAYER_RULED_OUT", "PARTICIPATION_INVALIDATED", model_evaluated, True, False, bs, CAUSE_EVENT, concurrent_market)
     if bset & EVENT_BLOCKERS:
         return PropTerminalDecision("NO_PLAY", "EVENT_INVALIDATED", model_evaluated, False, False, bs, CAUSE_EVENT, concurrent_market)
     # A failed registry lookup proves nothing about fitted-capability absence.
@@ -106,6 +118,8 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
         # that decision did not cause the terminal, so it is reported as
         # concurrent rather than as the cause.
         return PropTerminalDecision(label, "MODEL_REJECTED", True, True, False, bs, CAUSE_MODEL_JUDGMENT, concurrent_market)
+    if bset & PARTICIPATION_UNVERIFIED_BLOCKERS:
+        return PropTerminalDecision("PLAYER_AVAILABILITY_UNVERIFIED", "PARTICIPATION_UNVERIFIED", model_evaluated, False, False, bs, CAUSE_EVENT, concurrent_market)
     if bset & MARKET_BLOCKERS:
         return PropTerminalDecision(label if model_evaluated else "MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", model_evaluated, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     return PropTerminalDecision(label, "MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED", model_evaluated, False, False, bs, CAUSE_MODEL_SUPPORTED if model_evaluated else CAUSE_UNEVALUATED, concurrent_market)
