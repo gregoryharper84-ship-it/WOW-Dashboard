@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,11 +23,19 @@ BUCKET = "H0"
 
 def _residual(value: float, *, settle_day: int, decision_day: int | None = None) -> ForecastResidual:
     decision = settle_day - 1 if decision_day is None else decision_day
+    # Day offsets from a fixed epoch so fixtures with >31 samples stay valid
+    # calendar dates (a literal "2026-10-50" is correctly rejected as
+    # unnormalized by the production parser).
+    epoch = datetime(2026, 9, 30, tzinfo=timezone.utc)
+
+    def _iso(day: int) -> str:
+        return (epoch + timedelta(days=day)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     return ForecastResidual(
         forecast_value_f=value,
         settled_value_f=0.0,
-        forecast_as_of=f"2026-10-{decision:02d}T00:00:00Z",
-        settlement_time=f"2026-10-{settle_day:02d}T00:00:00Z",
+        forecast_as_of=_iso(decision),
+        settlement_time=_iso(settle_day),
     )
 
 
