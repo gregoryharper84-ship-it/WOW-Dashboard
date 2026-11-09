@@ -14,7 +14,8 @@ from datetime import date, datetime, time, timezone
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from basketball_specialist_pipeline import evaluate_untouched_calibrated_holdout
+from basketball_specialist_pipeline import _walk_forward_raw, evaluate_untouched_calibrated_holdout
+from calibration import phase_b_platt
 from basketball_team_event_specialist import (
     FEATURE_NAMES,
     FEATURE_SCHEMA_VERSION,
@@ -531,6 +532,63 @@ def _calibrator_digest(row: Mapping[str, Any]) -> str:
     return _sha256_json(payload)
 
 
+
+def _replay_calibrator_fit(
+    training_rows: list[FeatureRow],
+    calibrator_row: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recreate the walk-forward Platt fit from the exact pre-holdout corpus."""
+    try:
+        raw, outcomes, folds, timestamps = _walk_forward_raw(training_rows)
+        fit = phase_b_platt(raw, outcomes, folds, timestamps)
+        coefficients = fit.coefficients
+        metrics = fit.metrics
+        row_coefficients = calibrator_row.get("coefficients")
+        if not isinstance(row_coefficients, Mapping):
+            raise ValueError("NBA_REPLAY_CALIBRATOR_COEFFICIENTS_INVALID")
+        replay_metrics = {
+            "brier": float(metrics.brier),
+            "log_loss": float(metrics.log_loss),
+            "ece": float(metrics.ece),
+            "calibration_bias": float(metrics.calibration_bias),
+        }
+        replay_coefficients = {"a": float(coefficients.a), "b": float(coefficients.b)}
+        matches = (
+            fit.result is not None
+            and fit.result.calibration_status == calibrator_row.get("calibration_method")
+            and len(raw) == calibrator_row.get("calibration_row_count")
+            and _matches(replay_coefficients["a"], row_coefficients.get("a"))
+            and _matches(replay_coefficients["b"], row_coefficients.get("b"))
+            and all(_matches(replay_metrics[key], calibrator_row.get(key)) for key in replay_metrics)
+        )
+        digest = hashlib.sha256()
+        for raw_probability, outcome, fold_id, timestamp in zip(raw, outcomes, folds, timestamps):
+            digest.update(
+                f"{timestamp}|{int(fold_id)}|{float(raw_probability):.17g}|{int(outcome)}\n".encode("utf-8")
+            )
+        digest.update(_sha256_json({
+            "calibration_method": fit.result.calibration_status if fit.result else None,
+            "coefficients": replay_coefficients,
+            "metrics": replay_metrics,
+            "calibration_row_count": len(raw),
+        }).encode("ascii"))
+        return {
+            "status": "PASS" if matches else "MISMATCH",
+            "matches_persisted_calibrator": bool(matches),
+            "calibration_row_count": len(raw),
+            "fold_count": len(set(int(value) for value in folds)),
+            "evaluated_fold_count": len(fit.fold_train_audit),
+            "coefficients": replay_coefficients,
+            "metrics": replay_metrics,
+            "sha256": digest.hexdigest(),
+        }
+    except Exception as exc:  # noqa: BLE001 - preserve calibration replay failure, never fall back
+        return {
+            "status": "FAILED",
+            "matches_persisted_calibrator": False,
+            "error_type": type(exc).__name__,
+        }
+
 def _read_failure(stage: str, exc: Exception) -> dict[str, Any]:
     return {
         "sport": SPORT,
@@ -683,14 +741,11 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         and stored_holdout_evidence.get("publication_authorized") is False
         and stored_holdout_evidence.get("can_execute") is False
     )
-    calibrator_fit_replay_status = "NOT_REPRODUCIBLE_RAW_WALK_FORWARD_PREDICTIONS_NOT_PERSISTED"
+    calibrator_fit_replay_status = "NOT_RUN"
+    calibrator_fit_replay_sha256 = None
+    calibrator_fit_replay_metrics: dict[str, Any] | None = None
     calibrator_fit_evidence_ready = False
-    calibrator_ready = bool(
-        calibrator_identity_valid
-        and calibrator_checksum_persisted
-        and calibrator_fit_cohort_metadata_valid
-        and calibrator_fit_evidence_ready
-    )
+    calibrator_ready = False
 
     try:
         games = _read_all(db, TRAINING_TABLE, TRAINING_FIELDS, settled_only=True)
@@ -727,6 +782,17 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         if not split_valid:
             blockers.append("CANDIDATE_PARTITION_METRICS_MISMATCH")
         elif calibrator_identity_valid:
+            calibrator_fit_replay = _replay_calibrator_fit(training_rows, calibrator_row)
+            calibrator_fit_replay_status = str(calibrator_fit_replay.get("status") or "FAILED")
+            calibrator_fit_replay_sha256 = calibrator_fit_replay.get("sha256")
+            calibrator_fit_replay_metrics = calibrator_fit_replay.get("metrics")
+            calibrator_fit_evidence_ready = calibrator_fit_replay_status == "PASS"
+            calibrator_ready = bool(
+                calibrator_identity_valid
+                and calibrator_checksum_persisted
+                and calibrator_fit_cohort_metadata_valid
+                and calibrator_fit_evidence_ready
+            )
             try:
                 outcomes = [row.outcome for row in holdout_rows]
                 raw_probabilities = [artifact.raw_probability(row.values) for row in holdout_rows]
@@ -759,6 +825,8 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
 
     if numerical_replay_status != "PASS":
         blockers.append("CANDIDATE_PARTITION_METRICS_MISMATCH")
+    if calibrator_fit_replay_status != "PASS":
+        blockers.append("CALIBRATOR_NOT_READY")
 
     certification_binding_valid = bool(
         certification_row
@@ -784,6 +852,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "calibrator_fit_corpus_hash_persisted": False,
         "calibrator_fit_cohort_metadata_valid": calibrator_fit_cohort_metadata_valid,
         "calibrator_fit_replay_status": calibrator_fit_replay_status,
+        "calibrator_fit_replay_sha256": calibrator_fit_replay_sha256,
         "official_settlement_attestation_persisted": False,
         "event_start_timestamp_persisted": False,
     })
@@ -842,6 +911,9 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "calibrator_checksum_persisted": calibrator_checksum_persisted,
         "calibrator_fit_cohort_metadata_valid": calibrator_fit_cohort_metadata_valid,
         "calibrator_fit_replay_status": calibrator_fit_replay_status,
+        "calibrator_fit_replay_sha256": calibrator_fit_replay_sha256,
+        "calibrator_fit_replay_metrics": calibrator_fit_replay_metrics,
+        "calibrator_fit_evidence_ready": calibrator_fit_evidence_ready,
         "calibrator_ready": calibrator_ready,
         "calibration_row_count": calibrator_row.get("calibration_row_count"),
         "calibration_metrics": {
