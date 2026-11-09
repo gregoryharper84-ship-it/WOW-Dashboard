@@ -167,8 +167,22 @@ def run(manifest_path: Path, out: Path, tracking_root: Path) -> dict:
         from evidently.presets import ClassificationQuality, DataDriftPreset
     except ImportError:
         raise ResearchHold("RESEARCH_MLFLOW_OR_EVIDENTLY_NOT_INSTALLED") from None
-    if out.resolve() == manifest_path.resolve().parent or out.resolve() == tracking_root.resolve():
+    output = out.resolve()
+    tracking = tracking_root.resolve()
+    input_paths = {
+        manifest_path.resolve(),
+        (manifest_path.resolve().parent / json.loads(manifest_path.read_text())["artifact"]["path"]).resolve(),
+        (manifest_path.resolve().parent / json.loads(manifest_path.read_text())["predictions"]["path"]).resolve(),
+    }
+    if output == manifest_path.resolve().parent or output == tracking:
         raise ResearchHold("RESEARCH_OUTPUT_ROOT_INVALID")
+    if any(path == output or path.is_relative_to(output) for path in input_paths):
+        raise ResearchHold("RESEARCH_OUTPUT_OVERLAPS_INPUT")
+    if tracking.is_relative_to(output) or output.is_relative_to(tracking):
+        raise ResearchHold("RESEARCH_TRACKING_OVERLAPS_OUTPUT")
+    if output.exists():
+        if not output.is_dir() or any(output.iterdir()):
+            raise ResearchHold("RESEARCH_OUTPUT_ROOT_NOT_EMPTY")
     by_split = {split: [r for r in rows if r["split"] == split]
                 for split in ("HOLDOUT", "FORWARD")}
     summary = {split.lower(): metrics(part) for split, part in by_split.items()}
