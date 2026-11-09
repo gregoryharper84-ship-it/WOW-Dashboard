@@ -107,13 +107,22 @@ jobs:
         include:
           - name: gate-engine
             suite: gate_engine/tests
+            startup_side_effects: "0"
           - name: services
             suite: services/tests
+            startup_side_effects: "1"
           - name: application
             suite: tests
+            startup_side_effects: "0"
     defaults:
       run:
         working-directory: artifacts/flask-scoring-api
+    env:
+      # app.py starts DB-opening daemon threads at import. The services suite
+      # patches os.environ, and those threads racing that patch crashed this
+      # shard with a native psycopg2 segfault (exit 139). The manifest schema
+      # gate at import stays fail-closed; only the daemons are skipped here.
+      WOW_DISABLE_STARTUP_SIDE_EFFECTS: ${{ matrix.startup_side_effects }}
     services:
       postgres:
         image: postgres:16
