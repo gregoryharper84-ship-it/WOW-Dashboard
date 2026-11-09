@@ -141,8 +141,47 @@ PR-check reconciliation: the counts above are for this commit. The repository's
 docstring-coverage and patch-coverage bot results cannot be reproduced locally;
 new public functions carry docstrings and the new branches (provenance gap,
 provisional recheck, bounded WNBA section, incomplete section, NFL fallback and
-binding) each have a test. Database-write acceptance still requires an
-authorized ephemeral Postgres environment.
+binding) each have a test.
+
+### Durable persistence and Daily reduction (finding 6)
+
+The route computed the availability verdict and then dropped it:
+`_snapshot_payload` wrote `hydration_status="PASS"` and `blockers=[]`
+unconditionally. Every re-reader of `wow_prop_evidence_snapshots` therefore saw
+a ready row -- the SQL reader, the live self-acceptance check, and any later
+Daily reconstruction -- while the hold existed only in the HTTP response. That
+was the persistence half of the finding, and it was real.
+
+The verdict is now written to the row's `blockers` column. It is deliberately
+excluded from the evidence fingerprint so the same evidence keeps one
+`source_snapshot_id` when a later recheck clears the hold; the verdict is not
+evidence identity. `wow_prop_evidence_snapshot()` already returns
+`RUN_INVALID_ACQUISITION_INCOMPLETE` with the stored blockers whenever the
+column is non-empty, so the durable row now enforces the route's decision.
+
+Evidence, in two layers:
+
+- `v17/test_availability_snapshot_durability.py` (5 tests) drives the real
+  route: an unverified row persists `PLAYER_AVAILABILITY_UNVERIFIED`, a
+  provisional row persists `PLAYER_AVAILABILITY_RECHECK_REQUIRED`, a cleared
+  row persists `[]`, a ruled-out row writes no snapshot at all, and the Daily
+  reducer classifies the durable labels as `HELD` (both holds) and `PURGED`
+  (`PLAYER_RULED_OUT`).
+- `test_prop_snapshot_min3_postgres.py` (17 tests, 2 new) executes the actual
+  migrations against PostgreSQL 16 and proves that `role_status.availability`
+  and the blocker survive insert -> `wow_prop_evidence_snapshot()` -> re-read,
+  returning `ok=false` and `probability_publishable=false`.
+
+The database runs were against an unprivileged embedded PostgreSQL 16 built
+from the project's own migration SQL. The sandbox has no root and no usable
+Docker socket, so this is not the CI integration service; it is a real server
+executing the same SQL, and the results are reproducible only with that binary
+present. No production database was contacted.
+
+Not proven here: the Daily run-row-detail table and any specialist consumer
+that rebuilds the verdict from a snapshot are still not exercised, and no
+production replay has happened. Status therefore remains
+`PARTIALLY_REMEDIATED`.
 
 ### Phase 4 — workstream status
 
@@ -179,15 +218,12 @@ The control row proves the block is the availability fact, not a broken scorer.
 
 Run from `artifacts/wow-engine` with the project virtualenv:
 
-- Availability set (replay, gate, runtime binding, MLB/WNBA wiring, source
-  contracts, route-level availability, Daily reduction, pick-request runtime):
-  **106 passed**.
-- Whole prop + WNBA surface (`test_*prop*.py`, `test_*wnba*.py` in root, `v17/`,
-  `tests/`, plus the source-contract and route suites): **880 passed, 15
-  skipped**. All 15 skips are `test_prop_snapshot_min3_postgres.py`, which
-  requires an ephemeral Postgres integration service that is not provisioned
-  here; they are database-write acceptance cases, not availability or
-  terminal-publication gates.
+- Availability, route and snapshot-durability suites in a focused run:
+  **51 passed**.
+- Prop + WNBA + snapshot surface, source contracts, pick-request and schema
+  suites with the ephemeral Postgres enabled: **1103 passed, 0 skipped**.
+  Without a database the same set is **880 passed, 15 skipped**; the 15 are the
+  `test_prop_snapshot_min3_postgres.py` acceptance cases.
 - Action/editor schema compatibility: **33 passed**
   (`test_pick_request_action_contract.py`, `tests/test_v17_live_editor_compat.py`,
   `v17/test_v17_candidate_contracts.py`).

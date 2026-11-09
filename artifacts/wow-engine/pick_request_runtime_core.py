@@ -317,7 +317,21 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
 def _snapshot_payload(
     row: PickRequestRow,
     normalized: dict[str, Any],
+    blockers: list[str] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
+    """Freeze one row's evidence and its pre-model availability verdict.
+
+    ``blockers`` is the gate verdict (availability hold or provisional recheck
+    obligation), not evidence content, so it is persisted on the row but kept
+    out of the fingerprint: the same evidence row must resolve to the same
+    ``source_snapshot_id`` when it is re-scored after a later recheck clears it.
+
+    Persisting it matters because every re-reader of
+    ``wow_prop_evidence_snapshots`` -- including
+    ``wow_prop_evidence_snapshot()`` and the live self-acceptance check -- treats
+    ``blockers=[]`` with ``hydration_status=PASS`` as ready evidence. A hold
+    that lived only in the HTTP response would be invisible after the run.
+    """
     if row.evidence is None:
         raise ValueError("EVIDENCE_MISSING_AFTER_ACQUISITION")
 
@@ -373,7 +387,7 @@ def _snapshot_payload(
         "opportunity_ledger": row.evidence.opportunity_ledger,
         "source_timestamps": normalized["source_timestamps"],
         "hydration_status": "PASS",
-        "blockers": [],
+        "blockers": list(blockers or []),
         "evidence_version": str(row.evidence.evidence_version).strip(),
         "can_execute": False,
     }
@@ -1303,7 +1317,9 @@ def install_pick_request_routes(
                 premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
                 acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
 
-            snapshot_id, fingerprint, snapshot = _snapshot_payload(row, normalized)
+            snapshot_id, fingerprint, snapshot = _snapshot_payload(
+                row, normalized, premodel_blockers
+            )
             try:
                 market_api.prod.get_client().table("wow_prop_evidence_snapshots").upsert(
                     snapshot,
