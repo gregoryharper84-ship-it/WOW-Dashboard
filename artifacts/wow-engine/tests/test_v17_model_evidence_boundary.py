@@ -79,6 +79,7 @@ def _req(**overrides):
 
 def _served_result(**overrides):
     row = {
+        "official_event_id": "official-event-1",
         "calibrated_probability": 0.72,
         "calibrated_lower_bound": 0.66,
         "calibrated_upper_bound": 0.78,
@@ -249,6 +250,7 @@ def _complete_sealed(sport="MLB"):
         "status": COMPLETE,
         "bundle_complete": True,
         "sport": sport,
+        "official_event_id": "official-event-1",
         "model_kind": "TEAM_EVENT",
         "model_family": "V2D_SHARED_NB_PLUS_CONTEXT_REGIMES",
         "model_artifact_version": ARTIFACT_VERSION,
@@ -454,3 +456,46 @@ def test_registered_scorer_gate_survives_a_broken_evidence_store():
     assert "MODEL_BUNDLE_ARTIFACT_READ_FAILED" in result["publication_blockers"]
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+
+def test_complete_seal_cannot_be_replayed_for_another_official_event():
+    sealed = _complete_sealed("MLB")
+    payload = _served_result(
+        sport="MLB",
+        official_event_id="official-event-2",
+        model_evidence_triad=sealed,
+    )
+    decision = evaluate_team_event_official_publication(payload)
+
+    assert decision["official_publication_allowed"] is False
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
+
+
+def test_complete_seal_cannot_be_replayed_for_another_model_version():
+    sealed = _complete_sealed("MLB")
+    payload = _served_result(
+        sport="MLB",
+        model_artifact_version="unrelated-model-v2",
+        model_evidence_triad=sealed,
+    )
+    decision = evaluate_team_event_official_publication(payload)
+
+    assert decision["official_publication_allowed"] is False
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
+
+
+def test_complete_seal_covers_blockers_and_source_audit_fields():
+    sealed = _complete_sealed("MLB")
+    for field, tampered_value in (
+        ("blockers", ["WAS_NOT_PROVEN"]),
+        ("component_sources", {"artifact": {"status": "FOUND"}}),
+        ("missing_component_fields", {"calibrator": ["missing_sha"]}),
+    ):
+        edited = dict(sealed)
+        edited[field] = tampered_value
+        decision = evaluate_team_event_official_publication(
+            _served_result(sport="MLB", model_evidence_triad=edited)
+        )
+        assert decision["official_publication_allowed"] is False
+        assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
