@@ -822,6 +822,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
                 numerical_replay_status = "FAILED"
         else:
             numerical_replay_status = "CALIBRATOR_IDENTITY_INVALID"
+            calibrator_fit_replay_status = "CALIBRATOR_IDENTITY_INVALID"
 
     if numerical_replay_status != "PASS":
         blockers.append("CANDIDATE_PARTITION_METRICS_MISMATCH")
@@ -886,6 +887,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "artifact_checksum": artifact_row.get("artifact_checksum"),
         "calibrator_id": calibrator_row.get("calibrator_id"),
         "calibrator_version": calibrator_row.get("calibrator_version"),
+        "calibrator_fit_replay_sha256": calibrator_fit_replay_sha256,
         "observed_corpus_manifest_sha256": corpus_summary.get("observed_corpus_manifest_sha256"),
         "numerical_replay_status": numerical_replay_status,
         "raw_metrics": raw_metrics,
