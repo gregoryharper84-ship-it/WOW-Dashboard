@@ -146,8 +146,7 @@ def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatc
     # The fixture is a canonical two-row test: an independently scheduled
     # cross-sport provider scan is not a third synthetic candidate.
     monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
-    triad = _sealed_team_event_triad(monkeypatch)
-    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result(triad=triad))
+    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
     # full governed suite is collected in one interpreter.
@@ -235,9 +234,8 @@ def test_props_publishable_without_rank_is_held():
 
 def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     seen={}
-    triad = _sealed_team_event_triad(monkeypatch)
     def score(*_args,**kwargs):
-        seen.update(kwargs); return governed_team_result(triad=triad)
+        seen.update(kwargs); return governed_team_result()
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",score)
     # FULL response preserves the inline terminal evidence; the default
     # compact transport moves it to durable row-detail storage instead.
@@ -249,6 +247,28 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in (
         result["rows"][0]["result"]["official_publication_guard"]["blockers"]
     )
+
+
+def test_a_boundary_sealed_triad_permits_one_completed_moneyline_row(monkeypatch):
+    # Mirror of the hold above: when the served event and fitted version really
+    # do have a boundary-sealed triad, the same payload must complete instead of
+    # being held by an unconditionally closed gate.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    triad = _sealed_team_event_triad(monkeypatch)
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: governed_team_result(triad=triad),
+    )
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"],response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
+    row = result["rows"][0]
+    assert row["row_status"] == "COMPLETED"
+    assert row["result"]["official_publication_guard"]["status"] == "PASS"
+    assert row["result"]["official_publication_guard"]["blockers"] == []
+    assert row["probability_publishable"] is True
+    assert row["can_execute"] is False
+    assert result["reconciliation"]["rows_completed"] == 1
+    assert result["reconciliation"]["rows_held"] == 0
+    assert result["reconciliation"]["balanced"] is True
 
 
 def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
