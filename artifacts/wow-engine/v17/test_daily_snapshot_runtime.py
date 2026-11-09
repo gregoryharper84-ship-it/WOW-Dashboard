@@ -168,11 +168,18 @@ def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatc
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert result["run_status"]=="COMPLETED"
     assert len(result["rows"])==2
+    # The mocked legacy scorer has no event/model-bound triad receipt. It
+    # must not become a COMPLETED row merely from FINAL_APPROVED booleans.
     assert result["reconciliation"] == {
-        "rows_in":2,"rows_completed":1,"rows_held":1,"rows_rejected":0,
+        "rows_in":2,"rows_completed":0,"rows_held":2,"rows_rejected":0,
         "rows_purged":0,"rows_invalid":0,"rows_unclassified":0,"balanced":True,
     }
-    assert result["rows"][1]["result"]["official_publication_guard"]["status"]=="PASS"
+    moneyline = result["rows"][1]
+    assert moneyline["row_status"] == "HELD"
+    assert moneyline["result"]["official_publication_guard"]["status"] == "HELD"
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in (
+        moneyline["result"]["official_publication_guard"]["blockers"]
+    )
 
 
 def test_moneyline_normal_hold_is_not_completed(monkeypatch):
@@ -232,9 +239,16 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     def score(*_args,**kwargs):
         seen.update(kwargs); return governed_team_result(triad=triad)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",score)
-    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
+    # FULL response preserves the inline terminal evidence; the default
+    # compact transport moves it to durable row-detail storage instead.
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"],response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert seen["canonical_hydration_required"] is True
-    assert result["rows"][0]["row_status"]=="COMPLETED"
+    # Server-owned hydration is still required, but hydration alone cannot
+    # substitute for fitted artifact, calibrator and pregame-corpus receipts.
+    assert result["rows"][0]["row_status"] == "HELD"
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in (
+        result["rows"][0]["result"]["official_publication_guard"]["blockers"]
+    )
 
 
 def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
