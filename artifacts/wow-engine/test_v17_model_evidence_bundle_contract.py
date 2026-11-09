@@ -51,6 +51,7 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         station_id="station-1" if kind == "WEATHER_CONTRACT" else None,
     )
     identity = {
+        "model_kind": kind,
         "sport": sport,
         "market_family": market_family,
         "model_family": scope.model_family,
@@ -62,7 +63,7 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         "artifact_id": "artifact-123",
         "artifact_checksum": ARTIFACT_SHA,
         "training_dataset_hash": CORPUS_SHA,
-        "training_code_sha": "0123456789abcdef",
+        "training_code_sha": "f" * 40,
         "payload_checksum_verified": True,
         "training_provenance_verified": True,
         "training_rows": 5000,
@@ -175,6 +176,8 @@ def test_missing_component_is_its_own_blocker(missing, typed):
 
 
 @pytest.mark.parametrize("component,field,value", [
+    ("artifact", "model_kind", "PLAYER_PROP"),
+    ("artifact", "training_code_sha", "abc123"),
     ("artifact", "sport", "NFL"),
     ("artifact", "model_family", "OTHER_FAMILY"),
     ("artifact", "model_artifact_version", "OTHER_ARTIFACT"),
@@ -183,6 +186,7 @@ def test_missing_component_is_its_own_blocker(missing, typed):
     ("artifact", "training_dataset_hash", None),
     ("artifact", "payload_checksum_verified", False),
     ("artifact", "training_provenance_verified", False),
+    ("calibrator", "model_kind", "WEATHER_CONTRACT"),
     ("calibrator", "sport", "WNBA"),
     ("calibrator", "model_artifact_version", "OTHER_ARTIFACT"),
     ("calibrator", "model_artifact_checksum", "f"*64),
@@ -192,6 +196,7 @@ def test_missing_component_is_its_own_blocker(missing, typed):
     ("calibrator", "holdout_overlap_rows", 1),
     ("calibrator", "calibration_fit_end", "2026-11-13T00:00:00+00:00"),
     ("calibrator", "brier", float("nan")),
+    ("pregame_corpus", "model_kind", "PLAYER_PROP"),
     ("pregame_corpus", "sport", "NFL"),
     ("pregame_corpus", "model_artifact_version", "OTHER_ARTIFACT"),
     ("pregame_corpus", "model_artifact_checksum", "f"*64),
