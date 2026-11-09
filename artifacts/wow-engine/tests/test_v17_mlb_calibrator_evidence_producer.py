@@ -1,11 +1,11 @@
 """Governed MLB calibrator evidence producer.
 
-These tests fit the real ratified Phase B calibrator on synthetic settled rows
-and assert the persisted evidence row carries its own proofs: pregame forecast
-provenance, an identity-bound calibrator checksum, the fitted coefficients and
-their digest, and honest holdout metrics scored against the uncalibrated
-incumbent. No governed row is certified, no verification flag is written and no
-probability is published.
+These tests fit the real ratified Phase B calibrator through the governed receipt
+join and assert the persisted evidence row carries its own proofs: provenance
+re-read from receipts rather than supplied, an identity-bound calibrator
+checksum, the fitted coefficients and their digest, and honest holdout metrics
+scored against the uncalibrated incumbent. No governed row is certified, no
+verification flag is written and no probability is published.
 """
 from __future__ import annotations
 
@@ -86,39 +86,88 @@ def _artifact(**overrides):
     return row
 
 
-def _rows(*, days=30, per_day=40, seed=11):
-    """Settled observations with real pregame provenance.
+def _fixture(*, days=30, per_day=40, seed=11):
+    """Observations as identities only, plus the governed receipts behind them.
 
-    Each forecast is frozen an hour before its official start and settles the
-    same evening, so the row satisfies ``prediction_at < event_start <= settled``.
+    Each forecast receipt is frozen an hour before its official start and each
+    settlement receipt lands the same evening, so the joined row satisfies
+    ``prediction_at < event_start <= settled_at``.
     """
     rng = random.Random(seed)
-    rows = []
+    observations: list[dict[str, str]] = []
+    predictions: dict[str, dict] = {}
+    settlements: dict[str, dict] = {}
     for day in range(days):
         settled = LAST_SETTLEMENT - timedelta(days=days - 1 - day)
         start = settled.replace(hour=19, minute=0, second=0)
         for index in range(per_day):
+            event_id = f"MLB:{day}-{index}"
+            prediction_id = f"pred-{day}-{index}"
+            settlement_id = f"grade-{day}-{index}"
             raw = rng.uniform(0.25, 0.75)
-            rows.append(
+            observations.append(
                 {
-                    "event_id": f"MLB:{day}-{index}",
-                    "raw_probability": raw,
-                    "outcome": 1 if rng.random() < raw else 0,
-                    "prediction_at": (start - timedelta(hours=1)).isoformat(),
-                    "event_start_time": start.isoformat(),
-                    "settled_at": settled.isoformat(),
-                    "model_artifact_checksum": ARTIFACT_SHA,
+                    "event_id": event_id,
+                    "prediction_receipt_id": prediction_id,
+                    "settlement_receipt_id": settlement_id,
                 }
             )
-    return rows
+            predictions[prediction_id] = {
+                "official_event_id": event_id,
+                "raw_home_probability": raw,
+                "model_timestamp": (start - timedelta(hours=1)).isoformat(),
+                "event_start_time": start.isoformat(),
+                "model_artifact_checksum": ARTIFACT_SHA,
+            }
+            settlements[settlement_id] = {
+                "official_event_id": event_id,
+                "outcome": 1 if rng.random() < raw else 0,
+                "outcome_timestamp": settled.isoformat(),
+            }
+    return observations, predictions, settlements
 
 
-def _produce(db, rows, **overrides):
+def _resolver(predictions, settlements):
+    """Stand-in for the governed join: values come from receipts, never rows."""
+
+    def resolve(observation):
+        event_id = observation.get("event_id")
+        prediction = predictions.get(observation.get("prediction_receipt_id"))
+        settlement = settlements.get(observation.get("settlement_receipt_id"))
+        if prediction is None:
+            return None, (f"PREDICTION_RECEIPT_NOT_FOUND:{event_id}",)
+        if settlement is None:
+            return None, (f"SETTLEMENT_RECEIPT_NOT_FOUND:{event_id}",)
+        if prediction.get("official_event_id") != event_id:
+            return None, (f"PREDICTION_EVENT_MISMATCH:{event_id}",)
+        if settlement.get("official_event_id") != event_id:
+            return None, (f"SETTLEMENT_EVENT_MISMATCH:{event_id}",)
+        return (
+            {
+                "event_id": event_id,
+                "raw_probability": prediction["raw_home_probability"],
+                "prediction_at": prediction["model_timestamp"],
+                "event_start_time": prediction["event_start_time"],
+                "settled_at": settlement["outcome_timestamp"],
+                "outcome": settlement["outcome"],
+                "model_artifact_checksum": prediction.get(
+                    "model_artifact_checksum", ARTIFACT_SHA
+                ),
+            },
+            (),
+        )
+
+    return resolve
+
+
+def _produce(db, fixture, **overrides):
+    observations, predictions, settlements = fixture
     kwargs = {
         "artifact": _artifact(),
-        "settled_rows": rows,
+        "settled_rows": observations,
         "calibrator_id": "cal-mlb-1",
         "now": NOW,
+        "resolve": _resolver(predictions, settlements),
     }
     kwargs.update(overrides)
     return producer.produce_calibrator_evidence(db, **kwargs)
@@ -127,7 +176,7 @@ def _produce(db, rows, **overrides):
 def test_producer_fits_and_persists_one_exact_version_row():
     db = _Db()
 
-    receipt = _produce(db, _rows())
+    receipt = _produce(db, _fixture())
 
     assert receipt["status"] == producer.PERSISTED
     stored = db.tables[producer.TABLE]
@@ -140,9 +189,13 @@ def test_producer_fits_and_persists_one_exact_version_row():
     assert row["feature_schema_version"] == "MLB_EVENT_FEATURES_V1"
     assert row["model_artifact_checksum"] == ARTIFACT_SHA
     assert row["calibration_method"] == "PLATT_TIME_SPLIT_V1"
-    assert row["bounds_method_version"] == "PREDICTIVE_BOUNDS_V1"
+    # A holdout diagnostic, never a claim to the certified bounds method.
+    assert row["bounds_method_version"] == producer.HOLDOUT_BOUNDS_METHOD
+    assert row["bounds_method_version"] != "PREDICTIVE_BOUNDS_V1"
+    assert producer.BOUNDS_BOOTSTRAP_REALIZATIONS == 2000
     assert row["calibration_training_n"] == 880
     assert row["holdout_n"] == 320
+    assert row["holdout_n"] >= producer.HOLDOUT_MIN_N
     assert row["holdout_overlap_rows"] == 0
     assert 0.0 <= row["brier"] <= 1.0
     assert row["log_loss"] >= 0.0
@@ -154,7 +207,6 @@ def test_producer_fits_and_persists_one_exact_version_row():
         "holdout_evidence_sha256",
     ):
         assert len(row[field]) == 64
-    # The fitted numbers are persisted, not just summarized.
     coefficients = row["calibration_coefficients"]
     assert set(coefficients) == {"a", "b"}
     assert row["calibration_coefficients_sha256"] == canonical_sha256(coefficients)
@@ -163,7 +215,6 @@ def test_producer_fits_and_persists_one_exact_version_row():
         row["holdout_evidence_sha256"],
         row["calibration_coefficients_sha256"],
     }
-    # Holdout is scored against the uncalibrated incumbent on identical rows.
     assert 0.0 <= row["holdout_incumbent_brier"] <= 1.0
     assert row["holdout_brier_delta"] == row["brier"] - row["holdout_incumbent_brier"]
     assert row["holdout_log_loss_delta"] == (
@@ -171,13 +222,8 @@ def test_producer_fits_and_persists_one_exact_version_row():
     )
     assert isinstance(row["holdout_calibrated_worse_n"], int)
     assert 0 <= row["holdout_calibrated_worse_n"] <= row["holdout_n"]
-    # Declared floor sits under the declared ceiling.
-    assert (
-        row["holdout_bounds_lower_mean"]
-        <= row["holdout_bounds_upper_mean"]
-    )
+    assert row["holdout_bounds_lower_mean"] <= row["holdout_bounds_upper_mean"]
     assert -1.0 <= row["holdout_lower_bound_reliability_margin"] <= 1.0
-    # Independent-verification bindings belong to the CERTIFIED receipt only.
     assert "chronological_replay_verified" not in row
     assert "calibrated_lower_bound_verified" not in row
     assert receipt["probability_written"] is False
@@ -186,8 +232,12 @@ def test_producer_fits_and_persists_one_exact_version_row():
 
 
 def test_the_holdout_is_strictly_later_than_the_fit_cohort():
+    observations, predictions, settlements = _fixture()
     normalized, blockers = producer.normalize_settled_rows(
-        _rows(), decision_at=DECISION_AT, artifact_checksum=ARTIFACT_SHA
+        observations,
+        decision_at=DECISION_AT,
+        artifact_checksum=ARTIFACT_SHA,
+        resolve=_resolver(predictions, settlements),
     )
     assert blockers == ()
     fit, holdout = producer.partition_settled_rows(normalized)
@@ -199,11 +249,124 @@ def test_the_holdout_is_strictly_later_than_the_fit_cohort():
     assert not {row["event_id"] for row in fit} & {row["event_id"] for row in holdout}
 
 
+def test_an_observation_without_resolvable_receipts_is_refused():
+    # No resolver at all: provenance cannot even be attempted.
+    row, blockers = producer.build_calibrator_row(
+        artifact=_artifact(),
+        settled_rows=[
+            {
+                "event_id": "MLB:0-0",
+                "prediction_receipt_id": "pred-0-0",
+                "settlement_receipt_id": "grade-0-0",
+            }
+        ],
+        calibrator_id="cal-mlb-1",
+        now=NOW,
+        resolve=None,
+    )
+    assert row is None
+    assert blockers == ("MLB_CALIBRATOR_EVIDENCE_PROVENANCE_UNVERIFIABLE",)
+
+    # A store that holds no prelock receipt for the event refuses by name.
+    db = _Db()
+    observations, _, _ = _fixture(days=1, per_day=1)
+    receipt = producer.produce_calibrator_evidence(
+        db,
+        artifact=_artifact(),
+        settled_rows=observations,
+        calibrator_id="cal-mlb-1",
+        now=NOW,
+    )
+    assert receipt["status"] == producer.REFUSED
+    assert any(
+        "PRELOCK_RECEIPT_MISSING" in item for item in receipt["blockers"]
+    ), receipt["blockers"]
+    assert db.tables[producer.TABLE] == []
+
+
+def test_a_receipt_whose_forecast_was_written_at_first_pitch_is_refused():
+    db = _Db()
+    observations, predictions, settlements = _fixture()
+    first = predictions[observations[0]["prediction_receipt_id"]]
+    first["model_timestamp"] = first["event_start_time"]
+
+    receipt = _produce(db, (observations, predictions, settlements))
+
+    assert receipt["status"] == producer.REFUSED
+    assert any("FORECAST_NOT_PREGAME" in item for item in receipt["blockers"])
+    assert db.tables[producer.TABLE] == []
+
+
+def test_a_supplied_value_that_contradicts_its_receipt_is_refused():
+    db = _Db()
+    observations, predictions, settlements = _fixture()
+    observations[0] = {**observations[0], "raw_probability": 0.99}
+
+    receipt = _produce(db, (observations, predictions, settlements))
+
+    assert receipt["status"] == producer.REFUSED
+    assert any(
+        "RECEIPT_DISAGREES:raw_probability" in item for item in receipt["blockers"]
+    ), receipt["blockers"]
+
+
+def test_a_receipt_from_another_artifact_is_refused():
+    db = _Db()
+    observations, predictions, settlements = _fixture()
+    predictions[observations[0]["prediction_receipt_id"]][
+        "model_artifact_checksum"
+    ] = "b" * 64
+
+    receipt = _produce(db, (observations, predictions, settlements))
+
+    assert receipt["status"] == producer.REFUSED
+    assert any("ARTIFACT_PROVENANCE_MISMATCH" in item for item in receipt["blockers"])
+    assert db.tables[producer.TABLE] == []
+
+
+def test_a_settlement_before_first_pitch_is_refused():
+    db = _Db()
+    observations, predictions, settlements = _fixture()
+    prediction = predictions[observations[0]["prediction_receipt_id"]]
+    start = datetime.fromisoformat(prediction["event_start_time"])
+    settlements[observations[0]["settlement_receipt_id"]][
+        "outcome_timestamp"
+    ] = (start - timedelta(hours=2)).isoformat()
+
+    receipt = _produce(db, (observations, predictions, settlements))
+
+    assert receipt["status"] == producer.REFUSED
+    assert any("SETTLED_BEFORE_START" in item for item in receipt["blockers"])
+
+
+def test_an_empty_cohort_is_a_typed_refusal_not_a_crash():
+    db = _Db()
+
+    receipt = _produce(db, ([], {}, {}))
+
+    assert receipt["status"] == producer.REFUSED
+    assert receipt["blockers"] == ["MLB_CALIBRATOR_EVIDENCE_COHORT_EMPTY"]
+    assert db.tables[producer.TABLE] == []
+    assert producer.partition_settled_rows([]) == ([], [])
+
+
+def test_a_holdout_below_the_fixed_floor_is_refused():
+    db = _Db()
+    fixture = _fixture(days=22, per_day=33)  # holdout = 6 days x 33 = 198
+    _, predictions, settlements = fixture
+
+    receipt = _produce(db, fixture)
+
+    assert receipt["status"] == producer.REFUSED
+    assert any("HOLDOUT_INSUFFICIENT" in item for item in receipt["blockers"])
+    assert db.tables[producer.TABLE] == []
+
+
 def test_replay_is_idempotent():
     db = _Db()
 
-    assert _produce(db, _rows())["status"] == producer.PERSISTED
-    second = _produce(db, _rows())
+    assert _produce(db, _fixture())["status"] == producer.PERSISTED
+    second = _produce(db, _fixture())
 
     assert second["status"] == producer.ALREADY_CURRENT
     assert len(db.tables[producer.TABLE]) == 1
@@ -212,17 +375,14 @@ def test_replay_is_idempotent():
 def test_replay_under_the_same_id_with_different_coefficients_is_a_conflict():
     db = _Db()
 
-    first = _produce(db, _rows(seed=11))
-    second = _produce(db, _rows(seed=12))
+    first = _produce(db, _fixture(seed=11))
+    second = _produce(db, _fixture(seed=12))
 
     assert first["status"] == producer.PERSISTED
     assert second["status"] == producer.REFUSED
-    assert any(
-        "IDENTITY_CONFLICT" in blocker for blocker in second["blockers"]
-    ), second["blockers"]
+    assert any("IDENTITY_CONFLICT" in item for item in second["blockers"])
     stored = db.tables[producer.TABLE]
     assert len(stored) == 1
-    # The original binding is never overwritten by the refit.
     assert stored[0]["calibrator_checksum"] == first["calibrator_checksum"]
 
 
@@ -230,8 +390,8 @@ def test_the_checksum_binds_calibrator_id_and_artifact_identity():
     by_id = _Db()
     other_id = _Db()
 
-    _produce(by_id, _rows(), calibrator_id="cal-mlb-1")
-    _produce(other_id, _rows(), calibrator_id="cal-mlb-2")
+    _produce(by_id, _fixture(), calibrator_id="cal-mlb-1")
+    _produce(other_id, _fixture(), calibrator_id="cal-mlb-2")
 
     assert (
         by_id.tables[producer.TABLE][0]["calibrator_checksum"]
@@ -242,8 +402,8 @@ def test_the_checksum_binds_calibrator_id_and_artifact_identity():
 def test_two_different_cohorts_produce_different_calibrator_checksums():
     first, second = _Db(), _Db()
 
-    _produce(first, _rows(seed=11))
-    _produce(second, _rows(seed=12))
+    _produce(first, _fixture(seed=11))
+    _produce(second, _fixture(seed=12))
 
     assert (
         first.tables[producer.TABLE][0]["calibrator_checksum"]
@@ -251,111 +411,65 @@ def test_two_different_cohorts_produce_different_calibrator_checksums():
     )
 
 
-def test_a_forecast_written_at_first_pitch_is_refused():
-    rows = _rows()
-    rows[0] = {**rows[0], "prediction_at": rows[0]["event_start_time"]}
+def test_a_duplicate_settled_identity_is_a_conflict():
     db = _Db()
+    observations, predictions, settlements = _fixture()
 
-    receipt = _produce(db, rows)
+    receipt = _produce(
+        db, ([*observations, dict(observations[0])], predictions, settlements)
+    )
 
     assert receipt["status"] == producer.REFUSED
-    assert any("FORECAST_NOT_PREGAME" in item for item in receipt["blockers"])
-    assert db.tables[producer.TABLE] == []
+    assert any("DUPLICATE_SETTLED_ROW" in item for item in receipt["blockers"])
 
 
-def test_a_row_without_a_forecast_timestamp_is_refused():
-    rows = _rows()
-    rows[0].pop("prediction_at")
+def test_an_unsettled_observation_is_refused():
     db = _Db()
+    observations, predictions, settlements = _fixture()
+    settlements[observations[-1]["settlement_receipt_id"]][
+        "outcome_timestamp"
+    ] = "2026-11-10T00:00:00+00:00"
 
-    receipt = _produce(db, rows)
+    receipt = _produce(db, (observations, predictions, settlements))
 
     assert receipt["status"] == producer.REFUSED
-    assert any("FORECAST_TIMESTAMP_MISSING" in item for item in receipt["blockers"])
+    assert any("NOT_SETTLED_AT_DECISION" in item for item in receipt["blockers"])
 
 
-def test_a_forecast_from_another_artifact_is_refused():
-    rows = _rows()
-    rows[0] = {**rows[0], "model_artifact_checksum": "b" * 64}
+def test_an_invalid_receipted_probability_or_outcome_is_refused():
     db = _Db()
+    observations, predictions, settlements = _fixture()
+    predictions[observations[0]["prediction_receipt_id"]]["raw_home_probability"] = 0.0
+    settlements[observations[1]["settlement_receipt_id"]]["outcome"] = 2
 
-    receipt = _produce(db, rows)
+    receipt = _produce(db, (observations, predictions, settlements))
 
     assert receipt["status"] == producer.REFUSED
-    assert any("ARTIFACT_PROVENANCE_MISMATCH" in item for item in receipt["blockers"])
-    assert db.tables[producer.TABLE] == []
+    joined = " ".join(receipt["blockers"])
+    assert "RAW_PROBABILITY_INVALID" in joined
+    assert "OUTCOME_INVALID" in joined
 
 
-def test_settlement_before_first_pitch_is_refused():
-    rows = _rows()
-    start = datetime.fromisoformat(rows[0]["event_start_time"])
-    rows[0] = {**rows[0], "settled_at": (start - timedelta(hours=2)).isoformat()}
+def test_an_insufficient_fit_cohort_is_refused():
     db = _Db()
 
-    receipt = _produce(db, rows)
-
-    assert receipt["status"] == producer.REFUSED
-    assert any("SETTLED_BEFORE_START" in item for item in receipt["blockers"])
-
-
-def test_insufficient_fit_cohort_is_refused():
-    db = _Db()
-
-    receipt = _produce(db, _rows(days=5, per_day=30))
+    receipt = _produce(db, _fixture(days=5, per_day=30))
 
     assert receipt["status"] == producer.REFUSED
     assert any("FIT_COHORT_INSUFFICIENT" in item for item in receipt["blockers"])
-    assert db.tables[producer.TABLE] == []
     assert db.writes == []
 
 
 def test_a_fit_failure_is_typed_and_never_papered_over():
     db = _Db()
 
-    receipt = _produce(db, _rows(days=5, per_day=50))
+    # 6 days -> 4 fit days (4 folds, under the ratified minimum of 6) and a
+    # 200-row holdout, so the fitter itself is what refuses.
+    receipt = _produce(db, _fixture(days=6, per_day=100))
 
     assert receipt["status"] == producer.REFUSED
     assert any("FIT_FAILED" in item for item in receipt["blockers"])
     assert db.tables[producer.TABLE] == []
-
-
-def test_duplicate_settled_identity_is_a_conflict():
-    rows = _rows()
-    db = _Db()
-
-    receipt = _produce(db, [*rows, dict(rows[0])])
-
-    assert receipt["status"] == producer.REFUSED
-    assert any("DUPLICATE_SETTLED_ROW" in item for item in receipt["blockers"])
-    assert db.tables[producer.TABLE] == []
-
-
-def test_an_unsettled_observation_is_refused():
-    rows = _rows()
-    rows[-1] = {
-        **rows[-1],
-        "settled_at": "2026-11-10T00:00:00+00:00",
-    }
-    db = _Db()
-
-    receipt = _produce(db, rows)
-
-    assert receipt["status"] == producer.REFUSED
-    assert any("NOT_SETTLED_AT_DECISION" in item for item in receipt["blockers"])
-
-
-def test_invalid_probability_or_outcome_is_refused():
-    rows = _rows()
-    rows[0] = {**rows[0], "raw_probability": 0.0}
-    rows[1] = {**rows[1], "outcome": 2}
-    db = _Db()
-
-    receipt = _produce(db, rows)
-
-    assert receipt["status"] == producer.REFUSED
-    joined = " ".join(receipt["blockers"])
-    assert "RAW_PROBABILITY_INVALID" in joined
-    assert "OUTCOME_INVALID" in joined
 
 
 def test_a_holdout_the_calibration_worsens_is_refused():
@@ -373,7 +487,7 @@ def test_a_holdout_the_calibration_worsens_is_refused():
 def test_an_uncertified_artifact_is_not_evidence_authority():
     db = _Db()
 
-    receipt = _produce(db, _rows(), artifact=_artifact(lifecycle_state="CANDIDATE"))
+    receipt = _produce(db, _fixture(), artifact=_artifact(lifecycle_state="CANDIDATE"))
 
     assert receipt["status"] == producer.REFUSED
     assert any("ARTIFACT_NOT_CERTIFIED" in item for item in receipt["blockers"])
@@ -381,12 +495,15 @@ def test_an_uncertified_artifact_is_not_evidence_authority():
 
 
 def test_a_missing_database_is_a_typed_refusal():
+    observations, predictions, settlements = _fixture()
+
     receipt = producer.produce_calibrator_evidence(
         None,
         artifact=_artifact(),
-        settled_rows=_rows(),
+        settled_rows=observations,
         calibrator_id="cal-mlb-1",
         now=NOW,
+        resolve=_resolver(predictions, settlements),
     )
 
     assert receipt["status"] == producer.REFUSED

@@ -14,22 +14,31 @@ market prices, and cannot make a probability publishable.
 
 Governed properties:
 
-* **pregame provenance is required, not assumed.** Every settled observation
-  must carry the immutable forecast timestamp and the official event start it
-  belongs to, and the forecast must have been created strictly before first
-  pitch. Chronological settlement alone proves nothing: a forecast written
-  after the fact settles on time while being hindsight, so such a row is
-  refused instead of silently entering the cohort;
-* **the observation must come from the served artifact.** Each row names the
-  artifact checksum whose forecast it is; a row from any other artifact is
-  refused rather than pooled into this calibrator's cohort;
+* **provenance is joined, not supplied.** An observation is only an identity
+  (``event_id``, ``prediction_receipt_id``, ``settlement_receipt_id``). The
+  probability, forecast timestamp, official start, settlement timestamp,
+  outcome and artifact binding are re-read from the governed receipts: the
+  prelock row that froze the event's start and artifact checksum, the
+  specialist prediction receipt that froze the model probability and its
+  timestamp, and the official settlement receipt. A caller that also passes a
+  timestamp or probability is checked against the receipt and refused on
+  disagreement, so no input field can assert its own provenance;
+* **pregame provenance is required.** The receipt's forecast timestamp must be
+  strictly before the official start it belongs to, and the settlement must not
+  precede that start. Chronological settlement alone proves nothing: a forecast
+  written after the fact settles on time while being hindsight, so such a row
+  is refused instead of entering the cohort;
+* **the observation must come from the served artifact.** The prelock receipt
+  must carry the served artifact checksum and the prediction receipt the served
+  model version; anything else is refused rather than pooled in;
 * the split is fixed by this contract, not by a caller: the last quarter of the
   distinct settlement days is the holdout and the earlier days are the fit
   cohort. There is no knob to move the split until a fit passes;
 * the fit reuses the ratified Phase B walk-forward implementation, which
   verifies its own fold chronology from the settlement timestamps;
-* duplicate settled identities are a conflict, so a row can never be counted
-  twice or appear in both cohorts;
+* duplicate settled identities are a conflict, and an empty cohort, an empty
+  holdout or a holdout below the fixed minimum is a typed refusal rather than a
+  crash or a thin, unrepresentative metric;
 * ``calibrator_checksum`` binds the exact identity (calibrator id, artifact
   family/version/schema and artifact checksum), the coefficients and both
   cohort digests — so a checksum can never be reused for a different artifact,
@@ -41,10 +50,14 @@ Governed properties:
 * the holdout is scored against the **incumbent** (the uncalibrated
   probabilities) on the identical rows, with Brier, log loss, bias, per-row
   counterexamples and a lower-bound reliability margin. A calibration that
-  materially worsens the holdout, or whose declared lower bound is optimistic
-  beyond tolerance, is refused instead of dressed up as improvement;
-* only rows already settled at decision time are eligible; a future settlement
-  timestamp is refused rather than back-dated;
+  materially worsens the holdout, or whose declared floor is optimistic beyond
+  tolerance, is refused instead of dressed up as improvement;
+* the bounds recorded here are a **holdout diagnostic**
+  (``HOLDOUT_COEFFICIENT_BOOTSTRAP_DIAGNOSTIC_V1``), not the certified
+  ``PREDICTIVE_BOUNDS_V1`` interval: it resamples the fit cohort through the
+  ratified fitter to measure how far the coefficients move, and it is not a
+  published per-candidate interval. The row therefore never claims
+  ``PREDICTIVE_BOUNDS_V1``;
 * ``chronological_replay_verified`` and ``calibrated_lower_bound_verified`` are
   not written by this producer. They are independent-verification bindings the
   reader takes from the CERTIFIED receipt, and a producer must not attest to its
@@ -55,40 +68,54 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
 from calibration import (
+    DEFAULT_MAX_FIT_FAILURE_RATE,
+    MIN_BOUNDS_BOOTSTRAP_REALIZATIONS,
     PHASE_B_MIN_N,
-    PREDICTIVE_BOUNDS_METHOD_VERSION,
     CalibrationStatus,
     PlattCoefficients,
     phase_b_platt,
 )
 # The same ratified 1-D Platt fitter that produced these coefficients, so the
-# bound bootstrap resamples the real fitter instead of a second implementation.
+# bound diagnostic resamples the real fitter instead of a second implementation.
 from calibration import _fit_platt_1d as fit_platt_1d
 
 from v17.mlb_pregame_evidence_ingest import canonical_sha256
 
 TABLE = "wow_mlb_event_calibrator_evidence"
+PREGAME_RECEIPT_TABLE = "wow_mlb_event_pregame_feature_rows"
+PREDICTION_RECEIPT_TABLE = "wow_mlb_event_specialist_snapshots"
+SETTLEMENT_RECEIPT_TABLE = "wow_mlb_forward_shadow_grades"
+EVENT_LEDGER_TABLE = "wow_mlb_forward_shadow_events"
 SPORT = "MLB"
 CALIBRATION_METHOD = CalibrationStatus.PLATT_TIME_SPLIT_V1
-BOUNDS_METHOD_VERSION = PREDICTIVE_BOUNDS_METHOD_VERSION
+# Deliberately NOT PREDICTIVE_BOUNDS_V1: this is a holdout reliability
+# diagnostic over the fitted coefficients, not a published per-candidate
+# interval, and the evidence row must not claim the certified method.
+HOLDOUT_BOUNDS_METHOD = "HOLDOUT_COEFFICIENT_BOOTSTRAP_DIAGNOSTIC_V1"
+BOUNDS_METHOD_VERSION = HOLDOUT_BOUNDS_METHOD
 CERTIFIED_LIFECYCLES = ("PROSPECTIVE_CERTIFIED", "CHAMPION")
 # Fixed contract, not a parameter: the holdout is the final quarter of settlement
 # days. A caller-tunable split would let the same cohort be re-split until it fit.
 HOLDOUT_DAY_SHARE = 0.25
+# A holdout too small cannot demonstrate reliability; the floor matches the
+# ratified Phase B minimum rather than being tuned to whatever data arrives.
+HOLDOUT_MIN_N = PHASE_B_MIN_N
 # A holdout that calibration makes materially worse is not evidence of
 # calibration. The tolerance mirrors the ratified Phase B guard, which allows a
 # metric to drift by at most 2% before it counts as a regression.
 INCUMBENT_REGRESSION_TOLERANCE = 0.02
-# Declared 10th-percentile floor and upper 90th, matching PREDICTIVE_BOUNDS_V1.
+# Declared 10th-percentile floor and upper 90th, matching the ratified quantiles.
 BOUNDS_LOWER_QUANTILE = 0.10
 BOUNDS_UPPER_QUANTILE = 0.90
-BOUNDS_BOOTSTRAP_REALIZATIONS = 200
-BOUNDS_BOOTSTRAP_MIN_SUCCESS_SHARE = 0.80
+# Same realization floor and fit-failure tolerance as the ratified bounds method,
+# so the diagnostic is never weaker than the certified construction.
+BOUNDS_BOOTSTRAP_REALIZATIONS = MIN_BOUNDS_BOOTSTRAP_REALIZATIONS
+BOUNDS_BOOTSTRAP_MAX_FIT_FAILURE_RATE = DEFAULT_MAX_FIT_FAILURE_RATE
 # An honest lower bound may not exceed the realized holdout rate by more than
 # this much; more overconfidence than that is a failed reliability check.
 BOUNDS_RELIABILITY_TOLERANCE = 0.05
@@ -100,6 +127,8 @@ PERSISTED = "PERSISTED"
 ALREADY_CURRENT = "ALREADY_CURRENT"
 REFUSED = "REFUSED"
 WRITE_FAILED = "WRITE_FAILED"
+
+ReceiptResolver = Callable[[Mapping[str, Any]], "tuple[dict[str, Any] | None, tuple[str, ...]]"]
 
 
 def _text(value: Any) -> str:
@@ -134,6 +163,10 @@ def _sha256(value: Any) -> bool:
     return len(token) == 64 and all(ch in "0123456789abcdef" for ch in token)
 
 
+def _rows(result: Any) -> list[dict[str, Any]]:
+    return [dict(row) for row in (getattr(result, "data", None) or [])]
+
+
 def _receipt(
     status: str,
     *,
@@ -153,6 +186,7 @@ def _receipt(
         "calibration_coefficients_sha256": row.get("calibration_coefficients_sha256"),
         "calibration_cohort_sha256": row.get("calibration_cohort_sha256"),
         "holdout_evidence_sha256": row.get("holdout_evidence_sha256"),
+        "bounds_method_version": row.get("bounds_method_version"),
         "calibration_training_n": row.get("calibration_training_n"),
         "holdout_n": row.get("holdout_n"),
         "holdout_overlap_rows": row.get("holdout_overlap_rows"),
@@ -198,24 +232,174 @@ def _artifact_identity(
     return identity, ()
 
 
+def governed_receipt_resolver(
+    db: Any, *, artifact: Mapping[str, Any]
+) -> ReceiptResolver | None:
+    """Build a resolver that re-reads provenance from the governed receipts.
+
+    Nothing asserted by the observation is trusted: the prelock row supplies the
+    official start and artifact checksum, the specialist snapshot supplies the
+    frozen probability and forecast timestamp, and the official grade supplies
+    the outcome and settlement timestamp. Each receipt must also name the same
+    event, and the prediction must come from the served model version.
+    """
+    if db is None:
+        return None
+    version = _text(artifact.get("model_artifact_version"))
+    schema = _text(artifact.get("feature_schema_version"))
+    artifact_id = _text(artifact.get("artifact_id"))
+
+    def resolve(observation: Mapping[str, Any]) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+        blockers: list[str] = []
+        event_id = _text(observation.get("event_id") or observation.get("official_event_id"))
+        prediction_id = _text(observation.get("prediction_receipt_id"))
+        settlement_id = _text(observation.get("settlement_receipt_id"))
+        if not event_id:
+            return None, ("MLB_CALIBRATOR_EVIDENCE_RECEIPT_EVENT_MISSING",)
+        if not prediction_id:
+            return None, (f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_ID_MISSING:{event_id}",)
+        if not settlement_id:
+            return None, (f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_ID_MISSING:{event_id}",)
+
+        try:
+            prelock = _rows(
+                db.table(PREGAME_RECEIPT_TABLE)
+                .select("*")
+                .eq("official_event_id", event_id)
+                .eq("model_artifact_version", version)
+                .eq("feature_schema_version", schema)
+                .eq("is_current", "true")
+                .limit(2)
+                .execute()
+            )
+            snapshot = _rows(
+                db.table(PREDICTION_RECEIPT_TABLE)
+                .select("*")
+                .eq("specialist_snapshot_id", prediction_id)
+                .limit(1)
+                .execute()
+            )
+            grade = _rows(
+                db.table(SETTLEMENT_RECEIPT_TABLE)
+                .select("*")
+                .eq("grade_id", settlement_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable receipt is unproven
+            return None, (
+                f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_READ_FAILED:{type(exc).__name__}",
+            )
+
+        if len(prelock) != 1:
+            reason = "AMBIGUOUS" if prelock else "MISSING"
+            return None, (f"MLB_CALIBRATOR_EVIDENCE_PRELOCK_RECEIPT_{reason}:{event_id}",)
+        if not snapshot:
+            return None, (f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_NOT_FOUND:{event_id}",)
+        if not grade:
+            return None, (f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_NOT_FOUND:{event_id}",)
+
+        prelock_row, snapshot_row, grade_row = prelock[0], snapshot[0], grade[0]
+        if _text(snapshot_row.get("official_event_id")) != event_id:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_EVENT_MISMATCH:{event_id}")
+        if _text(snapshot_row.get("model_version")) != version:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_VERSION_MISMATCH:{event_id}")
+        if artifact_id and _text(snapshot_row.get("artifact_id")) != artifact_id:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_ARTIFACT_MISMATCH:{event_id}")
+        if not _sha256(snapshot_row.get("model_inputs_hash")):
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_INPUTS_HASH_MISSING:{event_id}")
+        if not _text(grade_row.get("settlement_source")):
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_SOURCE_MISSING:{event_id}")
+        winner = _text(grade_row.get("official_winner")).upper()
+        if winner not in ("HOME", "AWAY"):
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_OUTCOME_MISSING:{event_id}")
+
+        shadow_event_id = _text(grade_row.get("shadow_event_id"))
+        if shadow_event_id:
+            try:
+                ledger = _rows(
+                    db.table(EVENT_LEDGER_TABLE)
+                    .select("official_event_id")
+                    .eq("shadow_event_id", shadow_event_id)
+                    .limit(1)
+                    .execute()
+                )
+            except Exception as exc:  # noqa: BLE001 - unreadable ledger proves nothing
+                return None, (
+                    f"MLB_CALIBRATOR_EVIDENCE_EVENT_LEDGER_READ_FAILED:{type(exc).__name__}",
+                )
+            if ledger and _text(ledger[0].get("official_event_id")) != event_id:
+                blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_EVENT_MISMATCH:{event_id}")
+            elif not ledger:
+                blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_EVENT_UNRESOLVED:{event_id}")
+
+        if blockers:
+            return None, tuple(dict.fromkeys(blockers))
+        return (
+            {
+                "event_id": event_id,
+                "raw_probability": snapshot_row.get("raw_home_probability"),
+                "prediction_at": snapshot_row.get("model_timestamp"),
+                "event_start_time": prelock_row.get("event_start_time"),
+                "settled_at": grade_row.get("outcome_timestamp"),
+                "outcome": 1 if winner == "HOME" else 0,
+                "model_artifact_checksum": prelock_row.get("model_artifact_checksum"),
+            },
+            (),
+        )
+
+    return resolve
+
+
+def _disagreements(
+    observation: Mapping[str, Any], provenance: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Refuse a caller value that contradicts the governed receipt."""
+    blockers: list[str] = []
+    event_id = _text(provenance.get("event_id"))
+    supplied_probability = _number(observation.get("raw_probability"))
+    if supplied_probability is not None:
+        received = _number(provenance.get("raw_probability"))
+        if received is None or abs(supplied_probability - received) > 1e-9:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_DISAGREES:raw_probability:{event_id}")
+    for supplied_field, receipt_field in (
+        ("prediction_at", "prediction_at"),
+        ("event_start_time", "event_start_time"),
+        ("settled_at", "settled_at"),
+    ):
+        supplied = _when(observation.get(supplied_field))
+        if observation.get(supplied_field) in (None, ""):
+            continue
+        received = _when(provenance.get(receipt_field))
+        if supplied is None or received is None or supplied != received:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_DISAGREES:{supplied_field}:{event_id}"
+            )
+    supplied_checksum = _text(observation.get("model_artifact_checksum")).lower()
+    if supplied_checksum and supplied_checksum != _text(
+        provenance.get("model_artifact_checksum")
+    ).lower():
+        blockers.append(
+            f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_DISAGREES:model_artifact_checksum:{event_id}"
+        )
+    return tuple(dict.fromkeys(blockers))
+
+
 def normalize_settled_rows(
-    settled_rows: Iterable[Mapping[str, Any]],
+    observations: Iterable[Mapping[str, Any]],
     *,
     decision_at: datetime,
     artifact_checksum: str | None = None,
+    resolve: ReceiptResolver | None,
 ) -> tuple[list[dict[str, Any]] | None, tuple[str, ...]]:
-    """Validate and order settled observations; refuse anything unproven.
-
-    A settled row is only eligible when it names the immutable forecast that
-    produced ``raw_probability``, that forecast was created strictly before the
-    official start it belongs to, the event settled after that start, and the
-    forecast came from the artifact this calibrator is being bound to.
-    """
+    """Resolve each observation through its governed receipts; refuse anything unproven."""
+    if resolve is None:
+        return None, ("MLB_CALIBRATOR_EVIDENCE_PROVENANCE_UNVERIFIABLE",)
     blockers: list[str] = []
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     expected_artifact = _text(artifact_checksum).lower()
-    for index, raw in enumerate(settled_rows):
+    for index, raw in enumerate(observations):
         if not isinstance(raw, Mapping):
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_ROW_NOT_OBJECT:{index}")
             continue
@@ -223,16 +407,36 @@ def normalize_settled_rows(
         if not event_id:
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_ROW_IDENTITY_MISSING:{index}")
             continue
-        probability = _number(raw.get("raw_probability"))
-        outcome = raw.get("outcome")
-        settled_at = _when(raw.get("settled_at") or raw.get("timestamp"))
-        prediction_at = _when(raw.get("prediction_at") or raw.get("forecast_at"))
-        event_start = _when(raw.get("event_start_time") or raw.get("commence_time"))
-        row_artifact = _text(raw.get("model_artifact_checksum")).lower()
+        if event_id in seen:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_DUPLICATE_SETTLED_ROW:{event_id}")
+            continue
+        try:
+            provenance, receipt_blockers = resolve(raw)
+        except Exception as exc:  # noqa: BLE001 - a failing join proves nothing
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_RESOLUTION_FAILED:{event_id}:{type(exc).__name__}"
+            )
+            continue
+        if provenance is None:
+            blockers.extend(receipt_blockers or (f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_UNRESOLVED:{event_id}",))
+            continue
+        disagreements = _disagreements(raw, provenance)
+        if disagreements:
+            blockers.extend(disagreements)
+            continue
+        if _text(provenance.get("event_id")) != event_id:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_EVENT_MISMATCH:{event_id}")
+            continue
+        probability = _number(provenance.get("raw_probability"))
+        outcome = provenance.get("outcome")
+        settled_at = _when(provenance.get("settled_at"))
+        prediction_at = _when(provenance.get("prediction_at"))
+        event_start = _when(provenance.get("event_start_time"))
+        receipt_artifact = _text(provenance.get("model_artifact_checksum")).lower()
         if probability is None or not 0.0 < probability < 1.0:
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_RAW_PROBABILITY_INVALID:{event_id}")
             continue
-        if outcome is not True and outcome is not False and outcome not in (0, 1):
+        if outcome not in (0, 1) or isinstance(outcome, bool) and outcome not in (True, False):
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_OUTCOME_INVALID:{event_id}")
             continue
         if settled_at is None:
@@ -244,8 +448,6 @@ def normalize_settled_rows(
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_NOT_SETTLED_AT_DECISION:{event_id}")
             continue
         if prediction_at is None:
-            # Without the forecast timestamp there is no proof the probability
-            # predates first pitch, so the row cannot calibrate anything.
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_FORECAST_TIMESTAMP_MISSING:{event_id}")
             continue
         if event_start is None:
@@ -260,28 +462,27 @@ def normalize_settled_rows(
         if settled_at < event_start:
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLED_BEFORE_START:{event_id}")
             continue
-        if expected_artifact and row_artifact != expected_artifact:
+        if expected_artifact and receipt_artifact != expected_artifact:
             blockers.append(
                 f"MLB_CALIBRATOR_EVIDENCE_ARTIFACT_PROVENANCE_MISMATCH:{event_id}"
             )
-            continue
-        if event_id in seen:
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_DUPLICATE_SETTLED_ROW:{event_id}")
             continue
         seen.add(event_id)
         rows.append(
             {
                 "event_id": event_id,
                 "raw_probability": probability,
-                "outcome": int(bool(outcome)),
+                "outcome": int(outcome),
                 "settled_at": settled_at,
                 "prediction_at": prediction_at,
                 "event_start_time": event_start,
-                "model_artifact_checksum": row_artifact or expected_artifact,
+                "model_artifact_checksum": receipt_artifact,
             }
         )
     if blockers:
         return None, tuple(dict.fromkeys(blockers))
+    if not rows:
+        return None, ("MLB_CALIBRATOR_EVIDENCE_COHORT_EMPTY",)
     rows.sort(key=lambda row: (row["settled_at"], row["event_id"]))
     return rows, ()
 
@@ -291,6 +492,8 @@ def partition_settled_rows(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Chronological split on distinct settlement days, fixed at one quarter."""
     days = sorted({row["settled_at"].date() for row in rows})
+    if not days:
+        return [], []
     holdout_days = max(1, round(len(days) * HOLDOUT_DAY_SHARE))
     boundary: date = days[-holdout_days]
     fit = [row for row in rows if row["settled_at"].date() < boundary]
@@ -339,12 +542,13 @@ def _losses(
 def _bootstrap_bounds(
     fit: list[dict[str, Any]], holdout: list[dict[str, Any]]
 ) -> tuple[list[float] | None, list[float] | None, tuple[str, ...]]:
-    """Declared lower/upper bounds per holdout row, from the ratified fitter.
+    """Declared lower/upper floors per holdout row, from the ratified fitter.
 
     The fit cohort is resampled and refitted with the same 1-D Platt fitter used
     to produce the coefficients; the 10th/90th percentiles of those refits at
-    each holdout probability are the bounds. This resamples coefficient
-    uncertainty, not outcomes, so it cannot borrow the holdout's own answers.
+    each holdout probability are the diagnostic floors. This resamples
+    coefficient uncertainty, not outcomes, so it cannot borrow the holdout's own
+    answers, and it is labelled as a diagnostic rather than PREDICTIVE_BOUNDS_V1.
     """
     raw = np.array([row["raw_probability"] for row in fit], dtype=float)
     outcomes = np.array([row["outcome"] for row in fit], dtype=float)
@@ -360,13 +564,17 @@ def _bootstrap_bounds(
         except (ValueError, TypeError, ArithmeticError, np.linalg.LinAlgError):
             continue
         values = a + b * logit_targets
+        if not np.all(np.isfinite(values)):
+            continue
         draws.append(1.0 / (1.0 + np.exp(-values)))
+    minimum = int(
+        math.ceil(BOUNDS_BOOTSTRAP_REALIZATIONS * (1.0 - BOUNDS_BOOTSTRAP_MAX_FIT_FAILURE_RATE))
+    )
     if not draws:
         return None, None, ("MLB_CALIBRATOR_EVIDENCE_BOUNDS_BOOTSTRAP_EMPTY",)
-    if len(draws) < BOUNDS_BOOTSTRAP_REALIZATIONS * BOUNDS_BOOTSTRAP_MIN_SUCCESS_SHARE:
+    if len(draws) < minimum:
         return None, None, (
-            f"MLB_CALIBRATOR_EVIDENCE_BOUNDS_BOOTSTRAP_INSUFFICIENT:"
-            f"{len(draws)}<{int(BOUNDS_BOOTSTRAP_REALIZATIONS * BOUNDS_BOOTSTRAP_MIN_SUCCESS_SHARE)}",
+            f"MLB_CALIBRATOR_EVIDENCE_BOUNDS_BOOTSTRAP_INSUFFICIENT:{len(draws)}<{minimum}",
         )
     matrix = np.vstack(draws)
     lower = np.percentile(matrix, BOUNDS_LOWER_QUANTILE * 100, axis=0)
@@ -417,6 +625,7 @@ def build_calibrator_row(
     settled_rows: Iterable[Mapping[str, Any]],
     calibrator_id: Any,
     now: Any,
+    resolve: ReceiptResolver | None = None,
 ) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
     """Fit and assemble one evidence row, or return the typed reasons it cannot exist."""
     decision_at = _when(now)
@@ -433,17 +642,24 @@ def build_calibrator_row(
         settled_rows,
         decision_at=decision_at,
         artifact_checksum=identity["model_artifact_checksum"],
+        resolve=resolve,
     )
     if rows is None:
         return None, row_blockers
 
     fit, holdout = partition_settled_rows(rows)
+    if not fit:
+        return None, ("MLB_CALIBRATOR_EVIDENCE_FIT_COHORT_EMPTY",)
     if len(fit) < PHASE_B_MIN_N:
         return None, (
             f"MLB_CALIBRATOR_EVIDENCE_FIT_COHORT_INSUFFICIENT:{len(fit)}<{PHASE_B_MIN_N}",
         )
     if not holdout:
         return None, ("MLB_CALIBRATOR_EVIDENCE_HOLDOUT_EMPTY",)
+    if len(holdout) < HOLDOUT_MIN_N:
+        return None, (
+            f"MLB_CALIBRATOR_EVIDENCE_HOLDOUT_INSUFFICIENT:{len(holdout)}<{HOLDOUT_MIN_N}",
+        )
 
     fit_ids = {row["event_id"] for row in fit}
     if fit_ids & {row["event_id"] for row in holdout}:
@@ -554,22 +770,21 @@ def persist_calibrator_evidence(db: Any, row: Mapping[str, Any]) -> dict[str, An
             REFUSED, row=row, blockers=("MLB_CALIBRATOR_EVIDENCE_DB_UNAVAILABLE",)
         )
     try:
-        existing = (
+        existing = _rows(
             db.table(TABLE)
             .select("*")
             .eq("calibrator_id", row["calibrator_id"])
             .limit(1)
             .execute()
         )
-        stored = list(getattr(existing, "data", None) or [])
     except Exception as exc:  # noqa: BLE001 - an unreadable store is not writable
         return _receipt(
             REFUSED,
             row=row,
             blockers=(f"MLB_CALIBRATOR_EVIDENCE_READ_FAILED:{type(exc).__name__}",),
         )
-    if stored:
-        current = stored[0]
+    if existing:
+        current = existing[0]
         same_checksum = (
             _text(current.get("calibrator_checksum")).lower()
             == _text(row["calibrator_checksum"]).lower()
@@ -605,13 +820,18 @@ def produce_calibrator_evidence(
     settled_rows: Iterable[Mapping[str, Any]],
     calibrator_id: Any,
     now: Any,
+    resolve: ReceiptResolver | None = None,
 ) -> dict[str, Any]:
     """Fit, verify and persist one exact-version MLB calibrator evidence row."""
+    resolver = resolve if resolve is not None else governed_receipt_resolver(
+        db, artifact=artifact
+    )
     row, blockers = build_calibrator_row(
         artifact=artifact,
         settled_rows=settled_rows,
         calibrator_id=calibrator_id,
         now=now,
+        resolve=resolver,
     )
     if row is None:
         return _receipt(REFUSED, blockers=blockers)
@@ -625,15 +845,21 @@ __all__ = [
     "BOUNDS_RELIABILITY_TOLERANCE",
     "CALIBRATION_METHOD",
     "CAN_EXECUTE",
+    "HOLDOUT_BOUNDS_METHOD",
     "HOLDOUT_DAY_SHARE",
+    "HOLDOUT_MIN_N",
     "INCUMBENT_REGRESSION_TOLERANCE",
     "PERSISTED",
+    "PREGAME_RECEIPT_TABLE",
+    "PREDICTION_RECEIPT_TABLE",
     "REFUSED",
+    "SETTLEMENT_RECEIPT_TABLE",
     "SPORT",
     "TABLE",
     "TERMINAL_AUTHORITY",
     "WRITE_FAILED",
     "build_calibrator_row",
+    "governed_receipt_resolver",
     "normalize_settled_rows",
     "partition_settled_rows",
     "persist_calibrator_evidence",
