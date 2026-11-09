@@ -87,6 +87,14 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
     # MODEL_UNAVAILABLE even when a stale capability blocker is also present.
     if bset & REGISTRY_INFRA_BLOCKERS:
         return PropTerminalDecision("REGISTRY_INFRASTRUCTURE_BLOCKED", "REGISTRY_INFRASTRUCTURE_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
+    # Evidence-triad integrity is not proof of an absent model capability.
+    # Keep the exact typed MODEL_BUNDLE_* reason rather than flattening it into
+    # MODEL_UNAVAILABLE or allowing an UNEVALUATED terminal to seem supported.
+    if any(code.startswith("MODEL_BUNDLE_") for code in bs):
+        return PropTerminalDecision(
+            "MODEL_EVIDENCE_TRIAD_BLOCKED", "MODEL_EVIDENCE_TRIAD_BLOCKED",
+            False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market,
+        )
     if bset & MODEL_CAPABILITY_BLOCKERS:
         return PropTerminalDecision("MODEL_UNAVAILABLE", "CAPABILITY_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if (bset & SCORER_FAILURE_BLOCKERS) or label == "MODEL_SCORER_FAILED":
