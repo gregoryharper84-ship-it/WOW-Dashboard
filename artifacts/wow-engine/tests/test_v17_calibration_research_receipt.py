@@ -172,6 +172,11 @@ def test_source_inside_output_and_recursive_tracking_rejected(tmp_path):
     manifest, _ = _fixture(tmp_path)
     with pytest.raises(r.ResearchHold, match="RESEARCH_OUTPUT_ROOT_INVALID"):
         r.ensure_safe_output_locations(manifest, tmp_path, tmp_path.parent / "tracking")
+    inside = tmp_path / "nested_fixture"
+    inside.mkdir()
+    nested_manifest, _ = _fixture(inside)
+    with pytest.raises(r.ResearchHold, match="RESEARCH_OUTPUT_OVERLAPS_INPUT"):
+        r.ensure_safe_output_locations(nested_manifest, tmp_path, tmp_path.parent / "tracking")
     out = tmp_path / "fresh_reports"
     with pytest.raises(r.ResearchHold, match="RESEARCH_TRACKING_OVERLAPS_OUTPUT"):
         r.ensure_safe_output_locations(manifest, out, out / "mlruns")
@@ -236,3 +241,37 @@ def test_real_mlflow_evidently_integration_synthetic_only(tmp_path):
     ):
         assert (out / name).is_file() and (out / name).stat().st_size > 0
     assert json.loads((out / "research_tool_receipt.json").read_text())["mlflow_run_id"] == receipt["mlflow_run_id"]
+
+
+def test_forward_event_time_cannot_overlap_holdout(tmp_path):
+    _, rows = _fixture(tmp_path)
+    kickoff = datetime.fromisoformat(rows[0]["event_start_at"]) - timedelta(days=1)
+    rows[1]["forecast_issued_at"] = (kickoff - timedelta(hours=1)).isoformat()
+    rows[1]["event_start_at"] = kickoff.isoformat()
+    rows[1]["label_available_at"] = (kickoff + timedelta(hours=4)).isoformat()
+    manifest, _ = _fixture(tmp_path, rows)
+    with pytest.raises(r.ResearchHold, match="RESEARCH_SPLIT_CHRONOLOGY_OVERLAP"):
+        r.load_cohort(manifest)
+
+
+def test_symlinked_source_outside_manifest_root_is_held(tmp_path):
+    manifest, _ = _fixture(tmp_path)
+    other = tmp_path.parent / (tmp_path.name + "_untrusted_source.csv")
+    other.write_text("not part of verified research workspace")
+    (tmp_path / "alias.csv").symlink_to(other)
+    obj = json.loads(manifest.read_text())
+    obj["source_files"] = [{
+        "path": "alias.csv", "sha256": sha256(other.read_bytes()).hexdigest(),
+    }]
+    manifest.write_text(json.dumps(obj))
+    with pytest.raises(r.ResearchHold, match="RESEARCH_FILE_OUTSIDE_ROOT"):
+        r.load_cohort(manifest)
+
+
+def test_duplicate_source_files_are_held(tmp_path):
+    manifest, _ = _fixture(tmp_path)
+    obj = json.loads(manifest.read_text())
+    obj["source_files"].append(dict(obj["source_files"][0]))
+    manifest.write_text(json.dumps(obj))
+    with pytest.raises(r.ResearchHold, match="RESEARCH_SOURCE_SNAPSHOT_DUPLICATE"):
+        r.load_cohort(manifest)
