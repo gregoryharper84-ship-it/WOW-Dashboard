@@ -534,7 +534,7 @@ def test_nfl_failed_retrieval_is_unverified_not_available():
 
     evidence = nfl._athlete_availability("4241457", http_get=explode, captured=CAPTURED)
     assert evidence["evidence_status"] == "RETRIEVAL_FAILED"
-    assert evidence["reason"] == "INJURY_REPORT_RETRIEVAL_FAILED:RuntimeError"
+    assert evidence["reason"] == "INJURY_REPORT_RETRIEVAL_FAILED:NFLPropHydrationError"
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_UNVERIFIED
     assert decision.reason == "AVAILABILITY_EVIDENCE_RETRIEVAL_FAILED"
