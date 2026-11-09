@@ -1123,6 +1123,28 @@ def install_pick_request_routes(
                 )
                 continue
 
+            # A certified route alone does not prove the artifact-calibrator-
+            # pregame triad. Gate before hydration, persistence, or scorer call.
+            triad = assess_prop_action_boundary(
+                row, market_api=market_api, route=route, canonical_stat=canonical_stat,
+            )
+            if triad.status != "READY_FOR_INDEPENDENT_REVIEW":
+                utilization["exact_blocker"] = triad.blocker
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        triad.blocker or "MODEL_BUNDLE_EVIDENCE_UNVERIFIED",
+                        detail={
+                            **triad.as_hold(),
+                            "terminal_label": "MODEL_EVIDENCE_TRIAD_BLOCKED",
+                            "specialist_invoked": False,
+                        },
+                        acquisition=route_blocked_acquisition,
+                    )
+                )
+                continue
+
             utilization["fitted_artifact_found"] = True
             utilization["artifact_specialist_version"] = route.get("specialist_version")
             utilization["specialist_artifact_identity_match"] = _specialist_identity_matches(
