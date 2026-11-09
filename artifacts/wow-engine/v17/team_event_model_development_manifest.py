@@ -21,6 +21,7 @@ class ModelDevelopmentLane:
     status: str
     maintenance_lane: str | None
     next_gate: str
+    required_evidence_components: tuple[str, ...] = ("artifact", "calibrator", "pregame_corpus")
     can_execute: bool = False
 
     def as_dict(self) -> dict[str, object]:
@@ -29,6 +30,8 @@ class ModelDevelopmentLane:
             "status": self.status,
             "maintenance_lane": self.maintenance_lane,
             "next_gate": self.next_gate,
+            "required_evidence_components": list(self.required_evidence_components),
+            "bundle_provenance_verified": False,
             "can_execute": False,
         }
 
