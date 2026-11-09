@@ -17,6 +17,37 @@ export function assertRemoteCliAuth(env = {}) {
   return true;
 }
 
+/**
+ * One read-only request to the exact endpoint used by Trigger.dev CLI 4.8.3.
+ * Emits HTTP status class only; never reads or logs response bodies/credentials.
+ * This diagnoses provider rejection before starting a worker; it is not model proof.
+ */
+export async function probeTriggerPatWhoami(token, fetchFn = fetch) {
+  if (typeof token !== "string" || !/^tr_pat_[A-Za-z0-9_-]+$/.test(token)) {
+    throw new Error("TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED");
+  }
+  let response;
+  try {
+    response = await fetchFn("https://api.trigger.dev/api/v2/whoami", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    throw new Error("TRIGGER_PAT_WHOAMI_TRANSPORT_FAILED");
+  }
+  try {
+    if (response.status === 200) return { http_status: 200 };
+    const code = [401, 403, 404, 429, 500, 502, 503].includes(response.status)
+      ? response.status
+      : "OTHER";
+    throw new Error(`TRIGGER_PAT_WHOAMI_HTTP_${code}`);
+  } finally {
+    try { await response.body?.cancel?.(); } catch {}
+  }
+}
+
 function appendTail(current, chunk, max = 5000) {
   return (current + String(chunk)).slice(-max);
 }
@@ -60,6 +91,15 @@ const SAFE_FAILURES = new Set([
   "DEV_BRANCH_MISMATCH",
   "TRIGGER_CLI_NOT_INSTALLED",
   "TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED",
+  "TRIGGER_PAT_WHOAMI_TRANSPORT_FAILED",
+  "TRIGGER_PAT_WHOAMI_HTTP_401",
+  "TRIGGER_PAT_WHOAMI_HTTP_403",
+  "TRIGGER_PAT_WHOAMI_HTTP_404",
+  "TRIGGER_PAT_WHOAMI_HTTP_429",
+  "TRIGGER_PAT_WHOAMI_HTTP_500",
+  "TRIGGER_PAT_WHOAMI_HTTP_502",
+  "TRIGGER_PAT_WHOAMI_HTTP_503",
+  "TRIGGER_PAT_WHOAMI_HTTP_OTHER",
   "DEV_WORKER_SPAWN_FAILED",
   "DEV_WORKER_EXITED_EARLY",
   "TRIGGER_RUN_POLL_TIMEOUT",
@@ -242,6 +282,9 @@ async function main() {
   process.env.TRIGGER_PREVIEW_BRANCH = DEV_BRANCH;
   process.env.CI = "true";
   patchTriggerCli();
+
+  const patProbe = await probeTriggerPatWhoami(process.env.TRIGGER_ACCESS_TOKEN);
+  console.log("TRIGGER_PAT_WHOAMI_STATUS", patProbe.http_status);
 
   const worker = startWorker();
   try {
