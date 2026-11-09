@@ -56,8 +56,14 @@ class Market:
 class Event: pass
 
 
-def governed_team_result():
-    return {
+def governed_team_result(
+    *,
+    triad=None,
+    official_event_id="1",
+    sport="MLB",
+    model_artifact_version="MLB_TEAM_EVENT_V1",
+):
+    result = {
         "code":"FINAL_APPROVED",
         "terminal_label":"FINAL_APPROVED",
         "probability_publishable":True,
@@ -79,14 +85,69 @@ def governed_team_result():
             "final_gates_status":"PASS",
             "terminal_label":"FINAL_APPROVED",
         },
+        "sport": sport,
+        "official_event_id": official_event_id,
+        "model_artifact_version": model_artifact_version,
     }
+    if triad is not None:
+        result["model_evidence_triad"] = triad
+    return result
+
+
+def _sealed_team_event_triad(
+    monkeypatch,
+    *,
+    official_event_id="1",
+    sport="MLB",
+    model_artifact_version="MLB_TEAM_EVENT_V1",
+):
+    """A triad sealed at the boundary for exactly this event and model.
+
+    A lawful COMPLETED row now requires a boundary-sealed evidence report, so
+    this fixture builds and seals one instead of hand-writing an approval. The
+    assembled bundle is injected through the acceptance seam; no governed
+    database row is fabricated.
+    """
+    from v17 import model_evidence_boundary as boundary
+
+    monkeypatch.setattr(
+        boundary,
+        "EVIDENCE_ASSESSOR",
+        lambda _db, _scope: {
+            "bundle_complete": True,
+            "blockers": [],
+            "component_sources": {},
+            "missing_component_fields": {},
+        },
+    )
+    sealed = boundary.seal_report(
+        boundary.evaluate_market_evidence_triad(
+            model_kind="TEAM_EVENT",
+            sport=sport,
+            official_event_id=official_event_id,
+            event_start_time=FUTURE,
+            prediction_timestamp=FUTURE,
+            model_family="MLB_TEAM_EVENT_V1",
+            model_artifact_version=model_artifact_version,
+            feature_schema_version="MLB_FEATURES_V1",
+            db=DB(),
+        )
+    )
+    assert boundary.verify_sealed_report(
+        sealed,
+        sport=sport,
+        official_event_id=official_event_id,
+        model_artifact_version=model_artifact_version,
+    )
+    return sealed
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
     # The fixture is a canonical two-row test: an independently scheduled
     # cross-sport provider scan is not a third synthetic candidate.
     monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
-    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
+    triad = _sealed_team_event_triad(monkeypatch)
+    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result(triad=triad))
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
     # full governed suite is collected in one interpreter.
@@ -167,8 +228,9 @@ def test_props_publishable_without_rank_is_held():
 
 def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     seen={}
+    triad = _sealed_team_event_triad(monkeypatch)
     def score(*_args,**kwargs):
-        seen.update(kwargs); return governed_team_result()
+        seen.update(kwargs); return governed_team_result(triad=triad)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",score)
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
     assert seen["canonical_hydration_required"] is True
