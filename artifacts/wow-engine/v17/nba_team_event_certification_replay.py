@@ -328,7 +328,9 @@ def _corpus_replay(
             and feature_date is not None
             and feature_date == game_date
             and str(payload.get("feature_schema_version") or "") == FEATURE_SCHEMA_VERSION
-            and str(raw.get("feature_schema_version") or FEATURE_SCHEMA_VERSION) == FEATURE_SCHEMA_VERSION
+            and str(raw.get("feature_schema_version") or "") == FEATURE_SCHEMA_VERSION
+            and payload.get("home_games_prior") == raw.get("home_games_prior")
+            and payload.get("away_games_prior") == raw.get("away_games_prior")
             and isinstance(values, Mapping)
             and set(values) == set(FEATURE_NAMES)
             and type(raw.get("home_games_prior")) is int
@@ -470,7 +472,7 @@ def _corpus_replay(
     }
     if not event_start_attested or not official_settlement_attested:
         blockers.append("SOURCE_PROVENANCE_NOT_CERTIFIED")
-    return replay_rows, summary, not blockers
+    return replay_rows, summary, corpus_integrity_valid
 
 
 def _metrics(probabilities: list[float], outcomes: list[int]) -> dict[str, float]:
@@ -611,6 +613,16 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         )
         and type(calibrator_row.get("calibration_row_count")) is int
         and calibrator_row.get("calibration_row_count", 0) > 0
+        and all(
+            isinstance(calibrator_row.get(key), (int, float))
+            and not isinstance(calibrator_row.get(key), bool)
+            and math.isfinite(float(calibrator_row[key]))
+            for key in ("brier", "log_loss", "ece", "calibration_bias")
+        )
+        and 0.0 <= float(calibrator_row["brier"]) <= 1.0
+        and float(calibrator_row["log_loss"]) >= 0.0
+        and 0.0 <= float(calibrator_row["ece"]) <= 1.0
+        and -1.0 <= float(calibrator_row["calibration_bias"]) <= 1.0
     )
     calibrator_checksum = _calibrator_digest(calibrator_row)
     # The current table has no persisted calibrator checksum or fit-corpus hash.
