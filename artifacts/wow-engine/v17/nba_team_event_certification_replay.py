@@ -753,7 +753,27 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return _read_failure("PREGAME_CORPUS", exc)
 
-    replay_rows, corpus_summary, corpus_integrity_valid = _corpus_replay(games, features, artifact)
+    try:
+        replay_rows, corpus_summary, corpus_integrity_valid = _corpus_replay(games, features, artifact)
+    except Exception as exc:  # noqa: BLE001 - isolate NBA replay failure from the D1 replay route
+        return {
+            "sport": SPORT,
+            "status": "REPLAY_FAILED",
+            "replay_stage": "PREGAME_CORPUS_RECONSTRUCTION",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc)[:240],
+            "model_artifact_version": version,
+            "calibrator_version": calibrator_row.get("calibrator_version"),
+            "artifact_ready": artifact_ready,
+            "calibrator_ready": False,
+            "pregame_corpus_ready": False,
+            "exact_bundle_match": False,
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
     blockers = list(artifact_blockers)
     if not calibrator_identity_valid or not calibrator_checksum_persisted:
         blockers.append("CALIBRATOR_NOT_READY")
