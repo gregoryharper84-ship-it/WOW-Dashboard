@@ -53,10 +53,89 @@ def test_all_three_sports_get_read_only_winner_context(sport):
     assert len(value["events"]) == 1
     event = value["events"][0]
     assert event["sport"] == sport
-    assert event["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    # A self-asserted Daily winner is not a verified immutable event ledger
+    # receipt. The pure view has no authenticated database and must withhold p.
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in event["markets"][0]
+    assert event["source_diagnostics"]["event_prediction_receipt_verified"] is False
     assert event["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
     assert event["market_coverage"]["GAME_TOTAL"] == "NO_EXACT_TOTAL_RECEIPT_IN_DAILY_RUN"
     assert value["source_mutated"] is False and value["nfl_pickem_mutated"] is False
+
+
+
+@pytest.mark.parametrize("conflict", [
+    {"official_event_id": "different-nfl-fixture"},
+    {"home_team": "GB"},
+    {"away_team": "PHI"},
+    {"sport": "NHL"},
+    {"event_start_time_utc": (START + timedelta(days=1)).isoformat()},
+])
+def test_nfl_conflicting_saved_result_identity_is_diagnosed(conflict):
+    row = _row(sport="NFL", certified=True)
+    row["detail"]["result"].update(conflict)
+    projected = llp.project_llp_intelligence_page(_page([row]))
+    assert len(projected["events"]) == 1
+    event = projected["events"][0]
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert event["source_diagnostics"]["event_prediction_receipt_verified"] is False
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+
+
+@pytest.mark.parametrize("provider_label", [
+    "NFL", "National Football League", "americanfootball_nfl",
+])
+def test_nfl_provider_league_alias_is_not_an_identity_conflict(provider_label):
+    row = _row(sport="NFL", certified=True)
+    row["detail"]["result"]["league"] = provider_label
+    projected = llp.project_llp_intelligence_page(_page([row]))
+    assert len(projected["events"]) == 1
+    event = projected["events"][0]
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" not in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+    # No independent DB receipt is supplied: valid identity alone is not
+    # permission to expose a fitted probability.
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+
+
+
+@pytest.mark.parametrize("sport, valid_label", [
+    ("NFL", "National Football League"),
+    ("NFL", "americanfootball_nfl"),
+    ("NBA", "National Basketball Association"),
+    ("NBA", "basketball_nba"),
+    ("NHL", "National Hockey League"),
+    ("NHL", "icehockey_nhl"),
+])
+def test_known_provider_league_labels_do_not_create_false_conflicts(sport, valid_label):
+    row = _row(sport=sport, certified=True)
+    row["detail"]["result"]["league"] = valid_label
+    event = llp.project_llp_intelligence_page(_page([row]))["events"][0]
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" not in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+    # Independent ledger verification is still missing; no probability leaks.
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+
+
+@pytest.mark.parametrize("sport, wrong_label", [
+    ("NFL", "National Hockey League"),
+    ("NBA", "National Football League"),
+    ("NBA", "WNBA"),
+    ("NHL", "NBA"),
+    ("NHL", "unknown-league"),
+])
+def test_cross_sport_and_unknown_provider_leagues_are_rejected(sport, wrong_label):
+    row = _row(sport=sport, certified=True)
+    row["detail"]["result"]["league"] = wrong_label
+    event = llp.project_llp_intelligence_page(_page([row]))["events"][0]
+    assert "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT" in (
+        event["source_diagnostics"]["source_reason_codes"]
+    )
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
 
 
 def test_research_candidate_keeps_numeric_probability_hidden():
