@@ -9,7 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from hashlib import sha256
 import json
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    # Type only: runtime import would pull scikit-learn into serving startup.
+    from ncaaf_trainer import TrainingRow
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -27,22 +31,48 @@ class NCAAFTrainingRunnerUnavailable(RuntimeError):
         self.code = code
 
 
+_PAGED_TRAINING_PRIMARY_KEYS = {
+    "wow_ncaaf_training_games": "training_game_id",
+    "wow_ncaaf_training_features": "feature_row_id",
+}
+
+
 def _paged(client: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    """Read an exact, nonduplicated NCAAF fit corpus with a stable total order."""
+    key = _PAGED_TRAINING_PRIMARY_KEYS.get(table)
+    if key is None or isinstance(page_size, bool) or not isinstance(page_size, int) or page_size <= 0:
+        raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_PAGINATION_INVALID", "unsupported pagination contract")
+    # The selected primary key is required even for a projection that otherwise
+    # only needs numerical inputs. A verified identity is never inferred.
+    if columns.strip() != "*" and key not in {part.strip() for part in columns.split(",")}:
+        columns = f"{columns},{key}"
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     start = 0
     while True:
         try:
-            result = client.table(table).select(columns).range(start, start + page_size - 1).execute()
+            result = (
+                client.table(table).select(columns).order(key)
+                .range(start, start + page_size - 1).execute()
+            )
         except Exception as exc:
             raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_DATA_READ_FAILED", table) from exc
         rows = getattr(result, "data", None)
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or len(rows) > page_size:
             raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_DATA_INVALID", table)
-        out.extend(dict(row) for row in rows if isinstance(row, Mapping))
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_PAGINATION_INVALID", f"{table}:ROW_INVALID")
+            row_id = row.get(key)
+            if not isinstance(row_id, str) or not row_id.strip():
+                raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_PAGINATION_INVALID", f"{table}:ROW_ID_MISSING")
+            if row_id in seen:
+                raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_PAGINATION_INVALID", f"{table}:ROW_ID_DUPLICATED")
+            seen.add(row_id)
+            out.append(dict(row))
         if len(rows) < page_size:
             return out
         start += page_size
-
 
 def load_training_rows(client: Any) -> tuple[list[TrainingRow], list[dict[str, Any]]]:
     # The transform/trainer modules pull in scikit-learn. They are maintenance
@@ -66,7 +96,14 @@ def load_training_rows(client: Any) -> tuple[list[TrainingRow], list[dict[str, A
         if str(feature.get("feature_schema_version") or "") != FEATURE_SCHEMA_VERSION:
             continue
         game = games_by_id.get(str(feature.get("training_game_id") or ""))
-        if not game or game.get("home_won") is None:
+        if game is None:
+            # Games and features are read separately. A concurrent insert can
+            # yield a feature whose parent was absent from our games snapshot;
+            # silently dropping it would produce a non-reproducible fit corpus.
+            raise NCAAFTrainingRunnerUnavailable(
+                "NCAAF_TRAINING_DATA_INVALID", "feature parent missing from training read"
+            )
+        if game.get("home_won") is None:
             continue
         merged = {**feature, **{
             "official_event_id": game.get("official_event_id"),
