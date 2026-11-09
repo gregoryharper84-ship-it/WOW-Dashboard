@@ -144,18 +144,18 @@ def _read_all(
         offset += PAGE_SIZE
 
 
-def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None, list[str], bool]:
+def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None, list[str], bool, bool]:
     blockers: list[str] = []
     payload = row.get("artifact_payload")
     if not isinstance(payload, Mapping):
-        return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False
+        return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False, False
 
     checksum_fields = (
         "sport", "model_family", "model_artifact_version", "feature_schema_version",
         "feature_names", "intercept", "coefficients", "means", "scales",
     )
     if any(field not in payload for field in checksum_fields):
-        return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False
+        return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False, False
 
     try:
         calculated_checksum = _sha256_json({field: payload[field] for field in checksum_fields})
@@ -195,7 +195,7 @@ def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None,
             artifact_checksum=calculated_checksum,
         )
     except (KeyError, TypeError, ValueError, OverflowError):
-        return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False
+        return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False, False
 
     dimensions_valid = (
         len(artifact.coefficients) == len(FEATURE_NAMES)
@@ -211,6 +211,7 @@ def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None,
     if not dimensions_valid:
         blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
 
+    integrity_valid = not blockers
     # The current basketball artifact table/payload has no corpus hash or
     # training-code SHA. The artifact checksum above proves model payload
     # integrity, not which exact source corpus and training code produced it.
@@ -221,8 +222,8 @@ def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None,
     if not provenance_complete:
         blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
 
-    return artifact, list(dict.fromkeys(blockers)), not blockers
-
+    artifact_ready = integrity_valid and provenance_complete
+    return artifact, list(dict.fromkeys(blockers)), integrity_valid, artifact_ready
 
 def _training_game(row: Mapping[str, Any]) -> TrainingGame:
     game_id = str(row.get("game_id") or "").strip()
@@ -550,7 +551,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
             "can_execute": False,
         }
 
-    artifact, artifact_blockers, artifact_ready = _artifact_from_row(artifact_row)
+    artifact, artifact_blockers, artifact_integrity_valid, artifact_ready = _artifact_from_row(artifact_row)
     if artifact is None:
         return {
             "sport": SPORT,
@@ -766,7 +767,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "model_artifact_version": version,
         "model_family": artifact.model_family,
         "artifact_checksum": artifact_row.get("artifact_checksum"),
-        "artifact_integrity_valid": not artifact_blockers or artifact_ready,
+        "artifact_integrity_valid": artifact_integrity_valid,
         "artifact_ready": artifact_ready,
         "training_dataset_hash": dataset_hash,
         "training_code_sha": training_code_sha,
