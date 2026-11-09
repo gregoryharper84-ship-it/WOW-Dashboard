@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,6 +18,7 @@ from basketball_team_event_specialist import (
     TrainingGame,
     build_pregame_features,
 )
+import v17.nba_team_event_certification_replay as nba_replay_module
 from v17.nba_team_event_certification_replay import run_nba_team_event_certification_replay
 from v17.team_event_certification_replay import run_certification_replay
 
@@ -381,6 +383,48 @@ def test_nba_replay_holds_when_calibration_metadata_overlaps_holdout():
 
     assert report["numerical_replay_status"] == "PASS"
     assert report["calibrator_fit_cohort_metadata_valid"] is False
+    assert report["calibrator_ready"] is False
+    assert report["exact_bundle_match"] is False
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+
+
+def test_nba_calibrator_walk_forward_fit_replays_exact_persisted_parameters(monkeypatch):
+    tables = _fixture()
+    fit = SimpleNamespace(
+        result=SimpleNamespace(calibration_status="PLATT_TIME_SPLIT_V1"),
+        metrics=SimpleNamespace(
+            brier=0.25,
+            log_loss=math.log(2.0),
+            ece=0.0,
+            calibration_bias=0.0,
+        ),
+        coefficients=SimpleNamespace(a=0.0, b=1.0),
+        fold_train_audit={1: [0]},
+    )
+
+    monkeypatch.setattr(
+        nba_replay_module,
+        "_walk_forward_raw",
+        lambda _rows: (
+            [0.4, 0.6],
+            [0, 1],
+            [0, 1],
+            ["2025-03-06T00:00:00+00:00", "2025-03-07T00:00:00+00:00"],
+        ),
+    )
+    monkeypatch.setattr(nba_replay_module, "phase_b_platt", lambda *_args: fit)
+
+    report = run_nba_team_event_certification_replay(_DB(tables))
+
+    assert report["calibrator_fit_replay_status"] == "PASS"
+    assert report["calibrator_fit_evidence_ready"] is True
+    assert len(report["calibrator_fit_replay_sha256"]) == 64
+    assert report["calibrator_fit_cohort_metadata_valid"] is True
+    # A reproducible fit still is not a complete persisted calibrator bundle:
+    # the table has no immutable checksum or persisted fit-cohort digest.
+    assert report["calibrator_checksum_persisted"] is False
     assert report["calibrator_ready"] is False
     assert report["exact_bundle_match"] is False
     assert report["probability_publishable"] is False
