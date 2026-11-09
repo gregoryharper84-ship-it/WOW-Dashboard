@@ -29,12 +29,21 @@ B_RIGHTS_UNDOCUMENTED = "RIGHTS_UNDOCUMENTED_FIRST_PARTY"
 
 
 def _adapter_exists(ref: str, engine_root: Path) -> bool:
-    if ref.startswith("http"):
-        return False  # a URL is not a WOW adapter
-    for base in (engine_root, engine_root / "v17", engine_root.parent.parent):
-        if (base / ref).is_file():
-            return True
-    return (engine_root / ref.removeprefix("v17/")).is_file() or (engine_root / "v17" / Path(ref).name).is_file()
+    """Resolve only the explicitly referenced path from either accepted root."""
+    if not isinstance(ref, str) or not ref or ref.startswith(("http:", "https:")):
+        return False
+    relative = Path(ref)
+    if relative.is_absolute() or ".." in relative.parts:
+        return False
+    root = Path(engine_root).resolve()
+    if (root / "artifacts" / "wow-engine").is_dir():
+        repo_root, engine = root, root / "artifacts" / "wow-engine"
+    elif root.name == "wow-engine" and root.parent.name == "artifacts":
+        repo_root, engine = root.parent.parent, root
+    else:
+        # Arbitrary test root: do not search outside it or match by basename.
+        repo_root, engine = root, root
+    return any((base / relative).is_file() for base in (repo_root, engine))
 
 
 def build_source_matrix(
@@ -66,7 +75,7 @@ def build_source_matrix(
                 blockers.append(B_CERT_REVIEW)
             if reg.use == "CANDIDATE_FIRST_PARTY_UNDOCUMENTED":
                 blockers.append(B_RIGHTS_UNDOCUMENTED)
-        if cat is not None and not _adapter_exists(cat.adapter_reference, root):
+        if cat is None or not _adapter_exists(cat.adapter_reference, root):
             blockers.append(B_NO_ADAPTER)
         if source_id not in live:
             blockers.append(B_NO_LIVE_RECEIPT)
@@ -122,7 +131,7 @@ def research_tool_usage(root: str | Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {t: [] for t in RESEARCH_TOOLS}
     base = Path(root)
     for path in sorted(base.rglob("*.py")):
-        if any(p in {"node_modules", ".venv", "__pycache__"} for p in path.parts):
+        if any(p in {"node_modules", ".venv", "venv", "__pycache__", ".git", "site-packages", "build", "dist"} for p in path.parts):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
