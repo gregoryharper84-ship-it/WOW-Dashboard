@@ -39,11 +39,11 @@ These are questions to test on historical point-in-time data. Variance and unexp
 - The only overall headline research accuracy is for a complete verified official event set; otherwise show partial typed grades and blockers, with headline accuracy null.
 - Separate preferred/upset grading, same-game counterfactual comparison and pregame-feature review questions are diagnostics. No official model probability is generated and no automatic upset flip is allowed.
 - Optional `v17.llp_postmortem_recalibration.build_llp_learning_report` arguments append the research audit in a distinct `research_card` field without changing fitted-model Brier/log-loss/calibration.
-- New regression suite includes 13 synthetic tests: full three-sport reconciliation, 21/26 and 0/3 synthetic shape, missing receipts, late pick, hindsight evidence, unverified final, incomplete slate, duplicate picks, invalid event identity, unknown research and no retroactive upset flip.
+- New regression suite includes 15 synthetic tests (including receipt-reuse rejection): full three-sport reconciliation, 21/26 and 0/3 synthetic shape, missing receipts, late pick, hindsight evidence, unverified final, incomplete slate, duplicate picks, invalid event identity, unknown research and no retroactive upset flip.
 
 ## Verification and remaining work
 
-- Targeted isolated code regression run: `pytest -q test_llp_research_card_retro.py` — 13 passed in an isolated local extraction (not a complete repository test).
+- Targeted isolated code regression run: `pytest -q test_llp_research_card_retro.py` — 15 passed in an isolated local extraction (not a complete repository test).
 - Exact-head GitHub CI and independent review must complete before declaring the PR accepted. This is an unmerged research-layer patch until then.
 - The actual Nov 8 research card still requires its true immutable pregame source IDs, independent official final receipts, and verified official event manifest. Do not manufacture these from post-lock sheets.
 - No model/calibrator, terminal reducer, database migration, production build, or live GPT editor action is changed. Model validation and promotion remain their separate governed process.
