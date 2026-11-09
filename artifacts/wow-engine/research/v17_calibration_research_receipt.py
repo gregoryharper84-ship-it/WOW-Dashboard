@@ -157,9 +157,30 @@ def metrics(rows: list[dict]) -> dict:
                 ece_10bin=ece, reliability_bins=bins)
 
 
+def ensure_safe_output_locations(manifest_path: Path, out: Path, tracking_root: Path) -> None:
+    """Prevent stale receipt reuse, input destruction and local artifact recursion."""
+    source_root = manifest_path.resolve().parent
+    output, tracking = out.resolve(), tracking_root.resolve()
+    if output == source_root or output == tracking:
+        raise ResearchHold("RESEARCH_OUTPUT_ROOT_INVALID")
+    if tracking.is_relative_to(output) or output.is_relative_to(tracking):
+        raise ResearchHold("RESEARCH_TRACKING_OVERLAPS_OUTPUT")
+    # load_cohort already verified the manifest and all referenced paths.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = [manifest["artifact"], manifest["predictions"], *manifest["source_files"]]
+    inputs = [manifest_path.resolve()] + [
+        (source_root / item["path"]).resolve() for item in entries
+    ]
+    if any(path == output or path.is_relative_to(output) for path in inputs):
+        raise ResearchHold("RESEARCH_OUTPUT_OVERLAPS_INPUT")
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise ResearchHold("RESEARCH_OUTPUT_ROOT_NOT_EMPTY")
+
+
 def run(manifest_path: Path, out: Path, tracking_root: Path) -> dict:
     """Strict tool availability: fail before writing a misleading completion receipt."""
     meta, rows = load_cohort(manifest_path)
+    ensure_safe_output_locations(manifest_path, out, tracking_root)
     try:
         import pandas as pd
         import mlflow
@@ -167,22 +188,6 @@ def run(manifest_path: Path, out: Path, tracking_root: Path) -> dict:
         from evidently.presets import ClassificationQuality, DataDriftPreset
     except ImportError:
         raise ResearchHold("RESEARCH_MLFLOW_OR_EVIDENTLY_NOT_INSTALLED") from None
-    output = out.resolve()
-    tracking = tracking_root.resolve()
-    input_paths = {
-        manifest_path.resolve(),
-        (manifest_path.resolve().parent / json.loads(manifest_path.read_text())["artifact"]["path"]).resolve(),
-        (manifest_path.resolve().parent / json.loads(manifest_path.read_text())["predictions"]["path"]).resolve(),
-    }
-    if output == manifest_path.resolve().parent or output == tracking:
-        raise ResearchHold("RESEARCH_OUTPUT_ROOT_INVALID")
-    if any(path == output or path.is_relative_to(output) for path in input_paths):
-        raise ResearchHold("RESEARCH_OUTPUT_OVERLAPS_INPUT")
-    if tracking.is_relative_to(output) or output.is_relative_to(tracking):
-        raise ResearchHold("RESEARCH_TRACKING_OVERLAPS_OUTPUT")
-    if output.exists():
-        if not output.is_dir() or any(output.iterdir()):
-            raise ResearchHold("RESEARCH_OUTPUT_ROOT_NOT_EMPTY")
     by_split = {split: [r for r in rows if r["split"] == split]
                 for split in ("HOLDOUT", "FORWARD")}
     summary = {split.lower(): metrics(part) for split, part in by_split.items()}
