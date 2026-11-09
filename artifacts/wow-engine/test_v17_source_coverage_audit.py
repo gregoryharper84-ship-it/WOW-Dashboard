@@ -94,3 +94,37 @@ def test_repo_root_relative_adapter_references_resolve_from_relative_root():
     rows = sca.build_source_matrix(".")
     odds = [r for r in rows if r["source_id"] == "THE_ODDS_API"]
     assert odds and all(sca.B_NO_ADAPTER not in r["blockers"] for r in odds)
+
+
+def test_registry_only_sources_do_not_gain_an_adapter_by_omission():
+    rows = sca.build_source_matrix(ROOT)
+    ufc = [r for r in rows if r["source_id"] == "UFCSTATS_PUBLIC"]
+    assert ufc and all(sca.B_NO_ADAPTER in r["blockers"] for r in ufc)
+
+
+def test_adapter_lookup_rejects_basename_collisions_and_traversal(tmp_path):
+    (tmp_path / "v17").mkdir()
+    (tmp_path / "v17" / "odds_api.py").write_text("not the actual referenced file")
+    assert not sca._adapter_exists("artifacts/flask-scoring-api/services/odds_api.py", tmp_path)
+    assert not sca._adapter_exists("../outside.py", tmp_path)
+    assert not sca._adapter_exists("https://example.org/odds_api.py", tmp_path)
+
+
+def test_adapter_lookup_same_for_repository_root_and_engine_root(tmp_path):
+    engine = tmp_path / "artifacts" / "wow-engine"
+    engine.mkdir(parents=True)
+    (engine / "nflverse_historical_adapter.py").write_text("adapter")
+    (engine / "v17").mkdir()
+    (engine / "v17" / "ncaaf_sdv_espn_crosswalk.py").write_text("adapter")
+    for root in (tmp_path, engine):
+        assert sca._adapter_exists("nflverse_historical_adapter.py", root)
+        assert sca._adapter_exists("v17/ncaaf_sdv_espn_crosswalk.py", root)
+
+
+def test_research_tool_scan_ignores_vendor_tree(tmp_path):
+    (tmp_path / "venv").mkdir()
+    (tmp_path / "venv" / "vendor.py").write_text("import mlflow")
+    (tmp_path / "first_party.py").write_text("import evidently")
+    uses = sca.research_tool_usage(tmp_path)
+    assert uses["mlflow"] == []
+    assert uses["evidently"] == ["first_party.py"]
