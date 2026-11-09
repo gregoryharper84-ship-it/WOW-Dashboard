@@ -177,7 +177,9 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     def score(*_args,**kwargs):
         seen.update(kwargs); return governed_team_result()
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",score)
-    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
+    # FULL response preserves the inline terminal evidence; the default
+    # compact transport moves it to durable row-detail storage instead.
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"],response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert seen["canonical_hydration_required"] is True
     # Server-owned hydration is still required, but hydration alone cannot
     # substitute for fitted artifact, calibrator and pregame-corpus receipts.
