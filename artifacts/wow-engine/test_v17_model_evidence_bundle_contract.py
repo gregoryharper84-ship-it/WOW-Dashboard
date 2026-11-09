@@ -307,3 +307,27 @@ def test_repository_sport_audit_declares_required_triad_without_fake_verificatio
         assert row["triad_source_provenance_verified"] is None
         assert row["probability_publishable"] is False
         assert row["can_execute"] is False
+
+
+
+@pytest.mark.parametrize("malformed", [None, {}, "TEAM_EVENT", 42])
+def test_non_scope_input_returns_typed_hold_not_attribute_error(malformed):
+    scope, artifact, calibrator, pregame = _valid()
+    result = _assess(malformed, artifact, calibrator, pregame)
+    assert result["status"] == "BLOCKED"
+    assert result["blockers"] == ["MODEL_BUNDLE_ROUTE_UNSUPPORTED"]
+    assert result["bundle_complete"] is False
+    assert result["artifact_valid"] is False
+    assert result["calibrator_valid"] is False
+    assert result["pregame_corpus_valid"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_null_sport_is_not_a_valid_artifact_identity():
+    scope, artifact, calibrator, pregame = _valid()
+    scope = replace(scope, sport=None)
+    result = _assess(scope, artifact, calibrator, pregame)
+    assert "MODEL_BUNDLE_ROUTE_UNSUPPORTED" in result["blockers"]
+    assert result["bundle_complete"] is False
+    assert result["probability_publishable"] is False
