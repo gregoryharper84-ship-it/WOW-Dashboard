@@ -105,7 +105,7 @@ verification. Fresh-feed confirmation is deferred to the next eligible slate.
 | Exact endpoint + response shape | recorded per file in `manifest.json` |
 | Report completeness + freshness | WNBA "not yet submitted" raises; `report_complete`/`fresh` gate to `UNVERIFIED` |
 | Explicit OUT / inactive / unavailable | MLB hydration refuses a non-probable starter, WNBA raises, NFL yields `PLAYER_RULED_OUT` |
-| Unlisted on a complete current report | WNBA/NFL `FRESH_OFFICIAL_REPORT_UNLISTED`, `risk=False` |
+| Unlisted on a complete current report | WNBA full target-section proof can clear; NFL athlete-profile absence is `UNVERIFIED` until an independent dated, complete injury report is proven |
 | Missing / stale / incomplete / conflicting / failed | distinct `UNVERIFIED` reason per state |
 | Probable vs confirmed starter | `PROBABLE_STARTER` provisional (`risk=True`); `CONFIRMED_STARTER` not |
 | Posted vs unposted order | `POSTED_BATTING_ORDER` clears; unposted holds |
@@ -116,10 +116,12 @@ Two provider defects were found and fixed by this suite:
 - a hitter absent from a **posted** order produced the same evidence as an
   unposted lineup, so a late scratch was indistinguishable from pending news;
   `_batting_order_state()` now reports `PLAYER_NOT_IN_POSTED_ORDER`;
-- NFL "no active designation" carried `status=AVAILABLE` but no participation
-  basis, which the separated gate correctly held as `UNVERIFIED` for every
-  uninjured player; the athlete record now emits
-  `basis=FRESH_OFFICIAL_REPORT_UNLISTED, report_complete=True`.
+- NFL athlete detail absence previously carried `FRESH_OFFICIAL_REPORT_UNLISTED`
+  despite lacking a complete independently dated injury-report receipt. The
+  endpoint now returns `OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED` and
+  `fresh=False, report_complete=False`. Explicit matched `OUT` remains a
+  `PLAYER_RULED_OUT` terminal; a missing, mismatched, or empty record cannot
+  establish positive availability. This is contract-tested, not live-certified.
 
 ### Pre-merge review findings (2026-11-09)
 

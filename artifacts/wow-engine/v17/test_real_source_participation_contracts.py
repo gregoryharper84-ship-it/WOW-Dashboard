@@ -396,28 +396,51 @@ def _nfl_availability(fixture: str, athlete_id: str = "4241457") -> dict:
     )
 
 
-def test_nfl_record_without_a_designation_is_a_basis_not_missing_evidence():
+def test_nfl_empty_athlete_profile_injuries_cannot_certify_a_complete_report():
     evidence = nfl.bind_availability_to_event(
-        _nfl_availability("espn_nfl_athlete_clear_2026.json"),
+        _nfl_availability("espn_nfl_athlete_clear_2026.json", athlete_id="4241459"),
         team="TEST",
         event_id="401-test",
     )
-    assert evidence["basis"] == "FRESH_OFFICIAL_REPORT_UNLISTED"
-    assert evidence["report_complete"] is True
-    assert evidence["fresh"] is True
-    assert evidence["athlete_id"] == "4241457"
-    assert evidence["source_endpoint"].endswith("/athletes/4241457")
-    decision = evaluate_player_availability({"availability": evidence})
-    assert decision.status == AVAILABILITY_AVAILABLE
-    assert decision.risk is False
+    assert evidence.get("basis") is None
+    assert evidence["report_complete"] is False
+    assert evidence["fresh"] is False
+    assert evidence["athlete_id"] == "4241459"
+    assert evidence["source_endpoint"].endswith("/athletes/4241459")
+    assert evidence["evidence_status"] == "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED"
+    assert evaluate_player_availability({"availability": evidence}).status == AVAILABILITY_UNVERIFIED
 
 
-def test_nfl_clearance_without_event_binding_is_not_clearance():
-    evidence = _nfl_availability("espn_nfl_athlete_clear_2026.json")
+def test_nfl_missing_injuries_section_stays_unverified_after_event_binding():
+    evidence = nfl.bind_availability_to_event(
+        nfl._athlete_availability(
+            "4241459",
+            http_get=lambda *a, **k: _Response({"athlete": {"id": "4241459"}}),
+            captured=CAPTURED,
+        ),
+        team="TEST",
+        event_id="401-test",
+    )
+    assert evidence["evidence_status"] == "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED"
+    assert evaluate_player_availability({"availability": evidence}).status == AVAILABILITY_UNVERIFIED
+
+
+def test_nfl_response_for_another_athlete_cannot_authorize_clearance():
+    evidence = nfl.bind_availability_to_event(
+        _nfl_availability("espn_nfl_athlete_clear_2026.json", athlete_id="4241457"),
+        team="TEST",
+        event_id="401-test",
+    )
+    assert evidence["evidence_status"] == "ATHLETE_IDENTITY_UNVERIFIED"
+    assert evaluate_player_availability({"availability": evidence}).status == AVAILABILITY_UNVERIFIED
+
+
+def test_nfl_unbound_empty_report_remains_unverified():
+    evidence = _nfl_availability("espn_nfl_athlete_clear_2026.json", athlete_id="4241459")
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_UNVERIFIED
-    assert decision.reason == "AVAILABILITY_PROVENANCE_INCOMPLETE"
-    assert set(decision.provenance["missing"]) == {"event_id", "team"}
+    assert decision.reason == "AVAILABILITY_EVIDENCE_OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED"
+
 
 
 def test_nfl_out_designation_rules_the_player_out():
@@ -429,7 +452,7 @@ def test_nfl_out_designation_rules_the_player_out():
 
 
 def test_nfl_unparsed_designation_is_unverified():
-    evidence = _nfl_availability("espn_nfl_athlete_unparsed_2026.json")
+    evidence = _nfl_availability("espn_nfl_athlete_unparsed_2026.json", athlete_id="4241458")
     assert evidence["evidence_status"] == "RETRIEVED"
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_UNVERIFIED

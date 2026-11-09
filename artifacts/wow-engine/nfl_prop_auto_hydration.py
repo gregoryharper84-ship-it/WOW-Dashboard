@@ -727,7 +727,11 @@ def _athlete_availability(
         "source": AVAILABILITY_SOURCE,
         "captured_at": captured.isoformat(),
         "evidence_status": "RETRIEVED",
-        "fresh": True,
+        # A fetch timestamp is not an independently published injury-report
+        # timestamp. The athlete-profile endpoint does not certify a complete
+        # official report, even when its injuries list is empty.
+        "fresh": False,
+        "report_complete": False,
         "athlete_id": athlete_id,
     }
     payload: Mapping[str, Any] | None = None
@@ -753,18 +757,27 @@ def _athlete_availability(
             "retrieval_failures": failures[-3:],
         }
     base["source_endpoint"] = endpoint_used
-    entries = _injury_entries(payload)
-    if not entries:
-        # No active designation on the official athlete record is a participation
-        # basis, not a missing one: the record was read and is complete, and it
-        # names no restriction. It is still only the reported-injury dimension.
+    athlete = payload.get("athlete") if isinstance(payload.get("athlete"), Mapping) else payload
+    provider_id = str(athlete.get("id") or "").strip() if isinstance(athlete, Mapping) else ""
+    if provider_id != str(athlete_id):
         return {
             **base,
-            "status": "AVAILABLE",
+            "status": "UNVERIFIED",
             "designation": None,
-            "basis": "FRESH_OFFICIAL_REPORT_UNLISTED",
-            "report_complete": True,
-            "reason": "NO_ACTIVE_DESIGNATION_ON_OFFICIAL_REPORT",
+            "evidence_status": "ATHLETE_IDENTITY_UNVERIFIED",
+            "reason": "INJURY_SOURCE_ATHLETE_IDENTITY_MISMATCH",
+        }
+    entries = _injury_entries(payload)
+    if not entries:
+        # Missing/empty athlete-profile injuries are NOT proof that the current
+        # complete team injury report was retrieved. Avoid false AVAILABLE
+        # even after valid event/team identity binding.
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED",
+            "reason": "COMPLETE_PUBLISHED_INJURY_REPORT_NOT_VERIFIED",
         }
     latest = max(entries, key=lambda entry: str(entry.get("date") or ""))
     designation = normalize_designation(latest.get("status")) or normalize_designation(latest.get("type"))

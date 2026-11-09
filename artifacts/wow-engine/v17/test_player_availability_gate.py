@@ -237,7 +237,7 @@ def test_injury_report_designation_is_captured_into_role_evidence():
     assert evaluate_player_availability({"availability": availability}).status == AVAILABILITY_UNAVAILABLE
 
 
-def test_injury_report_without_designation_is_available_evidence():
+def test_athlete_profile_without_report_cannot_clear_even_after_event_binding():
     from datetime import datetime, timezone
 
     availability = hydration._athlete_availability(
@@ -250,7 +250,9 @@ def test_injury_report_without_designation_is_available_evidence():
     # resolved target is what completes the provenance contract.
     assert evaluate_player_availability({"availability": availability}).status == AVAILABILITY_UNVERIFIED
     bound = hydration.bind_availability_to_event(availability, team="TEST", event_id="401-test")
-    assert evaluate_player_availability({"availability": bound}).status == AVAILABILITY_AVAILABLE
+    assert evaluate_player_availability({"availability": bound}).status == AVAILABILITY_UNVERIFIED
+    assert bound["evidence_status"] == "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED"
+    assert bound["report_complete"] is False
 
 
 def test_injury_report_retrieval_failure_is_unverified_evidence():
