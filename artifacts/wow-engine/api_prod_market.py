@@ -845,6 +845,17 @@ def score_prop(
 
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
+    # The fitted artifact/calibrator/pregame corpus must be bound to this
+    # server-owned inference identity before the numerical model is invoked.
+    from v17.prop_action_model_evidence_boundary import require_prop_action_triad
+    require_prop_action_triad(
+        db=prod.get_client(),
+        req=req,
+        route_artifact=route_artifact,
+        inference_request=inference_request,
+        scored_at=scored_at,
+        period=_prop_period(req.stat_type),
+    )
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
     with _score_stage_timer("market_settlement_resolution", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         raw_market_a = _to_market_quote(req.market_side_a)
