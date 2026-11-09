@@ -187,7 +187,7 @@ def _finite_metric(row: Mapping[str, Any], key: str, lo: float, hi: float) -> bo
 def _matches_identity(row: Mapping[str, Any], scope: ModelBundleScope) -> bool:
     return (
         _text(row.get("model_kind")) == scope.model_kind
-        and _text(row.get("sport")).upper() == scope.sport.upper()
+        and _text(row.get("sport")).upper() == _text(scope.sport).upper()
         and _text(row.get("model_family")) == scope.model_family
         and _text(row.get("model_artifact_version")) == scope.model_artifact_version
         and _text(row.get("feature_schema_version")) == scope.feature_schema_version
@@ -325,6 +325,21 @@ def assess_model_bundle(
     a valid artifact cannot stand in for its calibrator or pregame corpus.
     This function deliberately has no database access, mutation or model fit.
     """
+    if not isinstance(scope, ModelBundleScope):
+        return ModelBundleAssessment(
+            model_kind="UNKNOWN",
+            sport="",
+            market_family=None,
+            model_family="",
+            model_artifact_version="",
+            status="BLOCKED",
+            blockers=("MODEL_BUNDLE_ROUTE_UNSUPPORTED",),
+            artifact_valid=False,
+            calibrator_valid=False,
+            pregame_corpus_valid=False,
+            bundle_complete=False,
+        )
+
     blockers: list[str] = []
     supported = (
         isinstance(scope, ModelBundleScope)
