@@ -365,8 +365,16 @@ def _read_verification(
     db: Any,
     scope: ModelBundleScope,
     artifact: Mapping[str, Any] | None,
+    calibrator: Mapping[str, Any] | None,
+    pregame_corpus: Mapping[str, Any] | None,
 ) -> tuple[dict[str, dict[str, bool]], str | None]:
-    """Read the immutable verification receipt bound to this exact artifact."""
+    """Verify component-specific attestation, not merely an artifact receipt.
+
+    A team/event artifact certification never attests to *all* future games.
+    Calibrator flags require the exact immutable calibrator ID/checksum; event
+    pregame flags require this event and its snapshot IDs/checksums. Missing
+    bindings remain False even when the artifact receipt's booleans are True.
+    """
     checksum = _text((artifact or {}).get("artifact_checksum")).lower()
     if not checksum:
         return {}, "MODEL_BUNDLE_VERIFICATION_RECEIPT_UNBINDABLE"
@@ -391,14 +399,57 @@ def _read_verification(
         return {}, "MODEL_BUNDLE_VERIFICATION_RECEIPT_READ_FAILED"
     if not rows:
         return {}, "MODEL_BUNDLE_VERIFICATION_RECEIPT_MISSING"
-    payload = rows[0].get("verification_receipt")
+    receipt_row = rows[0]
+    payload = receipt_row.get("verification_receipt")
     if not isinstance(payload, Mapping):
         payload = {}
+
+    # These bindings are intentionally strict: the current generic calibrator
+    # registry does not store a calibrator checksum, and the current game feature
+    # tables do not store all source snapshot identities. Those models therefore
+    # remain held until the missing independent evidence is persisted.
+    calibrator_checksum = _text((calibrator or {}).get("calibrator_checksum")).lower()
+    calibration_row_checksum = _text(receipt_row.get("calibration_sha256")).lower()
+    calibrator_bound = bool(
+        calibrator_checksum
+        and len(calibrator_checksum) == 64
+        and calibrator_checksum == calibration_row_checksum
+        and calibrator_checksum == _text(payload.get("calibrator_sha256")).lower()
+        and _text((calibrator or {}).get("calibrator_id"))
+            == _text(receipt_row.get("calibration_artifact_id"))
+        and _text((calibrator or {}).get("calibrator_id"))
+            == _text(payload.get("calibrator_id"))
+    )
+
+    feature_checksum = _text((pregame_corpus or {}).get("feature_snapshot_sha256")).lower()
+    source_checksum = _text((pregame_corpus or {}).get("source_payload_sha256")).lower()
+    event_bound = bool(
+        scope.official_event_id
+        and _text(payload.get("official_event_id")) == scope.official_event_id
+        and _text((pregame_corpus or {}).get("official_event_id")) == scope.official_event_id
+        and feature_checksum
+        and feature_checksum == _text(payload.get("feature_snapshot_sha256")).lower()
+        and source_checksum
+        and source_checksum == _text(payload.get("source_payload_sha256")).lower()
+        and _text((pregame_corpus or {}).get("feature_snapshot_id"))
+            == _text(payload.get("feature_snapshot_id"))
+        and _text((pregame_corpus or {}).get("source_snapshot_id"))
+            == _text(payload.get("source_snapshot_id"))
+        and _text(payload.get("event_start_time")) == scope.event_start_time
+    )
     return {
-        component: {
-            field: payload.get(key) is True for field, key in bindings.items()
-        }
-        for component, bindings in _VERIFICATION_BINDINGS.items()
+        "artifact": {
+            field: payload.get(key) is True
+            for field, key in _VERIFICATION_BINDINGS["artifact"].items()
+        },
+        "calibrator": {
+            field: calibrator_bound and payload.get(key) is True
+            for field, key in _VERIFICATION_BINDINGS["calibrator"].items()
+        },
+        "pregame_corpus": {
+            field: event_bound and payload.get(key) is True
+            for field, key in _VERIFICATION_BINDINGS["pregame_corpus"].items()
+        },
     }, None
 
 
@@ -437,7 +488,9 @@ def read_model_evidence_bundle(db: Any, scope: ModelBundleScope) -> RegistryEvid
         "calibrator": calibrator_read,
         "pregame_corpus": pregame_read,
     }
-    verification, verification_blocker = _read_verification(db, scope, artifact_read.row)
+    verification, verification_blocker = _read_verification(
+        db, scope, artifact_read.row, calibrator_read.row, pregame_read.row
+    )
     for component, read in reads.items():
         if read.row is None:
             continue
