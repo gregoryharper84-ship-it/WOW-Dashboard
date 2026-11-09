@@ -129,6 +129,8 @@ def audit_research_card(
         raise ValueError("RESEARCH_CARD_RECORD_NOT_OBJECT")
     board_blockers: list[str] = []
     final_keys = Counter(_key(r) for r in source_finals)
+    pregame_receipts = Counter(_name(r.get("pregame_receipt_id")) for r in source_picks if _name(r.get("pregame_receipt_id")))
+    settlement_receipts = Counter(_name(r.get("settlement_receipt_id")) for r in source_finals if _name(r.get("settlement_receipt_id")))
     final_lookup = {_key(r): r for r in source_finals}
     pick_keys = Counter((*_key(r), _name(r.get("selection_role")).upper()) for r in source_picks)
     primary_keys = {_key(r) for r in source_picks if _name(r.get("selection_role")).upper() == "PREFERRED"}
@@ -167,11 +169,17 @@ def audit_research_card(
             board_blockers.append("DUPLICATE_CARD_ROLE_FOR_EVENT")
         if role == "UPSET_WATCH" and _name(forecast.get("selected_side")).casefold() == preferred_sides.get((sport, event_id)):
             blocked.append("UPSET_WATCH_NOT_ALTERNATIVE")
+        if pregame_receipts[_name(forecast.get("pregame_receipt_id"))] > 1:
+            blocked.append("DUPLICATE_PREGAME_RECEIPT_ID")
+            board_blockers.append("DUPLICATE_PREGAME_RECEIPT_ID")
         blocked.extend(_verify_pick(forecast))
         final = final_lookup.get((sport, event_id))
         if final_keys[(sport, event_id)] > 1:
             blocked.append("DUPLICATE_OFFICIAL_FINAL")
             board_blockers.append("DUPLICATE_OFFICIAL_FINAL")
+        if final is not None and settlement_receipts[_name(final.get("settlement_receipt_id"))] > 1:
+            blocked.append("DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT_ID")
+            board_blockers.append("DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT_ID")
         blocked.extend(_verify_final(forecast, final))
         if manifest_lookup and (sport, event_id) in manifest_lookup and not _same_event(forecast, manifest_lookup[(sport, event_id)]):
             blocked.append("OFFICIAL_SLATE_IDENTITY_CONFLICT")

@@ -186,3 +186,20 @@ def test_upset_watch_same_side_as_primary_is_held_not_double_counted():
     assert report['upset_watch']['graded'] == 0
     assert report['upset_pair_comparison']['matched_events'] == 0
     assert 'UPSET_WATCH_NOT_ALTERNATIVE' in report['rows'][1]['blockers']
+
+
+def test_reused_pregame_receipt_across_events_cannot_grade_two_games():
+    first = pick()
+    second = pick('NBA', 'nba-b', pregame_receipt_id=first['pregame_receipt_id'])
+    report = audit_research_card([first, second],
+        [result(), result('NBA', 'nba-b')])
+    assert report['preferred']['graded'] == 0
+    assert 'DUPLICATE_PREGAME_RECEIPT_ID' in report['board_blockers']
+
+
+def test_reused_official_settlement_receipt_across_events_cannot_grade_two_games():
+    first = result()
+    second = result('NHL', 'nhl-c', settlement_receipt_id=first['settlement_receipt_id'])
+    report = audit_research_card([pick(), pick('NHL', 'nhl-c')], [first, second])
+    assert report['preferred']['graded'] == 0
+    assert 'DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT_ID' in report['board_blockers']
