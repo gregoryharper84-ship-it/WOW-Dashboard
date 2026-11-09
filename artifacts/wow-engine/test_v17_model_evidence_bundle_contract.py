@@ -18,6 +18,7 @@ from v17.model_evidence_bundle_contract import (
     assess_model_bundle,
 )
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
+from v17.team_event_model_development_manifest import TEAM_EVENT_MODEL_DEVELOPMENT
 
 
 CHECKSUM = "a" * 64
@@ -108,6 +109,12 @@ def test_contract_requires_triad_for_every_declared_team_event_sport():
     assert set(COMPONENTS) == {"artifact", "calibrator", "pregame_corpus"}
     assert MODEL_KINDS == {"TEAM_EVENT", "PLAYER_PROP", "WEATHER_CONTRACT"}
     assert CAN_EXECUTE is False
+    assert all(
+        lane.required_evidence_components == COMPONENTS
+        and lane.as_dict()["required_evidence_components"] == list(COMPONENTS)
+        and lane.as_dict()["bundle_provenance_verified"] is False
+        for lane in TEAM_EVENT_MODEL_DEVELOPMENT.values()
+    )
 
     for sport in EXPECTED_TEAM_EVENT_SPORTS:
         scope, artifact, calibrator, pregame = _valid(sport=sport)
