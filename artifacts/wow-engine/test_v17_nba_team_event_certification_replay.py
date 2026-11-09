@@ -365,3 +365,19 @@ def test_team_event_replay_endpoint_exposes_nba_artifact_lane_without_promotion(
     assert report["automatic_promotion"] is False
     assert report["probability_publishable"] is False
     assert report["can_execute"] is False
+
+
+
+def test_nba_replay_holds_when_calibration_metadata_overlaps_holdout():
+    tables = _fixture()
+    tables["wow_basketball_team_event_certification"][0]["certification_notes"][
+        "calibration_holdout_overlap_rows"
+    ] = 1
+    report = run_nba_team_event_certification_replay(_DB(tables))
+
+    assert report["numerical_replay_status"] == "PASS"
+    assert report["calibrator_fit_cohort_metadata_valid"] is False
+    assert report["calibrator_ready"] is False
+    assert report["exact_bundle_match"] is False
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
