@@ -41,13 +41,21 @@ _REQUIRED_COLUMNS = ("game_id", "game_date", "home_id", "away_id", "game_date_ti
 
 
 class NCAABEventIdentityError(RuntimeError):
+    """Typed fail-closed NCAAB schedule identity error, never a model fallback."""
+
     def __init__(self, code: str, detail: str = ""):
+        """Preserve the canonical failure code separately from source detail."""
         super().__init__(detail or code)
         self.code = code
         self.detail = detail
 
 
 def _aware(value: Any) -> datetime:
+    """Require a timezone-aware event tip and normalize it to UTC.
+
+    Raises:
+        NCAABEventIdentityError: For a missing, invalid or naive timestamp.
+    """
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
@@ -58,6 +66,7 @@ def _aware(value: Any) -> datetime:
 
 
 def _strip_espn(value: Any) -> str:
+    """Normalize an ESPN ID alias without inventing or coercing an identifier."""
     token = str(value or "").strip()
     return token.removeprefix("espn-").strip()
 
@@ -122,6 +131,11 @@ def _schedule_rows(
     fetcher: Any = None,
     now_monotonic: float | None = None,
 ) -> list[Mapping[str, Any]]:
+    """Fetch cached season rows or re-raise a short-lived typed source failure.
+
+    The per-season lock ensures a failing upstream read cannot multiply into
+    one network timeout per discovered event. Fixture fetchers bypass caches.
+    """
     # Frozen fixtures bypass the production source cache.
     if fetcher is not None:
         return list(fetcher(int(year)))
@@ -173,6 +187,14 @@ def resolve_ncaab_current_event_identity(
     away_team_alias: str,
     fetcher: Any = None,
 ) -> dict[str, Any]:
+    """Resolve a unique source-valid, ordered-team schedule tip within 30m.
+
+    An event ID is evidence of identity only. This never certifies a fitted
+    model, ranks a pick, publishes a probability or grants wager execution.
+
+    Raises:
+        NCAABEventIdentityError: On invalid, absent, ambiguous or stale proof.
+    """
     event_time = _aware(event_start_time)
     home_id = _strip_espn(home_team_alias)
     away_id = _strip_espn(away_team_alias)
@@ -231,6 +253,7 @@ def resolve_ncaab_current_event_identity(
 
 
 def reset_cache() -> None:
+    """Clear positive, negative and single-flight state for a fresh read."""
     with _CACHE_LOCK:
         _CACHE.clear()
         _ERROR_CACHE.clear()

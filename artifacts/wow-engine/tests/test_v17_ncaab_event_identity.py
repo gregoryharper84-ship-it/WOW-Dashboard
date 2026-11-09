@@ -407,3 +407,167 @@ def test_rate_limit_is_typed_and_negatively_cached(monkeypatch):
         assert cached.value.code == "NCAAB_SCHEDULE_SOURCE_RATE_LIMITED"
     assert len(calls) == 1
     identity.reset_cache()
+
+
+@pytest.mark.parametrize(
+    ("offset_seconds", "resolved"),
+    [(1800, True), (1801, False), (-1800, True), (-1801, False)],
+)
+def test_tip_drift_exact_boundary_stays_fail_closed(offset_seconds, resolved):
+    """An inclusive 30m boundary must not accept one extra second."""
+    from datetime import timedelta
+    tip = datetime(2026, 11, 10, tzinfo=timezone.utc) + timedelta(seconds=offset_seconds)
+    schedule = [{**NOV9_SCHEDULE[0], "game_date_time": tip.isoformat()}]
+    args = dict(
+        event_start_time="2026-11-10T00:00:00Z",
+        home_team_alias="2633", away_team_alias="2515",
+        fetcher=lambda _year: schedule,
+    )
+    if resolved:
+        row = identity.resolve_ncaab_current_event_identity(**args)
+        assert row["event_id"] == "espn-401906849"
+        assert row["identity_tip_drift_seconds"] == 1800
+        assert row["probability_publishable"] is False
+    else:
+        with pytest.raises(identity.NCAABEventIdentityError) as exc:
+            identity.resolve_ncaab_current_event_identity(**args)
+        assert exc.value.code == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_typed_negative_cache_expires_and_source_can_recover(monkeypatch):
+    """A recovered source must be fetched after 30s, never pinned in error."""
+    identity.reset_cache()
+    clock = [100.0]
+    calls = []
+    def fetch(_year):
+        calls.append(clock[0])
+        if len(calls) == 1:
+            raise identity.NCAABEventIdentityError("NCAAB_SCHEDULE_SOURCE_RATE_LIMITED")
+        return list(NOV9_SCHEDULE)
+    monkeypatch.setattr(identity.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(identity, "fetch_ncaab_schedule", fetch)
+    try:
+        with pytest.raises(identity.NCAABEventIdentityError) as first:
+            identity._schedule_rows(2027)
+        assert first.value.code == "NCAAB_SCHEDULE_SOURCE_RATE_LIMITED"
+        clock[0] = 129.999
+        with pytest.raises(identity.NCAABEventIdentityError):
+            identity._schedule_rows(2027)
+        assert len(calls) == 1
+        clock[0] = 130.001
+        recovered = identity._schedule_rows(2027)
+        assert recovered[0]["game_id"] == "401906849"
+        assert len(calls) == 2
+        clock[0] = 131.0
+        assert identity._schedule_rows(2027) == recovered
+        assert len(calls) == 2
+    finally:
+        identity.reset_cache()
+
+
+def test_held_ncaab_routed_identity_survives_daily_persisted_detail(monkeypatch):
+    """The real Daily row serializer must retain schedule proof with no model."""
+    from types import SimpleNamespace
+    from v17.daily_response_contract import persist_row_detail
+    from v17.daily_snapshot_runtime import _terminal_row
+
+    original = identity.resolve_ncaab_current_event_identity
+    monkeypatch.setattr(
+        identity, "resolve_ncaab_current_event_identity",
+        lambda **kwargs: original(**{**kwargs, "fetcher": _fetch}),
+    )
+    event = canonicalize_ncaab_discovery_identity(_alias_event())
+    inventory = DiscoveryInventory(
+        requested_slate_date="2026-11-09", requested_timezone="America/New_York",
+        events=[event],
+    )
+    routed = route_discovered_slate(
+        inventory,
+        resolve_model=lambda _event: None,
+        score_row=lambda *_args, **_kwargs: pytest.fail("no fitted model"),
+    )
+    assert len(routed) == 1
+    assert routed[0].bucket == MODEL_UNAVAILABLE
+    data = routed[0].as_dict()
+    assert data["canonical_identity_schedule_game_id"] == "401906849"
+    assert data["canonical_identity_schedule_tip_utc"] == "2026-11-10T00:00:00+00:00"
+    assert data["canonical_identity_tip_drift_seconds"] == 0
+    assert data["canonical_identity_home_team_id"] == "espn-2633"
+    assert data["canonical_identity_away_team_id"] == "espn-2515"
+    assert data["canonical_identity_source_asset"].endswith("mbb_schedule_2027.csv")
+    assert data["rank_eligible"] is False
+    assert data["probability_publishable"] is False
+
+    # Exact wrapper used by the production cross-sport parity handoff:
+    # the five-key identity is deliberately compact, but "result" is
+    # the full routed row and is written into immutable Daily detail.
+    row = _terminal_row(
+        "MONEYLINE",
+        {key: data.get(key) for key in (
+            "official_event_id", "commence_time_utc", "home_team", "away_team", "sport"
+        )},
+        data,
+        {"final_terminal": "HELD"},
+    )
+    class CaptureDB:
+        def __init__(self):
+            self.rows = []
+            self.selecting = False
+        def table(self, _name):
+            return self
+        def upsert(self, rows, **_kwargs):
+            self.rows = rows
+            self.selecting = False
+            return self
+        def select(self, *_args):
+            self.selecting = True
+            return self
+        def eq(self, *_args):
+            return self
+        def order(self, *_args):
+            return self
+        def range(self, *_args):
+            return self
+        def execute(self):
+            return SimpleNamespace(
+                data=[{"row_index": r["row_index"]} for r in self.rows]
+                if self.selecting else []
+            )
+
+    db = CaptureDB()
+    receipt = persist_row_detail(db, run_id="ncaab-proof-regression", rows=[row])
+    assert receipt["status"] == "PERSISTED"
+    stored = db.rows[0]
+    assert stored["row_status"] == "HELD"
+    result = stored["detail"]["result"]
+    for key in (
+        "canonical_identity_schedule_game_id",
+        "canonical_identity_schedule_tip_utc",
+        "canonical_identity_tip_drift_seconds",
+        "canonical_identity_home_team_id",
+        "canonical_identity_away_team_id",
+        "canonical_identity_source_asset",
+    ):
+        assert result[key] == data[key]
+    assert result["model_status"] == MODEL_UNAVAILABLE
+    assert result["rank_eligible"] is False
+    assert result["probability_publishable"] is False
+    assert stored["can_execute"] is False
+
+
+def test_unresolved_ncaab_exposes_only_typed_blocker_not_untrusted_raw_payload():
+    """The persisted hold must neither leak source prices nor forge proof."""
+    event = _alias_event()
+    raw = dict(event.raw)
+    raw.update({
+        "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+        "canonical_identity_blocker": "NCAAB_CANONICAL_EVENT_NOT_FOUND",
+        "canonical_identity_source_asset": "forged-source",
+        "price": -999,
+    })
+    from dataclasses import replace
+    unresolved = replace(event, raw=raw, official_event_id=None)
+    data = unresolved.identity()
+    assert data["canonical_identity_blocker"] == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
+    assert "canonical_identity_source_asset" not in data
+    assert "price" not in data
