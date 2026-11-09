@@ -157,3 +157,47 @@ def test_no_synthetic_research_result_can_publish():
     assert r.PROBABILITY_PUBLISHABLE is False
     assert r.PROMOTION_AUTHORIZED is False
     assert r.TERMINAL_AUTHORITY == "V17_TERMINAL_REDUCER"
+
+
+def test_reused_output_directory_cannot_upload_stale_receipt(tmp_path):
+    manifest, _ = _fixture(tmp_path)
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "research_tool_receipt.json").write_text('{"old":true}')
+    with pytest.raises(r.ResearchHold, match="RESEARCH_OUTPUT_ROOT_NOT_EMPTY"):
+        r.ensure_safe_output_locations(manifest, out, tmp_path / "tracking")
+
+
+def test_source_inside_output_and_recursive_tracking_rejected(tmp_path):
+    manifest, _ = _fixture(tmp_path)
+    with pytest.raises(r.ResearchHold, match="RESEARCH_OUTPUT_OVERLAPS_INPUT"):
+        r.ensure_safe_output_locations(manifest, tmp_path, tmp_path.parent / "tracking")
+    out = tmp_path / "fresh_reports"
+    with pytest.raises(r.ResearchHold, match="RESEARCH_TRACKING_OVERLAPS_OUTPUT"):
+        r.ensure_safe_output_locations(manifest, out, out / "mlruns")
+    with pytest.raises(r.ResearchHold, match="RESEARCH_TRACKING_OVERLAPS_OUTPUT"):
+        r.ensure_safe_output_locations(manifest, out / "reports", out)
+
+
+def test_naive_issued_at_rejected_as_typed_hold(tmp_path):
+    _, rows = _fixture(tmp_path)
+    rows[0]["forecast_issued_at"] = "2024-09-14T19:00:00"
+    manifest, _ = _fixture(tmp_path, rows)
+    with pytest.raises(r.ResearchHold, match="RESEARCH_TIMESTAMP_INVALID"):
+        r.load_cohort(manifest)
+
+
+def test_malformed_input_schema_fails_closed(tmp_path):
+    manifest, _ = _fixture(tmp_path)
+    rows = list(csv.DictReader((tmp_path / "predictions.csv").open()))
+    for row in rows:
+        row.pop("actual")
+    with (tmp_path / "predictions.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    data = json.loads(manifest.read_text())
+    data["predictions"]["sha256"] = sha256((tmp_path / "predictions.csv").read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(r.ResearchHold, match="RESEARCH_PREDICTION_SCHEMA_INVALID"):
+        r.load_cohort(manifest)
