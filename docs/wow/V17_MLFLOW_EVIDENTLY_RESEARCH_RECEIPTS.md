@@ -33,7 +33,7 @@ The already-declared research dependency set provides MLflow 3 and Evidently 0.7
     python -m pip install -r artifacts/wow-engine/requirements-research.txt
     python artifacts/wow-engine/research/v17_calibration_research_receipt.py       /path/to/workspace/manifest.json /path/to/experiment/reports       --mlflow-store /path/to/experiment/mlruns
 
-Files produced only after passing input validation and successfully calling both tools:
+The CLI requires an empty, separate report directory and a non-overlapping local MLflow store. After input validation, it writes the Evidently reports and calibration metrics before attempting the MLflow run. A failed MLflow call may leave partial reports but **cannot produce a successful research_tool_receipt.json**. Successful runs produce:
 
 - calibration_metrics.json: cohort Brier, log loss, calibration bias, 10-bin ECE and reliability bins.
 - evidently_classification_and_drift.html and .json: a genuine Evidently snapshot of classification quality and probability distribution drift.
