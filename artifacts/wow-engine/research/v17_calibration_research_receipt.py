@@ -41,6 +41,8 @@ def _verified_file(root: Path, entry: dict) -> tuple[Path, str]:
         if not path.is_relative_to(root) or not path.is_file():
             raise ResearchHold("RESEARCH_FILE_OUTSIDE_ROOT")
         digest = sha256(path.read_bytes()).hexdigest()
+    except ResearchHold:
+        raise
     except (OSError, ValueError, RuntimeError):
         raise ResearchHold("RESEARCH_FILE_UNREADABLE") from None
     if digest != expected:
