@@ -41,9 +41,7 @@ def test_final_refresh_issues_a_second_official_read_and_persists_it(monkeypatch
     row = _provisional_row("proof-reacquire")
     provisional = row["evidence"]["role_status"]["availability"]
     provisional_captured = datetime.fromisoformat(provisional["captured_at"])
-    observed_captured = (
-        datetime.now(timezone.utc) + timedelta(seconds=5)
-    ).isoformat()
+    observed_captured = datetime.now(timezone.utc).isoformat()
     recheck, calls = _spy(_confirmed_block(captured_at=observed_captured))
     monkeypatch.setattr(runtime_core, "recheck_provisional_participation", recheck)
 
@@ -72,6 +70,7 @@ def test_final_refresh_issues_a_second_official_read_and_persists_it(monkeypatch
     receipt = terminal["acquisition"]["availability_recheck"]
     assert receipt["status"] == "CONFIRMED"
     assert datetime.fromisoformat(receipt["checked_at"]) >= provisional_captured
+    assert datetime.fromisoformat(receipt["checked_at"]) >= datetime.fromisoformat(stored["captured_at"])
 
     assert persisted[0]["blockers"] == []
     assert terminal["terminal_status"] == "COMPLETED"

@@ -164,6 +164,38 @@ def resolve_provisional_recheck(
         and decision.basis == CONFIRMED_STARTER_BASIS
         and decision.requires_revalidation is False
     ):
+        # Positive clearance requires a complete report captured after the
+        # provisional evidence and no later than this recheck's retrieval.
+        # A flag saying fresh cannot authenticate an older/future observation.
+        try:
+            provisional_at = datetime.fromisoformat(
+                str(provisional.get("captured_at") or "").replace("Z", "+00:00")
+            )
+            observed_at = datetime.fromisoformat(
+                str(observed.get("captured_at") or "").replace("Z", "+00:00")
+            )
+            chronological = (
+                provisional_at.utcoffset() is not None
+                and observed_at.utcoffset() is not None
+                and observed_at > provisional_at
+                and (now is None or observed_at <= now)
+            )
+        except (TypeError, ValueError, OverflowError):
+            chronological = False
+        if not chronological:
+            return _hold(
+                observed,
+                status=RECHECK_INCONCLUSIVE,
+                reason="PROVISIONAL_RECHECK_CAPTURE_INVALID_OR_NOT_NEWER",
+                now=now,
+            )
+        if observed.get("report_complete") is not True:
+            return _hold(
+                observed,
+                status=RECHECK_INCONCLUSIVE,
+                reason="PROVISIONAL_RECHECK_REPORT_INCOMPLETE",
+                now=now,
+            )
         return decision, _receipt(
             status=RECHECK_CONFIRMED,
             observed=observed,

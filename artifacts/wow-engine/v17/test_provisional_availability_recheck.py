@@ -90,6 +90,40 @@ def test_still_probable_keeps_the_recheck_blocker():
     assert receipt["status"] == RECHECK_INCONCLUSIVE
 
 
+def test_report_marked_fresh_cannot_reuse_old_or_future_capture():
+    checked = datetime(2026, 11, 9, 21, 5, tzinfo=timezone.utc)
+    for timestamp in (
+        "2026-11-09T11:59:00+00:00",
+        "2026-11-09T12:00:00+00:00",
+        "2026-11-09T22:00:00+00:00",
+        "2026-11-09T21:00:00",
+        "bad-date",
+    ):
+        decision, receipt = resolve_provisional_recheck(
+            provisional=_provisional(),
+            observed=_observed(captured_at=timestamp),
+            now=checked,
+        )
+        assert decision.status != AVAILABILITY_AVAILABLE
+        assert decision.blocker == PLAYER_AVAILABILITY_RECHECK_REQUIRED
+        assert decision.requires_revalidation is True
+        assert receipt["status"] == RECHECK_INCONCLUSIVE
+        assert receipt["reason"] == "PROVISIONAL_RECHECK_CAPTURE_INVALID_OR_NOT_NEWER"
+
+
+def test_report_completeness_is_required_before_positive_clearance():
+    checked = datetime(2026, 11, 9, 21, 5, tzinfo=timezone.utc)
+    for completeness in (None, False):
+        decision, receipt = resolve_provisional_recheck(
+            provisional=_provisional(),
+            observed=_observed(report_complete=completeness),
+            now=checked,
+        )
+        assert decision.status != AVAILABILITY_AVAILABLE
+        assert decision.blocker == PLAYER_AVAILABILITY_RECHECK_REQUIRED
+        assert receipt["status"] == RECHECK_INCONCLUSIVE
+
+
 def test_stale_recheck_evidence_cannot_clear():
     decision, receipt = resolve_provisional_recheck(
         provisional=_provisional(),
