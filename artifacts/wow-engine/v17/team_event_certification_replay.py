@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.team_event_model_development_manifest import development_lane
+from v17.nba_team_event_certification_replay import run_nba_team_event_certification_replay
 
 CAN_EXECUTE = False
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
@@ -391,7 +392,16 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
         receipts = list(getattr(evidence_result, "data", None) or [])
     except Exception:
         receipts = []
-    return build_certification_report(rows, certification_evidence_receipts=receipts)
+    report = build_certification_report(rows, certification_evidence_receipts=receipts)
+    # NBA basketball artifacts are stored outside the D1 candidate registry.
+    # Keep their exact fitted/calibrator/corpus replay visible without converting
+    # a shadow artifact into candidate-bound certification evidence.
+    nba_replay = run_nba_team_event_certification_replay(db)
+    report["nba_team_event_replay"] = nba_replay
+    report["summary"]["nba_team_event_replay_status"] = nba_replay.get("status")
+    report["summary"]["nba_team_event_numerical_replay_status"] = nba_replay.get("numerical_replay_status")
+    report["summary"]["nba_team_event_exact_bundle_match"] = nba_replay.get("exact_bundle_match") is True
+    return report
 
 
 def install_team_event_certification_replay_route(
