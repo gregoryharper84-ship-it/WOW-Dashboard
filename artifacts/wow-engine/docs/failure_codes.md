@@ -595,3 +595,33 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+
+## V17 model evidence triad — runtime boundary (#2536)
+
+These are *evidence-integrity* and *registry infrastructure* failures, not fitted
+capability absence, and must never be collapsed into `MODEL_UNAVAILABLE`.
+The Action terminal reducer labels these `MODEL_EVIDENCE_TRIAD_BLOCKED`.
+Every code below is **not rank eligible** and `can_execute=false`.
+
+| Typed code | Owning lane / detection point | Recovery class | Rank eligible? |
+| --- | --- | --- | --- |
+| `MODEL_BUNDLE_DB_UNAVAILABLE` | Team-event scorer / prop Action, before fitted invocation | PROVIDER_CONFIGURATION: restore authorized read-only registry client | No |
+| `MODEL_BUNDLE_READER_UNAVAILABLE` | Scorer / Action, registry reader import | CODE_REPAIR: publish and independently review exact source reader implementation | No |
+| `MODEL_BUNDLE_READER_READ_FAILED` | Scorer / Action, registered read raises | FAIL_CLOSED: diagnose read-only query and transport; no silent fallback | No |
+| `MODEL_BUNDLE_READER_CONTRACT_INVALID` | Scorer / Action, missing/malformed/mismatched verification assessment | FAIL_CLOSED: repair reader contract | No |
+| `MODEL_BUNDLE_EVIDENCE_UNVERIFIED` | Scorer / Action, partial/unverified triad | FAIL_CLOSED: provide exact immutable receipts | No |
+| `MODEL_BUNDLE_CERTIFICATION_UNAVAILABLE` | Team-event scorer, exact certified identity absent | FAIL_CLOSED: obtain independently certified row | No |
+| `MODEL_BUNDLE_CERTIFICATION_READ_FAILED` | Team-event scorer, certification read failed | FAIL_CLOSED: diagnose DB/query | No |
+| `MODEL_BUNDLE_CERTIFICATION_AMBIGUOUS` | Team-event scorer, multiple matching certified versions | FAIL_CLOSED: resolve controlling exact version | No |
+| `MODEL_BUNDLE_SCOPE_IDENTITY_UNAVAILABLE` | Team-event / Action, incomplete server-controlled identity | FAIL_CLOSED: add exact artifact/model/schema/player identity; never infer | No |
+| `MODEL_BUNDLE_ROUTE_UNSUPPORTED` | Bundle validator, unknown sport/kind/market | FAIL_CLOSED: register exact approved scope | No |
+| `MODEL_BUNDLE_EVENT_OR_PREDICTION_TIME_INVALID` | Bundle validator, invalid pregame chronology | FAIL_CLOSED: verify official kickoff and capture | No |
+| `MODEL_BUNDLE_ARTIFACT_MISSING` / `MODEL_BUNDLE_ARTIFACT_INVALID_OR_UNVERIFIED` | Fitted artifact evidence | FAIL_CLOSED: verify immutable artifact/training provenance | No |
+| `MODEL_BUNDLE_CALIBRATOR_MISSING` / `MODEL_BUNDLE_CALIBRATOR_INVALID_OR_UNVERIFIED` | Calibrator/bounds evidence | FAIL_CLOSED: exact fitted model, holdout and bounds verification | No |
+| `MODEL_BUNDLE_PREGAME_CORPUS_MISSING` / `MODEL_BUNDLE_PREGAME_CORPUS_INVALID_OR_UNVERIFIED` | Event-specific pre-lock corpus | FAIL_CLOSED: source-backed immutable exact-event pregame replay | No |
+
+The `READY_FOR_INDEPENDENT_REVIEW` assessment is **not** a release,
+certification, scoring-probability or publication approval. V17 scientific
+acceptance, calibrated lower bounds and `V17_TERMINAL_REDUCER` remain separate
+requirements.
