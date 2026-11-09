@@ -170,7 +170,7 @@ def test_reused_output_directory_cannot_upload_stale_receipt(tmp_path):
 
 def test_source_inside_output_and_recursive_tracking_rejected(tmp_path):
     manifest, _ = _fixture(tmp_path)
-    with pytest.raises(r.ResearchHold, match="RESEARCH_OUTPUT_OVERLAPS_INPUT"):
+    with pytest.raises(r.ResearchHold, match="RESEARCH_OUTPUT_ROOT_INVALID"):
         r.ensure_safe_output_locations(manifest, tmp_path, tmp_path.parent / "tracking")
     out = tmp_path / "fresh_reports"
     with pytest.raises(r.ResearchHold, match="RESEARCH_TRACKING_OVERLAPS_OUTPUT"):
