@@ -269,9 +269,26 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
     result["evidence_triad_required"] = True
     result["evidence_triad_status"] = triad.get("status")
     if triad.get("bundle_complete") is not True:
+        # Preserve market/fee reconciliation as evidence, but never expose a
+        # publishable edge or QUALIFIED_EDGE terminal-style status when the
+        # controlling fitted weather probability lacks its model triad.
+        # The weather specialist still owns p_yes/p_no and calibrated bounds.
+        result["pre_triad_market_edge_status"] = result["status"]
+        result["pre_triad_market_edge_code"] = result["code"]
+        result["market_edge_evidence_publishable"] = result["edge_publishable"]
         result["probability_publishable"] = False
+        result["edge_publishable"] = False
         result["rank_eligible"] = False
-        result["probability_blockers"] = list(triad.get("blockers") or ())
+        result["status"] = "WATCH"
+        result["code"] = "V17_WEATHER_MODEL_EVIDENCE_TRIAD_HELD"
+        result["probability_blockers"] = list(dict.fromkeys([
+            *result["probability_blockers"],
+            *(triad.get("blockers") or ()),
+        ]))
+        result["edge_blockers"] = list(dict.fromkeys([
+            *result["edge_blockers"],
+            "WEATHER_MODEL_EVIDENCE_TRIAD_NOT_PROVEN_FOR_EDGE",
+        ]))
     return result
 
 
