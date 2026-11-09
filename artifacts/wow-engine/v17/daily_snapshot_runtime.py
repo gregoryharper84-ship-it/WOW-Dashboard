@@ -150,6 +150,7 @@ def _prop_manifest_rows(
     requested_timezone: str,
     *,
     page_size: int = 250,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Read the complete canonical slate manifest without a first-page truncation."""
     selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
@@ -165,18 +166,45 @@ def _prop_manifest_rows(
             # read preserves prior behavior while production Supabase uses range().
             batch = query.limit(page_size).execute().data or []
         batch = [dict(row) for row in batch]
-        manifest.extend(
-            row for row in batch
-            if not row.get("blockers") and _future(row.get("event_start_time")) and _matching_slate(row, requested_date, requested_timezone)
-        )
+        for row in batch:
+            blocked = bool(row.get("blockers"))
+            if blocked:
+                reason = "EVIDENCE_BLOCKED"
+            elif not _future(row.get("event_start_time")):
+                reason = "EVENT_NOT_PREGAME"
+            elif not _matching_slate(row, requested_date, requested_timezone):
+                reason = "NOT_REQUESTED_SLATE"
+            else:
+                manifest.append(row)
+                continue
+            # An acquired candidate that cannot be scored must still leave an
+            # explicit, inspectable reason. Dropping it silently made a run look
+            # complete while candidates had already disappeared from the board.
+            if exclusions is not None:
+                snapshot_id = str(row.get("source_snapshot_id") or "")
+                if snapshot_id and any(item.get("source_snapshot_id") == snapshot_id for item in exclusions):
+                    continue
+                exclusions.append({
+                    **{key: row.get(key) for key in (
+                        "source_snapshot_id", "event_id", "sport", "player", "stat_type", "line",
+                    )},
+                    "reason": reason,
+                    "blockers": [str(code) for code in (row.get("blockers") or [])][:4],
+                    "can_execute": False,
+                })
         if not callable(ranged) or len(batch) < page_size:
             break
         offset += page_size
     return canonicalize_prop_manifest(manifest)
 
 
-def _prop_rows(db: Any, requested_date: str, requested_timezone: str, limit: int) -> list[dict[str, Any]]:
-    return _prop_manifest_rows(db, requested_date, requested_timezone)[:limit]
+def _prop_rows(
+    db: Any, requested_date: str, requested_timezone: str, limit: int,
+    *, exclusions: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return _prop_manifest_rows(
+        db, requested_date, requested_timezone, exclusions=exclusions
+    )[:limit]
 
 
 def _team_rows(db: Any, requested_date: str, limit: int) -> list[dict[str, Any]]:
@@ -501,10 +529,15 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     requested_lanes = set(req.lanes)
     prop_acquisition: dict[str, Any] | None = None
     prop_manifest: list[dict[str, Any]] = []
+    prop_exclusions: list[dict[str, Any]] = []
+    prop_candidate_accounting: dict[str, Any] | None = None
 
     if "PROPS" in requested_lanes:
         try:
-            prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
+            prop_manifest = _prop_manifest_rows(
+                db, req.requested_slate_date, req.requested_timezone,
+                exclusions=prop_exclusions,
+            )
             prop_rows = prop_manifest[:req.max_props]
         except Exception as exc:
             prop_rows = []
@@ -560,6 +593,35 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                     _props_row_reduction(outcomes),
                 )
             )
+
+    if "PROPS" in requested_lanes:
+        scored_prop_rows = sum(1 for row in rows if row.get("lane") == "PROPS")
+        eligible_not_scored = max(len(prop_manifest) - len(prop_rows), 0)
+        reason_counts: dict[str, int] = {}
+        for exclusion in prop_exclusions:
+            reason = str(exclusion.get("reason") or "UNKNOWN")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if eligible_not_scored:
+            reason_counts["MAX_PROPS_LIMIT"] = (
+                reason_counts.get("MAX_PROPS_LIMIT", 0) + eligible_not_scored
+            )
+        seen = len(prop_manifest) + len(prop_exclusions)
+        accounted = scored_prop_rows + eligible_not_scored + len(prop_exclusions)
+        prop_candidate_accounting = {
+            "manifest_rows_seen": seen,
+            "eligible_rows": len(prop_manifest),
+            "scored_rows": scored_prop_rows,
+            "eligible_not_scored_rows": eligible_not_scored,
+            "excluded_rows": len(prop_exclusions),
+            "accounted_rows": accounted,
+            "excluded_by_reason": reason_counts,
+            "exclusions": prop_exclusions[:50],
+            "exclusions_truncated": max(len(prop_exclusions) - 50, 0),
+            "balanced": accounted == seen,
+            "can_execute": False,
+        }
+        if accounted != seen:
+            blockers.append("RUN_INVALID_PROP_CANDIDATE_ACCOUNTING")
 
     cross_sport_audit: dict[str, Any] | None = None
     if "MONEYLINE" in requested_lanes:
@@ -697,6 +759,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "lane_reconciliation": lane_reconciliation,
         "cross_sport_discovery_audit": cross_sport_audit,
         "prop_acquisition": prop_acquisition,
+        "prop_candidate_accounting": prop_candidate_accounting,
         "row_detail_persistence": detail_persistence,
         "blockers": list(dict.fromkeys(blockers)),
         "can_execute": False,
