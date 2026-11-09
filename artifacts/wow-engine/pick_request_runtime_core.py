@@ -312,6 +312,7 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
                 decision, availability_recheck = resolve_provisional_recheck(
                     provisional=availability.receipt(),
                     observed=observed,
+                    now=now,
                 )
                 if decision.status == AVAILABILITY_UNAVAILABLE:
                     raise ValueError(
@@ -1359,20 +1360,22 @@ def install_pick_request_routes(
                 continue
 
             premodel_blockers: list[str] = []
-            if normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
+            if normalized.get("availability_requires_revalidation") is True:
+                # A provisional official basis (MLB probable starter), or a
+                # recheck that failed to discharge it, names the player for the
+                # game but is not confirmed participation. The obligation is
+                # more specific than plain UNVERIFIED, so it is reported first:
+                # the row may be scored for research, but it cannot enter the
+                # Verified Pool until the final refresh rechecks the same
+                # official source.
+                premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
+                acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
+            elif normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
                 # No official participation evidence was retrieved. Compute the
                 # probability for research, but keep the row out of the Verified
                 # Pool until availability is verified.
                 premodel_blockers.append(PLAYER_AVAILABILITY_UNVERIFIED)
                 acquisition["availability_status"] = AVAILABILITY_UNVERIFIED
-            elif normalized.get("availability_requires_revalidation") is True:
-                # A provisional official basis (MLB probable starter) names the
-                # player for the game but is not confirmed participation. The
-                # row may be scored for research, but it cannot enter the
-                # Verified Pool until the final refresh rechecks the same
-                # official source.
-                premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
-                acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
 
             if normalized.get("availability_recheck") is not None:
                 acquisition["availability_recheck"] = normalized["availability_recheck"]

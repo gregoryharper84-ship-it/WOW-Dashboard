@@ -119,6 +119,7 @@ def _confirmed_block(**overrides) -> dict:
         "source": "MLB_STATS_API_OFFICIAL_STARTER_RECHECK",
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "fresh": True,
+        "evidence_status": "RETRIEVED",
         "report_complete": True,
         "athlete_id": "660271",
         "event_id": "823001",

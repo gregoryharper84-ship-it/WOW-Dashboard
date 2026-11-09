@@ -222,6 +222,33 @@ confirmed starter before first pitch, the recheck will correctly keep the row
 held rather than clear it; that behavior is unverified against live data and
 must be confirmed during the production replay.
 
+### Final-refresh reacquisition proof
+
+A hold is not evidence that a refresh happened, so the refresh is now proven
+separately from the gate. `v17/test_availability_final_refresh_proof.py` drives
+the real route and establishes four behaviors:
+
+- Inside the window, the runtime issues exactly one additional official read,
+  with the sport, player, event start, provisional basis and revalidation flag
+  of the obligation it is discharging.
+- The persisted snapshot carries the newer observation, not the cached one: the
+  confirming `captured_at` is strictly later than the provisional evidence, the
+  source is the official recheck surface, `evidence_status` is `RETRIEVED`,
+  report completeness is retained, and the athlete/event identity is unchanged.
+  The retrieval time is recorded on the recheck receipt.
+- An unchanged observation is detected as unchanged: the row is not promoted,
+  the blocker survives, and the persisted basis stays provisional.
+- A provider timeout at refresh produces `SOURCE_UNAVAILABLE` with the timeout
+  error type and keeps the publication hold.
+
+Outside the window, a research score performs no second read at all, which is
+asserted by call count rather than by outcome alone.
+
+Scope limit: the official responses in this proof are injected. It demonstrates
+a genuine second acquisition at the runtime boundary and correct change
+detection; it does not demonstrate the live provider's pregame confirmation
+shape, which is unverified off-season.
+
 ### Phase 4 — workstream status
 
 | Workstream | Status |
@@ -257,8 +284,8 @@ The control row proves the block is the availability fact, not a broken scorer.
 
 Run from `artifacts/wow-engine` with the project virtualenv:
 
-- Availability, recheck, route and snapshot-durability suites in a focused
-  run: **121 passed**.
+- Availability, recheck, final-refresh proof, route and snapshot-durability
+  suites in a focused run: **125 passed**.
 - Prop + WNBA + snapshot surface, source contracts, pick-request and schema
   suites with the ephemeral Postgres enabled: **1114 passed, 0 skipped**.
   Without a database the same set is **880 passed, 15 skipped**; the 15 are the

@@ -68,10 +68,12 @@ def _receipt(
     observed: Mapping[str, Any],
     reason: str,
     mismatched: list[str] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "status": status,
         "reason": reason,
+        "checked_at": now.isoformat() if now is not None else None,
         "source": str(observed.get("source") or "").strip() or None,
         "captured_at": str(observed.get("captured_at") or "").strip() or None,
         "basis": str(observed.get("basis") or "").strip() or None,
@@ -89,6 +91,7 @@ def _hold(
     status: str,
     reason: str,
     mismatched: list[str] | None = None,
+    now: datetime | None = None,
 ) -> tuple[AvailabilityDecision, dict[str, Any]]:
     """Keep the recheck obligation in place; never read as clearance."""
     decision = AvailabilityDecision(
@@ -107,13 +110,20 @@ def _hold(
         provenance={**_identity(observed), "mismatched_fields": list(mismatched or [])},
         requires_revalidation=True,
     )
-    return decision, _receipt(status=status, observed=observed, reason=reason, mismatched=mismatched)
+    return decision, _receipt(
+        status=status,
+        observed=observed,
+        reason=reason,
+        mismatched=mismatched,
+        now=now,
+    )
 
 
 def resolve_provisional_recheck(
     *,
     provisional: Mapping[str, Any],
     observed: Mapping[str, Any],
+    now: datetime | None = None,
 ) -> tuple[AvailabilityDecision, dict[str, Any]]:
     """Decide whether a fresh official observation discharges the obligation.
 
@@ -138,6 +148,7 @@ def resolve_provisional_recheck(
             status=RECHECK_IDENTITY_MISMATCH,
             reason="PROVISIONAL_RECHECK_IDENTITY_MISMATCH",
             mismatched=mismatched,
+            now=now,
         )
 
     decision = evaluate_player_availability({"availability": dict(observed)})
@@ -146,6 +157,7 @@ def resolve_provisional_recheck(
             status=RECHECK_RULED_OUT,
             observed=observed,
             reason=decision.reason,
+            now=now,
         )
     if (
         decision.status == AVAILABILITY_AVAILABLE
@@ -156,11 +168,13 @@ def resolve_provisional_recheck(
             status=RECHECK_CONFIRMED,
             observed=observed,
             reason="OFFICIAL_BASIS_CONFIRMED_STARTER",
+            now=now,
         )
     return _hold(
         observed,
         status=RECHECK_INCONCLUSIVE,
         reason=f"PROVISIONAL_RECHECK_{decision.reason or 'NOT_CONFIRMED'}",
+        now=now,
     )
 
 

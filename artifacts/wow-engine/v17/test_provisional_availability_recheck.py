@@ -62,9 +62,11 @@ def _observed(**overrides):
 
 
 def test_confirmed_official_start_discharges_the_obligation():
+    checked = datetime(2026, 11, 9, 21, 5, tzinfo=timezone.utc)
     decision, receipt = resolve_provisional_recheck(
         provisional=_provisional(),
         observed=_observed(),
+        now=checked,
     )
 
     assert decision.status == AVAILABILITY_AVAILABLE
@@ -72,6 +74,7 @@ def test_confirmed_official_start_discharges_the_obligation():
     assert decision.requires_revalidation is False
     assert decision.blocker is None
     assert receipt["status"] == RECHECK_CONFIRMED
+    assert receipt["checked_at"] == checked.isoformat()
     assert receipt["can_execute"] is False
 
 
