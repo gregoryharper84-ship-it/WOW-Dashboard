@@ -1,7 +1,7 @@
 """Canonical NCAAB current-event reconciliation for V17 Free-Core.
 
 Free ESPN scoreboard discovery supplies provider aliases only. The canonical
-identity is assigned after a unique team/date match against the open-licensed
+identity is assigned after a unique team/season/scheduled-tip match against the open-licensed
 SportsDataverse men's college basketball schedule already used by WOW's NCAAB
 research lane.
 
@@ -12,6 +12,7 @@ sporting probability, calibration, ranking, or execution authority exists here.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import csv
 import io
 import threading
@@ -29,9 +30,14 @@ SCHEDULE_URL = (
     "espn_mens_college_basketball_schedules/mbb_schedule_{year}.csv"
 )
 _CACHE_TTL_SECONDS = 300.0
+_ERROR_TTL_SECONDS = 30.0
+_MAX_TIP_DRIFT_SECONDS = 1800
+_EASTERN = ZoneInfo("America/New_York")
+_YEAR_LOCKS: dict[int, threading.Lock] = {}
+_ERROR_CACHE: dict[int, tuple[float, str, str]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[int, tuple[float, list[Mapping[str, Any]]]] = {}
-_REQUIRED_COLUMNS = ("game_id", "game_date", "home_id", "away_id")
+_REQUIRED_COLUMNS = ("game_id", "game_date", "home_id", "away_id", "game_date_time", "time_valid")
 
 
 class NCAABEventIdentityError(RuntimeError):
@@ -70,7 +76,7 @@ def fetch_ncaab_schedule(
     year: int,
     *,
     session: Any = requests,
-    timeout: int = 60,
+    timeout: int = 10,
 ) -> list[dict[str, Any]]:
     """Read one open-licensed SportsDataverse MBB schedule release.
 
@@ -113,21 +119,51 @@ def fetch_ncaab_schedule(
 def _schedule_rows(
     year: int,
     *,
-    fetcher: Any = fetch_ncaab_schedule,
+    fetcher: Any = None,
     now_monotonic: float | None = None,
 ) -> list[Mapping[str, Any]]:
-    if fetcher is not fetch_ncaab_schedule:
+    # Frozen fixtures bypass the production source cache.
+    if fetcher is not None:
         return list(fetcher(int(year)))
+    key = int(year)
+    with _CACHE_LOCK:
+        year_lock = _YEAR_LOCKS.setdefault(key, threading.Lock())
+    # Per-season single-flight avoids N repeated 10-second source timeouts.
+    with year_lock:
+        now_value = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        with _CACHE_LOCK:
+            cached = _CACHE.get(key)
+            if cached is not None and now_value - cached[0] <= _CACHE_TTL_SECONDS:
+                return list(cached[1])
+            failure = _ERROR_CACHE.get(key)
+            if failure is not None and now_value - failure[0] <= _ERROR_TTL_SECONDS:
+                raise NCAABEventIdentityError(failure[1], failure[2])
+        try:
+            rows = list(fetch_ncaab_schedule(key))
+        except NCAABEventIdentityError as exc:
+            with _CACHE_LOCK:
+                _ERROR_CACHE[key] = (time.monotonic(), exc.code, exc.detail)
+            raise
+        with _CACHE_LOCK:
+            _CACHE[key] = (time.monotonic(), list(rows))
+            _ERROR_CACHE.pop(key, None)
+        return rows
 
-    now_value = time.monotonic() if now_monotonic is None else float(now_monotonic)
-    with _CACHE_LOCK:
-        cached = _CACHE.get(int(year))
-        if cached is not None and (now_value - cached[0]) <= _CACHE_TTL_SECONDS:
-            return list(cached[1])
-    rows = list(fetch_ncaab_schedule(int(year)))
-    with _CACHE_LOCK:
-        _CACHE[int(year)] = (now_value, list(rows))
-    return rows
+
+def _scheduled_tip_utc(row: Mapping[str, Any]) -> datetime | None:
+    """Schedule game_date_time is documented as America/New_York."""
+    if str(row.get("time_valid") or "").strip().lower() not in ("true", "1"):
+        return None
+    value = str(row.get("game_date_time") or "").strip()
+    if not value:
+        return None
+    try:
+        tip = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if tip.utcoffset() is None:
+        tip = tip.replace(tzinfo=_EASTERN)
+    return tip.astimezone(timezone.utc)
 
 
 def resolve_ncaab_current_event_identity(
@@ -135,7 +171,7 @@ def resolve_ncaab_current_event_identity(
     event_start_time: str,
     home_team_alias: str,
     away_team_alias: str,
-    fetcher: Any = fetch_ncaab_schedule,
+    fetcher: Any = None,
 ) -> dict[str, Any]:
     event_time = _aware(event_start_time)
     home_id = _strip_espn(home_team_alias)
@@ -143,9 +179,8 @@ def resolve_ncaab_current_event_identity(
     if not home_id or not away_id or home_id == away_id:
         raise NCAABEventIdentityError("NCAAB_PROVIDER_TEAM_ALIAS_INVALID")
 
-    # Schedule game_date is the calendar date of the local tip. Allow ±1 UTC
-    # day so an evening North-American game that crosses UTC midnight still
-    # matches, without accepting a different matchup.
+    # Local date is only a prefilter; independent schedule tip within
+    # 30 minutes and ordered team IDs must prove the canonical event.
     candidate_dates = {
         (event_time.date() + timedelta(days=offset)).isoformat()
         for offset in (-1, 0, 1)
@@ -157,7 +192,13 @@ def resolve_ncaab_current_event_identity(
         and str(row.get("game_date") or "")[:10] in candidate_dates
         and _strip_espn(row.get("home_id")) == home_id
         and _strip_espn(row.get("away_id")) == away_id
-        and str(row.get("game_id") or "").strip()
+        and str(row.get("game_id") or "").strip().isdecimal()
+        and (
+            not str(row.get("season") or "").strip()
+            or str(row.get("season")).strip() == str(schedule_season_year(event_time))
+        )
+        and (tip := _scheduled_tip_utc(row)) is not None
+        and abs((tip - event_time).total_seconds()) <= _MAX_TIP_DRIFT_SECONDS
     ]
     ids = {str(row.get("game_id") or "").strip() for row in matches}
     if not ids:
@@ -173,6 +214,9 @@ def resolve_ncaab_current_event_identity(
     return {
         "event_id": f"espn-{event_id.removeprefix('espn-')}",
         "game_date": str(selected.get("game_date") or "")[:10],
+        "matched_schedule_game_id": event_id,
+        "matched_schedule_tip_utc": _scheduled_tip_utc(selected).isoformat(),
+        "identity_tip_drift_seconds": abs((_scheduled_tip_utc(selected) - event_time).total_seconds()),
         "home_team_id": f"espn-{home_id}",
         "away_team_id": f"espn-{away_id}",
         "identity_provider": SOURCE_PROVIDER,
@@ -188,6 +232,8 @@ def resolve_ncaab_current_event_identity(
 def reset_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+        _ERROR_CACHE.clear()
+        _YEAR_LOCKS.clear()
 
 
 __all__ = [

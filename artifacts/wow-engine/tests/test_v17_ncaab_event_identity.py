@@ -21,11 +21,14 @@ from v17.cross_sport_winner_discovery import (
 )
 from v17.team_event_sport_parity import canonicalize_ncaab_discovery_identity
 
-# Exact SportsDataverse MBB rows for the 2026-11-09 diagnostic matchups.
+# Synthetic tip-time fixtures retaining the reported Nov 9 schedule IDs.
+# These test times are not assertions about the real fixtures.
 NOV9_SCHEDULE = [
     {
         "game_id": "401906849",
         "game_date": "2026-11-09",
+        "game_date_time": "2026-11-09 19:00:00-05:00",
+        "time_valid": True,
         "home_id": "2633",
         "away_id": "2515",
         "home_display_name": "Tennessee Volunteers",
@@ -34,6 +37,8 @@ NOV9_SCHEDULE = [
     {
         "game_id": "401906865",
         "game_date": "2026-11-09",
+        "game_date_time": "2026-11-09 19:00:00-05:00",
+        "time_valid": True,
         "home_id": "251",
         "away_id": "2755",
         "home_display_name": "Texas Longhorns",
@@ -42,6 +47,8 @@ NOV9_SCHEDULE = [
     {
         "game_id": "401920686",
         "game_date": "2026-11-09",
+        "game_date_time": "2026-11-09 19:00:00-05:00",
+        "time_valid": True,
         "home_id": "41",
         "away_id": "2681",
         "home_display_name": "UConn Huskies",
@@ -50,6 +57,8 @@ NOV9_SCHEDULE = [
     {
         "game_id": "401921720",
         "game_date": "2026-11-09",
+        "game_date_time": "2026-11-09 19:00:00-05:00",
+        "time_valid": True,
         "home_id": "2390",
         "away_id": "2454",
         "home_display_name": "Miami Hurricanes",
@@ -58,6 +67,8 @@ NOV9_SCHEDULE = [
     {
         "game_id": "401906759",
         "game_date": "2026-11-09",
+        "game_date_time": "2026-11-09 19:00:00-05:00",
+        "time_valid": True,
         "home_id": "333",
         "away_id": "2473",
         "home_display_name": "Alabama Crimson Tide",
@@ -129,8 +140,8 @@ def test_swapped_or_unknown_teams_fail_closed():
 def test_two_schedule_ids_for_the_same_teams_stay_ambiguous():
     def duplicate(_year):
         return [
-            {"game_id": "1", "game_date": "2026-11-09", "home_id": "2633", "away_id": "2515"},
-            {"game_id": "2", "game_date": "2026-11-10", "home_id": "2633", "away_id": "2515"},
+            {"game_id": "1", "game_date": "2026-11-09", "game_date_time": "2026-11-09 19:00:00-05:00", "time_valid": True, "home_id": "2633", "away_id": "2515"},
+            {"game_id": "2", "game_date": "2026-11-10", "game_date_time": "2026-11-09 19:10:00-05:00", "time_valid": True, "home_id": "2633", "away_id": "2515"},
         ]
 
     with pytest.raises(identity.NCAABEventIdentityError) as exc:
@@ -155,12 +166,13 @@ def test_schedule_fetch_parses_required_columns_and_rejects_drift(monkeypatch):
             assert headers["User-Agent"] == "WOW-V17-NCAAB-Identity/1.0"
             return Response(
                 200,
-                "game_id,game_date,home_id,away_id\n401906849,2026-11-09,2633,2515\n",
+                "game_id,game_date,home_id,away_id,game_date_time,time_valid\n"
+                "401906849,2026-11-09,2633,2515,2026-11-09 19:00:00-05:00,True\n",
             )
 
     rows = identity.fetch_ncaab_schedule(2027, session=Session())
     assert rows == [
-        {"game_id": "401906849", "game_date": "2026-11-09", "home_id": "2633", "away_id": "2515"}
+        {"game_id": "401906849", "game_date": "2026-11-09", "home_id": "2633", "away_id": "2515", "game_date_time": "2026-11-09 19:00:00-05:00", "time_valid": "True"}
     ]
 
     class DriftSession:
@@ -330,3 +342,62 @@ def test_unmatched_alias_remains_identity_unresolved_and_unscored():
     assert rows[0].bucket == IDENTITY_UNRESOLVED
     assert rows[0].detail["model_invoked"] is False
     assert rows[0].rank_eligible is False
+
+def test_wrong_tip_and_wrong_date_cannot_establish_identity():
+    for patch in (
+        {"game_date_time": "2026-11-09 15:00:00-05:00"},
+        {"game_date": "2026-11-11", "game_date_time": "2026-11-11 19:00:00-05:00"},
+        {"time_valid": False},
+        {"season": 2026},
+        {"game_date_time": ""},
+        {"game_date_time": "not-a-time"},
+    ):
+        with pytest.raises(identity.NCAABEventIdentityError) as exc:
+            identity.resolve_ncaab_current_event_identity(
+                event_start_time="2026-11-10T00:00:00Z",
+                home_team_alias="2633", away_team_alias="2515",
+                fetcher=lambda _year: [{**NOV9_SCHEDULE[0], **patch}],
+            )
+        assert exc.value.code == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
+
+
+@pytest.mark.parametrize("value", ["2026-11-10T00:00:00", "not-a-time"])
+def test_discovery_tip_without_utc_is_invalid(value):
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        identity.resolve_ncaab_current_event_identity(
+            event_start_time=value, home_team_alias="2633",
+            away_team_alias="2515", fetcher=_fetch,
+        )
+    assert exc.value.code == "NCAAB_EVENT_TIME_INVALID"
+
+
+def test_schedule_naive_datetime_uses_documented_new_york_timezone():
+    row = {**NOV9_SCHEDULE[0], "game_date_time": "2026-11-09 19:00:00"}
+    out = identity.resolve_ncaab_current_event_identity(
+        event_start_time="2026-11-10T00:00:00Z",
+        home_team_alias="2633", away_team_alias="2515",
+        fetcher=lambda _year: [row],
+    )
+    assert out["matched_schedule_tip_utc"] == "2026-11-10T00:00:00+00:00"
+    assert out["identity_tip_drift_seconds"] == 0
+
+
+def test_rate_limit_is_typed_and_negatively_cached(monkeypatch):
+    class Session:
+        def get(self, *_args, **_kwargs):
+            return type("Response", (), {"status_code": 429, "text": ""})()
+    with pytest.raises(identity.NCAABEventIdentityError) as exc:
+        identity.fetch_ncaab_schedule(2027, session=Session())
+    assert exc.value.code == "NCAAB_SCHEDULE_SOURCE_RATE_LIMITED"
+    identity.reset_cache()
+    calls = []
+    def failed(_year):
+        calls.append(True)
+        raise identity.NCAABEventIdentityError("NCAAB_SCHEDULE_SOURCE_RATE_LIMITED")
+    monkeypatch.setattr(identity, "fetch_ncaab_schedule", failed)
+    for _ in range(3):
+        with pytest.raises(identity.NCAABEventIdentityError) as cached:
+            identity._schedule_rows(2027)
+        assert cached.value.code == "NCAAB_SCHEDULE_SOURCE_RATE_LIMITED"
+    assert len(calls) == 1
+    identity.reset_cache()
