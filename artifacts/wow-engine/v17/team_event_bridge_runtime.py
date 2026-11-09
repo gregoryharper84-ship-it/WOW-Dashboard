@@ -359,6 +359,19 @@ def score_registered_team_event_request(
                 extra={"missing_fields": missing},
             )
 
+    # Mandatory exact fitted-artifact/calibrator/pregame-corpus check at the
+    # registered scorer boundary, including the authenticated team-event Action.
+    # A missing reader or unverified source stays HELD before scorer invocation.
+    triad = assess_team_event_boundary(req, event_api=event_api, registration=registration)
+    if triad.status != "READY_FOR_INDEPENDENT_REVIEW":
+        raise _model_failure_detail(
+            req,
+            code=triad.blocker or "MODEL_BUNDLE_EVIDENCE_UNVERIFIED",
+            blocker=triad.blocker or "MODEL_BUNDLE_EVIDENCE_UNVERIFIED",
+            status_code=409,
+            extra=triad.as_hold(),
+        )
+
     try:
         result = registration.scorer(
             req,
