@@ -429,3 +429,22 @@ def test_nba_calibrator_walk_forward_fit_replays_exact_persisted_parameters(monk
     assert report["exact_bundle_match"] is False
     assert report["probability_publishable"] is False
     assert report["can_execute"] is False
+
+
+
+def test_nba_corpus_reconstruction_failure_is_typed_and_does_not_fallback(monkeypatch):
+    def fail_reconstruction(*_args):
+        raise RuntimeError("reconstruction fixture failure")
+
+    monkeypatch.setattr(nba_replay_module, "build_pregame_features", fail_reconstruction)
+    report = run_nba_team_event_certification_replay(_DB(_fixture()))
+
+    assert report["status"] == "REPLAY_FAILED"
+    assert report["replay_stage"] == "PREGAME_CORPUS_RECONSTRUCTION"
+    assert report["error_type"] == "RuntimeError"
+    assert report["artifact_ready"] is False
+    assert report["calibrator_ready"] is False
+    assert report["pregame_corpus_ready"] is False
+    assert report["exact_bundle_match"] is False
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
