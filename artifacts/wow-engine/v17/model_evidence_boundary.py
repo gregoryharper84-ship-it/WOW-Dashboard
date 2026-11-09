@@ -1,0 +1,405 @@
+"""Serve-time evidence-triad gate for scored V17 team/event output.
+
+The registry readers answer whether one exact model version has a verified
+artifact, calibrator and pregame corpus. This module applies that answer at the
+scoring boundary: the scored package is preserved for diagnosis, but no row may
+claim publication, ranking, official status or a non-hold terminal ceiling while
+its triad is incomplete, unresolved or unreadable.
+
+It never edits a probability, bound, coefficient or settlement fact, never
+promotes an artifact, and keeps ``can_execute`` false everywhere.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import secrets
+import threading
+from typing import Any, Callable, Mapping
+
+from v17.model_evidence_bundle_contract import ModelBundleScope
+from v17.model_evidence_registry_readers import assess_registry_model_bundle
+
+CAN_EXECUTE = False
+TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
+HOLD = "MODEL_QUALIFIED_HOLD"
+
+COMPLETE = "COMPLETE"
+INCOMPLETE = "INCOMPLETE"
+IDENTITY_UNRESOLVED = "IDENTITY_UNRESOLVED"
+EVIDENCE_UNAVAILABLE = "EVIDENCE_UNAVAILABLE"
+STATUSES = (COMPLETE, INCOMPLETE, IDENTITY_UNRESOLVED, EVIDENCE_UNAVAILABLE)
+
+TRIAD_INCOMPLETE = "MODEL_EVIDENCE_TRIAD_INCOMPLETE"
+TRIAD_IDENTITY_UNRESOLVED = "MODEL_EVIDENCE_TRIAD_IDENTITY_UNRESOLVED"
+TRIAD_READER_UNAVAILABLE = "MODEL_EVIDENCE_TRIAD_READER_UNAVAILABLE"
+TRIAD_LANE_NOT_CONFIGURED = "MODEL_EVIDENCE_TRIAD_LANE_NOT_CONFIGURED"
+
+# Only labels that assert approval may be replaced by the hold ceiling. Any other
+# upstream label is already at least as strict and is preserved verbatim.
+_APPROVED_TERMINALS = frozenset({
+    "FINAL_APPROVED",
+    "APPROVED",
+    "PUBLISHABLE",
+    "QUALIFIED",
+    "PASS",
+    "COMPLETE",
+})
+
+# Reports that reached the guard through the scoring boundary are sealed here.
+# A payload cannot elevate itself by asserting bundle_complete: the seal binds the
+# report id to a per-process key and to the exact report digest, and a report whose
+# bundle_complete field is altered no longer matches its digest.
+_SEAL_KEY = secrets.token_hex(32)
+_SEALED_REPORTS: dict[str, tuple[str, str]] = {}
+_SEAL_LOCK = threading.Lock()
+_MAX_SEALED_REPORTS = 4096
+
+AssessmentCallable = Callable[[Any, ModelBundleScope], Mapping[str, Any]]
+
+# Acceptance/test seam only. Production leaves this None so the real governed
+# registry readers always run; it exists so a fixture can declare a verified
+# registry without fabricating database rows.
+EVIDENCE_ASSESSOR: AssessmentCallable | None = None
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def triad_required(*, sport: Any = None, candidate_family: Any = None) -> bool:
+    """Is the triad mandatory for this row, from trusted configuration only?
+
+    The requirement is derived from the governed team/event manifest, never from
+    a caller-supplied publication flag. A payload that omits the flag is still
+    held. Payloads that name neither a sport nor a family cannot be attributed to
+    a governed lane and are left to the legacy contract.
+    """
+    family = _text(candidate_family).upper()
+    name = _text(sport).upper()
+    if family and family != "TEAM_EVENT":
+        return False
+    try:
+        from v17.team_event_capability_manifest import TEAM_EVENT_INPUT_CONTRACTS
+    except Exception:  # noqa: BLE001 - unreadable trusted config fails closed
+        return bool(name or family)
+    governed = {str(key).upper() for key in TEAM_EVENT_INPUT_CONTRACTS}
+    if name:
+        return name in governed
+    return family == "TEAM_EVENT"
+
+
+def _report_digest(report: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        {
+            "status": report.get("status"),
+            "bundle_complete": report.get("bundle_complete"),
+            "model_kind": report.get("model_kind"),
+            "sport": report.get("sport"),
+            "model_family": report.get("model_family"),
+            "model_artifact_version": report.get("model_artifact_version"),
+            "feature_schema_version": report.get("feature_schema_version"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256((_SEAL_KEY + canonical).encode("utf-8")).hexdigest()
+
+
+def seal_report(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind a boundary-produced report to this process for downstream verification."""
+    sealed = dict(report)
+    report_id = secrets.token_hex(12)
+    digest = _report_digest(sealed)
+    with _SEAL_LOCK:
+        while len(_SEALED_REPORTS) >= _MAX_SEALED_REPORTS:
+            _SEALED_REPORTS.pop(next(iter(_SEALED_REPORTS)))
+        _SEALED_REPORTS[report_id] = (_text(sealed.get("sport")).upper(), digest)
+    sealed["report_id"] = report_id
+    sealed["report_digest"] = digest
+    return sealed
+
+
+def verify_sealed_report(report: Any, *, sport: Any = None) -> bool:
+    """True only for an unaltered, complete report issued by this boundary."""
+    if not isinstance(report, Mapping) or report.get("bundle_complete") is not True:
+        return False
+    report_id = _text(report.get("report_id"))
+    digest = _text(report.get("report_digest"))
+    if not report_id or not digest:
+        return False
+    with _SEAL_LOCK:
+        sealed = _SEALED_REPORTS.get(report_id)
+    if sealed is None:
+        return False
+    sealed_sport, sealed_digest = sealed
+    if sealed_sport != _text(sport).upper():
+        return False
+    if not hmac.compare_digest(sealed_digest, _report_digest(report)):
+        return False
+    return hmac.compare_digest(sealed_digest, digest)
+
+
+def _mlb_identity() -> dict[str, str]:
+    try:
+        from v17.mlb_event_feature_contract import (
+            FEATURE_SCHEMA_VERSION,
+            MODEL_ARTIFACT_VERSION,
+            MODEL_FAMILY,
+        )
+    except Exception:  # noqa: BLE001 - an unavailable contract is not identity
+        return {}
+    return {
+        "model_family": str(MODEL_FAMILY),
+        "model_artifact_version": str(MODEL_ARTIFACT_VERSION),
+        "feature_schema_version": str(FEATURE_SCHEMA_VERSION),
+    }
+
+
+def _nfl_identity() -> dict[str, str]:
+    try:
+        from nfl_event_model_contract import FEATURE_SCHEMA_VERSION
+    except Exception:  # noqa: BLE001 - an unavailable contract is not identity
+        return {}
+    # NFL declares no repository-wide artifact version; the served model must
+    # name its exact version. Schema remains the governed P2 contract.
+    return {"feature_schema_version": str(FEATURE_SCHEMA_VERSION)}
+
+
+def evidence_db_client(event_api: Any) -> Any:
+    """Return the governed read client for this boundary, or None.
+
+    ``None`` is deliberately distinguishable from an empty database: the caller
+    reports an unreadable evidence store as a blocker instead of "no evidence".
+    """
+    if event_api is None:
+        return None
+    if hasattr(event_api, "table"):
+        return event_api
+    get_client = getattr(event_api, "get_client", None)
+    if not callable(get_client):
+        return None
+    try:
+        return get_client()
+    except Exception:  # noqa: BLE001 - a failed client is not a verified client
+        return None
+
+
+def build_evidence_scope(
+    result: Mapping[str, Any],
+    req: Any,
+    *,
+    sport: str,
+) -> tuple[ModelBundleScope | None, tuple[str, ...]]:
+    """Bind the served model identity to one exact evidence scope.
+
+    Only identities the result actually served (or a governed repository
+    contract declares) are used. A missing family/version stays unresolved; it is
+    never inferred from a sport, a feature name or another model.
+    """
+    fallback = _mlb_identity() if _text(sport).upper() == "MLB" else _nfl_identity()
+    model_family = _text(result.get("model_family")) or fallback.get("model_family", "")
+    artifact_version = (
+        _text(result.get("model_artifact_version"))
+        or _text(result.get("model_version"))
+        or fallback.get("model_artifact_version", "")
+    )
+    feature_schema = (
+        _text(result.get("feature_schema_version"))
+        or fallback.get("feature_schema_version", "")
+    )
+    official_event_id = (
+        _text(result.get("official_event_id"))
+        or _text(result.get("canonical_event_id"))
+        or _text(getattr(req, "official_event_id", ""))
+    )
+    event_start = _text(getattr(req, "event_start_time_utc", ""))
+    prediction_at = (
+        _text(result.get("immutable_model_timestamp"))
+        or _text(result.get("model_timestamp"))
+    )
+    update_at = (
+        _text(result.get("latest_material_update_timestamp"))
+        or _text(getattr(req, "latest_material_update_timestamp", ""))
+    )
+
+    missing = tuple(
+        name
+        for name, value in (
+            ("model_family", model_family),
+            ("model_artifact_version", artifact_version),
+            ("feature_schema_version", feature_schema),
+            ("official_event_id", official_event_id),
+            ("event_start_time_utc", event_start),
+            ("prediction_timestamp", prediction_at),
+        )
+        if not value
+    )
+    if missing:
+        return None, missing
+
+    return (
+        ModelBundleScope(
+            model_kind="TEAM_EVENT",
+            sport=_text(sport).upper(),
+            model_family=model_family,
+            model_artifact_version=artifact_version,
+            feature_schema_version=feature_schema,
+            market_family=None,
+            official_event_id=official_event_id,
+            event_start_time=event_start,
+            prediction_timestamp=prediction_at,
+            latest_material_update_timestamp=update_at or None,
+        ),
+        (),
+    )
+
+
+def _report(
+    status: str,
+    *,
+    blockers: tuple[str, ...],
+    scope: ModelBundleScope | None,
+    assessment: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    assessment = assessment or {}
+    complete = status == COMPLETE and bool(assessment.get("bundle_complete"))
+    return {
+        "status": status if not complete else COMPLETE,
+        "bundle_complete": complete,
+        "blockers": list(dict.fromkeys(blockers)),
+        "component_sources": dict(assessment.get("component_sources") or {}),
+        "missing_component_fields": dict(assessment.get("missing_component_fields") or {}),
+        "model_kind": "TEAM_EVENT",
+        "sport": scope.sport if scope else None,
+        "model_family": scope.model_family if scope else None,
+        "model_artifact_version": scope.model_artifact_version if scope else None,
+        "feature_schema_version": scope.feature_schema_version if scope else None,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+
+
+def evaluate_served_model_evidence(
+    result: Mapping[str, Any],
+    req: Any,
+    *,
+    sport: str,
+    db: Any,
+    assessor: AssessmentCallable | None = None,
+) -> dict[str, Any]:
+    """Read the triad for the model version this result actually served."""
+    scope, missing = build_evidence_scope(result, req, sport=sport)
+    if scope is None:
+        return _report(
+            IDENTITY_UNRESOLVED,
+            blockers=(TRIAD_IDENTITY_UNRESOLVED, *[f"{TRIAD_IDENTITY_UNRESOLVED}:{name}" for name in missing]),
+            scope=None,
+        )
+    chosen = assessor or EVIDENCE_ASSESSOR
+    if chosen is None:
+        if db is None:
+            return _report(
+                EVIDENCE_UNAVAILABLE,
+                blockers=(TRIAD_READER_UNAVAILABLE, "MODEL_BUNDLE_READER_CLIENT_UNAVAILABLE"),
+                scope=scope,
+            )
+        chosen = assess_registry_model_bundle
+    assessment = chosen(db, scope)
+    blockers = tuple(str(code) for code in (assessment.get("blockers") or ()))
+    if assessment.get("bundle_complete") is True and not blockers:
+        return _report(COMPLETE, blockers=(), scope=scope, assessment=assessment)
+    return _report(
+        INCOMPLETE,
+        blockers=(TRIAD_INCOMPLETE, *blockers),
+        scope=scope,
+        assessment=assessment,
+    )
+
+
+def apply_evidence_triad_gate(
+    outcome: Mapping[str, Any],
+    report: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach the triad report and withhold publication unless it is complete.
+
+    The scored numbers remain intact for immutable diagnostic receipts; only
+    publication, ranking and the terminal ceiling are forced to the held state.
+    """
+    out = dict(outcome)
+    sealed = seal_report(report)
+    out["model_evidence_triad"] = sealed
+    out["evidence_triad_required"] = True
+    out["evidence_triad_status"] = sealed.get("status")
+    out["can_execute"] = False
+    if sealed.get("bundle_complete") is True:
+        return out
+
+    blockers = [str(code) for code in (report.get("blockers") or ())]
+    out["prepublication_claim"] = out.get("prepublication_claim") or {
+        "probability_publishable": out.get("probability_publishable"),
+        "rank_eligible": out.get("rank_eligible"),
+        "terminal_label": out.get("terminal_label"),
+    }
+    out["probability_publishable"] = False
+    out["rank_eligible"] = False
+
+    existing = out.get("publication_blockers")
+    prior = [str(code) for code in existing] if isinstance(existing, list) else []
+    merged = list(dict.fromkeys([*prior, *blockers]))
+    out["publication_blockers"] = merged
+
+    reducer_input = dict(out.get("terminal_reducer_input") or {})
+    # The strictest applicable upstream ceiling wins: an approved label from a
+    # scorer or governance bridge cannot survive an incomplete triad, and an
+    # already stricter non-approved label is never replaced by the model hold.
+    label = _strictest_terminal(out.get("terminal_label"), HOLD)
+    ceiling = _strictest_terminal(out.get("terminal_ceiling"), label)
+    terminal_output = _strictest_terminal(reducer_input.get("terminal_output"), ceiling)
+    status = _text(reducer_input.get("status")).upper()
+    reducer_input.update({
+        "status": "HOLD" if status in {"", "PASS", "COMPLETE", "OK", "APPROVED"} else status,
+        "terminal_output": terminal_output,
+        "global_terminal_reducer": reducer_input.get("global_terminal_reducer") or TERMINAL_AUTHORITY,
+        "blockers": merged,
+        "evidence_triad_status": report.get("status"),
+        "evidence_triad_complete": False,
+    })
+    out["terminal_reducer_input"] = reducer_input
+    out["terminal_label"] = label
+    out["terminal_ceiling"] = ceiling
+    return out
+
+
+def _strictest_terminal(existing: Any, proposed: str) -> str:
+    """Never upgrade a terminal: only replace an approval-asserting label."""
+    label = _text(existing).upper()
+    if not label or label in _APPROVED_TERMINALS:
+        return proposed
+    return label
+
+
+__all__ = [
+    "CAN_EXECUTE",
+    "COMPLETE",
+    "EVIDENCE_ASSESSOR",
+    "EVIDENCE_UNAVAILABLE",
+    "HOLD",
+    "IDENTITY_UNRESOLVED",
+    "INCOMPLETE",
+    "STATUSES",
+    "TERMINAL_AUTHORITY",
+    "TRIAD_IDENTITY_UNRESOLVED",
+    "TRIAD_INCOMPLETE",
+    "TRIAD_LANE_NOT_CONFIGURED",
+    "TRIAD_READER_UNAVAILABLE",
+    "apply_evidence_triad_gate",
+    "build_evidence_scope",
+    "evaluate_served_model_evidence",
+    "evidence_db_client",
+    "seal_report",
+    "triad_required",
+    "verify_sealed_report",
+]

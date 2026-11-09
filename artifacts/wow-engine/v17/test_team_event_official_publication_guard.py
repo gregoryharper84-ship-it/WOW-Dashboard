@@ -1,4 +1,20 @@
+from v17.model_evidence_boundary import seal_report
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
+
+
+def complete_sealed_triad(sport: str) -> dict:
+    """A triad report issued by the scoring boundary for a verified registry."""
+    return seal_report({
+        "status": "COMPLETE",
+        "bundle_complete": True,
+        "sport": sport,
+        "model_kind": "TEAM_EVENT",
+        "model_family": "TEST_TEAM_EVENT_FAMILY_V1",
+        "model_artifact_version": "fitted-test-v1",
+        "feature_schema_version": "TEST_FEATURES_V1",
+        "blockers": [],
+        "can_execute": False,
+    })
 
 
 def governed_result() -> dict:
@@ -217,6 +233,9 @@ def test_opted_in_scoring_with_current_verified_evidence_can_pass():
     row["cross_sport_evidence_required"] = True
     row["cross_sport_evidence_attested"] = True
     row["cross_sport_evidence"] = _certified_sample_evidence()
+    # A governed team/event row must carry the sealed triad report; publication
+    # additionally requires every other governance field to PASS.
+    row["model_evidence_triad"] = complete_sealed_triad("NBA")
     decision = evaluate_team_event_official_publication(row)
     assert decision["status"] == "PASS"
     assert decision["evidence_integrity_audit"]["evidence_status"] == "PASS"

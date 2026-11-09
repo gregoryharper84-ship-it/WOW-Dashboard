@@ -45,3 +45,39 @@ Other sport or market families found in the registry must join the same audit, n
 - **Reducer:** V17_TERMINAL_REDUCER remains sole terminal authority. No wager or order execution. No automatic rank eligibility, certification, promotion or hold waiver.
 
 Until connected readers and independent acceptance prove each specific lane, the universal contract is **implemented as a reusable contract and development-lane declaration**, not as a claim that every production scorer is already protected by the new validator. Do not merge/deploy or mark COMPLETE on green CI alone.
+
+## Registry reader layer (read-only)
+
+`v17/model_evidence_registry_readers.py` connects the pure validator to governed persistence. It reads only; it never writes, fits, calibrates, certifies, promotes or scores. `assess_registry_model_bundle(db, scope)` returns the merged contract verdict plus `component_sources` and `missing_component_fields`.
+
+Guarantees of this layer:
+
+- **No registry column is verification.** `payload_checksum_verified`, `training_provenance_verified`, `chronological_replay_verified`, `calibrated_lower_bound_verified` and the four pregame verification flags are set only from an explicit `true` inside an immutable `wow_team_event_specialist_certifications.verification_receipt` for the exact `sport`/`model_version`/`artifact_sha256`/`feature_schema_version` with `CERTIFIED` + `PASS`. No receipt yields `MODEL_BUNDLE_VERIFICATION_RECEIPT_MISSING`, and the flags are overridden to `false` rather than defaulted to trust.
+- **No substitution.** A missing event row is not replaced by another event, an adjacent prop offer, a sibling sport or a model-family name.
+- **Typed failures.** Unconfigured lanes report `MODEL_BUNDLE_<COMPONENT>_SOURCE_NOT_CONFIGURED`, unreadable stores `*_READ_FAILED`, duplicate exact identities `*_AMBIGUOUS`, unlinkable calibrators `MODEL_BUNDLE_CALIBRATOR_LINK_UNAVAILABLE`, and each absent column `MODEL_BUNDLE_<COMPONENT>_FIELD_UNAVAILABLE:<field>`.
+
+Configured lanes and their observed gaps (presence only, not certification):
+
+| Lane | Artifact | Calibrator | Pregame corpus |
+|---|---|---|---|
+| NFL | `wow_nfl_event_fitted_model_artifacts` | `wow_calibrators` via artifact `calibrator_id`; no artifact checksum binding | `wow_nfl_pregame_feature_rows` is a training matrix keyed by gameday, so tipoff, source snapshot identity and source payload hash are unavailable |
+| MLB | `wow_mlb_event_fitted_model_artifacts` | `wow_calibrators` via artifact `calibrator_id`; no artifact checksum binding | No per-event pregame table configured |
+| NBA / WNBA | `wow_basketball_team_event_model_artifacts`; no `training_dataset_hash` or `training_code_sha` column | `wow_basketball_team_event_calibrators`; no checksum, cohort hash or holdout separation | `wow_nba_pregame_feature_rows` / `wow_wnba_pregame_feature_rows`; `as_of` and feature hash only, no tipoff, source snapshot or event status |
+| Player props | `wow_prop_fitted_model_artifacts` | Not configured: the registry stores only a `calibrator_version` string | Not configured |
+| Weather contracts | Not configured: no fitted weather artifact registry | `wow_kalshi_weather_calibration_profiles` is an unfitted profile table | Not configured |
+| NHL, NCAAB, NCAAF, SOCCER, TENNIS, PGA, MMA, BOXING, CRICKET | Development candidates live in the shared D1 candidate registry, which is research evidence with no dedicated pregame corpus and no verification receipts, so no reader is declared |
+
+Consequently every configured lane currently returns `BLOCKED`. That is the expected, evidence-based result, not a regression: the registered tables cannot supply an exact-version, independently verified triad. The report names the absent component and the absent field for each lane instead of emitting a probability or an empty success.
+
+## Scoring-boundary enforcement
+
+`v17/model_evidence_boundary.py` applies the reader verdict at the single dispatch point every certified team-event scorer and the Action path already pass through: `score_registered_team_event_request` (also installed as the base `score_team_event_request`, so sport bridges and their governance overlays cannot bypass it).
+
+- **Exact served identity.** `build_evidence_scope` builds the scope from the identity the result actually served (`model_family`, `model_artifact_version`/`model_version`, `feature_schema_version`, `immutable_model_timestamp`/`model_timestamp`) plus the request's `official_event_id` and `event_start_time_utc`. A repository contract supplies a value only where the family declares one (MLB artifact version and feature schema, NFL feature schema); nothing is inferred from a sport string or another model. Unresolved fields yield `MODEL_EVIDENCE_TRIAD_IDENTITY_UNRESOLVED:<field>`.
+- **Typed blockers, no substitution.** An incomplete triad reports `MODEL_EVIDENCE_TRIAD_INCOMPLETE` together with every component code the reader produced; an unreadable store reports `MODEL_EVIDENCE_TRIAD_READER_UNAVAILABLE`. The report is attached as `model_evidence_triad` with `evidence_triad_status` and merged into `publication_blockers`, preserving any upstream blocker and its order.
+- **What is withheld.** `probability_publishable=false`, `rank_eligible=false`, `terminal_label`/`terminal_ceiling=MODEL_QUALIFIED_HOLD`, and the reducer input is set to `status=HOLD`, `terminal_output=MODEL_QUALIFIED_HOLD`, `global_terminal_reducer=V17_TERMINAL_REDUCER`, `evidence_triad_complete=false`. `can_execute=false` everywhere. Probabilities, bounds, feature receipts and market status are left exactly as scored, so the immutable diagnostic record survives; only the publication and terminal claim is withheld. An already-stricter upstream terminal (`RESEARCH_INTEREST`, `NO_LOW_PROBABILITY`, an infrastructure hold) is preserved rather than replaced by `MODEL_QUALIFIED_HOLD`, and only approval-asserting labels are downgraded.
+- **Publication gate.** `evaluate_team_event_official_publication` refuses a payload that cannot prove its triad, adding `TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN`. The requirement is derived from the governed `TEAM_EVENT_INPUT_CONTRACTS` manifest, not from the payload's `evidence_triad_required` flag: clearing or omitting that flag on a governed sport is still held. Completeness is accepted only from a report sealed at the scoring boundary (`report_id` + per-process keyed digest); an unsealed claim, an edited report or a report sealed for another sport is rejected. Payloads naming no governed sport and no team/event family keep the legacy contract.
+- **Failure taxonomy.** The gate never converts a triad gap into `MODEL_UNAVAILABLE`: the model was available, invoked and scored. Model failures keep their own codes.
+- **Test seam.** `EVIDENCE_ASSESSOR` is `None` in production so the governed readers always run; acceptance fixtures set it to declare a verified registry without fabricating rows.
+
+Boundary coverage lives in `tests/test_v17_model_evidence_boundary.py`. Because every configured lane still returns `BLOCKED`, registered scorers now score and withhold instead of publishing; that remains the intended evidence-based state rather than a certification claim.

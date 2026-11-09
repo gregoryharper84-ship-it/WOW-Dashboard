@@ -43,6 +43,7 @@ from v17.team_event_bridge_runtime import (
     team_event_bridge_health,
 )
 from v17.team_event_capability_manifest import TEAM_EVENT_INPUT_CONTRACTS
+from v17 import model_evidence_boundary as evidence_boundary
 
 SLATE_DATE = "2026-09-15"
 SLATE_TZ = "UTC"
@@ -54,11 +55,24 @@ SLATE_TZ = "UTC"
 
 @pytest.fixture(autouse=True)
 def _isolated_registry():
+    """Isolate bridges and declare a verified triad for governed-package tests.
+
+    Registry-evidence withholding has its own suite; these tests pin the
+    discovery/routing taxonomy of an otherwise complete governed package.
+    """
     original = dict(TEAM_EVENT_BRIDGES)
+    original_assessor = evidence_boundary.EVIDENCE_ASSESSOR
     TEAM_EVENT_BRIDGES.clear()
+    evidence_boundary.EVIDENCE_ASSESSOR = lambda _db, _scope: {
+        "bundle_complete": True,
+        "blockers": [],
+        "component_sources": {},
+        "missing_component_fields": {},
+    }
     try:
         yield
     finally:
+        evidence_boundary.EVIDENCE_ASSESSOR = original_assessor
         TEAM_EVENT_BRIDGES.clear()
         TEAM_EVENT_BRIDGES.update(original)
 
@@ -166,6 +180,8 @@ def _valid_package(candidate_id="candidate-1"):
         "source_snapshot_timestamp": "2026-09-15T16:55:00+00:00",
         "outcome_space": "TWO_WAY_WINNER",
         "model_version": "fitted-v1",
+        "model_family": "TEST_TEAM_EVENT_FAMILY_V1",
+        "feature_schema_version": "TEST_TEAM_EVENT_FEATURES_V1",
         "event_status": "PREGAME",
         "probability_publishable": True,
         "rank_eligible": True,
@@ -183,6 +199,7 @@ def _bridge_request(sport, *, complete=True, league=None):
         "sport": sport,
         "league": league or sport,
         "official_event_id": "event-1",
+        "event_start_time_utc": "2026-09-15T18:00:00+00:00",
         "home_team": "Alpha",
         "away_team": "Beta",
         "settlement_basis": "FULL_GAME",

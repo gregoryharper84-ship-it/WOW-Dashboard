@@ -24,6 +24,54 @@ TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 COMPONENTS = ("artifact", "calibrator", "pregame_corpus")
 MODEL_KINDS = frozenset(("TEAM_EVENT", "PLAYER_PROP", "WEATHER_CONTRACT"))
 
+# Fields a component must supply before the validator can even inspect values.
+# Registry readers use this to report exactly which evidence a physical table
+# cannot supply, instead of inventing a value or calling the component present.
+COMPONENT_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "artifact": (
+        "artifact_id",
+        "artifact_checksum",
+        "training_dataset_hash",
+        "training_code_sha",
+        "training_rows",
+        "payload_checksum_verified",
+        "training_provenance_verified",
+    ),
+    "calibrator": (
+        "model_artifact_checksum",
+        "calibrator_id",
+        "calibrator_checksum",
+        "calibration_method",
+        "bounds_method_version",
+        "calibration_cohort_sha256",
+        "holdout_evidence_sha256",
+        "calibration_training_n",
+        "holdout_overlap_rows",
+        "brier",
+        "log_loss",
+        "calibration_bias",
+        "calibration_fit_end",
+        "chronological_replay_verified",
+        "calibrated_lower_bound_verified",
+    ),
+    "pregame_corpus": (
+        "model_artifact_checksum",
+        "official_event_id",
+        "event_start_time",
+        "source_snapshot_id",
+        "source_snapshot_timestamp",
+        "source_payload_sha256",
+        "feature_snapshot_id",
+        "feature_snapshot_timestamp",
+        "feature_snapshot_sha256",
+        "event_status",
+        "source_payload_independently_verified",
+        "feature_replay_verified",
+        "official_event_identity_verified",
+        "settlement_basis_verified",
+    ),
+}
+
 # A single contract for every declared team/event sport; PLAYER_PROP and
 # WEATHER_CONTRACT are defined for exact sport/market-family rows discovered
 # from their own specialist registries, not inferred from a team/event model.
@@ -245,6 +293,25 @@ def _pregame_valid(
     )
 
 
+def missing_component_fields(
+    component: str, row: Mapping[str, Any] | None
+) -> tuple[str, ...]:
+    """Return the required fields this row does not supply.
+
+    Reporting is intentionally literal: a field is missing when it is absent,
+    ``None`` or an empty string. This function never infers a value from an
+    adjacent column, a sibling component or a model-family name.
+    """
+    if component not in COMPONENT_REQUIRED_FIELDS:
+        raise KeyError(component)
+    required = COMPONENT_REQUIRED_FIELDS[component]
+    if not isinstance(row, Mapping):
+        return required
+    return tuple(
+        field for field in required if row.get(field) is None or row.get(field) == ""
+    )
+
+
 def assess_model_bundle(
     scope: ModelBundleScope,
     *,
@@ -340,7 +407,14 @@ def assess_model_bundle(
 
 
 __all__ = [
-    "CAN_EXECUTE", "COMPONENTS", "MODEL_KINDS", "TERMINAL_AUTHORITY",
-    "TEAM_EVENT_BUNDLE_REQUIREMENTS", "ModelBundleScope",
-    "ModelBundleAssessment", "assess_model_bundle",
+    "CAN_EXECUTE",
+    "COMPONENTS",
+    "COMPONENT_REQUIRED_FIELDS",
+    "MODEL_KINDS",
+    "TEAM_EVENT_BUNDLE_REQUIREMENTS",
+    "TERMINAL_AUTHORITY",
+    "ModelBundleAssessment",
+    "ModelBundleScope",
+    "assess_model_bundle",
+    "missing_component_fields",
 ]
