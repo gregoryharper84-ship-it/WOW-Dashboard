@@ -668,6 +668,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         and str(certification_notes.get("calibration_training_cutoff") or "") == artifact.train_end_date
         and type(calibration_holdout_overlap_rows) is int
         and calibration_holdout_overlap_rows == 0
+        and type(calibrator_row.get("calibration_row_count")) is int
         and calibrator_row.get("calibration_row_count", 0) <= calibration_training_rows
         and stored_holdout_evidence.get("holdout_rows") == artifact.holdout_row_count
         and stored_holdout_evidence.get("publication_authorized") is False
