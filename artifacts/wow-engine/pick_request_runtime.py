@@ -384,8 +384,10 @@ class _ScoringReceiptMarketApi:
             return scorer(*args, **kwargs)
         except HTTPException as exc:
             detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-            detail["specialist_scoring_attempted"] = True
-            detail["scoring_attempted"] = True
+            # A typed pre-inference triad hold must remain NOT_INVOKED even
+            # when propagated through the request-bound Action wrapper.
+            detail.setdefault("specialist_scoring_attempted", True)
+            detail.setdefault("scoring_attempted", True)
             detail.setdefault("specialist_invoked", True)
             raise HTTPException(status_code=exc.status_code, detail=detail, headers=exc.headers) from exc
         except Exception as exc:
