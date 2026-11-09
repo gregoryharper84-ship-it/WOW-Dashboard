@@ -595,3 +595,24 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+ 
+## V17 exact PLAYER_PROP Action evidence triad (#2536)
+ 
+These codes are upstream **evidence-integrity/registry** failures, never
+`MODEL_UNAVAILABLE`. The caller must retain `model_evaluated=false`, hold,
+and pass the detailed reason to `V17_TERMINAL_REDUCER`.
+ 
+| Typed code | Owning lane | Recovery class | Rank eligible? |
+| --- | --- | --- | ---: |
+| `MODEL_EVIDENCE_TRIAD_IDENTITY_UNRESOLVED` | Action route, exact fitted model/player/line identity absent | FAIL_CLOSED — bind correct server-owned identity; never infer from nearby model or line | No |
+| `MODEL_EVIDENCE_TRIAD_READER_UNAVAILABLE` | Action route, registry client/read or response invalid | FAIL_CLOSED — repair read-only source or contract; don't substitute a model | No |
+| `MODEL_EVIDENCE_TRIAD_INCOMPLETE` | Action route, fitted artifact/calibrator/pregame evidence incomplete | FAIL_CLOSED — capture receipt-bound component proof | No |
+| `MODEL_EVIDENCE_TRIAD_BLOCKED` | Terminal reducer, typed evidence hold | FAIL_CLOSED — retain `MODEL_BUNDLE_*` causes and no prediction | No |
+| `MODEL_BUNDLE_SCOPE_IDENTITY_UNAVAILABLE` | Exact player/market/model scope resolution | FAIL_CLOSED — obtain canonical source identity | No |
+| `MODEL_BUNDLE_DB_UNAVAILABLE` / `MODEL_BUNDLE_READER_CONTRACT_INVALID` / `MODEL_BUNDLE_VERIFICATION_RECEIPT_READ_FAILED` | Registry reader / scorer boundary | FAIL_CLOSED — inspect governed source and immutable certification receipt | No |
+ 
+A `READY_FOR_INDEPENDENT_REVIEW` triad alone does not certify or publish
+probabilities and grants no execution authority. All current registries lacking
+calibrator/corpus proof remain HELD. Direct `scoreWowProp` and wrapped
+`scoreWowPickRequest` share this guard on the certified fitted path.
