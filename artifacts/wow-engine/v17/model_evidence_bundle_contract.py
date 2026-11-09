@@ -108,6 +108,11 @@ def _sha256(value: Any) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def _full_code_sha(value: Any) -> bool:
+    token = _text(value).lower()
+    return len(token) in (40, 64) and all(ch in "0123456789abcdef" for ch in token)
+
+
 def _when(value: Any) -> datetime | None:
     raw = _text(value)
     if not raw:
@@ -133,7 +138,8 @@ def _finite_metric(row: Mapping[str, Any], key: str, lo: float, hi: float) -> bo
 
 def _matches_identity(row: Mapping[str, Any], scope: ModelBundleScope) -> bool:
     return (
-        _text(row.get("sport")).upper() == scope.sport.upper()
+        _text(row.get("model_kind")) == scope.model_kind
+        and _text(row.get("sport")).upper() == scope.sport.upper()
         and _text(row.get("model_family")) == scope.model_family
         and _text(row.get("model_artifact_version")) == scope.model_artifact_version
         and _text(row.get("feature_schema_version")) == scope.feature_schema_version
@@ -150,7 +156,7 @@ def _artifact_valid(artifact: Mapping[str, Any], scope: ModelBundleScope) -> boo
         and bool(_text(artifact.get("artifact_id")))
         and _sha256(artifact.get("artifact_checksum"))
         and _sha256(artifact.get("training_dataset_hash"))
-        and bool(_text(artifact.get("training_code_sha")))
+        and _full_code_sha(artifact.get("training_code_sha"))
         and artifact.get("payload_checksum_verified") is True
         and artifact.get("training_provenance_verified") is True
         and type(artifact.get("training_rows")) is int
