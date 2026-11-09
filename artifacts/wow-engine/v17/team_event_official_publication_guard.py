@@ -267,7 +267,12 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
         sport=payload.get("sport"), candidate_family=payload.get("candidate_family")
     ) or payload.get("evidence_triad_required") is True
     if triad_mandatory and not verify_sealed_report(
-        payload.get("model_evidence_triad"), sport=payload.get("sport")
+        payload.get("model_evidence_triad"),
+        sport=payload.get("sport"),
+        official_event_id=payload.get("official_event_id"),
+        model_artifact_version=(
+            payload.get("model_artifact_version") or payload.get("model_version")
+        ),
     ):
         blockers.append("TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN")
 
