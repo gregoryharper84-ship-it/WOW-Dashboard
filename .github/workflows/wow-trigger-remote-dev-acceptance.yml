@@ -1,0 +1,86 @@
+name: wow-trigger-remote-dev-acceptance
+
+# A bounded, opt-in DEV worker hosted on GitHub Actions.
+# This is not a Trigger Preview deployment, production worker, scheduler or coding dispatcher.
+# Operator reported the one-time GitHub DEV settings complete; this guarded PR sync is the acceptance attempt.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "integrations/trigger-dev-pilot/**"
+      - ".github/workflows/wow-trigger-remote-dev-acceptance.yml"
+  workflow_dispatch:
+    inputs:
+      confirm_development_only:
+        description: "Confirm this run may use the isolated Trigger.dev DEVELOPMENT key only"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Exact-head isolation: an obsolete approval must not block a newer security-patched PR head.
+  group: wow-trigger-v17-remote-dev-acceptance-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  remote-dev-acceptance:
+    name: Run bounded Trigger.dev DEVELOPMENT acceptance
+    if: >-
+      ${{
+        vars.WOW_TRIGGER_REMOTE_DEV_ENABLED == 'true' &&
+        vars.WOW_TRIGGER_CLI_AUTH_READY == 'true' &&
+        (
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.number == 2529 &&
+            github.event.pull_request.head.ref == 'feat/trigger-v17-engineering-recovery-intake-20261108' &&
+            github.event.pull_request.head.repo.full_name == github.repository
+          ) ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            github.ref_name == 'feat/trigger-v17-engineering-recovery-intake-20261108' &&
+            inputs.confirm_development_only == true
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: wow-trigger-dev
+    defaults:
+      run:
+        working-directory: integrations/trigger-dev-pilot
+    env:
+      TRIGGER_PROJECT_REF: ${{ vars.TRIGGER_PROJECT_REF }}
+      TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
+      TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+      TRIGGER_DEV_BRANCH: wow-v17-github-actions-acceptance
+      TRIGGER_PREVIEW_BRANCH: wow-v17-github-actions-acceptance
+      WOW_TRIGGER_PILOT_ENABLED: "true"
+      WOW_TRIGGER_PILOT_ENV: "dev"
+      WOW_TRIGGER_ENGINEERING_AGENT_ENABLED: "true"
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      CI: "true"
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: integrations/trigger-dev-pilot/package-lock.json
+      - name: Install the isolated pilot dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply the reviewed local CLI compatibility patch
+        run: npm run patch:cli
+      - name: Re-run no-network contracts and typecheck
+        run: |
+          npm run typecheck
+          npm test
+          node --check scripts/run-remote-dev-acceptance.mjs
+      - name: Start cloud-hosted DEV worker and prove task lifecycle
+        run: node scripts/run-remote-dev-acceptance.mjs

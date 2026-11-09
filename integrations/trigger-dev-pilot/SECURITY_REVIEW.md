@@ -66,3 +66,56 @@ The lockfile and installed dependency tree showed `trigger.dev@4.8.3` with the s
 **Limits:** this proves the patched CLI module imports in CI. It does not prove `trigger dev` starts a connected worker, provider-reported `DEVELOPMENT`, actual task registration, retries, remote idempotency, or checkpoint/resume. Those require the operator's local DEV project reference/key and real Trigger.dev receipts. The patch is a temporary local compatibility adaptation, not an upstream Trigger.dev fix.
 
 **Disposition:** runtime compatibility is improved but the pilot remains `WORKING_NOT_COMPLETE`. No merge, deployment, production activation, scheduler change, writable task, or SIRT acceptance is claimed.
+
+
+## 2026-11-08 GitHub-hosted DEVELOPMENT runner design — pending live secret configuration
+
+The operator requested a no-local-terminal path. Trigger.dev's native GitHub integration deploys PRs into Preview branches; the published active Preview branch limits are Free 0, Hobby 5, Pro 20. The user's earlier dashboard observation was that Preview deployment is restricted on the current plan, and the standing cost directive is no additional spend. Therefore this pilot does **not** use native Preview deployment and does not request a plan upgrade.
+
+A separate opt-in workflow, `.github/workflows/wow-trigger-remote-dev-acceptance.yml`, starts a bounded `trigger dev` worker inside a GitHub-hosted runner on one named Trigger.dev DEVELOPMENT branch. It is restricted to same-repository PR #2529, requires repository opt-in variable `WOW_TRIGGER_REMOTE_DEV_ENABLED=true`, has `contents: read`, no schedule, no GitHub write credential, and a 12-minute timeout. It re-runs tests/typecheck, applies the exact-version/source-guarded CLI patch, triggers only the existing health, synthetic retry and engineering-intake tasks, polls their run receipts, and terminates the worker. It does not deploy to Trigger Preview, Staging or Production, and it does not dispatch a coding agent.
+
+**Credential trade-off:** Trigger.dev documents that Free/Hobby environments expose only the `No restrictions` API-key preset. A Development key stored in the GitHub Actions environment is therefore full access to the Trigger.dev DEVELOPMENT environment, even though the task code itself is read-only/synthetic. The new workflow requires a *new, short-lived Development-only key* in the GitHub environment secret `wow-trigger-dev / TRIGGER_SECRET_KEY`, never the previously used key and never a Production/Staging key. Set a short expiration, enable GitHub environment required-reviewer protection if available, and revoke the key after acceptance. The project reference is a non-secret Actions variable. The workflow is deliberately opt-in and does not run until the user configures the secret and variable.
+
+**Current disposition:** code and workflow design only. No GitHub environment secret/variable is configured or read by SIRT; no cloud worker has been started; no provider receipt exists for this workflow. The opt-in job must remain skipped until the operator explicitly configures the dedicated Development key and project reference. A successful source CI run is not a connected-worker receipt. Formal non-author SIRT review remains outstanding.
+
+
+### Exact-head no-credential CI readback for remote runner — Nov 8, 2026
+
+- Current exact head: `26752693593706c170975160307bb2fe00190766`.
+- Pilot verification [#42523475007](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42523475007): SUCCESS; 48/48 tests, TypeScript, patched CLI import smoke, 33 cross-platform lock entries and npm audit 0 vulnerabilities.
+- Remote DEV workflow [#42523475026](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42523475026): SKIPPED by its explicit opt-in guard. The job did not start, no Trigger key was consumed, and no cloud task receipt was produced.
+- The tests validate receipt-shape assertions and workflow safety conditions only. They do not validate a connected GitHub-hosted worker, provider-reported DEVELOPMENT, actual health/retry/checkpoint runs, or secret configuration.
+- **Disposition remains WORKING_NOT_COMPLETE / UNVERIFIED for live DEV acceptance.** The operator must configure the repository opt-in variable, actual project reference variable, and a new short-lived Development-only key in the GitHub environment before the workflow can run. Formal non-author SIRT review remains pending.
+
+
+### Live runner authentication finding — Nov 8, 2026
+
+The first GitHub-hosted worker attempt reached the guarded job with the configured project reference and masked Development API key. The CLI process exited before worker registration and reported: `Authentication required in CI environment. Please set the TRIGGER_ACCESS_TOKEN environment variable with a Personal Access Token.` This is the Trigger.dev CLI's explicit CI authentication contract, not a project-ref or API-key failure.
+
+Source inspection of Trigger.dev CLI v4.8.3 `packages/cli-v3/src/commands/login.ts` confirms that CI requires `TRIGGER_ACCESS_TOKEN` and validates it as a `tr_pat_...` Personal Access Token (or internal organization token). A Development environment API key (`tr_dev_sk_...`) is not accepted for CLI login. The CLI error is distinct from the SDK's `TRIGGER_SECRET_KEY` used by the task-triggering code.
+
+The workflow now preflights `TRIGGER_ACCESS_TOKEN` before starting a worker and expects it as a separate GitHub Actions environment secret. This is a user-level PAT and has a broader potential blast radius than a single Development API key. Do not add it until the GitHub environment has a required reviewer / prevent-self-review protection and a branch deployment restriction. Use a new short-lived PAT, run once, then revoke it. No PAT was present in the first attempt; no task run was triggered and no task receipt exists.
+
+**Current state:** Root cause CONFIRMED; remediation code/docs added; live worker acceptance remains BLOCKED on protected, short-lived PAT provisioning. Production/Staging access remains prohibited.
+
+### Latest exact-head state and remaining user-only action — Nov 8, 2026
+
+Exact child head: `4adac19878272f76fda20c9b4c03e849e285fc16`. No-credential pilot verification [#42525441419](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42525441419) completed SUCCESS: 51/51 tests, TypeScript passed, patched CLI import smoke passed, 33 cross-platform lock entries present, and npm audit reported 0 vulnerabilities.
+
+The remote acceptance workflow [#42525441271](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42525441271) reached its explicit CLI credential preflight and failed closed with `TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED`. The environment secret `TRIGGER_SECRET_KEY` is present (masked in logs); `TRIGGER_ACCESS_TOKEN` was empty. The worker did not start and no task run was created. This is expected until the additional CLI PAT is configured.
+
+**Environment approval is not independently verified.** The workflow job did not expose a reviewer-approval receipt in the available readback, and the GitHub integration here cannot inspect environment protection settings. Treat required-reviewer and branch-restriction settings as UNVERIFIED. Before adding the user-level PAT, configure a required reviewer for `wow-trigger-dev` and restrict deployments to the fixed recovery branch. Use a new short-lived PAT, execute the bounded run once, then revoke it. Never paste it into chat.
+
+Current disposition: implementation source validated; live task acceptance BLOCKED on protected PAT provisioning. PR #2529 remains DRAFT / UNMERGED. No Production/Staging, model scoring, coding dispatch or betting authority has been used.
+
+
+### Credential-readiness guard — Nov 8, 2026
+
+The remote job now requires repository variable `WOW_TRIGGER_CLI_AUTH_READY=true` in addition to the existing remote-worker opt-in. Set this only after the `wow-trigger-dev` environment has a required reviewer / branch restriction and both separate secrets are installed. This prevents automatic PR synchronization from repeatedly starting a runner while the CLI PAT is absent. The variable is an operator acknowledgement, not proof of environment protection; actual run receipts remain the evidence.
+
+
+### Operator setup reported — Nov 8, 2026
+
+The operator reports that GitHub environment `wow-trigger-dev` now requires reviewer `gregoryharper84-ship-it`, deployment is restricted to protected branches, the short-lived Trigger.dev PAT is stored as environment secret `TRIGGER_ACCESS_TOKEN`, and repository variable `WOW_TRIGGER_CLI_AUTH_READY=true` is set. These settings are operator-reported until a new workflow run demonstrates that the environment releases the secret after its required approval.
+
+A guarded PR synchronization will now re-attempt the bounded Development-only worker. This does not authorize Production/Staging, model scoring, live trading, or coding dispatch.
