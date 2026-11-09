@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np, pandas as pd, pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import sdv_team_event_chrono_challenger as s
-from nfl_ml_chronological_challenger import EvidenceError
+from chrono_common import EvidenceError
 
 def nhl_csv(path, seasons=range(2014, 2027), degenerate=(), extra_rows=()):
     rng = np.random.default_rng(3); teams = [f"T{i}" for i in range(10)]; st = dict(zip(teams, rng.normal(0, .5, 10))); rows = []; gid = 0
@@ -16,6 +16,12 @@ def nhl_csv(path, seasons=range(2014, 2027), degenerate=(), extra_rows=()):
             rows.append(dict(game_id=gid, game_type="R", game_date=str(day.date()), home_team_abbr=h, away_team_abbr=a,
                              home_score=hs, away_score=as_, game_state="OFF", season=yr))
     rows += list(extra_rows); pd.DataFrame(rows).to_csv(path, index=False); return path
+
+@pytest.fixture(autouse=True)
+def _fixed_code_sha(monkeypatch):
+    # hermetic: run() normally requires a clean tracked tree; code_provenance itself is tested separately below
+    monkeypatch.setattr(s, "code_provenance", lambda: {"code_sha": "c" * 40})
+
 
 def test_valid_case_and_provenance(tmp_path):
     p = nhl_csv(tmp_path / "n.csv"); r = s.run("NHL", [p], tmp_path / "o")
@@ -69,3 +75,29 @@ def test_stale_no_holdout_fails_closed(tmp_path):
 
 def test_invariants():
     assert s.CAN_EXECUTE is False and s.PROMOTION_AUTHORIZED is False and s.PROBABILITY_PUBLISHABLE is False
+
+
+def test_cohort_bound_is_never_a_calibrated_lower_bound(tmp_path):
+    import json, subprocess
+    r = s.run("NHL", [nhl_csv(tmp_path / "n.csv")], tmp_path / "o")
+    assert r["calibrated_lower_bound"] is None and r["rank_eligible"] is False
+    for split in ("holdout", "forward"):
+        c = r[split]["cohort_ge_65"]
+        assert "wilson90_lower" not in c and "calibrated_lower_bound" not in c
+        assert c["semantics"].endswith("NOT_A_CALIBRATED_LOWER_BOUND")
+        assert all("cohort" in b or k != "wilson90_lower" for b in r[split]["reliability"] for k in b if "lower" in k)
+        assert all("calibrated_lower_bound" not in b for b in r[split]["reliability"])
+    assert "calibrated_lower_bound" not in json.dumps(r).replace('"calibrated_lower_bound": null', "")
+
+def test_source_rights_recorded_not_mit_and_not_commercial(tmp_path):
+    r = s.run("NHL", [nhl_csv(tmp_path / "n.csv")], tmp_path / "o")
+    assert r["source_rights"]["license"] == "CC BY 4.0" and r["source_rights"]["commercial_use"].startswith("NOT_AUTHORIZED")
+    assert r["source_rights"]["upstream_rights"] == "UNVERIFIED" and "CC BY 4.0" in s.__doc__
+
+def test_code_sha_required_and_dirty_tree_rejected(tmp_path, monkeypatch):
+    import chrono_common as cc
+    monkeypatch.setattr(cc.subprocess, "check_output", lambda *a, **k: (_ for _ in ()).throw(OSError("no git")))
+    with pytest.raises(EvidenceError, match="CODE_SHA_UNAVAILABLE"): cc.code_provenance()
+    outs = iter(["a" * 40 + "\n", " M file.py\n"])
+    monkeypatch.setattr(cc.subprocess, "check_output", lambda *a, **k: next(outs))
+    with pytest.raises(EvidenceError, match="CODE_TREE_DIRTY_NOT_REPRODUCIBLE"): cc.code_provenance()

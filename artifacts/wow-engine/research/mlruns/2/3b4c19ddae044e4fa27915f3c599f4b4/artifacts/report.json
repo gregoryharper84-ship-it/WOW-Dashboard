@@ -1,0 +1,185 @@
+{
+  "sport": "NCAAF",
+  "challenger_id": "NCAAF_ML_DECAYFORM_LOGREG_PLATT_CHRONO_V1",
+  "features": [
+    "margin_diff",
+    "win_diff",
+    "rest_diff",
+    "neutral"
+  ],
+  "splits": {
+    "n_train": 7625,
+    "n_cal": 883,
+    "n_holdout": 2798,
+    "n_forward": 673,
+    "train_last": "2022-02-05",
+    "cal_first": "2022-08-27",
+    "holdout_first": "2023-08-26"
+  },
+  "holdout": {
+    "baseline_home_rate": {
+      "n": 2798,
+      "brier": 0.23386285297729653,
+      "log_loss": 0.6605710301855564,
+      "calibration_bias": -0.031201162422807904,
+      "accuracy": 0.6308077197998571
+    },
+    "challenger_platt": {
+      "n": 2798,
+      "brier": 0.17774403194084087,
+      "log_loss": 0.5277412740445133,
+      "calibration_bias": -0.018550206488542775,
+      "accuracy": 0.729807005003574
+    },
+    "reliability": [
+      {
+        "bin": "[0,0.4)",
+        "n": 523,
+        "forecast": 0.27719303554845776,
+        "observed": 0.27915869980879543,
+        "wilson90_lower": 0.24809140478284888
+      },
+      {
+        "bin": "[0.4,0.5)",
+        "n": 348,
+        "forecast": 0.45319857889911475,
+        "observed": 0.4339080459770115,
+        "wilson90_lower": 0.3908802126967297
+      },
+      {
+        "bin": "[0.5,0.6)",
+        "n": 433,
+        "forecast": 0.551609755207602,
+        "observed": 0.5635103926096998,
+        "wilson90_lower": 0.5240292374106718
+      },
+      {
+        "bin": "[0.6,0.65)",
+        "n": 224,
+        "forecast": 0.6226127155728391,
+        "observed": 0.6205357142857143,
+        "wilson90_lower": 0.5660619049425595
+      },
+      {
+        "bin": "[0.65,0.7)",
+        "n": 214,
+        "forecast": 0.6742403729696919,
+        "observed": 0.6962616822429907,
+        "wilson90_lower": 0.6423639823761212
+      },
+      {
+        "bin": "[0.7,0.8)",
+        "n": 401,
+        "forecast": 0.7502920624647001,
+        "observed": 0.8079800498753117,
+        "wilson90_lower": 0.7736013672947041
+      },
+      {
+        "bin": "[0.8,1)",
+        "n": 655,
+        "forecast": 0.896098671815657,
+        "observed": 0.934351145038168,
+        "wilson90_lower": 0.9165777290061229
+      }
+    ],
+    "cohort_ge_65": {
+      "n": 1668,
+      "observed": 0.8255395683453237,
+      "wilson90_lower": 0.8097298819123246
+    }
+  },
+  "forward": {
+    "baseline_home_rate": {
+      "n": 673,
+      "brier": 0.22721262648004398,
+      "log_loss": 0.647090318422189,
+      "calibration_bias": -0.06458363578788395,
+      "accuracy": 0.6641901931649331
+    },
+    "challenger_platt": {
+      "n": 673,
+      "brier": 0.18005074973213847,
+      "log_loss": 0.5296208624201832,
+      "calibration_bias": -0.030537846393969392,
+      "accuracy": 0.7072808320950966
+    },
+    "reliability": [
+      {
+        "bin": "[0,0.4)",
+        "n": 119,
+        "forecast": 0.2835043717548491,
+        "observed": 0.36134453781512604,
+        "wilson90_lower": 0.292729628302874
+      },
+      {
+        "bin": "[0.4,0.5)",
+        "n": 74,
+        "forecast": 0.45748421608463385,
+        "observed": 0.527027027027027,
+        "wilson90_lower": 0.4322940055684228
+      },
+      {
+        "bin": "[0.5,0.6)",
+        "n": 85,
+        "forecast": 0.5495377376651565,
+        "observed": 0.5058823529411764,
+        "wilson90_lower": 0.41788113965650137
+      },
+      {
+        "bin": "[0.6,0.65)",
+        "n": 52,
+        "forecast": 0.6248522468694109,
+        "observed": 0.6346153846153846,
+        "wilson90_lower": 0.5206524975292297
+      },
+      {
+        "bin": "[0.65,0.7)",
+        "n": 48,
+        "forecast": 0.6737565442847226,
+        "observed": 0.75,
+        "wilson90_lower": 0.6357409659731721
+      },
+      {
+        "bin": "[0.7,0.8)",
+        "n": 108,
+        "forecast": 0.7430298359421258,
+        "observed": 0.7777777777777778,
+        "wilson90_lower": 0.7056360184648919
+      },
+      {
+        "bin": "[0.8,1)",
+        "n": 187,
+        "forecast": 0.8934043647144637,
+        "observed": 0.9037433155080213,
+        "wilson90_lower": 0.8622905200023807
+      }
+    ],
+    "cohort_ge_65": {
+      "n": 429,
+      "observed": 0.8181818181818182,
+      "wilson90_lower": 0.7855860948102737
+    }
+  },
+  "artifact_checksum": "8c6e64854c930aa684c0d860f039f508931bd9f17876eee34db5bf42d096b7de",
+  "source_sha256": {
+    "cfb_2012.csv": "eac79a485c5ec9e6d68f199d2ae7d003ba3083d6c48884d8c7c9c2915b304258",
+    "cfb_2013.csv": "c81adc768e93590ab214e3f703820344eab5aad5db27e42d9b7d856cc6922b99",
+    "cfb_2014.csv": "16c5b182e200b3488734ba540b0552eaeec4950f11edb9286b28451ea7315ecc",
+    "cfb_2015.csv": "7632a78a2c25d8f07d01e79da57ec153bbc1dc4109c1367ddbe567ea2f7b1f79",
+    "cfb_2016.csv": "77300eaf6087c92d16d24bcd55ecad6411c9ea5d52a46499409622021c2b8c81",
+    "cfb_2017.csv": "1cf8bbb302c5c81f86a1363e0bcaccbbf65793229dbc63e23ae04cc423773316",
+    "cfb_2018.csv": "9d42a7908b1fd4fb29af9152f8e975e75de3be6dc680d0b109dcb684c41c89c5",
+    "cfb_2019.csv": "26a0ced78824b2795eba6abcb8b58b77a5d01c0b353e104754fb774d68767560",
+    "cfb_2020.csv": "00cdff66c2d6fc6aa03323a6afa18266364971d1ec208d3a6eade2b8d54bb26c",
+    "cfb_2021.csv": "cf5015fc724898e2449de86ef9544c3a9d52074f361c2c2538ed31d6cef41752",
+    "cfb_2022.csv": "71259290b32d363ec7e6b996bc460d4b79a7978f7ec655601a5b8d0be81dc02e",
+    "cfb_2023.csv": "5739569b8e7684ed6fa838c9e3cf13ab1d62f223cef0e7785e466544d5d0a7c1",
+    "cfb_2024.csv": "6249cc0922e3fe3eade3634b733bd193b92b5b07e6ee4ca456b5efd2b670ca86",
+    "cfb_2025.csv": "2b8e4e24f3c62c8833b7e15703675d9648f438aaa01de966e6498eae50b1d86f",
+    "cfb_2026.csv": "4baa84aa1aa255713fb7a6685540547f719e4fe41b308f1d3db963017e85c82f"
+  },
+  "training_dataset_hash": "ce65f3d5ae4b8c4e1cd324249c2e60c15d2d84e661c7925db7fb52e76d5a734e",
+  "code_sha": "db5e6b7c8e97079dc52ede0e36cc2b0e6e5bbc8c",
+  "status": "CANDIDATE_ONLY_NOT_PROMOTABLE",
+  "can_execute": false
+}

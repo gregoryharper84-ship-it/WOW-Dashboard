@@ -1,11 +1,14 @@
 """Research-only NHL / NCAAF moneyline chronological challengers (restoration workstreams #2-6).
 
-Source adapters for SportsDataverse release assets (MIT licensed):
+Source adapters for SportsDataverse release assets. Rights: the sportsdataverse-data release store
+declares CC BY 4.0 (its DESCRIPTION file); the MIT license belongs to separate wrapper software, not
+the data. Rights of the upstream ESPN / NHL-origin data are UNVERIFIED, so output is research-only and
+must not be used commercially until a rights review passes (attribution to SportsDataverse required).
   NHL   releases/nhl_schedules/nhl_schedule_<season>.csv
   NCAAF releases/espn_cfb_schedules/cfb_schedule_<season>.csv
 Pipeline: final games -> strictly-prior decayed form + rest -> logistic -> Platt ->
 identical chronological holdout, plus a separate forward season. Candidate only: it cannot
-publish, certify, promote, or execute (can_execute=false). Reuses the NFL pipeline's math.
+publish, certify, promote, or execute (can_execute=false). Math/guards come from chrono_common.py (self-contained; no cross-PR module dependency).
 """
 from __future__ import annotations
 
@@ -15,8 +18,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from nfl_ml_chronological_challenger import (EvidenceError, fit_logit, logit, metrics, predict, reliability,
-                                             sha256_file, wilson_lower)
+from chrono_common import (COHORT_BOUND_SEMANTICS, EvidenceError, code_provenance, fit_logit, logit, metrics, predict,
+                           reliability, sha256_file, wilson_lower)
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -108,15 +111,19 @@ def run(sport: str, csv_paths: list[Path], out_dir: Path, mlflow_uri: str | None
         if len(x) == 0: continue
         p, y = score(x), x.y.values; hi = np.maximum(p, 1 - p) >= .65; ok = (p > .5) == (y > .5)
         res[name] = dict(baseline_home_rate=metrics(np.full(len(x), tr.y.mean()), y), challenger_platt=metrics(p, y),
-                         reliability=reliability(p, y), cohort_ge_65=dict(n=int(hi.sum()), observed=float(ok[hi].mean()) if hi.any() else None,
-                         wilson90_lower=wilson_lower(int(ok[hi].sum()), int(hi.sum())) if hi.any() else None))
+                         reliability=reliability(p, y), cohort_ge_65=dict(n=int(hi.sum()), observed_hit_rate=float(ok[hi].mean()) if hi.any() else None,
+                         cohort_hit_rate_wilson90_lower=wilson_lower(int(ok[hi].sum()), int(hi.sum())) if hi.any() else None,
+                         semantics=COHORT_BOUND_SEMANTICS))
     art = dict(model_family=cfg["id"], features=feats, mu=mu.tolist(), sd=sd.tolist(), coef=b.tolist(), platt=pl.tolist())
     blob = json.dumps(art, sort_keys=True).encode()
     res["artifact_checksum"] = hashlib.sha256(blob).hexdigest()
     res["source_sha256"] = {Path(p).name: sha256_file(Path(p)) for p in csv_paths}
     res["training_dataset_hash"] = hashlib.sha256(pd.util.hash_pandas_object(tr, index=False).values.tobytes()).hexdigest()
-    try: res["code_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
-    except Exception: res["code_sha"] = "UNKNOWN"
+    res.update(code_provenance())
+    res["source_rights"] = dict(dataset="sportsdataverse-data releases", license="CC BY 4.0", attribution_required=True,
+                                upstream_rights="UNVERIFIED", commercial_use="NOT_AUTHORIZED_PENDING_RIGHTS_REVIEW")
+    res["official_score_crosswalk"] = "NOT_PERFORMED"  # official NHL/ESPN final scores not reconciled to every included game
+    res["calibrated_lower_bound"] = None; res["rank_eligible"] = False; res["incumbent_comparison"] = "NONE_EXISTS_HOME_RATE_BASELINE_ONLY"
     res["status"] = "CANDIDATE_ONLY_NOT_PROMOTABLE"; res["can_execute"] = False
     out_dir.mkdir(parents=True, exist_ok=True); (out_dir / "artifact.json").write_bytes(blob); (out_dir / "report.json").write_text(json.dumps(res, indent=2, default=float))
     if mlflow_uri:
@@ -126,6 +133,8 @@ def run(sport: str, csv_paths: list[Path], out_dir: Path, mlflow_uri: str | None
             mlflow.log_params(dict(code_sha=res["code_sha"], artifact_checksum=res["artifact_checksum"], train_hash=res["training_dataset_hash"]))
             for k, v in res["holdout"]["challenger_platt"].items(): mlflow.log_metric(f"holdout_{k}", v)
             mlflow.log_artifacts(str(out_dir))
+            res["mlflow_run_id"] = mlflow.active_run().info.run_id
+        (out_dir / "report.json").write_text(json.dumps(res, indent=2, default=float))
     return res
 
 
