@@ -60,11 +60,14 @@ def test_winner_watch_floor_remains_publishable_when_all_governance_and_triad_pa
     # This is a test-only boundary-issued complete report, not a production
     # certification or substitute for a fitted registry verification receipt.
     result["sport"] = "MLB"
+    result["official_event_id"] = "test-winner-event-1"
+    result["model_artifact_version"] = "TEST_FITTED_ARTIFACT_V1"
     result["model_evidence_triad"] = seal_report({
         "status": COMPLETE,
         "bundle_complete": True,
         "model_kind": "TEAM_EVENT",
         "sport": "MLB",
+        "official_event_id": "test-winner-event-1",
         "model_family": "TEST_FITTED_MODEL",
         "model_artifact_version": "TEST_FITTED_ARTIFACT_V1",
         "feature_schema_version": "TEST_FEATURE_SCHEMA_V1",
