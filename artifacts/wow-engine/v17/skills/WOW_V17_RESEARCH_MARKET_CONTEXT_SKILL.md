@@ -32,7 +32,7 @@ For each material candidate, gather when relevant and available:
 
 ## Sport-specific pregame uncertainty and postmortem learning
 
-Prior to freezing a team-event winner, check material evidence by sport and mark \`KNOWN\`, \`UNKNOWN\` or \`CONTRADICTORY\` with an exact source and \`available_to_user_at_utc\`:
+Prior to freezing a team-event winner, check material evidence by sport and mark `KNOWN`, `UNKNOWN` or `CONTRADICTORY` with an exact source and `available_to_user_at_utc`:
 - **NFL:** quarterback status/efficiency, passing-matchup and protection context, turnover sensitivity, major starters and recent injury changes.
 - **NBA:** actual player availability and late scratches, replacement rotation/usage upside, opponent offensive ceiling and shooting variance, rest/back-to-back and travel.
 - **NHL:** confirmed (not projected) starting goaltender, back-to-back/rest/travel, injuries, special teams, and regulation/OT/shootout settlement exposure.
