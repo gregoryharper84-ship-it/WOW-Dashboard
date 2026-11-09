@@ -1966,13 +1966,11 @@ def test_trust_root_bootstrap_holds_for_missing_or_stale_owner_approval():
         build_bootstrap(data)
 
 
-def test_owner_authored_trust_root_change_cannot_bootstrap():
+def test_legacy_owner_authored_receipt_cannot_be_reinterpreted_as_v3():
+    receipt = build_bootstrap()
+    receipt['target']['author'] = {'id':verifier.OWNER_ID,'login':verifier.OWNER_LOGIN}
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_AUTHORED"):
-        build_bootstrap(bootstrap_evidence(author={
-            "id": verifier.OWNER_ID,
-            "login": verifier.OWNER_LOGIN,
-            "type": "User",
-        }))
+        verify_bootstrap(receipt)
 
 
 def test_ordinary_diff_cannot_use_the_bootstrap_receipt():
@@ -2453,3 +2451,201 @@ def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
     assert "--trusted-reviewers-json" in workflow
     assert "--source-review-json" in workflow  # reviewed non-Class-A PRs retain their path
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+
+
+def owner_v3_evidence(**kwargs):
+    data=bootstrap_evidence(author={'id':verifier.OWNER_ID,'login':verifier.OWNER_LOGIN,'type':'User'},**kwargs)
+    data['reviews']=[]
+    return data
+
+
+def test_v3_owner_receipt_is_versioned_evidence_not_self_approval():
+    data=owner_v3_evidence()
+    receipt=build_bootstrap(data)
+    assert receipt['receipt_schema_version'] == 3
+    assert receipt['owner_review'] is None
+    assert receipt['owner_authorization'] == {
+        'basis':'AUTHENTICATED_OWNER_AUTHORSHIP', 'head_sha':HEAD,
+        'owner_merge_required':True, 'release_authorized':False,
+    }
+    assert 'independent_review' not in receipt
+    verify_bootstrap(receipt,data=data)
+
+
+@pytest.mark.parametrize('field,value', [('release_authorized',True),('head_sha','b'*40),('owner_merge_required',False)])
+def test_v3_owner_receipt_cannot_claim_release_or_change_its_head(field,value):
+    data=owner_v3_evidence()
+    receipt=build_bootstrap(data)
+    receipt['owner_authorization'][field]=value
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError):
+        verify_bootstrap(receipt,data=data)
+
+
+def test_v3_owner_still_requires_exact_green_qa_and_release():
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,match='REQUIRED_CHECK_NOT_GREEN'):
+        build_bootstrap(owner_v3_evidence(qa_conclusion='failure'))
+
+
+@pytest.mark.parametrize('author', [
+    {'id':verifier.OWNER_ID,'login':'someone-else','type':'User'},
+    {'id':100,'login':verifier.OWNER_LOGIN,'type':'User'},
+    {'id':verifier.OWNER_ID,'login':verifier.OWNER_LOGIN,'type':'Bot'},
+])
+def test_v3_owner_identity_requires_matching_id_login_and_human_type(author):
+    data=bootstrap_evidence(author=author)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError):
+        build_bootstrap(data)
+
+
+def test_v3_owner_cli_build_and_live_recheck(tmp_path, monkeypatch):
+    monkeypatch.chdir(REPO_ROOT)
+    data = owner_v3_evidence()
+    evidence_path = tmp_path / 'evidence.json'
+    reviews_path = tmp_path / 'reviews.json'
+    checks_path = tmp_path / 'checks.json'
+    output = tmp_path / 'receipt.json'
+    evidence_path.write_text(json.dumps(data))
+    reviews_path.write_text(json.dumps(data['reviews']))
+    checks_path.write_text(json.dumps(data['check_runs']))
+    common = ['--repository', REPOSITORY, '--head-sha', HEAD,
+              '--head-ref', 'fix/issue-1806', '--workflow-run-id', '12345',
+              '--workflow-run-attempt', '1', '--workflow-name', verifier.WORKFLOW_NAME,
+              '--pr-number', '1822', '--incident-id', '1806']
+    monkeypatch.setattr(sys, 'argv', ['verify', *common, '--evidence', str(evidence_path),
+                                     '--output', str(output), '--bootstrap'])
+    assert verifier.main() == 0
+    assert json.loads(output.read_text())['owner_authorization']['release_authorized'] is False
+    monkeypatch.setattr(sys, 'argv', ['verify', *common, '--receipt', str(output),
+                                     '--live-reviews-json', str(reviews_path),
+                                     '--live-checks-json', str(checks_path)])
+    assert verifier.main() == 0
+    checks_path.write_text('[]')
+    assert verifier.main() == 1
+
+
+@pytest.mark.parametrize('mode,schema,expected', [
+    ('TRUST_ROOT_BOOTSTRAP', '3', 'bootstrap'),
+    ('TRUST_ROOT_BOOTSTRAP', '2', 'bootstrap'),
+    ('ORDINARY_ENGINEERING', '3', 'semantic'),
+])
+def test_trusted_gate_source_artifact_route_respects_certification_mode(mode, schema, expected):
+    import subprocess
+    workflow = TRUSTED_GATE.read_text()
+    line = next(line.strip() for line in workflow.splitlines()
+                if line.strip().startswith('if [ "$WORKFLOW_NAME"')
+                and '"$receipt_schema" = "3"' in line)
+    script = ('WORKFLOW_NAME=wow-v17-existing-pr-governance-review\n'
+              f'cert_mode={mode}\nreceipt_schema={schema}\n'
+              + line + '\n echo semantic\nelse\n echo bootstrap\nfi\n')
+    assert subprocess.check_output(['bash', '-c', script], text=True).strip() == expected
+
+
+def trusted_gate_schema_routing_block():
+    """Return the real if/elif/fi routing block that accepts or rejects a schema.
+
+    The block decides, before the verifier runs, whether a receipt is routed to
+    the semantic source-review artifact checks or rejected outright. Testing the
+    first condition in isolation cannot prove that a bootstrap receipt survives
+    the whole block, so the block is executed verbatim here.
+    """
+    lines = TRUSTED_GATE.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines)
+                 if line.strip().startswith('if [ "$WORKFLOW_NAME"')
+                 and '"$receipt_schema" = "3"' in line)
+    # The block is nested inside a run: | script; its closing fi shares the if's
+    # indentation, while the inner fi of the source-review branch is deeper.
+    indent = lines[start][:len(lines[start]) - len(lines[start].lstrip())]
+    end = next(index for index in range(start + 1, len(lines))
+               if lines[index].rstrip("\n") == f"{indent}fi")
+    block = "".join(lines[start:end + 1])
+    assert "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" in block
+    # The step's run: | block scalar strips its own indentation before bash sees
+    # the script; reproduce that so embedded heredoc terminators stay at column 0.
+    return textwrap.dedent(block)
+
+
+@pytest.mark.parametrize("cert_mode,schema", [
+    ("TRUST_ROOT_BOOTSTRAP", "3"),
+    ("TRUST_ROOT_BOOTSTRAP", "2"),
+])
+def test_trusted_gate_bootstrap_receipts_are_not_rejected_as_unsupported(cert_mode, schema):
+    script = ("set -euo pipefail\n"
+              f"WORKFLOW_NAME={verifier.WORKFLOW_NAME}\n"
+              f"cert_mode={cert_mode}\n"
+              f"receipt_schema={schema}\n"
+              + trusted_gate_schema_routing_block() + "\n"
+              "echo ROUTE_ALLOWED\n")
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "ROUTE_ALLOWED" in result.stdout
+
+
+def test_trusted_gate_bootstrap_schema3_verifier_invocation_accepts_owner_receipt(tmp_path):
+    """Exercise the downstream half of the gate for the accepted V3 owner path.
+
+    The existing argv-shape test only drives a schema-2 non-owner bootstrap
+    receipt, so an owner-authored schema-3 receipt could fail inside the gate's
+    --live-checks-json branch without any test noticing.
+    """
+    workflow = TRUSTED_GATE.read_text(encoding="utf-8")
+    start = workflow.index('verifier=".github/scripts/verify_engineering_governance_receipt.py"')
+    marker = 'echo "Trusted exact-head governance receipt verified. can_execute=false."'
+    invocation = textwrap.dedent(workflow[start:workflow.index(marker, start) + len(marker)])
+
+    def run(receipt, reviews, checks):
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text(json.dumps(reviews), encoding="utf-8")
+        checks_path = tmp_path / "checks.json"
+        checks_path.write_text(json.dumps(checks), encoding="utf-8")
+        script = (
+            "set -euo pipefail\n"
+            'receipt="$RECEIPT_PATH"\n'
+            'live_reviews="$LIVE_REVIEWS_PATH"\n'
+            'live_checks="$LIVE_CHECKS_PATH"\n'
+            'cert_mode=$(python -c \'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")\' "$receipt")\n'
+            'receipt_schema=$(python -c \'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("receipt_schema_version") or "")\' "$receipt")\n'
+            f"{invocation}\n"
+        )
+        env = os.environ | {
+            "WORKFLOW_NAME": verifier.WORKFLOW_NAME,
+            "RECEIPT_PATH": str(receipt_path),
+            "LIVE_REVIEWS_PATH": str(reviews_path),
+            "LIVE_CHECKS_PATH": str(checks_path),
+            "PR_NUMBER": "1822",
+            "PR_HEAD_SHA": HEAD,
+            "PR_HEAD_REF": "fix/issue-1806",
+            "RUN_ID": "12345",
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        }
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+        )
+
+    data = owner_v3_evidence()
+    accepted = run(build_bootstrap(data, now=datetime.now(timezone.utc)),
+                   data["reviews"], data["check_runs"])
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert "TRUST_ROOT_BOOTSTRAP_VERIFIED" in accepted.stdout
+
+    tampered_data = owner_v3_evidence()
+    tampered = build_bootstrap(tampered_data, now=datetime.now(timezone.utc))
+    tampered["owner_authorization"]["release_authorized"] = True
+    rejected = run(tampered, tampered_data["reviews"], tampered_data["check_runs"])
+    assert rejected.returncode == 1
+    assert "OWNER_AUTHORIZATION_SCOPE_INVALID" in rejected.stdout
+
+
+def test_trusted_gate_still_rejects_an_unrecognized_receipt_schema():
+    script = ("set -euo pipefail\n"
+              f"WORKFLOW_NAME={verifier.WORKFLOW_NAME}\n"
+              "cert_mode=ORDINARY_ENGINEERING\n"
+              "receipt_schema=1\n"
+              + trusted_gate_schema_routing_block() + "\n"
+              "echo ROUTE_ALLOWED\n")
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 1
+    assert "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" in result.stderr

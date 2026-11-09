@@ -494,7 +494,7 @@ def test_renamed_trust_root_is_still_protected_by_its_previous_path():
     assert result["findings"] == ["TRUST_ROOT_OWNER_APPROVAL_MISSING"]
 
 
-def test_trust_root_owner_authored_change_cannot_self_approve():
+def test_owner_identity_missing_human_type_still_fails_closed():
     result = classify(
         pull=make_pull(author_id=OWNER_ID, author=OWNER),
         file_records=[make_file(".github/workflows/new.yml")],
@@ -502,7 +502,7 @@ def test_trust_root_owner_authored_change_cannot_self_approve():
     )
 
     assert result["action"] == "HOLD"
-    assert result["findings"] == ["TRUST_ROOT_OWNER_AUTHORED"]
+    assert result["findings"] == ["PR_AUTHOR_IDENTITY_UNKNOWN"]
 
 
 @pytest.mark.parametrize(
@@ -940,6 +940,41 @@ def test_dispatch_attempts_never_blindly_repeat(role, reviewer_status, role_stat
         transport.next_dispatch_attempt(role, reviewer_status, role_statuses, previous)
 
 
+@pytest.mark.parametrize("review_decision,expected", [
+    ("PASS", "PASS"), ("REJECT", "REJECT"), ("HOLD", "INVALID"),
+])
+def test_provenance_valid_source_artifact_does_not_erase_semantic_reject(
+    review_decision, expected,
+):
+    class SignedFixture:
+        SourceReviewError = FakeSourceReviewError
+
+        @staticmethod
+        def resolve_current_source_review(**kwargs):
+            assert kwargs["pr_number"] == 41
+            assert kwargs["head_sha"] == HEAD
+            return {"artifact": {"review": {"decision": review_decision}}}
+
+    class FakeClient:
+        token = "read-only-test-token"
+
+        def get(self, _):
+            pytest.fail("validated reviewer fixture must not request extra API data")
+
+    result = transport.source_review_status(
+        FakeClient(), module=SignedFixture(), pr=make_pull(),
+        files=[make_file()], source_runs=[],
+    )
+    assert result == expected
+    if expected == "REJECT":
+        blocked = classify(
+            source_review=result, zero_credit_mode=False,
+            check_runs=required_ci_checks(),
+        )
+        assert blocked["action"] == "HOLD"
+        assert blocked["findings"] == ["SOURCE_REVIEW_REJECT"]
+
+
 @pytest.mark.parametrize("expired", [False, True])
 def test_expired_source_review_artifact_is_identified_for_bounded_refresh(expired):
     module = source_review_module()
@@ -1177,6 +1212,59 @@ def test_ambiguous_non_idempotent_write_is_not_retried(monkeypatch):
         transport.GitHub("test-token").request("POST", "/repos/example/repo/actions/workflows/1/dispatches", {})
 
     assert len(attempts) == 1
+
+
+@pytest.mark.parametrize("signed_status,allow_dispatch", [
+    ("REJECT", False), ("INVALID", False),
+    ("STALE", False), ("PENDING", False), ("PASS", True),
+])
+def test_zero_credit_dispatch_reads_prior_authenticated_review_before_qa(
+    monkeypatch, signed_status, allow_dispatch,
+):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    pull = make_pull(author_id=OWNER_ID, author=OWNER)
+    pull["user"]["type"] = "User"
+    events = []
+    review_run = {"id": 911, "run_attempt": 1,
+                  "status": "completed", "conclusion": "success"}
+    workflows = {
+        role: {"id": idx + 1, **details}
+        for idx, (role, details) in enumerate(transport.WORKFLOWS.items())
+    }
+    monkeypatch.setattr(transport, "_owner", lambda _: (OWNER_ID, OWNER))
+    monkeypatch.setattr(transport, "list_workflows", lambda _: workflows)
+    monkeypatch.setattr(transport, "count_wip",
+                        lambda *_: {role: 0 for role in transport.WORKFLOWS})
+    monkeypatch.setattr(transport, "_source_review_module", lambda: object())
+    monkeypatch.setattr(transport, "_target_list", lambda *_: [pull])
+    monkeypatch.setattr(transport, "_target_pull", lambda *_: pull)
+    monkeypatch.setattr(transport, "pull_files",
+                        lambda *_: [make_file(".github/workflows/new.yml")])
+    monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
+    monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "matching_role_runs",
+                        lambda *_: {"source_review": {
+                            "history": [review_run], "latest": review_run}})
+    monkeypatch.setattr(transport, "source_review_status",
+                        lambda *_args, **_kwargs: events.append("read_signed_review")
+                        or signed_status)
+    monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
+    monkeypatch.setattr(transport, "reserve_dispatch",
+                        lambda *_args, **_kwargs: events.append("reserve"))
+    monkeypatch.setattr(transport, "dispatch",
+                        lambda *_args, **_kwargs: events.append("dispatch"))
+    result = transport.reconcile(
+        client=object(), input_pr="41", run_number=7,
+        controller_run_id="12345", source_sha=OTHER_HEAD,
+        zero_credit_mode=True,
+    )
+    assert events[0] == "read_signed_review"
+    assert ("dispatch" in events) is allow_dispatch
+    assert result["dispatch_count"] == int(allow_dispatch)
+    if not allow_dispatch:
+        assert result["decisions"][0]["action"] == "HOLD"
+        assert result["decisions"][0]["findings"] == ["SOURCE_REVIEW_" + signed_status]
+    assert result["can_execute"] is False
 
 
 def test_reconcile_reserves_before_dispatch(monkeypatch):
@@ -1655,3 +1743,55 @@ def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner()
     assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
     assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
     assert "cancel-in-progress: false" in source
+
+
+def test_v3_owner_authorship_routes_review_without_fabricating_approval():
+    pull=make_pull(author_id=OWNER_ID,author=OWNER)
+    pull['user']['type']='User'
+    result=classify(pull=pull,file_records=[make_file('.github/workflows/new.yml')],
+                    reviews=[],source_review='MISSING',check_runs=all_ci_checks())
+    assert result['action'] == 'DISPATCH'
+    assert result['role'] == 'source_review'
+
+
+def test_v3_zero_credit_owner_signed_semantic_reject_is_permanent_veto():
+    pull = make_pull(author_id=OWNER_ID, author=OWNER)
+    pull["user"]["type"] = "User"
+    reject = make_check("WOW Independent Security Review",
+                        app_id=policy.QA_APP_ID, conclusion="failure", id=40)
+    reject["output"] = {"title": "REJECT — independent semantic source review"}
+    result = classify(pull=pull,
+                      file_records=[make_file(".github/workflows/new.yml")],
+                      check_runs=all_ci_checks() + [reject],
+                      source_review="PENDING", zero_credit_mode=True)
+    assert result["action"] == "HOLD"
+    assert result["findings"] == ["SOURCE_REVIEW_REJECT"]
+
+
+@pytest.mark.parametrize("variant", ("foreign_app", "stale_head", "hold_not_reject"))
+def test_v3_zero_credit_cannot_be_vetoed_by_unsigned_or_other_head_review(variant):
+    pull = make_pull(author_id=OWNER_ID, author=OWNER)
+    pull["user"]["type"] = "User"
+    reject = make_check("WOW Independent Security Review",
+                        app_id=policy.QA_APP_ID, conclusion="failure", id=40)
+    reject["output"] = {"title": "REJECT — independent semantic source review"}
+    if variant == "foreign_app":
+        reject["app"]["id"] = policy.QA_APP_ID + 1
+    elif variant == "stale_head":
+        reject["head_sha"] = OTHER_HEAD
+    else:
+        reject["output"]["title"] = "HOLD — independent semantic source review"
+    result = classify(pull=pull,
+                      file_records=[make_file(".github/workflows/new.yml")],
+                      check_runs=all_ci_checks() + [reject],
+                      source_review="PENDING", zero_credit_mode=True)
+    assert "SOURCE_REVIEW_REJECT" not in result.get("findings", [])
+
+
+def test_v3_owner_authorship_does_not_bypass_source_review_reject():
+    pull=make_pull(author_id=OWNER_ID,author=OWNER)
+    pull['user']['type']='User'
+    result=classify(pull=pull,file_records=[make_file('.github/workflows/new.yml')],
+                    reviews=[],source_review='REJECT',check_runs=all_ci_checks())
+    assert result['action'] == 'HOLD'
+    assert 'TRUST_ROOT_OWNER_AUTHORED' not in result['findings']
