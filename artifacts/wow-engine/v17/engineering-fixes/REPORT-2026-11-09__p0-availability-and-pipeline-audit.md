@@ -249,6 +249,11 @@ a genuine second acquisition at the runtime boundary and correct change
 detection; it does not demonstrate the live provider's pregame confirmation
 shape, which is unverified off-season.
 
+Hosted durability acceptance against the Supabase project (deployed reader
+inspection, ACLs, migration state, and a scratch-schema round-trip) is recorded
+separately in `SUPABASE-ACCEPTANCE-2026-11-09.md`. It passes the snapshot
+durability contract but does not establish production deployment or replay.
+
 ### Phase 4 — workstream status
 
 | Workstream | Status |
@@ -285,7 +290,7 @@ The control row proves the block is the availability fact, not a broken scorer.
 Run from `artifacts/wow-engine` with the project virtualenv:
 
 - Availability, recheck, final-refresh proof, route and snapshot-durability
-  suites in a focused run: **125 passed**.
+  suites in a focused run: **127 passed**.
 - Prop + WNBA + snapshot surface, source contracts, pick-request and schema
   suites with the ephemeral Postgres enabled: **1114 passed, 0 skipped**.
   Without a database the same set is **880 passed, 15 skipped**; the 15 are the
