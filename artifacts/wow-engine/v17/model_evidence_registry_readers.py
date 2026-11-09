@@ -70,6 +70,9 @@ class TableSpec:
     field_columns: Mapping[str, str]
     filters: tuple[tuple[str, str], ...] = ()
     order_by: str | None = None
+    # Literal predicates that belong to the declared reader rather than to the
+    # assessed scope (for example the single current pregame snapshot row).
+    static_filters: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,66 @@ _PROP_ARTIFACT = TableSpec(
     order_by="created_at",
 )
 
+# MLB declares its own event-specific prelock corpus and exact-version
+# calibrator evidence. The generic wow_calibrators table cannot supply a
+# calibrator checksum, cohort hash, holdout evidence or overlap count, and the
+# NFL pregame matrix has no per-event tipoff/source identity, so neither may
+# stand in for these tables.
+_MLB_CALIBRATOR_EVIDENCE = TableSpec(
+    table="wow_mlb_event_calibrator_evidence",
+    field_columns={
+        "calibrator_id": "calibrator_id",
+        "model_family": "model_family",
+        "model_artifact_version": "model_artifact_version",
+        "feature_schema_version": "feature_schema_version",
+        "model_artifact_checksum": "model_artifact_checksum",
+        "calibrator_checksum": "calibrator_checksum",
+        "calibration_method": "calibration_method",
+        "bounds_method_version": "bounds_method_version",
+        "calibration_cohort_sha256": "calibration_cohort_sha256",
+        "holdout_evidence_sha256": "holdout_evidence_sha256",
+        "calibration_training_n": "calibration_training_n",
+        "holdout_overlap_rows": "holdout_overlap_rows",
+        "brier": "brier",
+        "log_loss": "log_loss",
+        "calibration_bias": "calibration_bias",
+        "calibration_fit_end": "calibration_fit_end",
+    },
+    filters=(
+        ("model_artifact_version", "model_artifact_version"),
+        ("feature_schema_version", "feature_schema_version"),
+    ),
+    order_by="created_at",
+)
+
+_MLB_PREGAME = TableSpec(
+    table="wow_mlb_event_pregame_feature_rows",
+    field_columns={
+        "model_family": "model_family",
+        "model_artifact_version": "model_artifact_version",
+        "feature_schema_version": "feature_schema_version",
+        "model_artifact_checksum": "model_artifact_checksum",
+        "official_event_id": "official_event_id",
+        "event_start_time": "event_start_time",
+        "event_status": "event_status",
+        "source_snapshot_id": "source_snapshot_id",
+        "source_snapshot_timestamp": "source_snapshot_timestamp",
+        "source_payload_sha256": "source_payload_sha256",
+        "feature_snapshot_id": "feature_snapshot_id",
+        "feature_snapshot_timestamp": "feature_snapshot_timestamp",
+        "feature_snapshot_sha256": "feature_snapshot_sha256",
+    },
+    filters=(
+        ("official_event_id", "official_event_id"),
+        ("model_artifact_version", "model_artifact_version"),
+        ("feature_schema_version", "feature_schema_version"),
+    ),
+    order_by="created_at",
+    # Only the single current snapshot is servable evidence; superseded rows are
+    # retained for audit. Two current rows remain AMBIGUOUS and fail closed.
+    static_filters=(("is_current", "true"),),
+)
+
 # Only lanes whose artifact, calibrator and pregame tables can be named with
 # confidence are configured. Every other declared sport reports an explicit
 # unconfigured blocker: the D1 candidate registry is research evidence, not a
@@ -231,7 +294,7 @@ _LANES: dict[tuple[str, str], LaneReader] = {
         calibrator_link=("calibrator_id", "calibrator_id"),
     ),
     ("TEAM_EVENT", "MLB"): LaneReader(
-        "TEAM_EVENT", "MLB", _MLB_ARTIFACT, _EVENT_CALIBRATOR, None,
+        "TEAM_EVENT", "MLB", _MLB_ARTIFACT, _MLB_CALIBRATOR_EVIDENCE, _MLB_PREGAME,
         calibrator_link=("calibrator_id", "calibrator_id"),
     ),
     ("TEAM_EVENT", "NBA"): LaneReader(
@@ -343,6 +406,8 @@ def _read_component(
             value = _text(getattr(scope, attribute, None))
             if not value:
                 return ComponentRead(component, READ_FAILED, None, spec.table, (f"{code}_READ_FAILED",))
+            query = query.eq(column, value)
+        for column, value in spec.static_filters:
             query = query.eq(column, value)
         for column, value in extra_filters:
             if not value:
