@@ -32,6 +32,7 @@ def _attempt(
     code: str | None,
     status: str,
 ) -> dict[str, Any]:
+    """Record one acquisition attempt without changing its outcome."""
     return {
         "path": path,
         "source_snapshot_id": source_snapshot_id,
@@ -47,6 +48,7 @@ def _annotate(
     attempts: list[dict[str, Any]],
     repair_status: str,
 ) -> dict[str, Any]:
+    """Attach requested/effective snapshot identity and repair history."""
     result = dict(payload)
     result["requested_source_snapshot_id"] = requested_source_snapshot_id
     result["effective_source_snapshot_id"] = result.get("source_snapshot_id") or requested_source_snapshot_id
@@ -56,15 +58,42 @@ def _annotate(
     return result
 
 
+def _canonical_identity(req: Any) -> tuple[str, str, str, str]:
+    """Normalize lookup keys exactly as the governed snapshot writer stores them.
+
+    ``pick_request_runtime_core._validate_evidence`` / ``_snapshot_payload``
+    persist ``event_id`` stripped, ``sport`` uppercase, ``player``
+    whitespace-collapsed and ``stat_type`` as the canonical alias-resolved
+    label. The primary ``wow_prop_evidence_snapshot`` RPC compares event id and
+    player exactly, so a padded caller identity could never read the row it
+    wrote. The same canonical keys are therefore used for both the fallback
+    lookup and the fallback revalidation request.
+
+    This changes identity comparison only. It cannot create evidence, relax
+    calibration, or publish a probability.
+    """
+    # Reuse the writer's own alias resolution. Imported lazily because the
+    # governed runtime module loads the full agent graph and imports this
+    # repair layer indirectly through api_prod_market.
+    from pick_request_runtime_core import _canonical_stat
+
+    event_id = str(getattr(req, "event_id", "") or "").strip()
+    sport = str(getattr(req, "sport", "") or "").strip().upper()
+    player = " ".join(str(getattr(req, "player", "") or "").split())
+    stat_type = _canonical_stat(sport, str(getattr(req, "stat_type", "") or ""))
+    return event_id, sport, player, stat_type
+
+
 def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
     """Return newest exact-identity snapshots captured strictly before start."""
+    event_id, sport, player, stat_type = _canonical_identity(req)
     query = (
         client.table("wow_prop_evidence_snapshots")
         .select("source_snapshot_id,captured_at")
-        .eq("event_id", req.event_id)
-        .eq("sport", req.sport)
-        .eq("player", req.player)
-        .eq("stat_type", req.stat_type)
+        .eq("event_id", event_id)
+        .eq("sport", sport)
+        .eq("player", player)
+        .eq("stat_type", stat_type)
         .eq("line", req.line)
         .eq("hydration_status", "PASS")
         .lt("captured_at", req.event_start_time)
@@ -141,12 +170,24 @@ def repair_prop_evidence(
             repair_status="FALLBACK_LOOKUP_FAILED",
         )
 
+    event_id, sport, player, stat_type = _canonical_identity(req)
     attempted_ids = {requested_id}
     for fallback_id in fallback_ids:
         if fallback_id in attempted_ids:
             continue
         attempted_ids.add(fallback_id)
-        fallback_req = req.model_copy(update={"source_snapshot_id": fallback_id})
+        # The RPC revalidates against the persisted identity, so the fallback
+        # request must carry the same canonical keys used to locate the row.
+        # ``model_copy`` leaves the caller's request object untouched.
+        fallback_req = req.model_copy(
+            update={
+                "source_snapshot_id": fallback_id,
+                "event_id": event_id,
+                "sport": sport,
+                "player": player,
+                "stat_type": stat_type,
+            }
+        )
         try:
             candidate = primary_fetch(fallback_req)
         except HTTPException as exc:
