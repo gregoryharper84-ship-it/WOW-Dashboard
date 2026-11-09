@@ -42,6 +42,13 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         event_start_time="2026-11-12T19:00:00+00:00",
         prediction_timestamp="2026-11-12T18:30:00+00:00",
         latest_material_update_timestamp="2026-11-12T18:10:00+00:00",
+        player_id="player-1" if kind == "PLAYER_PROP" else None,
+        stat_type="PTS" if kind == "PLAYER_PROP" else None,
+        period="FULL_GAME" if kind == "PLAYER_PROP" else None,
+        line="7+" if kind == "PLAYER_PROP" else None,
+        direction="MORE" if kind == "PLAYER_PROP" else None,
+        contract_id="contract-1" if kind == "WEATHER_CONTRACT" else None,
+        station_id="station-1" if kind == "WEATHER_CONTRACT" else None,
     )
     identity = {
         "sport": sport,
@@ -83,6 +90,13 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         "model_artifact_checksum": ARTIFACT_SHA,
         "official_event_id": scope.official_event_id,
         "event_start_time": scope.event_start_time,
+        "player_id": scope.player_id,
+        "stat_type": scope.stat_type,
+        "period": scope.period,
+        "line": scope.line,
+        "direction": scope.direction,
+        "contract_id": scope.contract_id,
+        "station_id": scope.station_id,
         "source_snapshot_id": "source-123",
         "source_snapshot_timestamp": "2026-11-12T18:00:00+00:00",
         "source_payload_sha256": CORPUS_SHA,
@@ -238,3 +252,39 @@ def test_fabricated_ready_flags_do_not_override_missing_data():
     assert result["status"] == "BLOCKED"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+
+@pytest.mark.parametrize("field,wrong", [
+    ("player_id", "other-player"),
+    ("stat_type", "ASSISTS"),
+    ("period", "FIRST_HALF"),
+    ("line", "7.5"),
+    ("direction", "LESS"),
+])
+def test_prop_exact_identity_not_substituted_by_adjacent_offer(field, wrong):
+    scope, artifact, calibrator, pregame = _valid("PLAYER_PROP", "NBA", "POINTS")
+    pregame[field] = wrong
+    result = _assess(scope, artifact, calibrator, pregame)
+    assert "MODEL_BUNDLE_PREGAME_CORPUS_INVALID_OR_UNVERIFIED" in result["blockers"]
+    assert result["bundle_complete"] is False
+
+
+@pytest.mark.parametrize("field,wrong", [
+    ("station_id", "neighboring-station"),
+    ("contract_id", "adjacent-temperature-contract"),
+])
+def test_weather_cannot_swap_station_or_contract(field, wrong):
+    scope, artifact, calibrator, pregame = _valid("WEATHER_CONTRACT", "WEATHER", "HIGH_TEMPERATURE")
+    pregame[field] = wrong
+    result = _assess(scope, artifact, calibrator, pregame)
+    assert "MODEL_BUNDLE_PREGAME_CORPUS_INVALID_OR_UNVERIFIED" in result["blockers"]
+    assert result["bundle_complete"] is False
+
+
+def test_prop_requires_exact_line_and_direction():
+    scope, artifact, calibrator, pregame = _valid("PLAYER_PROP", "NBA", "POINTS")
+    scope = replace(scope, line=None, direction=None)
+    result = _assess(scope, artifact, calibrator, pregame)
+    assert "MODEL_BUNDLE_ROUTE_UNSUPPORTED" in result["blockers"]
+    assert result["bundle_complete"] is False
