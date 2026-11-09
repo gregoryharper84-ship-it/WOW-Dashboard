@@ -26,6 +26,17 @@ This skill remains probability-only. A high ranking here is **not** permission t
 11. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
 12. Keep unsupported sports/events fail-closed with exact typed status.
 
+## Preferred winner, upset watch and frozen evidence
+
+- Keep exactly one **preferred winner** per event in the provisional research card. An upset alternative is a distinct \`UPSET_WATCH\` research hypothesis; never silently reverse the preferred side or count both as preferred picks.
+- A market favorite disagreement, external 51–49 projection, narrative upset case, or close final margin is **not** a fitted-model upset. Only an actual timely governed specialist can establish a qualified upset-side probability.
+- Before favoring a contrarian replacement, demand a fresh independently verified event identity, source/as-of receipts, explicit contradictory evidence review, and a governed pregame model recheck. Without that, show the alternative as WATCH only and preserve the original preferred card.
+- Snapshot the original selected side, \`PREFERRED\` or \`UPSET_WATCH\` role, sport, official event ID, kickoff, selection timestamp, independent pregame receipt ID and user-visibility timestamp **before kickoff**. Keep a separately frozen final-refreshed model package when available. Never reconstruct the prelock card from a post-lock sheet.
+- When the user requests a retro, use \`v17.llp_research_card_retro.audit_research_card\` with independently verified official results and an official full-slate manifest; require complete reconciliation before reporting a headline winning percentage. The output is explicitly research-only; it adds zero fitted-model calibration samples.
+- The fitted-model postmortem remains \`v17.llp_postmortem_recalibration.build_llp_learning_report\` using immutable governed probability receipts. Its optional \`research_card_picks\`/\`research_card_finals\` inputs are deliberately a separate, non-mutating report section.
+- Report the primary and upset-watch exact win/loss grades side by side. Never award credit for a close loss, market movement, a postgame explanation, or an upside hypothesis that did not win.
+- Keep GH's actually submitted Pick'em card, research-preferred card, upset-watch alternatives and fitted-model card as four distinct provenances; no transfer of credit across them.
+
 ## Cash/profitability handoff — P0 invariant
 When the user asks to use a PrizePicks Game Winner as a cash single, in a profitability plan, or in any paid-card/value context, this skill stops at the sporting-probability package and hands the row downstream.
 
