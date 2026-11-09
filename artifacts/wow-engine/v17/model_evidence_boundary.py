@@ -19,7 +19,10 @@ import threading
 from typing import Any, Callable, Mapping
 
 from v17.model_evidence_bundle_contract import ModelBundleScope
-from v17.model_evidence_registry_readers import assess_registry_model_bundle
+from v17.model_evidence_registry_readers import (
+    assess_registry_model_bundle,
+    lane_configured,
+)
 
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -298,6 +301,16 @@ def evaluate_served_model_evidence(
             blockers=(TRIAD_IDENTITY_UNRESOLVED, *[f"{TRIAD_IDENTITY_UNRESOLVED}:{name}" for name in missing]),
             scope=None,
         )
+    return evaluate_scope_triad(scope, db=db, assessor=assessor)
+
+
+def evaluate_scope_triad(
+    scope: ModelBundleScope,
+    *,
+    db: Any,
+    assessor: AssessmentCallable | None = None,
+) -> dict[str, Any]:
+    """Assess one exact scope and normalize it into a boundary report."""
     chosen = assessor or EVIDENCE_ASSESSOR
     if chosen is None:
         if db is None:
@@ -317,6 +330,101 @@ def evaluate_served_model_evidence(
         scope=scope,
         assessment=assessment,
     )
+
+
+def evaluate_market_evidence_triad(
+    *,
+    model_kind: str,
+    sport: str,
+    db: Any,
+    market_family: str | None = None,
+    official_event_id: Any = None,
+    event_start_time: Any = None,
+    prediction_timestamp: Any = None,
+    model_family: Any = None,
+    model_artifact_version: Any = None,
+    feature_schema_version: Any = None,
+    assessor: AssessmentCallable | None = None,
+) -> dict[str, Any]:
+    """Read the triad for a prop/weather serving path.
+
+    A lane with no declared artifact, calibrator and pregame reader cannot be
+    verified at all, so it is reported as unconfigured rather than guessed from a
+    similarly named table or from a research candidate registry.
+    """
+    if not lane_configured(model_kind, sport):
+        return _report(
+            INCOMPLETE,
+            blockers=(
+                TRIAD_LANE_NOT_CONFIGURED,
+                "MODEL_BUNDLE_ARTIFACT_SOURCE_NOT_CONFIGURED",
+                "MODEL_BUNDLE_CALIBRATOR_SOURCE_NOT_CONFIGURED",
+                "MODEL_BUNDLE_PREGAME_CORPUS_SOURCE_NOT_CONFIGURED",
+            ),
+            scope=None,
+        )
+    scope = ModelBundleScope(
+        model_kind=_text(model_kind),
+        sport=_text(sport).upper(),
+        model_family=_text(model_family),
+        model_artifact_version=_text(model_artifact_version),
+        feature_schema_version=_text(feature_schema_version),
+        market_family=_text(market_family) or None,
+        official_event_id=_text(official_event_id),
+        event_start_time=_text(event_start_time),
+        prediction_timestamp=_text(prediction_timestamp),
+        latest_material_update_timestamp=None,
+    )
+    missing = tuple(
+        name
+        for name, value in (
+            ("model_family", scope.model_family),
+            ("model_artifact_version", scope.model_artifact_version),
+            ("feature_schema_version", scope.feature_schema_version),
+            ("official_event_id", scope.official_event_id),
+            ("event_start_time_utc", scope.event_start_time),
+            ("prediction_timestamp", scope.prediction_timestamp),
+        )
+        if not value
+    )
+    if missing:
+        return _report(
+            IDENTITY_UNRESOLVED,
+            blockers=(
+                TRIAD_IDENTITY_UNRESOLVED,
+                *[f"{TRIAD_IDENTITY_UNRESOLVED}:{name}" for name in missing],
+            ),
+            scope=scope,
+        )
+    return evaluate_scope_triad(scope, db=db, assessor=assessor)
+
+
+def gate_prop_probability_payload(payload: dict[str, Any], *, db: Any) -> dict[str, Any]:
+    """Withhold prop publication unless the served prop triad is verified.
+
+    The calibrated probability, bounds and calibration evidence are untouched;
+    only the publication claim is withdrawn, with the typed blockers attached.
+    """
+    report = evaluate_market_evidence_triad(
+        model_kind="PLAYER_PROP",
+        sport=_text(payload.get("sport")),
+        market_family=_text(payload.get("stat_type")) or None,
+        official_event_id=payload.get("event_id"),
+        event_start_time=payload.get("event_start_time"),
+        prediction_timestamp=payload.get("model_timestamp"),
+        model_family=payload.get("model_family"),
+        model_artifact_version=payload.get("model_artifact_version"),
+        feature_schema_version=payload.get("feature_schema_version"),
+        db=db,
+    )
+    sealed = seal_report(report)
+    payload["model_evidence_triad"] = sealed
+    payload["evidence_triad_required"] = True
+    payload["evidence_triad_status"] = sealed.get("status")
+    if sealed.get("bundle_complete") is not True:
+        payload["probability_publishable"] = False
+        payload["triad_blockers"] = list(sealed.get("blockers") or ())
+    return payload
 
 
 def apply_evidence_triad_gate(
@@ -397,8 +505,11 @@ __all__ = [
     "TRIAD_READER_UNAVAILABLE",
     "apply_evidence_triad_gate",
     "build_evidence_scope",
+    "evaluate_market_evidence_triad",
+    "evaluate_scope_triad",
     "evaluate_served_model_evidence",
     "evidence_db_client",
+    "gate_prop_probability_payload",
     "seal_report",
     "triad_required",
     "verify_sealed_report",

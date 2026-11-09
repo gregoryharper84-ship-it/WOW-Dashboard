@@ -160,13 +160,18 @@ def test_weather_lane_routes_to_weather_specialist_but_not_global_authority():
     assert expected_full_model_operation_id("HOURLY_TEMPERATURE") == "analyzeKalshiWeatherV17Contract"
 
 
-def test_v17_global_reducer_publishes_probability_and_labeled_pre_fee_edge_only_after_immutable_reconciliation():
+def test_v17_global_reducer_holds_probability_pending_a_verified_evidence_triad():
     result = reduce_kalshi_weather_prediction_v17(client=_Client(_tables()), prediction_id="pred-1")
     assert result["status"] == "WATCH"
     assert result["code"] == "V17_WEATHER_POSITIVE_PRE_FEE_EDGE_FRICTION_HELD"
     assert result["p_yes"] == 0.64
     assert result["p_no"] == 0.36
-    assert result["probability_publishable"] is True
+    # Probability publication additionally requires the fitted artifact,
+    # station/lane calibrator and pregame-corpus triad. No weather lane declares
+    # those readers yet, so the probability is preserved and publication is held.
+    assert result["probability_publishable"] is False
+    assert result["evidence_triad_status"] == "INCOMPLETE"
+    assert "MODEL_EVIDENCE_TRIAD_LANE_NOT_CONFIGURED" in result["probability_blockers"]
     assert result["edge_publishable"] is True
     assert result["rank_eligible"] is False
     assert result["raw_edge_yes"] == 0.14
@@ -189,18 +194,21 @@ def test_verified_friction_allows_positive_uncertainty_adjusted_edge_to_be_rank_
     assert result["status"] == "QUALIFIED_EDGE"
     assert result["code"] == "POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
     assert result["edge_publishable"] is True
-    assert result["rank_eligible"] is True
+    # Rank eligibility is withheld with probability until the triad is verified.
+    assert result["rank_eligible"] is False
     assert result["best_side"] == "YES"
     assert round(result["best_uncertainty_adjusted_edge"], 10) == 0.07
     assert result["edge_basis"] == "VERIFIED_EFFECTIVE_BREAK_EVEN"
 
 
-def test_missing_market_snapshot_holds_edge_but_does_not_erase_certified_probability():
+def test_missing_market_snapshot_holds_edge_publication_without_erasing_probability():
     tables = _tables()
     tables["wow_kalshi_weather_market_snapshots"] = []
     result = reduce_kalshi_weather_prediction_v17(client=_Client(tables), prediction_id="pred-1")
     assert result["status"] == "WATCH"
-    assert result["probability_publishable"] is True
+    assert result["p_yes"] == 0.64
+    assert result["probability_publishable"] is False
+    assert "MODEL_EVIDENCE_TRIAD_LANE_NOT_CONFIGURED" in result["probability_blockers"]
     assert result["edge_publishable"] is False
     assert result["rank_eligible"] is False
     assert "MARKET_SNAPSHOT_MISSING" in result["edge_blockers"]

@@ -81,3 +81,13 @@ Consequently every configured lane currently returns `BLOCKED`. That is the expe
 - **Test seam.** `EVIDENCE_ASSESSOR` is `None` in production so the governed readers always run; acceptance fixtures set it to declare a verified registry without fabricating rows.
 
 Boundary coverage lives in `tests/test_v17_model_evidence_boundary.py`. Because every configured lane still returns `BLOCKED`, registered scorers now score and withhold instead of publishing; that remains the intended evidence-based state rather than a certification claim.
+
+### Prop and Kalshi weather serving
+
+The same readers now govern the two other serving paths that emit a fitted probability.
+
+- **Player props.** `prop_universal_forward_evidence._persist_prediction` gates the payload before persistence using a `PLAYER_PROP` scope built from the row's own `sport`, `stat_type`, `event_id`, `event_start_time`, `model_timestamp`, `model_family`, `model_artifact_version` and `feature_schema_version`. A row whose artifact, calibrator or event-specific pregame evidence is missing is persisted with `probability_publishable=false`, `triad_blockers` and a sealed report, while its calibrated probability, bounds and calibration evidence are preserved. Missing identity is reported as `MODEL_EVIDENCE_TRIAD_IDENTITY_UNRESOLVED:<field>`, never guessed.
+- **Kalshi weather.** `reduce_kalshi_weather_prediction_v17` gates its successful reduction using a `WEATHER` scope. No weather lane declares an artifact, calibrator and pregame reader, so a weather reduction now returns `probability_publishable=false`, `rank_eligible=false` and `MODEL_EVIDENCE_TRIAD_LANE_NOT_CONFIGURED` in `probability_blockers`, while preserving `p_yes`, `p_no`, the bounds and the market/edge reconciliation.
+- **Undeclared lanes never fabricate a reader.** `lane_configured` answers from the declared lane table; an undeclared model kind or sport reports the three `*_SOURCE_NOT_CONFIGURED` blockers instead of reading a look-alike table or a research candidate registry.
+
+Prop/weather coverage lives in `tests/test_v17_model_evidence_prop_weather.py`; the weather reducer's own expectations were updated to the withheld-until-verified policy. Withholding publication here is an evidence statement, not a claim that these probabilities are wrong.

@@ -393,6 +393,12 @@ def _prediction_payload(
 
 
 def _persist_prediction(db: Any, payload: dict[str, Any]) -> None:
+    # The served prop model must prove its artifact, calibrator and event-specific
+    # pregame corpus before the row may claim publication. The calibrated
+    # numbers are preserved; only the publication claim is withheld.
+    from v17.model_evidence_boundary import gate_prop_probability_payload
+
+    gate_prop_probability_payload(payload, db=db)
     _db_call(
         "wow_predictions.upsert_universal_forward_prediction",
         lambda: db.table("wow_predictions").upsert(

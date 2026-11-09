@@ -291,6 +291,20 @@ def _resolve(row: Mapping[str, Any], path: str) -> Any:
     return value
 
 
+def lane_configured(model_kind: Any, sport: Any) -> bool:
+    """Does a declared reader lane exist for this exact model kind and sport?
+
+    Used by serving paths whose identity is not a `ModelBundleScope` yet. A
+    transient lane can never be invented here: an undeclared lane is reported as
+    unconfigured downstream instead of being read from a look-alike table.
+    """
+    kind = _text(model_kind)
+    name = _text(sport).upper()
+    if not kind:
+        return False
+    return (kind, name) in _LANES or (kind, "*") in _LANES
+
+
 def lane_for(scope: ModelBundleScope) -> LaneReader | None:
     """Return the declared reader lane for this exact model/sport, or None."""
     if not isinstance(scope, ModelBundleScope):
@@ -508,6 +522,7 @@ __all__ = [
     "RegistryEvidence",
     "TableSpec",
     "assess_registry_model_bundle",
+    "lane_configured",
     "lane_for",
     "read_model_evidence_bundle",
 ]

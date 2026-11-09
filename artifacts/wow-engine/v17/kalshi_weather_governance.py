@@ -6,6 +6,8 @@ from typing import Any, Mapping
 
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence
 
+from v17.model_evidence_boundary import evaluate_market_evidence_triad, seal_report
+
 GLOBAL_TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 LOCAL_WEATHER_AUTHORITY = "KALSHI_WEATHER_MARKET_EXPERT"
 CAPABILITY_KEY = "KALSHI_WEATHER_PROBABILITY"
@@ -211,7 +213,7 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
 
     # V17 publication is a view over immutable rows. Historical decision-time
     # weather/model evidence is never mutated after the fact.
-    return {
+    result = {
         "status": status,
         "code": code,
         "prediction_id": prediction_id,
@@ -256,6 +258,21 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
         "row_reconciliation_verified": True,
         "can_execute": False,
     }
+    # The weather specialist owns the probability, but publication additionally
+    # requires the fitted artifact, station/lane calibrator and pregame corpus
+    # triad. No weather lane declares those readers yet, so publication is
+    # withheld with a typed blocker instead of being assumed.
+    triad = seal_report(
+        evaluate_market_evidence_triad(model_kind="WEATHER", sport="WEATHER", db=client)
+    )
+    result["model_evidence_triad"] = triad
+    result["evidence_triad_required"] = True
+    result["evidence_triad_status"] = triad.get("status")
+    if triad.get("bundle_complete") is not True:
+        result["probability_publishable"] = False
+        result["rank_eligible"] = False
+        result["probability_blockers"] = list(triad.get("blockers") or ())
+    return result
 
 
 def governance_snapshot(*, client) -> Mapping[str, Any]:
