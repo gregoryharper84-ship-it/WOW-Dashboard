@@ -19,6 +19,9 @@ def complete_sealed_triad(sport: str) -> dict:
 
 def governed_result() -> dict:
     return {
+        "sport": "MLB",
+        "candidate_family": "TEAM_EVENT",
+        "model_evidence_triad": complete_sealed_triad("MLB"),
         "terminal_label": "FINAL_APPROVED",
         "probability_publishable": True,
         "rank_eligible": True,
