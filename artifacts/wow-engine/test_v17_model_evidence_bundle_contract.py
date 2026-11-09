@@ -288,3 +288,17 @@ def test_prop_requires_exact_line_and_direction():
     result = _assess(scope, artifact, calibrator, pregame)
     assert "MODEL_BUNDLE_ROUTE_UNSUPPORTED" in result["blockers"]
     assert result["bundle_complete"] is False
+
+
+
+def test_repository_sport_audit_declares_required_triad_without_fake_verification():
+    from v17.team_event_model_registry_audit import audit_table
+
+    rows = audit_table()
+    assert {row["sport"] for row in rows} == set(EXPECTED_TEAM_EVENT_SPORTS)
+    for row in rows:
+        assert row["required_evidence_components"] == list(COMPONENTS)
+        assert row["triad_verification_status"] == "NOT_EVALUATED_BY_REPOSITORY_PROBE"
+        assert row["triad_source_provenance_verified"] is None
+        assert row["probability_publishable"] is False
+        assert row["can_execute"] is False
