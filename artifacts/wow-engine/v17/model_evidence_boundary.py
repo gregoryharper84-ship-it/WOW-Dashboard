@@ -72,25 +72,15 @@ def _text(value: Any) -> str:
 
 
 def triad_required(*, sport: Any = None, candidate_family: Any = None) -> bool:
-    """Is the triad mandatory for this row, from trusted configuration only?
+    """Require the triad at the trusted team/event publication boundary.
 
-    The requirement is derived from the governed team/event manifest, never from
-    a caller-supplied publication flag. A payload that omits the flag is still
-    held. Payloads that name neither a sport nor a family cannot be attributed to
-    a governed lane and are left to the legacy contract.
+    This entrypoint is exclusively a TEAM_EVENT official-publication guard.
+    A request/body field cannot turn off this requirement by clearing sport,
+    inventing a sport alias, or claiming candidate_family=UPSET. The scorer
+    manifest still controls which fitted specialist may produce a result;
+    this function only refuses to treat missing identity as an exemption.
     """
-    family = _text(candidate_family).upper()
-    name = _text(sport).upper()
-    if family and family != "TEAM_EVENT":
-        return False
-    try:
-        from v17.team_event_capability_manifest import TEAM_EVENT_INPUT_CONTRACTS
-    except Exception:  # noqa: BLE001 - unreadable trusted config fails closed
-        return bool(name or family)
-    governed = {str(key).upper() for key in TEAM_EVENT_INPUT_CONTRACTS}
-    if name:
-        return name in governed
-    return family == "TEAM_EVENT"
+    return True
 
 
 def _report_digest(report: Mapping[str, Any]) -> str:
