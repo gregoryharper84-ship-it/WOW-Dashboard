@@ -139,3 +139,55 @@ def test_deterministic_digest(tmp_path):
     two = audit_chronological_corpus(rows, source_root=tmp_path)
     assert one["input_metadata_sha256"] == two["input_metadata_sha256"]
     assert one["status"] == two["status"]
+
+
+def test_timestamp_overflow_reports_typed_row_hold(tmp_path):
+    rows = _example(tmp_path)
+    rows[0]["source_published_at"] = "0001-01-01T00:00:00+05:00"
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_HOLD"
+    assert report["row_results"][0]["status"] == "ROW_HOLD"
+    assert "TIMESTAMP_INVALID_OR_NAIVE:source_published_at" in report["blockers"]
+
+
+def test_embedded_nul_path_gets_typed_hold_not_exception(tmp_path):
+    rows = _example(tmp_path)
+    rows[0]["source_file"] = "bad\\u0000file".replace("\\u0000", "\\x00")
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_HOLD"
+    assert report["row_results"][0]["status"] == "ROW_HOLD"
+    assert "FILE_UNREADABLE:source_file" in report["blockers"]
+
+
+def test_duplicate_row_id_unknown_split_and_invalid_digest_hold(tmp_path):
+    rows = _example(tmp_path)
+    rows[1]["row_id"] = rows[0]["row_id"]
+    rows[2]["split"] = "UNKNOWN"
+    rows[0]["source_payload_sha256"] = "NOT-A-SHA256"
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_HOLD"
+    assert "DUPLICATE_ROW_ID" in report["blockers"]
+    assert "SPLIT_UNKNOWN" in report["blockers"]
+    assert "HASH_INVALID:source_payload_sha256" in report["blockers"]
+
+
+def test_calibration_label_after_holdout_freeze_blocks(tmp_path):
+    rows = _example(tmp_path)
+    freeze = datetime.fromisoformat(rows[2]["feature_frozen_at"])
+    rows[1]["label_available_at"] = (freeze + timedelta(minutes=1)).isoformat()
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_HOLD"
+    assert "CALIBRATION_LABEL_LEAKS_INTO_HOLDOUT" in report["blockers"]
+
+
+def test_calibration_holdout_event_overlap_blocks(tmp_path):
+    rows = _example(tmp_path)
+    shift = timedelta(days=20)
+    for field in (
+        "source_published_at", "source_captured_at", "feature_frozen_at",
+        "event_start_at", "label_available_at",
+    ):
+        rows[2][field] = (datetime.fromisoformat(rows[2][field]) - shift).isoformat()
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_HOLD"
+    assert "CALIBRATION_HOLDOUT_EVENT_CHRONOLOGY_OVERLAP" in report["blockers"]
