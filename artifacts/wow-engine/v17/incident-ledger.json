@@ -274,7 +274,29 @@
           "rollback": "Revert merge commit 10084e5039ae8a91cf54586388795ef74b497d93."
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-11-09-001",
+      "title": "Trigger.dev Development experiment scope creep and stop decision",
+      "severity": "P3",
+      "domain": "engineering governance / orchestration platform",
+      "state": "CLOSED_SUPERSEDED",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-11-09-001__trigger-dev-experiment-scope-creep-and-stop-decision.md",
+      "engineering_fix_ids": [],
+      "created_utc": "2026-11-09T14:30:00Z",
+      "updated_utc": "2026-11-09T14:30:00Z",
+      "decision": "STOP_TRIGGERDEV_EXPANSION__CONTINUE_WOW_RESTORATION",
+      "superseded_by_architecture_issue": 2364,
+      "related_pull_requests": [
+        2507,
+        2529
+      ],
+      "open_independent_reviews": [
+        2516,
+        2530
+      ],
+      "can_execute": false
     }
   ],
-  "updated_utc": "2026-09-25T19:31:23Z"
+  "updated_utc": "2026-11-09T14:30:00Z"
 }
