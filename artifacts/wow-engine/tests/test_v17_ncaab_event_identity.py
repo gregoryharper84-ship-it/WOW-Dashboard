@@ -247,6 +247,12 @@ def test_discovery_alias_is_rewritten_only_after_schedule_match(monkeypatch):
     assert out.raw["provider_event_id"] == "999999999"
     assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
     assert out.raw["canonical_identity_market_features_used"] is False
+    assert out.raw["canonical_identity_schedule_game_id"] == "401906849"
+    assert out.raw["canonical_identity_schedule_tip_utc"] == "2026-11-10T00:00:00+00:00"
+    assert out.raw["canonical_identity_tip_drift_seconds"] == 0
+    assert out.raw["canonical_identity_home_team_id"] == "espn-2633"
+    assert out.raw["canonical_identity_away_team_id"] == "espn-2515"
+    assert out.raw["canonical_identity_source_asset"].endswith("mbb_schedule_2027.csv")
     assert out.raw["prediction_authority"] is False
 
 

@@ -518,8 +518,16 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
     )
     raw["canonical_identity_resolution"] = str(
         resolution.get("identity_resolution")
-        or "SPORTSDATAVERSE_MBB_SCHEDULE_EXACT_TEAM_DATE_MATCH"
+        or "SPORTSDATAVERSE_MBB_SCHEDULE_EXACT_TEAM_TIP_MATCH"
     )
+    # Persist the independent schedule row identity and tip proof, not just
+    # the discovery alias or a categorical "resolved" string.
+    raw["canonical_identity_schedule_game_id"] = resolution.get("matched_schedule_game_id")
+    raw["canonical_identity_schedule_tip_utc"] = resolution.get("matched_schedule_tip_utc")
+    raw["canonical_identity_tip_drift_seconds"] = resolution.get("identity_tip_drift_seconds")
+    raw["canonical_identity_home_team_id"] = resolution.get("home_team_id")
+    raw["canonical_identity_away_team_id"] = resolution.get("away_team_id")
+    raw["canonical_identity_source_asset"] = resolution.get("identity_source_asset")
     raw["canonical_identity_market_features_used"] = False
     raw["prediction_authority"] = False
     return replace(event, official_event_id=canonical_event_id, raw=raw)
