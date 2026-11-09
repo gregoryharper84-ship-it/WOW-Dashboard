@@ -201,3 +201,38 @@ def test_malformed_input_schema_fails_closed(tmp_path):
     manifest.write_text(json.dumps(data))
     with pytest.raises(r.ResearchHold, match="RESEARCH_PREDICTION_SCHEMA_INVALID"):
         r.load_cohort(manifest)
+
+
+def test_real_mlflow_evidently_integration_synthetic_only(tmp_path):
+    pytest.importorskip("mlflow")
+    pytest.importorskip("evidently")
+    # Executed only in the isolated research environment, NOT production.
+    # Synthetic input tests provider API compatibility; it proves no model quality.
+    base = datetime(2024, 9, 15, 19, tzinfo=timezone.utc)
+    rows = []
+    for split, offset in (("HOLDOUT", 0), ("FORWARD", 365)):
+        for i in range(16):
+            kickoff = base + timedelta(days=offset + i)
+            rows.append(dict(
+                official_event_id=f"{split}-{i}", split=split,
+                probability=str(0.7 if i % 2 else 0.3),
+                actual=str(i % 2),
+                forecast_issued_at=(kickoff - timedelta(hours=12)).isoformat(),
+                event_start_at=kickoff.isoformat(),
+                label_available_at=(kickoff + timedelta(hours=4)).isoformat(),
+            ))
+    manifest, _ = _fixture(tmp_path, rows)
+    out, tracking = tmp_path / "report", tmp_path / "mlflow_tracking"
+    receipt = r.run(manifest, out, tracking)
+    assert receipt["status"] == "RESEARCH_TOOL_RECEIPT_ONLY"
+    assert receipt["can_execute"] is False and receipt["probability_publishable"] is False
+    assert receipt["independent_acceptance"] is False
+    assert receipt["mlflow_run_id"]
+    for name in (
+        "evidently_classification_and_drift.html",
+        "evidently_classification_and_drift.json",
+        "calibration_metrics.json",
+        "research_tool_receipt.json",
+    ):
+        assert (out / name).is_file() and (out / name).stat().st_size > 0
+    assert json.loads((out / "research_tool_receipt.json").read_text())["mlflow_run_id"] == receipt["mlflow_run_id"]
