@@ -84,20 +84,22 @@ def triad_required(*, sport: Any = None, candidate_family: Any = None) -> bool:
 
 
 def _report_digest(report: Mapping[str, Any]) -> str:
+    # Bind the *entire* issued assessment and its exact event/model identity,
+    # including component sources, missing fields and typed blockers. Only the
+    # two seal fields are excluded to avoid circular hashing.
     canonical = json.dumps(
         {
-            "status": report.get("status"),
-            "bundle_complete": report.get("bundle_complete"),
-            "model_kind": report.get("model_kind"),
-            "sport": report.get("sport"),
-            "model_family": report.get("model_family"),
-            "model_artifact_version": report.get("model_artifact_version"),
-            "feature_schema_version": report.get("feature_schema_version"),
+            key: value
+            for key, value in report.items()
+            if key not in {"report_id", "report_digest"}
         },
         sort_keys=True,
         default=str,
+        separators=(",", ":"),
     )
-    return hashlib.sha256((_SEAL_KEY + canonical).encode("utf-8")).hexdigest()
+    return hmac.new(
+        _SEAL_KEY.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
 
 
 def seal_report(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -114,9 +116,26 @@ def seal_report(report: Mapping[str, Any]) -> dict[str, Any]:
     return sealed
 
 
-def verify_sealed_report(report: Any, *, sport: Any = None) -> bool:
-    """True only for an unaltered, complete report issued by this boundary."""
+def verify_sealed_report(
+    report: Any,
+    *,
+    sport: Any = None,
+    official_event_id: Any = None,
+    model_artifact_version: Any = None,
+) -> bool:
+    """Only a complete report sealed for *this event and model* can authorize."""
     if not isinstance(report, Mapping) or report.get("bundle_complete") is not True:
+        return False
+    if report.get("status") != COMPLETE or report.get("blockers"):
+        return False
+    if (
+        report.get("model_kind") != "TEAM_EVENT"
+        or not _text(sport)
+        or not _text(official_event_id)
+        or not _text(model_artifact_version)
+        or _text(report.get("official_event_id")) != _text(official_event_id)
+        or _text(report.get("model_artifact_version")) != _text(model_artifact_version)
+    ):
         return False
     report_id = _text(report.get("report_id"))
     digest = _text(report.get("report_digest"))
@@ -266,6 +285,9 @@ def _report(
         "missing_component_fields": dict(assessment.get("missing_component_fields") or {}),
         "model_kind": "TEAM_EVENT",
         "sport": scope.sport if scope else None,
+        "official_event_id": scope.official_event_id if scope else None,
+        "event_start_time": scope.event_start_time if scope else None,
+        "prediction_timestamp": scope.prediction_timestamp if scope else None,
         "model_family": scope.model_family if scope else None,
         "model_artifact_version": scope.model_artifact_version if scope else None,
         "feature_schema_version": scope.feature_schema_version if scope else None,
@@ -428,6 +450,14 @@ def apply_evidence_triad_gate(
     """
     out = dict(outcome)
     sealed = seal_report(report)
+    # The registered scoring boundary creates these fields from its actual
+    # request/served-model scope, never from a caller-issued triad flag.
+    # Do not overwrite a conflicting scored identity; the official guard will
+    # hold it because it cannot match the sealed scope.
+    if sealed.get("model_kind") == "TEAM_EVENT":
+        for field in ("sport", "official_event_id", "model_artifact_version"):
+            if not _text(out.get(field)) and _text(sealed.get(field)):
+                out[field] = sealed[field]
     out["model_evidence_triad"] = sealed
     out["evidence_triad_required"] = True
     out["evidence_triad_status"] = sealed.get("status")
