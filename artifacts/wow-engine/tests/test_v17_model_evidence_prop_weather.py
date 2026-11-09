@@ -151,6 +151,42 @@ def test_weather_has_no_declared_lane_so_its_triad_is_unconfigured():
     assert report["can_execute"] is False
 
 
+def test_a_sealed_prop_report_is_labelled_player_prop_and_cannot_authorize_team_event(monkeypatch):
+    monkeypatch.setattr(
+        boundary,
+        "EVIDENCE_ASSESSOR",
+        lambda _db, _scope: {
+            "bundle_complete": True,
+            "blockers": [],
+            "component_sources": {},
+            "missing_component_fields": {},
+        },
+    )
+    payload = _prop_payload()
+
+    gate_prop_probability_payload(payload, db=_EmptyDb())
+    report = payload["model_evidence_triad"]
+
+    assert report["bundle_complete"] is True
+    assert report["model_kind"] == "PLAYER_PROP"
+    # The official-publication guard accepts only a TEAM_EVENT seal, so a verified
+    # prop report for the same sport/event/version must never authorize a team-event
+    # publication.
+    assert boundary.verify_sealed_report(
+        report,
+        sport="WNBA",
+        official_event_id="WNBA:TEST-1",
+        model_artifact_version="WNBA_POINTS_MODEL_V1",
+    ) is False
+
+
+def test_weather_report_is_labelled_weather_kind_not_team_event():
+    report = evaluate_market_evidence_triad(model_kind="WEATHER", sport="WEATHER", db=_EmptyDb())
+
+    assert report["model_kind"] == "WEATHER"
+    assert report["bundle_complete"] is False
+
+
 def test_a_declared_prop_lane_is_read_rather_than_reported_unconfigured():
     report = evaluate_market_evidence_triad(
         model_kind="PLAYER_PROP",

@@ -274,16 +274,21 @@ def _report(
     blockers: tuple[str, ...],
     scope: ModelBundleScope | None,
     assessment: Mapping[str, Any] | None = None,
+    model_kind: str = "TEAM_EVENT",
 ) -> dict[str, Any]:
     assessment = assessment or {}
     complete = status == COMPLETE and bool(assessment.get("bundle_complete"))
+    # The kind must be the one actually assessed: the official-publication guard
+    # accepts a sealed report only for TEAM_EVENT, so a prop or weather report
+    # relabelled here could otherwise authorize a team-event publication.
+    kind = (_text(scope.model_kind) if scope else "") or model_kind
     return {
         "status": status if not complete else COMPLETE,
         "bundle_complete": complete,
         "blockers": list(dict.fromkeys(blockers)),
         "component_sources": dict(assessment.get("component_sources") or {}),
         "missing_component_fields": dict(assessment.get("missing_component_fields") or {}),
-        "model_kind": "TEAM_EVENT",
+        "model_kind": kind,
         "sport": scope.sport if scope else None,
         "official_event_id": scope.official_event_id if scope else None,
         "event_start_time": scope.event_start_time if scope else None,
@@ -374,6 +379,7 @@ def evaluate_market_evidence_triad(
                 "MODEL_BUNDLE_PREGAME_CORPUS_SOURCE_NOT_CONFIGURED",
             ),
             scope=None,
+            model_kind=model_kind,
         )
     scope = ModelBundleScope(
         model_kind=_text(model_kind),
