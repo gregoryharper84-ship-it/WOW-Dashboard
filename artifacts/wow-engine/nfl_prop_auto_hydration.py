@@ -753,7 +753,7 @@ def _athlete_availability(
             "designation": None,
             "evidence_status": "RETRIEVAL_FAILED",
             "source_endpoint": None,
-            "reason": f"INJURY_REPORT_RETRIEVAL_FAILED:{type(failures[-1]).__name__ if failures else 'UNKNOWN'}",
+            "reason": f"INJURY_REPORT_RETRIEVAL_FAILED:{failures[-1].split(':', 1)[0] if failures else 'UNKNOWN'}",
             "retrieval_failures": failures[-3:],
         }
     base["source_endpoint"] = endpoint_used

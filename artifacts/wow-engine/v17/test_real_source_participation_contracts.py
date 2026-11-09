@@ -19,6 +19,7 @@ import nfl_prop_auto_hydration as nfl
 import prop_auto_hydration as mlb
 import prop_auto_hydration_plate_appearances as pa
 import wnba_prop_auto_hydration as wnba
+import wnba_injury_status as wnba_status
 from v17.player_availability_gate import (
     AVAILABILITY_AVAILABLE,
     AVAILABILITY_UNAVAILABLE,
@@ -385,6 +386,74 @@ def test_wnba_section_with_no_status_rows_is_incomplete():
     assert excinfo.value.code == "WNBA_INJURY_REPORT_SECTION_INCOMPLETE"
 
 
+@pytest.mark.parametrize(
+    "parse",
+    [wnba._availability_from_report, wnba_status.availability_from_report],
+)
+def test_second_listed_team_cannot_clear_from_later_matchup_statuses(parse):
+    """A later game's status must never certify a missing team report."""
+    report = (
+        "Injury Report\nLVA@IND\nLas Vegas Aces\nA'ja Wilson - Out\n"
+        "Indiana Fever\n\nNYL@CHI\nNew York Liberty\nOther Player - Available\n"
+        "Chicago Sky\nAnother Player - Available\n"
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse(
+            report,
+            player_name="Caitlin Clark",
+            team_name="Indiana Fever",
+            opponent_name="Las Vegas Aces",
+            matchup="LVA@IND",
+            game_date="08/01/2026",
+        )
+    assert excinfo.value.code == "WNBA_INJURY_REPORT_SECTION_INCOMPLETE"
+
+
+@pytest.mark.parametrize(
+    "parse",
+    [wnba._availability_from_report, wnba_status.availability_from_report],
+)
+def test_second_listed_team_out_stays_explicit_before_next_game(parse):
+    report = (
+        "Injury Report\nLVA@IND\nLas Vegas Aces\nA'ja Wilson - Available\n"
+        "Indiana Fever\nCaitlin Clark - Out\n\nNYL@CHI\n"
+        "New York Liberty\nOther Player - Available\n"
+    )
+    result = parse(
+        report,
+        player_name="Caitlin Clark",
+        team_name="Indiana Fever",
+        opponent_name="Las Vegas Aces",
+        matchup="LVA@IND",
+        game_date="08/01/2026",
+    )
+    assert result["designation"] == "OUT"
+    assert result["availability"] == "UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "parse",
+    [wnba._availability_from_report, wnba_status.availability_from_report],
+)
+def test_wnba_extended_team_report_finds_out_beyond_1800_chars(parse):
+    earlier = "".join(f"Reserve Player {i} - Available\n" for i in range(95))
+    report = (
+        "Injury Report\nLVA@IND\nLas Vegas Aces\n"
+        + earlier + "Late Player - Out\n\nIndiana Fever\nOther Player - Available\n"
+    )
+    assert report.index("Late Player") - report.index("Las Vegas Aces") > 1800
+    result = parse(
+        report,
+        player_name="Late Player",
+        team_name="Las Vegas Aces",
+        opponent_name="Indiana Fever",
+        matchup="LVA@IND",
+        game_date="08/01/2026",
+    )
+    assert result["availability"] == "UNAVAILABLE"
+    assert result["designation"] == "OUT"
+
+
 # ---------------------------------------------------------------------------
 # NFL — designation on the official athlete record
 # ---------------------------------------------------------------------------
@@ -465,6 +534,7 @@ def test_nfl_failed_retrieval_is_unverified_not_available():
 
     evidence = nfl._athlete_availability("4241457", http_get=explode, captured=CAPTURED)
     assert evidence["evidence_status"] == "RETRIEVAL_FAILED"
+    assert evidence["reason"] == "INJURY_REPORT_RETRIEVAL_FAILED:RuntimeError"
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_UNVERIFIED
     assert decision.reason == "AVAILABILITY_EVIDENCE_RETRIEVAL_FAILED"

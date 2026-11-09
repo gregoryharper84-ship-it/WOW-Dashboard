@@ -501,7 +501,31 @@ def _availability_from_report(
             "opponent section header was not parsed, so the target section cannot be bounded",
             detail={"team": team_name, "opponent": opponent_name, "game_date": game_date},
         )
-    section = normalized[team_pos:opponent_pos] if opponent_pos > team_pos else normalized[team_pos:]
+    if opponent_pos > team_pos:
+        section = normalized[team_pos:opponent_pos]
+    else:
+        # The opponent is listed first; otherwise a slice to EOF can consume
+        # subsequent games and falsely certify this player's absence.
+        report_lines = str(text).replace("\u00a0", " ").splitlines()
+        target_headers = [
+            idx for idx, line in enumerate(report_lines)
+            if _name_key(line) == team_key
+        ]
+        if len(target_headers) != 1:
+            raise WNBAPropHydrationError(
+                "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+                "second-listed team header is not uniquely identifiable",
+                detail={"team": team_name, "game_date": game_date},
+            )
+        following = report_lines[target_headers[0]:]
+        next_matchup = next(
+            (
+                idx for idx, line in enumerate(following[1:], start=1)
+                if re.match(r"^\s*[A-Z0-9]{2,4}\s*@\s*[A-Z0-9]{2,4}(?:\s|$)", line)
+            ),
+            len(following),
+        )
+        section = _name_key(" ".join(following[:next_matchup]))
     if not section.strip():
         raise WNBAPropHydrationError(
             "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
