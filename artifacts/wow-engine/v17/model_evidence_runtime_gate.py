@@ -130,9 +130,159 @@ def assess_scoring_boundary(
     )
 
 
+TRIAD_CERTIFICATION_UNAVAILABLE = "MODEL_BUNDLE_CERTIFICATION_UNAVAILABLE"
+TRIAD_CERTIFICATION_READ_FAILED = "MODEL_BUNDLE_CERTIFICATION_READ_FAILED"
+TRIAD_CERTIFICATION_AMBIGUOUS = "MODEL_BUNDLE_CERTIFICATION_AMBIGUOUS"
+TRIAD_SCOPE_IDENTITY_UNAVAILABLE = "MODEL_BUNDLE_SCOPE_IDENTITY_UNAVAILABLE"
+
+
+def _db_from_event_api(event_api: Any) -> Any:
+    """Return only the scorer's own authorized Supabase client."""
+    get_client = getattr(event_api, "get_client", None)
+    if not callable(get_client):
+        return None
+    return get_client()
+
+
+def assess_team_event_boundary(
+    req: Any, *, event_api: Any, registration: Any,
+    reader: Any = None,
+) -> TriadBoundaryVerdict:
+    """Resolve exact certified identity server-side before team-event scoring.
+
+    No client-supplied model name or version is accepted. Zero or ambiguous
+    certification rows block rather than selecting a convenient version.
+    """
+    try:
+        db = _db_from_event_api(event_api)
+    except Exception:
+        return _failure(TRIAD_CERTIFICATION_READ_FAILED)
+    if db is None:
+        return _failure(TRIAD_DB_UNAVAILABLE)
+    sport = str(getattr(registration, "sport", "") or "")
+    specialist = str(getattr(registration, "controlling_specialist", "") or "")
+    if not sport or not specialist:
+        return _failure(TRIAD_SCOPE_IDENTITY_UNAVAILABLE)
+    try:
+        response = (
+            db.table("wow_team_event_specialist_certifications")
+            .select("sport,controlling_specialist,model_family,model_version,"
+                    "feature_schema_version,artifact_sha256,"
+                    "certification_status,independent_verification_status")
+            .eq("sport", sport)
+            .eq("controlling_specialist", specialist)
+            .eq("certification_status", "CERTIFIED")
+            .execute()
+        )
+        rows = _field(response, "data")
+    except Exception:
+        return _failure(TRIAD_CERTIFICATION_READ_FAILED)
+    if not isinstance(rows, list):
+        return _failure(TRIAD_CERTIFICATION_READ_FAILED)
+    if len(rows) > 1:
+        return _failure(TRIAD_CERTIFICATION_AMBIGUOUS)
+    if not rows or not isinstance(rows[0], Mapping):
+        return _failure(TRIAD_CERTIFICATION_UNAVAILABLE)
+    cert = rows[0]
+    if (
+        cert.get("sport") != sport
+        or cert.get("controlling_specialist") != specialist
+        or cert.get("certification_status") != "CERTIFIED"
+        or cert.get("independent_verification_status") != "PASS"
+    ):
+        return _failure(TRIAD_CERTIFICATION_UNAVAILABLE)
+    model_family = cert.get("model_family")
+    version = cert.get("model_version")
+    schema = cert.get("feature_schema_version")
+    artifact_hash = cert.get("artifact_sha256")
+    if (
+        not all(isinstance(x, str) and x.strip()
+                for x in (model_family, version, schema))
+        or not isinstance(artifact_hash, str)
+        or len(artifact_hash) != 64
+        or any(ch not in "0123456789abcdef" for ch in artifact_hash.lower())
+    ):
+        return _failure(TRIAD_SCOPE_IDENTITY_UNAVAILABLE)
+    event_id = str(getattr(req, "official_event_id", "") or "")
+    event_at = str(getattr(req, "event_start_time_utc", "") or "")
+    if not event_id or not event_at:
+        return _failure(TRIAD_SCOPE_IDENTITY_UNAVAILABLE)
+
+    from datetime import datetime, timezone
+    scope = ModelBundleScope(
+        model_kind="TEAM_EVENT",
+        sport=sport,
+        model_family=model_family,
+        model_artifact_version=version,
+        feature_schema_version=schema,
+        official_event_id=event_id,
+        event_start_time=event_at,
+        prediction_timestamp=datetime.now(timezone.utc).isoformat(),
+        market_family="OUTRIGHT_WINNER",
+        latest_material_update_timestamp=getattr(
+            req, "latest_material_update_timestamp", None,
+        ),
+    )
+    return assess_scoring_boundary(db, scope, reader=reader)
+
+
+def assess_prop_action_boundary(
+    row: Any, *, market_api: Any, route: Mapping[str, Any],
+    canonical_stat: str, reader: Any = None,
+) -> TriadBoundaryVerdict:
+    """Require an exact trusted prop identity before Action-side scoring.
+
+    The Action's player name is NOT a canonical player ID. Registry or
+    server-owned route must provide player_id. Never convert 7+ to 7.0.
+    """
+    if not isinstance(route, Mapping):
+        return _failure(TRIAD_SCOPE_IDENTITY_UNAVAILABLE)
+    player_id = route.get("player_id")
+    model_family = route.get("model_family")
+    model_version = route.get("model_artifact_version")
+    schema_version = route.get("feature_schema_version")
+    if not all(isinstance(x, str) and x.strip()
+               for x in (player_id, model_family, model_version, schema_version)):
+        return _failure(TRIAD_SCOPE_IDENTITY_UNAVAILABLE)
+    # The existing Action schema carries a numeric line. Its exact textual
+    # identity (such as "7+") is unrepresentable; reject non-numeric lines
+    # rather than silently substitute a neighbouring numeric threshold.
+    line = getattr(row, "line", None)
+    if type(line) not in (float, int):
+        return _failure(TRIAD_SCOPE_IDENTITY_UNAVAILABLE)
+    try:
+        db = market_api.prod.get_client()
+    except Exception:
+        return _failure(TRIAD_DB_UNAVAILABLE)
+    if db is None:
+        return _failure(TRIAD_DB_UNAVAILABLE)
+    from datetime import datetime, timezone
+    period = market_api._prop_period(canonical_stat)
+    scope = ModelBundleScope(
+        model_kind="PLAYER_PROP",
+        sport=str(getattr(row, "sport", "")).upper(),
+        model_family=model_family,
+        model_artifact_version=model_version,
+        feature_schema_version=schema_version,
+        official_event_id=str(getattr(row, "event_id", "") or ""),
+        event_start_time=str(getattr(row, "event_start_time", "") or ""),
+        prediction_timestamp=datetime.now(timezone.utc).isoformat(),
+        market_family="PLAYER_PROP",
+        player_id=player_id,
+        stat_type=canonical_stat,
+        period=period,
+        line=str(line),
+        direction=str(getattr(row, "direction", "") or "").upper(),
+    )
+    return assess_scoring_boundary(db, scope, reader=reader)
+
+
 __all__ = [
     "CAN_EXECUTE", "TERMINAL_AUTHORITY", "TriadBoundaryVerdict",
     "TRIAD_DB_UNAVAILABLE", "TRIAD_READER_UNAVAILABLE",
     "TRIAD_READER_FAILED", "TRIAD_READER_INVALID",
     "TRIAD_EVIDENCE_UNVERIFIED", "assess_scoring_boundary",
+    "TRIAD_CERTIFICATION_UNAVAILABLE", "TRIAD_CERTIFICATION_READ_FAILED",
+    "TRIAD_CERTIFICATION_AMBIGUOUS", "TRIAD_SCOPE_IDENTITY_UNAVAILABLE",
+    "assess_team_event_boundary", "assess_prop_action_boundary",
 ]
