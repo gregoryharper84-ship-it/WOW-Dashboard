@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   assertCompletedRun,
   assertRemoteCliAuth,
+  probeTriggerPatWhoami,
   sanitizeWorkerOutput,
   workerDiagnostic,
   healthReceipt,
@@ -180,4 +181,45 @@ test("remote CLI preflight requires a Trigger.dev Personal Access Token, not an 
       /TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED/,
     );
   }
+});
+
+test("Trigger PAT server diagnostic reports only HTTP status for fixed whoami route", async () => {
+  const token = "tr_pat_test_only";
+  let seen = null;
+  const result = await probeTriggerPatWhoami(token, async (url, options) => {
+    seen = { url, options };
+    return { status: 200, body: { cancel: async () => {} } };
+  });
+  assert.deepEqual(result, { http_status: 200 });
+  assert.equal(seen.url, "https://api.trigger.dev/api/v2/whoami");
+  assert.equal(seen.options.method, "GET");
+  assert.equal(seen.options.redirect, "error");
+  assert.equal(seen.options.headers.Authorization, "Bearer tr_pat_test_only");
+});
+
+test("Trigger PAT server diagnostic maps rejection without consuming or logging response body", async () => {
+  let cancelled = false;
+  for (const status of [401, 403, 404, 429, 503, 418]) {
+    cancelled = false;
+    const expected = [401, 403, 404, 429, 503].includes(status) ? status : "OTHER";
+    await assert.rejects(
+      probeTriggerPatWhoami("tr_pat_test_only", async () => ({
+        status,
+        body: { cancel: async () => { cancelled = true; } },
+      })),
+      new RegExp(`TRIGGER_PAT_WHOAMI_HTTP_${expected}`),
+    );
+    assert.equal(cancelled, true);
+  }
+});
+
+test("Trigger PAT server diagnostic rejects malformed tokens and reports transport failure safely", async () => {
+  await assert.rejects(
+    probeTriggerPatWhoami("tr_dev_sk_unsafe", async () => { throw new Error("should not fetch"); }),
+    /TRIGGER_CLI_PERSONAL_ACCESS_TOKEN_REQUIRED/,
+  );
+  await assert.rejects(
+    probeTriggerPatWhoami("tr_pat_test_only", async () => { throw new Error("sensitive upstream detail"); }),
+    /TRIGGER_PAT_WHOAMI_TRANSPORT_FAILED/,
+  );
 });
