@@ -453,10 +453,10 @@ def test_nfl_out_designation_rules_the_player_out():
 
 def test_nfl_unparsed_designation_is_unverified():
     evidence = _nfl_availability("espn_nfl_athlete_unparsed_2026.json", athlete_id="4241458")
-    assert evidence["evidence_status"] == "RETRIEVED"
+    assert evidence["evidence_status"] == "INJURY_DESIGNATION_UNPARSED"
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_UNVERIFIED
-    assert decision.reason == "AVAILABILITY_DESIGNATION_MISSING"
+    assert decision.reason == "AVAILABILITY_EVIDENCE_INJURY_DESIGNATION_UNPARSED"
 
 
 def test_nfl_failed_retrieval_is_unverified_not_available():

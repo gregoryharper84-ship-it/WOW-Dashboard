@@ -786,6 +786,7 @@ def _athlete_availability(
             **base,
             "status": "UNVERIFIED",
             "designation": None,
+            "evidence_status": "INJURY_DESIGNATION_UNPARSED",
             "reason": "INJURY_DESIGNATION_UNPARSED",
         }
     return {
