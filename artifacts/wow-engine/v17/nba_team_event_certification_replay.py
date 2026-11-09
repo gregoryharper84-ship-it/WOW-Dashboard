@@ -880,6 +880,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
     pregame_corpus_ready = bool(
         corpus_integrity_valid
         and corpus_summary.get("artifact_corpus_hash_bound")
+        and corpus_summary.get("source_payload_hash_independently_recomputable")
         and corpus_summary.get("event_start_timestamp_persisted")
         and corpus_summary.get("official_settlement_attestation_persisted")
     )
