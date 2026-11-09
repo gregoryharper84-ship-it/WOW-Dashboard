@@ -97,99 +97,99 @@ $$;
 
 
 def run_provenance_migration(conn) -> dict[str, Any]:
-    """
-    Apply the WOW-PATCH-2026-08-14-SOURCE-PROVENANCE DDL migrations.
+    """Apply provenance DDL with one savepoint per independent statement.
 
-    Parameters
-    ----------
-    conn : psycopg2 connection (or compatible)
-
-    Returns
-    -------
-    dict with keys:
-        success       : bool
-        columns_added : list[str]  — "table.column" for each ADD COLUMN executed
-        indexes_added : int
-        fk_applied    : bool
-        errors        : list[str]
+    PostgreSQL aborts a transaction after a lock_timeout. Catching that error
+    without ROLLBACK TO SAVEPOINT would cause later statements to fail and
+    discard earlier successful columns at COMMIT. The caller owns the connection.
     """
     columns_added: list[str] = []
     errors: list[str] = []
     indexes_added = 0
     fk_applied = False
+    cur = None
 
     try:
         cur = conn.cursor()
 
-        # ── 1. Add provenance columns to llp_source_snapshots ──────────────
-        for col_name, col_type in _PROVENANCE_COLUMNS:
+        def execute_isolated(statement: str, label: str) -> bool:
+            # Fixed internal name; RELEASE after every statement prevents nesting.
+            cur.execute("SAVEPOINT wow_provenance_step")
             try:
-                cur.execute(
-                    f"ALTER TABLE llp_source_snapshots "
-                    f"ADD COLUMN IF NOT EXISTS {col_name} {col_type};"
-                )
-                columns_added.append(f"llp_source_snapshots.{col_name}")
+                cur.execute(statement)
             except Exception as exc:
-                errors.append(f"llp_source_snapshots.{col_name}: {exc}")
-                log.warning("provenance_migration: column add failed: %s", exc)
+                # Do not attempt RELEASE while the transaction remains aborted:
+                # it would mask the original rollback failure. Fail closed.
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT wow_provenance_step")
+                except Exception:
+                    raise RuntimeError("PROVENANCE_SAVEPOINT_ROLLBACK_FAILED") from None
+                errors.append(f"{label}: {exc}")
+                log.warning("provenance_migration: %s failed: %s", label, type(exc).__name__)
+                cur.execute("RELEASE SAVEPOINT wow_provenance_step")
+                return False
+            cur.execute("RELEASE SAVEPOINT wow_provenance_step")
+            return True
 
-        # ── 2. Add provenance columns to uac_evidence_packets ───────────────
         for col_name, col_type in _PROVENANCE_COLUMNS:
-            try:
-                cur.execute(
-                    f"ALTER TABLE uac_evidence_packets "
-                    f"ADD COLUMN IF NOT EXISTS {col_name} {col_type};"
-                )
-                columns_added.append(f"uac_evidence_packets.{col_name}")
-            except Exception as exc:
-                errors.append(f"uac_evidence_packets.{col_name}: {exc}")
-                log.warning("provenance_migration: column add failed: %s", exc)
+            label = f"llp_source_snapshots.{col_name}"
+            if execute_isolated(
+                f"ALTER TABLE llp_source_snapshots ADD COLUMN IF NOT EXISTS {col_name} {col_type};",
+                label,
+            ):
+                columns_added.append(label)
 
-        # ── 3. Add provenance indexes ────────────────────────────────────────
+        for col_name, col_type in _PROVENANCE_COLUMNS:
+            label = f"uac_evidence_packets.{col_name}"
+            if execute_isolated(
+                f"ALTER TABLE uac_evidence_packets ADD COLUMN IF NOT EXISTS {col_name} {col_type};",
+                label,
+            ):
+                columns_added.append(label)
+
         for idx_sql in _PROVENANCE_INDEXES:
-            try:
-                cur.execute(idx_sql)
+            if execute_isolated(idx_sql, "index"):
                 indexes_added += 1
-            except Exception as exc:
-                errors.append(f"index: {exc}")
-                log.warning("provenance_migration: index creation failed: %s", exc)
 
-        # ── 4. Fix FK on llp_calibration_ledger ─────────────────────────────
-        try:
-            cur.execute(_FK_FIX_DDL)
-            fk_applied = True
-        except Exception as exc:
-            errors.append(f"fk_fix: {exc}")
-            log.warning("provenance_migration: FK fix failed: %s", exc)
-
+        fk_applied = execute_isolated(_FK_FIX_DDL, "fk_fix")
         conn.commit()
-        cur.close()
-
         log.info(
             "provenance_migration: complete. columns_added=%d indexes=%d fk=%s errors=%d",
             len(columns_added), indexes_added, fk_applied, len(errors),
         )
         return {
-            "success":       len(errors) == 0,
+            "success": not errors,
             "columns_added": columns_added,
             "indexes_added": indexes_added,
-            "fk_applied":    fk_applied,
-            "errors":        errors,
+            "fk_applied": fk_applied,
+            "errors": errors,
         }
 
     except Exception as exc:
-        log.error("provenance_migration: fatal error: %s", exc)
+        # Only publish this trusted internal literal, never raw DB errors.
+        fatal_code = (
+            "PROVENANCE_SAVEPOINT_ROLLBACK_FAILED"
+            if type(exc) is RuntimeError and str(exc) == "PROVENANCE_SAVEPOINT_ROLLBACK_FAILED"
+            else type(exc).__name__
+        )
+        log.error("provenance_migration: fatal error: %s", fatal_code)
         try:
             conn.rollback()
         except Exception:
             pass
         return {
-            "success":       False,
+            "success": False,
             "columns_added": columns_added,
             "indexes_added": indexes_added,
-            "fk_applied":    fk_applied,
-            "errors":        errors + [f"fatal: {exc}"],
+            "fk_applied": fk_applied,
+            "errors": errors + [f"fatal: {fatal_code}"],
         }
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
 
 
 def generate_migration_sql() -> str:
