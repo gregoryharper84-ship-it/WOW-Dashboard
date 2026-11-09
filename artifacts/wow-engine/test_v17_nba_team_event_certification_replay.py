@@ -303,7 +303,10 @@ def test_nba_replay_reproduces_holdout_but_keeps_incomplete_bundle_held():
     assert report["calibrator_model_artifact_version_match"] is True
     assert report["calibrator_checksum_persisted"] is False
     assert report["calibrator_ready"] is False
-    assert report["pregame_corpus"]["feature_replay_status"] == "PASS"
+    assert report["pregame_corpus"]["feature_reconstruction_status"] == "PASS"
+    assert report["pregame_corpus"]["source_provenance_fields_valid"] is True
+    assert report["pregame_corpus"]["source_payload_raw_bytes_persisted"] is False
+    assert report["pregame_corpus"]["source_payload_hash_independently_recomputable"] is False
     assert report["pregame_corpus"]["settled_game_rows"] == 13
     assert report["pregame_corpus"]["persisted_feature_rows"] == 3
     assert report["pregame_corpus"]["settled_games_without_features"] == 10
@@ -334,7 +337,8 @@ def test_nba_replay_detects_a_tampered_feature_payload_hash():
     report = run_nba_team_event_certification_replay(_DB(tables))
 
     assert report["numerical_replay_status"] == "PASS"
-    assert report["pregame_corpus"]["feature_replay_status"] == "BLOCKED"
+    assert report["pregame_corpus"]["feature_reconstruction_status"] == "BLOCKED"
+    assert report["pregame_corpus"]["source_payload_hash_independently_recomputable"] is False
     assert "SOURCE_PROVENANCE_NOT_CERTIFIED" in report["blockers"]
     assert report["exact_bundle_match"] is False
     assert report["probability_publishable"] is False
