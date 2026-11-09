@@ -172,6 +172,8 @@ def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None,
             or str(row.get("feature_schema_version") or "") != FEATURE_SCHEMA_VERSION
             or str(payload.get("feature_schema_version") or "") != FEATURE_SCHEMA_VERSION
             or tuple(payload.get("feature_names") or ()) != tuple(FEATURE_NAMES)
+            or not str(row.get("artifact_id") or "").strip()
+            or str(row.get("artifact_format") or "") != "WOW_BASKETBALL_LOGISTIC_JSON_V1"
         ):
             blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
 
@@ -198,7 +200,18 @@ def _artifact_from_row(row: Mapping[str, Any]) -> tuple[LogisticArtifact | None,
         return None, ["CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE"], False, False
 
     dimensions_valid = (
-        len(artifact.coefficients) == len(FEATURE_NAMES)
+        type(payload.get("training_row_count")) is int
+        and type(payload.get("holdout_row_count")) is int
+        and type(row.get("training_row_count")) is int
+        and type(row.get("holdout_row_count")) is int
+        and row.get("training_row_count") == artifact.training_row_count
+        and row.get("holdout_row_count") == artifact.holdout_row_count
+        and str(row.get("train_start_date") or "") == artifact.train_start_date
+        and str(row.get("train_end_date") or "") == artifact.train_end_date
+        and _matches(row.get("holdout_brier"), artifact.holdout_brier)
+        and _matches(row.get("holdout_log_loss"), artifact.holdout_log_loss)
+        and _matches(row.get("holdout_accuracy"), artifact.holdout_accuracy)
+        and len(artifact.coefficients) == len(FEATURE_NAMES)
         and len(artifact.means) == len(FEATURE_NAMES)
         and len(artifact.scales) == len(FEATURE_NAMES)
         and all(math.isfinite(value) for value in (
@@ -627,7 +640,6 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
     calibrator_checksum = _calibrator_digest(calibrator_row)
     # The current table has no persisted calibrator checksum or fit-corpus hash.
     calibrator_checksum_persisted = bool(calibrator_row.get("calibrator_checksum"))
-    calibrator_ready = calibrator_identity_valid and calibrator_checksum_persisted
 
     try:
         certification_row = _read_one(
@@ -640,6 +652,35 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001
         return _read_failure("CERTIFICATION_REGISTRY", exc)
+
+    certification_notes = (
+        certification_row.get("certification_notes")
+        if isinstance(certification_row, Mapping) else {}
+    )
+    certification_notes = certification_notes if isinstance(certification_notes, Mapping) else {}
+    stored_holdout_evidence = certification_notes.get("untouched_holdout_evidence")
+    stored_holdout_evidence = stored_holdout_evidence if isinstance(stored_holdout_evidence, Mapping) else {}
+    calibration_training_rows = certification_notes.get("calibration_training_rows")
+    calibration_holdout_overlap_rows = certification_notes.get("calibration_holdout_overlap_rows")
+    calibrator_fit_cohort_metadata_valid = bool(
+        type(calibration_training_rows) is int
+        and calibration_training_rows == artifact.training_row_count
+        and str(certification_notes.get("calibration_training_cutoff") or "") == artifact.train_end_date
+        and type(calibration_holdout_overlap_rows) is int
+        and calibration_holdout_overlap_rows == 0
+        and calibrator_row.get("calibration_row_count", 0) <= calibration_training_rows
+        and stored_holdout_evidence.get("holdout_rows") == artifact.holdout_row_count
+        and stored_holdout_evidence.get("publication_authorized") is False
+        and stored_holdout_evidence.get("can_execute") is False
+    )
+    calibrator_fit_replay_status = "NOT_REPRODUCIBLE_RAW_WALK_FORWARD_PREDICTIONS_NOT_PERSISTED"
+    calibrator_fit_evidence_ready = False
+    calibrator_ready = bool(
+        calibrator_identity_valid
+        and calibrator_checksum_persisted
+        and calibrator_fit_cohort_metadata_valid
+        and calibrator_fit_evidence_ready
+    )
 
     try:
         games = _read_all(db, TRAINING_TABLE, TRAINING_FIELDS, settled_only=True)
@@ -731,7 +772,8 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "artifact_training_code_sha_present": bool(str(training_code_sha or "").strip()),
         "calibrator_checksum_persisted": calibrator_checksum_persisted,
         "calibrator_fit_corpus_hash_persisted": False,
-        "calibrator_fit_replay_status": "NOT_REPRODUCIBLE_RAW_WALK_FORWARD_PREDICTIONS_NOT_PERSISTED",
+        "calibrator_fit_cohort_metadata_valid": calibrator_fit_cohort_metadata_valid,
+        "calibrator_fit_replay_status": calibrator_fit_replay_status,
         "official_settlement_attestation_persisted": False,
         "event_start_timestamp_persisted": False,
     })
@@ -788,6 +830,8 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "calibrator_sha256_observed": calibrator_checksum,
         "calibrator_model_artifact_version_match": calibrator_identity_valid,
         "calibrator_checksum_persisted": calibrator_checksum_persisted,
+        "calibrator_fit_cohort_metadata_valid": calibrator_fit_cohort_metadata_valid,
+        "calibrator_fit_replay_status": calibrator_fit_replay_status,
         "calibrator_ready": calibrator_ready,
         "calibration_row_count": calibrator_row.get("calibration_row_count"),
         "calibration_metrics": {
