@@ -9,7 +9,7 @@ served artifact.
 This producer fits the already-ratified Platt ladder (``calibration.phase_b_platt``
 walk-forward out-of-fold fit) on a chronological fit cohort, scores a strictly
 later holdout that the fit never saw, and derives every digest from the frozen
-input rows it used. It does not choose a new calibration method, does not fit on
+rows it used. It does not choose a new calibration method, does not fit on
 market prices, and cannot make a probability publishable.
 
 Governed properties:
@@ -23,11 +23,17 @@ Governed properties:
   timestamp, and the official settlement receipt. A caller that also passes a
   timestamp or probability is checked against the receipt and refused on
   disagreement, so no input field can assert its own provenance;
-* **pregame provenance is required.** The receipt's forecast timestamp must be
-  strictly before the official start it belongs to, and the settlement must not
-  precede that start. Chronological settlement alone proves nothing: a forecast
-  written after the fact settles on time while being hindsight, so such a row
-  is refused instead of entering the cohort;
+* **as-of custody is checked, not assumed.** A stored ``model_timestamp`` is a
+  claim about when the forecast was frozen; the receipt's own insertion
+  timestamp is evidence that the record existed then. The producer requires the
+  forecast to have been frozen no later than it was persisted, the persisted
+  prediction and prelock receipts to exist before first pitch, and both the
+  prediction and settlement records to have existed at the decision cutoff —
+  so a record written after the game settles cannot be back-dated into the
+  cohort by editing its payload timestamp;
+* **pregame provenance is required.** The forecast timestamp must be strictly
+  before the official start it belongs to, and the settlement must not precede
+  that start;
 * **the observation must come from the served artifact.** The prelock receipt
   must carry the served artifact checksum and the prediction receipt the served
   model version; anything else is refused rather than pooled in;
@@ -40,11 +46,13 @@ Governed properties:
   holdout or a holdout below the fixed minimum is a typed refusal rather than a
   crash or a thin, unrepresentative metric;
 * ``calibrator_checksum`` binds the exact identity (calibrator id, artifact
-  family/version/schema and artifact checksum), the coefficients and both
-  cohort digests — so a checksum can never be reused for a different artifact,
-  a different id or refitted weights, and ``calibration_coefficients`` +
-  ``calibration_coefficients_sha256`` are persisted beside it so the fitted
-  numbers are auditable after the fact instead of living only in this process;
+  family/version/schema and artifact checksum), the coefficients, both cohort
+  digests and the receipt manifest digest — so a checksum can never be reused
+  for a different artifact, a different id, refitted weights or a different
+  receipt set, and ``calibration_coefficients`` plus
+  ``calibration_receipt_manifest`` are persisted beside it so independent
+  verification can retrieve the exact receipt pairs rather than trusting a
+  digest it cannot reopen;
 * replaying the same identity with different coefficients is a conflict: the
   producer refuses rather than overwriting an existing row;
 * the holdout is scored against the **incumbent** (the uncalibrated
@@ -91,6 +99,7 @@ PREGAME_RECEIPT_TABLE = "wow_mlb_event_pregame_feature_rows"
 PREDICTION_RECEIPT_TABLE = "wow_mlb_event_specialist_snapshots"
 SETTLEMENT_RECEIPT_TABLE = "wow_mlb_forward_shadow_grades"
 EVENT_LEDGER_TABLE = "wow_mlb_forward_shadow_events"
+RECEIPT_MANIFEST_VERSION = "MLB_CALIBRATOR_RECEIPT_MANIFEST_V1"
 SPORT = "MLB"
 CALIBRATION_METHOD = CalibrationStatus.PLATT_TIME_SPLIT_V1
 # Deliberately NOT PREDICTIVE_BOUNDS_V1: this is a holdout reliability
@@ -184,6 +193,9 @@ def _receipt(
         "model_artifact_checksum": row.get("model_artifact_checksum"),
         "calibrator_checksum": row.get("calibrator_checksum"),
         "calibration_coefficients_sha256": row.get("calibration_coefficients_sha256"),
+        "calibration_receipt_manifest_sha256": row.get(
+            "calibration_receipt_manifest_sha256"
+        ),
         "calibration_cohort_sha256": row.get("calibration_cohort_sha256"),
         "holdout_evidence_sha256": row.get("holdout_evidence_sha256"),
         "bounds_method_version": row.get("bounds_method_version"),
@@ -235,13 +247,14 @@ def _artifact_identity(
 def governed_receipt_resolver(
     db: Any, *, artifact: Mapping[str, Any]
 ) -> ReceiptResolver | None:
-    """Build a resolver that re-reads provenance from the governed receipts.
+    """Build a resolver that re-reads provenance and custody from the receipts.
 
     Nothing asserted by the observation is trusted: the prelock row supplies the
     official start and artifact checksum, the specialist snapshot supplies the
     frozen probability and forecast timestamp, and the official grade supplies
-    the outcome and settlement timestamp. Each receipt must also name the same
-    event, and the prediction must come from the served model version.
+    the outcome and settlement timestamp. Each receipt's own insertion timestamp
+    is returned as well, because that — not a payload timestamp the writer
+    controls — is the evidence the record existed at a given time.
     """
     if db is None:
         return None
@@ -249,17 +262,25 @@ def governed_receipt_resolver(
     schema = _text(artifact.get("feature_schema_version"))
     artifact_id = _text(artifact.get("artifact_id"))
 
-    def resolve(observation: Mapping[str, Any]) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    def resolve(
+        observation: Mapping[str, Any],
+    ) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
         blockers: list[str] = []
-        event_id = _text(observation.get("event_id") or observation.get("official_event_id"))
+        event_id = _text(
+            observation.get("event_id") or observation.get("official_event_id")
+        )
         prediction_id = _text(observation.get("prediction_receipt_id"))
         settlement_id = _text(observation.get("settlement_receipt_id"))
         if not event_id:
             return None, ("MLB_CALIBRATOR_EVIDENCE_RECEIPT_EVENT_MISSING",)
         if not prediction_id:
-            return None, (f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_ID_MISSING:{event_id}",)
+            return None, (
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_ID_MISSING:{event_id}",
+            )
         if not settlement_id:
-            return None, (f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_ID_MISSING:{event_id}",)
+            return None, (
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_ID_MISSING:{event_id}",
+            )
 
         try:
             prelock = _rows(
@@ -295,24 +316,40 @@ def governed_receipt_resolver(
             reason = "AMBIGUOUS" if prelock else "MISSING"
             return None, (f"MLB_CALIBRATOR_EVIDENCE_PRELOCK_RECEIPT_{reason}:{event_id}",)
         if not snapshot:
-            return None, (f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_NOT_FOUND:{event_id}",)
+            return None, (
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_NOT_FOUND:{event_id}",
+            )
         if not grade:
-            return None, (f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_NOT_FOUND:{event_id}",)
+            return None, (
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_NOT_FOUND:{event_id}",
+            )
 
         prelock_row, snapshot_row, grade_row = prelock[0], snapshot[0], grade[0]
         if _text(snapshot_row.get("official_event_id")) != event_id:
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_EVENT_MISMATCH:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_EVENT_MISMATCH:{event_id}"
+            )
         if _text(snapshot_row.get("model_version")) != version:
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_VERSION_MISMATCH:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_VERSION_MISMATCH:{event_id}"
+            )
         if artifact_id and _text(snapshot_row.get("artifact_id")) != artifact_id:
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_ARTIFACT_MISMATCH:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_ARTIFACT_MISMATCH:{event_id}"
+            )
         if not _sha256(snapshot_row.get("model_inputs_hash")):
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_INPUTS_HASH_MISSING:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_INPUTS_HASH_MISSING:{event_id}"
+            )
         if not _text(grade_row.get("settlement_source")):
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_SOURCE_MISSING:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_SOURCE_MISSING:{event_id}"
+            )
         winner = _text(grade_row.get("official_winner")).upper()
         if winner not in ("HOME", "AWAY"):
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_OUTCOME_MISSING:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_OUTCOME_MISSING:{event_id}"
+            )
 
         shadow_event_id = _text(grade_row.get("shadow_event_id"))
         if shadow_event_id:
@@ -329,19 +366,28 @@ def governed_receipt_resolver(
                     f"MLB_CALIBRATOR_EVIDENCE_EVENT_LEDGER_READ_FAILED:{type(exc).__name__}",
                 )
             if ledger and _text(ledger[0].get("official_event_id")) != event_id:
-                blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_EVENT_MISMATCH:{event_id}")
+                blockers.append(
+                    f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_EVENT_MISMATCH:{event_id}"
+                )
             elif not ledger:
-                blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_EVENT_UNRESOLVED:{event_id}")
+                blockers.append(
+                    f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_EVENT_UNRESOLVED:{event_id}"
+                )
 
         if blockers:
             return None, tuple(dict.fromkeys(blockers))
         return (
             {
                 "event_id": event_id,
+                "prediction_receipt_id": prediction_id,
+                "settlement_receipt_id": settlement_id,
                 "raw_probability": snapshot_row.get("raw_home_probability"),
                 "prediction_at": snapshot_row.get("model_timestamp"),
+                "prediction_recorded_at": snapshot_row.get("created_at"),
                 "event_start_time": prelock_row.get("event_start_time"),
+                "prelock_recorded_at": prelock_row.get("created_at"),
                 "settled_at": grade_row.get("outcome_timestamp"),
+                "settlement_recorded_at": grade_row.get("grade_timestamp"),
                 "outcome": 1 if winner == "HOME" else 0,
                 "model_artifact_checksum": prelock_row.get("model_artifact_checksum"),
             },
@@ -361,7 +407,9 @@ def _disagreements(
     if supplied_probability is not None:
         received = _number(provenance.get("raw_probability"))
         if received is None or abs(supplied_probability - received) > 1e-9:
-            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_DISAGREES:raw_probability:{event_id}")
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_DISAGREES:raw_probability:{event_id}"
+            )
     for supplied_field, receipt_field in (
         ("prediction_at", "prediction_at"),
         ("event_start_time", "event_start_time"),
@@ -392,7 +440,14 @@ def normalize_settled_rows(
     artifact_checksum: str | None = None,
     resolve: ReceiptResolver | None,
 ) -> tuple[list[dict[str, Any]] | None, tuple[str, ...]]:
-    """Resolve each observation through its governed receipts; refuse anything unproven."""
+    """Resolve each observation through its governed receipts; refuse anything unproven.
+
+    Beyond the payload chronology, this enforces as-of custody: the prediction
+    must have been frozen no later than it was persisted, the persisted
+    prediction and prelock receipts must predate first pitch, and both the
+    prediction and settlement records must already have existed at the decision
+    cutoff. A row inserted after the game cannot be back-dated by its payload.
+    """
     if resolve is None:
         return None, ("MLB_CALIBRATOR_EVIDENCE_PROVENANCE_UNVERIFIABLE",)
     blockers: list[str] = []
@@ -414,11 +469,15 @@ def normalize_settled_rows(
             provenance, receipt_blockers = resolve(raw)
         except Exception as exc:  # noqa: BLE001 - a failing join proves nothing
             blockers.append(
-                f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_RESOLUTION_FAILED:{event_id}:{type(exc).__name__}"
+                "MLB_CALIBRATOR_EVIDENCE_RECEIPT_RESOLUTION_FAILED:"
+                f"{event_id}:{type(exc).__name__}"
             )
             continue
         if provenance is None:
-            blockers.extend(receipt_blockers or (f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_UNRESOLVED:{event_id}",))
+            blockers.extend(
+                receipt_blockers
+                or (f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_UNRESOLVED:{event_id}",)
+            )
             continue
         disagreements = _disagreements(raw, provenance)
         if disagreements:
@@ -432,11 +491,16 @@ def normalize_settled_rows(
         settled_at = _when(provenance.get("settled_at"))
         prediction_at = _when(provenance.get("prediction_at"))
         event_start = _when(provenance.get("event_start_time"))
+        prediction_recorded = _when(provenance.get("prediction_recorded_at"))
+        settlement_recorded = _when(provenance.get("settlement_recorded_at"))
+        prelock_recorded = _when(provenance.get("prelock_recorded_at"))
         receipt_artifact = _text(provenance.get("model_artifact_checksum")).lower()
+        prediction_id = _text(provenance.get("prediction_receipt_id") or raw.get("prediction_receipt_id"))
+        settlement_id = _text(provenance.get("settlement_receipt_id") or raw.get("settlement_receipt_id"))
         if probability is None or not 0.0 < probability < 1.0:
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_RAW_PROBABILITY_INVALID:{event_id}")
             continue
-        if outcome not in (0, 1) or isinstance(outcome, bool) and outcome not in (True, False):
+        if outcome not in (0, 1) or (isinstance(outcome, bool) and outcome not in (True, False)):
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_OUTCOME_INVALID:{event_id}")
             continue
         if settled_at is None:
@@ -462,6 +526,52 @@ def normalize_settled_rows(
         if settled_at < event_start:
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_SETTLED_BEFORE_START:{event_id}")
             continue
+        if prediction_id is None or not prediction_id:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_ID_MISSING:{event_id}"
+            )
+            continue
+        if settlement_id is None or not settlement_id:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_ID_MISSING:{event_id}"
+            )
+            continue
+        if prediction_recorded is None:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECORD_TIMESTAMP_MISSING:{event_id}"
+            )
+            continue
+        if settlement_recorded is None:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECORD_TIMESTAMP_MISSING:{event_id}"
+            )
+            continue
+        # As-of custody: the record has to have existed when it claims to.
+        if prediction_at > prediction_recorded:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECORD_PRECEDES_FROZEN:{event_id}"
+            )
+            continue
+        if prediction_recorded >= event_start:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECORD_POSTDATES_START:{event_id}"
+            )
+            continue
+        if prediction_recorded > decision_at:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECORD_POSTDATES_DECISION:{event_id}"
+            )
+            continue
+        if settlement_recorded > decision_at:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECORD_POSTDATES_DECISION:{event_id}"
+            )
+            continue
+        if prelock_recorded is not None and prelock_recorded >= event_start:
+            blockers.append(
+                f"MLB_CALIBRATOR_EVIDENCE_PRELOCK_RECORD_POSTDATES_START:{event_id}"
+            )
+            continue
         if expected_artifact and receipt_artifact != expected_artifact:
             blockers.append(
                 f"MLB_CALIBRATOR_EVIDENCE_ARTIFACT_PROVENANCE_MISMATCH:{event_id}"
@@ -471,10 +581,14 @@ def normalize_settled_rows(
         rows.append(
             {
                 "event_id": event_id,
+                "prediction_receipt_id": prediction_id,
+                "settlement_receipt_id": settlement_id,
                 "raw_probability": probability,
                 "outcome": int(outcome),
                 "settled_at": settled_at,
                 "prediction_at": prediction_at,
+                "prediction_recorded_at": prediction_recorded,
+                "settlement_recorded_at": settlement_recorded,
                 "event_start_time": event_start,
                 "model_artifact_checksum": receipt_artifact,
             }
@@ -568,7 +682,10 @@ def _bootstrap_bounds(
             continue
         draws.append(1.0 / (1.0 + np.exp(-values)))
     minimum = int(
-        math.ceil(BOUNDS_BOOTSTRAP_REALIZATIONS * (1.0 - BOUNDS_BOOTSTRAP_MAX_FIT_FAILURE_RATE))
+        math.ceil(
+            BOUNDS_BOOTSTRAP_REALIZATIONS
+            * (1.0 - BOUNDS_BOOTSTRAP_MAX_FIT_FAILURE_RATE)
+        )
     )
     if not draws:
         return None, None, ("MLB_CALIBRATOR_EVIDENCE_BOUNDS_BOOTSTRAP_EMPTY",)
@@ -607,16 +724,42 @@ def _cohort_digest(rows: list[dict[str, Any]]) -> str:
         [
             {
                 "event_id": row["event_id"],
+                "prediction_receipt_id": row["prediction_receipt_id"],
+                "settlement_receipt_id": row["settlement_receipt_id"],
                 "raw_probability": row["raw_probability"],
                 "outcome": row["outcome"],
                 "settled_at": row["settled_at"].isoformat(),
                 "prediction_at": row["prediction_at"].isoformat(),
+                "prediction_recorded_at": row["prediction_recorded_at"].isoformat(),
+                "settlement_recorded_at": row["settlement_recorded_at"].isoformat(),
                 "event_start_time": row["event_start_time"].isoformat(),
                 "model_artifact_checksum": row["model_artifact_checksum"],
             }
             for row in rows
         ]
     )
+
+
+def _receipt_manifest(
+    fit: list[dict[str, Any]], holdout: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The exact receipt pairs used, retrievable after the fact."""
+
+    def pairs(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return [
+            {
+                "event_id": row["event_id"],
+                "prediction_receipt_id": row["prediction_receipt_id"],
+                "settlement_receipt_id": row["settlement_receipt_id"],
+            }
+            for row in rows
+        ]
+
+    return {
+        "manifest_version": RECEIPT_MANIFEST_VERSION,
+        "fit": pairs(fit),
+        "holdout": pairs(holdout),
+    }
 
 
 def build_calibrator_row(
@@ -684,6 +827,8 @@ def build_calibrator_row(
         return None, ("MLB_CALIBRATOR_EVIDENCE_COEFFICIENTS_NON_FINITE",)
     coefficients_payload = {"a": coefficients.a, "b": coefficients.b}
     coefficients_sha = canonical_sha256(coefficients_payload)
+    manifest = _receipt_manifest(fit, holdout)
+    manifest_sha = canonical_sha256(manifest)
 
     brier, log_loss, bias, per_row = _losses(holdout, coefficients)
     incumbent_brier, incumbent_log_loss, _, incumbent_rows = _losses(
@@ -723,6 +868,7 @@ def build_calibrator_row(
             "calibration_method": CALIBRATION_METHOD,
             "bounds_method_version": BOUNDS_METHOD_VERSION,
             "calibration_coefficients_sha256": coefficients_sha,
+            "calibration_receipt_manifest_sha256": manifest_sha,
             "calibration_training_n": len(fit),
             "holdout_n": len(holdout),
             "calibration_cohort_sha256": cohort_sha,
@@ -742,6 +888,8 @@ def build_calibrator_row(
         "bounds_method_version": BOUNDS_METHOD_VERSION,
         "calibration_coefficients": coefficients_payload,
         "calibration_coefficients_sha256": coefficients_sha,
+        "calibration_receipt_manifest": manifest,
+        "calibration_receipt_manifest_sha256": manifest_sha,
         "calibration_cohort_sha256": cohort_sha,
         "holdout_evidence_sha256": holdout_sha,
         "calibration_training_n": len(fit),
@@ -793,7 +941,11 @@ def persist_calibrator_evidence(db: Any, row: Mapping[str, Any]) -> dict[str, An
             _text(current.get("calibration_coefficients_sha256")).lower()
             == _text(row["calibration_coefficients_sha256"]).lower()
         )
-        if same_checksum and same_coefficients:
+        same_manifest = (
+            _text(current.get("calibration_receipt_manifest_sha256")).lower()
+            == _text(row["calibration_receipt_manifest_sha256"]).lower()
+        )
+        if same_checksum and same_coefficients and same_manifest:
             return _receipt(ALREADY_CURRENT, row=row)
         # Same identity, different fitted evidence: overwriting would erase the
         # binding the checksum is supposed to prove.
@@ -823,8 +975,10 @@ def produce_calibrator_evidence(
     resolve: ReceiptResolver | None = None,
 ) -> dict[str, Any]:
     """Fit, verify and persist one exact-version MLB calibrator evidence row."""
-    resolver = resolve if resolve is not None else governed_receipt_resolver(
-        db, artifact=artifact
+    resolver = (
+        resolve
+        if resolve is not None
+        else governed_receipt_resolver(db, artifact=artifact)
     )
     row, blockers = build_calibrator_row(
         artifact=artifact,
@@ -852,6 +1006,7 @@ __all__ = [
     "PERSISTED",
     "PREGAME_RECEIPT_TABLE",
     "PREDICTION_RECEIPT_TABLE",
+    "RECEIPT_MANIFEST_VERSION",
     "REFUSED",
     "SETTLEMENT_RECEIPT_TABLE",
     "SPORT",

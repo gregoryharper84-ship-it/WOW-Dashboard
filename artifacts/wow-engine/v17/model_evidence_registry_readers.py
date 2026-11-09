@@ -241,6 +241,8 @@ _MLB_CALIBRATOR_EVIDENCE = TableSpec(
         "calibration_method": "calibration_method",
         "bounds_method_version": "bounds_method_version",
         "calibration_coefficients_sha256": "calibration_coefficients_sha256",
+        "calibration_receipt_manifest": "calibration_receipt_manifest",
+        "calibration_receipt_manifest_sha256": "calibration_receipt_manifest_sha256",
         "calibration_cohort_sha256": "calibration_cohort_sha256",
         "holdout_evidence_sha256": "holdout_evidence_sha256",
         "calibration_training_n": "calibration_training_n",
