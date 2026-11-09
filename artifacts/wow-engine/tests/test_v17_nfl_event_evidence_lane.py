@@ -350,3 +350,155 @@ def test_migration_declares_the_pregame_and_calibrator_tables_additively():
         line.startswith(("grant ", "revoke ", "update ", "delete ", "truncate "))
         for line in statements
     )
+
+
+# ---- Added: exact-artifact calibrator binding, prelock ordering, fail-closed publication ----
+
+def _full_db(**table_overrides):
+    tables = _tables(pregame=[_pregame_row()])
+    tables.update(table_overrides)
+    return _Db(tables)
+
+
+def test_missing_nfl_calibrator_evidence_blocks_the_bundle():
+    report = readers.assess_registry_model_bundle(
+        _full_db(wow_nfl_event_calibrator_evidence=[]), _scope()
+    )
+
+    assert report["bundle_complete"] is False
+    assert "MODEL_BUNDLE_CALIBRATOR_MISSING" in report["blockers"]
+    assert report["component_sources"]["calibrator"]["status"] == readers.MISSING
+    assert report["probability_publishable"] is False
+
+
+def test_calibrator_for_another_model_version_is_not_substituted():
+    other = _calibrator_row(model_artifact_version="NFL_EVENT_OTHER_VERSION")
+    report = readers.assess_registry_model_bundle(
+        _full_db(wow_nfl_event_calibrator_evidence=[other]), _scope()
+    )
+
+    assert report["bundle_complete"] is False
+    assert report["component_sources"]["calibrator"]["status"] == readers.MISSING
+
+
+def test_calibrator_bound_to_a_different_artifact_checksum_is_rejected():
+    report = readers.assess_registry_model_bundle(
+        _full_db(
+            wow_nfl_event_calibrator_evidence=[
+                _calibrator_row(model_artifact_checksum=FOREIGN_SHA)
+            ]
+        ),
+        _scope(),
+    )
+
+    assert report["bundle_complete"] is False
+    assert "MODEL_BUNDLE_CALIBRATOR_INVALID_OR_UNVERIFIED" in report["blockers"]
+
+
+def test_calibrator_with_holdout_overlap_is_rejected():
+    report = readers.assess_registry_model_bundle(
+        _full_db(
+            wow_nfl_event_calibrator_evidence=[_calibrator_row(holdout_overlap_rows=3)]
+        ),
+        _scope(),
+    )
+
+    assert report["bundle_complete"] is False
+    assert "MODEL_BUNDLE_CALIBRATOR_INVALID_OR_UNVERIFIED" in report["blockers"]
+
+
+def test_a_second_calibrator_for_the_version_is_ignored_unless_the_artifact_binds_it():
+    # The artifact's immutable calibrator_id selects exactly one record; a
+    # look-alike row with another id and checksum can never be served instead.
+    first = _calibrator_row()
+    stray = _calibrator_row(calibrator_id="cal-nfl-2", calibrator_checksum="7" * 64)
+    report = readers.assess_registry_model_bundle(
+        _full_db(wow_nfl_event_calibrator_evidence=[first, stray]), _scope()
+    )
+
+    assert report["bundle_complete"] is True
+    # Binding the stray row instead (artifact points at cal-nfl-2) must then
+    # demand that record's own checksum chain, not the first row's.
+    repointed = _artifact_row(calibrator_id="cal-nfl-2")
+    report = readers.assess_registry_model_bundle(
+        _full_db(
+            wow_nfl_event_fitted_model_artifacts=[repointed],
+            wow_nfl_event_calibrator_evidence=[first],
+        ),
+        _scope(),
+    )
+    assert report["bundle_complete"] is False
+    assert report["component_sources"]["calibrator"]["status"] == readers.MISSING
+
+
+def test_duplicate_records_for_the_bound_calibrator_are_ambiguous():
+    report = readers.assess_registry_model_bundle(
+        _full_db(
+            wow_nfl_event_calibrator_evidence=[_calibrator_row(), _calibrator_row()]
+        ),
+        _scope(),
+    )
+
+    assert report["bundle_complete"] is False
+    assert "MODEL_BUNDLE_CALIBRATOR_AMBIGUOUS" in report["blockers"]
+    assert report["probability_publishable"] is False
+
+
+def test_source_snapshot_after_the_feature_snapshot_is_held():
+    late_source = _pregame_row(source_snapshot_timestamp="2026-11-12T18:30:00+00:00")
+    report = readers.assess_registry_model_bundle(
+        _Db(_tables(pregame=[late_source])), _scope()
+    )
+
+    assert report["bundle_complete"] is False
+    assert "MODEL_BUNDLE_PREGAME_CORPUS_INVALID_OR_UNVERIFIED" in report["blockers"]
+
+
+def test_unparseable_or_missing_prelock_timestamps_are_held():
+    for overrides in (
+        {"feature_snapshot_timestamp": "not-a-timestamp"},
+        {"source_snapshot_timestamp": None},
+        {"event_start_time": None},
+        {"source_payload_sha256": None},
+    ):
+        report = readers.assess_registry_model_bundle(
+            _Db(_tables(pregame=[_pregame_row(**overrides)])), _scope()
+        )
+        assert report["bundle_complete"] is False, overrides
+        assert report["probability_publishable"] is False, overrides
+
+
+def test_pregame_row_for_a_different_event_is_not_substituted():
+    other = _pregame_row(official_event_id="NFL:OTHER-GAME")
+    report = readers.assess_registry_model_bundle(_Db(_tables(pregame=[other])), _scope())
+
+    assert report["bundle_complete"] is False
+    assert "MODEL_BUNDLE_PREGAME_CORPUS_MISSING" in report["blockers"]
+
+
+def test_publication_fails_closed_without_a_complete_sealed_triad():
+    # Incomplete bundle: no pregame row. The guard must not publish, with the
+    # triad absent, or with the (honest) incomplete triad attached.
+    db = _Db(_tables(pregame=[]))
+    triad = boundary.evaluate_market_evidence_triad(
+        model_kind="TEAM_EVENT",
+        sport="NFL",
+        official_event_id=EVENT_ID,
+        event_start_time=EVENT_START,
+        prediction_timestamp=MODEL_AT,
+        model_family=FAMILY,
+        model_artifact_version=VERSION,
+        feature_schema_version=SCHEMA,
+        db=db,
+    )
+    assert triad["status"] != boundary.COMPLETE
+    assert triad["bundle_complete"] is False
+
+    absent = evaluate_team_event_official_publication(_approved_payload())
+    incomplete = evaluate_team_event_official_publication(
+        {**_approved_payload(), "model_evidence_triad": boundary.seal_report(triad)}
+    )
+    for guard in (absent, incomplete):
+        assert guard["status"] != "PASS"
+        assert guard["blockers"]
+        assert guard["can_execute"] is False
