@@ -255,6 +255,7 @@ def test_wnba_complete_report_clears_only_an_unlisted_player():
         text,
         player_name="Jackie Young",
         team_name="Las Vegas Aces",
+        opponent_name="Indiana Fever",
         matchup="LVA@IND",
         game_date="08/01/2026",
     )
@@ -278,18 +279,34 @@ def test_wnba_complete_report_clears_only_an_unlisted_player():
 
 @pytest.mark.parametrize(
     ("player", "team", "expected"),
+    [("A'ja Wilson", "Las Vegas Aces", "OUT")],
+)
+def test_wnba_explicit_out_is_returned_as_a_ruling(player, team, expected):
+    result = wnba._availability_from_report(
+        _text_fixture("wnba_injury_report_20260801.txt"),
+        player_name=player,
+        team_name=team,
+        opponent_name="Indiana Fever" if team == "Las Vegas Aces" else "Las Vegas Aces",
+        matchup="LVA@IND",
+        game_date="08/01/2026",
+    )
+    assert result == {"availability": "UNAVAILABLE", "designation": expected, "injury_reason": None}
+
+
+@pytest.mark.parametrize(
+    ("player", "team", "expected"),
     [
-        ("A'ja Wilson", "Las Vegas Aces", "OUT"),
         ("Chelsea Gray", "Las Vegas Aces", "QUESTIONABLE"),
         ("Aliyah Boston", "Indiana Fever", "DOUBTFUL"),
     ],
 )
-def test_wnba_explicit_designations_never_clear(player, team, expected):
+def test_wnba_playable_designations_still_need_uncertified_model_handling(player, team, expected):
     with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
         wnba._availability_from_report(
             _text_fixture("wnba_injury_report_20260801.txt"),
             player_name=player,
             team_name=team,
+            opponent_name="Indiana Fever" if team == "Las Vegas Aces" else "Las Vegas Aces",
             matchup="LVA@IND",
             game_date="08/01/2026",
         )
@@ -302,6 +319,7 @@ def test_wnba_explicitly_available_player_is_cleared_from_the_report():
         _text_fixture("wnba_injury_report_20260801.txt"),
         player_name="Kiah Stokes",
         team_name="Las Vegas Aces",
+        opponent_name="Indiana Fever",
         matchup="LVA@IND",
         game_date="08/01/2026",
     )
@@ -314,6 +332,7 @@ def test_wnba_unsubmitted_team_report_is_refused():
             _text_fixture("wnba_injury_report_not_submitted_20260801.txt"),
             player_name="Jackie Young",
             team_name="Las Vegas Aces",
+            opponent_name="Indiana Fever",
             matchup="LVA@IND",
             game_date="08/01/2026",
         )
@@ -326,10 +345,44 @@ def test_wnba_report_for_another_matchup_is_refused():
             _text_fixture("wnba_injury_report_20260801.txt"),
             player_name="Jackie Young",
             team_name="Las Vegas Aces",
+            opponent_name="Indiana Fever",
             matchup="LVA@NYL",
             game_date="08/01/2026",
         )
     assert excinfo.value.code == "WNBA_INJURY_REPORT_EVENT_UNRESOLVED"
+
+
+def test_wnba_report_without_the_opponent_header_cannot_bound_the_section():
+    # The target team is present and has submitted, but the page does not carry
+    # the opponent header, so the section end is unknown and an absence inside
+    # it must not be read as clearance.
+    text = "Injury Report LVA@IND Las Vegas Aces A'ja Wilson - Out (Rest)"
+    with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
+        wnba._availability_from_report(
+            text,
+            player_name="Jackie Young",
+            team_name="Las Vegas Aces",
+            opponent_name="Indiana Fever",
+            matchup="LVA@IND",
+            game_date="08/01/2026",
+        )
+    assert excinfo.value.code == "WNBA_INJURY_REPORT_SECTION_INCOMPLETE"
+
+
+def test_wnba_section_with_no_status_rows_is_incomplete():
+    # A section with no parsable designation row proves nothing about a player
+    # who is absent from it.
+    text = "Injury Report LVA@IND Las Vegas Aces Indiana Fever Caitlin Clark - Available"
+    with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
+        wnba._availability_from_report(
+            text,
+            player_name="Jackie Young",
+            team_name="Las Vegas Aces",
+            opponent_name="Indiana Fever",
+            matchup="LVA@IND",
+            game_date="08/01/2026",
+        )
+    assert excinfo.value.code == "WNBA_INJURY_REPORT_SECTION_INCOMPLETE"
 
 
 # ---------------------------------------------------------------------------
@@ -344,14 +397,27 @@ def _nfl_availability(fixture: str, athlete_id: str = "4241457") -> dict:
 
 
 def test_nfl_record_without_a_designation_is_a_basis_not_missing_evidence():
-    evidence = _nfl_availability("espn_nfl_athlete_clear_2026.json")
+    evidence = nfl.bind_availability_to_event(
+        _nfl_availability("espn_nfl_athlete_clear_2026.json"),
+        team="TEST",
+        event_id="401-test",
+    )
     assert evidence["basis"] == "FRESH_OFFICIAL_REPORT_UNLISTED"
     assert evidence["report_complete"] is True
     assert evidence["fresh"] is True
     assert evidence["athlete_id"] == "4241457"
+    assert evidence["source_endpoint"].endswith("/athletes/4241457")
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_AVAILABLE
     assert decision.risk is False
+
+
+def test_nfl_clearance_without_event_binding_is_not_clearance():
+    evidence = _nfl_availability("espn_nfl_athlete_clear_2026.json")
+    decision = evaluate_player_availability({"availability": evidence})
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.reason == "AVAILABILITY_PROVENANCE_INCOMPLETE"
+    assert set(decision.provenance["missing"]) == {"event_id", "team"}
 
 
 def test_nfl_out_designation_rules_the_player_out():
@@ -397,6 +463,9 @@ def test_starter_basis_is_a_participation_fact_not_an_injury_clearance():
         source="TEST_OFFICIAL_LINEUP",
         captured_at=CAPTURED.isoformat(),
         fresh=True,
+        athlete_id="592450",
+        event_id="823001",
+        team="LAD",
     )
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_AVAILABLE
@@ -424,6 +493,9 @@ def test_questionable_and_doubtful_remain_playable_risk_flags():
                     source="TEST",
                     captured_at=CAPTURED.isoformat(),
                     fresh=True,
+                    athlete_id="1",
+                    event_id="2",
+                    team="TEST",
                 )
             }
         )

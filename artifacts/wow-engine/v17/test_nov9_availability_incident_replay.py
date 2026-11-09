@@ -79,12 +79,17 @@ def _row(availability: dict | None):
 
 
 def _official(designation: str | None, *, status: str = "AVAILABLE") -> dict:
+    """Official participation evidence with complete provenance."""
     return {
         "status": status,
         "designation": designation,
         "evidence_status": "RETRIEVED",
         "source": "ESPN_NFL_ATHLETE_INJURY_REPORT",
         "captured_at": datetime.now(timezone.utc).isoformat(),
+        "fresh": True,
+        "athlete_id": "4241457",
+        "event_id": "WOW:NFL:2026-W10-JENNINGS",
+        "team": "SF",
     }
 
 

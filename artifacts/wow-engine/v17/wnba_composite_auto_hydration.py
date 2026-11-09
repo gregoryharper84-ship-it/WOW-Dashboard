@@ -169,6 +169,7 @@ def hydrate_wnba_composite_evidence(
         injury_text,
         player_name=official_name,
         team_name=team_name,
+        opponent_name=opponent_name,
         matchup=matchup,
         game_date=game_date,
     )
@@ -188,7 +189,11 @@ def hydrate_wnba_composite_evidence(
         "game_log": game_log,
         "box_score_log": box_score_log,
         "role_status": {
-            "status": "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION",
+            "status": (
+                "RULED_OUT_OFFICIAL_INJURY_REPORT"
+                if availability["availability"] == "UNAVAILABLE"
+                else "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION"
+            ),
             "role": str(roster.get("POSITION") or "WNBA_ROTATION_PLAYER"),
             "confirmation_strength": "OFFICIAL_ROSTER_PLUS_FRESH_OFFICIAL_INJURY_REPORT",
             "player_id": player_id,
@@ -231,7 +236,11 @@ def hydrate_wnba_composite_evidence(
             "l10_minutes_mean": sum(l10_minutes) / len(l10_minutes),
             "l5_minutes_mean": sum(l10_minutes[:5]) / 5.0,
             "current_roster_confirmation": "PASS",
-            "availability_gate": "PASS",
+            "availability_gate": (
+                "BLOCKED_PLAYER_RULED_OUT"
+                if availability["availability"] == "UNAVAILABLE"
+                else "PASS"
+            ),
             "availability_policy": "BLOCK_ANY_EXPLICIT_INJURY_REPORT_DESIGNATION_UNLESS_AVAILABLE",
         },
         "source_timestamps": source_timestamps,

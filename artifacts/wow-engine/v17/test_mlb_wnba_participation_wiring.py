@@ -291,6 +291,7 @@ def test_wnba_unsubmitted_report_never_clears():
             text,
             player_name="Test Player",
             team_name="Las Vegas Aces",
+            opponent_name="Indiana Fever",
             matchup="LVA@IND",
             game_date="08/01/2026",
         )
@@ -362,6 +363,9 @@ def test_doubtful_remains_playable_but_flagged():
         source="TEST",
         captured_at=NOW.isoformat(),
         fresh=True,
+        athlete_id="1",
+        event_id="2",
+        team="TEST",
     )
     decision = evaluate_player_availability({"availability": evidence})
     assert decision.status == AVAILABILITY_AVAILABLE

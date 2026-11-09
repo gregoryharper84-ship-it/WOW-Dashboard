@@ -47,6 +47,7 @@ from v17.player_availability_gate import (
     AVAILABILITY_UNAVAILABLE,
     AVAILABILITY_UNVERIFIED,
     PLAYER_AVAILABILITY_UNVERIFIED,
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
     PLAYER_RULED_OUT,
     evaluate_player_availability,
 )
@@ -308,6 +309,7 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         # run loop can apply it as a pre-model ranking blocker. UNVERIFIED is
         # never converted into clearance here.
         "availability_status": availability.status,
+        "availability_requires_revalidation": availability.requires_revalidation,
         "availability": availability.receipt(),
     }
 
@@ -1292,6 +1294,14 @@ def install_pick_request_routes(
                 # Pool until availability is verified.
                 premodel_blockers.append(PLAYER_AVAILABILITY_UNVERIFIED)
                 acquisition["availability_status"] = AVAILABILITY_UNVERIFIED
+            elif normalized.get("availability_requires_revalidation") is True:
+                # A provisional official basis (MLB probable starter) names the
+                # player for the game but is not confirmed participation. The
+                # row may be scored for research, but it cannot enter the
+                # Verified Pool until the final refresh rechecks the same
+                # official source.
+                premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
+                acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
 
             snapshot_id, fingerprint, snapshot = _snapshot_payload(row, normalized)
             try:

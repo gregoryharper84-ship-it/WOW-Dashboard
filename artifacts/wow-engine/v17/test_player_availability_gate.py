@@ -26,12 +26,17 @@ from v17.player_availability_gate import (
 
 
 def _availability(status: str, designation: str | None, *, evidence_status: str = "RETRIEVED") -> dict:
+    """Build complete availability evidence, including its provenance."""
     return {
         "status": status,
         "designation": designation,
         "source": "ESPN_NFL_ATHLETE_INJURY_REPORT",
         "captured_at": "2026-11-09T16:00:00+00:00",
         "evidence_status": evidence_status,
+        "fresh": True,
+        "athlete_id": "123",
+        "event_id": "401-test",
+        "team": "TEST",
     }
 
 
@@ -241,7 +246,11 @@ def test_injury_report_without_designation_is_available_evidence():
         captured=datetime(2026, 11, 9, 16, 0, tzinfo=timezone.utc),
     )
     assert availability["designation"] is None
-    assert evaluate_player_availability({"availability": availability}).status == AVAILABILITY_AVAILABLE
+    # The athlete record alone does not name an event or team. Binding it to the
+    # resolved target is what completes the provenance contract.
+    assert evaluate_player_availability({"availability": availability}).status == AVAILABILITY_UNVERIFIED
+    bound = hydration.bind_availability_to_event(availability, team="TEST", event_id="401-test")
+    assert evaluate_player_availability({"availability": bound}).status == AVAILABILITY_AVAILABLE
 
 
 def test_injury_report_retrieval_failure_is_unverified_evidence():

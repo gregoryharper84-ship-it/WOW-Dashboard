@@ -31,7 +31,14 @@ ESPN_SEARCH_URL = "https://site.api.espn.com/apis/search/v2"
 ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_TEAM_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/schedule"
-ESPN_ATHLETE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/{athlete_id}"
+# The site/v2 athlete path returns HTTP 404 for NFL athletes (verified
+# 2026-11-09 against athlete 4241457). The common/v3 profile endpoint serves the
+# same official record, including the `injuries` entries this hydrator reads.
+ESPN_ATHLETE_URL = "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}"
+ESPN_ATHLETE_FALLBACK_URLS = (
+    "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}",
+    "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{athlete_id}",
+)
 AVAILABILITY_SOURCE = "ESPN_NFL_ATHLETE_INJURY_REPORT"
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 HTTP_TIMEOUT_SECONDS = 12.0
@@ -723,16 +730,29 @@ def _athlete_availability(
         "fresh": True,
         "athlete_id": athlete_id,
     }
-    try:
-        payload = _request(ESPN_ATHLETE_URL.format(athlete_id=athlete_id), http_get=http_get)
-    except Exception as exc:
+    payload: Mapping[str, Any] | None = None
+    endpoint_used: str | None = None
+    failures: list[str] = []
+    for url_template in ESPN_ATHLETE_FALLBACK_URLS:
+        url = url_template.format(athlete_id=athlete_id)
+        try:
+            payload = _request(url, http_get=http_get)
+        except Exception as exc:
+            failures.append(f"{type(exc).__name__}:{url}")
+            continue
+        endpoint_used = url
+        break
+    if payload is None:
         return {
             **base,
             "status": "UNVERIFIED",
             "designation": None,
             "evidence_status": "RETRIEVAL_FAILED",
-            "reason": f"INJURY_REPORT_RETRIEVAL_FAILED:{type(exc).__name__}",
+            "source_endpoint": None,
+            "reason": f"INJURY_REPORT_RETRIEVAL_FAILED:{type(failures[-1]).__name__ if failures else 'UNKNOWN'}",
+            "retrieval_failures": failures[-3:],
         }
+    base["source_endpoint"] = endpoint_used
     entries = _injury_entries(payload)
     if not entries:
         # No active designation on the official athlete record is a participation
@@ -763,6 +783,25 @@ def _athlete_availability(
     }
 
 
+def bind_availability_to_event(
+    availability: Mapping[str, Any],
+    *,
+    team: str,
+    event_id: str,
+) -> dict[str, Any]:
+    """Attach the resolved event/team identity to availability evidence.
+
+    The athlete injury record is read without knowing which game it will be
+    used for. Binding happens after the target event resolves so the gate sees
+    one athlete, one event, and one team, exactly as the provenance contract
+    requires for clearance.
+    """
+    bound = dict(availability)
+    bound["team"] = str(team or "").strip() or None
+    bound["event_id"] = str(event_id or "").strip() or None
+    return bound
+
+
 def hydrate_nfl_prop_evidence(
     *,
     player: str,
@@ -788,6 +827,9 @@ def hydrate_nfl_prop_evidence(
     availability = _athlete_availability(athlete_id, http_get=http_get, captured=captured)
     team = _athlete_team(athlete_id, http_get=http_get)
     target = _target_event(event_start=event_start, team=team, opponent=opponent, http_get=http_get)
+    # Availability must name the event and team it was captured for, otherwise
+    # the gate cannot distinguish this game's report from a stale one.
+    availability = bind_availability_to_event(availability, team=team, event_id=target["event_id"])
     official_start = _aware(target["provider_event_start_time"])
     if captured >= official_start:
         raise NFLPropHydrationError("EVENT_ALREADY_STARTED", "NFL prop capture must precede the official kickoff")

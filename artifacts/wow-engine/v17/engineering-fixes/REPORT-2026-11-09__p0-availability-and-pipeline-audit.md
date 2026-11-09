@@ -121,6 +121,27 @@ Two provider defects were found and fixed by this suite:
   uninjured player; the athlete record now emits
   `basis=FRESH_OFFICIAL_REPORT_UNLISTED, report_complete=True`.
 
+### Pre-merge review findings (2026-11-09)
+
+Each automated-review finding was reproduced or dismissed against `a3c6403e`.
+Five were real and are fixed; one is partially addressed.
+
+| Finding | Disposition |
+|---|---|
+| P0 NFL athlete endpoint 404 | **Confirmed live.** `site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241457` returned 404; `site.api.espn.com/apis/common/v3/.../athletes/4241457` returned 200 with the `athlete` envelope. The hydrator now uses common/v3 with a core-API fallback chain and records `source_endpoint` on the evidence. |
+| P0 clearance without complete provenance | **Confirmed.** Clearance now requires source, capture time, `fresh=True`, athlete, event, and team. Otherwise the gate returns `UNVERIFIED` with reason `AVAILABILITY_PROVENANCE_INCOMPLETE` and the missing fields on the receipt. NFL availability is bound to the resolved event/team (`bind_availability_to_event`) because the athlete record alone names neither. |
+| P0 `PROBABLE_STARTER` rank-eligible before recheck | **Confirmed.** Provisional bases set `requires_revalidation`; the route emits `PLAYER_AVAILABILITY_RECHECK_REQUIRED`, which both the qualification policy and the terminal reducer treat as a Verified-Pool block. The route test proves the row is scored for research yet held. |
+| P0 WNBA report "complete" before the team section is parsed | **Confirmed.** The parser that production actually uses (`wnba_injury_status.availability_from_report`, swapped in by the hydration router) and the base provider both bound the section with the opposing team header and require parsed status rows before an absence can read as no designation. New code: `WNBA_INJURY_REPORT_SECTION_INCOMPLETE`. |
+| P0 WNBA OUT through the wrong error path | **Confirmed.** An explicit OUT now returns a ruling (`availability=UNAVAILABLE`, `designation=OUT`); hydration emits it, the runtime raises `PLAYER_RULED_OUT`, and Daily purges. QUESTIONABLE/DOUBTFUL still refuse uncertified unconditional model adjustment. |
+| P1 blocker persistence through every consumer | **Partially addressed.** New route-level tests (`v17/test_availability_api_route.py`) cover OUT rejected before the scorer, missing evidence held with scoring still permitted, provisional held with the recheck receipt, and a changed ruling rejected on the second request. Durable-snapshot persistence and every Daily/specialist consumer are not yet individually proven. |
+
+PR-check reconciliation: the counts above are for this commit. The repository's
+docstring-coverage and patch-coverage bot results cannot be reproduced locally;
+new public functions carry docstrings and the new branches (provenance gap,
+provisional recheck, bounded WNBA section, incomplete section, NFL fallback and
+binding) each have a test. Database-write acceptance still requires an
+authorized ephemeral Postgres environment.
+
 ### Phase 4 — workstream status
 
 | Workstream | Status |
@@ -156,16 +177,15 @@ The control row proves the block is the availability fact, not a broken scorer.
 
 Run from `artifacts/wow-engine` with the project virtualenv:
 
-- Availability + source-contract set (replay, gate, runtime binding, MLB/WNBA
-  wiring, source contracts, Daily reduction, pick-request runtime): **83 passed**
-  before the corpus landed; **75 passed** in the focused run that includes the
-  corpus suite.
+- Availability set (replay, gate, runtime binding, MLB/WNBA wiring, source
+  contracts, route-level availability, Daily reduction, pick-request runtime):
+  **106 passed**.
 - Whole prop + WNBA surface (`test_*prop*.py`, `test_*wnba*.py` in root, `v17/`,
-  `tests/`, plus the source-contract suite): **873 passed, 15 skipped**. All 15
-  skips are `test_prop_snapshot_min3_postgres.py`, which requires an ephemeral
-  Postgres integration service that is not provisioned here; they are
-  database-write acceptance cases, not availability or terminal-publication
-  gates.
+  `tests/`, plus the source-contract and route suites): **880 passed, 15
+  skipped**. All 15 skips are `test_prop_snapshot_min3_postgres.py`, which
+  requires an ephemeral Postgres integration service that is not provisioned
+  here; they are database-write acceptance cases, not availability or
+  terminal-publication gates.
 - Action/editor schema compatibility: **33 passed**
   (`test_pick_request_action_contract.py`, `tests/test_v17_live_editor_compat.py`,
   `v17/test_v17_candidate_contracts.py`).

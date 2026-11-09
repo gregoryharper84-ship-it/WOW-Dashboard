@@ -458,13 +458,27 @@ def _availability_from_report(
     *,
     player_name: str,
     team_name: str,
+    opponent_name: str,
     matchup: str,
     game_date: str,
 ) -> dict[str, Any]:
+    """Read one team's section of the official WNBA injury report.
+
+    The section is bounded by the report's two team headers (the page covers a
+    single matchup). An absence is read as "no reported designation" only after
+    the bounded section is shown to contain parsed designation rows; a missing
+    opponent header or a section with no status rows raises instead of clearing.
+
+    An explicit ``OUT`` is a settled participation fact and is returned so the
+    gate can terminate the row as ``PLAYER_RULED_OUT``. ``QUESTIONABLE`` and
+    ``DOUBTFUL`` still raise: they are playable, but unconditional model
+    adjustment for them is not certified.
+    """
     compact = " ".join(str(text).replace("\u00a0", " ").split())
     normalized = _name_key(compact)
     matchup_key = _name_key(matchup)
     team_key = _name_key(team_name)
+    opponent_key = _name_key(opponent_name)
     if matchup_key not in normalized or team_key not in normalized:
         raise WNBAPropHydrationError(
             "WNBA_INJURY_REPORT_EVENT_UNRESOLVED",
@@ -473,11 +487,35 @@ def _availability_from_report(
         )
 
     team_pos = normalized.find(team_key)
-    section = normalized[team_pos : team_pos + 1800]
-    if "not yet submitted" in section[:250]:
+    if "not yet submitted" in normalized[team_pos : team_pos + 250]:
         raise WNBAPropHydrationError(
             "WNBA_INJURY_REPORT_NOT_SUBMITTED",
             "target team has not submitted its official WNBA injury report",
+            detail={"team": team_name, "game_date": game_date},
+        )
+
+    opponent_pos = normalized.find(opponent_key) if opponent_key else -1
+    if not opponent_key or opponent_pos < 0:
+        raise WNBAPropHydrationError(
+            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+            "opponent section header was not parsed, so the target section cannot be bounded",
+            detail={"team": team_name, "opponent": opponent_name, "game_date": game_date},
+        )
+    section = normalized[team_pos:opponent_pos] if opponent_pos > team_pos else normalized[team_pos:]
+    if not section.strip():
+        raise WNBAPropHydrationError(
+            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+            "target team section was empty",
+            detail={"team": team_name, "game_date": game_date},
+        )
+    if "no injuries" not in section and not re.search(
+        r"\b(out|doubtful|questionable|probable|available)\b", section
+    ):
+        # Nothing in the section parsed as a status row, so the absence of this
+        # player proves nothing about the report.
+        raise WNBAPropHydrationError(
+            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+            "target team section contained no parsed participation designations",
             detail={"team": team_name, "game_date": game_date},
         )
 
@@ -505,6 +543,8 @@ def _availability_from_report(
             "player appeared on the official injury report but the designation was not parsed",
             detail={"player": player_name, "team": team_name},
         )
+    if designation == "OUT":
+        return {"availability": "UNAVAILABLE", "designation": "OUT", "injury_reason": None}
     if designation != "AVAILABLE":
         raise WNBAPropHydrationError(
             "WNBA_PLAYER_AVAILABILITY_NOT_CLEAR",
@@ -585,6 +625,7 @@ def hydrate_wnba_prop_evidence(
         injury_text,
         player_name=official_name,
         team_name=team_name,
+        opponent_name=opponent_name,
         matchup=matchup,
         game_date=game_date,
     )
@@ -605,7 +646,11 @@ def hydrate_wnba_prop_evidence(
         "game_log": game_log,
         "box_score_log": box_score_log,
         "role_status": {
-            "status": "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION",
+            "status": (
+                "RULED_OUT_OFFICIAL_INJURY_REPORT"
+                if availability["availability"] == "UNAVAILABLE"
+                else "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION"
+            ),
             "role": str(roster.get("POSITION") or "WNBA_ROTATION_PLAYER"),
             "confirmation_strength": "OFFICIAL_ROSTER_PLUS_FRESH_OFFICIAL_INJURY_REPORT",
             "player_id": player_id,
@@ -649,7 +694,11 @@ def hydrate_wnba_prop_evidence(
             "l10_minutes_mean": sum(l10_minutes) / len(l10_minutes),
             "l5_minutes_mean": sum(l10_minutes[:5]) / 5.0,
             "current_roster_confirmation": "PASS",
-            "availability_gate": "PASS",
+            "availability_gate": (
+                "BLOCKED_PLAYER_RULED_OUT"
+                if availability["availability"] == "UNAVAILABLE"
+                else "PASS"
+            ),
             "availability_policy": "BLOCK_ANY_EXPLICIT_INJURY_REPORT_DESIGNATION_UNLESS_AVAILABLE",
         },
         "source_timestamps": source_timestamps,

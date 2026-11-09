@@ -32,6 +32,10 @@ AVAILABILITY_UNVERIFIED = "UNVERIFIED"
 
 PLAYER_RULED_OUT = "PLAYER_RULED_OUT"
 PLAYER_AVAILABILITY_UNVERIFIED = "PLAYER_AVAILABILITY_UNVERIFIED"
+# Provisional official participation (an MLB probable starter) is neither
+# unverified nor confirmed: it needs its final pregame recheck before the row
+# may enter the Verified Pool.
+PLAYER_AVAILABILITY_RECHECK_REQUIRED = "PLAYER_AVAILABILITY_RECHECK_REQUIRED"
 
 # Official designations that remove a player from game participation. Doubtful
 # and Questionable do not appear here: they are playable designations that must
@@ -120,6 +124,7 @@ class AvailabilityDecision:
     fresh: bool | None = None
     report_complete: bool | None = None
     provenance: Mapping[str, Any] | None = None
+    requires_revalidation: bool = False
     can_execute: bool = CAN_EXECUTE
 
     @property
@@ -145,6 +150,7 @@ class AvailabilityDecision:
             "confirmation": self.confirmation,
             "fresh": self.fresh,
             "report_complete": self.report_complete,
+            "requires_revalidation": self.requires_revalidation,
             "provenance": dict(self.provenance or {}),
             "can_execute": CAN_EXECUTE,
         }
@@ -197,6 +203,7 @@ def _decision(
     fresh: bool | None = None,
     report_complete: bool | None = None,
     provenance: Mapping[str, Any] | None = None,
+    requires_revalidation: bool = False,
 ) -> AvailabilityDecision:
     return AvailabilityDecision(
         status=status,
@@ -212,6 +219,7 @@ def _decision(
         fresh=fresh,
         report_complete=report_complete,
         provenance=provenance,
+        requires_revalidation=requires_revalidation,
     )
 
 
@@ -334,6 +342,33 @@ def evaluate_player_availability(role_status: Any) -> AvailabilityDecision:
                 blocker=PLAYER_AVAILABILITY_UNVERIFIED,
                 reason="AVAILABILITY_REPORT_INCOMPLETE",
             )
+        if designation in PLAYABLE_DESIGNATIONS or basis in PLAYABLE_BASES:
+            # Clearance is only as trustworthy as its provenance. A played
+            # designation without the official source, a capture time, and the
+            # athlete/event/team it was captured for cannot be verified later,
+            # so it is not clearance.
+            missing = [
+                field
+                for field, value in (
+                    ("source", source),
+                    ("captured_at", captured_at),
+                    ("athlete_id", provenance["athlete_id"]),
+                    ("event_id", provenance["event_id"]),
+                    ("team", provenance["team"]),
+                )
+                if not value
+            ]
+            if fresh is not True:
+                missing.append("fresh")
+            if missing:
+                return _decision(
+                    **{**shared, "provenance": {**provenance, "missing": missing}},
+                    status=AVAILABILITY_UNVERIFIED,
+                    designation=designation or None,
+                    risk=False,
+                    blocker=PLAYER_AVAILABILITY_UNVERIFIED,
+                    reason="AVAILABILITY_PROVENANCE_INCOMPLETE",
+                )
         if designation in PLAYABLE_DESIGNATIONS:
             return _decision(
                 **shared,
@@ -360,6 +395,7 @@ def evaluate_player_availability(role_status: Any) -> AvailabilityDecision:
                 # Provisional official bases still need the final pregame
                 # refresh to recheck the same source, so they carry risk.
                 risk=basis in PROVISIONAL_BASES,
+                requires_revalidation=basis in PROVISIONAL_BASES,
                 blocker=None,
                 reason=f"OFFICIAL_BASIS_{basis}",
             )
@@ -407,6 +443,7 @@ __all__ = [
     "AvailabilityDecision",
     "CAN_EXECUTE",
     "LEGACY_DESIGNATION_KEYS",
+    "PLAYER_AVAILABILITY_RECHECK_REQUIRED",
     "PLAYER_AVAILABILITY_UNVERIFIED",
     "PLAYER_RULED_OUT",
     "PLAYABLE_BASES",

@@ -71,7 +71,12 @@ PARTICIPATION_BLOCKERS = {
 # failure. It is a ranking blocker: a probability computed without official
 # participation evidence may be reported for research but may never enter the
 # Verified Pool, regardless of how strong the numbers are.
-PARTICIPATION_UNVERIFIED_BLOCKERS = {"PLAYER_AVAILABILITY_UNVERIFIED"}
+PARTICIPATION_UNVERIFIED_BLOCKERS = {
+    "PLAYER_AVAILABILITY_UNVERIFIED",
+    # Provisional participation (for example an MLB probable starter) is
+    # official but unconfirmed until the final pregame recheck succeeds.
+    "PLAYER_AVAILABILITY_RECHECK_REQUIRED",
+}
 
 UNHEALTHY_CALIBRATION_STATES = {
     "UNKNOWN",
