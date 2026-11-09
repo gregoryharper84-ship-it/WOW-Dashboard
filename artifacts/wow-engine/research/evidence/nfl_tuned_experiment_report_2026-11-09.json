@@ -1,0 +1,103 @@
+{
+  "challenger_id": "NFL_ML_DECAYFORM_LOGREG_PLATT_CHRONO_V1_OPTUNA_L2_HL",
+  "frozen_params": {
+    "half_life_days": 448,
+    "l2": 97.8365109205067
+  },
+  "n_trials": 20,
+  "tuning_window": {
+    "train_end": 2020,
+    "validation": 2021,
+    "best_validation_log_loss": 0.6622056516958098
+  },
+  "holdout_evaluations_run": 1,
+  "n": {
+    "train": 5965,
+    "cal": 282,
+    "holdout": 854,
+    "forward": 134
+  },
+  "holdout": {
+    "n": 854,
+    "brier": 0.2258708254593697,
+    "log_loss": 0.642594715861318,
+    "calibration_bias": 0.013177506540455686,
+    "accuracy": 0.6206088992974239
+  },
+  "forward": {
+    "n": 134,
+    "brier": 0.23263704652547318,
+    "log_loss": 0.6544479464911542,
+    "calibration_bias": 0.07103049465484323,
+    "accuracy": 0.6044776119402985
+  },
+  "reliability_holdout": [
+    {
+      "bin": "[0,0.4)",
+      "n": 146,
+      "forecast": 0.31710427063390084,
+      "observed": 0.3493150684931507,
+      "wilson90_lower": 0.28768613674339977
+    },
+    {
+      "bin": "[0.4,0.5)",
+      "n": 165,
+      "forecast": 0.45181139965491246,
+      "observed": 0.4484848484848485,
+      "wilson90_lower": 0.3861357599141977
+    },
+    {
+      "bin": "[0.5,0.6)",
+      "n": 186,
+      "forecast": 0.5501317084633766,
+      "observed": 0.5053763440860215,
+      "wilson90_lower": 0.4454280047786283
+    },
+    {
+      "bin": "[0.6,0.65)",
+      "n": 85,
+      "forecast": 0.6256910339982333,
+      "observed": 0.6470588235294118,
+      "wilson90_lower": 0.5584580105440792
+    },
+    {
+      "bin": "[0.65,0.7)",
+      "n": 69,
+      "forecast": 0.6741055060450563,
+      "observed": 0.6376811594202898,
+      "wilson90_lower": 0.5389649223759241
+    },
+    {
+      "bin": "[0.7,0.8)",
+      "n": 139,
+      "forecast": 0.7438108816963582,
+      "observed": 0.7122302158273381,
+      "wilson90_lower": 0.6454852013616555
+    },
+    {
+      "bin": "[0.8,1)",
+      "n": 64,
+      "forecast": 0.8436915311406029,
+      "observed": 0.8125,
+      "wilson90_lower": 0.7201941785522629
+    }
+  ],
+  "cohort_bound_semantics": "cohort Wilson bound of observed hit rate; NOT a per-selection calibrated_lower_bound",
+  "calibrated_lower_bound": null,
+  "rank_eligible": false,
+  "can_execute": false,
+  "status": "CANDIDATE_ONLY_NOT_PROMOTABLE",
+  "source_sha256": "a07c76fdefdafb814f19472ddd1154067dc504bb9f283b7257316ee6466b2b27",
+  "artifact_checksum": "c95e697b5072b8def39f42a251c26db5758eacb2512f5e5db911c0b97aacb7a4",
+  "code_sha": "8c3dcdeeb9ed33588e1f2259990047dfc726fc3f",
+  "script_sha256": "0a5a0d48799edb124ff5d2c58dc775d794ec000c24e3f26725f5a4e2c93022c8",
+  "untuned_reference_holdout": {
+    "n": 854,
+    "brier": 0.22571890378042817,
+    "log_loss": 0.6421584368947606,
+    "calibration_bias": 0.013318369678779307,
+    "accuracy": 0.6264637002341921
+  },
+  "note": "Holdout 2023-2025 was already viewed for the untuned reference in a prior receipt, so it is not pristine; the 2026 forward cohort is the least-contaminated evidence. Neither authorizes promotion.",
+  "mlflow_run_id": "f85cfb87ed8c4abca7dbb5161a3c1e1a"
+}
