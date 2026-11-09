@@ -26,6 +26,12 @@ from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
+from nfl_player_game_eligibility import (
+    PLAYER_UNAVAILABLE,
+    player_game_availability_blocker,
+)
+from nfl_roster_negative_availability import read_espn_nfl_roster_negative
+from nfl_inactives_source_shadow import read_nflmeta_inactives_shadow
 from prop_market_audit import audit_candidate_market
 from prop_settlement import (
     LINEUP_PAYOUT_CONTEXT_REQUIRED,
@@ -842,6 +848,83 @@ def score_prop(
         detail["probability_publishable"] = False
         detail["can_execute"] = False
         raise HTTPException(status_code=422, detail=detail)
+
+    # P0 #2131: the Daily runner and direct scoreWowProp Action may load an
+    # already-frozen evidence snapshot, bypassing /score-pick-request hydration.
+    # Protect the *fitted-model entry point* too. ESPN roster membership and
+    # caller-provided ACTIVE/AVAILABLE do not prove game participation. Until a
+    # trusted, event-specific availability attestor is certified here, NFL
+    # player props are held before fitted scoring and prediction persistence.
+    if str(req.sport or "").strip().upper() == "NFL":
+        role = evidence.get("role_status")
+        role = role if isinstance(role, dict) else {}
+        code = player_game_availability_blocker(role)
+
+        # Query fresh provider data using only a provider-identity-bound player,
+        # team and exact canonical event. Server-owned HTTP fetch: never accept
+        # caller's arbitrary "ACTIVE" assertion as positive eligibility proof.
+        # ESPN roster IR/out can invalidate; its absence cannot enable scoring.
+        availability_source = None
+        if (
+            code != PLAYER_UNAVAILABLE
+            and str(role.get("verified_canonical_event_id") or "") == str(req.event_id)
+            and str(role.get("player") or "").strip().casefold() == str(req.player).strip().casefold()
+            and str(role.get("espn_athlete_id") or "").isdigit()
+        ):
+            with _score_stage_timer(
+                "nfl_roster_negative_availability",
+                sport=req.sport,
+                stat_type=req.stat_type,
+                direction=req.direction,
+            ):
+                availability_source = read_espn_nfl_roster_negative(
+                    team=str(role.get("team") or ""),
+                    espn_athlete_id=str(role["espn_athlete_id"]),
+                )
+            if availability_source.get("code") == PLAYER_UNAVAILABLE:
+                code = PLAYER_UNAVAILABLE
+        # Shadow-only second-source official inactive-list proof. The vendor
+        # game ID is resolved from full matchup/week/kickoff, never trusted from
+        # a caller's evidence. This cannot grant positive game availability.
+        inactive_shadow = None
+        if (
+            code != PLAYER_UNAVAILABLE
+            and str(role.get("verified_canonical_event_id") or "") == str(req.event_id)
+            and str(role.get("player") or "").strip().casefold() == str(req.player).strip().casefold()
+            and str(role.get("espn_athlete_id") or "").isdigit()
+            and isinstance(role.get("provider_season"), int)
+            and isinstance(role.get("provider_week"), int)
+        ):
+            with _score_stage_timer(
+                "nfl_inactives_source_shadow",
+                sport=req.sport, stat_type=req.stat_type, direction=req.direction,
+            ):
+                inactive_shadow = read_nflmeta_inactives_shadow(
+                    season=role["provider_season"],
+                    week=role["provider_week"],
+                    home_team=str(role.get("provider_home_team") or ""),
+                    away_team=str(role.get("provider_away_team") or ""),
+                    player_team=str(role.get("team") or ""),
+                    player_name=req.player,
+                    event_start=_aware_event_start(req.event_start_time),
+                )
+            if inactive_shadow.get("code") == PLAYER_UNAVAILABLE:
+                code = PLAYER_UNAVAILABLE
+
+        unavailable = code == PLAYER_UNAVAILABLE
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": code,
+                "failure_class": "EVENT_INVALIDATED" if unavailable else "ACQUISITION_BLOCKED",
+                "availability_source": availability_source,
+                "inactive_list_shadow": inactive_shadow,
+                "model_evaluated": False,
+                "specialist_invoked": False,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
 
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
