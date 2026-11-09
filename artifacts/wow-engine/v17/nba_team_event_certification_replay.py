@@ -279,7 +279,7 @@ def _corpus_replay(
     training_games: list[TrainingGame] = []
     providers: set[str] = set()
     endpoints: set[str] = set()
-    source_provenance_valid = True
+    source_provenance_fields_valid = True
 
     for raw in games_raw:
         game_id = str(raw.get("game_id") or "").strip()
@@ -290,7 +290,7 @@ def _corpus_replay(
         try:
             training_games.append(_training_game(raw))
         except (TypeError, ValueError, OverflowError):
-            source_provenance_valid = False
+            source_provenance_fields_valid = False
             blockers.append("SOURCE_PROVENANCE_NOT_CERTIFIED")
             continue
 
@@ -302,7 +302,7 @@ def _corpus_replay(
         if endpoint:
             endpoints.add(endpoint)
         if not provider or not endpoint or retrieved_at is None or not _is_sha256(raw.get("source_payload_sha256")):
-            source_provenance_valid = False
+            source_provenance_fields_valid = False
             blockers.append("SOURCE_PROVENANCE_NOT_CERTIFIED")
 
     generated = build_pregame_features(training_games, SPORT)
@@ -430,7 +430,12 @@ def _corpus_replay(
         digest.update((
             "G|" + "|".join((
                 game_id,
+                str(raw.get("season") or ""),
                 str(raw.get("game_date") or ""),
+                str(raw.get("home_team_id") or ""),
+                str(raw.get("away_team_id") or ""),
+                str(raw.get("home_score") or ""),
+                str(raw.get("away_score") or ""),
                 str(raw.get("source_provider") or ""),
                 str(raw.get("source_endpoint") or ""),
                 str(raw.get("source_retrieved_at") or ""),
@@ -445,6 +450,8 @@ def _corpus_replay(
                 game_id,
                 str(raw.get("as_of") or ""),
                 str(raw.get("feature_schema_version") or ""),
+                str(raw.get("home_games_prior") or ""),
+                str(raw.get("away_games_prior") or ""),
                 str(raw.get("feature_payload_sha256") or ""),
             )) + "\n"
         ).encode("utf-8"))
@@ -461,7 +468,7 @@ def _corpus_replay(
         and len(persisted_by_id) == len(features_raw)
         and generated_ids == persisted_ids
         and len(replay_rows) == len(generated)
-        and source_provenance_valid
+        and source_provenance_fields_valid
         and feature_hashes_valid
     )
     summary = {
@@ -474,10 +481,12 @@ def _corpus_replay(
         "feature_rows_without_settled_games": len(persisted_ids - set(games_by_id)),
         "source_providers": sorted(providers),
         "source_endpoints": sorted(endpoints),
-        "source_provenance_valid": source_provenance_valid,
+        "source_provenance_fields_valid": source_provenance_fields_valid,
+        "source_payload_raw_bytes_persisted": False,
+        "source_payload_hash_independently_recomputable": False,
         "feature_payload_hashes_valid": feature_hashes_valid,
-        "feature_replay_status": "PASS" if corpus_integrity_valid else "BLOCKED",
-        "observed_pregame_corpus_sha256": digest.hexdigest(),
+        "feature_reconstruction_status": "PASS" if corpus_integrity_valid else "BLOCKED",
+        "observed_corpus_manifest_sha256": digest.hexdigest(),
         "event_start_timestamp_persisted": event_start_attested,
         "official_settlement_attestation_persisted": official_settlement_attested,
         "pregame_corpus_ready": False,
@@ -769,7 +778,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         artifact_row.get("artifact_payload") or {}
     ).get("training_code_sha")
     corpus_summary.update({
-        "artifact_corpus_hash_bound": _is_sha256(dataset_hash) and str(dataset_hash).lower() == corpus_summary["observed_pregame_corpus_sha256"],
+        "artifact_corpus_hash_bound": _is_sha256(dataset_hash) and str(dataset_hash).lower() == corpus_summary["observed_corpus_manifest_sha256"],
         "artifact_training_code_sha_present": bool(str(training_code_sha or "").strip()),
         "calibrator_checksum_persisted": calibrator_checksum_persisted,
         "calibrator_fit_corpus_hash_persisted": False,
@@ -808,7 +817,7 @@ def run_nba_team_event_certification_replay(db: Any) -> dict[str, Any]:
         "artifact_checksum": artifact_row.get("artifact_checksum"),
         "calibrator_id": calibrator_row.get("calibrator_id"),
         "calibrator_version": calibrator_row.get("calibrator_version"),
-        "observed_pregame_corpus_sha256": corpus_summary.get("observed_pregame_corpus_sha256"),
+        "observed_corpus_manifest_sha256": corpus_summary.get("observed_corpus_manifest_sha256"),
         "numerical_replay_status": numerical_replay_status,
         "raw_metrics": raw_metrics,
         "calibrated_metrics": calibrated_metrics,
