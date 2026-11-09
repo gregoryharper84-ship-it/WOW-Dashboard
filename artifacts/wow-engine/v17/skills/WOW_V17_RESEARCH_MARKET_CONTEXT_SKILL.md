@@ -30,6 +30,17 @@ For each material candidate, gather when relevant and available:
 - Do not use lineup, injury, closing-line, settled-result, or other future information that was unavailable at the decision timestamp.
 - If evidence is stale, contradictory, or unavailable, record that condition instead of guessing.
 
+## Sport-specific pregame uncertainty and postmortem learning
+
+Prior to freezing a team-event winner, check material evidence by sport and mark \`KNOWN\`, \`UNKNOWN\` or \`CONTRADICTORY\` with an exact source and \`available_to_user_at_utc\`:
+- **NFL:** quarterback status/efficiency, passing-matchup and protection context, turnover sensitivity, major starters and recent injury changes.
+- **NBA:** actual player availability and late scratches, replacement rotation/usage upside, opponent offensive ceiling and shooting variance, rest/back-to-back and travel.
+- **NHL:** confirmed (not projected) starting goaltender, back-to-back/rest/travel, injuries, special teams, and regulation/OT/shootout settlement exposure.
+
+A missing or uncertain input is a typed risk or hydration blocker where the fitted specialist requires it; do not invent the missing input or apply a manual probability penalty. A news item first available **after** the immutable selection freeze cannot be attributed to the original decision. If it arrives before kickoff, create a new timestamped governed recheck rather than rewriting the old record. Information first available during the game may be an explanatory postmortem hypothesis, never a pregame feature.
+
+For settled losses, compare only the frozen knowable features to independently verified outcomes. Register sport-specific hypotheses for out-of-time baseline/challenger replay; **one losing game does not prove any particular feature coefficient was wrong**. Preserve immutable original grades and require independent forward validation before changing calibrators or publishing improved-model claims.
+
 ## Market evidence typing
 Every external market observation must be classified as one of:
 - `EXACT_LINE`: same participant/event/stat/line/side identity as the candidate; may support exact-line no-vig/economics analysis.
