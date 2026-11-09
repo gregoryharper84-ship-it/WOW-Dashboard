@@ -21,7 +21,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: wow-trigger-v17-remote-dev-acceptance
+  # Exact-head isolation: an obsolete approval must not block a newer security-patched PR head.
+  group: wow-trigger-v17-remote-dev-acceptance-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
