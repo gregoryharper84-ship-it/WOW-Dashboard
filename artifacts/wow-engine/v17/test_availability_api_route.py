@@ -134,7 +134,7 @@ def test_final_recheck_confirmation_clears_the_hold(monkeypatch):
     monkeypatch.setattr(
         runtime_core,
         "recheck_provisional_participation",
-        lambda **_kwargs: _confirmed_block(),
+        lambda **kwargs: _confirmed_block(captured_at=kwargs["now"].isoformat()),
     )
 
     body = _post(client, [_provisional_row("api-recheck-confirmed")]).json()
