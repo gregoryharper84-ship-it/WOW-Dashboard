@@ -573,6 +573,24 @@ current-head approval or a signed independent semantic PASS.
 | `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
 
 
+
+## NCAAB current-event schedule identity (#2550)
+
+Discovery-only failure codes; they do not authorize fitted probabilities or publication. An unresolved row stays `EVENT_IDENTITY_UNRESOLVED` and `can_execute=false`.
+
+| Typed code | Owning lane | Recovery class | Rank eligible? |
+| --- | --- | --- | --- |
+| `NCAAB_EVENT_TIME_INVALID` | NCAAB identity | INPUT_INVALID | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_INVALID` | NCAAB identity | INPUT_INVALID | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_MISSING` | NCAAB handoff | SOURCE_INCOMPLETE | No |
+| `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB identity | SOURCE_MISMATCH | No |
+| `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB identity | SOURCE_AMBIGUOUS | No |
+| `NCAAB_CANONICAL_EVENT_ID_MISSING` | NCAAB handoff | SOURCE_MALFORMED | No |
+| `NCAAB_SCHEDULE_SOURCE_NOT_READY` | NCAAB source | SOURCE_NOT_READY | No |
+| `NCAAB_SCHEDULE_SOURCE_UNAVAILABLE` | NCAAB source | SOURCE_UNAVAILABLE | No |
+| `NCAAB_SCHEDULE_SOURCE_RATE_LIMITED` | NCAAB source | TRANSIENT | No |
+| `NCAAB_SCHEDULE_SCHEMA_DRIFT` | NCAAB source | SOURCE_MALFORMED | No |
+
 ## Simple V1 deterministic delivery re-entry
 
 These are read-only delivery **decisions**, not fitted-model failure substitutes,

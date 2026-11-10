@@ -20,6 +20,8 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from v17.player_availability_gate import participation_evidence
+
 from prop_auto_hydration import (
     AUTO_HYDRATION_EVIDENCE_VERSION,
     MLB_STATS_API_BASE,
@@ -211,6 +213,16 @@ def hydrate_mlb_pitcher_fantasy_score_evidence(
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
             "source": "MLB StatsAPI official schedule/probablePitcher",
+            "availability": participation_evidence(
+                basis="PROBABLE_STARTER",
+                confirmation="PROBABLE",
+                source="MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER",
+                captured_at=timestamp,
+                fresh=True,
+                athlete_id=player_id,
+                event_id=schedule["official_game_pk"],
+                team=schedule["team"],
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {

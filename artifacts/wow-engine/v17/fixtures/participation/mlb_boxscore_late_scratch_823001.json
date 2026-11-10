@@ -1,0 +1,27 @@
+{
+  "copyright": "Copyright 2026 MLB Advanced Media, L.P.",
+  "gamePk": 823001,
+  "teams": {
+    "away": {
+      "team": {"id": 135, "name": "San Diego Padres", "abbreviation": "SD"},
+      "battingOrder": [605484, 605485, 605486],
+      "players": {}
+    },
+    "home": {
+      "team": {"id": 119, "name": "Los Angeles Dodgers", "abbreviation": "LAD"},
+      "battingOrder": [660271, 605483, 592451],
+      "players": {
+        "ID592450": {
+          "person": {"id": 592450, "fullName": "Mookie Betts"},
+          "position": {"abbreviation": "SS"}
+        },
+        "ID592451": {
+          "person": {"id": 592451, "fullName": "Replacement Infielder"},
+          "position": {"abbreviation": "2B"},
+          "battingOrder": "300"
+        }
+      },
+      "note": "scratched hitter 592450 remains on the active roster but is not in the posted order"
+    }
+  }
+}
