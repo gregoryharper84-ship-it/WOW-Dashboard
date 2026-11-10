@@ -214,6 +214,37 @@ jobs:
           assert_compact_batch(cross, 4, "CROSS_SPORT_COMPACT")
 
           slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+
+          # PM-2026-09-14-001 residual first: does not depend on prop scoring inventory.
+          zero = post("/internal/v17/daily-snapshot", {
+              "requested_slate_date": slate_date,
+              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+              "lanes": ["PROPS"],
+              "max_props": 0,
+              "max_team_events": 0,
+              "response_mode": "COMPACT",
+          }, timeout=600)
+          if zero.get("can_execute") is not False:
+              raise AssertionError("DAILY_ZERO: can_execute invariant failed")
+          if zero.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("DAILY_ZERO: terminal authority mismatch")
+          zero_lane = (zero.get("lane_reconciliation") or {}).get("PROPS") or {}
+          if zero_lane.get("requested_row_limit") != 0:
+              raise AssertionError(f"DAILY_ZERO: requested_row_limit={zero_lane.get('requested_row_limit')}")
+          if zero_lane.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
+              raise AssertionError(f"DAILY_ZERO: zero_row_reason={zero_lane.get('zero_row_reason')}")
+          if int(zero_lane.get("scored_count") or -1) != 0:
+              raise AssertionError(f"DAILY_ZERO: scored_count={zero_lane.get('scored_count')}")
+          print(json.dumps({
+              "status": "REQUESTED_ROW_LIMIT_ZERO_CAPTURED",
+              "daily_zero_row_run_id": zero.get("run_id"),
+              "props_zero_row_reason": zero_lane.get("zero_row_reason"),
+              "props_requested_row_limit": zero_lane.get("requested_row_limit"),
+              "props_scored_count": zero_lane.get("scored_count"),
+              "can_execute": False,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
+          }, sort_keys=True))
+
           daily = post("/internal/v17/daily-snapshot", {
               "requested_slate_date": slate_date,
               "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
@@ -251,27 +282,6 @@ jobs:
               ))
           if len(set(keys)) != 4:
               raise AssertionError("DAILY: duplicate sporting identities consumed max_props slots")
-
-          # PM-2026-09-14-001 secondary residual: requested-limit zero-row typing.
-          zero = post("/internal/v17/daily-snapshot", {
-              "requested_slate_date": slate_date,
-              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
-              "lanes": ["PROPS"],
-              "max_props": 0,
-              "max_team_events": 0,
-              "response_mode": "COMPACT",
-          }, timeout=600)
-          if zero.get("can_execute") is not False:
-              raise AssertionError("DAILY_ZERO: can_execute invariant failed")
-          if zero.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
-              raise AssertionError("DAILY_ZERO: terminal authority mismatch")
-          zero_lane = (zero.get("lane_reconciliation") or {}).get("PROPS") or {}
-          if zero_lane.get("requested_row_limit") != 0:
-              raise AssertionError(f"DAILY_ZERO: requested_row_limit={zero_lane.get('requested_row_limit')}")
-          if zero_lane.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
-              raise AssertionError(f"DAILY_ZERO: zero_row_reason={zero_lane.get('zero_row_reason')}")
-          if int(zero_lane.get("scored_count") or -1) != 0:
-              raise AssertionError(f"DAILY_ZERO: scored_count={zero_lane.get('scored_count')}")
 
           print(json.dumps({
               "status": "FIXED_VERIFIED",
