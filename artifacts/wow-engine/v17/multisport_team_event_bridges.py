@@ -368,6 +368,10 @@ def _score_one(
         ) from exc
     except (ModelInputsInsufficient, ModelOutputInvalid, ModelScorerFailed) as exc:
         raise _typed_failure(req, exc) from exc
+    except HTTPException:
+        # Fitted NHL (and any other scorer that already emitted a typed HTTP hold)
+        # must keep its status/blockers; do not collapse them into MODEL_SCORER_FAILED.
+        raise
     except Exception as exc:  # noqa: BLE001 - convert unknown scorer faults to typed failure
         raise _typed_failure(req, ModelScorerFailed(type(exc).__name__)) from exc
 

@@ -651,6 +651,52 @@ def test_bridge_preserves_fitted_specialist_typed_blockers(monkeypatch):
     assert caught.value.detail["can_execute"] is False
 
 
+def test_score_one_preserves_fitted_http_goalie_stale_hold(monkeypatch):
+    """Production MODEL_SCORERS['NHL'] emits HTTPException; keep 422 + blockers."""
+    from fastapi import HTTPException
+
+    import v17.multisport_team_event_bridges as bridges
+    import v17.team_event_request_runtime as host_routing
+
+    monkeypatch.setattr(
+        host_routing,
+        "resolve_host_route",
+        lambda *_args: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
+            candidate_family="NHL",
+        ),
+    )
+    monkeypatch.setattr(bridges, "_route_contract", lambda _req: SimpleNamespace())
+    monkeypatch.setattr(
+        bridges.base_runtime, "_run_mandatory_scout_research", lambda _req: {}
+    )
+
+    def _blocked(_req, **_kwargs):
+        raise nhl.NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT", ["NHL_GOALIE_STATUS_STALE"]
+        )
+
+    monkeypatch.setattr(nhl, "score_current_nhl_event", _blocked)
+    # Keep the production scorer entry so HTTPException is raised into _score_one.
+    monkeypatch.setitem(
+        bridges.MODEL_SCORERS, "NHL", nhl.score_nhl_fitted_team_event
+    )
+    request = SimpleNamespace(
+        sport="NHL",
+        league="NHL",
+        event_key="NHL:2026029001",
+        requester_host_identity="test-requester-host",
+        candidate_family="NHL",
+    )
+    with pytest.raises(HTTPException) as caught:
+        bridges._score_one("NHL", request, event_api=None)
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_GOALIE_STATUS_STALE" in caught.value.detail["blockers"]
+    assert caught.value.detail["can_execute"] is False
+
+
 def test_registered_nhl_scorer_translates_native_typed_failure(monkeypatch):
     from fastapi import HTTPException
 
