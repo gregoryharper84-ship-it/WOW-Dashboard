@@ -726,6 +726,37 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
     )
 
 
+
+def test_qa_nonmain_workflow_run_skips_before_resolution_and_release_stays_neutral():
+    """A non-main PR's source-CI completion is not a protected-main QA target.
+
+    Live regression: QA run 42846662166 admitted a PR #2559 workflow_run with
+    base=freebuff/*, failed QA_TARGET_COUNT_INVALID with no target, and caused
+    Release admit-release to fail QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING on main.
+    Deny admission at the job guard; Release already classifies qa=skipped as
+    neutral, without consulting a nonexistent QA-policy artifact.
+    """
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    qa_gate = workflow["jobs"]["qa"]["if"]
+    assert "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'" in qa_gate
+    assert "github.ref == 'refs/heads/main'" in qa_gate
+    assert "github.event_name != 'workflow_run'" in qa_gate
+    assert (
+        "github.event.workflow_run.pull_requests[0] && "
+        "github.event.workflow_run.pull_requests[0].base.ref == 'main'"
+    ) in qa_gate
+    # The same strict gate remains for actual main-target PRs and manual runs.
+    assert "vars.WOW_QA_APP_ID != ''" in qa_gate
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(_qa_run(conclusion="success"), _qa_jobs("skipped")),
+    )
+    assert classified == {
+        "disposition": "neutral",
+        "reason": "RELEASE_UPSTREAM_QA_NO_TARGET",
+    }
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
