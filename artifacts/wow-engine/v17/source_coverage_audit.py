@@ -10,6 +10,7 @@ license: both require an explicit receipt, and none is accepted here by default.
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -26,6 +27,30 @@ B_UNCLASSIFIED = "NOT_IN_ENTITLEMENT_REGISTRY"
 B_NO_ADAPTER = "ADAPTER_REFERENCE_NOT_FOUND"
 B_CERT_REVIEW = "CERTIFICATION_SOURCE_REVIEW_REQUIRED"
 B_RIGHTS_UNDOCUMENTED = "RIGHTS_UNDOCUMENTED_FIRST_PARTY"
+B_NONCOMMERCIAL = "TERMS_RESTRICT_NONCOMMERCIAL"
+B_RECEIPT_WEAK = "LICENSE_RECEIPT_NOT_PROBATIVE"
+B_UPSTREAM = "UPSTREAM_RIGHTS_UNVERIFIED"
+B_TIMESTAMP_GAP = "PUBLICATION_TIMESTAMP_ABSENT"
+RECEIPT_SCHEMA = "WOW_SOURCE_RIGHTS_RECEIPTS_V1"
+
+
+def load_rights_receipts(path: str | Path) -> dict[str, list[dict]]:
+    """Load typed rights findings keyed by source_id. Fails closed on bad shape."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if raw.get("schema") != RECEIPT_SCHEMA or raw.get("can_execute") is not False:
+        raise ValueError("SOURCE_RIGHTS_RECEIPT_SCHEMA_INVALID")
+    out: dict[str, list[dict]] = {}
+    for item in raw.get("receipts", []):
+        for key in ("source_id", "finding", "evidence_grade", "url", "excerpt_sha256"):
+            if not item.get(key):
+                raise ValueError(f"SOURCE_RIGHTS_RECEIPT_FIELD_MISSING:{key}")
+        out.setdefault(item["source_id"], []).append(item)
+    return out
+
+
+def unmatched_receipts(rows: Iterable[dict], receipts: Mapping[str, list[dict]]) -> list[str]:
+    known = {r["source_id"] for r in rows}
+    return sorted(set(receipts) - known)
 
 
 def _adapter_exists(ref: str, engine_root: Path) -> bool:
@@ -42,11 +67,13 @@ def build_source_matrix(
     *,
     live_receipts: Mapping[str, str] | None = None,
     license_receipts: Mapping[str, str] | None = None,
+    rights_receipts: Mapping[str, list[dict]] | None = None,
 ) -> list[dict]:
     """One row per (sport, source). Receipts are source_id -> evidence id."""
     root = Path(engine_root).resolve()
     live = dict(live_receipts or {})
     lic = dict(license_receipts or {})
+    findings = dict(rights_receipts or {})
     rows: list[dict] = []
     catalog_by_reg = {s.registry_source_id: s for s in CATALOG if s.registry_source_id}
     seen: set[tuple[str, str]] = set()
@@ -70,8 +97,16 @@ def build_source_matrix(
             blockers.append(B_NO_ADAPTER)
         if source_id not in live:
             blockers.append(B_NO_LIVE_RECEIPT)
-        if source_id not in lic:
-            blockers.append(B_NO_LICENSE_RECEIPT)
+        found = findings.get(source_id, [])
+        probative = any(f["finding"] == "PERMITS_TRAINING" and f["evidence_grade"] == "RAW_BYTES" for f in found)
+        if source_id not in lic and not probative:
+            blockers.append(B_RECEIPT_WEAK if found else B_NO_LICENSE_RECEIPT)
+        if any(f["finding"] == "RESTRICTS_NONCOMMERCIAL" for f in found):
+            blockers.append(B_NONCOMMERCIAL)
+        if any(f.get("upstream_unverified") for f in found):
+            blockers.append(B_UPSTREAM)
+        if any(f.get("timestamp_gap") for f in found):
+            blockers.append(B_TIMESTAMP_GAP)
         rows.append({
             "sport": sport,
             "source_id": source_id,
@@ -87,6 +122,7 @@ def build_source_matrix(
             "candidate_training_ready": bool(readiness and readiness.ready_for_candidate_training),
             "live_endpoint_receipt": live.get(source_id),
             "license_verification_receipt": lic.get(source_id),
+            "rights_findings": [f["finding"] for f in found],
             "blockers": sorted(set(blockers)),
             # Legal, reproducible fitted training needs NO blockers at all.
             "legal_reproducible_fitted_training": not blockers,
@@ -142,4 +178,4 @@ def research_tool_usage(root: str | Path) -> dict[str, list[str]]:
     return found
 
 
-__all__ = ["AUDIT_VERSION", "CAN_EXECUTE", "build_source_matrix", "research_tool_usage", "sport_summary"]
+__all__ = ["AUDIT_VERSION", "CAN_EXECUTE", "build_source_matrix", "load_rights_receipts", "unmatched_receipts", "research_tool_usage", "sport_summary"]

@@ -32,3 +32,17 @@ Live endpoint availability, schema, historical coverage, quotas, and license tex
 
 ## Smallest next action
 Run the receipt capture from an environment with allowed egress (or approve WebFetch for the listed hosts), save receipts, pass them into `build_source_matrix(live_receipts=..., license_receipts=...)`.
+
+## Addendum 2026-11-10 — rights receipts (approved WebFetch/WebSearch)
+Data: `v17/source_rights_receipts_2026-11-10.json`, loaded via `load_rights_receipts()`. Evidence graded; only RAW_BYTES + PERMITS_TRAINING clears the license-receipt blocker (none do). Prior-session findings (SDV, CFBD, NWS, Open-Meteo) carried with their recorded 16-char hash prefixes; see `claude/2026-11-09-source-rights-and-nhl-crosswalk-receipts.md`.
+
+| Source | Finding (this session) | Effect |
+|---|---|---|
+| NHL_PUBLIC_WEB_API | schedule endpoint returns JSON (via WebFetch, truncated); no last-updated field, only per-game `startTimeUTC`; nhl.com terms snippet: non-commercial personal use | `TERMS_RESTRICT_NONCOMMERCIAL`, `PUBLICATION_TIMESTAMP_ABSENT` |
+| MLB_STATS_API | MLBAM copyright notice; non-commercial per secondary sources; primary notice NOT fetched | `TERMS_RESTRICT_NONCOMMERCIAL` (secondary evidence) |
+| NFLVERSE | repo page links CC-BY-4.0 but states no scope/attribution/exceptions; no weather fields on page | `LICENSE_RECEIPT_NOT_PROBATIVE` |
+| NOAA_NCEI | fetch failed, nothing retrieved | unmatched receipt (not in registry/catalog) |
+
+Still NOT verified: raw-byte license text for nflverse/NHL/MLB/NCEI; live schema/coverage/quotas; archived-forecast pregame timestamps. Shell egress remains blocked; WebFetch output is summarized, not raw.
+
+Decision needed (owner/SIRT, not engineering): NHL and MLB terms read as personal non-commercial; Decision Edge Lab is public-facing. Registry still reports NHL/UFCStats `ready_for_candidate_training=True` (existing tests assert it). Left unchanged; recommend an explicit rights ruling before any fitted NHL/MLB training uses these feeds.
