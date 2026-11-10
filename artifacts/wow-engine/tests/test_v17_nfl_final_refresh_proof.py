@@ -54,6 +54,7 @@ def _score(**overrides):
 
 
 def _refresh(monkeypatch, *, req=None, snapshot=None, score=None):
+    """Run final refresh against a controlled evidence snapshot fixture."""
     monkeypatch.setattr(
         nfl,
         "resolve_nfl_team_event_evidence",
@@ -327,6 +328,7 @@ def test_kickoff_during_successful_remote_recheck_stays_held(monkeypatch):
     class Clock(RealDateTime):
         @classmethod
         def now(cls, tz=None):
+            """Return pre-kickoff first, then a post-recheck instant."""
             # First timestamp is before kickoff, second after the recheck.
             instant = NOW if not clock_calls else NOW + timedelta(minutes=3)
             clock_calls.append(instant)
@@ -360,11 +362,13 @@ def test_kickoff_during_failed_remote_recheck_stays_held(monkeypatch):
     class Clock(RealDateTime):
         @classmethod
         def now(cls, tz=None):
+            """Return pre-kickoff first, then a post-recheck instant."""
             instant = NOW if not clock_calls else NOW + timedelta(minutes=3)
             clock_calls.append(instant)
             return instant.astimezone(tz) if tz is not None else instant
 
     def fails():
+        """Simulate a slow upstream failure that spans kickoff."""
         raise TimeoutError("upstream timeout after kickoff")
 
     monkeypatch.setattr(nfl, "datetime", Clock)
