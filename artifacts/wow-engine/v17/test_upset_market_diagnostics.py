@@ -152,6 +152,7 @@ def test_conflicting_books_leave_favorite_identity_unresolved():
     result = _evaluate(book_quotes=quotes)
     assert result["market_favorite"] is None
     assert result["market_favorite_verified"] is False
+    assert result["book_favorites_agree"] is False
 
 
 def test_single_book_research_is_explicitly_partial():
@@ -228,3 +229,20 @@ def test_no_reference_class_never_calls_disagreement_real_information_edge():
     assert dog["reference_class_bias_component"] is None
     assert dog["reference_class_residual_disagreement"] is None
     assert dog["automatic_pick_promotion"] is False
+
+
+def test_books_with_clear_opposite_favorites_cannot_be_overridden_by_average():
+    quotes = _quotes()
+    # First book strongly prefers FAVORITE, second slightly prefers DOG.
+    # The average can still prefer FAVORITE, but that is not a verified
+    # cross-book favorite classification.
+    quotes[0]["american_odds"] = {"FAVORITE": -280, "DOG": 235}
+    quotes[1]["american_odds"] = {"FAVORITE": 115, "DOG": -130}
+    result = _evaluate(book_quotes=quotes)
+    assert result["outcomes"]["FAVORITE"]["no_vig_market_probability"] > 0.5
+    assert result["market_favorite"] is None
+    assert result["market_favorite_verified"] is False
+    assert result["book_favorites_agree"] is False
+    assert result["outcomes"]["DOG"]["is_non_market_favorite"] is False
+    assert result["outcomes"]["DOG"]["information_edge_proven"] is False
+    assert result["can_execute"] is False
