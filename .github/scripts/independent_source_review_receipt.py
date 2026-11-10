@@ -1199,6 +1199,20 @@ def resolve_qa_review_policy(
     # so it can exit neutral instead of publishing a failing check on the
     # unrelated protected-main tip Render's checksPass trigger evaluates.
     if len(matching) == 0 and allow_superseded_target:
+        # A missing artifact alone cannot authenticate its producer. Reject
+        # forged, incomplete or foreign QA runs before any neutral outcome.
+        _require(
+            _is_qa_workflow_run(run)
+            and run.get("event") in {"workflow_run", "workflow_dispatch"}
+            and run.get("head_branch") == "main"
+            and isinstance(run.get("head_sha"), str)
+            and SHA.fullmatch(run["head_sha"]) is not None
+            and (run.get("repository") or {}).get("full_name") == repository
+            and (run.get("head_repository") or {}).get("full_name") == repository
+            and run.get("status") == "completed"
+            and run.get("conclusion") in {"success", "failure"},
+            "QA_POLICY_RUN_PROVENANCE_MISMATCH",
+        )
         return {
             "disposition": "neutral",
             "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
