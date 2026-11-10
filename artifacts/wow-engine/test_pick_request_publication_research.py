@@ -1,4 +1,5 @@
 """Canonical acquisition must preserve publication-only research separation."""
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,7 @@ import prop_evidence_repair as evidence_repair
 from prop_fitted_provider import CertifiedInference
 from prop_model_adapters import mlb_pitcher_so_failure_path_nb_v1_adapter
 from test_mlb_strikeout_min3_candidate_calibration import _artifact
-from test_pick_request_runtime import _Client, _build, _row
+from test_pick_request_runtime import _Client, _Table, _build, _row
 
 
 PUBLICATION_LOCK = {"blockers": ["FORWARD_SHADOW_NOT_COMPLETED"]}
@@ -25,10 +26,58 @@ PUBLICATION_PREFLIGHT = {
 }
 
 
+class _SourceTable(_Table):
+    """Test-only backend snapshot selection with original upsert semantics."""
+
+    def __init__(self, sink):
+        super().__init__(sink)
+        self.filters = []
+        self.before = None
+        self.descending = False
+        self.maximum = None
+
+    def select(self, *_columns):
+        return self
+
+    def eq(self, name, value):
+        self.filters.append((name, value))
+        return self
+
+    def lt(self, name, value):
+        assert name == "captured_at"
+        self.before = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return self
+
+    def order(self, name, *, desc):
+        assert name == "captured_at"
+        self.descending = desc
+        return self
+
+    def limit(self, count):
+        self.maximum = count
+        return self
+
+    def execute(self):
+        rows = [
+            row for row in self.sink
+            if all(row.get(name) == value for name, value in self.filters)
+            and (
+                self.before is None
+                or datetime.fromisoformat(row["captured_at"]) < self.before
+            )
+        ]
+        rows.sort(key=lambda row: row["captured_at"], reverse=self.descending)
+        return SimpleNamespace(data=rows[:self.maximum])
+
+
 class _PreflightClient(_Client):
     def __init__(self, sink, preflight):
         super().__init__(sink)
         self.preflight = preflight
+
+    def table(self, name):
+        assert name == "wow_prop_evidence_snapshots"
+        return _SourceTable(self.sink)
 
     def rpc(self, name, params):
         assert name == "wow_governed_probability_preflight"
