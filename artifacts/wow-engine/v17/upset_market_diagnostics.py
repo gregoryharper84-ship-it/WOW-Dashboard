@@ -15,6 +15,10 @@ MUTATES_SPORTING_PROBABILITY = False
 GRANTS_MODEL_CERTIFICATION = False
 GRANTS_RANK_ELIGIBILITY = False
 CONTRACT = "V17_UPSET_MARKET_DIAGNOSTICS_RESEARCH_V1"
+# A 0.5 percentage-point book/model favorite margin is treated as an
+# unresolved identity for this research-only classifier. It is a conservative
+# evidence-quality cutoff, NOT a fitted sporting prediction parameter.
+_FAVORITE_IDENTITY_TOLERANCE = 0.005
 
 
 def _timestamp(raw: Any) -> datetime:
@@ -199,14 +203,14 @@ def analyze_upset_market_snapshot(
     # or has a near-tie. The favorite label is a cross-source identity assertion,
     # not a numerical parameter that a mean can safely manufacture.
     favorite_prob = max(consensus.values())
-    favorite_labels = [label for label in labels if abs(consensus[label] - favorite_prob) <= 0.005]
+    favorite_labels = [label for label in labels if abs(consensus[label] - favorite_prob) <= _FAVORITE_IDENTITY_TOLERANCE]
     favorite = favorite_labels[0] if len(favorite_labels) == 1 else None
     individual_favorites: list[str | None] = []
     for probabilities in book_probs:
         largest = max(probabilities.values())
         leaders = [
             label for label in labels
-            if abs(probabilities[label] - largest) <= 0.005
+            if abs(probabilities[label] - largest) <= _FAVORITE_IDENTITY_TOLERANCE
         ]
         individual_favorites.append(leaders[0] if len(leaders) == 1 else None)
     if favorite is None or any(label != favorite for label in individual_favorites):
@@ -250,6 +254,7 @@ def analyze_upset_market_snapshot(
         "decision_time_utc": decision.isoformat(),
         "market_favorite": favorite,
         "market_favorite_verified": favorite is not None,
+        "market_favorite_tie_tolerance": _FAVORITE_IDENTITY_TOLERANCE,
         "book_favorites_agree": favorite is not None,
         "book_count": len(book_probs),
         "source_snapshot_ids": sources,
