@@ -342,5 +342,6 @@ def test_incomplete_governed_probability_distribution_rejected():
     """Catch missing probability mass in market diagnostics as well as alerts."""
     values = _outcomes()
     values["DOG"]["calibrated_probability"] = 0.22
+    values["DOG"]["calibrated_lower_bound"] = 0.15
     with pytest.raises(ValueError, match="MARKET_MODEL_OUTCOMES_NOT_NORMALIZED"):
         _evaluate(governed_outcomes=values)
