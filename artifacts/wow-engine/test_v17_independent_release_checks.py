@@ -745,7 +745,46 @@ def test_qa_nonmain_workflow_run_skips_before_resolution_and_release_stays_neutr
         "github.event.workflow_run.pull_requests[0] && "
         "github.event.workflow_run.pull_requests[0].base.ref == 'main'"
     ) in qa_gate
-    # The same strict gate remains for actual main-target PRs and manual runs.
+    # Evaluate the actual job expression, not just a fragment of its text.
+    # An added bypass clause would keep the string assertions passing but make
+    # this executable negative case fail.
+    import ast
+    from types import SimpleNamespace as NS
+
+    py_expression = qa_gate.replace("&&", " and ").replace("||", " or ")
+    tree = ast.parse(py_expression, mode="eval")
+    safe_nodes = (
+        ast.Expression, ast.BoolOp, ast.Compare, ast.Attribute,
+        ast.Subscript, ast.Name, ast.Constant, ast.Load,
+        ast.And, ast.Or, ast.Eq, ast.NotEq,
+    )
+    assert all(isinstance(node, safe_nodes) for node in ast.walk(tree))
+    expression = compile(tree, "<QA-job-admission>", "eval")
+
+    def admitted(event, base_ref, *, repository=REPO, ref="refs/heads/main"):
+        event_prs = [] if event == "workflow_dispatch" else [
+            NS(base=NS(ref=base_ref)),
+        ]
+        context = {
+            "github": NS(
+                repository=repository, ref=ref, event_name=event,
+                event=NS(workflow_run=NS(
+                    pull_requests=event_prs, name="wow-engine-verify",
+                )),
+            ),
+            "vars": NS(
+                WOW_QA_APP_ID="5245832",
+                WOW_QA_INDEPENDENT_REVIEW_ACTIVE="false",
+                WOW_QA_ZERO_CREDIT_MODE="false",
+            ),
+        }
+        return eval(expression, {"__builtins__": {}}, context)
+
+    assert admitted("workflow_run", "freebuff/review-branch") is False
+    assert admitted("workflow_run", "main") is True
+    assert admitted("workflow_dispatch", None) is True
+    assert admitted("workflow_run", "main", repository="foreign/WOW-Dashboard") is False
+    assert admitted("workflow_run", "main", ref="refs/heads/development") is False
     assert "vars.WOW_QA_APP_ID != ''" in qa_gate
     classified = m.classify_upstream_qa(
         REPO, run_id=40107281706, run_attempt=1,
