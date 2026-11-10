@@ -21,6 +21,8 @@ CALIBRATOR = "wow_basketball_team_event_calibrators"
 # not the retired draft table: status and scope have different column names.
 LEDGER_FIELDS = "receipt_id,independent_verification_status,can_execute,publishable_scope"
 CALIBRATOR_FIELDS = "calibration_sha256,calibration_fit_end"
+RPC = "wow_nba_team_event_verification_receipt_schema_ready"
+CONTRACT = "NBA_TEAM_EVENT_VERIFICATION_RECEIPTS_V2"
 SCHEMA_STATE = "WOW_TEST_NBA_SCHEMA_STATE"
 URL_ENV = "WOW_TEST_SUPABASE_URL"
 KEY_ENV = "WOW_TEST_SUPABASE_SERVICE_KEY"
@@ -61,17 +63,8 @@ def _headers(key: str) -> dict[str, str]:
     return out
 
 
-def _read_only_select(
-    base_url: str, key: str, table: str, columns: str, *, opener=None
-) -> tuple[int, str | None, object]:
-    base_url = _project_url(base_url)
-    if not re.fullmatch(r"[a-z][a-z0-9_]*", table):
-        raise AssertionError("NBA_POSTGREST_TABLE_INVALID")
-    if not re.fullmatch(r"[a-z_]+(?:,[a-z_]+)*", columns):
-        raise AssertionError("NBA_POSTGREST_FIELDS_INVALID")
-    url = f"{base_url}/rest/v1/{table}?" + urlencode(
-        {"select": columns, "limit": 1}
-    )
+def _read_only_get(url: str, key: str, *, opener=None) -> tuple[int, str | None, object]:
+    """Issue a bounded GET with no redirects and typed, sanitized HTTP results."""
     req = Request(url, headers=_headers(key), method="GET")
     client = opener if opener is not None else build_opener(NoRedirect())
     try:
@@ -94,6 +87,59 @@ def _read_only_select(
     ) else None
     return status, code, data if status == 200 else None
 
+
+def _read_only_select(
+    base_url: str, key: str, table: str, columns: str, *, opener=None
+) -> tuple[int, str | None, object]:
+    """GET only the named ledger or calibrator columns."""
+    base_url = _project_url(base_url)
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", table):
+        raise AssertionError("NBA_POSTGREST_TABLE_INVALID")
+    if not re.fullmatch(r"[a-z_]+(?:,[a-z_]+)*", columns):
+        raise AssertionError("NBA_POSTGREST_FIELDS_INVALID")
+    url = f"{base_url}/rest/v1/{table}?" + urlencode(
+        {"select": columns, "limit": 1}
+    )
+    return _read_only_get(url, key, opener=opener)
+
+
+def _read_only_rpc(
+    base_url: str, key: str, *, opener=None
+) -> tuple[int, str | None, object]:
+    """GET the precise stable readiness RPC used by the Render predeploy gate."""
+    url = f"{_project_url(base_url)}/rest/v1/rpc/{RPC}"
+    return _read_only_get(url, key, opener=opener)
+
+
+def _require_old_rpc(result):
+    """Old-schema fixture must expose a typed missing-function response."""
+    status, code, _ = result
+    assert status in (400, 404) and code == "PGRST202", (
+        "NBA_VERIFICATION_READINESS_RPC_MISSING_NOT_TYPED_AS_EXPECTED"
+    )
+
+
+def _require_ready_rpc(result):
+    """A successful table read is insufficient without the actual RPC proof."""
+    status, code, data = result
+    assert status == 200 and code is None and type(data) is dict, (
+        "NBA_VERIFICATION_READY_RPC_HTTP_READBACK_FAILED"
+    )
+    assert data.get("contract_version") == CONTRACT, (
+        "NBA_VERIFICATION_READINESS_RPC_CONTRACT_MISMATCH"
+    )
+    assert data.get("compatible") is True, (
+        "NBA_VERIFICATION_READINESS_RPC_INCOMPATIBLE"
+    )
+    assert data.get("ledger") == LEDGER, (
+        "NBA_VERIFICATION_READINESS_RPC_LEDGER_MISMATCH"
+    )
+    assert data.get("can_execute") is False, (
+        "NBA_VERIFICATION_READINESS_RPC_EXECUTION_NOT_CLOSED"
+    )
+    assert data.get("probability_publishable") is False, (
+        "NBA_VERIFICATION_READINESS_RPC_PUBLICATION_NOT_CLOSED"
+    )
 
 def _require_old_schema(ledger, calibrator):
     ledger_status, ledger_code, _ = ledger
@@ -132,6 +178,30 @@ def test_state_assertions_reject_wrong_payloads(state):
             _require_ready_schema(old_ledger, old_cal)
 
 
+def test_rpc_state_requires_typed_old_and_exact_ready_payload():
+    """Reject a missing, stale, or publishable readiness RPC response."""
+    compatible = {
+        "contract_version": CONTRACT,
+        "compatible": True,
+        "ledger": LEDGER,
+        "can_execute": False,
+        "probability_publishable": False,
+    }
+    _require_old_rpc((404, "PGRST202", None))
+    _require_ready_rpc((200, None, compatible))
+    with pytest.raises(AssertionError):
+        _require_old_rpc((200, None, compatible))
+    for wrong in (
+        (404, "PGRST205", None),
+        (200, None, []),
+        (200, None, {**compatible, "compatible": False}),
+        (200, None, {**compatible, "can_execute": True}),
+        (200, None, {**compatible, "contract_version": "V0"}),
+    ):
+        with pytest.raises(AssertionError):
+            _require_ready_rpc(wrong)
+
+
 def test_service_key_header_selection_and_no_redirect():
     assert "Authorization" not in _headers("sb_secret_test")
     assert _headers("legacy-test")["Authorization"] == "Bearer legacy-test"
@@ -152,7 +222,12 @@ def test_real_supabase_postgrest_prerequisite_state_read_only():
     assert state in ("old", "ready"), "NBA_POSTGREST_EXPECTED_STATE_INVALID"
     ledger = _read_only_select(base, key, LEDGER, LEDGER_FIELDS)
     calibrator = _read_only_select(base, key, CALIBRATOR, CALIBRATOR_FIELDS)
+    # This is the same stable, no-argument RPC the Render predeploy gate calls.
+    # A table GET alone cannot verify its schema-cache visibility or grants.
+    rpc = _read_only_rpc(base, key)
     if state == "old":
         _require_old_schema(ledger, calibrator)
+        _require_old_rpc(rpc)
     else:
         _require_ready_schema(ledger, calibrator)
+        _require_ready_rpc(rpc)
