@@ -52,6 +52,45 @@ def test_openai_quota_is_failover_eligible() -> None:
     assert result.can_execute is False
 
 
+def test_actions_script_echo_is_not_provider_key_missing() -> None:
+    module = _load_module()
+    log = "\n".join([
+        "##[group]Run Verify OpenAI authentication",
+        'echo "::error::OPENAI_API_KEY is required for the ChatGPT engineering worker."',
+        "##[endgroup]",
+        "##[error]Process completed with exit code 1.",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "UNCLASSIFIED_PROVIDER_OR_WORKFLOW_FAILURE"
+    assert result.failover_eligible is False
+
+
+def test_emitted_actions_error_still_classifies_key_missing() -> None:
+    module = _load_module()
+    log = "\n".join([
+        "##[group]Run Verify OpenAI authentication",
+        'echo "::error::OPENAI_API_KEY is required for the ChatGPT engineering worker."',
+        "##[endgroup]",
+        "##[error]OPENAI_API_KEY is required for the ChatGPT engineering worker.",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "OPENAI_API_KEY_MISSING"
+    assert result.failover_eligible is True
+
+
+def test_specialist_hold_script_echo_is_not_quota_exceeded() -> None:
+    module = _load_module()
+    log = "\n".join([
+        "##[group]Run Surface quota-admission hold without invoking Codex",
+        'echo "::error::Quota exceeded: BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"',
+        "##[endgroup]",
+        "##[error]BLOCKED_WITH_EXACT_REASON:CIRCUIT_BREAKER:OPENAI_API_KEY_MISSING; Codex not invoked",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "UNCLASSIFIED_PROVIDER_OR_WORKFLOW_FAILURE"
+    assert result.failover_eligible is False
+
+
 def test_openai_auth_and_rate_limits_are_failover_eligible() -> None:
     module = _load_module()
     auth = module.classify_provider_failure("openai", "invalid_api_key")

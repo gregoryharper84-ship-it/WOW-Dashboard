@@ -106,6 +106,12 @@ OPENAI_FAILOVER_ELIGIBLE = {
 # workflow error command, never on the step's own script text echoed into the log.
 DELIVERY_ERROR_RE = re.compile(r"(?:::error::|##\[error\])(ACTIONABLE_REPAIR_[A-Z_]+):")
 GOVERNANCE_BLOCKED_CODES = frozenset({"ACTIONABLE_REPAIR_POLICY_BOUNDARY"})
+# Actions --log-failed dumps unevaluated `echo "::error::..."` script lines.
+# Those script echoes are not provider evidence; only emitted error payloads are.
+_ACTIONS_MARKER_RE = re.compile(r"(?:##\[(?:group|endgroup|error|warning)\]|::(?:error|warning|notice)::)")
+_SCRIPT_ECHO_ERROR_RE = re.compile(r"""echo\s+['"]::error::""")
+_EMITTED_ERROR_RE = re.compile(r"(?:##\[error\]|::error::)(.+)$")
+_PROCESS_COMPLETED_RE = re.compile(r"^process completed with exit code\b", re.IGNORECASE)
 
 NON_PROVIDER_MARKERS = (
     "eacces:",
@@ -116,6 +122,32 @@ NON_PROVIDER_MARKERS = (
     "pytest",
     "yaml",
 )
+
+
+def _provider_match_text(log_text: str) -> str:
+    """Return text that may classify a provider failure.
+
+    Plain non-Actions logs keep full-text matching for unit/direct callers.
+    GitHub Actions logs only contribute emitted `::error::` / `##[error]`
+    payloads, never unevaluated workflow script echoes.
+    """
+    text = str(log_text or "")
+    if not _ACTIONS_MARKER_RE.search(text):
+        return text
+    emitted: list[str] = []
+    for line in text.splitlines():
+        if _SCRIPT_ECHO_ERROR_RE.search(line) or (
+            "echo" in line and "::error::" in line
+        ):
+            continue
+        match = _EMITTED_ERROR_RE.search(line)
+        if not match:
+            continue
+        payload = match.group(1).strip()
+        if not payload or _PROCESS_COMPLETED_RE.match(payload):
+            continue
+        emitted.append(payload)
+    return "\n".join(emitted)
 
 
 @dataclass(frozen=True)
@@ -143,7 +175,8 @@ class ProviderFailure:
 
 def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
     provider_key = str(provider or "").strip().lower()
-    text = str(log_text or "").lower()
+    raw = str(log_text or "")
+    text = _provider_match_text(raw).lower()
 
     patterns = (
         OPENAI_FAILURE_PATTERNS
@@ -156,7 +189,9 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         (code for code, needles in patterns if any(needle in text for needle in needles)),
         None,
     )
-    delivery = DELIVERY_ERROR_RE.search(str(log_text or ""))
+    # Delivery codes are still read from the full Actions log so emitted
+    # ##[error]ACTIONABLE_REPAIR_* lines remain visible after script filtering.
+    delivery = DELIVERY_ERROR_RE.search(raw)
     if delivery:
         # A typed delivery outcome is never relabelled as a provider failure. A governance
         # policy boundary never fails over or retries, whatever else the log contains.
