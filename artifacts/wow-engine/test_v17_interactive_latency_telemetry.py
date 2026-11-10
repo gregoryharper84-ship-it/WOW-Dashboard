@@ -99,9 +99,11 @@ def test_stage_timers_labels_percentiles_and_typed_outcomes(caplog):
     assert any("route=/score-prop" in m and "outcome=overload" in m for m in messages)
     assert not any("MODEL_UNAVAILABLE" in m for m in messages)
 
-    rows = {(r["route"], r["sport"]): r for r in t.latency_percentiles()}
-    row = rows[("/score-pick-request", "mlb")]
-    assert row["samples"] == 3 and row["p50_ms"] <= row["p95_ms"]
+    rows = {(r["route"], r["sport"], r["http_status"]): r for r in t.latency_percentiles()}
+    row = rows[("/score-pick-request", "mlb", 200)]
+    assert row["request_count"] == row["samples"] == 3
+    assert row["p50_ms"] <= row["p95_ms"] <= row["p99_ms"]
+    assert rows[("/score-team-event-request", "unknown", 504)]["request_count"] == 1
     assert row["can_execute"] is False
 
 
@@ -122,9 +124,104 @@ def test_sample_key_cardinality_is_bounded():
     t.reset_latency_samples()
     ctx = {"row_count": "le1", "batch_size": "le1"}
     for i in range(t._MAX_KEYS + 50):
-        t._record("/score-prop", {**ctx, "sport": f"s{i}"}, 1.0)
-    assert len(t._SAMPLES) <= t._MAX_KEYS + 1
+        t._record("/score-prop", {**ctx, "sport": f"s{i}"}, 1.0, 200)
+    assert len(t._SAMPLES) <= t._MAX_BUCKETS
     t.reset_latency_samples()
+
+
+def test_overflow_buckets_preserve_route_and_http_status():
+    from v17 import interactive_latency_telemetry as t
+
+    t.reset_latency_samples()
+    ctx = {"row_count": "le1", "batch_size": "le1"}
+    for i in range(t._MAX_KEYS):
+        t._record("/score-prop", {**ctx, "sport": f"s{i}"}, 1.0, 200)
+    t._record("/score-prop", {**ctx, "sport": "overflow"}, 3.0, 503)
+
+    row = next(row for row in t.latency_percentiles() if row["http_status"] == 503)
+    assert row["route"] == "/score-prop"
+    assert row["sport"] == "other"
+    assert row["request_count"] == 1
+    assert len(t._SAMPLES) <= t._MAX_BUCKETS
+    t.reset_latency_samples()
+
+
+def test_percentiles_and_request_counts_are_split_by_http_status():
+    from v17 import interactive_latency_telemetry as t
+
+    t.reset_latency_samples()
+    ctx = {"sport": "mlb", "row_count": "le1", "batch_size": "le1"}
+    for duration in (100.0, 125.0, 225.0):
+        t._record("/score-prop", ctx, duration, 200)
+    t._record("/score-prop", ctx, 20.0, 503)
+
+    rows = {(row["http_status"]): row for row in t.latency_percentiles()}
+    assert rows[200]["request_count"] == 3
+    assert rows[200]["p50_ms"] == 125.0
+    assert rows[200]["p95_ms"] == rows[200]["p99_ms"] == 225.0
+    assert rows[503]["request_count"] == 1
+    assert rows[503]["p50_ms"] == rows[503]["p95_ms"] == rows[503]["p99_ms"] == 20.0
+    t.reset_latency_samples()
+
+
+def test_request_count_continues_past_the_bounded_percentile_window():
+    from v17 import interactive_latency_telemetry as t
+
+    t.reset_latency_samples()
+    ctx = {"sport": "mlb", "row_count": "le1", "batch_size": "le1"}
+    for _ in range(t._MAX_SAMPLES_PER_KEY + 1):
+        t._record("/score-prop", ctx, 10.0, 200)
+
+    row = t.latency_percentiles()[0]
+    assert row["request_count"] == t._MAX_SAMPLES_PER_KEY + 1
+    assert row["samples"] == t._MAX_SAMPLES_PER_KEY
+    t.reset_latency_samples()
+
+
+def test_latency_logs_redact_authorization_and_request_body(caplog):
+    from fastapi import Request
+
+    app = FastAPI()
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-prop")
+    async def score_prop(request: Request):
+        await request.body()
+        return {"ok": True, "can_execute": False}
+
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        response = TestClient(app).post(
+            "/score-prop",
+            headers={"Authorization": "sensitive-header-marker"},
+            content="sensitive-body-marker",
+        )
+
+    assert response.status_code == 200
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1
+    assert "sensitive-header-marker" not in messages[0]
+    assert "sensitive-body-marker" not in messages[0]
+
+
+def test_typed_scorer_failure_response_is_not_rewritten_as_transport_model_failure(caplog):
+    from fastapi import HTTPException
+
+    app = FastAPI()
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-prop")
+    def score_prop():
+        raise HTTPException(status_code=503, detail={"code": "MODEL_SCORER_FAILED"})
+
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        response = TestClient(app).post("/score-prop")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "MODEL_SCORER_FAILED"
+    message = next(record.getMessage() for record in caplog.records if "route=/score-prop" in record.getMessage())
+    assert "status_code=503" in message
+    assert "outcome=overload" in message
+    assert "MODEL_UNAVAILABLE" not in message
 
 
 def test_interactive_latency_diagnostics_route_exposes_only_bounded_aggregates():
@@ -135,11 +232,13 @@ def test_interactive_latency_diagnostics_route_exposes_only_bounded_aggregates()
         "/score-pick-request",
         {"sport": "mlb", "row_count": "le4", "batch_size": "le4"},
         125.0,
+        200,
     )
     t._record(
         "/score-pick-request",
         {"sport": "mlb", "row_count": "le4", "batch_size": "le4"},
         225.0,
+        200,
     )
 
     app = FastAPI()
@@ -171,9 +270,12 @@ def test_interactive_latency_diagnostics_route_exposes_only_bounded_aggregates()
         "sport": "mlb",
         "row_count": "le4",
         "batch_size": "le4",
+        "http_status": 200,
+        "request_count": 2,
         "samples": 2,
         "p50_ms": 125.0,
         "p95_ms": 225.0,
+        "p99_ms": 225.0,
         "can_execute": False,
     }
     assert "probability" not in row

@@ -33,7 +33,8 @@ STAGES = frozenset({
 })
 _MAX_SAMPLES_PER_KEY = 512
 _MAX_KEYS = 256
-_OVERFLOW_KEY = ("other", "other", "other", "other")
+_MAX_STATUS_BUCKETS = 501
+_MAX_BUCKETS = _MAX_KEYS + (len(INTERACTIVE_PATHS) + 1) * _MAX_STATUS_BUCKETS
 _MAX_LABEL_LEN = 32
 
 # Transport/overload outcomes are labelled for observability only. They are
@@ -45,7 +46,9 @@ _CTX: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "wow_interactive_latency_ctx", default=None
 )
 _LOCK = threading.Lock()
-_SAMPLES: dict[tuple[str, str, str, str], deque[float]] = {}
+_SampleKey = tuple[str, str, str, str, int]
+_SAMPLES: dict[_SampleKey, deque[float]] = {}
+_REQUEST_COUNTS: dict[_SampleKey, int] = {}
 
 
 def _label(value: Any) -> str:
@@ -102,12 +105,25 @@ def stage_timer(stage: str) -> Iterator[None]:
             stages[stage] = stages.get(stage, 0.0) + elapsed
 
 
-def _record(route: str, ctx: dict[str, Any], total_ms: float) -> None:
-    key = (route, ctx["sport"], ctx["row_count"], ctx["batch_size"])
+def _record(route: str, ctx: dict[str, Any], total_ms: float, status_code: int) -> None:
+    try:
+        http_status = int(status_code)
+    except (TypeError, ValueError, OverflowError):
+        http_status = 0
+    if not 100 <= http_status <= 599:
+        http_status = 0
+    key = (route, ctx["sport"], ctx["row_count"], ctx["batch_size"], http_status)
     with _LOCK:
         if key not in _SAMPLES and len(_SAMPLES) >= _MAX_KEYS:
-            key = _OVERFLOW_KEY
+            key = (
+                route if route in INTERACTIVE_PATHS else "other",
+                "other",
+                "other",
+                "other",
+                http_status,
+            )
         _SAMPLES.setdefault(key, deque(maxlen=_MAX_SAMPLES_PER_KEY)).append(total_ms)
+        _REQUEST_COUNTS[key] = _REQUEST_COUNTS.get(key, 0) + 1
 
 
 def _percentile(sorted_values: list[float], q: float) -> float:
@@ -118,27 +134,34 @@ def _percentile(sorted_values: list[float], q: float) -> float:
 
 
 def latency_percentiles() -> list[dict[str, Any]]:
-    """p50/p95 total wall time by route, sport, row-count bucket and batch bucket."""
+    """Bounded p50/p95/p99 latency and request counts by route and response labels."""
     with _LOCK:
-        snapshot = {key: sorted(values) for key, values in _SAMPLES.items()}
+        snapshot = {
+            key: (sorted(values), _REQUEST_COUNTS.get(key, 0))
+            for key, values in _SAMPLES.items()
+        }
     return [
         {
             "route": route,
             "sport": sport,
             "row_count": rows,
             "batch_size": batch,
+            "http_status": http_status,
+            "request_count": request_count,
             "samples": len(values),
             "p50_ms": _percentile(values, 0.50),
             "p95_ms": _percentile(values, 0.95),
+            "p99_ms": _percentile(values, 0.99),
             "can_execute": False,
         }
-        for (route, sport, rows, batch), values in sorted(snapshot.items())
+        for (route, sport, rows, batch, http_status), (values, request_count) in sorted(snapshot.items())
     ]
 
 
 def reset_latency_samples() -> None:
     with _LOCK:
         _SAMPLES.clear()
+        _REQUEST_COUNTS.clear()
 
 
 def _outcome(status_code: int, error: BaseException | None) -> str:
@@ -186,7 +209,7 @@ def install_interactive_latency_middleware(app: Any) -> None:
             total_ms = (perf_counter() - started) * 1000.0
             with _LOCK:
                 stages = dict(ctx["stages"])
-            _record(path, ctx, total_ms)
+            _record(path, ctx, total_ms, status_code)
             stage_text = ",".join(
                 f"{name}={ms:.3f}" for name, ms in sorted(stages.items())
             ) or "none"
@@ -216,7 +239,7 @@ def latency_diagnostics_snapshot() -> dict[str, Any]:
         "bucket_count": len(rows),
         "sample_count": sum(int(row.get("samples") or 0) for row in rows),
         "max_samples_per_bucket": _MAX_SAMPLES_PER_KEY,
-        "max_buckets": _MAX_KEYS + 1,
+        "max_buckets": _MAX_BUCKETS,
         "probability_publishable": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
