@@ -8,8 +8,9 @@
 | --- | --- |
 | Web service | `srv-da7sa9gu01pc73brt80g` (`wow-governed-probability-engine`) |
 | Worker | `srv-dapkbc0473hc73c1978g` |
-| Live deploy (web+worker) | `dep-dbpin52vcj2c73d9c1g0` / sibling worker deploy on SHA `e7384b9d2fed3256681b25715516dff2e97d3233` (later tip `2f535a248` after #2553) |
-| Safety deploy still observed earlier same day | `dep-dbphku67bikc73dkl5rg` SHA `98a56157a5916c6d25ee1c51bab3d183448e23c8` (#2554 availability) |
+| Live deploy (web+worker) | `dep-dbpin52vcj2c73d9c1g0` / worker sibling `dep-dbpin52vcj2c73d9c3b0` on SHA `e7384b9d2fed3256681b25715516dff2e97d3233` (#2557) |
+| Safety deploy ancestor (deactivated, still in live ancestry) | `dep-dbphku67bikc73dkl5rg` SHA `98a56157a5916c6d25ee1c51bab3d183448e23c8` (#2554 availability); compare `98a56157…e7384b9d` = `behind_by=0`, `ahead_by=6` |
+| Protected `main` vs live | `main` includes merged #2552 (`e82af6a9…`) and is ahead of the live SHA; Render has not yet redeployed that tip — lag does not remove the safety ancestor from what is serving |
 | `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
 | `/governance` | `can_execute=false`, `global_terminal_authority=V17_TERMINAL_REDUCER`, `deployment_gates.status=PASS` |
 | `wow_rapid.py verify-production` | `PRODUCTION_READ_ONLY_VERIFIED` |
@@ -38,14 +39,15 @@ Regression suite re-run for secondary contracts (local `.venv`):
 ### NFL
 
 - Forward grades: **94 / 100** required (`INSUFFICIENT_FORWARD_EVIDENCE`, `DO_NOT_CERTIFY_YET`, blocker `FORWARD_GRADED_N_94_LT_100`).
-- Open restorative PRs refreshed onto protected main for exact-head re-check: #2552 (aged schedule recheck), #2512 (publishability provenance).
+- #2552 (aged schedule recheck) **merged** to protected `main` at `e82af6a9…` (not yet the live Render tip).
+- #2512 (publishability provenance) remains open for exact-head re-check after docstring/coverage follow-ups.
 - Legitimate forward grading continues via `/internal/v17/nfl-forward-shadow` (OIDC). This session could not invoke that path (no workflow dispatch / OIDC from the agent).
 
 ### NBA / NHL model capability (not infrastructure-only)
 
 - Live governance: NBA `MODEL_UNAVAILABLE` / unregistered; NHL registered but `model_artifact_present=false` / `REGISTERED_NOT_READY`.
-- Persistence: NBA/WNBA fitted artifact + calibrator rows exist (`promoted=false`, `active=false` for all 114 NBA model artifacts). Certification table empty. Confirms need for current-pregame hydration + publication bridge (#2472 family) rather than more plumbing.
-- Restorative PRs: #2509 NHL fitted specialist refreshed onto main (tests 30 passed locally); #2472 NBA remains CONFLICTING and is the canonical restorative path.
+- Persistence: NBA/WNBA fitted artifact + calibrator rows exist (`promoted=false`, `active=false` for all 114 NBA model artifacts). Certification table empty. Confirms need for current-pregame hydration + publication bridge (#2472 / #2560 family) rather than more plumbing.
+- Restorative PRs: #2509 NHL fitted specialist and #2560 NBA restorative rebase remain open for governed review/merge.
 
 ## Independent re-verify (2026-11-10T14:55Z, unpaid)
 
@@ -61,12 +63,25 @@ Regression suite re-run for secondary contracts (local `.venv`):
 | NBA / NHL live | NBA `MODEL_UNAVAILABLE` / unregistered; NHL `REGISTERED_NOT_READY` (`model_artifact_present=false`) |
 | NFL forward Action | Legitimate grading is `workflow_dispatch` / daily cron `wow-v17-nfl-forward-shadow` only (OIDC). Agent cannot mint OIDC or dispatch that workflow from this session. |
 
+## Independent re-verify (2026-11-10T15:27Z–15:35Z, unpaid, separate principal)
+
+Verdict: `SAFETY_MILESTONE_HELD_AND_PM_STILL_PENDING_VERIFY`. Evidence packet: cloud-agent artifact `prod-acceptance-independent-verify.md`.
+
+| Probe | Result |
+| --- | --- |
+| Safety ancestry | Live SHA contains deactivated `#2554` safety commit `98a56157…` as ancestor (`behind_by=0`) |
+| Post-safety Daily / prediction rows | Still **0** after safety finish; newest Daily remains `2026-11-09T15:35:36Z` |
+| Post-safety Action receipts | Three `wow_action_invocation_receipts` rows at/after safety: all `caller_class=SELF_ACCEPTANCE`, `POST /score-prop`, HTTP 422, `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`. Startup probes only — they do **not** close `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` |
+| Attempt / zero-row fields in Daily detail | Across 28180 row-detail docs: 0 of `REQUESTED_ROW_LIMIT_ZERO`, `action_invocation_attempted`, `specialist_scoring_attempted`, `scoring_attempted` |
+| Exact-head QA on this PR | Pre-`Incident:` body failed `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS`. Body now carries exactly one `Incident: #2020` (parallel-restoration epic; not a PM-specific issue). A later QA pass clears PR identity wiring only — it does **not** close the postmortem |
+
 ## Closure gate
 
-`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the two remaining secondary observations land **or** Reporter explicitly scopes them out with a typed residual. Safety/availability deployment is independently real; model certification / pick production is not restored.
+`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the two remaining secondary observations land **or** Reporter explicitly scopes them out with a typed residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
 
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
 post_safety_daily_scoring_run = ABSENT
+post_safety_scoring_attempted_observation = ABSENT
 ```
