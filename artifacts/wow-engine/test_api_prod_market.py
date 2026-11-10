@@ -131,11 +131,60 @@ def _install_common(monkeypatch, score_fn):
         "_runtime_capability",
         lambda _key: {"capability_status": "AVAILABLE", "evidence": {}, "can_execute": False},
     )
-    monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", lambda _req: _ready_evidence())
+    # The scorer now reads newest exact snapshot authority before accepting a
+    # ready RPC result. Its test double must match that real DB contract.
+    authority = {"row": None}
+
+    def _ready_for_request(request):
+        evidence = _ready_evidence()
+        evidence["source_snapshot_id"] = str(request.source_snapshot_id)
+        authority["row"] = {
+            "source_snapshot_id": evidence["source_snapshot_id"],
+            "captured_at": evidence["captured_at"],
+            "event_id": request.event_id,
+            "sport": request.sport,
+            "player": request.player,
+            "stat_type": request.stat_type,
+            "line": request.line,
+            "hydration_status": "PASS",
+        }
+        return evidence
+
+    class _AuthorityQuery:
+        def select(self, *_args):
+            return self
+
+        def eq(self, name, value):
+            assert authority["row"][name] == value
+            return self
+
+        def lt(self, name, value):
+            assert name == "captured_at"
+            assert datetime.fromisoformat(authority["row"][name]) < datetime.fromisoformat(value)
+            return self
+
+        def order(self, name, *, desc):
+            assert name == "captured_at" and desc is True
+            return self
+
+        def limit(self, count):
+            assert count == 1
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[authority["row"]])
+
+    class _AuthorityClient:
+        def table(self, name):
+            assert name == "wow_prop_evidence_snapshots"
+            assert authority["row"] is not None
+            return _AuthorityQuery()
+
+    monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", _ready_for_request)
     monkeypatch.setattr(api_prod_market.prod, "_reject_llp_prop_identity", lambda _identity: "WOW_BETTING_ENGINE")
     monkeypatch.setattr(api_prod_market.prod.base_api, "_controlling_specialist_provider", lambda _sport, _stat: _specialist())
     monkeypatch.setattr(api_prod_market, "_prop_route_artifact", lambda _sport, _stat: _ready_route_artifact())
-    monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: object())
+    monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: _AuthorityClient())
     monkeypatch.setattr(api_prod_market, "score_discrete_prop_end_to_end", score_fn)
     monkeypatch.setattr(
         api_prod_market.prod.base_api,
