@@ -175,10 +175,12 @@ def resolve_provisional_recheck(
                 str(observed.get("captured_at") or "").replace("Z", "+00:00")
             )
             chronological = (
-                provisional_at.utcoffset() is not None
+                now is not None
+                and now.utcoffset() is not None
+                and provisional_at.utcoffset() is not None
                 and observed_at.utcoffset() is not None
                 and observed_at > provisional_at
-                and (now is None or observed_at <= now)
+                and observed_at <= now
             )
         except (TypeError, ValueError, OverflowError):
             chronological = False

@@ -262,7 +262,7 @@ def test_durable_row_detail_agrees_with_the_compact_response_and_pages():
     assert all(row["detail"]["can_execute"] is False for row in details)
 
 
-def test_duplicate_run_is_idempotent_and_ruled_out_stays_purged():
+def test_repeated_runs_have_consistent_terminals_and_ruled_out_stays_purged():
     class RuledOutMarket(_Market):
         def score_prop(self, req, _identity):
             if str(req.kwargs.get("player") or "") != "Late Scratch":
@@ -293,3 +293,96 @@ def test_duplicate_run_is_idempotent_and_ruled_out_stays_purged():
     assert scratch["probability_publishable"] is False
     assert first["reconciliation"]["rows_purged"] == 1
     assert first["reconciliation"]["balanced"] is True
+
+
+def test_purged_publication_flags_are_false_in_full_and_persisted_detail():
+    class ContradictoryMarket(_Market):
+        def score_prop(self, req, _identity):
+            return {
+                "terminal_label": "PLAYER_RULED_OUT",
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "probability_qualification": {"rank_eligible": True},
+                "can_execute": False,
+            }
+
+    db = _DB([_snapshot("Late Scratch", index=1)])
+    payload = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE,
+                             requested_timezone="America/Chicago",
+                             lanes=["PROPS"], response_mode="FULL"),
+        db=db, market_api=ContradictoryMarket(), event_api=object(),
+    )
+    row = payload["rows"][0]
+    assert row["row_status"] == "PURGED"
+    for effective in (row["result"], db.row_detail[0]["detail"]["result"], row):
+        assert effective["probability_publishable"] is False
+        assert effective["rank_eligible"] is False
+    for outcome in row["result"]["outcomes"]:
+        assert outcome["payload"]["probability_publishable"] is False
+        assert outcome["payload"]["rank_eligible"] is False
+        assert outcome["payload"]["probability_qualification"]["rank_eligible"] is False
+    assert payload["reconciliation"]["rows_purged"] == 1
+    assert payload["can_execute"] is False
+
+
+def test_newest_blocked_snapshot_prevents_older_clean_snapshot_scoring(monkeypatch):
+    old = _snapshot("Same Player", index=1)
+    newer = {**old, "source_snapshot_id": "new-blocked", "captured_at": (NOW + timedelta(seconds=1)).isoformat(),
+             "blockers": ["PLAYER_AVAILABILITY_UNVERIFIED"]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([old, newer]), _Market(publishable={"Same Player"}))
+    assert payload["rows"] == []
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["excluded_rows"] == 1
+    assert accounting["exclusions"][0]["source_snapshot_id"] == "new-blocked"
+    assert accounting["raw_rows_read"] == 2
+    assert accounting["canonical_merged_rows"] == 1
+    assert accounting["balanced"] is True
+
+
+def test_post_acquisition_exclusions_replace_the_initial_read(monkeypatch):
+    old = _snapshot("Same Player", blockers=["PLAYER_RULED_OUT"], index=1)
+    db = _DB([old])
+    def acquire(**_):
+        db.snapshots[:] = [_snapshot("Same Player", index=1),
+                           _snapshot("New Blocked Player", blockers=["PLAYER_AVAILABILITY_UNVERIFIED"], index=2)]
+        return {"status": "COMPLETED", "attempted": 0, "persisted": 0}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    payload = _run(db, _Market())
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["scored_rows"] == 1
+    assert accounting["excluded_rows"] == 1
+    assert accounting["exclusions"][0]["player"] == "New Blocked Player"
+    assert accounting["raw_rows_read"] == 2
+    assert accounting["balanced"] is True
+
+
+def test_independent_raw_count_detects_candidate_lost_in_canonicalization(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.canonicalize_prop_manifest", lambda rows: [])
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([_snapshot("Lost Player", index=1)]), _Market())
+    assert payload["prop_candidate_accounting"]["raw_rows_read"] == 1
+    assert payload["prop_candidate_accounting"]["balanced"] is False
+    assert "RUN_INVALID_PROP_CANDIDATE_ACCOUNTING" in payload["blockers"]
+
+
+def test_acquired_blocked_snapshot_is_an_explicit_handoff_exclusion(monkeypatch):
+    db = _DB([])
+    blocked = _snapshot("Unavailable Player", blockers=["PLAYER_RULED_OUT"], index=1)
+    def acquire(**_):
+        db.snapshots[:] = [blocked]
+        return {"status": "COMPLETED", "attempted": 1, "persisted": 1,
+                "snapshot_write_succeeded": 1,
+                "receipts": [{"write_status": "SNAPSHOT_WRITE_SUCCEEDED",
+                              "source_snapshot_id": blocked["source_snapshot_id"]}]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    payload = _run(db, _Market())
+    handoff = payload["lane_reconciliation"]["PROPS"]["handoff_reconciliation"]
+    assert payload["rows"] == []
+    assert handoff["explicit_precanonical_exclusions"] == 1
+    assert handoff["missing_persisted_snapshot_ids"] == []
+    assert handoff["persisted_to_canonical_balanced"] is True
+    assert "PROP_SNAPSHOT_INGESTION_EMPTY" not in payload["blockers"]

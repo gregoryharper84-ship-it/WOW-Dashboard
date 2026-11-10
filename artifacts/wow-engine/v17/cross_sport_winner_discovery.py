@@ -559,7 +559,14 @@ class DiscoveredEvent:
         return f"{self.sport}:{self.official_event_id or 'UNRESOLVED'}"
 
     def identity(self) -> dict[str, Any]:
-        return {
+        """Return serialized discovery identity with verified NCAAB schedule proof.
+
+        The NCAAB identity handoff owns canonicalization. Retain only its
+        explicit, immutable schedule-match fields on the routed row, including
+        on MODEL_UNAVAILABLE holds; do not forward arbitrary provider raw data.
+        Other sports keep their existing identity contract unchanged.
+        """
+        result = {
             "sport": self.sport,
             "league": self.league,
             "sport_key": self.sport_key,
@@ -574,6 +581,37 @@ class DiscoveredEvent:
             "event_status": self.event_status,
             "discovery_source": self.source,
         }
+        if self.sport == "NCAAB" and isinstance(self.raw, Mapping):
+            raw = self.raw
+            if (
+                raw.get("canonical_identity_status") == "CANONICAL_RESOLVED"
+                and self.official_event_id
+                and str(self.official_event_id) == (
+                    f"espn-{raw.get('canonical_identity_schedule_game_id')}"
+                )
+                and raw.get("canonical_identity_source") == "SPORTSDATAVERSE_ESPN"
+            ):
+                # Only the canonicalizer's explicit proof keys; no raw prices,
+                # implied probability, provider payload or execution flags.
+                for key in (
+                    "canonical_identity_status",
+                    "canonical_identity_source",
+                    "canonical_identity_resolution",
+                    "canonical_identity_schedule_game_id",
+                    "canonical_identity_schedule_tip_utc",
+                    "canonical_identity_tip_drift_seconds",
+                    "canonical_identity_home_team_id",
+                    "canonical_identity_away_team_id",
+                    "canonical_identity_source_asset",
+                    "canonical_identity_market_features_used",
+                ):
+                    if key in raw:
+                        result[key] = raw[key]
+            elif raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED":
+                result["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+                if isinstance(raw.get("canonical_identity_blocker"), str):
+                    result["canonical_identity_blocker"] = raw["canonical_identity_blocker"]
+        return result
 
 
 def _text(value: Any) -> str:

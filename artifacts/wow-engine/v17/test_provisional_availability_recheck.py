@@ -165,3 +165,12 @@ def test_recheck_window_is_pregame_and_short():
     assert recheck_is_due(now + timedelta(hours=7), now) is False
     assert recheck_is_due(now - timedelta(minutes=1), now) is False
     assert RECHECK_WINDOW == timedelta(hours=6)
+
+
+def test_positive_recheck_without_retrieval_time_cannot_confirm():
+    decision, receipt = resolve_provisional_recheck(
+        provisional=_provisional(), observed=_observed(),
+    )
+    assert decision.status != AVAILABILITY_AVAILABLE
+    assert decision.requires_revalidation is True
+    assert receipt["status"] == RECHECK_INCONCLUSIVE

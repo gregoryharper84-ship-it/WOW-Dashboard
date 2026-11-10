@@ -370,11 +370,13 @@ def evaluate_player_availability(role_status: Any) -> AvailabilityDecision:
                     reason="AVAILABILITY_PROVENANCE_INCOMPLETE",
                 )
         if designation in PLAYABLE_DESIGNATIONS:
+            provisional = basis in PROVISIONAL_BASES
             return _decision(
                 **shared,
                 status=AVAILABILITY_AVAILABLE,
                 designation=designation,
-                risk=designation in RISK_DESIGNATIONS,
+                risk=designation in RISK_DESIGNATIONS or provisional,
+                requires_revalidation=provisional,
                 blocker=None,
                 reason=f"OFFICIAL_DESIGNATION_{designation}",
             )

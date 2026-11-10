@@ -80,8 +80,9 @@ Scratch schema dropped after the run; absence verified with a catalog read.
 `public.wow_prop_evidence_snapshots` holds **21,936 rows**, of which **0** carry
 `role_status.availability` and **0** carry any blocker. Consequences:
 
-- The repair's write path has not produced availability-bearing rows in this
-  project yet. This is consistent with production still running the pre-repair
+- No availability-bearing rows were retained in this project at inspection
+  time; current row counts do not establish write history (rows may expire or
+  be deleted). This is consistent with production still running the pre-repair
   build `4c8c1fb0`, which never wrote `role_status.availability`; the Render SHA
   gap is already recorded elsewhere. It is **not** proof, because the binding
   between Render and this project is unverified.

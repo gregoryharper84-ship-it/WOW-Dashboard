@@ -206,13 +206,15 @@ source confirmed the start. The recheck is now implemented end to end.
   inside a six-hour pregame window, so an ordinary research score days out is
   unchanged, and it persists the outcome as `acquisition.availability_recheck`.
   A cleared row loses the blocker and the persisted snapshot records the
-  confirming basis; a failed recheck records `SOURCE_UNAVAILABLE` and keeps the
-  hold.
+  confirming basis. A returned `RETRIEVAL_FAILED` observation records
+  `INCONCLUSIVE` and persists `PLAYER_AVAILABILITY_UNVERIFIED`; a provider
+  exception records `SOURCE_UNAVAILABLE` with the recheck-required hold.
 
 Evidence: 6 adjudicator tests, 6 official-fetch tests with injected payloads,
 and 3 route-level tests (confirmation completes the row with an empty blocker
-list, a rule-out rejects before the scorer, an unavailable source keeps the
-hold). The pre-existing provisional route test now asserts `NOT_DUE` outside
+list, an injected OUT ruling rejects before the scorer, an unavailable source
+keeps the hold). The injected ruling tests adjudication, not MLB provider
+coverage: removal from the probable list yields RETRIEVAL_FAILED, not OUT. The pre-existing provisional route test now asserts `NOT_DUE` outside
 the window.
 
 Honest limitation: MLB is out of season here and no live pregame game feed was
@@ -293,7 +295,9 @@ Run from `artifacts/wow-engine` with the project virtualenv:
   suites in a focused run: **127 passed**.
 - Prop + WNBA + snapshot surface, source contracts, pick-request and schema
   suites with the ephemeral Postgres enabled: **1114 passed, 0 skipped**.
-  Without a database the same set is **880 passed, 15 skipped**; the 15 are the
+  A separate no-database run was recorded as **880 passed, 15 skipped**; its
+  collected scope was not reconciled with the 1114-test run, so these counts
+  must not be presented as the same test set. The 15 skips were the
   `test_prop_snapshot_min3_postgres.py` acceptance cases.
 - Action/editor schema compatibility: **33 passed**
   (`test_pick_request_action_contract.py`, `tests/test_v17_live_editor_compat.py`,

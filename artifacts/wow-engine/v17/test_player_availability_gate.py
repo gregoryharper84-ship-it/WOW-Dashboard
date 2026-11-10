@@ -265,3 +265,13 @@ def test_injury_report_retrieval_failure_is_unverified_evidence():
     )
     assert availability["evidence_status"] == "RETRIEVAL_FAILED"
     assert evaluate_player_availability({"availability": availability}).status == AVAILABILITY_UNVERIFIED
+
+
+@pytest.mark.parametrize("designation", ["ACTIVE", "PROBABLE", "DOUBTFUL"])
+def test_playable_designation_cannot_clear_a_provisional_basis(designation):
+    evidence = _availability("AVAILABLE", designation)
+    evidence["basis"] = "PROBABLE_STARTER"
+    decision = evaluate_player_availability({"availability": evidence})
+    assert decision.status == AVAILABILITY_AVAILABLE
+    assert decision.requires_revalidation is True
+    assert decision.risk is True

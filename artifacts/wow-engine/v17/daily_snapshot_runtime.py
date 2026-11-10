@@ -47,7 +47,7 @@ from v17.daily_terminal_reduction import (
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
-from v17.prop_canonical_identity import canonical_source_snapshot_ids, canonicalize_prop_manifest
+from v17.prop_canonical_identity import canonical_source_snapshot_ids, canonical_sporting_key, canonicalize_prop_manifest
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
@@ -68,6 +68,34 @@ def _detail(exc: HTTPException) -> dict[str, Any]:
     return dict(exc.detail) if isinstance(exc.detail, dict) else {"code": "HTTP_EXCEPTION", "message": str(exc.detail)}
 
 
+def _withhold_publication(value: Any) -> Any:
+    """Copy an ineligible result, retaining original claims only as audit data.
+
+    Full responses and durable detail share this projection. Nested direction,
+    qualification and governance receipts cannot contradict the row ceiling.
+    Numerical model evidence and blockers remain intact.
+    """
+    if isinstance(value, list):
+        return [_withhold_publication(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    flags = {key: value[key] for key in (
+        "probability_publishable", "rank_eligible", "probability_rank_eligible",
+        "official_leaderboard_eligible",
+    ) if key in value}
+    projected = {
+        key: item if key == "prepublication_claim" else _withhold_publication(item)
+        for key, item in value.items()
+    }
+    if flags:
+        # An existing guard may already have captured the earlier scorer claim.
+        projected.setdefault("prepublication_claim", flags)
+        projected.update({key: False for key in flags})
+    if "can_execute" in projected:
+        projected["can_execute"] = False
+    return projected
+
+
 def _terminal_row(
     lane: str,
     identity: dict[str, Any],
@@ -85,6 +113,9 @@ def _terminal_row(
         and payload.get("rank_eligible") is True
         and row_status == "COMPLETED"
     )
+    if not publishable:
+        payload = _withhold_publication(payload)
+        payload = {**payload, "probability_publishable": False, "rank_eligible": False}
     return {
         "lane": lane,
         "identity": identity,
@@ -93,6 +124,7 @@ def _terminal_row(
         "row_status": row_status,
         "terminal_reduction": reduction,
         "probability_publishable": publishable,
+        "rank_eligible": publishable,
         "can_execute": False,
     }
 
@@ -151,51 +183,72 @@ def _prop_manifest_rows(
     *,
     page_size: int = 250,
     exclusions: list[dict[str, Any]] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Read the complete canonical slate manifest without a first-page truncation."""
+    """Select the newest sporting snapshot before applying eligibility filters.
+
+    Raw-read and duplicate counts are collected independently of the canonical
+    output so reconciliation can detect a candidate lost by that transformation.
+    Only a completed read exposes exclusions; a failed page cannot leave a
+    partially populated accounting ledger.
+    """
     selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
-    manifest: list[dict[str, Any]] = []
+    raw_rows: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, ...]] = set()
+    merged = 0
     offset = 0
+    if exclusions is not None:
+        exclusions.clear()
+    if stats is not None:
+        stats.clear()
+        stats.update(raw_rows_read=0, canonical_merged_rows=0, read_complete=False)
     while True:
-        query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time")
+        query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time").order("source_snapshot_id")
         ranged = getattr(query, "range", None)
         if callable(ranged):
             batch = ranged(offset, offset + page_size - 1).execute().data or []
         else:
-            # Compatibility for test doubles/clients without range(); one bounded
-            # read preserves prior behavior while production Supabase uses range().
             batch = query.limit(page_size).execute().data or []
         batch = [dict(row) for row in batch]
         for row in batch:
-            blocked = bool(row.get("blockers"))
-            if blocked:
-                reason = "EVIDENCE_BLOCKED"
-            elif not _future(row.get("event_start_time")):
-                reason = "EVENT_NOT_PREGAME"
-            elif not _matching_slate(row, requested_date, requested_timezone):
-                reason = "NOT_REQUESTED_SLATE"
-            else:
-                manifest.append(row)
-                continue
-            # An acquired candidate that cannot be scored must still leave an
-            # explicit, inspectable reason. Dropping it silently made a run look
-            # complete while candidates had already disappeared from the board.
-            if exclusions is not None:
-                snapshot_id = str(row.get("source_snapshot_id") or "")
-                if snapshot_id and any(item.get("source_snapshot_id") == snapshot_id for item in exclusions):
-                    continue
-                exclusions.append({
-                    **{key: row.get(key) for key in (
-                        "source_snapshot_id", "event_id", "sport", "player", "stat_type", "line",
-                    )},
-                    "reason": reason,
-                    "blockers": [str(code) for code in (row.get("blockers") or [])][:4],
-                    "can_execute": False,
-                })
+            key = canonical_sporting_key(row)
+            if key is not None:
+                if key in seen_keys:
+                    merged += 1
+                seen_keys.add(key)
+            raw_rows.append(row)
+        if stats is not None:
+            stats.update(raw_rows_read=len(raw_rows), canonical_merged_rows=merged)
         if not callable(ranged) or len(batch) < page_size:
             break
         offset += page_size
-    return canonicalize_prop_manifest(manifest)
+
+    manifest: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for row in canonicalize_prop_manifest(raw_rows):
+        if row.get("blockers"):
+            reason = "EVIDENCE_BLOCKED"
+        elif not _future(row.get("event_start_time")):
+            reason = "EVENT_NOT_PREGAME"
+        elif not _matching_slate(row, requested_date, requested_timezone):
+            reason = "NOT_REQUESTED_SLATE"
+        else:
+            manifest.append(row)
+            continue
+        excluded.append({
+            **{key: row.get(key) for key in (
+                "source_snapshot_id", "event_id", "sport", "player", "stat_type", "line",
+            )},
+            "source_snapshot_ids": row.get("source_snapshot_ids") or [],
+            "reason": reason,
+            "blockers": [str(code) for code in (row.get("blockers") or [])][:4],
+            "can_execute": False,
+        })
+    if exclusions is not None:
+        exclusions.extend(excluded)
+    if stats is not None:
+        stats["read_complete"] = True
+    return manifest
 
 
 def _prop_rows(
@@ -245,12 +298,15 @@ def _prop_handoff_reconciliation(
     acquisition: dict[str, Any] | None,
     canonical_manifest: list[dict[str, Any]],
     scored_rows: int,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     counts = _acquisition_counts(acquisition)
     canonical_ids = canonical_source_snapshot_ids(canonical_manifest)
     persisted_ids = _receipt_snapshot_ids(acquisition)
+    excluded_ids = canonical_source_snapshot_ids(exclusions or []) - canonical_ids
+    explicit_precanonical_exclusions = len(persisted_ids & excluded_ids)
     if persisted_ids:
-        missing_persisted_ids = sorted(persisted_ids - canonical_ids)
+        missing_persisted_ids = sorted(persisted_ids - canonical_ids - excluded_ids)
         canonical_from_current_acquisition = len(persisted_ids & canonical_ids)
     else:
         # Backward-compatible fallback for older acquisition payloads. The count
@@ -258,7 +314,6 @@ def _prop_handoff_reconciliation(
         missing_count = max(counts["persisted_candidates"] - len(canonical_manifest), 0)
         missing_persisted_ids = [f"UNRECEIPTED_PERSISTED_ROW_{index + 1}" for index in range(missing_count)]
         canonical_from_current_acquisition = min(counts["persisted_candidates"], len(canonical_manifest))
-    explicit_precanonical_exclusions = 0
     prewrite_balanced = (
         counts["lane_discovered_raw"]
         == counts["lane_snapshot_write_succeeded"]
@@ -289,6 +344,7 @@ def _lane_reconciliation(
     acquisition: dict[str, Any] | None = None,
     canonical_manifest: list[dict[str, Any]] | None = None,
     requested_limit: int | None = None,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     blockers = blockers or []
     lane_rows = [row for row in rows if row.get("lane") == lane]
@@ -333,6 +389,7 @@ def _lane_reconciliation(
             acquisition=acquisition,
             canonical_manifest=canonical_manifest or [],
             scored_rows=len(lane_rows),
+            exclusions=exclusions,
         )
     return result
 
@@ -530,13 +587,14 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     prop_acquisition: dict[str, Any] | None = None
     prop_manifest: list[dict[str, Any]] = []
     prop_exclusions: list[dict[str, Any]] = []
+    prop_read_stats: dict[str, Any] = {}
     prop_candidate_accounting: dict[str, Any] | None = None
 
     if "PROPS" in requested_lanes:
         try:
             prop_manifest = _prop_manifest_rows(
                 db, req.requested_slate_date, req.requested_timezone,
-                exclusions=prop_exclusions,
+                exclusions=prop_exclusions, stats=prop_read_stats,
             )
             prop_rows = prop_manifest[:req.max_props]
         except Exception as exc:
@@ -559,7 +617,10 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
                 blockers.extend(prop_acquisition.get("blockers") or [])
             try:
-                prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
+                prop_manifest = _prop_manifest_rows(
+                    db, req.requested_slate_date, req.requested_timezone,
+                    exclusions=prop_exclusions, stats=prop_read_stats,
+                )
                 prop_rows = prop_manifest[:req.max_props]
             except Exception as exc:
                 prop_rows = []
@@ -568,7 +629,15 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
 
             persisted = int(prop_acquisition.get("persisted") or 0)
             if persisted > 0 and not prop_manifest:
-                blockers.append("PROP_SNAPSHOT_INGESTION_EMPTY")
+                handoff = _prop_handoff_reconciliation(
+                    acquisition=prop_acquisition, canonical_manifest=prop_manifest,
+                    scored_rows=0, exclusions=prop_exclusions,
+                )
+                if not (
+                    prop_read_stats.get("read_complete") is True
+                    and handoff["persisted_to_canonical_balanced"] is True
+                ):
+                    blockers.append("PROP_SNAPSHOT_INGESTION_EMPTY")
 
         for row in prop_rows:
             identity = {key: row.get(key) for key in ("event_id", "event_start_time", "sport", "player", "stat_type", "line", "source_snapshot_id")}
@@ -605,10 +674,15 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             reason_counts["MAX_PROPS_LIMIT"] = (
                 reason_counts.get("MAX_PROPS_LIMIT", 0) + eligible_not_scored
             )
-        seen = len(prop_manifest) + len(prop_exclusions)
-        accounted = scored_prop_rows + eligible_not_scored + len(prop_exclusions)
+        seen = int(prop_read_stats.get("raw_rows_read") or 0)
+        merged_rows = int(prop_read_stats.get("canonical_merged_rows") or 0)
+        accounted = scored_prop_rows + eligible_not_scored + len(prop_exclusions) + merged_rows
+        accounting_balanced = prop_read_stats.get("read_complete") is True and accounted == seen
         prop_candidate_accounting = {
             "manifest_rows_seen": seen,
+            "raw_rows_read": seen,
+            "canonical_merged_rows": merged_rows,
+            "read_complete": prop_read_stats.get("read_complete") is True,
             "eligible_rows": len(prop_manifest),
             "scored_rows": scored_prop_rows,
             "eligible_not_scored_rows": eligible_not_scored,
@@ -617,10 +691,10 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             "excluded_by_reason": reason_counts,
             "exclusions": prop_exclusions[:50],
             "exclusions_truncated": max(len(prop_exclusions) - 50, 0),
-            "balanced": accounted == seen,
+            "balanced": accounting_balanced,
             "can_execute": False,
         }
-        if accounted != seen:
+        if not accounting_balanced:
             blockers.append("RUN_INVALID_PROP_CANDIDATE_ACCOUNTING")
 
     cross_sport_audit: dict[str, Any] | None = None
@@ -730,6 +804,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             prop_acquisition,
             prop_manifest if lane == "PROPS" else None,
             requested_limit=requested_limits.get(lane),
+            exclusions=prop_exclusions if lane == "PROPS" else None,
         )
         for lane in requested_lanes
     }
