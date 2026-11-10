@@ -27,7 +27,13 @@ def pick(sport='NFL', identity='game-1', **changes):
                  {'publisher':'beatwriter.com','source_type':'NON_MARKET','available_to_user_at_utc':ASOF}],
              'model_status':'MODEL_UNAVAILABLE',
              'market_context':{'favorite':'Home','as_of_utc':ASOF},
-             'market_disagreement_reviewed':True}
+             'market_disagreement_reviewed':True,
+             'game_script':{
+                 'primary_win_path':'Away controls matchups and avoids high-risk turnovers',
+                 'opponent_win_path':'Home creates extra possessions and wins late',
+                 'swing_factors':['starting personnel', 'pace and possession swing'],
+                 'as_of_utc':ASOF,
+             }}
     value.update(changes)
     return value
 
@@ -119,3 +125,53 @@ def test_market_prices_are_never_spoofed_as_certified_sporting_probabilities():
     assert r['rows'][0]['model_status']=='MODEL_UNAVAILABLE'
     assert r['rows'][0]['governed_probability'] is None
     assert '.89' not in str(r)
+
+
+def test_game_scripts_are_pregame_evidence_and_do_not_change_winner():
+    r=audit([event('NBA')],[pick('NBA')])
+    row=r['rows'][0]
+    assert row['game_script_verified_pregame'] is True
+    assert 'controls matchups' in row['game_script_primary_win_path']
+    assert 'extra possessions' in row['game_script_opponent_win_path']
+    assert len(row['game_script_swing_factors']) == 2
+    assert row['selected_side']=='Away'
+    assert row['governed_probability'] is None
+    assert r['research_evidence_fully_reconciled'] is True
+
+
+def test_missing_or_incomplete_game_script_warns_without_discretionary_pass():
+    missing=audit([event('NHL')],[pick('NHL',game_script=None)])
+    row=missing['rows'][0]
+    assert row['selected_side']=='Away'
+    assert row['game_script_verified_pregame'] is False
+    assert 'GAME_SCRIPT_NOT_REVIEWED' in row['evidence_warnings']
+    assert missing['board_complete'] is True
+    assert missing['research_evidence_fully_reconciled'] is False
+
+    incomplete=audit([event()],[pick(game_script={
+        'primary_win_path':'Same',
+        'opponent_win_path':'Same',
+        'swing_factors':[],
+        'as_of_utc':ASOF,
+    })])
+    row=incomplete['rows'][0]
+    assert 'GAME_SCRIPT_SCENARIOS_INCOMPLETE' in row['evidence_warnings']
+    assert 'GAME_SCRIPT_SWING_FACTORS_MISSING' in row['evidence_warnings']
+    assert row['game_script_primary_win_path'] is None
+
+
+def test_late_script_or_probability_claim_never_becomes_fitted_output():
+    late=pick(game_script={
+        'primary_win_path':'Away dominates',
+        'opponent_win_path':'Home scores late',
+        'swing_factors':['turnovers'],
+        'as_of_utc':START,
+        'win_probability':0.8,
+    }, research_confidence='HIGH')
+    row=audit([event()],[late])['rows'][0]
+    assert 'GAME_SCRIPT_TIME_UNVERIFIED_OR_FUTURE' in row['evidence_warnings']
+    assert 'UNVERIFIED_GAME_SCRIPT_PROBABILITY' in row['evidence_warnings']
+    assert 'HIGH_CONFIDENCE_UNSUPPORTED' in row['evidence_warnings']
+    assert row['game_script_primary_win_path'] is None
+    assert row['governed_probability'] is None
+    assert row['governed_lower_bound'] is None
