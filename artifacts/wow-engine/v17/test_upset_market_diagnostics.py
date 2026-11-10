@@ -356,3 +356,33 @@ def test_reference_class_receipt_must_be_nonblank_string(bad_receipt):
             reference_class_receipt_id=bad_receipt,
             reference_class_as_of_utc="2026-11-09T12:00:00Z",
         )
+
+
+def test_governed_outcome_non_string_label_fails_with_typed_error():
+    """Reject labels that would be stringified and mismatch quote identities."""
+    values = _outcomes()
+    values[1] = values.pop("DOG")
+    with pytest.raises(ValueError, match="MARKET_GOVERNED_OUTCOME_SPACE_INVALID"):
+        _evaluate(governed_outcomes=values)
+
+
+def test_governed_outcome_non_mapping_row_fails_with_typed_error():
+    """Malformed source rows must not leak a TypeError into governance."""
+    values = _outcomes()
+    values["DOG"] = None
+    with pytest.raises(ValueError, match="MARKET_MODEL_PROBABILITY_INVALID"):
+        _evaluate(governed_outcomes=values)
+
+
+def test_governed_outcome_missing_required_field_fails_with_typed_error():
+    """No accidental KeyError or fabricated default when model bounds absent."""
+    values = _outcomes()
+    del values["DOG"]["calibrated_lower_bound"]
+    with pytest.raises(ValueError, match="MARKET_MODEL_PROBABILITY_INVALID"):
+        _evaluate(governed_outcomes=values)
+
+
+def test_governed_outcome_non_mapping_package_is_typed_hold():
+    """Top-level non-dictionary packages must fail before outcome iteration."""
+    with pytest.raises(ValueError, match="MARKET_GOVERNED_OUTCOME_SPACE_INVALID"):
+        _evaluate(governed_outcomes=None)
