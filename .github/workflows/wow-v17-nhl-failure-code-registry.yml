@@ -1,0 +1,63 @@
+name: wow-v17-nhl-failure-code-registry
+
+# No `paths:` filter, deliberately: an NHL_* code can be emitted by any module,
+# and a fixed path list cannot enumerate modules that do not exist yet. The job
+# installs only pytest and reads text, so running it on every change is cheap.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nhl-registry-guard-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  registry-guard:
+    name: NHL failure-code and disposition registry guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install guard test runner only
+        # The registry guards read documentation and source text; they need
+        # pytest and the standard library, nothing from the runtime stack.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pytest>=8.0"
+      - name: Registry guards
+        # --noconftest is required: the repository conftest imports the Celery
+        # runtime, which this documentation-only guard does not install.
+        run: |
+          set -o pipefail
+          python -m pytest -q --noconftest \
+            tests/test_nhl_pregame_failure_codes_registered.py \
+            tests/test_nhl_status_registry.py | tee /tmp/nhl-registry-guard.log
+      - name: Upload guard log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nhl-registry-guard-log
+          path: /tmp/nhl-registry-guard.log
+          if-no-files-found: warn
+      - name: Record invariants
+        if: always()
+        run: |
+          {
+            echo '## NHL registry guard'
+            echo 'Fails when an emitted failure code is unregistered, a documented code is no longer emitted,'
+            echo 'a row names the wrong module, or a shared emitter is left undocumented.'
+            echo '`can_execute=false`'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -59,6 +59,16 @@ def test_nfl_missing_incomplete_or_nonpassing_health_is_fail_closed():
     assert "THEN 'DO_NOT_CERTIFY_YET'" in sql
 
 
+def test_prop_preflight_is_per_exact_stat_family_not_per_sport():
+    sql = SQL.read_text()
+    # A certified family cannot stand in for a different stat_type.
+    assert 'GROUP BY sport, stat_type' in sql
+    assert 'prop_stat_family' in sql
+    assert "'PROP_EXACT_LINE_RANGE_NOT_CERTIFIED'" in sql
+    assert 'certified_line_range_artifacts' in sql
+    assert 'supported_line_min IS NOT NULL' in sql
+
+
 def test_prop_registry_uses_canonical_certified_lifecycle_not_publish_flag():
     sql = SQL.read_text()
     # The prop registry intentionally CHECKs probability_publishable = false;

@@ -43,13 +43,22 @@ latest_nfl_health AS (
     LIMIT 1
 ),
 prop_model_counts AS (
-    SELECT sport, count(*)::int AS fitted_artifact_count,
+    -- Props certify per exact sport/stat family, never per sport as a whole.
+    -- A certified MLB family cannot stand in for a different stat_type.
+    SELECT sport, stat_type,
+           count(*)::int AS fitted_artifact_count,
            count(*) FILTER (
                WHERE active AND promoted
                  AND lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')
-           )::int AS active_promoted_artifacts
+           )::int AS active_promoted_artifacts,
+           count(*) FILTER (
+               WHERE active AND promoted
+                 AND lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')
+                 AND supported_line_min IS NOT NULL
+                 AND supported_line_max IS NOT NULL
+           )::int AS certified_line_range_artifacts
     FROM public.wow_prop_fitted_model_artifacts
-    GROUP BY sport
+    GROUP BY sport, stat_type
 ),
 requested_props(sport) AS (
     VALUES ('MLB'), ('NBA'), ('NFL'), ('WNBA')
@@ -90,7 +99,8 @@ SELECT rt.sport, 'LLP_TEAM_BETTING_ENGINE'::text AS routed_lane,
             ELSE 'RECEIPT_PRESENT_REQUIRES_ROUTE_REPLAY'
        END AS preflight_finding,
        FALSE AS preflight_authorizes_publication,
-       FALSE AS can_execute
+       FALSE AS can_execute,
+       NULL::text AS prop_stat_family
 FROM requested_team rt
 LEFT JOIN latest_team_cert cert ON cert.sport = rt.sport AND cert.league_scope = rt.sport
 LEFT JOIN basketball_model_counts bm ON bm.sport = rt.sport
@@ -105,12 +115,16 @@ SELECT rp.sport, 'WOW_PROP_LANE'::text, 'EXACT_LINE_PER_STAT'::text,
        COALESCE(pm.active_promoted_artifacts,0),
        NULL::int, NULL::text, NULL::text, NULL::text,
        NULL::text, NULL::text,
-       CASE WHEN COALESCE(pm.active_promoted_artifacts,0) = 0
+       CASE WHEN pm.stat_type IS NULL
+                 OR COALESCE(pm.active_promoted_artifacts,0) = 0
             THEN 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
+            WHEN COALESCE(pm.certified_line_range_artifacts,0) = 0
+            THEN 'PROP_EXACT_LINE_RANGE_NOT_CERTIFIED'
             ELSE 'PROP_REGISTRY_FLAGS_PRESENT_REQUIRES_CERTIFIED_ROUTE_REPLAY'
        END,
        FALSE AS preflight_authorizes_publication,
-       FALSE AS can_execute
+       FALSE AS can_execute,
+       pm.stat_type::text AS prop_stat_family
 FROM requested_props rp
-LEFT JOIN prop_model_counts pm ON pm.sport=rp.sport
-ORDER BY routed_lane, sport;
+LEFT JOIN prop_model_counts pm ON upper(pm.sport)=upper(rp.sport)
+ORDER BY routed_lane, sport, prop_stat_family;

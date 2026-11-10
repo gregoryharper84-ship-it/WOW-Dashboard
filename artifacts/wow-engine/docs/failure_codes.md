@@ -4,6 +4,9 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+Successful and informational NHL dispositions are catalogued separately in
+`docs/nhl_status_registry.md`; they are not failure codes and grant no authority.
+
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
@@ -477,18 +480,18 @@ These are synthetic-layout research contracts until verified against distinct re
 
 These typed errors belong to the offline `nhl_player_box_outcome_research` adapter. They do not imply model capability or replace governing specialist failures.
 
-| Code | Exact research condition | Model unavailable? |
-| --- | --- | --- |
-| `NHL_PLAYER_BOX_SCHEMA_INVALID` | Required official boxscore/side/player array missing | No |
-| `NHL_PLAYER_BOX_IDENTITY_MISMATCH` | Official event ID, team identity or supplied schedule start conflicts | No |
-| `NHL_PLAYER_BOX_NOT_FINAL_REGULAR_SEASON` | No final regular-season game / incorrect NHL season | No |
-| `NHL_PLAYER_BOX_TIMESTAMP_INVALID` | Missing, invalid or timezone-naive source/capture time | No |
-| `NHL_PLAYER_BOX_NOT_POSTGAME` | Source capture precedes claimed game start | No |
-| `NHL_PLAYER_BOX_PLAYER_ID_INVALID` | Official player ID missing or nonpositive | No |
-| `NHL_PLAYER_BOX_DUPLICATE_PLAYER` | A player occurs in more than one boxscore position/side | No |
-| `NHL_PLAYER_BOX_STAT_INVALID` | Missing, negative, non-integer or excessive stat count | No |
-| `NHL_PLAYER_BOX_STAT_CONTRADICTION` | Points differ from goals plus assists or saves exceed shots against | No |
-| `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
+| Code | Exact research condition | Emitting module | Also emitted by | Model unavailable? |
+|---|---|---|---|---|
+| `NHL_PLAYER_BOX_SCHEMA_INVALID` | Required official boxscore/side/player array missing | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_IDENTITY_MISMATCH` | Official event ID, team identity or supplied schedule start conflicts | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_NOT_FINAL_REGULAR_SEASON` | No final regular-season game / incorrect NHL season | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_TIMESTAMP_INVALID` | Missing, invalid or timezone-naive source/capture time | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_NOT_POSTGAME` | Source capture precedes claimed game start | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_PLAYER_ID_INVALID` | Official player ID missing or nonpositive | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_DUPLICATE_PLAYER` | A player occurs in more than one boxscore position/side | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_STAT_INVALID` | Missing, negative, non-integer or excessive stat count | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_STAT_CONTRADICTION` | Points differ from goals plus assists or saves exceed shots against | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | `v17/nhl_player_box_outcome_research.py` | — | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
 
@@ -645,3 +648,465 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 | `RESEARCH_TRACKING_OVERLAPS_OUTPUT` | V17 research telemetry / local receipt preflight | Local tracking and report trees nest recursively. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
 | `RESEARCH_OUTPUT_ROOT_NOT_EMPTY` | V17 research telemetry / local receipt preflight | Report destination contains previous or unrelated files. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
 | `RESEARCH_MLFLOW_OR_EVIDENTLY_NOT_INSTALLED` | V17 research telemetry / local receipt preflight | Optional reporting dependency unavailable; no receipt generated. Recovery: `PROVIDER_CONFIGURATION`; investigate the exact files/environment, then use a new distinct output directory. | No |
+
+## NHL pregame starter-goalie evidence pipeline (November 2026)
+
+Research-only evidence chain: two server-owned official starter feeds, an
+independent confirmation contract, the pregame evidence gate, and the
+collect → persist → gate orchestration. None of these codes is
+`MODEL_UNAVAILABLE`: a feed, timestamp, identity or persistence failure never
+proves fitted-model absence. A passing gate still means only input completeness.
+`can_execute=false` and `probability_publishable=false` remain invariant.
+
+### Starter-feed adapters (`v17/nhl_starter_feed_adapters.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_STARTER_FEED_ENDPOINT_UNCONFIGURED` | Neither an explicit endpoint nor the provider deployment variable is set. Adapter construction fails closed before any request. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_ENDPOINT_NOT_ALLOWLISTED` | Endpoint is not HTTPS, its host is outside the provider allowlist, or it carries userinfo/a fragment. Rejected before any request. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TRANSPORT_FAILED` | Timeout, connection, DNS or other transport exception during collection. Acquisition failure only; never a model failure. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_REDIRECT_REJECTED` | Upstream returned a 3xx response. Redirects are never followed. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_HTTP_STATUS` | Non-200 response (including 401/403/429/5xx) or a response URL that differs from the requested allowlisted URL. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_PAYLOAD_INVALID` | Empty body or bytes that are not valid JSON. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_PAYLOAD_TOO_LARGE` | Response body exceeds the bounded 512 KiB adapter cap. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_SCHEMA_DRIFT` | JSON root is not an object, a required contract field/shape is missing, or the event ID is malformed. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_EVENT_MISMATCH` | Receipt event ID differs from the server-owned canonical identity. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_START_TIME_MISMATCH` | Receipt kickoff differs from the canonical start by more than 60 seconds. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TEAM_MISMATCH` | Receipt home/away abbreviations differ from the canonical identity. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TEAM_NOT_IN_EVENT` | League roster feed designates a starter for a team outside this event. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TIMESTAMP_MISSING` | Neither the payload observation time nor the HTTP `Date` header supplies a timezone-aware timestamp. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TIMESTAMP_IN_FUTURE` | Observation time is later than the run instant. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_AFTER_KICKOFF` | Observation time is at or after the official start. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_STALE` | Observation is older than the 90-minute pregame confirmation window. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_GOALIE_MISSING` | A side has no numeric starting-goalie identity, or the league feed has no `STARTER` for a team. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_GOALIE_AMBIGUOUS` | The same goalie is claimed for both sides, or a team has more than one `STARTER`. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_STATUS_MISSING` | Starter status is absent on a side. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_STATUS_DIVERGENT` | Home and away starter statuses differ, so one aggregate status cannot be claimed. | `v17/nhl_starter_feed_adapters.py` | — | No |
+
+### Pregame Gamecenter source capture (`v17/nhl_pregame_gamecenter_capture.py`)
+
+This adapter captures an official pregame boxscore under the canonical identity
+gate. A pregame boxscore proves roster/participation, never who starts in goal,
+so a fully successful capture still terminates as a HOLD. All outcomes keep
+`probability_publishable=false`, `rank_eligible=false`, `can_execute=false`.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_GAMECENTER_EVENT_ID_INVALID` | Supplied event ID is not exactly 10 ASCII digits. Rejected before identity validation or any fetch. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_SOURCE_UNOBTAINABLE` | Transport exception, non-200 response, or a response URL that differs from the requested allowlisted Gamecenter URL. No payload is accepted. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_RATE_LIMITED` | Upstream returned HTTP 429. Acquisition failure only, never a model failure. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_REDIRECT_REJECTED` | Upstream returned a 3xx response. Redirects are never followed. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_PAYLOAD_INVALID` | Body is empty, exceeds the 2 MiB capture cap, or is not valid JSON. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_SCHEMA_DRIFT` | Decoded JSON root is not an object. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_GAMECENTER_CANONICAL_IDENTITY_MISMATCH` | Payload event ID or home/away abbreviations differ from the canonical identity receipt. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_GAMECENTER_START_TIME_MISMATCH` | Payload kickoff is missing or differs from the canonical start by more than 30 minutes. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_GOALIE_STARTER_CONFIRMATION_REQUIRED` | Capture, identity, timestamp and `gameState=FUT` checks all passed, but the payload is only a pregame boxscore. It cannot establish the starting goalie, so the result is HELD with `goalie_status=UNVERIFIED`, `goalie_confirmation_status=NOT_ESTABLISHED`, and the source hash retained. Research-only; never certification. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+
+The capture also emits `NHL_CANONICAL_IDENTITY_RECEIPT_MISSING`,
+`NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH` and `NHL_EVENT_NOT_PREGAME`, which are
+registered once under the gate/confirmation tables above.
+
+### Independent confirmation (`v17/nhl_starter_goalie_confirmation.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_CANONICAL_IDENTITY_RECEIPT_MISSING` | No server-owned canonical identity receipt was supplied. A caller field is not authoritative identity. | `v17/nhl_starter_goalie_confirmation.py` | `v17/nhl_pregame_evidence_boundary.py` | No |
+| `NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH` | Identity provider/source/event/start/teams/flags/staleness fail validation. | `v17/nhl_starter_goalie_confirmation.py` | `v17/nhl_pregame_evidence_boundary.py` | No |
+| `NHL_EVENT_NOT_PREGAME` | The canonical start is not in the future. | `v17/nhl_starter_goalie_confirmation.py` | `v17/nhl_pregame_evidence_boundary.py` | No |
+| `NHL_GOALIE_INDEPENDENT_CONFIRMATION_INSUFFICIENT` | Fewer than two usable confirmation receipts were supplied. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_EVIDENCE_INCOMPLETE` | Aggregate wrapper for one or more per-source blockers; the specific blocker codes remain in the receipt. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GAMECENTER_PARTICIPATION_NOT_CONFIRMATION` | Source kind is Gamecenter boxscore participation, which never proves who starts in goal. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_SOURCE_KIND_UNSUPPORTED` | Source kind is not an approved starter designation, lineup or roster designation. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_PROVIDER_NOT_OFFICIAL` | Provider is outside the official confirmation allowlist. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_SNAPSHOT_MISSING` | Source snapshot identity is blank. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_PAYLOAD_HASH_INVALID` | Payload hash is not 64 lowercase hexadecimal characters. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_EVENT_MISMATCH` | Receipt event ID or kickoff clock differs from the canonical event. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_TEAM_MISMATCH` | Receipt home/away teams differ from the canonical event. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_TIME_MISSING` | Observation timestamp is absent or not timezone-aware. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_TIME_IN_FUTURE` | Observation timestamp is later than the run instant. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_AFTER_KICKOFF` | Observation timestamp is at or after the official start. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_STALE` | Observation is older than the 90-minute confirmation window. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTING_GOALIE_NOT_CONFIRMED` | Source status is not `CONFIRMED` (for example `PROJECTED`). | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_IDENTITY_MISSING` | Starting-goalie identity is missing on a side. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_IDENTITY_INVALID` | Home and away starting-goalie identities are identical. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_SOURCES_NOT_INDEPENDENT` | Fewer than two distinct providers or distinct source receipts. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTING_GOALIE_CONFLICT` | Independent receipts disagree on a starting-goalie identity. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+
+### Pregame evidence gate (`v17/nhl_pregame_evidence_boundary.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TEAM_IDENTITY_UNVERIFIED` | `home_team`/`away_team` cannot be normalized to a recognized NHL abbreviation. Alias text is not canonical team identity. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_DUPLICATE_OPPONENT_IDENTITY` | Normalized home and away team identities are the same team. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_EVENT_IDENTITY_UNVERIFIED` | `official_event_id` is not a 10-character ASCII digit string. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_SETTLEMENT_BASIS_UNVERIFIED` | `settlement_basis` is not `HOME_AWAY_INCLUDING_OT_SO`, so a 60-minute or partial-game market could be mixed with a full-game result. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_STATUS_UNVERIFIED` | Evidence `goalie_status` is not `CONFIRMED`. This is the pre-existing evidence-side label check; it is necessary but never sufficient without the independent receipt below. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_STATUS_STALE` | `goalie_status_observed_at` is missing, unparseable, in the future, or older than `max_status_age_minutes` (default 60). | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_NUMERIC_FEATURE_INVALID` | An Elo value is missing/non-finite, or a save/PP/PK rate is missing, boolean, non-finite or outside `0..1`. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_SOURCE_SNAPSHOT_MISSING` | `source_snapshot_id` is absent or blank. A payload hash is not a persisted snapshot receipt. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_RECEIPT_MISSING` | The gate was called without an independent confirmation receipt; a caller `CONFIRMED` label is not proof. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED` | Receipt status/code/event/goalie-status are wrong, or the receipt already carries blockers. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_SOURCES_NOT_INDEPENDENT` | Receipt reports fewer than two independent sources or a non-integer source count. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_IDENTITY_SNAPSHOT_MISMATCH` | Receipt snapshot identity differs from the evidence row's snapshot identity. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_TIME_MISMATCH` | Receipt and evidence observation instants differ. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_IDENTITY_UNVERIFIED` | Goalie identities are missing, blank or identical; also the pre-existing required-input check. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_AUTHORITY_INVALID` | Receipt claims `probability_publishable`, `rank_eligible` or `can_execute`. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+
+The eight identity, settlement, feature, goalie-status and snapshot rows above
+predate the independent confirmation contract and remain emitted by the same
+validator. The receipt adds independent proof; it does not replace these checks.
+
+### Orchestration and receipt persistence (`v17/nhl_pregame_orchestration.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_PREGAME_ADAPTER_PROVIDER_NOT_OFFICIAL` | Adapter registration used a non-official provider. Configuration error, never a sport result. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ADAPTER_NOT_A_STARTER_SOURCE` | Adapter registration used a Gamecenter participation, projection or last-start-inference kind. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ADAPTER_SOURCE_KIND_UNSUPPORTED` | Adapter registration used a kind outside the approved starter kinds. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ADAPTER_COLLECT_NOT_CALLABLE` | Adapter registration supplied a non-callable collector. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ORCHESTRATION_ADAPTERS_INSUFFICIENT` | Fewer than two adapters, or fewer than two distinct official providers. Nothing is fetched or persisted. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_STARTER_SOURCE_UNOBTAINABLE:<provider>:<code>` | An adapter raised during collection. The suffix names the provider and its typed adapter/transport code. Acquisition only. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_STARTER_SOURCE_INVALID:<provider>` | An adapter returned a non-mapping receipt. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_PROVIDER_MISMATCH:<provider>` | A receipt claimed a different provider or source kind than its adapter. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_PERSISTENCE_FAILED` | The immutable receipt ledger write failed, so the evidence gate was not invoked. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_PERSISTENCE_ERROR:<TYPE>` | Suffix names the persistence exception class for the failed ledger write. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_GATE_NOT_PASSED` | Aggregate gate HOLD after persistence and confirmation; nested blockers identify the exact cause. | `v17/nhl_pregame_orchestration.py` | — | No |
+
+### NHL candidate preflight and promotion-stage maintenance (`v17/nhl_candidate_preflight.py`, `v17/nhl_model_maintenance.py`)
+
+This is the candidate-training lane, not the pregame evidence lane. Governed
+maintenance runs in one fixed stage order:
+
+```text
+CONFIGURATION -> CANDIDATE_TRAINING -> NHL_ACQUISITION_OR_TRAINING
+-> CANDIDATE_PREFLIGHT -> NHL_RECONCILIATION -> CANDIDATE_PERSISTENCE
+```
+
+A fully successful run terminates at `CANDIDATE_EVIDENCE_UPDATED`, which still
+carries `automatic_certification=false`, `automatic_promotion=false`,
+`probability_publishable=false` and `can_execute=false`. No code below can
+certify, promote, activate, publish, rank or execute; a preflight pass means only
+that evidence is fit to persist as a candidate. None of these is
+`MODEL_UNAVAILABLE` or `MODEL_INPUTS_INSUFFICIENT`.
+
+#### Candidate source acquisition and reconstruction (`nhl_candidate_pipeline.py`)
+
+This upstream lane fetches official club-season schedules and rebuilds features
+chronologically from prior settled games only; sportsbook prices never enter a
+feature. Rows remain historical reconstructions, not archived pregame snapshots,
+and the fitted output stays `lifecycle_state=CANDIDATE` with
+`probability_publishable=false`, `promoted=false` and `can_execute=false`.
+`CANDIDATE_BUILT` and the `NHL_REGULAR_SEASON_LOGISTIC_V1` /
+`NHL_REGULAR_SEASON_FEATURES_V1` / `NHL_PRIOR_SETTLED_RECONSTRUCTION_V1` /
+`NHL_RS_LOGISTIC_V1` labels are identifiers, not failure codes. This module also
+raises `NHL_EVENT_TIME_INVALID`, registered once under the event-identity section.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_SOURCE_NOT_READY` | The model-source entitlement registry does not admit `NHL_PUBLIC_WEB_API` for candidate training; detail lists its blockers. Raised before any team request. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_TEAM_UNSUPPORTED` | The requested team is not in the known NHL abbreviation universe, including historical ARI/UTA. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_TEAM_NOT_ACTIVE_IN_SEASON` | The team is known but not active in the requested season (for example SEA before 2021, ARI after 2023, UTA before 2024); detail is `abbr:year`. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_TRANSPORT_FAILED` | A club-season request raised; detail is the exception type. Acquisition failure only, never a model verdict. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_RATE_LIMITED` | The club-season endpoint returned HTTP 429; detail is the team. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_HTTP_<status>` | The club-season endpoint returned a non-200, non-429 status; the suffix is the status and detail is the team. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_RESPONSE_INVALID` | The response body could not be decoded as JSON; detail is the exception type. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_SCHEMA_DRIFT` | The decoded body is not a mapping or lacks a `games` list. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_SEASON_IDENTITY_DRIFT` | A normalized game's season differs from the season requested for that team schedule; detail is the first mismatched game ID. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_DUPLICATE_GAME_CONFLICT` | The same game ID observed through two team mirrors disagrees on season, start, teams or scores. Identical duplicates are merged without error. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_RECENT_HISTORY_EMPTY` | Recent-form metrics were requested for a team with no prior games in its window. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_REST_HISTORY_EMPTY` | Rest days were requested before the team had any prior game. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_CHRONOLOGY_INVALID` | The computed rest interval is non-positive, so the prior start is not strictly earlier than the current fixture. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_GAMES_NOT_CHRONOLOGICAL` | Reconstruction received games that were not sorted by start and game ID. Sorting is mandatory so no later result can enter an earlier feature row. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_CANDIDATE_TRAINING_FAILED` | Wrapper for any non-`NHLCandidateError` raised by `train_binary_candidate`. An embedded typed code is preserved; otherwise this code names the untyped failure. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_TRAINING_CODE_SHA_REQUIRED` | `training_code_sha` is shorter than 7 characters, so the artifact version could not be tied to deployed code. | `nhl_candidate_pipeline.py` | — | No |
+
+#### Candidate package and dataset preflight (stage `CANDIDATE_PREFLIGHT`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_CANDIDATE_PACKAGE_INCOMPLETE` | Package lacks a non-empty `games` list, a non-empty `feature_rows` list, or a `candidate` mapping. Nothing is validated further. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_IDENTITY_MISMATCH` | Candidate sport/league, model family, source policy or feature-schema version differs from the governed NHL family. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_EVENT_TIME_INVALID` | `event_start_time` or `feature_as_of` is missing, unparseable or timezone-naive. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_FEATURE_SCHEMA_MISMATCH` | Artifact `feature_names` or a training row's feature key set differs from the governed `FEATURE_NAMES`. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_FEATURE_INVALID` | A training feature is boolean, non-numeric or non-finite. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_OUTCOME_MISSING` | `positive_outcome` is not a bool. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_MANIFEST_INVALID` | Row manifest is not a mapping, its SHA is invalid or mismatched, source/schema/reconstruction identity is wrong, an archived pregame snapshot is claimed, or market features / `can_execute` are not false. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_GOVERNANCE_FLAGS_INVALID` | Candidate or package is not research-only: lifecycle is not `CANDIDATE`, or promoted/active/automatic-certification/automatic-promotion/publishable/execute flags are not false. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ARTIFACT_CHECKSUM_MISMATCH` | `artifact_checksum` is not 64-hex or does not equal the canonical hash of the artifact payload. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_PARTITIONS_INVALID` | `validation_metrics` is not a mapping. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_MARKET_FEATURES_FORBIDDEN` | Validation metrics admit market-derived inputs as model features. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_PARTITION_MISMATCH` | Stored or fitted train/calibration/test counts are not positive integers, disagree with each other, or do not sum to the feature-row count. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ARTIFACT_IDENTITY_MISMATCH` | Embedded artifact model family differs from the governed family. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ARTIFACT_SPLIT_MISMATCH` | Embedded split policy is not `CHRONOLOGICAL_60_20_20`, or its boundary indices differ from the fitted cumulative counts. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_EVENT_INVALID` | A source game entry is not a mapping. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_PIN_MISSING` | A source game fails provider, payload-hash, official URI-prefix, retrieved-time, historical-reconstruction or `can_execute` pinning. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_DUPLICATE_IDENTITY` | Empty or duplicate event ID, a repeated (season, start, home, away) identity, or a feature row with no matching source game. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_FEATURE_ROW_INVALID` | A feature row is not a mapping. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_IDENTITY_MISMATCH` | Feature-row flags, start/outcome, or manifest game hash disagree with its source game. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_TEMPORAL_LEAKAGE` | `feature_as_of` is at or after the event start, so pregame features would contain outcome-adjacent information. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ROWS_NOT_CHRONOLOGICAL` | Feature rows are not in non-decreasing event-start order. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_DATASET_HASH_MISMATCH` | `training_dataset_hash` is invalid or differs from the recomputed canonical dataset hash. | `v17/nhl_candidate_preflight.py` | — | No |
+
+#### Frozen → current goalie-status handoff (`validate_nhl_goalie_status_handoff`)
+
+This comparison is evidence reconciliation only. It does not qualify a scorer,
+invoke one, or certify a probability.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_GOALIE_EVENT_IDENTITY_MISMATCH` | Frozen and current snapshots do not both carry the same non-empty official event ID. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_KICKOFF_INVALID` | Either snapshot's kickoff is missing, unparseable or timezone-naive. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_AS_OF_INVALID` | Either snapshot's `as_of` is missing, unparseable or timezone-naive. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_KICKOFF_MISMATCH` | Frozen and current kickoffs differ. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_EVIDENCE_AFTER_KICKOFF` | Either snapshot was observed at or after its kickoff. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_CURRENT_RECEIPT_STALE` | The current observation does not postdate the frozen one, or kickoff is more than 4 hours after the current observation. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_SOURCE_PIN_MISSING` | Either snapshot lacks the governed source ID, a snapshot ID, or a 64-hex payload hash. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_SOURCE_NOT_REFRESHED` | Snapshot ID and payload hash are both unchanged; a newer timestamp alone is not a refreshed immutable receipt. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_MISSING` | A side lacks a goalie mapping or goalie ID in either snapshot. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_STARTING_GOALIE_CHANGED` | The starting-goalie ID changed between the frozen and current snapshots. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_STATUS_MISSING` | Starting status is blank on a side in either snapshot. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_STARTING_STATUS_CHANGED` | Starting status differs between the snapshots even though both are confirmed statuses. | `v17/nhl_candidate_preflight.py` | — | No |
+
+This handoff also emits `NHL_STARTING_GOALIE_NOT_CONFIRMED` and
+`NHL_GOALIE_IDENTITY_INVALID`, registered once under the confirmation table above.
+
+#### Promotion stages and blocked dispositions (`v17/nhl_model_maintenance.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_MAINTENANCE_RANGE_EMPTY` | Stage `CONFIGURATION`: no start years remain after normalization. Nothing is acquired or trained. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_TRAINING_CODE_SHA_UNAVAILABLE` | Stage `CANDIDATE_TRAINING`: no training-code SHA was supplied and `RENDER_GIT_COMMIT` is unset, so evidence could not be tied to deployed code. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_CANDIDATE_PREFLIGHT_BLOCKED` | Stage `CANDIDATE_PREFLIGHT`: wrapper emitted only after candidate preflight rejects the package; nested `detail.code` names the specific preflight code above. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_MODEL_MAINTENANCE_FAILED` | Stage `NHL_ACQUISITION_OR_TRAINING`: an untyped exception escaped acquisition/training; only the exception type is recorded. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_TRAINING_OUTCOME_NOT_RECONCILED` | Stage `NHL_RECONCILIATION`: a feature-row event ID has no settled source-game outcome. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_CANDIDATE_PERSISTENCE_FAILED` | Stage `CANDIDATE_PERSISTENCE`: an untyped failure occurred while writing the immutable candidate package; only the exception type is recorded. | `v17/nhl_model_maintenance.py` | — | No |
+
+Success status `NHL_PREGAME_GATE_INPUTS_COMPLETE` is not a failure code and grants
+no probability, rank or execution authority.
+
+## NHL official event identity and source resolution (November 2026)
+
+First-party resolver (`v17/nhl_event_identity.py`). Provider discovery IDs (for
+example ESPN IDs) remain aliases; canonical event identity is assigned only
+after an exact participant plus start-time match against the NHL-owned club
+season schedule endpoint, within a 30-minute tolerance. The resolver returns
+`identity_provider=NHL_PUBLIC_WEB_API`, `market_features_used=false`,
+`prediction_authority=false` and `can_execute=false`; it grants no probability,
+ranking, certification or execution authority. None of these codes is
+`MODEL_UNAVAILABLE`: they describe identity or acquisition state, not the
+absence of a fitted model.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_EVENT_TIME_INVALID` | Supplied event start is missing, not parseable as ISO-8601, or timezone-naive. Raised before any source fetch, so no provider aliasing occurs. | `v17/nhl_event_identity.py` | `nhl_candidate_pipeline.py` | No |
+| `NHL_EVENT_PARTICIPANT_IDENTITY_UNRESOLVED` | Home or away cannot be normalized to a recognized NHL abbreviation, or both normalize to the same team. Raised before any source fetch. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_TRANSPORT_FAILED` | The club-season schedule request raised (timeout, DNS, connection, TLS). Acquisition failure only; carries the exception type, never a model verdict. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_RATE_LIMITED` | The official schedule endpoint returned HTTP 429. Acquisition failure only. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_HTTP_<status>` | The official schedule endpoint returned any other non-200 status. The suffix is the provider status code, or `UNKNOWN` when absent. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_RESPONSE_INVALID` | The response body could not be decoded as JSON. The detail records the exception type only. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_SCHEMA_DRIFT` | Decoded payload is not a mapping, or its `games` member is not a list. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_CANONICAL_EVENT_NOT_FOUND` | No scheduled game matched both normalized participants and a start within the 30-minute tolerance, so no canonical official event ID exists. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_CANONICAL_EVENT_AMBIGUOUS` | More than one distinct official event ID matched the same participants and start window. No arbitrary winner is chosen. | `v17/nhl_event_identity.py` | — | No |
+
+## NHL total-goals research lane (November 2026)
+
+Research challengers only (`v17/nhl_total_goals_*`). Every artifact and receipt in
+this lane sets `probability_publishable=false`, `rank_eligible=false`,
+`can_execute=false`; the regime-mixture module additionally sets
+`automatic_certification=false` and `automatic_promotion=false`. Features are
+retrospectively reconstructed from prior settled games only and are explicitly
+**not** archived pregame snapshots. A passing disposition means the research
+evidence reconciled; it never certifies a probability or registers a serving
+specialist. None of these codes is `MODEL_UNAVAILABLE`. Information-bearing
+dispositions are not failure codes: `NHL_TOTALS_OFFICIAL_HISTORICAL_PROJECTION_VERIFIED`,
+`NHL_TOTALS_REAL_SOURCE_RESEARCH_FEATURES_READY`,
+`NHL_TOTALS_REGIME_FIT_INPUTS_RECONCILED_RESEARCH_ONLY`,
+`NHL_TOTALS_RETROSPECTIVE_SOURCE_LABELS_RECONCILED`,
+`NHL_TOTALS_OFFICIAL_REGIME_COHORT_RECONCILED`,
+`NHL_TOTALS_OFFICIAL_REGIME_PARTIAL_RESEARCH_ONLY`,
+`NHL_TOTALS_PARTIAL_RESEARCH_NO_FIT`,
+`NHL_TOTALS_REAL_5SEASON_REGIME_REPLAY_RESEARCH_ONLY` and
+`NHL_TOTALS_RESEARCH_MODEL_REPLAY_COMPLETED_NOT_CERTIFIED`. Their stage meanings
+are recorded in `docs/nhl_status_registry.md`.
+
+### Source admission and cohort reconstruction
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_SOURCE_ROWS_EMPTY` | No D1 or official source records were supplied, so no research row can be reconstructed. | `v17/nhl_total_goals_source_adapter.py` | `v17/nhl_total_goals_challenger.py` | No |
+| `NHL_TOTALS_SOURCE_ROW_INVALID` | A source row fails sport/source, historical-reconstruction, `can_execute`, season identity, event/team identity, 64-hex hash, regular-season (`gameType` 2) or final-score (non-negative, non-tie) admission. Detail is the underlying validation text. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_EVENT_TIME_INVALID` | A source timestamp is missing, unparseable, or timezone-naive. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_SOURCE_IDENTITY_CONFLICT` | The same season/event appears with different start, teams or scores; no source version is chosen implicitly. | `v17/nhl_total_goals_source_adapter.py` | `v17/nhl_total_goals_challenger.py` | No |
+| `NHL_TOTALS_DUPLICATE_EVENT` | The same event identity appears twice with identical content. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_OVERLAPPING_TEAM_EVENT` | Within one scheduled instant a team appears in more than one fixture, so its prior-game history would be ambiguous. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_CHRONOLOGY_INVALID` | A history entry used to build features is timestamped at or after the fixture being featurized. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_FEATURE_INVALID` | A reconstructed prior-10 feature is non-finite or negative. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PERSISTED_ROW_INVALID` | A persisted D1 row fails season/event/score/team/source/governance/hash admission; detail is the validation text. | `v17/nhl_total_goals_source_adapter.py` | — | No |
+| `NHL_TOTALS_SOURCE_VERSION_REVIEW_REQUIRED` | One event has multiple source payload versions or instances. The explicit research-only override `allow_matching_source_versions=True` is required after review, and the audit ledger retains every hash. | `v17/nhl_total_goals_source_adapter.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_ROW_INVALID` | An official schedule game row is not a mapping, or its event ID, season, start, teams, scores or period fail admission, including OT/SO one-goal-margin and odd-parity rules. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_SCHEMA_INVALID` | A club schedule payload is not a mapping or lacks a `games` list. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_TEAM_INVALID` | The requested schedule team is not a 3-letter abbreviation. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_IDENTITY_DRIFT` | A schedule row's season differs from the requested season, or the requested team is not a participant. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_DUPLICATE_EVENT` | One club schedule contains the same event ID twice. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_SOURCE_TYPE_INVALID` | Reconciliation received a row that is not an `NHLOfficialRegimeResult`. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_GOVERNANCE_INVALID` | A regime row admits execution/publication or is not marked historically reconstructed. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_SOURCE_EMPTY` | No completed regular-season games remained after normalization. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_MIRROR_CONFLICT` | Two team-mirror views of the same event disagree on start, teams, score, period or goal-count definition. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_COHORT_EMPTY` | Either the D1 event cohort or the official regime cohort is empty; a one-sided join is never attempted. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_TYPE_INVALID` | A regime-side join input is not an `NHLOfficialRegimeResult`. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_DUPLICATE` | A season/event key is duplicated in either cohort. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_COHORT_MISSING` | A D1 event has no official regime label, or an official label was never matched; detail counts the unmatched side and no partial join is accepted. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_IDENTITY_CONFLICT` | D1 start, teams or scores disagree with the official settled result. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_ROW_INVALID` | A D1 row lacks required fields or contains invalid ones during the retrospective join. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_SEASONS_INVALID` | No seasons, non-integer seasons, or seasons outside the fully historical 2021–2025 range were requested. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_SOURCE_NOT_READY` | The source entitlement registry does not admit `NHL_PUBLIC_WEB_API` for candidate training; detail lists its blockers. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_TEAMS_INVALID` | The requested team set is empty, duplicated, or contains a team outside the official season team list. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_TRANSPORT_FAILED` | A club-schedule request raised; detail records the team and exception type. Acquisition failure only. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_HTTP_<status>` | A club-schedule request returned non-200; the suffix is the HTTP status and detail is the team. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_RESPONSE_INVALID` | A club-schedule response could not be decoded as JSON; detail is the team. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_COVERAGE_INCOMPLETE` | A supposedly complete season did not reconcile to 1,312 unique games, 2,624 mirror instances, and exactly two instances per event. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_SEASON_INVALID` | The fixture year is not an integer in the approved 2021–2025 set. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_ARCHIVE_INVALID` | Base64, gzip or JSON decoding failed, or the compressed (>100 KB) or expanded (>2 MB) bound was exceeded. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_PROVENANCE_INVALID` | Fixture season, URL template, historical-reconstruction flags, projection-not-raw-payload marker, or mirror-instance count is wrong. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_COVERAGE_INCOMPLETE` | A season does not contain exactly 1,312 admitted games. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_GAME_PROJECTION_INVALID` | A projected game fails event-ID/season prefix, final-state, team, score, two-mirror or final-period admission. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_TEAM_COVERAGE_INVALID` | The season does not cover all 32 teams at 82 games each. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_DUPLICATE_EVENT` | A game ID repeats within a season, or the same event appears across seasons during reconstruction. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_SOURCE_FINGERPRINT_MISMATCH` | The recomputed identity or REG/OT/SO label digest differs from the pinned per-season checksum. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_SEASON_SET_INVALID` | Reconstruction received no seasons or duplicate years. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_ROW_UNVERIFIED` | A reconstruction input is not an `OfficialProjection` or carries the wrong season tag. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_MODEL_JOIN_MISMATCH` | A reconstructed row's total, source hash or start disagrees with its admitted official projection. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_FIXTURE_MISSING` | The checked-in compressed fixture for a requested season is absent; there is no network fallback. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_LANDING_SOURCE_INVALID` | The gamecenter landing payload is not a mapping. | `v17/nhl_total_goals_score_regimes.py` | — | No |
+| `NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH` | Landing reconciliation failed: identity, final state, period order/completeness, per-goal side/team, shootout award, or official-versus-reconstructed total. Detail names the specific internal check. | `v17/nhl_total_goals_score_regimes.py` | — | No |
+
+### Feature reconstruction and regime-label bridge
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_BRIDGE_TIME_INVALID` | Bridge timestamp is missing, unparseable or timezone-naive. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_SOURCE_HASH_INVALID` | A D1 or official digest is not 64 lowercase hexadecimal characters. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_RECEIPT_INVALID` | The joined-label receipt status, reconstruction flags, publish/execute flags, `model_probability` or `calibrated_lower_bound` are unsafe for a research join. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LABELS_INVALID` | Labels are not a non-empty list, `count` is not an int equal to the list length, or a label is not a mapping. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LABEL_DUPLICATE` | A label event ID is not 10 decimal digits or is duplicated. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LABEL_UNVERIFIED` | A label is not historical, claims an archived pregame snapshot, or admits publication/execution. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_FEATURES_EMPTY` | No reconstructed total rows were supplied. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_FEATURE_UNVERIFIED` | A feature row is not a `TotalRow` or is not marked historically reconstructed. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_DUPLICATE_FEATURE` | Duplicate feature event ID. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_MISSING_REGIME` | No official regime label exists for a feature event. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_IDENTITY_CONFLICT` | Season ID, final total, D1 payload hash or kickoff disagrees between the feature row and its label. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LEAKAGE` | `reconstructed_as_of` is at or after kickoff. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_FEATURE_WIDTH` | The feature tuple is not the governed width of 6. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_REGIME_CONFLICT` | Terminal regime is not REG/OT/SO, or a non-REG total is even. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_ROW_INVALID` | A required label field is missing or mistyped while constructing the research row. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_REGIME_TIME_INVALID` | Mixture timestamp is missing, unparseable or timezone-naive. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_ROWS_EMPTY` | No regime research rows were supplied. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_ROW_TYPE_INVALID` | Row is not a `RegimeResearchRow`. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DUPLICATE_EVENT` | Duplicate event ID in the regime cohort. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_FEATURE_CHRONOLOGY_INVALID` | `feature_as_of` is at or after kickoff, the row is not historical, or it claims an archived pregame snapshot. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_OUTCOME_INVALID` | Regime is not REG/OT/SO, the total is not a positive int, or a non-REG total is even. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_FEATURES_INVALID` | Feature count differs from 6 or a value is non-finite. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_SOURCE_HASH_INVALID` | A D1 or regime digest is not 64 hexadecimal characters. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_SEASON_UNSUPPORTED` | Season is outside the 2021–2025 research cohorts. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Fitting and chronological splits
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_NONFINITE_DATA` | The feature or outcome matrix contains non-finite values before fitting. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_HOLDOUT_INSUFFICIENT` | Train, calibration or validation rows are below the 300/120/120 minimums. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_SPLIT_OVERLAP` | An event appears in more than one cohort (train, calibration, validation or forward reserve). | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_REGIME_HOLDOUT_INSUFFICIENT` | Train, calibration or development rows are below the 300/120/120 minimums. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_CLASS_HISTORY_INSUFFICIENT` | A terminal regime has fewer than 30 training or 15 calibration rows. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_CLASSES_MISSING` | Fitted logistic classes are not exactly REG/OT/SO. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Calibration
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_CALIBRATION_INVALID` | The empirical calibration mean multiplier is non-finite, non-positive, or outside 0.25–4. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_CALIBRATION_INSUFFICIENT` | The parity calibration cohort is below 120 rows or contains duplicate events. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_CALIBRATION_DEGENERATE` | The odd-total share is not strictly between 0 and 1. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_REGIME_CLASS_CALIBRATION_INVALID` | A class-weight factor is non-finite or outside 0.20–5. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_COUNT_CALIBRATION_INVALID` | A per-class count mean factor is non-finite or outside 0.20–5. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Validation and distribution integrity
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_MEAN_INVALID` | Fitted logits are non-finite or beyond ±80, or a supplied mean is non-finite or non-positive. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_VALIDATION_INVALID` | Validation length mismatch, non-finite predictions, or non-positive predicted means. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_DIRECTION_INVALID` | Side is not UNDER/OVER. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_LINE_UNSUPPORTED` | Line is not finite, is negative, or is not a half-integer. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PROBABILITY_INVALID` | Win plus push plus loss mass does not equal 1 within 1e-8. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_PARAMETERS_INVALID` | Mean is outside 0.1–30, or the odd share is non-finite or outside (0,1). | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_LINE_UNSUPPORTED` | Parity line is not finite, is outside 0–20.5, or is not a half-integer. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_DIRECTION_UNRESOLVED` | Parity side is not UNDER/OVER. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_MASS_INVALID` | Parity under/push/over mass is out of range or inconsistent. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_REGIME_SCORING_FEATURES_INVALID` | The scoring feature vector has the wrong width or a non-finite value. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DISTRIBUTION_INVALID` | Component probabilities or means are non-finite, a mean is <= 0, or a mean exceeds 40. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_GOAL_COUNT_INVALID` | The requested goal count is not a non-negative integer. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_LINE_UNSUPPORTED` | Regime line is not finite, is outside 0–30, or is not a half-integer. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DIRECTION_INVALID` | Regime side is not UNDER/OVER. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_MASS_INVALID` | The exact CDF/complement mass fails normalization. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DEV_DENSITY_INVALID` | The development likelihood of an observed total is non-positive. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Replay and corpus reproduction
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_HISTORICAL_DUPLICATE_EVENT` | The five-season replay encountered the same event ID in more than one season fixture. | `v17/nhl_total_goals_official_fitted_replay.py` | — | No |
+| `NHL_TOTALS_EXPERIMENT_COMPARISON_COHORT_MISMATCH` | Mixture and Poisson models were not fitted on identical train/calibration/development counts, or the admitted corpus is not 6,560 games. | `v17/nhl_total_goals_official_fitted_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_SEASON_COHORT_INCOMPLETE` | A complete-corpus replay is missing one of the five required historical seasons. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_SCHEDULE_INPUT_INVALID` | A schedule export record is not a mapping or lacks season, team or payload. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_SCHEDULE_MISSING` | No official schedule exports were supplied. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_COVERAGE_INCOMPLETE` | Full-corpus invariants failed: not 6,560 games on each side, 13,120 mirror instances, 6,560 mirrored events, or a ledger event without exactly two instances. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+
+## NHL goalie/shot/special-teams research challenger (November 2026)
+
+Research-only side-by-side comparison (`v17/nhl_goalie_shot_challenger.py`,
+`v17/nhl_goalie_shot_runner.py`). V1 and V2 are refit on the identical
+boxscore-complete intersection with the same chronological 60/20/20 partitions;
+the added features are prior-settled-game reconstructions with a projected
+goalie policy (`LAST_START_OR_B2B_ALTERNATE_V1`, `goalie_status=PROJECTED`), so
+no pregame starter confirmation is claimed. The current game's settled boxscore
+is excluded from every feature-row manifest. The report is
+`ADVISORY_RESEARCH_ONLY` with `automatic_promotion_allowed=false`,
+`probability_publishable=false` and `can_execute=false`; even a passing research
+gate only requires forward shadow and governed review. The CI runner holds no
+secrets and writes no database rows. None of these codes is `MODEL_UNAVAILABLE`.
+
+### Boxscore acquisition and paired-row construction
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_BOX_SCHEMA_DRIFT` | Official boxscore structure or numeric data is unusable: a count is boolean, negative or non-integer, a team/player array or goalie list is missing, saves exceed shots against, a required field is absent, or the decoded payload is not a mapping. Detail names the field or exception type; no default is substituted. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_IDENTITY_MISMATCH` | Boxscore ID/season, a team abbreviation, or the parsed box season/home/away disagrees with the scheduled game. Detail appends the side when only one team conflicts. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_NOT_FINAL` | `gameState` is not `FINAL`/`OFF`, or `gameType` is not 2 (regular season). A non-final boxscore is never admitted as a settled outcome. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_STARTER_AMBIGUOUS` | A side's goalie list has zero or more than one entry with `starter: true`, so the starting goalie cannot be identified without guessing. The CI runner may exclude this event as a documented coverage gap. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_TRANSPORT_FAILED` | A boxscore request raised `requests.RequestException` on the final of four attempts (backoff 1s, 2s, 4s, capped at 8s). | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_HTTP_<status>` | Non-200 response: immediately for non-retryable statuses such as 404, or after the final attempt for 429/500/502/503/504. The suffix is the HTTP status and detail is the game ID. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_RETRIES_EXHAUSTED` | The retry loop ended without a classified response or exception, which happens when the retry budget is non-positive. Defensive terminal; it reports no provider result. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_JSON_INVALID` | The boxscore response body could not be decoded as JSON. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_GAME_RECONCILIATION_FAILED` | Schedule game IDs are duplicated, or a supplied boxscore key is not in the schedule universe. No box is silently dropped or invented. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_GAME_ID_DUPLICATE` | The fetched historical schedule contains a duplicate official game ID, in either replay entry point. | `v17/nhl_goalie_shot_challenger.py` | `v17/nhl_goalie_shot_runner.py` | No |
+| `NHL_V1_IDENTITY_DUPLICATE` | The reconstructed V1 baseline rows contain a duplicate event ID, so the side-by-side comparison would not hold one row per game. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_GAME_TIME_CONFLICT` | A team appears twice at the same scheduled instant, or its prior history entry is timestamped at or after the current fixture. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_COMPARISON_INTERSECTION_INCOMPLETE` | Fewer than 300 events remain in the boxscore-complete V1/V2 intersection, so the paired comparison is not fitted. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+
+### Cached replay driver
+
+The runner excludes an event only for the three documented coverage failures
+(`NHL_BOX_HTTP_404`, `NHL_BOX_STARTER_AMBIGUOUS`, `NHL_BOX_SCHEMA_DRIFT`).
+Transport, rate-limit and identity failures remain blocking.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_CACHE_IDENTITY_CONFLICT` | A cached box's event ID, season, home or away team differs from the schedule row. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_CACHE_HASH_INVALID` | A cached box's `source_hash` is not 64 characters. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_CACHE_INVALID` | A cached file is unreadable, mistyped, missing keys, or failed its identity/hash check. The run fails closed instead of trusting the row or silently refetching it. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_BOX_COVERAGE_BELOW_98_PERCENT` | More than 2% of scheduled games were excluded for documented coverage reasons, so the research corpus is too incomplete to replay. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_RESEARCH_REPLAY_FAILED` | The CI driver caught an exception with no typed `code` attribute. The block is still rendered typed, with `exception_type`, `can_execute=false` and a non-zero exit. | `v17/nhl_goalie_shot_runner.py` | — | No |
+
+`NHL_REPLAY_BLOCKED:<code>:<type>` is the CI stderr marker for a typed block, not
+a distinct failure code; the underlying code is always one of the rows above.
