@@ -45,16 +45,19 @@ latest_nfl_health AS (
 prop_model_counts AS (
     -- Exact (sport, stat_type) family: an artifact for one stat family must never
     -- authorize another family. Line range is reported, never assumed.
-    SELECT sport, stat_type, count(*)::int AS fitted_artifact_count,
+    -- Normalized exactly as the registry's unique index does (upper) plus btrim, so
+    -- 'nfl ' / 'Nfl' rows cannot silently drop out of the join or split a family.
+    SELECT upper(btrim(sport)) AS sport, upper(btrim(stat_type)) AS stat_type,
+           count(*)::int AS fitted_artifact_count,
            count(*) FILTER (
                WHERE active AND promoted
                  AND lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')
-                 AND calibrator_version IS NOT NULL
+                 AND NULLIF(btrim(calibrator_version),'') IS NOT NULL
                  AND supported_line_min IS NOT NULL
                  AND supported_line_max IS NOT NULL
            )::int AS active_promoted_artifacts
     FROM public.wow_prop_fitted_model_artifacts
-    GROUP BY sport, stat_type
+    GROUP BY upper(btrim(sport)), upper(btrim(stat_type))
 ),
 requested_props(sport) AS (
     VALUES ('MLB'), ('NBA'), ('NFL'), ('WNBA')
@@ -117,5 +120,5 @@ SELECT rp.sport, 'WOW_PROP_LANE'::text, COALESCE(pm.stat_type,'__NO_FITTED_ARTIF
        FALSE AS preflight_authorizes_publication,
        FALSE AS can_execute
 FROM requested_props rp
-LEFT JOIN prop_model_counts pm ON pm.sport=rp.sport
+LEFT JOIN prop_model_counts pm ON pm.sport=upper(btrim(rp.sport))
 ORDER BY routed_lane, sport, market_key;
