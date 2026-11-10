@@ -224,3 +224,65 @@ def test_workflow_run_is_not_globally_authorized_for_other_internal_workflows():
     claims["event_name"] = "workflow_run"
     with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(claims)
+
+
+def test_continuous_learning_oidc_accepts_only_exact_protected_main_workflow():
+    claims = _claims()
+    claims["workflow_ref"] = oidc.CONTINUOUS_INTELLIGENCE_WORKFLOW_REF
+    claims["event_name"] = "workflow_dispatch"
+    assert oidc.validate_continuous_intelligence_oidc_claims(claims)["ref"] == oidc.REF
+    claims["event_name"] = "schedule"
+    assert oidc.validate_continuous_intelligence_oidc_claims(claims)["repository"] == oidc.REPOSITORY
+    # The learning job must not inherit global scorer/Scout OIDC privileges.
+    assert oidc.CONTINUOUS_INTELLIGENCE_WORKFLOW_REF not in oidc.ALLOWED_WORKFLOW_REFS
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="WORKFLOW_REF_MISMATCH"):
+        oidc.validate_github_actions_claims(claims)
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("repository", "attacker/fork"),
+    ("repository_id", "1"),
+    ("repository_owner_id", "1"),
+    ("ref", "refs/heads/feature"),
+    ("runner_environment", "self-hosted"),
+    ("workflow_ref", "attacker/workflow@refs/heads/main"),
+    ("event_name", "pull_request"),
+    ("event_name", "workflow_run"),
+    ("event_name", "push"),
+    ("job_workflow_ref", "attacker/reusable.yml@refs/heads/main"),
+])
+def test_continuous_learning_oidc_rejects_untrusted_claims(field, bad):
+    claims = _claims()
+    claims["workflow_ref"] = oidc.CONTINUOUS_INTELLIGENCE_WORKFLOW_REF
+    claims["event_name"] = "schedule"
+    claims[field] = bad
+    with pytest.raises(oidc.GitHubOIDCValidationError):
+        oidc.validate_continuous_intelligence_oidc_claims(claims)
+
+
+def test_continuous_learning_oidc_preserves_signature_and_audience_validation(monkeypatch):
+    claims = _claims()
+    claims["workflow_ref"] = oidc.CONTINUOUS_INTELLIGENCE_WORKFLOW_REF
+    claims["event_name"] = "schedule"
+
+    class _Key:
+        key = object()
+
+    class _Client:
+        def get_signing_key_from_jwt(self, token):
+            assert token == "signed-runner-jwt"
+            return _Key()
+
+    calls = []
+    def decode(token, key, **kw):
+        calls.append(kw)
+        return claims
+
+    monkeypatch.setattr(oidc.jwt, "decode", decode)
+    assert oidc.verify_github_actions_oidc(
+        "signed-runner-jwt", jwk_client=_Client(),
+        validator=oidc.validate_continuous_intelligence_oidc_claims,
+    )["workflow_ref"] == oidc.CONTINUOUS_INTELLIGENCE_WORKFLOW_REF
+    assert calls[0]["issuer"] == oidc.ISSUER
+    assert calls[0]["audience"] == oidc.AUDIENCE
+    assert calls[0]["algorithms"] == ["RS256"]

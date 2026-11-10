@@ -17,13 +17,12 @@ SCHEMA_VERSION = "WOW17_CORE_INTELLIGENCE_V1"
 
 _POSITIVE_RESULTS = {"HIT", "WIN", "WON", "SETTLED_WIN"}
 _NEGATIVE_RESULTS = {"MISS", "LOSS", "LOST", "SETTLED_LOSS"}
-_NON_BINARY_RESULTS = {"PUSH", "TIE", "VOID", "REFUND", "VOID_NOT_STARTER"}
+_NON_BINARY_RESULTS = {"PUSH", "TIE", "VOID", "REFUND", "VOID_NOT_STARTER", "DNP"}
 
-_PROBABILITY_FIELDS = (
-    "calibrated_probability",
-    "raw_model_probability",
-    "model_probability",
-)
+# Official calibration diagnostics may grade only the recorded calibrated
+# probability. Preserve raw probabilities in immutable source receipts; never
+# turn an uncalibrated model number into a calibration score.
+_PROBABILITY_FIELDS = ("calibrated_probability",)
 
 
 def _text(value: Any) -> str | None:
@@ -50,7 +49,9 @@ def _outcome_target(official_result: Any, hit: Any = None) -> int | None:
         return 1
     if result in _NEGATIVE_RESULTS:
         return 0
-    if result in _NON_BINARY_RESULTS:
+    # Provider-specific voids (e.g. VOID_PLAYER_DNP) are never binary
+    # results, even if an inconsistent upstream hit field was populated.
+    if result in _NON_BINARY_RESULTS or result.startswith("VOID_"):
         return None
     if isinstance(hit, bool):
         return int(hit)
