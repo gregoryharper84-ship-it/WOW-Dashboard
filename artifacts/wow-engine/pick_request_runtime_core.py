@@ -10,6 +10,10 @@ artifact before any expensive automatic acquisition. Evidence then follows one
 canonical path: validate -> deterministic fingerprint -> immutable/idempotent
 snapshot -> existing governed /score-prop model path.
 
+A recognized publication-only aggregate hold may continue through that existing
+scorer's raw research branch after canonical preflight. Its receipt stays held,
+nonpublishable, and non-rankable; other capability failures remain closed.
+
 Every row terminates exactly once. A bad/unsupported row cannot erase a sibling
 row. can_execute is false unconditionally.
 """
@@ -21,7 +25,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Any, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,13 +35,29 @@ from agent_runtime.registry import worker_spec
 from agent_runtime.runner_scout_research import execute_envelope
 from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
+from calibration_publication_api import _collect_blockers, _governed_preflight, _publication_only
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
 from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
-from prop_auto_hydration import PropAutoHydrationError
-from prop_auto_hydration_router import auto_hydrate_prop_evidence
+from prop_auto_hydration import PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS, PropAutoHydrationError
+from prop_auto_hydration_router import auto_hydrate_prop_evidence, recheck_provisional_participation
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
+from v17.player_availability_gate import (
+    AVAILABILITY_AVAILABLE,
+    AVAILABILITY_UNAVAILABLE,
+    AVAILABILITY_UNVERIFIED,
+    PLAYER_AVAILABILITY_UNVERIFIED,
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
+    PLAYER_RULED_OUT,
+    evaluate_player_availability,
+)
+from v17.provisional_availability_recheck import (
+    RECHECK_NOT_DUE,
+    RECHECK_SOURCE_UNAVAILABLE,
+    recheck_is_due,
+    resolve_provisional_recheck,
+)
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
 from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 
@@ -47,6 +67,48 @@ from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 PROP_ROUTE_REGISTRY_INFRA_CODES = frozenset(
     {"PROP_MODEL_REGISTRY_UNAVAILABLE", "PROP_MODEL_REGISTRY_INVALID_RESPONSE"}
 )
+
+
+def _publication_scopes_only(value: Any) -> bool:
+    """Reject an explicit unknown/malformed failed scope anywhere in evidence."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).strip().upper() == "FAILED_CONTRACT_SCOPE":
+                if not isinstance(child, (list, tuple)) or any(
+                    not isinstance(scope, str)
+                    or scope.strip().upper() not in {"CALIBRATION", "PUBLICATION"}
+                    for scope in child
+                ):
+                    return False
+            elif not _publication_scopes_only(child):
+                return False
+    elif isinstance(value, (list, tuple)):
+        return all(_publication_scopes_only(child) for child in value)
+    return True
+
+
+def _publication_research_preflight_valid(lane: dict[str, Any], preflight: dict[str, Any]) -> bool:
+    """Require independent canonical proof; aggregate reasons cannot supply it.
+
+    The canonical RPC returns ok=true even when publication is held. Its
+    unavailable/invalid transport responses are not successful preflights.
+    NOT_EVALUATED is its legacy aggregate-only specialist status; exact fitted
+    capability is still proved by the subsequent specialist/artifact gates.
+    """
+    return bool(
+        preflight.get("ok") is True
+        and not preflight.get("code")
+        and preflight.get("governed_probability_capability") in ("AVAILABLE", "UNAVAILABLE")
+        and preflight.get("governed_publication_capability") == "UNAVAILABLE"
+        and preflight.get("specialist_model_capability") in ("AVAILABLE", "NOT_EVALUATED")
+        and preflight.get("probability_publishable") is False
+        and preflight.get("governed_publishable") is False
+        and isinstance(preflight.get("failed_contract_scope"), (list, tuple))
+        and preflight["failed_contract_scope"]
+        and _publication_only(_collect_blockers(preflight))
+        and _publication_scopes_only(preflight)
+        and _publication_scopes_only(lane)
+    )
 
 
 PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
@@ -181,10 +243,16 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     if captured > now:
         raise ValueError("CAPTURE_TIMESTAMP_IN_FUTURE")
 
-    if len(row.evidence.game_log) < 10:
-        raise ValueError("L10_GAME_LOG_INCOMPLETE")
-    if len(row.evidence.box_score_log) < 10:
-        raise ValueError("L10_BOX_SCORE_LOG_INCOMPLETE")
+    # Reviewed min3 eligibility belongs only to the MLB strikeout route. Keep
+    # the L10 contract for workload and every other sport/stat unchanged.
+    if str(row.sport).strip().upper() == "MLB" and canonical_stat == "PITCHER_STRIKEOUTS":
+        if min(len(row.evidence.game_log), len(row.evidence.box_score_log)) < PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS:
+            raise ValueError("MLB_RECENT_STARTS_INSUFFICIENT")
+    else:
+        if len(row.evidence.game_log) < 10:
+            raise ValueError("L10_GAME_LOG_INCOMPLETE")
+        if len(row.evidence.box_score_log) < 10:
+            raise ValueError("L10_BOX_SCORE_LOG_INCOMPLETE")
     if any(
         not isinstance(v, (int, float))
         or isinstance(v, bool)
@@ -199,6 +267,66 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     role_label = str(role_status.get("status") or role_status.get("role") or "").strip()
     if not role_label:
         raise ValueError("ROLE_STATUS_MISSING")
+
+    # Roster identity above is not game availability. Official participation
+    # evidence is evaluated separately and, when it rules the player out, stops
+    # the row before the scorer runs. Missing availability evidence is reported
+    # as UNVERIFIED and applied as a pre-model ranking blocker by the caller, so
+    # it is never read as clearance.
+    availability = evaluate_player_availability(role_status)
+    if availability.status == AVAILABILITY_UNAVAILABLE:
+        raise ValueError(f"{PLAYER_RULED_OUT}:{availability.designation or 'UNSPECIFIED'}")
+
+    # A provisional official basis (MLB probable starter) carries an explicit
+    # recheck obligation. Inside the final-refresh window, re-read the same
+    # official source: a typed confirmation discharges the obligation, a
+    # rule-out becomes a normal rejection, and every other outcome (stale,
+    # unretrievable, identity mismatch, still probable) leaves the obligation
+    # in place. A recheck that fails never converts into clearance.
+    availability_recheck: dict[str, Any] | None = None
+    if availability.requires_revalidation:
+        availability_recheck = {
+            "status": RECHECK_NOT_DUE,
+            "checked_at": now.isoformat(),
+            "event_start_time": event_start.isoformat(),
+            "window_hours": 6,
+            "can_execute": False,
+        }
+        if recheck_is_due(event_start, now):
+            try:
+                observed = recheck_provisional_participation(
+                    sport=str(row.sport).strip().upper(),
+                    player=row.player,
+                    event_start_time=event_start.isoformat(),
+                    availability=availability.receipt(),
+                    now=now,
+                )
+            except Exception as exc:
+                availability_recheck = {
+                    "status": RECHECK_SOURCE_UNAVAILABLE,
+                    "error_type": type(exc).__name__,
+                    "checked_at": now.isoformat(),
+                    "can_execute": False,
+                }
+            else:
+                decision, availability_recheck = resolve_provisional_recheck(
+                    provisional=availability.receipt(),
+                    observed=observed,
+                    now=now,
+                )
+                if decision.status == AVAILABILITY_UNAVAILABLE:
+                    raise ValueError(
+                        f"{PLAYER_RULED_OUT}:{decision.designation or 'UNSPECIFIED'}"
+                    )
+                availability = decision
+                if decision.status == AVAILABILITY_AVAILABLE:
+                    # Freeze the confirming observation on the row so the
+                    # snapshot and every re-reader see the discharged
+                    # obligation, not the original probable listing.
+                    row.evidence.role_status = {
+                        **row.evidence.role_status,
+                        "availability": dict(observed),
+                    }
 
     opportunity = row.evidence.opportunity_ledger
     opportunity_status = str(
@@ -234,15 +362,53 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         "stat_type": canonical_stat,
         "player": " ".join(str(row.player).strip().split()),
         "event_id": str(row.event_id).strip(),
+        # Official participation evidence is reported through validation so the
+        # run loop can apply it as a pre-model ranking blocker. UNVERIFIED is
+        # never converted into clearance here.
+        "availability_status": availability.status,
+        "availability_requires_revalidation": availability.requires_revalidation,
+        "availability": availability.receipt(),
+        "availability_recheck": availability_recheck,
     }
+
+
+def _premodel_availability_blockers(normalized: dict[str, Any]) -> list[str]:
+    """Recompute availability holds at the source snapshot writer.
+
+    The writer must not trust caller-supplied blocker lists: every direct
+    Daily or scoring call preserves unverified/recheck status in storage.
+    """
+    if normalized.get("availability_requires_revalidation") is True:
+        return [PLAYER_AVAILABILITY_RECHECK_REQUIRED]
+    if normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
+        return [PLAYER_AVAILABILITY_UNVERIFIED]
+    if normalized.get("availability_status") == AVAILABILITY_UNAVAILABLE:
+        return [PLAYER_RULED_OUT]
+    return []
 
 
 def _snapshot_payload(
     row: PickRequestRow,
     normalized: dict[str, Any],
+    blockers: list[str] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
+    """Freeze one row's evidence and its pre-model availability verdict.
+
+    ``blockers`` is the gate verdict (availability hold or provisional recheck
+    obligation), not evidence content, so it is persisted on the row but kept
+    out of the fingerprint: the same evidence row must resolve to the same
+    ``source_snapshot_id`` when it is re-scored after a later recheck clears it.
+
+    Persisting it matters because every re-reader of
+    ``wow_prop_evidence_snapshots`` -- including
+    ``wow_prop_evidence_snapshot()`` and the live self-acceptance check -- treats
+    ``blockers=[]`` with ``hydration_status=PASS`` as ready evidence. A hold
+    that lived only in the HTTP response would be invisible after the run.
+    """
     if row.evidence is None:
         raise ValueError("EVIDENCE_MISSING_AFTER_ACQUISITION")
+
+    snapshot_blockers = list(dict.fromkeys([*(blockers or []), *_premodel_availability_blockers(normalized)]))
 
     fingerprint_input = {
         "event_id": normalized["event_id"],
@@ -296,7 +462,7 @@ def _snapshot_payload(
         "opportunity_ledger": row.evidence.opportunity_ledger,
         "source_timestamps": normalized["source_timestamps"],
         "hydration_status": "PASS",
-        "blockers": [],
+        "blockers": snapshot_blockers,
         "evidence_version": str(row.evidence.evidence_version).strip(),
         "can_execute": False,
     }
@@ -371,7 +537,37 @@ def _completed_scored_outcome(
     snapshot_id: str,
     fingerprint: str,
     acquisition: dict[str, Any],
+    premodel_blockers: Iterable[str] = (),
 ) -> dict[str, Any]:
+    premodel = list(dict.fromkeys(str(b).strip().upper() for b in premodel_blockers if str(b).strip()))
+    if scored.get("research_only") is True:
+        # The publication wrapper returns raw fitted output without a governed
+        # prediction. Preserve that receipt as a typed hold; no bounds, rank,
+        # portfolio admission, or completed governed row can be inferred.
+        out = _terminal(
+            row_key,
+            "HELD",
+            "CALIBRATION_BLOCKED_NO_PUBLISH",
+            detail={
+                "terminal_label": "CALIBRATION_BLOCKED_NO_PUBLISH",
+                "model_evaluated": True,
+                "specialist_invoked": True,
+                "scoring_attempted": True,
+                "blockers": list(dict.fromkeys([*(scored.get("blockers") or []), *premodel])),
+            },
+            snapshot_id=snapshot_id,
+            acquisition=acquisition,
+        )
+        out.update({
+            "evidence_fingerprint": fingerprint,
+            "confidence_tier": "RESEARCH_ONLY",
+            "rank_eligible": False,
+            "model_supported": True,
+            "downstream_money_evaluation_allowed": False,
+            "downstream_portfolio_evaluation_allowed": False,
+            "result": scored,
+        })
+        return out
     prediction = scored.get("prediction") or {}
     payload = scored.get("probability_qualification")
     if isinstance(payload, dict) and payload.get("terminal_label"):
@@ -400,14 +596,30 @@ def _completed_scored_outcome(
             blockers.append("MARKET_DATA_UNAVAILABLE")
         if (lanes.get("MONEY") or {}).get("status") != "PASS":
             blockers.append("PAYOUT_UNRESOLVED")
+    # Pre-model ranking blockers are added after the scorer's own blockers so no
+    # scoring or lane stage can drop them. Participation evidence that was never
+    # retrieved is a ranking blocker, not a model rejection: the probability may
+    # still be reported for research, but the row cannot be rank eligible.
+    if premodel:
+        blockers = list(dict.fromkeys([*blockers, *premodel]))
+        rank_eligible = False
+        money_allowed = False
     decision = reduce_prop_terminal(
         proposed_label=terminal_label,
         blockers=blockers,
         model_evaluated=True,
     )
+    if decision.pick_rejected:
+        terminal_status = "REJECTED"
+    elif premodel:
+        # Evidence is missing, not the model: the row is unresolved, never a
+        # completed governed row.
+        terminal_status = "HELD"
+    else:
+        terminal_status = "COMPLETED"
     return {
         "row_key": row_key,
-        "terminal_status": "REJECTED" if decision.pick_rejected else "COMPLETED",
+        "terminal_status": terminal_status,
         "code": decision.terminal_label,
         "terminal_label": decision.terminal_label,
         "confidence_tier": confidence_tier,
@@ -593,9 +805,10 @@ def _mark_scored_utilization(audit: dict[str, Any], scored: dict[str, Any]) -> N
         if isinstance(scored.get("probability_qualification"), dict)
         else {}
     )
-    model_family = model_evidence.get("model_family") or prediction.get("model_family")
+    research = scored.get("research_model_output") if isinstance(scored.get("research_model_output"), dict) else {}
+    model_family = model_evidence.get("model_family") or prediction.get("model_family") or research.get("model_family")
     audit["model_family"] = model_family
-    executed_specialist = model_evidence.get("specialist_version") or prediction.get("specialist_version")
+    executed_specialist = model_evidence.get("specialist_version") or prediction.get("specialist_version") or research.get("specialist_version")
     audit["executed_specialist_version"] = executed_specialist
     audit["specialist_execution_identity_match"] = _specialist_identity_matches(
         audit.get("assigned_specialist"),
@@ -611,6 +824,7 @@ def _mark_scored_utilization(audit: dict[str, Any], scored: dict[str, Any]) -> N
             model_evidence.get("probability_less"),
             prediction.get("raw_model_probability"),
             prediction.get("raw_probability"),
+            research.get("raw_specialist_probability"),
         )
     )
     audit["calibrator_invoked"] = any(
@@ -960,23 +1174,40 @@ def install_pick_request_routes(
                 continue
 
             lane = market_api.prod._runtime_capability(market_api.prod.PROP_CAPABILITY_KEY)
+            publication_research_only = False
             if lane.get("capability_status") != "AVAILABLE":
-                utilization["exact_blocker"] = "PROP_PROBABILITY_UNAVAILABLE"
-                outcomes.append(
-                    _terminal(
-                        row_key,
-                        "HELD",
-                        "PROP_PROBABILITY_UNAVAILABLE",
-                        detail={
-                            "governed_probability_capability": "UNAVAILABLE",
-                            "capability_evidence": lane.get("evidence") or {},
-                            "controlling_specialist": specialist.get("controlling_specialist"),
-                            "specialist_invoked": False,
-                        },
-                        acquisition=route_blocked_acquisition,
-                    )
+                preflight = _governed_preflight(market_api)
+                blockers = list(dict.fromkeys([
+                    *_collect_blockers(lane.get("evidence") or {}),
+                    *_collect_blockers(preflight),
+                ]))
+                # Only the existing /score-prop wrapper owns raw research
+                # continuation. Dedicated 1IP ingress has separate authority.
+                publication_research_only = (
+                    lane.get("capability_status") == "UNAVAILABLE"
+                    and canonical_stat != MLB_1IP_STAT_TYPE
+                    and _publication_only(blockers)
+                    and _publication_research_preflight_valid(lane, preflight)
                 )
-                continue
+                if not publication_research_only:
+                    utilization["exact_blocker"] = "PROP_PROBABILITY_UNAVAILABLE"
+                    outcomes.append(
+                        _terminal(
+                            row_key,
+                            "HELD",
+                            "PROP_PROBABILITY_UNAVAILABLE",
+                            detail={
+                                "governed_probability_capability": "UNAVAILABLE",
+                                "capability_evidence": lane.get("evidence") or {},
+                                "preflight": preflight,
+                                "blockers": blockers or ["UNCLASSIFIED_CAPABILITY_FAILURE"],
+                                "controlling_specialist": specialist.get("controlling_specialist"),
+                                "specialist_invoked": False,
+                            },
+                            acquisition=route_blocked_acquisition,
+                        )
+                    )
+                    continue
 
             route = market_api._prop_route_artifact(sport, canonical_stat)
             route_code = str(route.get("code") or "")
@@ -1113,6 +1344,27 @@ def install_pick_request_routes(
                 acquisition["status"] = "PASS"
             except ValueError as exc:
                 acquisition["status"] = "FAILED_VALIDATION"
+                reason = str(exc)
+                if reason.split(":", 1)[0] == PLAYER_RULED_OUT:
+                    # Participation invalidation keeps its own terminal. It is
+                    # not an incomplete acquisition, a model rejection, or an
+                    # absent fitted capability.
+                    outcomes.append(
+                        _terminal(
+                            row_key,
+                            "REJECTED",
+                            PLAYER_RULED_OUT,
+                            detail={
+                                "blocker": PLAYER_RULED_OUT,
+                                "terminal_label": PLAYER_RULED_OUT,
+                                "designation": reason.split(":", 1)[1] if ":" in reason else None,
+                                "model_evaluated": False,
+                                "specialist_invoked": False,
+                            },
+                            acquisition=acquisition,
+                        )
+                    )
+                    continue
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -1124,7 +1376,34 @@ def install_pick_request_routes(
                 )
                 continue
 
-            snapshot_id, fingerprint, snapshot = _snapshot_payload(row, normalized)
+            premodel_blockers: list[str] = []
+            if normalized.get("availability_requires_revalidation") is True:
+                # A provisional official basis (MLB probable starter), or a
+                # recheck that failed to discharge it, names the player for the
+                # game but is not confirmed participation. The obligation is
+                # more specific than plain UNVERIFIED, so it is reported first:
+                # the row may be scored for research, but it cannot enter the
+                # Verified Pool until the final refresh rechecks the same
+                # official source.
+                premodel_blockers.append(PLAYER_AVAILABILITY_RECHECK_REQUIRED)
+                acquisition["availability_status"] = "PROVISIONAL_RECHECK_REQUIRED"
+            elif normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
+                # No official participation evidence was retrieved. Compute the
+                # probability for research, but keep the row out of the Verified
+                # Pool until availability is verified.
+                premodel_blockers.append(PLAYER_AVAILABILITY_UNVERIFIED)
+                acquisition["availability_status"] = AVAILABILITY_UNVERIFIED
+
+            if normalized.get("availability_recheck") is not None:
+                acquisition["availability_recheck"] = normalized["availability_recheck"]
+                if normalized.get("availability_requires_revalidation") is False:
+                    # Only a discharged obligation changes the reported status;
+                    # a provisional row reports its recheck obligation instead.
+                    acquisition["availability_status"] = normalized.get("availability_status")
+
+            snapshot_id, fingerprint, snapshot = _snapshot_payload(
+                row, normalized, premodel_blockers
+            )
             try:
                 market_api.prod.get_client().table("wow_prop_evidence_snapshots").upsert(
                     snapshot,
@@ -1220,10 +1499,37 @@ def install_pick_request_routes(
                 score_req = market_api.ScorePropRequest(**request_payload)
                 utilization["specialist_invoked"] = True
                 utilization["model_execution_path"] = "CERTIFIED_MODEL_FAMILY_ADAPTER"
-                scored = market_api.score_prop(
-                    score_req,
-                    x_wow_model_identity=x_wow_model_identity,
-                )
+                if publication_research_only:
+                    # Bind this request to the existing raw specialist scorer
+                    # before invocation. A later publication-health recovery
+                    # cannot upgrade it to governed prediction persistence.
+                    scored = market_api.score_prop_research(
+                        score_req,
+                        x_wow_model_identity=x_wow_model_identity,
+                        lane=lane,
+                        preflight=preflight,
+                        blockers=blockers,
+                    )
+                else:
+                    scored = market_api.score_prop(
+                        score_req,
+                        x_wow_model_identity=x_wow_model_identity,
+                    )
+                if publication_research_only and not (
+                    isinstance(scored, dict)
+                    and scored.get("ok") is True
+                    and scored.get("research_only") is True
+                    and scored.get("probability_publishable") is False
+                    and scored.get("governed_publishable") is False
+                ):
+                    raise HTTPException(status_code=409, detail={
+                        "code": "MODEL_OUTPUT_INVALID",
+                        "blocker_code": "PUBLICATION_LOCK_RESEARCH_CONTRACT_INVALID",
+                        "specialist_invoked": True,
+                        "scoring_attempted": True,
+                        "probability_publishable": False,
+                        "can_execute": False,
+                    })
             except HTTPException as exc:
                 raw_detail = (
                     exc.detail
@@ -1271,6 +1577,7 @@ def install_pick_request_routes(
                 snapshot_id=snapshot_id,
                 fingerprint=fingerprint,
                 acquisition=acquisition,
+                premodel_blockers=premodel_blockers,
             )
             outcomes.append(completed_outcome)
             if completed_outcome["terminal_status"] == "COMPLETED":

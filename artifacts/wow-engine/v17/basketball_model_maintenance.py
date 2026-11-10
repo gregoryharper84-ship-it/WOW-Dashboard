@@ -468,40 +468,47 @@ def run_basketball_model_maintenance(
             # The live candidate must be proven by a separate season-filtered
             # readback; do not trust a hydration-supplied verification flag.
             # Explicit-clock replay is separately held before fitting.
+            current_evidence: dict[str, Any] = {}
             if isinstance(hydration, dict):
-                hydration = {
+                current_evidence = {
                     k: v for k, v in hydration.items()
                     if k not in {
                         "latest_current_season_game_date_after",
                         "current_season_readback_code",
                     }
                 }
-                raw_latest = hydration.get("latest_game_date_after")
-                try:
-                    latest_date = date.fromisoformat(str(raw_latest)[:10]) if raw_latest else None
-                except ValueError:
-                    latest_date = None
-                start_year = clock.year if clock.month >= 10 else clock.year - 1
-                if (
-                    now is None and latest_date is not None
+            raw_latest = current_evidence.get("latest_game_date_after")
+            try:
+                latest_date = date.fromisoformat(str(raw_latest)[:10]) if raw_latest else None
+            except ValueError:
+                latest_date = None
+            start_year = clock.year if clock.month >= 10 else clock.year - 1
+            if now is None and (
+                hydration is None or (
+                    latest_date is not None
                     and date(start_year, 10, 1) <= latest_date <= clock.date()
-                ):
-                    try:
-                        hydration["latest_current_season_game_date_after"] = (
-                            _nba_verified_current_season_date(db, clock)
-                        )
-                    except BasketballHydrationError as exc:
-                        # Surface exact typed readback failures but never raw
-                        # provider or database transport exception details.
-                        hydration["current_season_readback_code"] = _public_failure_code(
-                            exc, "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
-                        )
-                    except Exception:  # noqa BLE001 - no unsafe replay after DB failure
-                        hydration["current_season_readback_code"] = (
-                            "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
-                        )
+                )
+            ):
+                try:
+                    verified = _nba_verified_current_season_date(db, clock)
+                    current_evidence["latest_current_season_game_date_after"] = verified
+                    if hydration is None:
+                        # This is independent persisted evidence, never a
+                        # successful fresh acquisition. Keep hydration=None and
+                        # its native provider blocker in the replay response.
+                        current_evidence["latest_game_date_after"] = verified
+                except BasketballHydrationError as exc:
+                    current_evidence["current_season_readback_code"] = _public_failure_code(
+                        exc, "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
+                    )
+                except Exception:  # noqa BLE001 - no unsafe replay after DB failure
+                    current_evidence["current_season_readback_code"] = (
+                        "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED"
+                    )
+            if isinstance(hydration, dict):
+                hydration = current_evidence
             gap = _nba_current_season_data_gap(
-                hydration, clock, require_verified_current_season=now is None,
+                current_evidence, clock, require_verified_current_season=now is None,
             )
             if gap is not None:
                 # Preserve the original acquisition failure underneath the

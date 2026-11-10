@@ -1,10 +1,9 @@
 """Hydrate real NBA/WNBA settled team games into V17 research stores.
 
-Primary source: BallDontLie when its credential/path is available.
-First fallback: Sportsdataverse's open-licensed ESPN schedule releases.
-Second fallback: ESPN public scoreboard, used only for settled games newer than
-the currently persisted corpus. The monotonic-date fallback rule prevents a
-provider switch from duplicating older BallDontLie rows under different IDs.
+NBA uses canonical SportsDataverse ESPN schedule releases. WNBA uses BallDontLie
+when available, then SportsDataverse, with any scoreboard training fallback
+subject to source entitlement. A monotonic date fence protects provider switches;
+verified canonical NBA days may append missing IDs without rewriting evidence.
 
 Research/training only. No scoring, publication, recommendation, wager, or
 execution. can_execute=False unconditional.
@@ -108,7 +107,10 @@ def fetch_games(sport: str, season: int, *, max_pages: int = 100) -> list[dict[s
         if not cursor:
             break
         params = {**params, "cursor": cursor}
-    return rows
+    # Stamp our acquisition clock after all pages have been fetched. Provider
+    # fields and historical replay cutoffs cannot supply observation time.
+    observed_at = datetime.now(timezone.utc).isoformat()
+    return [dict(row, _wow_source_observed_at=observed_at) for row in rows]
 
 
 def fetch_sportsdataverse_games(
@@ -279,7 +281,25 @@ def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[s
     date_text = str(raw.get("date") or raw.get("datetime") or "")[:10]
     if not gid or not date_text or not home.get("id") or not away.get("id"):
         return None
-    payload_sha = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    try:
+        game_day = date.fromisoformat(date_text)
+        cutoff = datetime.fromisoformat(str(retrieved_at).replace("Z", "+00:00"))
+        observed_text = str(raw.get("_wow_source_observed_at") or "")
+        observed = datetime.fromisoformat(observed_text.replace("Z", "+00:00"))
+        if cutoff.utcoffset() is None or observed.utcoffset() is None:
+            return None
+        if observed > cutoff or game_day > observed.astimezone(ZoneInfo("America/New_York")).date():
+            return None
+        if raw.get("datetime"):
+            event_at = datetime.fromisoformat(str(raw["datetime"]).replace("Z", "+00:00"))
+            if event_at.utcoffset() is None or not event_at < observed:
+                return None
+    except (ValueError, TypeError, OverflowError):
+        return None
+    payload_sha = hashlib.sha256(json.dumps(
+        {key: value for key, value in raw.items() if key != "_wow_source_observed_at"},
+        sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
     return {
         "game_id": gid,
         "season": int(raw.get("season") or int(date_text[:4])),
@@ -292,10 +312,10 @@ def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[s
         "home_win": int(hs) > int(aws),
         "source_provider": "BALLDONTLIE",
         "source_endpoint": BASE_URLS[sport],
-        "source_retrieved_at": retrieved_at,
+        "source_retrieved_at": observed_text,
         "source_payload_sha256": payload_sha,
         "settled": True,
-        "updated_at": retrieved_at,
+        "updated_at": observed_text,
     }
 
 
@@ -535,16 +555,57 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
                 client.table(TABLES[sport]).select("game_id")
                 .in_("game_id", ids).execute()
             )
-            if not isinstance(getattr(result, "data", None), list):
+            existing_rows = getattr(result, "data", None)
+            if not isinstance(existing_rows, list):
                 raise BasketballHydrationError("BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED")
-            existing = {
-                str(row.get("game_id") or "") for row in result.data
-                if isinstance(row, dict)
-            }
-            new_ids.update(set(ids) - existing)
+            existing: set[str] = set()
+            for existing_row in existing_rows:
+                # A boundary that drops or malforms an existing row can make an
+                # already-present ID look absent, which is the false-new count
+                # this write attestation exists to prevent. Fail before writing.
+                existing_id = (
+                    str(existing_row.get("game_id") or "")
+                    if isinstance(existing_row, dict) else ""
+                )
+                if not existing_id:
+                    raise BasketballHydrationError(
+                        "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED"
+                    )
+                existing.add(existing_id)
+            canonical_nba = sport == "NBA" and all(
+                row.get("source_provider") == "SPORTSDATAVERSE_ESPN" for row in batch
+            )
+            if canonical_nba:
+                # A later canonical snapshot may fill missing IDs, but never
+                # rewrite an earlier immutable settled observation/correction.
+                batch = [row for row in batch if row["game_id"] not in existing]
+                if not batch:
+                    continue
+                # Confirmation may only attest the IDs this invocation actually
+                # offered. Validating against the pre-filter list would accept
+                # a boundary that echoes an already-present row back as "new".
+                offered_ids = [row["game_id"] for row in batch]
             # A failed/ambiguous response may still represent a committed write.
             write_attempted = True
-            client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
+            if canonical_nba:
+                result = client.table(TABLES[sport]).upsert(
+                    batch, on_conflict="game_id", ignore_duplicates=True,
+                ).execute()
+                inserted = getattr(result, "data", None)
+                if not isinstance(inserted, list) or any(
+                    not isinstance(row, dict) for row in inserted
+                ):
+                    raise BasketballHydrationError("BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED")
+                confirmed = [row.get("game_id") for row in inserted]
+                if (
+                    any(identifier not in offered_ids for identifier in confirmed)
+                    or len(confirmed) != len(set(confirmed))
+                ):
+                    raise BasketballHydrationError("BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED")
+                new_ids.update(confirmed)
+            else:
+                client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
+                new_ids.update(set(ids) - existing)
     except Exception as exc:
         if write_attempted:
             raise BasketballHydrationPartialWriteError(
@@ -552,6 +613,60 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
             ) from exc
         raise
     return len(new_ids)
+
+
+def _reconcile_canonical_nba_days(
+    client: Any, rows: list[dict[str, Any]], latest_before: date,
+) -> list[dict[str, Any]]:
+    """Append missing IDs after a complete, namespace-consistent day readback.
+
+    An empty day proves no existing same-day identities can be duplicated. Any
+    existing rows must prove the same canonical namespace and remain unchanged.
+    """
+    identifiers = [row["game_id"] for row in rows]
+    if len(identifiers) != len(set(identifiers)):
+        raise BasketballHydrationError("BASKETBALL_SETTLED_GAME_ID_INVALID")
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    accepted = []
+    for row in rows:
+        if date.fromisoformat(row["game_date"]) > latest_before:
+            accepted.append(row)
+        else:
+            by_day.setdefault(row["game_date"], []).append(row)
+    for day, candidates in by_day.items():
+        try:
+            result = (
+                client.table(TABLES["NBA"])
+                .select("game_id,game_date,season,source_provider")
+                .eq("settled", True).eq("game_date", day).limit(101).execute()
+            )
+        except Exception as exc:
+            raise BasketballHydrationError("NBA_CANONICAL_DAY_READBACK_FAILED") from exc
+        existing = getattr(result, "data", None)
+        if not isinstance(existing, list) or len(existing) >= 101:
+            raise BasketballHydrationError("NBA_CANONICAL_DAY_READBACK_INCOMPLETE")
+        if not existing:
+            accepted.extend(candidates)
+            continue
+        expected_seasons = {row["season"] for row in candidates}
+        seen = set()
+        canonical = True
+        for row in existing:
+            event = row.get("game_id") if isinstance(row, dict) else None
+            if (
+                not isinstance(row, dict) or row.get("source_provider") != "SPORTSDATAVERSE_ESPN"
+                or row.get("game_date") != day or type(row.get("season")) is not int
+                or row["season"] not in expected_seasons
+                or not isinstance(event, str) or not event.startswith("espn-")
+                or not event[5:].isascii() or not event[5:].isdigit() or event in seen
+            ):
+                canonical = False
+                break
+            seen.add(event)
+        if not canonical:
+            raise BasketballHydrationError("NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED")
+        accepted.extend(row for row in candidates if row["game_id"] not in seen)
+    return accepted
 
 
 
@@ -778,7 +893,9 @@ def hydrate(
                     except BasketballHydrationError as exc:
                         recent_supplement[year] = "SOURCE_BLOCKED:" + str(exc)
 
-            if provider != "BALLDONTLIE" and latest_before is not None:
+            if sport == "NBA" and provider == "SPORTSDATAVERSE_ESPN" and latest_before is not None:
+                normalized_rows = _reconcile_canonical_nba_days(client, normalized_rows, latest_before)
+            elif provider != "BALLDONTLIE" and latest_before is not None:
                 # Provider IDs are not globally comparable. Restrict fallback writes
                 # to rows newer than the existing corpus so old BDL rows cannot be
                 # duplicated under ESPN-derived IDs.
@@ -834,7 +951,7 @@ def hydrate(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sport", required=True, choices=["NBA", "WNBA"])
-    parser.add_argument("--seasons", required=True, help="comma-separated calendar years")
+    parser.add_argument("--seasons", required=True, help="comma-separated release seasons: NBA ending year, WNBA calendar year")
     args = parser.parse_args()
     seasons = [int(x.strip()) for x in args.seasons.split(",") if x.strip()]
     print(json.dumps(hydrate(args.sport, seasons), sort_keys=True))

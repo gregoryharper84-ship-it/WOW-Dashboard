@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 import basketball_event_hydration_runtime as hydration
 
 
@@ -863,11 +865,11 @@ def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
         calls.append((sport, season))
         if season == 2026:
             return [_sportsdataverse_row(
-                event_id="nba-june-2026", game_date="2026-06-13",
+                event_id="401586001", game_date="2026-06-13",
             )]
         if season == 2027:
             return [dict(_sportsdataverse_row(
-                event_id="nba-oct-2027", game_date="2026-10-26",
+                event_id="401810026", game_date="2026-10-26",
             ), season="2027")]
         raise AssertionError("unexpected season")
 
@@ -891,8 +893,39 @@ def test_nba_completed_season_is_not_recent_espn_supplement_target(monkeypatch):
         lambda _client, _sport, rows: (stored.extend(rows), len(rows))[1],
     )
 
+    # Main's canonical day reconcile reads existing same-day IDs before the
+    # date fence. Stub only the June corpus day as already present.
+    class _Query:
+        def __init__(self):
+            self.day = None
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, key, value):
+            if key == "game_date":
+                self.day = value
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if self.day == "2026-06-13":
+                return SimpleNamespace(data=[{
+                    "game_id": "espn-401586001",
+                    "game_date": "2026-06-13",
+                    "season": 2026,
+                    "source_provider": "SPORTSDATAVERSE_ESPN",
+                }])
+            return SimpleNamespace(data=[])
+
+    class _Client:
+        def table(self, _name):
+            return _Query()
+
     result = hydration.hydrate(
-        "NBA", [2026, 2027], client=object(),
+        "NBA", [2026, 2027], client=_Client(),
         now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
     )
     assert calls == [("NBA", 2026), ("NBA", 2027)]

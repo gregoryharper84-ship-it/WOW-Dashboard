@@ -273,6 +273,7 @@ def test_colts_chiefs_utc_rollover_survives_100_replays_and_duplicate_aliases() 
             "opponent": "IND",
             "provider_season": 2026,
             "provider_week": 2,
+            "provider_event_start_time": "2026-09-21T00:20:00+00:00",
             "provider_home_team": "KC",
             "provider_away_team": "IND",
             "canonical_home_team": "KC",
