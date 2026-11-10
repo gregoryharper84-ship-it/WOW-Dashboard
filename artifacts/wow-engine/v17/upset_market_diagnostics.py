@@ -182,9 +182,23 @@ def analyze_upset_market_snapshot(
         label: sum(values[label] for values in book_probs) / len(book_probs)
         for label in labels
     }
+    # Averaging across books is useful for descriptive consensus, but never
+    # proves a market favorite if *any* included book selects a different side
+    # or has a near-tie. The favorite label is a cross-source identity assertion,
+    # not a numerical parameter that a mean can safely manufacture.
     favorite_prob = max(consensus.values())
     favorite_labels = [label for label in labels if abs(consensus[label] - favorite_prob) <= 0.005]
     favorite = favorite_labels[0] if len(favorite_labels) == 1 else None
+    individual_favorites: list[str | None] = []
+    for probabilities in book_probs:
+        largest = max(probabilities.values())
+        leaders = [
+            label for label in labels
+            if abs(probabilities[label] - largest) <= 0.005
+        ]
+        individual_favorites.append(leaders[0] if len(leaders) == 1 else None)
+    if favorite is None or any(label != favorite for label in individual_favorites):
+        favorite = None
 
     detail: dict[str, dict[str, Any]] = {}
     for label, (p, lo, hi) in model.items():
@@ -224,6 +238,7 @@ def analyze_upset_market_snapshot(
         "decision_time_utc": decision.isoformat(),
         "market_favorite": favorite,
         "market_favorite_verified": favorite is not None,
+        "book_favorites_agree": favorite is not None,
         "book_count": len(book_probs),
         "source_snapshot_ids": sources,
         "governed_receipt_id": governed_receipt_id,
