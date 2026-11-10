@@ -77,10 +77,58 @@ jobs:
           DD_APPLICATION_KEY: ${{ secrets.WOW_DATADOG_LOG_READ_APP_KEY }}
           DD_SITE: ${{ vars.WOW_DATADOG_SITE }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ -z "${DD_SITE:-}" ]; then export DD_SITE=datadoghq.com; fi
+          # Preserve the source CLI's typed exit 2 as a non-actionable provider
+          # HOLD, not a failing protected-main code-validation check. Unexpected
+          # exits and missing/malformed receipts remain hard failures.
           python artifacts/wow-engine/v17/log_incident_intake.py \
             --hours 2 --out "$RUNNER_TEMP/wow-v17-log-intake.json"
+          intake_exit=$?
+          python - "$RUNNER_TEMP/wow-v17-log-intake.json" "$intake_exit" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          allowed_holds = frozenset({
+              "SOURCE_INCOMPLETE", "SOURCE_EVENT_LIMIT_EXCEEDED",
+              "DATADOG_CREDENTIAL_MISSING", "DATADOG_SITE_NOT_ALLOWED",
+              "DATADOG_RATE_LIMITED", "DATADOG_HTTP_FAILED",
+              "DATADOG_TRANSPORT_FAILED", "DATADOG_PAGE_OVERSIZE",
+              "DATADOG_RESPONSE_INVALID", "DATADOG_PAGINATION_STALLED",
+              "DATADOG_RESULT_TRUNCATED",
+          })
+          try:
+              receipt = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+              exit_code = int(sys.argv[2])
+          except (OSError, ValueError, TypeError, IndexError):
+              raise SystemExit(1)
+          if not isinstance(receipt, dict):
+              raise SystemExit(1)
+          if receipt.get("source") != "DATADOG" or receipt.get("can_execute") is not False:
+              raise SystemExit(1)
+          if exit_code == 0:
+              status = receipt.get("status")
+              findings = receipt.get("findings")
+              if (status not in {"NO_ACTION", "CANDIDATES"}
+                      or not isinstance(findings, list)
+                      or bool(findings) != (status == "CANDIDATES")
+                      or receipt.get("needs_durable_reporter_dedupe") is not True
+                      or receipt.get("terminal_authority") != "V17_TERMINAL_REDUCER"):
+                  raise SystemExit(1)
+              raise SystemExit(0)
+          if exit_code == 2:
+              reason = receipt.get("reason")
+              if (set(receipt) != {"status", "reason", "source", "can_execute"}
+                      or receipt.get("status") != "SOURCE_UNAVAILABLE"
+                      or reason not in allowed_holds):
+                  raise SystemExit(1)
+              # The original typed SOURCE_UNAVAILABLE receipt is uploaded,
+              # and no Reporter candidate is emitted or treated as NO_ACTION.
+              print(f"::warning::WOW_LOG_INTAKE_SOURCE_UNAVAILABLE:{reason}")
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
       - name: Record strictly redacted Reporter candidate summary
         if: always()
         shell: bash
