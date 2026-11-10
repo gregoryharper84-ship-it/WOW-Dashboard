@@ -111,7 +111,9 @@ jobs:
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
         run: |
           set -euo pipefail
-          runs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --jq '.workflow_runs')
+          # Read the provider payload from disk: argv has a per-argument size limit.
+          runs_file="$RUNNER_TEMP/release-required-runs.json"
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --jq '.workflow_runs' > "$runs_file"
           required=(
             "wow-verify|.github/workflows/wow-verify.yml"
             "wow-engine-verify|.github/workflows/wow-engine-verify.yml"
@@ -123,7 +125,7 @@ jobs:
           for required_spec in "${required[@]}"; do
             required_name="${required_spec%%|*}"
             required_path="${required_spec#*|}"
-            match=$(jq -r --arg name "$required_name" --arg path "$required_path" '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$runs")
+            match=$(jq -r --arg name "$required_name" --arg path "$required_path" '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' "$runs_file")
             [ "$match" = "completed|success" ] || {
               echo "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN: $required_name:$required_path -> ${match:-MISSING}" >&2
               exit 1
@@ -131,14 +133,19 @@ jobs:
           done
           # V4: authenticated five-check release evidence, not retired
           # trusted-governance or paid semantic-review artifacts.
-          all_checks='[]'
+          # A raw check-run page can exceed Linux MAX_ARG_STRLEN (~128 KiB).
+          # Keep authenticated pages on disk and retain only gate fields.
+          checks_file="$RUNNER_TEMP/release-head-checks.jsonl"
+          : > "$checks_file"
           for page in $(seq 1 10); do
-            response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}")
-            page_checks=$(jq -ce '.check_runs | select(type == "array")' <<<"$response") || {
+            response_file="$RUNNER_TEMP/release-head-checks-page-${page}.json"
+            gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}" > "$response_file"
+            count=$(jq -er 'if (.check_runs | type) == "array" then (.check_runs | length) else error("missing check_runs") end' "$response_file") || {
               echo "RELEASE_CHECK_PAGE_INVALID" >&2; exit 1;
             }
-            count=$(jq 'length' <<<"$page_checks")
-            all_checks=$(jq -cn --argjson old "$all_checks" --argjson new "$page_checks" '$old + $new')
+            jq -c '.check_runs[] | {name, head_sha, id, app: {id: .app.id}, status, conclusion}' "$response_file" >> "$checks_file" || {
+              echo "RELEASE_CHECK_PAGE_INVALID" >&2; exit 1;
+            }
             [ "$count" -lt 100 ] && break
             [ "$page" -lt 10 ] || { echo "RELEASE_CHECK_PAGE_LIMIT" >&2; exit 1; }
           done
@@ -152,13 +159,13 @@ jobs:
           for entry in "${expected[@]}"; do
             context="${entry%%|*}"
             app_id="${entry#*|}"
-            jq -e --arg name "$context" --arg sha "$HEAD_SHA" --argjson app "$app_id" '
+            jq -se --arg name "$context" --arg sha "$HEAD_SHA" --argjson app "$app_id" '
               ([.[] | select(.name == $name and .head_sha == $sha)] | sort_by(.id) | last) as $check
               | $check != null
                 and $check.app.id == $app
                 and $check.status == "completed"
                 and $check.conclusion == "success"
-            ' <<<"$all_checks" >/dev/null || {
+            ' "$checks_file" >/dev/null || {
               echo "RELEASE_V4_REQUIRED_CHECK_MISSING_FOREIGN_OR_FAILED:${context}" >&2
               exit 1
             }
