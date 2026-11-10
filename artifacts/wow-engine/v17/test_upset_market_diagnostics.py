@@ -21,7 +21,7 @@ def _outcomes():
         },
         "DOG": {
             "calibrated_probability": 0.42,
-            "calibrated_lower_bound": 0.35,
+            "calibrated_lower_bound": 0.37,
             "calibrated_upper_bound": 0.49,
         },
     }
