@@ -1,5 +1,9 @@
 """Offline negative and prioritization tests for 24x7 engineering intake."""
 import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -57,11 +61,34 @@ class Test24x7(unittest.TestCase):
         for title in (
             "P1: autonomous same-PR CI/SIRT failure remediation",
             "SIRT: restore production alerting",
+            "SIRT: fix verification script timeout",
+            "[SIRT] audit log repair",
         ):
             with self.subTest(title=title):
                 engineering = issue(1527, "P1", title=title)
                 result = mod.plan([engineering], [])
                 self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
+
+    def test_cli_explicit_null_manifest_does_not_fall_back_to_global(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "issues.json").write_text(json.dumps([issue(1527, "P1")]), encoding="utf-8")
+            (base / "prs.json").write_text("[]", encoding="utf-8")
+            (base / "manifest.json").write_text("null", encoding="utf-8")
+            output = base / "result.json"
+            completed = subprocess.run(
+                [
+                    sys.executable, str(FILE),
+                    "--issues", str(base / "issues.json"),
+                    "--prs", str(base / "prs.json"),
+                    "--manifest", str(base / "manifest.json"),
+                    "--output", str(output),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("dispatch manifest invalid", completed.stderr)
+            self.assertFalse(output.exists())
 
     def test_p0_requires_manifest_domain_lease_and_p1_uses_global(self):
         manifest = {
