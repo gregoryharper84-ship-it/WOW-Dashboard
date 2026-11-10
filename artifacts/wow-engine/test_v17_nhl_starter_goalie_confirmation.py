@@ -7,10 +7,36 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from v17.nhl_candidate_preflight import NHLCandidatePreflightError
-from v17.nhl_starter_goalie_confirmation import confirm_starting_goalies
+from v17.nhl_starter_goalie_confirmation import (
+    ATTESTATION_FIELD, TrustedProvider, attest_receipt, confirm_starting_goalies as _raw_confirm,
+)
 
 START = datetime(2026, 11, 11, 0, 0, tzinfo=timezone.utc)
 NOW = START - timedelta(minutes=30)
+KEY = b"k" * 32  # test-only; the real key lives only in the server-owned acquisition path
+REG = {
+    sid: TrustedProvider(sid, fam)
+    for sid, fam in (("NHL_GAMECENTER", "NHL_COM"), ("TEAM_OFFICIAL", "CLUB_SITE"),
+                     ("A", "F1"), ("B", "F2"), ("C", "G"))
+}
+
+
+def _resign(receipts):
+    if isinstance(receipts, (list, tuple)):
+        for r in receipts:
+            if isinstance(r, dict) and r.get("source_id") in REG:
+                try:
+                    r[ATTESTATION_FIELD] = attest_receipt(r, KEY)
+                except Exception:  # noqa: BLE001 - malformed fixtures stay unsigned
+                    r.pop(ATTESTATION_FIELD, None)
+    return receipts
+
+
+def confirm_starting_goalies(receipts, *, now, trusted=REG, key=KEY, sign=True):
+    """Test wrapper: re-signs (simulating the server path) unless sign=False."""
+    if sign:
+        _resign(receipts)
+    return _raw_confirm(receipts, now=now, trusted_providers=trusted, attestation_key=key)
 
 
 def _receipt(source, family, snap, digit, minutes_before=45, status="CONFIRMED"):
@@ -30,9 +56,9 @@ def _pair():
             _receipt("TEAM_OFFICIAL", "CLUB_SITE", "snap-b", "b", 40)]
 
 
-def _code(receipts, now=NOW):
+def _code(receipts, now=NOW, **kw):
     with pytest.raises(NHLCandidatePreflightError) as err:
-        confirm_starting_goalies(receipts, now=now)
+        confirm_starting_goalies(receipts, now=now, **kw)
     return err.value.code
 
 
@@ -63,12 +89,14 @@ def test_three_receipts_hold():
 
 
 @pytest.mark.parametrize("field,value", [
-    ("source_id", "NHL_GAMECENTER"), ("provider_family", "nhl_com"),
+    ("source_id", "NHL_GAMECENTER"),
     ("source_snapshot_id", "snap-a"), ("source_payload_sha256", "a" * 64),
 ])
 def test_syndicated_or_duplicated_evidence_is_not_independent(field, value):
     pair = _pair()
     pair[1][field] = value
+    if field == "source_id":  # a genuine duplicate provider carries its registered family too
+        pair[1]["provider_family"] = "NHL_COM"
     assert _code(pair) == "NHL_STARTER_PROVIDERS_NOT_INDEPENDENT"
 
 
@@ -136,10 +164,14 @@ def test_malformed_hash_and_missing_fields_hold():
     bad = _pair()
     bad[0]["source_payload_sha256"] = "xyz"
     assert _code(bad) == "NHL_STARTER_RECEIPTS_INCOMPLETE"
-    for key in ("source_id", "provider_family", "source_snapshot_id", "official_event_id"):
+    for key in ("source_id", "source_snapshot_id", "official_event_id"):
         missing = deepcopy(_pair())
         missing[1][key] = ""
         assert _code(missing) == "NHL_STARTER_RECEIPTS_INCOMPLETE"
+    # A blank provider family no longer matches the server registry: untrusted, not accepted.
+    blank_family = _pair()
+    blank_family[1]["provider_family"] = ""
+    assert _code(blank_family) == "NHL_STARTER_SOURCE_NOT_TRUSTED"
 
 
 def test_module_has_no_io_scoring_or_execution_surface():
@@ -148,3 +180,99 @@ def test_module_has_no_io_scoring_or_execution_surface():
     for banned in ("requests", "httpx", "supabase", "urllib", "open(", "score", "predict"):
         assert banned not in text.replace("never scores", "").replace("scorer", "")
     assert m.CAN_EXECUTE is False and m.PROBABILITY_PUBLISHABLE is False
+
+
+# --- Trust boundary: authority/independence come from the server, not receipts ----
+def test_no_registry_or_key_means_every_call_holds():
+    for bad in (None, {}, [], "x", {"NHL_GAMECENTER": "OFFICIAL"}):
+        assert _code(_pair(), trusted=bad) == "NHL_STARTER_SOURCE_NOT_TRUSTED"
+    for bad in (None, b"", b"short", "k" * 32, 12345):
+        assert _code(_pair(), key=bad) == "NHL_STARTER_ATTESTATION_INVALID"
+
+
+def test_self_declared_official_unregistered_provider_is_not_trusted():
+    pair = [_receipt("EVIL_FEED", "EVIL", "s1", "a"), _receipt("TEAM_OFFICIAL", "CLUB_SITE", "s2", "b", 40)]
+    assert _code(pair) == "NHL_STARTER_SOURCE_NOT_TRUSTED"
+    reg = dict(REG, EVIL_FEED=TrustedProvider("EVIL_FEED", "EVIL", authority="AGGREGATOR"))
+    assert _code(pair, trusted=reg) == "NHL_STARTER_SOURCE_NOT_TRUSTED"
+
+
+def test_receipt_cannot_relabel_its_provider_family_to_look_independent():
+    pair = _pair()
+    pair[1]["provider_family"] = "SOMETHING_ELSE"
+    assert _code(pair) == "NHL_STARTER_SOURCE_NOT_TRUSTED"
+
+
+def test_independence_is_judged_on_registry_family_not_receipt_claims():
+    # Two source ids the server knows belong to one family are one provider,
+    # no matter what the receipts claim.
+    reg = dict(REG, TEAM_OFFICIAL=TrustedProvider("TEAM_OFFICIAL", "NHL_COM"))
+    pair = _pair()
+    pair[1]["provider_family"] = "NHL_COM"
+    assert _code(pair, trusted=reg) == "NHL_STARTER_PROVIDERS_NOT_INDEPENDENT"
+
+
+def test_unattested_tampered_or_wrongly_keyed_receipts_hold():
+    pair = _resign(_pair())
+    pair[0]["home"]["goalie_id"] = "7777777"  # edited after the server signed it
+    assert _code(pair, sign=False) == "NHL_STARTER_ATTESTATION_INVALID"
+    unsigned = _pair()
+    for r in unsigned:
+        r.pop(ATTESTATION_FIELD, None)
+    assert _code(unsigned, sign=False) == "NHL_STARTER_ATTESTATION_INVALID"
+    assert _code(_resign(_pair()), sign=False, key=b"z" * 32) == "NHL_STARTER_ATTESTATION_INVALID"
+    forged = _resign(_pair())
+    forged[1][ATTESTATION_FIELD] = "0" * 64
+    assert _code(forged, sign=False) == "NHL_STARTER_ATTESTATION_INVALID"
+    for junk in (None, 5, ["x"], ""):
+        forged[1][ATTESTATION_FIELD] = junk
+        assert _code(forged, sign=False) == "NHL_STARTER_ATTESTATION_INVALID"
+
+
+# --- Malformed input always becomes a typed hold --------------------------------
+@pytest.mark.parametrize("receipts", [
+    [None, None], [1, 2], ["a", "b"], [[], []], [{}, {}], {"a": 1, "b": 2}, (), 5, b"xx",
+    [{"source_id": None}, {"source_id": "A"}], [{"source_id": ["A"]}, {"source_id": {"x": 1}}],
+])
+def test_malformed_receipt_collections_hold_with_typed_code(receipts):
+    assert _code(receipts, sign=False) in {"NHL_STARTER_RECEIPTS_INCOMPLETE"}
+
+
+@pytest.mark.parametrize("now", [None, "2026-11-10", 5, datetime(2026, 11, 10)])
+def test_malformed_now_holds(now):
+    assert _code(_pair(), now=now) == "NHL_STARTER_RECEIPTS_INCOMPLETE"
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda r: r.update(home="BUF"), lambda r: r.update(home=["x"]), lambda r: r.update(home={"goalie_id": None}),
+    lambda r: r.update(away={"goalie_id": {"x": 1}, "starting_status": None}),
+    lambda r: r.update(event_start_time_utc=12345), lambda r: r.update(as_of=["x"]),
+    lambda r: r.update(source_payload_sha256=None), lambda r: r.update(source_payload_sha256=["a"] * 64),
+    lambda r: r.update(official_event_id={"x": 1}), lambda r: r.update(source_snapshot_id=None),
+    lambda r: r.update(home={"goalie_id": "8480000", "starting_status": ["CONFIRMED"]}),
+])
+def test_malformed_field_shapes_hold_typed_never_raise_untyped_or_pass(mutate):
+    pair = _pair()
+    mutate(pair[0])
+    with pytest.raises(NHLCandidatePreflightError) as err:
+        confirm_starting_goalies(pair, now=NOW)
+    assert err.value.code.startswith("NHL_STAR")
+
+
+def test_unserializable_receipt_content_holds_typed():
+    pair = _pair()
+    pair[0]["extra"] = object()
+    assert _code(pair) in {"NHL_STARTER_RECEIPTS_INCOMPLETE", "NHL_STARTER_ATTESTATION_INVALID"}
+    pair = _pair()
+    pair[0]["extra"] = float("nan")
+    assert _code(pair) in {"NHL_STARTER_RECEIPTS_INCOMPLETE", "NHL_STARTER_ATTESTATION_INVALID"}
+
+
+def test_attestation_binds_exact_content_and_output_unchanged_by_signature():
+    out = confirm_starting_goalies(_pair(), now=NOW)
+    assert out["provider_receipts"] and out["goalie_status"] == "CONFIRMED"
+    a = _receipt("A", "F1", "s1", "a")
+    assert attest_receipt(a, KEY) == attest_receipt({**a, ATTESTATION_FIELD: "ignored"}, KEY)
+    assert attest_receipt(a, KEY) != attest_receipt({**a, "as_of": a["as_of"][:-1] + "1"}, KEY)
+    with pytest.raises(NHLCandidatePreflightError):
+        attest_receipt(a, b"short")
