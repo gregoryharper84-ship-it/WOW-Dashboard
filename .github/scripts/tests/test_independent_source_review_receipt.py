@@ -868,6 +868,94 @@ def test_qa_policy_rejects_missing_duplicate_or_expired_artifacts(mutation, reas
         )
 
 
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact(conclusion):
+    """Automatic workflow_run admission must not poison checksPass.
+
+    Observed on main tip e82af6a (2026-11-10): upstream QA failed before
+    uploading wow-v17-qa-policy-{run}-{attempt} (TARGET_PR_IDENTITY_MISMATCH
+    on draft/retargeted #2559). Strict resolve still fails closed; only the
+    opt-in main-scoped callback may exit neutral with no Release check.
+    """
+    routes, archive = qa_policy_routes()
+    # Both successful and failed authenticated QA producers may have no policy;
+    # neither outcome must create a main-scoped Release failure or approval.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}"]["conclusion"] = conclusion
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    kwargs = dict(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"],
+        run_attempt=1,
+        token="read-only",
+        now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+    )
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+    ):
+        review.resolve_qa_review_policy(**kwargs)
+    neutral = review.resolve_qa_review_policy(
+        **kwargs, allow_superseded_target=True,
+    )
+    assert neutral == {
+        "disposition": "neutral",
+        "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
+    }
+    # Duplicate inventory remains fail-closed even for the main-scoped opt-in.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [
+            {"id": 778, "name": f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-1", "expired": False,
+             "created_at": "2026-11-04T16:40:00Z"},
+            {"id": 779, "name": f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-1", "expired": False,
+             "created_at": "2026-11-04T16:40:01Z"},
+        ],
+    }
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+    ):
+        review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_id", 1),
+        ("path", ".github/workflows/foreign.yml"),
+        ("event", "pull_request_target"),
+        ("head_branch", "feature/foreign"),
+        ("head_sha", "not-a-sha"),
+        ("repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("head_repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("status", "in_progress"),
+        ("conclusion", "cancelled"),
+    ],
+)
+def test_missing_policy_neutral_requires_authenticated_qa_run(field, value):
+    """Foreign or unfinished producer evidence can never become neutral."""
+    routes, archive = qa_policy_routes()
+    run_id = PRODUCER_RUN["id"]
+    routes[f"/actions/runs/{run_id}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    routes[f"/actions/runs/{run_id}"][field] = value
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_RUN_PROVENANCE_MISMATCH",
+    ):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=run_id,
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+            allow_superseded_target=True,
+        )
+
+
 def test_qa_policy_rejects_pr_movement_checksum_and_canary_scope_replay():
     routes, archive = qa_policy_routes()
     moved_pr = pr()
