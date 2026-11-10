@@ -112,6 +112,10 @@ _ACTIONS_MARKER_RE = re.compile(r"(?:##\[(?:group|endgroup|error|warning)\]|::(?
 # Only executable shell commands followed by whitespace are script echoes.
 # Log/step prefixes such as "printf-check" are not shell commands.
 _SCRIPT_COMMAND_RE = re.compile(r"(?<![\w-])(?:echo|printf)[ \t]+", re.IGNORECASE)
+# gh run --log-failed often prepends a job/step name and an ISO timestamp.
+# Remove that display-only prefix before inspecting any shell command text.
+_LOG_TIMESTAMP_RE = re.compile(r"(?:^|[\t ])20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b")
+_LOG_STEP_LABEL_RE = re.compile(r"^\s*(?:\[[^\]\n]+\]\s*)+")
 _EMITTED_ERROR_RE = re.compile(r"(?:##\[error\]|::error::)(.+)$")
 _PROCESS_COMPLETED_RE = re.compile(r"^process completed with exit code\b", re.IGNORECASE)
 
@@ -141,9 +145,14 @@ def _provider_match_text(log_text: str) -> str:
         match = _EMITTED_ERROR_RE.search(line)
         if not match:
             continue
-        # A shell command preceding the first marker is unevaluated script text.
-        # Keep real emitted errors even when their payload mentions "echo".
-        if _SCRIPT_COMMAND_RE.search(line[:match.start()]):
+        # Ignore display-only job/step labels (which can be named "Echo receipt")
+        # but still reject actual unevaluated `echo "::error::..."` commands.
+        prefix = line[:match.start()]
+        timestamp = _LOG_TIMESTAMP_RE.search(prefix)
+        if timestamp:
+            prefix = prefix[timestamp.end():]
+        prefix = _LOG_STEP_LABEL_RE.sub("", prefix)
+        if _SCRIPT_COMMAND_RE.search(prefix):
             continue
         payload = match.group(1).strip()
         if not payload or _PROCESS_COMPLETED_RE.match(payload):
