@@ -196,6 +196,7 @@ def test_refresh_pass_never_upgrades_a_prior_sql_hold():
 
 
 def _remote_capture(**overrides):
+    """Build a successful allowlisted remote schedule-recheck capture fixture."""
     return {
         "source_status": "CAPTURED",
         "content_sha256": HASH,
@@ -207,6 +208,7 @@ def _remote_capture(**overrides):
 
 
 def test_aged_identical_immutable_schedule_is_rechecked_without_mutation(monkeypatch):
+    """Aged same-hash immutable manifests require a remote recheck, not mutation."""
     old = _new_snapshot(
         canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
     )
@@ -228,6 +230,7 @@ def test_aged_identical_immutable_schedule_is_rechecked_without_mutation(monkeyp
 
 
 def test_aged_remote_schedule_with_different_bytes_requires_model_rerun(monkeypatch):
+    """Remote bytes that differ from the stored hash invalidate the prior probability."""
     old = _new_snapshot(
         canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
     )
@@ -243,6 +246,7 @@ def test_aged_remote_schedule_with_different_bytes_requires_model_rerun(monkeypa
 
 
 def test_aged_remote_schedule_failure_stays_held_not_model_unavailable(monkeypatch):
+    """Upstream recheck failure holds publication; it does not claim model unavailability."""
     old = _new_snapshot(
         canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
     )
@@ -264,6 +268,7 @@ def test_aged_remote_schedule_failure_stays_held_not_model_unavailable(monkeypat
     {"resolved_url": ""},
 ])
 def test_aged_remote_capture_requires_valid_source_proof(monkeypatch, invalid):
+    """Malformed remote captures fail closed instead of refreshing freshness proof."""
     old = _new_snapshot(
         canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
     )
@@ -278,6 +283,7 @@ def test_aged_remote_capture_requires_valid_source_proof(monkeypatch, invalid):
 
 
 def test_remote_recheck_never_masks_changed_stored_snapshot(monkeypatch):
+    """Changed stored snapshot bytes must force rerun before any remote recheck."""
     old = _new_snapshot(
         schedule_content_sha256="b" * 64,
         canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
@@ -292,6 +298,7 @@ def test_remote_recheck_never_masks_changed_stored_snapshot(monkeypatch):
 
 
 def test_fresh_source_does_not_trigger_extra_remote_download(monkeypatch):
+    """Fresh stored manifests must not pay for an extra remote recheck."""
     monkeypatch.setattr(
         nfl, "_remote_nfl_schedule_recheck",
         lambda: pytest.fail("fresh stored source must not require remote download"),
@@ -300,6 +307,7 @@ def test_fresh_source_does_not_trigger_extra_remote_download(monkeypatch):
 
 
 def test_remote_recheck_future_capture_fails_closed(monkeypatch):
+    """Future-dated remote capture timestamps are invalid freshness evidence."""
     old = _new_snapshot(
         canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
     )

@@ -98,6 +98,7 @@ def test_download_fails_closed_when_schema_changes(tmp_path: Path):
 
 
 def test_download_fails_closed_on_total_deadline(tmp_path: Path, monkeypatch):
+    """Hard wall-clock deadline must abort before a partial CSV is retained."""
     fields = [
         "game_id", "season", "game_type", "week", "gameday",
         "away_team", "away_score", "home_team", "home_score", "roof",
@@ -120,6 +121,7 @@ def test_download_fails_closed_on_total_deadline(tmp_path: Path, monkeypatch):
 
 
 def test_download_fails_closed_on_max_bytes(tmp_path: Path):
+    """Oversized streams must fail closed without retaining partial content."""
     fields = [
         "game_id", "season", "game_type", "week", "gameday",
         "away_team", "away_score", "home_team", "home_score", "roof",
