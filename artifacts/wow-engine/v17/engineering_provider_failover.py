@@ -109,7 +109,9 @@ GOVERNANCE_BLOCKED_CODES = frozenset({"ACTIONABLE_REPAIR_POLICY_BOUNDARY"})
 # Actions --log-failed dumps unevaluated `echo "::error::..."` script lines.
 # Those script echoes are not provider evidence; only emitted error payloads are.
 _ACTIONS_MARKER_RE = re.compile(r"(?:##\[(?:group|endgroup|error|warning)\]|::(?:error|warning|notice)::)")
-_SCRIPT_COMMAND_RE = re.compile(r"\b(?:echo|printf)\b", re.IGNORECASE)
+# Only executable shell commands followed by whitespace are script echoes.
+# Log/step prefixes such as "printf-check" are not shell commands.
+_SCRIPT_COMMAND_RE = re.compile(r"(?<![\w-])(?:echo|printf)[ \t]+", re.IGNORECASE)
 _EMITTED_ERROR_RE = re.compile(r"(?:##\[error\]|::error::)(.+)$")
 _PROCESS_COMPLETED_RE = re.compile(r"^process completed with exit code\b", re.IGNORECASE)
 
