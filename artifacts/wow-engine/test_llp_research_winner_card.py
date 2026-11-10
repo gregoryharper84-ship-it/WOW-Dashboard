@@ -33,6 +33,34 @@ def pick(sport='NFL', identity='game-1', **changes):
                  'opponent_win_path':'Home creates extra possessions and wins late',
                  'swing_factors':['starting personnel', 'pace and possession swing'],
                  'as_of_utc':ASOF,
+                 'scenarios':[
+                     {'scenario_id':'baseline','path':'Away controls pace and half-court efficiency',
+                      'favored_side':'Away','swing_factors':['pace'],'as_of_utc':ASOF},
+                     {'scenario_id':'personnel','path':'Away uses bench depth to maintain late lead',
+                      'favored_side':'Away','swing_factors':['replacement production'],'as_of_utc':ASOF},
+                     {'scenario_id':'upset','path':'Home gains extra transition opportunities',
+                      'favored_side':'Home','swing_factors':['turnovers'],'as_of_utc':ASOF},
+                 ],
+             },
+             'matchup_media':{
+                 'headlines':[
+                     {'headline_id':'h1','publisher':'league.com',
+                      'title':'Team Away seeks to control tempo','url':'https://league.com/previews/1',
+                      'source_receipt_id':'research-source-h1','published_at_utc':ASOF,
+                      'available_to_user_at_utc':ASOF,'stance':'SUPPORTS_PICK'},
+                     {'headline_id':'h2','publisher':'beatwriter.com',
+                      'title':'Home coaches identify transition as a key','url':'https://beatwriter.com/previews/2',
+                      'source_receipt_id':'research-source-h2','published_at_utc':ASOF,
+                      'available_to_user_at_utc':ASOF,'stance':'CHALLENGES_PICK'},
+                 ],
+                 'storylines':[
+                     {'claim':'Away wants fewer high-variance possessions',
+                      'headline_ids':['h1'],'stance':'SUPPORTS_PICK'},
+                     {'claim':'Home seeks a faster transition game',
+                      'headline_ids':['h2'],'stance':'CHALLENGES_PICK'},
+                 ],
+                 'counter_narrative':{'claim':'Home can win by speeding the pace',
+                                      'headline_ids':['h2']},
              }}
     value.update(changes)
     return value
@@ -175,3 +203,85 @@ def test_late_script_or_probability_claim_never_becomes_fitted_output():
     assert row['game_script_primary_win_path'] is None
     assert row['governed_probability'] is None
     assert row['governed_lower_bound'] is None
+
+
+def test_game_script_robustness_is_unweighted_not_probability():
+    r=audit([event('NBA')],[pick('NBA')])
+    s=r['rows'][0]['script_robustness']
+    assert s['assessment']=='SELECTED_SIDE_FAVORED_IN_MORE_DOCUMENTED_SCRIPTS'
+    assert (s['scenario_count'],s['favored_selected_count'],s['favored_opponent_count'])==(3,2,1)
+    assert s['basis']=='UNWEIGHTED_RESEARCH_SCENARIOS_ONLY'
+    assert s['probability'] is None
+    assert r['rows'][0]['selected_side']=='Away'
+    assert r['research_evidence_fully_reconciled'] is True
+
+
+def test_script_sensitive_even_when_research_winner_stays_selected():
+    p=pick('NFL')
+    p['game_script']['scenarios'][1]['favored_side']='Home'
+    r=audit([event('NFL')],[p])
+    assert r['rows'][0]['script_robustness']['assessment']=='SCRIPT_SENSITIVE_OR_CONTRADICTORY'
+    assert r['rows'][0]['selected_side']=='Away'
+
+
+def test_future_or_weighted_scenario_does_not_create_a_model_probability():
+    p=pick()
+    p['game_script']['scenarios'][0]['as_of_utc']=START
+    p['game_script']['scenarios'][1]['scenario_probability']=0.95
+    r=audit([event()],[p])
+    row=r['rows'][0]
+    assert 'SCENARIO_FUTURE_OR_TIME_UNVERIFIED' in row['evidence_warnings']
+    assert 'SCENARIO_UNCERTIFIED_NUMERIC_WEIGHT' in row['evidence_warnings']
+    assert row['script_robustness']['assessment']=='NOT_EVALUATED'
+    assert row['script_robustness']['probability'] is None
+    assert row['governed_probability'] is None
+    assert row['selected_side']=='Away'
+    assert r['research_evidence_fully_reconciled'] is False
+
+
+def test_headlines_storylines_counter_narrative_preserve_source_links():
+    r=audit([event('NHL')],[pick('NHL')])
+    row=r['rows'][0]
+    assert len(row['media_headlines'])==2
+    assert row['media_headlines'][0]['url']=='https://league.com/previews/1'
+    assert len(row['media_storylines'])==2
+    assert row['media_counter_narrative']['headline_ids']==['h2']
+    assert row['media_evidence_status']=='STRUCTURAL_PREGAME_PROVENANCE_ONLY'
+    assert row['governed_lower_bound'] is None
+
+
+def test_late_fake_headline_and_unsourced_narrative_flagged():
+    p=pick()
+    p['matchup_media']['headlines'][1]['available_to_user_at_utc']=START
+    r=audit([event()],[p])
+    row=r['rows'][0]
+    assert 'MEDIA_HEADLINE_FUTURE_OR_TIME_UNVERIFIED' in row['evidence_warnings']
+    assert 'STORYLINE_INVALID_OR_UNSOURCED' in row['evidence_warnings']
+    assert 'COUNTER_NARRATIVE_UNSOURCED' in row['evidence_warnings']
+    assert len(row['media_headlines'])==1
+    assert len(row['media_storylines'])==1
+    assert row['selected_side']=='Away'
+    assert r['research_evidence_fully_reconciled'] is False
+
+
+def test_missing_media_keeps_research_pick_but_downgrades_quality():
+    r=audit([event()],[pick(matchup_media=None,research_confidence='HIGH')])
+    row=r['rows'][0]
+    assert r['board_complete'] is True
+    assert r['research_evidence_fully_reconciled'] is False
+    assert 'MATCHUP_MEDIA_NOT_REVIEWED' in row['evidence_warnings']
+    assert 'HIGH_CONFIDENCE_UNSUPPORTED' in row['evidence_warnings']
+    assert row['selected_side']=='Away'
+
+
+def test_unverified_media_cannot_sneak_unsupported_links_into_summary():
+    p=pick()
+    p['matchup_media']['headlines'][0]['url']='javascript:alert(1)'
+    p['matchup_media']['headlines'][1]['source_receipt_id']=''
+    r=audit([event()],[p])
+    row=r['rows'][0]
+    assert row['media_headlines']==[]
+    assert 'MEDIA_HEADLINE_IDENTITY_OR_PROVENANCE_INVALID' in row['evidence_warnings']
+    assert 'NO_ADMISSIBLE_PREGAME_HEADLINES' in row['evidence_warnings']
+    assert row['media_counter_narrative'] is None
+    assert r['board_complete'] is True
