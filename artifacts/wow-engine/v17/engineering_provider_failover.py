@@ -181,7 +181,7 @@ def _provider_match_parts(log_text: str) -> tuple[str, str]:
             continue
         # Unevaluated workflow script that only prints a synthetic ::error::
         # must not become provider evidence.
-        if _SCRIPT_COMMAND_RE.search(body) and "::error::" in body:
+        if _SCRIPT_COMMAND_RE.search(body):
             continue
         unannotated.append(body)
     emitted_only = "\n".join(emitted)
