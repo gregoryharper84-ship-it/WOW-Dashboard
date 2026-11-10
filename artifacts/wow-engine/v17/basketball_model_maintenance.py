@@ -130,6 +130,16 @@ _PUBLIC_FAILURE_CODE_MAP = {
         "WNBA_TRAINING_CORPUS_STALE",
         "NBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
         "WNBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
+        # Current-season persisted readback literals must stay typed through
+        # the public mapper; otherwise provenance failures collapse to the
+        # generic READBACK_FAILED fallback and hide the real blocker.
+        "NBA_CURRENT_SEASON_READBACK_INVALID",
+        "NBA_CURRENT_SEASON_READBACK_INCOMPLETE",
+        "NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID",
+        "NBA_CURRENT_SEASON_PERSISTED_IDENTITY_MISMATCH",
+        "NBA_CURRENT_SEASON_PERSISTED_PROOF_MISSING",
+        "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED",
+        "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING",
         *(f"{prefix}{status}" for prefix in (
             "BALLDONTLIE_HTTP_",
             "SPORTSDATAVERSE_ESPN_HTTP_",

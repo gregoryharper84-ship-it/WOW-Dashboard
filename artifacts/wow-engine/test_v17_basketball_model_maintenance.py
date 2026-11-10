@@ -1081,6 +1081,12 @@ def test_typed_maintenance_failure_codes_never_expose_provider_or_db_details():
     ) == "NBA_SOURCE_HTTP_503"
     assert maintenance._public_failure_code(
         maintenance.BasketballHydrationError(
+            "NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID"
+        ),
+        "NBA_CURRENT_SEASON_PERSISTED_READBACK_FAILED",
+    ) == "NBA_CURRENT_SEASON_PERSISTED_PROVENANCE_INVALID"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError(
             "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:postgres://secret-host"
         ),
         "BASKETBALL_HYDRATION_FAILED",
