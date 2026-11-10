@@ -345,3 +345,14 @@ def test_incomplete_governed_probability_distribution_rejected():
     values["DOG"]["calibrated_lower_bound"] = 0.15
     with pytest.raises(ValueError, match="MARKET_MODEL_OUTCOMES_NOT_NORMALIZED"):
         _evaluate(governed_outcomes=values)
+
+
+@pytest.mark.parametrize("bad_receipt", ["  ", 1, True])
+def test_reference_class_receipt_must_be_nonblank_string(bad_receipt):
+    """Never accept whitespace or truthy non-string provenance identifiers."""
+    with pytest.raises(ValueError, match="MARKET_REFERENCE_CLASS_UNVERIFIED"):
+        _evaluate(
+            empirical_reference_probs={"FAVORITE": 0.6, "DOG": 0.4},
+            reference_class_receipt_id=bad_receipt,
+            reference_class_as_of_utc="2026-11-09T12:00:00Z",
+        )
