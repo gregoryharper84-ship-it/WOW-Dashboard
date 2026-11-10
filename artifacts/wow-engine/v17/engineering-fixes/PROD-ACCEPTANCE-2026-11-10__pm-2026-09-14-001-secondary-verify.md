@@ -88,6 +88,22 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 | Residual exercise caveat | A scheduled MONEYLINE-only Daily may never emit `max_props=0` PROP `REQUESTED_ROW_LIMIT_ZERO` or the three-field Action split — do not infer closure from workflow green |
 | Next observation window | Existing OIDC scheduled Daily ~17:00 UTC; verify persisted run ID **and** the specific residuals, not merely CI success |
 
+## Independent re-verify (2026-11-10T16:05Z, unpaid)
+
+| Probe | Result |
+| --- | --- |
+| Live web deploy | Still `dep-dbpin52vcj2c73d9c1g0` SHA `e7384b9d2fed3256681b25715516dff2e97d3233` status `live` |
+| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| `/governance` | `can_execute=false`, `V17_TERMINAL_REDUCER`, `deployment_gates.status=PASS`, `deployed_sha=e7384b9d…` |
+| Live sport readiness | NFL `model_capability_ready=true` / `CANDIDATE_REGISTERED_UNCERTIFIED` / `can_execute=false`; NBA `MODEL_UNAVAILABLE`; NHL `REGISTERED_NOT_READY` (`model_artifact_present=false`) |
+| `wow_v17_daily_async_runs` | newest `submitted_at=2026-11-09T15:33:38Z`; **0** rows at/after safety `2026-11-10T13:23:22Z` |
+| `wow_v17_daily_run_row_detail` | newest `captured_at=2026-11-10T10:46:10Z`; **0** post-safety |
+| `wow_predictions` | newest `created_at=2026-11-09T15:38:05Z`; **0** post-safety |
+| Action receipts post-safety | Still exactly **four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422 `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` (`can_execute=false`) — no new receipts since 14:36 UTC |
+| NFL forward health | Still `graded_n=94` / `minimum_forward_required=100`; `INSUFFICIENT_FORWARD_EVIDENCE`; `DO_NOT_CERTIFY_YET`; blocker `FORWARD_GRADED_N_94_LT_100` (row `created_at=2026-11-09T22:36:02Z`) |
+| Parallel PR delta | `#2512` **merged** at `2026-11-10T16:01:53Z` (`d3260b09…`) — not yet on the live Render tip; stored `wow_nfl_event_predictions` history still carries pre-merge publishability stamps |
+| Next observation | Existing OIDC scheduled Daily ~17:00 UTC; closure still requires both secondary residual observations, not workflow green alone |
+
 ## Closure gate
 
 `PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until **both** remaining secondary observations are recorded (`ZERO_ROW_REASON_MISCLASSIFIED` and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`). A Reporter-scoped residual, if ever filed, is recorded as **unverified** and does **not** authorize a ledger status change. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
