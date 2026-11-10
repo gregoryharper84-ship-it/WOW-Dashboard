@@ -150,7 +150,7 @@ def _provider_match_parts(log_text: str) -> tuple[str, str]:
 
     For GitHub Actions logs:
     - ``emitted_only`` is vetted `::error::` / `##[error]` payloads only
-      (never unevaluated script echoes). Delivery outcomes use this when
+      (never unevaluated script echoes). Delivery outcomes use this lane when
       deciding whether a provider_signal may arm failover.
     - ``classification_text`` also keeps unannotated stderr/stdout so Codex
       CLI quota/auth lines remain classifiable when no delivery code is
