@@ -39,12 +39,17 @@ SIRT_REPAIR_TITLE = re.compile(
     r"[\s:—-]*(?:fix|repair|restore|recover|debug|resolve|rebuild|implement|audit\s+log\s+repair)\b",
     re.IGNORECASE,
 )
+# Classify explicit assurance language centrally rather than re-implementing
+# partial word exceptions in each operational-failure rule.
+SIRT_ASSURANCE_TERMS = re.compile(
+    r"\b(?:independent\w*|review|intake|assurance|acceptance|certification|audit)\b",
+    re.IGNORECASE,
+)
 # A production malfunction is implementation work even when its noun is
-# "verification"; independent acceptance/assurance is still review-only.
+# "verification"; independently assigned assurance remains review-only.
 SIRT_PRODUCTION_FAILURE_TITLE = re.compile(
     r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)"
-    r"[\s:—-]*(?!.*\b(?:independent|acceptance|assurance|certification|review|intake|audit)\b)"
-    r"(?=.*\b(?:fails?|failed|failure|broken|outage|down|regression)\b)"
+    r"[\s:—-]*(?=.*\b(?:fails?|failed|failure|broken|outage|down|regression)\b)"
     r"(?=.*\b(?:production|prod|runtime|alerting|deployment|worker|pipeline|workflow)\b)",
     re.IGNORECASE,
 )
@@ -82,10 +87,15 @@ def eligible(issue: dict) -> tuple[int, int] | None:
         return None
     # SIRT-owned review/assurance tickets are not implementation assignments.
     title = issue.get("title")
-    if (isinstance(title, str) and SIRT_REVIEW_TITLE.match(title.strip())
-            and not SIRT_REPAIR_TITLE.match(title.strip())
-            and not SIRT_PRODUCTION_FAILURE_TITLE.match(title.strip())):
-        return None
+    if isinstance(title, str):
+        title = title.strip()
+        if SIRT_REVIEW_TITLE.match(title) and not SIRT_REPAIR_TITLE.match(title):
+            operational_failure = (
+                SIRT_PRODUCTION_FAILURE_TITLE.match(title)
+                and not SIRT_ASSURANCE_TERMS.search(title)
+            )
+            if not operational_failure:
+                return None
     number = issue.get("number")
     if type(number) is not int or number <= 0:
         return None
