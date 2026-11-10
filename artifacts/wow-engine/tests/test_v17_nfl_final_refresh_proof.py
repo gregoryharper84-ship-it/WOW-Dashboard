@@ -310,3 +310,35 @@ def test_remote_recheck_future_capture_fails_closed(monkeypatch):
     proof = _refresh(monkeypatch, snapshot=old)
     assert "FINAL_REFRESH_SOURCE_STALE_OR_INVALID" in proof["reasons"]
     assert proof["final_refresh_status"] == "HOLD"
+
+def test_kickoff_during_successful_remote_recheck_stays_held(monkeypatch):
+    """A slow remote check cannot preserve an initial pre-kickoff verdict."""
+    from datetime import datetime as RealDateTime
+
+    clock_calls = []
+    class Clock(RealDateTime):
+        @classmethod
+        def now(cls, tz=None):
+            # First timestamp is before kickoff, second after the recheck.
+            instant = NOW if not clock_calls else NOW + timedelta(minutes=3)
+            clock_calls.append(instant)
+            return instant.astimezone(tz) if tz is not None else instant
+
+    monkeypatch.setattr(nfl, "datetime", Clock)
+    monkeypatch.setattr(
+        nfl, "resolve_nfl_team_event_evidence",
+        lambda req, *, db: _new_snapshot(
+            canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+        ),
+    )
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: _remote_capture(fetched_at=(NOW + timedelta(minutes=1)).isoformat()),
+    )
+    request = _req(event_start_time_utc=(NOW + timedelta(minutes=2)).isoformat())
+    proof = nfl._nfl_final_refresh(request, _score(), db=object())
+    assert len(clock_calls) == 2
+    assert proof["final_refresh_status"] == "HOLD"
+    assert "FINAL_REFRESH_EVENT_NOT_PREGAME" in proof["reasons"]
+    assert proof["probability_invalidated"] is True
+    assert proof["can_execute"] is False
