@@ -138,9 +138,9 @@ def resolve_provisional_recheck(
     mismatched = [
         field
         for field in ("athlete_id", "event_id", "team")
-        if provisional_identity[field]
-        and observed_identity[field]
-        and provisional_identity[field] != observed_identity[field]
+        if not provisional_identity[field]
+        or not observed_identity[field]
+        or provisional_identity[field] != observed_identity[field]
     ]
     if mismatched:
         return _hold(
@@ -175,11 +175,11 @@ def resolve_provisional_recheck(
                 str(observed.get("captured_at") or "").replace("Z", "+00:00")
             )
             chronological = (
-                now is not None
-                and now.utcoffset() is not None
-                and provisional_at.utcoffset() is not None
+                provisional_at.utcoffset() is not None
                 and observed_at.utcoffset() is not None
                 and observed_at > provisional_at
+                and now is not None
+                and now.utcoffset() is not None
                 and observed_at <= now
             )
         except (TypeError, ValueError, OverflowError):
