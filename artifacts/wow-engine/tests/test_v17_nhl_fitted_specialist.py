@@ -151,22 +151,20 @@ def _timeline_receipt(
     target_start: datetime = START,
     season: str = SEASON,
 ) -> dict:
-    """Test-authority club-prior receipt for a synthetic timeline."""
-    clubs = {home: set(), away: set()}
+    """Test-authority full-season prior receipt for a synthetic timeline."""
+    del home, away  # retained for call-site compatibility
+    prior_ids: set[str] = set()
     for event in events:
         start = datetime.fromisoformat(str(event["event_start_time"]).replace("Z", "+00:00"))
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         if start >= target_start:
             continue
-        event_id = str(event["official_event_id"])
-        for club in (str(event["home_participant"]), str(event["away_participant"])):
-            if club in clubs:
-                clubs[club].add(event_id)
+        prior_ids.add(str(event["official_event_id"]))
     return {
         "provenance_complete": True,
         "season": str(season),
-        "club_prior_event_ids": {club: sorted(ids) for club, ids in clubs.items()},
+        "settled_prior_event_ids": sorted(prior_ids),
     }
 
 
@@ -197,7 +195,6 @@ def _request(**evidence_overrides):
         "source_snapshot_id": "nhl-source-snapshot-20261119",
         "season": SEASON,
         "neutral_site": False,
-        "source_timeline_receipt": _timeline_receipt(_events()),
     }
     evidence.update(evidence_overrides)
     return SimpleNamespace(
@@ -223,6 +220,23 @@ def _reconstruction(db=None):
         season=SEASON,
         source_timeline_receipt=_timeline_receipt(events),
     )
+
+
+
+@pytest.fixture(autouse=True)
+def _install_test_timeline_receipt_provider():
+    """Score path must not trust caller evidence; use a synthetic server seam."""
+    def _provider(*, season, event_start_time, home_team="", away_team="", session=None):
+        return _timeline_receipt(
+            _events(),
+            home=str(home_team or "BOS"),
+            away=str(away_team or "NYR"),
+            target_start=event_start_time if isinstance(event_start_time, datetime) else START,
+            season=str(season),
+        )
+    nhl.install_nhl_timeline_receipt_provider(_provider)
+    yield
+    nhl.reset_nhl_timeline_receipt_provider()
 
 
 def test_feature_schema_matches_training_pipeline():
@@ -387,8 +401,28 @@ def test_generic_calibrated_fields_remain_home_oriented_for_away_selection():
     assert outcome["calibrated_probability"] == package["calibrated_away_probability"]
 
 
-def test_missing_or_mismatched_timeline_receipt_holds_incomplete():
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda receipt: None,
+        lambda receipt: {**receipt, "provenance_complete": False},
+        lambda receipt: {**receipt, "season": "20252026"},
+        lambda receipt: {k: v for k, v in receipt.items() if k != "settled_prior_event_ids"},
+        lambda receipt: {**receipt, "settled_prior_event_ids": "not-a-list"},
+        lambda receipt: {
+            **receipt,
+            "settled_prior_event_ids": list(receipt["settled_prior_event_ids"]) + ["2026029999"],
+        },
+        lambda receipt: {
+            **receipt,
+            "settled_prior_event_ids": list(receipt["settled_prior_event_ids"])[:-1],
+        },
+    ],
+)
+def test_missing_or_mismatched_timeline_receipt_holds_incomplete(mutate):
     events = _events()
+    baseline = _timeline_receipt(events)
+    receipt = mutate(baseline)
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl.reconstruct_nhl_pregame_features(
             events,
@@ -397,22 +431,76 @@ def test_missing_or_mismatched_timeline_receipt_holds_incomplete():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            **({"source_timeline_receipt": receipt} if receipt is not None else {}),
         )
     assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
 
-    receipt = _timeline_receipt(events)
-    receipt["club_prior_event_ids"]["BOS"].append("2026029999")
+
+def test_build_official_season_timeline_receipt_uses_default_session_and_filters_by_start(monkeypatch):
+    from types import SimpleNamespace
+
+    captured: dict[str, object] = {}
+
+    def _fake_fetch(start_years, *, teams=None, session=None, strict=False):
+        captured["session"] = session
+        captured["teams"] = teams
+        captured["strict"] = strict
+        return [
+            SimpleNamespace(
+                game_id="2026020001",
+                event_start_time=(START - timedelta(days=2)).isoformat(),
+                game_type=2,
+                home_team="BOS",
+                away_team="TOR",
+            ),
+            SimpleNamespace(
+                game_id="2026020002",
+                event_start_time=START.isoformat(),
+                game_type=2,
+                home_team="NYR",
+                away_team="MTL",
+            ),
+            SimpleNamespace(
+                game_id="2026020003",
+                event_start_time=(START + timedelta(days=1)).isoformat(),
+                game_type=2,
+                home_team="BOS",
+                away_team="NYR",
+            ),
+        ]
+
+    monkeypatch.setattr("nhl_candidate_pipeline.fetch_historical_games", _fake_fetch)
+    receipt = nhl.build_official_season_timeline_receipt(
+        season=int(SEASON),
+        event_start_time=START,
+    )
+    assert captured["session"] is None  # default session path (kwargs omitted)
+    assert captured["teams"] is None  # full season
+    assert captured["strict"] is True
+    assert receipt["settled_prior_event_ids"] == ["2026020001"]
+    assert receipt["provenance_complete"] is True
+
+    def _boom(*_args, **_kwargs):
+        from nhl_candidate_pipeline import NHLCandidateError
+        raise NHLCandidateError("NHL_SOURCE_TRANSPORT_FAILED", "boom")
+
+    monkeypatch.setattr("nhl_candidate_pipeline.fetch_historical_games", _boom)
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
-        nhl.reconstruct_nhl_pregame_features(
-            events,
-            official_event_id="2026029001",
-            event_start_time=START.isoformat(),
-            home_team="BOS",
-            away_team="NYR",
-            season=SEASON,
-            source_timeline_receipt=receipt,
-        )
+        nhl.build_official_season_timeline_receipt(season=int(SEASON), event_start_time=START)
     assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
+
+
+def test_score_current_ignores_caller_supplied_timeline_receipt(monkeypatch):
+    # Poisoned caller evidence must not authorize an incomplete stored timeline.
+    poisoned = {
+        "provenance_complete": True,
+        "season": SEASON,
+        "settled_prior_event_ids": [],
+    }
+    request = _request(source_timeline_receipt=poisoned)
+    package = nhl.score_current_nhl_event(request, db=_DB(), now_utc=NOW)
+    assert package["can_execute"] is False
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" not in package.get("blockers", [])
 
 
 def test_feature_reconstruction_requires_minimum_prior_games():

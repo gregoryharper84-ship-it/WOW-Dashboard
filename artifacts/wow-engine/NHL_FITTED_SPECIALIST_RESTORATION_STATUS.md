@@ -193,7 +193,9 @@ Typed holds preserved:
   `NHL_SETTLEMENT_BASIS_UNVERIFIED` — invalid or unsupported inputs.
 - `NHL_PRIOR_GAMES_INSUFFICIENT`, `NHL_SOURCE_TIMELINE_INCOMPLETE`,
   `NHL_SOURCE_EVENT_IDENTITY_CONFLICT`, `NHL_EVENT_ALREADY_SETTLED` —
-  incomplete or conflicting chronological replay.
+  incomplete or conflicting chronological replay. Timeline receipts must
+  cover every settled regular-season prior (Elo is transitive across clubs);
+  scoring resolves the receipt server-side and ignores caller evidence.
 - `NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE` — the selected calibrator has no
   empirical residual/Wilson bound.
 - `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED`,

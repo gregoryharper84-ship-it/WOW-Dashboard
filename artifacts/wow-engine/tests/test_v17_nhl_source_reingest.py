@@ -221,7 +221,8 @@ def _target_start() -> datetime:
 
 
 def _timeline_receipt(rows, *, home, away, target_start, season=SEASON):
-    clubs = {home: set(), away: set()}
+    del home, away
+    prior_ids = set()
     target = datetime.fromisoformat(str(target_start).replace("Z", "+00:00"))
     if target.tzinfo is None:
         target = target.replace(tzinfo=timezone.utc)
@@ -231,14 +232,11 @@ def _timeline_receipt(rows, *, home, away, target_start, season=SEASON):
             start = start.replace(tzinfo=timezone.utc)
         if start >= target:
             continue
-        event_id = str(row["official_event_id"])
-        for club in (str(row["home_participant"]), str(row["away_participant"])):
-            if club in clubs:
-                clubs[club].add(event_id)
+        prior_ids.add(str(row["official_event_id"]))
     return {
         "provenance_complete": True,
         "season": str(season),
-        "club_prior_event_ids": {club: sorted(ids) for club, ids in clubs.items()},
+        "settled_prior_event_ids": sorted(prior_ids),
     }
 
 def _reconstruct_target(rows: list[dict]):

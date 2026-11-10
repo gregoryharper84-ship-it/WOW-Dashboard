@@ -91,6 +91,7 @@ _MAX_SEASON_EVENTS = 5000
 
 # Test/rollback seam. Production installs the trusted db-client provider once.
 _REGISTRY_DB_PROVIDER: Any = None
+_TIMELINE_RECEIPT_PROVIDER: Any = None
 
 
 class NHLFittedSpecialistError(RuntimeError):
@@ -169,6 +170,17 @@ def install_nhl_fitted_registry_provider(provider: Any) -> None:
 def reset_nhl_fitted_registry_provider() -> None:
     global _REGISTRY_DB_PROVIDER
     _REGISTRY_DB_PROVIDER = None
+
+
+def install_nhl_timeline_receipt_provider(provider: Any) -> None:
+    """Install a test-only server-side timeline receipt provider."""
+    global _TIMELINE_RECEIPT_PROVIDER
+    _TIMELINE_RECEIPT_PROVIDER = provider
+
+
+def reset_nhl_timeline_receipt_provider() -> None:
+    global _TIMELINE_RECEIPT_PROVIDER
+    _TIMELINE_RECEIPT_PROVIDER = None
 
 
 @dataclass(frozen=True)
@@ -600,40 +612,18 @@ def _validated_target_season(value: Any, event_start: datetime) -> int:
     return target
 
 
-def _club_prior_event_ids(
-    games: Iterable[Mapping[str, Any]],
-    *,
-    home: str,
-    away: str,
-) -> dict[str, set[str]]:
-    """Collect prior event ids that involve the target clubs."""
-    observed = {home: set(), away: set()}
-    for game in games:
-        event_key = str(game.get("event_id") or "")
-        game_home = str(game.get("home") or "")
-        game_away = str(game.get("away") or "")
-        if not event_key:
-            continue
-        if game_home in observed:
-            observed[game_home].add(event_key)
-        if game_away in observed:
-            observed[game_away].add(event_key)
-    return observed
-
-
 def _require_source_timeline_receipt(
     receipt: Mapping[str, Any] | None,
     *,
     season: int,
-    home: str,
-    away: str,
     prior_games: list[Mapping[str, Any]],
 ) -> None:
-    """Fail closed unless an authoritative club-prior receipt matches storage.
+    """Fail closed unless an authoritative season-prior receipt matches storage.
 
-    Stored V2 rows alone never prove missing games are absent. The receipt must
-    declare the complete prior event ids for each target club (from a verified
-    re-ingest completion or official schedule counts).
+    Stored V2 rows alone never prove missing games are absent. Elo depends on
+    ratings propagated through non-target clubs, so the receipt must declare
+    every settled regular-season event before the target — not only the two
+    participating clubs.
     """
     if not isinstance(receipt, Mapping):
         raise NHLFittedSpecialistError(
@@ -653,33 +643,25 @@ def _require_source_timeline_receipt(
             ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
             {"reason": "SOURCE_TIMELINE_SEASON_MISMATCH"},
         )
-    club_ids = receipt.get("club_prior_event_ids")
-    if not isinstance(club_ids, Mapping):
+    expected_raw = receipt.get("settled_prior_event_ids")
+    if not isinstance(expected_raw, (list, tuple, set, frozenset)):
         raise NHLFittedSpecialistError(
             "MODEL_INPUTS_INSUFFICIENT",
             ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
-            {"reason": "SOURCE_TIMELINE_CLUB_IDS_MISSING"},
+            {"reason": "SOURCE_TIMELINE_PRIOR_IDS_MISSING"},
         )
-    observed = _club_prior_event_ids(prior_games, home=home, away=away)
-    for club in (home, away):
-        expected_raw = club_ids.get(club)
-        if not isinstance(expected_raw, (list, tuple, set, frozenset)):
-            raise NHLFittedSpecialistError(
-                "MODEL_INPUTS_INSUFFICIENT",
-                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
-                {"reason": "SOURCE_TIMELINE_CLUB_IDS_INVALID", "club": club},
-            )
-        expected = {str(item) for item in expected_raw}
-        if observed.get(club, set()) != expected:
-            raise NHLFittedSpecialistError(
-                "MODEL_INPUTS_INSUFFICIENT",
-                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
-                {
-                    "club": club,
-                    "expected_n": len(expected),
-                    "observed_n": len(observed.get(club, set())),
-                },
-            )
+    expected = {str(item) for item in expected_raw}
+    observed = {str(game.get("event_id") or "") for game in prior_games}
+    observed.discard("")
+    if observed != expected:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {
+                "expected_n": len(expected),
+                "observed_n": len(observed),
+            },
+        )
 
 
 def reconstruct_nhl_pregame_features(
@@ -699,8 +681,9 @@ def reconstruct_nhl_pregame_features(
     per-season team state, Elo K=20, a 10-game recent window, and rest computed
     from the previous game start. The target event must not already be settled.
 
-    ``source_timeline_receipt`` must prove the club-prior timeline is complete;
-    rows currently stored in ``events`` are never treated as that proof.
+    ``source_timeline_receipt`` must prove the full settled-prior timeline is
+    complete; rows currently stored in ``events`` are never treated as that
+    proof.
     """
     event_id = str(official_event_id or "").strip()
     target_start = _aware(event_start_time)
@@ -772,8 +755,6 @@ def reconstruct_nhl_pregame_features(
     _require_source_timeline_receipt(
         source_timeline_receipt,
         season=expected_season,
-        home=str(home),
-        away=str(away),
         prior_games=prior_games,
     )
     states: dict[str, dict[str, Any]] = {}
@@ -1096,14 +1077,14 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
     events = load_nhl_season_events(client, season=season)
     home_team = str(getattr(req, "home_team", "") or "")
     away_team = str(getattr(req, "away_team", "") or "")
-    receipt = evidence.get("source_timeline_receipt")
-    if not isinstance(receipt, Mapping):
-        receipt = build_official_club_timeline_receipt(
-            season=season,
-            event_start_time=target_start,
-            home_team=home_team,
-            away_team=away_team,
-        )
+    # Timeline completeness is server-owned. Caller evidence cannot supply or
+    # override the receipt; tests install a provider seam instead.
+    receipt = resolve_nhl_timeline_receipt(
+        season=season,
+        event_start_time=target_start,
+        home_team=home_team,
+        away_team=away_team,
+    )
     reconstruction = reconstruct_nhl_pregame_features(
         events,
         official_event_id=official_id,
@@ -1122,36 +1103,50 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
     )
 
 
-def build_official_club_timeline_receipt(
+def resolve_nhl_timeline_receipt(
     *,
     season: int,
     event_start_time: datetime,
-    home_team: str,
-    away_team: str,
+    home_team: str = "",
+    away_team: str = "",
     session: Any = None,
 ) -> dict[str, Any]:
-    """Build a club-prior receipt from official NHL schedule counts.
+    """Resolve the server-side season timeline receipt for scoring."""
+    if _TIMELINE_RECEIPT_PROVIDER is not None:
+        return _TIMELINE_RECEIPT_PROVIDER(
+            season=season,
+            event_start_time=event_start_time,
+            home_team=home_team,
+            away_team=away_team,
+            session=session,
+        )
+    return build_official_season_timeline_receipt(
+        season=season,
+        event_start_time=event_start_time,
+        session=session,
+    )
 
-    Only the two participating clubs are required: Elo/form for the target game
-    depend on their own prior settled games, not on unrelated clubs.
+
+def build_official_season_timeline_receipt(
+    *,
+    season: int,
+    event_start_time: datetime,
+    session: Any = None,
+) -> dict[str, Any]:
+    """Build a full-season settled-prior receipt from official NHL schedules.
+
+    Elo for the target clubs depends on ratings propagated through other clubs,
+    so the receipt covers every settled regular-season game before the target.
     """
     from nhl_candidate_pipeline import NHLCandidateError, fetch_historical_games
 
-    home = team_abbreviation(home_team)
-    away = team_abbreviation(away_team)
-    if not home or not away or home == away:
-        raise NHLFittedSpecialistError(
-            "MODEL_INPUTS_INSUFFICIENT",
-            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
-            {"reason": "SOURCE_TIMELINE_CLUB_IDENTITY_INVALID"},
-        )
     start_year = int(str(season)[:4]) if len(str(season)) >= 4 else _season_start_year(event_start_time)
+    fetch_kwargs: dict[str, Any] = {} if session is None else {"session": session}
     try:
         games = fetch_historical_games(
             [start_year],
-            teams=(home, away),
-            session=session,
             strict=True,
+            **fetch_kwargs,
         )
     except NHLCandidateError as exc:
         raise NHLFittedSpecialistError(
@@ -1159,25 +1154,37 @@ def build_official_club_timeline_receipt(
             ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
             {"reason": str(exc.code)},
         ) from exc
-    club_ids = {home: set(), away: set()}
+    prior_ids: set[str] = set()
     for game in games:
         start = _aware(game.event_start_time)
         if start is None or start >= event_start_time:
             continue
         if int(getattr(game, "game_type", 2) or 2) != 2:
             continue
-        event_key = str(game.game_id)
-        for club in (str(game.home_team), str(game.away_team)):
-            if club in club_ids:
-                club_ids[club].add(event_key)
+        prior_ids.add(str(game.game_id))
     return {
         "provenance_complete": True,
         "season": str(season),
-        "club_prior_event_ids": {
-            club: sorted(ids) for club, ids in club_ids.items()
-        },
-        "source": "NHL_PUBLIC_WEB_API_CLUB_SCHEDULE",
+        "settled_prior_event_ids": sorted(prior_ids),
+        "source": "NHL_PUBLIC_WEB_API_SEASON_SCHEDULE",
     }
+
+
+def build_official_club_timeline_receipt(
+    *,
+    season: int,
+    event_start_time: datetime,
+    home_team: str = "",
+    away_team: str = "",
+    session: Any = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper; timeline completeness is season-wide for Elo."""
+    del home_team, away_team
+    return build_official_season_timeline_receipt(
+        season=season,
+        event_start_time=event_start_time,
+        session=session,
+    )
 
 
 def _fitted_http_failure(req: Any, exc: NHLFittedSpecialistError):
@@ -1229,11 +1236,15 @@ __all__ = [
     "SOURCE_POLICY_ID",
     "SOURCE_TABLE",
     "build_official_club_timeline_receipt",
+    "build_official_season_timeline_receipt",
     "install_nhl_fitted_registry_provider",
+    "install_nhl_timeline_receipt_provider",
     "load_nhl_fitted_candidate",
     "load_nhl_season_events",
     "reconstruct_nhl_pregame_features",
     "reset_nhl_fitted_registry_provider",
+    "reset_nhl_timeline_receipt_provider",
+    "resolve_nhl_timeline_receipt",
     "score_current_nhl_event",
     "score_nhl_fitted_candidate",
     "score_nhl_fitted_team_event",
