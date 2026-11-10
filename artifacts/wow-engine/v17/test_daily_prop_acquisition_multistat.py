@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -180,3 +180,87 @@ def test_receipts_are_route_distinct_even_when_lines_match():
     assert strikeout["stat_type"] != outs["stat_type"]
     assert strikeout["can_execute"] is False
     assert outs["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "participation, expected_blocker",
+    [
+        ("PROBABLE_STARTER", "PLAYER_AVAILABILITY_RECHECK_REQUIRED"),
+        ("NOT_SUPPLIED", "PLAYER_AVAILABILITY_UNVERIFIED"),
+    ],
+)
+def test_real_daily_writer_preserves_official_availability_hold(
+    monkeypatch: pytest.MonkeyPatch,
+    participation: str,
+    expected_blocker: str,
+):
+    """Daily uses its real validator and snapshot writer, not the old PASS mock.
+
+    This is an offline official-response fixture: it proves that an unresolved
+    participation observation survives the actual acquisition-to-upsert path.
+    It does not claim the external provider was contacted.
+    """
+    real_validate = subject._validate_evidence
+    real_writer = subject._snapshot_payload
+    _install_common(monkeypatch)
+    monkeypatch.setattr(subject, "_validate_evidence", real_validate)
+    monkeypatch.setattr(subject, "_snapshot_payload", real_writer)
+
+    captured = datetime.now(timezone.utc) - timedelta(seconds=5)
+    event_start = captured + timedelta(hours=8)
+    candidate = {
+        "event_id": "MLB:123456",
+        "event_start_time": event_start.isoformat(),
+        "player": "Starter One",
+        "opponent": "TWO",
+    }
+    monkeypatch.setattr(subject, "_schedule_pitchers", lambda *_a, **_k: [candidate])
+
+    def hydrate(**kwargs):
+        evidence = _raw(kwargs["stat_type"])
+        evidence["captured_at"] = captured.isoformat()
+        evidence["role_timestamp"] = captured.isoformat()
+        evidence["source_timestamps"] = {"MLB_STATS_API": captured.isoformat()}
+        if participation == "PROBABLE_STARTER":
+            evidence["role_status"] = {
+                "status": "PROBABLE_STARTER",
+                "availability": {
+                    "status": "PROBABLE_STARTER",
+                    "basis": "PROBABLE_STARTER",
+                    "confirmation": "PROBABLE",
+                    "source": "MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER",
+                    "captured_at": captured.isoformat(),
+                    "evidence_status": "RETRIEVED",
+                    "fresh": True,
+                    "athlete_id": "660271",
+                    "event_id": candidate["event_id"],
+                    "team": "ONE",
+                },
+            }
+        return evidence
+
+    monkeypatch.setattr(subject, "auto_hydrate_prop_evidence", hydrate)
+    db = _DB()
+    result = subject.acquire_daily_prop_snapshots(
+        db=db,
+        requested_date=event_start.date().isoformat(),
+        requested_timezone="America/Chicago",
+        max_candidates=4,
+        now=captured,
+        http_get=lambda *_a, **_k: None,
+    )
+
+    assert result["attempted"] == result["persisted"] == 4
+    assert result["snapshot_write_succeeded"] == 4
+    assert result["snapshot_write_failed"] == 0
+    assert result["explicit_prewrite_exclusions"] == 0
+    assert len(db.writes) == 4
+    assert all(on_conflict == "source_snapshot_id" for _, on_conflict in db.writes)
+    assert {row["stat_type"] for row, _ in db.writes} == set(subject.STAT_TYPES)
+    for row, _ in db.writes:
+        assert row["hydration_status"] == "PASS"
+        assert row["blockers"] == [expected_blocker]
+        assert row["can_execute"] is False
+        assert row["role_status"]["status"] in {"PROBABLE_STARTER", "CONFIRMED_STARTER"}
+    assert all(r["write_status"] == "SNAPSHOT_WRITE_SUCCEEDED" for r in result["receipts"])
+    assert result["can_execute"] is False
