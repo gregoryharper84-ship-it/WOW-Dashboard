@@ -71,3 +71,25 @@ def test_newer_clean_snapshot_supersedes_older_blocked_without_duplicate_exclusi
     assert not exclusions
     assert stats["raw_rows_read"] == 2
     assert stats["canonical_merged_rows"] == 1
+
+
+def test_newer_failed_hydration_supersedes_old_pass_even_without_explicit_blocker():
+    prior = _row("old-pass", "Pitcher", 4.5)
+    prior["captured_at"] = "2099-09-19T12:00:00Z"
+    newer = _row("new-failed", "Pitcher", 4.5)
+    newer["captured_at"] = "2099-09-20T12:00:00Z"
+    newer["hydration_status"] = "FAILED"
+    newer["blockers"] = []
+
+    exclusions, stats = [], {}
+    rows = _prop_manifest_rows(
+        _DB([prior, newer]), "2099-09-20", "UTC",
+        page_size=1, exclusions=exclusions, stats=stats,
+    )
+    assert rows == []
+    assert len(exclusions) == 1
+    assert exclusions[0]["source_snapshot_id"] == "new-failed"
+    assert exclusions[0]["reason"] == "EVIDENCE_HYDRATION_NOT_PASSED"
+    assert set(exclusions[0]["source_snapshot_ids"]) == {"old-pass", "new-failed"}
+    assert stats["raw_rows_read"] == 2
+    assert stats["canonical_merged_rows"] == 1
