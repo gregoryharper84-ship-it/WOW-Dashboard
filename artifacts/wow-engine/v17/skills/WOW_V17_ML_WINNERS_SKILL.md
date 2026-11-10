@@ -26,6 +26,37 @@ This skill remains probability-only. A high ranking here is **not** permission t
 11. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
 12. Keep unsupported sports/events fail-closed with exact typed status.
 
+## Upset Integrity V2 — optional research diagnostics (non-authoritative)
+
+When source-visible exact-line market snapshots are available, the analyst may
+run `v17.upset_market_diagnostics.analyze_upset_market_snapshot` alongside the
+existing governed `team_event_upset_alert` interpretation layer. Require matching
+event/outcome space, exact market type/settlement basis, source snapshot IDs,
+timely pregame book quotes, declared power/multiplicative no-vig method and
+complete governed outcome probabilities and bounds. Treat cross-book dispersion
+and reference-class favorite–longshot bias as uncertainty, not model evidence.
+A reference-class decomposition requires a separate time-safe receipt.
+
+All outputs from that helper are `RESEARCH_ONLY` (or explicitly single-book):
+not certified, not rank eligible, not allowed to update sporting probabilities,
+not permission for pick promotion or a cash/profitability decision. A positive
+market disagreement is not proof of information advantage. No stale,
+after-kickoff or different-settlement quote may contribute to an edge claim.
+The existing alert governs favorite vulnerability from a complete model package.
+The diagnostic measures *separate* market disagreement.
+
+For requested tennis winner research, include ATP/WTA scheduled matches in the
+research slate when identity and source coverage permit, but route through a
+fitted certified tennis specialist only when genuinely available. Never
+manufacture FULL_MODEL support from rankings, Elo alone, or market prices.
+Challenger tennis is independently source/capability-qualified.
+
+The proposed universal winner posterior-predictive ensemble, variance/tail
+modeling, reference-class learning, sequential market snapshots, CLV,
+calibration and prospective testing are **research designs, not implemented
+fitted capabilities**. See:
+`docs/wow/contracts/canonical/WOW-PATCH-2026-11-10-UPSET-INTEGRITY-AND-UNIVERSAL-WINNERS.md`.
+
 ## Cash/profitability handoff — P0 invariant
 When the user asks to use a PrizePicks Game Winner as a cash single, in a profitability plan, or in any paid-card/value context, this skill stops at the sporting-probability package and hands the row downstream.
 
