@@ -69,3 +69,45 @@ def test_migration_is_immutable_restricted_and_non_certifying():
     assert "can_execute = false" in sql
     assert "create function public.wow_nba_team_event_verification_receipt_schema_ready()" in sql
     assert "insert into public.wow_team_event_specialist_certifications" not in sql
+
+
+def _migration_sql_without_comments():
+    """Read real migration DDL, not prose or example/comment mentions."""
+    import re
+    sql = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "migrations").glob("*.sql"))
+    )
+    return re.sub(r"--[^\n]*", "", sql)
+
+
+def test_wiring_ledger_is_backed_by_an_actual_migration():
+    """Red until the reported NBA pre-fit verifier and schema agree by name."""
+    import re
+    sql = _migration_sql_without_comments()
+    assert re.search(
+        r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        r"(?:public\.)?wow_independent_verification_receipts\b",
+        sql, flags=re.IGNORECASE,
+    ), (
+        "NBA_VERIFICATION_LEDGER_MISSING: draft migration creates "
+        "wow_nba_team_event_verification_receipts, but new NBA pre-fit wiring "
+        "requires wow_independent_verification_receipts; do not enable predeploy."
+    )
+
+
+def test_wiring_calibrator_evidence_columns_have_real_ddl():
+    """Neither column exists in the validated database's base table."""
+    import re
+    sql = _migration_sql_without_comments()
+    for col in ("calibration_sha256", "calibration_fit_end"):
+        assert re.search(
+            r"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?"
+            r"(?:public\.)?wow_basketball_team_event_calibrators\b"
+            r"[^;]*\bADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+            + col + r"\b",
+            sql, flags=re.IGNORECASE | re.DOTALL,
+        ), (
+            "NBA_VERIFICATION_CALIBRATOR_EVIDENCE_MISSING: "
+            + col + " has no additive migration; do not enable predeploy."
+        )
