@@ -47,18 +47,17 @@ Real `wow-engine-validation` PostgreSQL SELECT probes returned:
 
 ## Opt-in PostgREST HTTP acceptance test — draft
 
-The read-only HTTP acceptance test is \`tests/test_nba_verification_postgrest_http.py\` (added in \`f4bb4c3\`). It is a **different test** from the reported, still-uncommitted six-test PostgreSQL/psycopg integration file. This test uses Python standard-library \`urllib\` to issue only two credentialed GET requests, with redirects disabled to protect API keys. It accepts the legacy JWT \`Authorization: Bearer\` header only for legacy service_role JWTs; Supabase \`sb_secret_...\` keys are sent solely in \`apikey\`. It never logs response bodies or key material.
+The read-only HTTP acceptance test is `tests/test_nba_verification_postgrest_http.py` (added in `f4bb4c3`). It is a **different test** from the reported, still-uncommitted six-test PostgreSQL/psycopg integration file. This test uses Python standard-library `urllib` to issue only two credentialed GET requests, with redirects disabled to protect API keys. It accepts the legacy JWT `Authorization: Bearer` header only for legacy service_role JWTs; Supabase `sb_secret_...` keys are sent solely in `apikey`. It never logs response bodies or key material.
 
 Explicit test command from a controlled, authorized environment, using a scoped **service-role** key and the exact intended Supabase project:
 
-\`\`\`bash
-WOW_TEST_NBA_SCHEMA_STATE=old \
-WOW_TEST_SUPABASE_URL=https://<authorized-project-ref>.supabase.co \
-WOW_TEST_SUPABASE_SERVICE_KEY='<secret provided by environment, not shell history>' \
-PYTHONPATH=artifacts/wow-engine \
-pytest -q artifacts/wow-engine/tests/test_nba_verification_postgrest_http.py
-\`\`\`
+```bash
+# Supply WOW_TEST_SUPABASE_SERVICE_KEY through the authorized secret manager.
+export WOW_TEST_SUPABASE_URL="https://PROJECT_REF.supabase.co"
+WOW_TEST_NBA_SCHEMA_STATE=old PYTHONPATH=artifacts/wow-engine \
+  pytest -q artifacts/wow-engine/tests/test_nba_verification_postgrest_http.py
+```
 
-Prefer exporting secrets through the existing protected environment/secrets manager rather than pasting them into shell history. Repeat with \`WOW_TEST_NBA_SCHEMA_STATE=ready\` **only after** the independently accepted canonical schema migration has been applied in the authorized project. Without all three opt-in variables the real HTTP test is **SKIPPED**, not PASS. The other three tests cover expected response contract and header/redirect behavior with dummy inputs; they do not prove a live HTTP call. As of this note, the authenticated real-HTTP test has **not** been executed here.
+Prefer exporting secrets through the existing protected environment/secrets manager rather than pasting them into shell history. Repeat with `WOW_TEST_NBA_SCHEMA_STATE=ready` **only after** the independently accepted canonical schema migration has been applied in the authorized project. Without all three opt-in variables the real HTTP test is **SKIPPED**, not PASS. The other three tests cover expected response contract and header/redirect behavior with dummy inputs; they do not prove a live HTTP call. As of this note, the authenticated real-HTTP test has **not** been executed here.
 
 **Release invariant:** the draft currently does **not** satisfy the new wiring's ledger/column requirements; the two intentional red structural contract tests on this branch must be made green by the actual verified migration and producer/consumer wiring, not by removing or loosening those checks. No schema write or fitted-model change is authorized by these test instructions.
