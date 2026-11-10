@@ -71,6 +71,8 @@ Use when a PrizePicks board/PDF/screenshots/pasted board is supplied and the use
 
 When the user requests all NFL, NBA and NHL game winners rather than a shortlist or cash singles, discover and independently verify every official scheduled playable event and use the existing LLP team/event synthesis owner. Present exactly **one researched winner per playable event**. No discretionary PASS for weak evidence, conflicting sources or missing certified probability: deepen injury, QB/goalie, rotation, volatility, scenario and current market reconciliation. Keep qualitative uncertainty visible, without asserting certified Full Model provenance.
 
+Add a concise game-script finding beside each full-game research winner: expected winning path, opponent's realistic upset path, and the named swing factors. Preserve a source/as-of time and do not substitute the outcome actually observed after kickoff. Absent or late game scripts raise research-quality warnings, not an automatic PASS; numeric script weights remain unavailable unless separately fitted and certified.
+
 Run read-only v17.llp_research_winner_card.audit_research_winner_card as the research user-card coverage preflight. Report its board_complete separately from research_evidence_fully_reconciled and from qualified fitted-model coverage. An unverified slate or incomplete/late/duplicate selection is an actual incomplete result, never silently filled by the validator. Model/terminal HOLD is preserved. Keep upset watch, fitted probabilities, research winners and submitted NFL Pick'em entries separated. Never mutate the shared Sheet, wager or automatically submit an entry.
 
 ## Retrospective research winner-card discipline
