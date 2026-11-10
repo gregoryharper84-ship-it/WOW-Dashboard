@@ -540,18 +540,23 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     prop_acquisition: dict[str, Any] | None = None
     prop_manifest: list[dict[str, Any]] = []
     prop_exclusions: list[dict[str, Any]] = []
+    prop_manifest_stats: dict[str, int] = {}
     prop_candidate_accounting: dict[str, Any] | None = None
 
     if "PROPS" in requested_lanes:
+        prop_exclusions.clear()
+        prop_manifest_stats.clear()
         try:
             prop_manifest = _prop_manifest_rows(
                 db, req.requested_slate_date, req.requested_timezone,
-                exclusions=prop_exclusions,
+                exclusions=prop_exclusions, stats=prop_manifest_stats,
             )
             prop_rows = prop_manifest[:req.max_props]
         except Exception as exc:
             prop_rows = []
             prop_manifest = []
+            prop_exclusions.clear()
+            prop_manifest_stats.clear()
             blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
         # Acquisition exists to fill an empty canonical lane. A zero-length page
         # caused by max_props is not an empty lane, so it must not trigger a
@@ -568,12 +573,20 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
                 blockers.extend(prop_acquisition.get("blockers") or [])
+            # The second inventory is independent of the initial empty/blocked read.
+            prop_exclusions.clear()
+            prop_manifest_stats.clear()
             try:
-                prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
+                prop_manifest = _prop_manifest_rows(
+                    db, req.requested_slate_date, req.requested_timezone,
+                    exclusions=prop_exclusions, stats=prop_manifest_stats,
+                )
                 prop_rows = prop_manifest[:req.max_props]
             except Exception as exc:
                 prop_rows = []
                 prop_manifest = []
+                prop_exclusions.clear()
+                prop_manifest_stats.clear()
                 blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
 
             persisted = int(prop_acquisition.get("persisted") or 0)
