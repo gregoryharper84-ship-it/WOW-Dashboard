@@ -69,6 +69,22 @@ class Test24x7(unittest.TestCase):
                 result = mod.plan([engineering], [])
                 self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
 
+    def test_sirt_production_failures_still_admit_repairs_without_review_bypass(self):
+        for title in (
+            "SIRT: alerting verification fails in production",
+            "[P0 SIRT] worker failure after deployment",
+            "SIRT: runtime pipeline outage under verification",
+        ):
+            with self.subTest(title=title):
+                repair = issue(1527, "P1", title=title)
+                result = mod.plan([repair], [], target=1527)
+                self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
+                self.assertFalse(result["can_execute"])
+        # Explicit targeting must not convert independent assurance into coding.
+        review = issue(2469, "P1",
+                       title="SIRT: independent verification failed in production")
+        self.assertEqual(mod.plan([review], [], target=2469)["action"], "IDLE")
+
     def test_cli_explicit_null_manifest_does_not_fall_back_to_global(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
