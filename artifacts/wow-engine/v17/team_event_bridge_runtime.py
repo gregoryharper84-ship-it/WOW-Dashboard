@@ -228,7 +228,12 @@ def _validate_fitted_registry_bridge_output(
     packages still go through the full governed scoring contract.
     """
     blockers = [str(item) for item in (result.get("blockers") or []) if str(item or "").strip()]
-    identity_hold = "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in blockers
+    identity_hold = (
+        "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in blockers
+        and str(result.get("calibration_method") or "") == "IDENTITY_RAW_PROBABILITY_V1"
+        and result.get("calibrated_lower_bound") is None
+        and result.get("calibrated_upper_bound") is None
+    )
     required_fields = (
         "candidate_id",
         "immutable_model_timestamp",

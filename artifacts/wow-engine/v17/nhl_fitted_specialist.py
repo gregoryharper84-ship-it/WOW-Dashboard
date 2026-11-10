@@ -1105,15 +1105,13 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         as_of_utc=now,
     )
     scoring_evidence = dict(evidence)
-    # Prefer caller snapshot time; otherwise use the server timeline receipt time.
-    if not str(scoring_evidence.get("source_snapshot_timestamp") or "").strip():
-        verified_at = str(receipt.get("verified_at") or "").strip()
-        if not verified_at:
-            raise NHLFittedSpecialistError(
-                "MODEL_INPUTS_INSUFFICIENT",
-                ["NHL_SOURCE_SNAPSHOT_TIMESTAMP_MISSING"],
-            )
-        scoring_evidence["source_snapshot_timestamp"] = verified_at
+    # Caller snapshot provenance stays caller-owned; never borrow receipt time.
+    snapshot_at = _aware(scoring_evidence.get("source_snapshot_timestamp"))
+    if snapshot_at is None or snapshot_at > now or snapshot_at >= target_start:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_SNAPSHOT_TIMESTAMP_MISSING"],
+        )
     reconstruction = reconstruct_nhl_pregame_features(
         events,
         official_event_id=official_id,
@@ -1124,12 +1122,16 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         neutral_site=neutral_site,
         source_timeline_receipt=receipt,
     )
-    return score_nhl_fitted_candidate(
+    package = score_nhl_fitted_candidate(
         candidate,
         reconstruction,
         event_key=str(getattr(req, "event_key", "") or f"NHL:{official_id}"),
         evidence=scoring_evidence,
     )
+    verified_at = str(receipt.get("verified_at") or "").strip()
+    if verified_at:
+        package["timeline_receipt_verified_at"] = verified_at
+    return package
 
 
 def persist_nhl_season_timeline_receipt(db: Any, receipt: Mapping[str, Any]) -> dict[str, Any]:

@@ -544,6 +544,21 @@ def test_score_current_ignores_caller_supplied_timeline_receipt(monkeypatch):
     package = nhl.score_current_nhl_event(request, db=_DB(), now_utc=NOW)
     assert package["can_execute"] is False
     assert "NHL_SOURCE_TIMELINE_INCOMPLETE" not in package.get("blockers", [])
+    assert package.get("timeline_receipt_verified_at") == NOW.isoformat()
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [None, "not-a-timestamp", (NOW + timedelta(hours=1)).isoformat(), START.isoformat()],
+)
+def test_score_current_requires_valid_caller_source_snapshot_timestamp(timestamp):
+    overrides = {"source_snapshot_timestamp": timestamp}
+    if timestamp is None:
+        overrides = {"source_snapshot_timestamp": ""}
+    request = _request(**overrides)
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.score_current_nhl_event(request, db=_DB(), now_utc=NOW)
+    assert "NHL_SOURCE_SNAPSHOT_TIMESTAMP_MISSING" in caught.value.blockers
 
 
 def test_resolve_timeline_receipt_uses_persisted_full_season_receipt(monkeypatch):
@@ -1179,7 +1194,9 @@ def test_nhl_bridge_registration_uses_the_fitted_server_scorer():
     assert "goalie_identity_snapshot_id" in SPORT_MODEL_INPUTS["NHL"]
 
 
-def test_fitted_registry_bridge_output_keeps_identity_hold_and_requires_provenance():
+def test_fitted_registry_bridge_output_keeps_identity_hold_and_requires_provenance(
+    monkeypatch,
+):
     from fastapi import HTTPException
 
     import v17.team_event_bridge_runtime as bridge_runtime
@@ -1188,12 +1205,16 @@ def test_fitted_registry_bridge_output_keeps_identity_hold_and_requires_provenan
     request = _request()
     request.requester_host_identity = "test-requester-host"
     request.candidate_family = "NHL"
-    host_routing.resolve_host_route = lambda *_args: SimpleNamespace(
-        requester_host_identity="test-requester-host",
-        controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
-        candidate_family="NHL",
+    monkeypatch.setattr(
+        host_routing,
+        "resolve_host_route",
+        lambda *_args: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
+            candidate_family="NHL",
+        ),
     )
-    package = {
+    hold = {
         "fitted_registry_scoring": True,
         "candidate_id": "06a765ad-845f-4a57-986e-62a8d9adfaed",
         "prediction_id": "NHL:NHL_RS_LOGISTIC_V1:2026029001",
@@ -1211,13 +1232,38 @@ def test_fitted_registry_bridge_output_keeps_identity_hold_and_requires_provenan
         "probability_publishable": True,
         "can_execute": False,
     }
-    validated = bridge_runtime._validate_standard_bridge_output(request, package)
-    assert validated["rank_eligible"] is False
-    assert validated["probability_publishable"] is False
-    assert validated["can_execute"] is False
-    assert "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in validated["blockers"]
+    validated_hold = bridge_runtime._validate_standard_bridge_output(request, hold)
+    assert validated_hold["rank_eligible"] is False
+    assert validated_hold["probability_publishable"] is False
+    assert validated_hold["can_execute"] is False
+    assert "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in validated_hold["blockers"]
 
-    broken = dict(package)
+    passed = {
+        **hold,
+        "model_version": "NHL_RS_LOGISTIC_V1-test",
+        "calibration_method": nhl.EMPIRICAL_CALIBRATION_METHOD,
+        "calibrated_lower_bound": 0.50,
+        "calibrated_upper_bound": 0.60,
+        "blockers": [],
+        "rank_eligible": True,
+        "probability_publishable": True,
+    }
+    validated_pass = bridge_runtime._validate_standard_bridge_output(request, passed)
+    assert validated_pass["rank_eligible"] is True
+    assert validated_pass["probability_publishable"] is True
+    assert validated_pass["can_execute"] is False
+
+    unmarked = {
+        **hold,
+        "calibration_method": nhl.EMPIRICAL_CALIBRATION_METHOD,
+        "blockers": [],
+    }
+    with pytest.raises(HTTPException) as unmarked_caught:
+        bridge_runtime._validate_standard_bridge_output(request, unmarked)
+    assert unmarked_caught.value.status_code == 409
+    assert unmarked_caught.value.detail["code"] == "MODEL_OUTPUT_INVALID"
+
+    broken = dict(hold)
     broken.pop("candidate_id")
     broken.pop("prediction_id")
     with pytest.raises(HTTPException) as caught:
