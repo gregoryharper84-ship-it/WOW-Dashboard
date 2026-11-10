@@ -97,6 +97,8 @@ def test_actions_wrapped_codex_stderr_quota_remains_classified() -> None:
     When that stderr is captured inside a GitHub Actions --log-failed blob
     that also contains ##[group]/##[error] markers, those markers must not
     hide the real provider failure. Script-echo quota strings still stay out.
+    Delivery outcomes still require emitted ##[error] provider payloads before
+    provider_signal may arm failover.
     """
     module = _load_module()
     log = "\n".join([
