@@ -8,6 +8,22 @@ from fastapi.testclient import TestClient
 import v17.basketball_model_maintenance as maintenance
 
 
+class _PrerequisiteDb:
+    """Client double whose verification-storage probes succeed."""
+
+    def table(self, name):
+        return self
+
+    def select(self, columns):
+        return self
+
+    def limit(self, count):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=[])
+
+
 def test_default_seasons_are_four_year_window():
     assert maintenance.default_seasons(datetime(2026, 9, 15, tzinfo=timezone.utc)) == (2023, 2024, 2025, 2026)
 
@@ -30,7 +46,7 @@ def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
 
     monkeypatch.setattr(maintenance, "hydrate", fake_hydrate)
     monkeypatch.setattr(maintenance, "run_training_replay", fake_replay)
-    db = object()
+    db = _PrerequisiteDb()
     result = maintenance.run_basketball_model_maintenance(db, seasons=(2025, 2026))
 
     assert result["status"] == "COMPLETE"
@@ -65,7 +81,7 @@ def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
 
     monkeypatch.setattr(maintenance, "hydrate", fail_hydration)
     monkeypatch.setattr(maintenance, "run_training_replay", replay)
-    db = object()
+    db = _PrerequisiteDb()
     result = maintenance.run_basketball_model_maintenance(db, sports=("NBA",), seasons=(2026,))
     row = result["rows"][0]
 
