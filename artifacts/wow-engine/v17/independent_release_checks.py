@@ -333,6 +333,29 @@ def gather(
 MAX_TARGETS = 20
 
 
+def _event_repo_is(side: Any, repo: str) -> bool:
+    """True only if a workflow_run pull_requests head/base repo is exactly ``repo``.
+
+    GitHub's workflow_run payload carries ``{id, name, url}`` (no full_name), so
+    accept an exact ``full_name`` or the exact API url. Missing, non-dict,
+    malformed or foreign values are never accepted.
+    """
+    ref = side.get("repo") if isinstance(side, dict) else None
+    if not isinstance(ref, dict):
+        return False
+    # Event origin must be unambiguous. Real GitHub workflow_run payloads may
+    # provide only "url", but if both identity fields are present they must
+    # agree; a forged full_name cannot be rescued by a matching URL (or vice
+    # versa). Absence of both fields is not affirmative provenance.
+    if "full_name" not in ref and "url" not in ref:
+        return False
+    if "full_name" in ref and ref["full_name"] != repo:
+        return False
+    if "url" in ref and ref["url"] != f"https://api.github.com/repos/{repo}":
+        return False
+    return True
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None,
             neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
@@ -364,12 +387,39 @@ def targets(repo: str, *, pr: str | None = None,
             head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
             base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
             same_origin = (
-                live.get("number") == number
+                _event_repo_is(item.get("head"), repo)
+                and _event_repo_is(item.get("base"), repo)
+                and live.get("number") == number
                 and head_repo.get("full_name") == repo
                 and base.get("ref") == "main"
                 and base_repo.get("full_name") == repo
                 and SHA_RE.match(str(current_sha or "")) is not None
             )
+            # #1021: workflow_run can report a same-repo PR that is still
+            # draft when its upstream QA run completes. A draft is not a
+            # reviewable release target. Do not issue a valid QA policy for it:
+            # Release would correctly fail and poison the unrelated main SHA.
+            # Neutral is allowed ONLY for one authenticated same-origin,
+            # exact-current-head, OPEN draft; every other identity fails closed.
+            # Manual workflow_dispatch never enables this neutral admission.
+            if live.get("state") == "open" and live.get("draft") is True:
+                draft_exact = (
+                    neutral_superseded
+                    and len(workflow_run_prs) == 1
+                    and same_origin
+                    and not live.get("merged_at")
+                    and current_sha == sha
+                    and isinstance(head.get("ref"), str)
+                    and bool(head["ref"].strip())
+                )
+                if draft_exact:
+                    return {
+                        "targets": [], "errors": [],
+                        "disposition": "neutral",
+                        "reason": "QA_SOURCE_PR_DRAFT_INELIGIBLE",
+                    }
+                errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+                continue
             if (
                 neutral_superseded and len(workflow_run_prs) == 1
                 and same_origin and (
@@ -383,6 +433,15 @@ def targets(repo: str, *, pr: str | None = None,
                     "disposition": "neutral",
                     "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
                 }
+            # A closed source PR is never a fresh scoring target. Its
+            # historical workflow_run event must still be proven same-origin
+            # before the strict current-SHA fallback can admit it.
+            if live.get("state") == "closed" and not (
+                _event_repo_is(item.get("head"), repo)
+                and _event_repo_is(item.get("base"), repo)
+            ):
+                errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+                continue
             if (
                 live.get("number") != number
                 or head.get("sha") != sha
