@@ -93,6 +93,7 @@ async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
     logger = logging.getLogger("test-v17-synthetic-self-acceptance")
     result = await mod.run_v17_synthetic_self_acceptance(logger)
     assert result["status"] == "PASS"
+    assert result["status_scope"] == "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
     assert result["prop_ok"] is True
     assert result["team_event_ok"] is True
     assert result["can_execute"] is False
@@ -186,7 +187,8 @@ async def test_projected_422_preserves_typed_backend_diagnostics(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_claim(monkeypatch):
+@pytest.mark.parametrize("prediction_id", [None, "claimed-id-is-not-persistence-proof"])
+async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_claim(monkeypatch, prediction_id):
     monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
     monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
     _patch_client(
@@ -221,6 +223,7 @@ async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_cl
                 "blockers": ["LINEUP_CONFIRMATION_PENDING"],
                 "can_execute": False,
                 "request_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+                "prediction_id": prediction_id,
             }),
         ],
     )
@@ -229,9 +232,10 @@ async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_cl
     )
     assert result["status"] == "PASS"
     assert result["synthetic_negative_probes"]["status"] == "PASS"
-    assert result["scoring_acceptance_proven"] is True
+    assert result["scoring_acceptance_proven"] is False
+    assert result["status_scope"] == "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
     scoring = result["source_backed_pregame_scoring"]
-    assert scoring["status"] == "PASS"
+    assert scoring["status"] == "HELD"
     assert scoring["lane"] == "SOURCE_BACKED_PROJECTED_TEAM_EVENT"
     assert scoring["request_id"] == "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE"
     assert scoring["official_event_id"] == "824226"
@@ -239,6 +243,6 @@ async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_cl
     assert scoring["fitted_route"] == "score-team-event"
     assert scoring["calibrated_lower_bound"] == 0.51
     assert scoring["reducer_authority"] == "V17_TERMINAL_REDUCER"
-    assert scoring["immutable_prediction_id"] is None
-    assert scoring["blocker"] == ""
+    assert scoring["immutable_prediction_id"] == prediction_id
+    assert scoring["blocker"] == "LINEUP_CONFIRMATION_PENDING"
     assert result["can_execute"] is False
