@@ -129,3 +129,56 @@ def test_timeout_at_final_refresh_keeps_the_publication_hold(monkeypatch):
     assert receipt["error_type"] == "TimeoutError"
     assert terminal["terminal_status"] == "HELD"
     assert persisted[0]["blockers"] == [PLAYER_AVAILABILITY_RECHECK_REQUIRED]
+
+
+def _snapshot_from_normalized_availability(*, status, requires_revalidation, blockers=()):
+    row = runtime_core.PickRequestRow(**_provisional_row("snapshot-internal-gate"))
+    evidence = row.evidence
+    normalized = {
+        "event_id": row.event_id,
+        "event_start_time": row.event_start_time,
+        "sport": row.sport,
+        "player": row.player,
+        "stat_type": runtime_core._canonical_stat(row.sport, row.stat_type),
+        "captured_at": evidence.captured_at,
+        "role_timestamp": evidence.role_timestamp,
+        "source_timestamps": evidence.source_timestamps,
+        "availability_status": status,
+        "availability_requires_revalidation": requires_revalidation,
+    }
+    return runtime_core._snapshot_payload(row, normalized, list(blockers))[2]
+
+
+def test_snapshot_writer_cannot_drop_provisional_hold_even_with_empty_caller_blockers():
+    persisted = _snapshot_from_normalized_availability(
+        status="AVAILABLE", requires_revalidation=True, blockers=[],
+    )
+    assert persisted["hydration_status"] == "PASS"
+    assert persisted["blockers"] == [PLAYER_AVAILABILITY_RECHECK_REQUIRED]
+    assert persisted["can_execute"] is False
+
+
+def test_snapshot_writer_cannot_drop_unverified_or_ruled_out_status():
+    from v17.player_availability_gate import (
+        PLAYER_AVAILABILITY_UNVERIFIED, PLAYER_RULED_OUT,
+    )
+    for status, expected in (
+        ("UNVERIFIED", PLAYER_AVAILABILITY_UNVERIFIED),
+        ("UNAVAILABLE", PLAYER_RULED_OUT),
+    ):
+        persisted = _snapshot_from_normalized_availability(
+            status=status, requires_revalidation=False, blockers=[],
+        )
+        assert persisted["blockers"] == [expected]
+        assert persisted["can_execute"] is False
+
+
+def test_snapshot_writer_deduplicates_explicit_and_derived_holds():
+    persisted = _snapshot_from_normalized_availability(
+        status="AVAILABLE",
+        requires_revalidation=True,
+        blockers=[PLAYER_AVAILABILITY_RECHECK_REQUIRED, "EXTERNAL_SOURCE_HOLD"],
+    )
+    assert persisted["blockers"] == [
+        PLAYER_AVAILABILITY_RECHECK_REQUIRED, "EXTERNAL_SOURCE_HOLD",
+    ]
