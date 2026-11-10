@@ -44,7 +44,10 @@ jobs:
           set -o pipefail
           python -m pytest -q --noconftest \
             tests/test_nhl_pregame_failure_codes_registered.py \
-            tests/test_nhl_status_registry.py | tee /tmp/nhl-registry-guard.log
+            tests/test_nhl_status_registry.py \
+            tests/test_sport_failure_registries.py | tee /tmp/nhl-registry-guard.log
+      - name: Check the generated sport registries are current
+        run: python scripts/sport_failure_registry.py --check
       - name: Upload guard log
         if: always()
         uses: actions/upload-artifact@v4
@@ -56,8 +59,9 @@ jobs:
         if: always()
         run: |
           {
-            echo '## NHL registry guard'
+            echo '## NHL and per-sport registry guards'
             echo 'Fails when an emitted failure code is unregistered, a documented code is no longer emitted,'
-            echo 'a row names the wrong module, or a shared emitter is left undocumented.'
+            echo 'a row names the wrong module, a shared emitter is left undocumented, or a generated'
+            echo 'sport registry document is stale.'
             echo '`can_execute=false`'
           } >> "$GITHUB_STEP_SUMMARY"
