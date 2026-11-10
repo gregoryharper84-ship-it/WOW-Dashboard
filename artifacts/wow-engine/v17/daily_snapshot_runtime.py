@@ -160,7 +160,7 @@ def _prop_manifest_rows(
     raw_rows: list[dict[str, Any]] = []
     offset = 0
     while True:
-        query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time")
+        query = db.table("wow_prop_evidence_snapshots").select(selected).order("event_start_time")
         ranged = getattr(query, "range", None)
         if callable(ranged):
             batch = ranged(offset, offset + page_size - 1).execute().data or []
@@ -181,7 +181,10 @@ def _prop_manifest_rows(
         })
     eligible: list[dict[str, Any]] = []
     for row in canonical:
-        if row.get("blockers"):
+        # A newer failed hydration must not expose an older PASS snapshot.
+        if row.get("hydration_status") != "PASS":
+            reason = "EVIDENCE_HYDRATION_NOT_PASSED"
+        elif row.get("blockers"):
             reason = "EVIDENCE_BLOCKED"
         elif not _future(row.get("event_start_time")):
             reason = "EVENT_NOT_PREGAME"
@@ -590,7 +593,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
 
             persisted = int(prop_acquisition.get("persisted") or 0)
-            if persisted > 0 and not prop_manifest:
+            if persisted > 0 and not prop_manifest and not prop_exclusions:
                 blockers.append("PROP_SNAPSHOT_INGESTION_EMPTY")
 
         for row in prop_rows:
