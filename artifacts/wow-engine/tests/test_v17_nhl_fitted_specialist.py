@@ -586,6 +586,24 @@ def test_batch_boundary_resolves_full_club_names_to_the_selected_side():
     assert "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID" in held["blockers"]
 
 
+def test_games_after_target_start_never_leak_into_features():
+    baseline = _reconstruct(_events())
+    future = _event(60, "BOS", "NYR", 9, 0)  # starts after START
+    leaked = _reconstruct(_events() + [future])
+    assert dict(leaked.features) == dict(baseline.features)
+    assert leaked.prior_event_count == baseline.prior_event_count
+    assert leaked.timeline_hash == baseline.timeline_hash
+
+
+def test_request_regulation_settlement_mismatches_full_game_evidence():
+    request = _request()
+    request.settlement_basis = "REGULATION_3_WAY"
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.score_current_nhl_event(request, db=_DB(), now_utc=NOW)
+    assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
+    assert "NHL_SETTLEMENT_BASIS_MISMATCH" in caught.value.blockers
+
+
 def test_current_event_rejects_mismatched_or_malformed_season_evidence():
     for bad_season in ("20252026", "not-a-season", "²", "٢٠٢٥٢٠٢٦", 20252026, True):
         with pytest.raises(nhl.NHLFittedSpecialistError) as caught:

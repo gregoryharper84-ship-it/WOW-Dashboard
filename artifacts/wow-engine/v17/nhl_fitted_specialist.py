@@ -74,6 +74,15 @@ EMPIRICAL_CALIBRATION_METHOD = "EMPIRICAL_WILSON_BINS_V1"
 FULL_GAME_SETTLEMENT = "HOME_AWAY_INCLUDING_OT_SO"
 SETTLEMENT_CONTRACT = "FULL_GAME_MONEYLINE_INCLUDING_OVERTIME_SHOOTOUT"
 ACCEPTED_SETTLEMENT_BASES = frozenset({FULL_GAME_SETTLEMENT, SETTLEMENT_CONTRACT})
+# Request/host labels that mean the same full-game OT/SO moneyline settlement.
+REQUEST_FULL_GAME_OT_SO_BASES = frozenset(
+    {
+        FULL_GAME_SETTLEMENT,
+        SETTLEMENT_CONTRACT,
+        "FULL_GAME_INCLUDING_OVERTIME_AND_SHOOTOUT",
+        "FULL_GAME_OUTRIGHT",
+    }
+)
 CONFIRMED_GOALIE_STATUSES = frozenset({"CONFIRMED", "CONFIRMED_STARTER", "OFFICIAL_STARTER"})
 MAX_EVIDENCE_AGE = timedelta(minutes=60)
 
@@ -526,6 +535,7 @@ def load_nhl_season_events(db: Any, *, season: int) -> list[dict[str, Any]]:
             .eq("season", str(season))
             .order("event_start_time")
             .order("official_event_id")
+            .order("source_payload_sha256")
         )
         page_method = getattr(query, "range", None)
         if callable(page_method):
@@ -948,8 +958,16 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         blockers.append("NHL_EVENT_TIME_INVALID")
     elif target_start <= now:
         blockers.append("NHL_EVENT_NOT_PREGAME")
-    if str(evidence.get("settlement_basis") or "") not in ACCEPTED_SETTLEMENT_BASES:
+    evidence_basis = evidence.get("settlement_basis")
+    if not isinstance(evidence_basis, str) or evidence_basis not in ACCEPTED_SETTLEMENT_BASES:
         blockers.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
+    request_basis = getattr(req, "settlement_basis", None)
+    if request_basis not in (None, ""):
+        if (
+            not isinstance(request_basis, str)
+            or request_basis.strip() not in REQUEST_FULL_GAME_OT_SO_BASES
+        ):
+            blockers.append("NHL_SETTLEMENT_BASIS_MISMATCH")
     goalie_status = str(evidence.get("goalie_status") or "").strip().upper()
     if goalie_status not in CONFIRMED_GOALIE_STATUSES:
         blockers.append("NHL_STARTING_GOALIE_NOT_CONFIRMED")
@@ -1016,6 +1034,7 @@ def _fitted_http_failure(req: Any, exc: NHLFittedSpecialistError):
         extra={
             "blockers": list(exc.blockers),
             "model_invoked": exc.code != "MODEL_UNAVAILABLE",
+            "detail": exc.detail,
         },
     )
 
@@ -1032,6 +1051,7 @@ def score_nhl_fitted_team_event(req: Any, **_kwargs: Any) -> dict[str, Any]:
 
 __all__ = [
     "ACCEPTED_SETTLEMENT_BASES",
+    "REQUEST_FULL_GAME_OT_SO_BASES",
     "CAN_EXECUTE",
     "CANDIDATE_TABLE",
     "CONFIRMED_GOALIE_STATUSES",

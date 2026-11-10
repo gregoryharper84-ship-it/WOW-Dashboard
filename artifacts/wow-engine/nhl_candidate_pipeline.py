@@ -182,9 +182,8 @@ def normalize_game(
     raw_game_type = raw.get("gameType")
     if raw_game_type in (None, ""):
         return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
-    try:
-        game_type = int(raw_game_type)
-    except (TypeError, ValueError):
+    game_type = _exact_nonneg_int(raw_game_type)
+    if game_type is None:
         return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
     game_state = str(raw.get("gameState") or "").strip().upper()
     if game_type != 2:
@@ -219,9 +218,8 @@ def normalize_game(
     away_score = _exact_nonneg_int(aws)
     if home_score is None or away_score is None:
         return _drop("NHL_SOURCE_SCORE_INVALID", "score")
-    try:
-        parsed_season = int(raw_season)
-    except (TypeError, ValueError):
+    parsed_season = _exact_nonneg_int(raw_season)
+    if parsed_season is None:
         return _drop("NHL_SOURCE_SEASON_IDENTITY_INVALID", "season")
     if home_score == away_score:
         return _drop("NHL_SOURCE_SCORE_INVALID", "tie")

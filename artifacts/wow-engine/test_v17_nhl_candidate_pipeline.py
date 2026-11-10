@@ -210,3 +210,22 @@ def test_nhl_fit_is_candidate_only_and_requires_later_source_review():
     assert candidate.metrics.train_n < len(records)
     assert candidate.automatic_certification is False
     assert candidate.automatic_promotion is False
+
+
+@pytest.mark.parametrize(
+    "field,value,code",
+    [
+        ("gameType", 2.9, "NHL_SOURCE_GAME_TYPE_INVALID"),
+        ("gameType", True, "NHL_SOURCE_GAME_TYPE_INVALID"),
+        ("season", 20262027.9, "NHL_SOURCE_SEASON_IDENTITY_INVALID"),
+        ("season", True, "NHL_SOURCE_SEASON_IDENTITY_INVALID"),
+    ],
+)
+def test_normalize_rejects_coerced_game_type_and_season(field, value, code):
+    from nhl_candidate_pipeline import NHLCandidateError, normalize_game
+
+    raw = raw_game(1)
+    raw[field] = value
+    with pytest.raises(NHLCandidateError) as caught:
+        normalize_game(raw, source_uri="https://example.test", retrieved_at="2026-09-15T00:00:00+00:00", strict=True)
+    assert caught.value.code == code

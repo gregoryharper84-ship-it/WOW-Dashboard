@@ -347,25 +347,10 @@ def _score_one(
     try:
         raw_package = scorer(req)
     except NHLFittedSpecialistError as exc:
-        # Preserve the specialist's exact failure semantics. A missing artifact
-        # is MODEL_UNAVAILABLE, missing evidence is MODEL_INPUTS_INSUFFICIENT,
-        # and a malformed package is MODEL_OUTPUT_INVALID.
-        status_code = {
-            MODEL_UNAVAILABLE: 409,
-            MODEL_INPUTS_INSUFFICIENT: 422,
-            MODEL_OUTPUT_INVALID: 500,
-        }.get(exc.code, 503)
-        raise bridges._model_failure_detail(
-            req,
-            code=exc.code,
-            blocker=(exc.blockers[0] if exc.blockers else "NHL_FITTED_SPECIALIST_BLOCKED"),
-            status_code=status_code,
-            extra={
-                "blockers": list(exc.blockers),
-                "model_invoked": exc.code != MODEL_UNAVAILABLE,
-                "detail": exc.detail,
-            },
-        ) from exc
+        # One shared mapping with score_nhl_fitted_team_event / _fitted_http_failure.
+        from v17.nhl_fitted_specialist import _fitted_http_failure
+
+        raise _fitted_http_failure(req, exc) from exc
     except (ModelInputsInsufficient, ModelOutputInvalid, ModelScorerFailed) as exc:
         raise _typed_failure(req, exc) from exc
     except HTTPException:
