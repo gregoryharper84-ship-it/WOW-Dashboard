@@ -42,10 +42,10 @@ SIRT_REPAIR_TITLE = re.compile(
 # A production malfunction is implementation work even when its noun is
 # "verification"; independent acceptance/assurance is still review-only.
 SIRT_PRODUCTION_FAILURE_TITLE = re.compile(
-    r"^(?:\\[[^\\]]*\\bSIRT\\b[^\\]]*\\]|(?:P[0-3]\\s+)?SIRT\\b|P[0-3]\\s*:\\s*SIRT\\b)"
-    r"[\\s:—-]*(?!.*\\b(?:independent|acceptance|assurance|certification)\\b)"
-    r"(?=.*\\b(?:fails?|failed|failure|broken|outage|down|regression)\\b)"
-    r"(?=.*\\b(?:production|prod|runtime|alerting|deployment|worker|pipeline|workflow)\\b)",
+    r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)"
+    r"[\s:—-]*(?!.*\b(?:independent|acceptance|assurance|certification)\b)"
+    r"(?=.*\b(?:fails?|failed|failure|broken|outage|down|regression)\b)"
+    r"(?=.*\b(?:production|prod|runtime|alerting|deployment|worker|pipeline|workflow)\b)",
     re.IGNORECASE,
 )
 LEASE_GROUP = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
