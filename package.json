@@ -11,6 +11,10 @@
   "private": true,
   "devDependencies": {
     "typescript": "~5.9.2",
-    "prettier": "^3.8.1"
+    "prettier": "^3.8.1",
+    "@trigger.dev/build": "4.8.3"
+  },
+  "dependencies": {
+    "@trigger.dev/sdk": "4.8.3"
   }
 }
