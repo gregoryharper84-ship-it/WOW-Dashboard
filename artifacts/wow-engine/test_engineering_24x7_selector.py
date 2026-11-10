@@ -127,6 +127,16 @@ class Test24x7(unittest.TestCase):
         p1 = mod.plan([issue(1527, "P1")], [], target=1527, manifest=manifest)
         self.assertEqual((p1["action"], p1["lease_group"]), ("BUILD", "GLOBAL"))
 
+    def test_existing_p0_pr_remains_read_only_resumable_if_lease_disappears(self):
+        manifest = {"restoration": []}
+        resume = mod.plan([issue(823, "P0")], [pr(3001, 823)], manifest=manifest)
+        self.assertEqual((resume["action"], resume["pr"]), ("RESUME_PR", 3001))
+        self.assertIsNone(resume["lease_group"])
+        self.assertFalse(resume["can_execute"])
+        # The same incident without a PR still may not acquire a new BUILD lease.
+        held = mod.plan([issue(823, "P0")], [], manifest=manifest)
+        self.assertEqual(held["action"], "IDLE")
+
     def test_p0_global_or_invalid_manifest_lease_is_denied(self):
         for group in ("GLOBAL", "not-valid!"):
             with self.subTest(group=group):
