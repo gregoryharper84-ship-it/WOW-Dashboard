@@ -761,9 +761,12 @@ def test_qa_nonmain_workflow_run_skips_before_resolution_and_release_stays_neutr
     assert all(isinstance(node, safe_nodes) for node in ast.walk(tree))
     expression = compile(tree, "<QA-job-admission>", "eval")
 
-    def admitted(event, base_ref, *, repository=REPO, ref="refs/heads/main"):
+    def admitted(event, base_ref, *, repository=REPO, ref="refs/heads/main", has_pr=True):
+        """Evaluate real QA admission on a bounded, non-executable event context."""
+        # GitHub returns null for missing pull_requests[0]; [None] models
+        # that lookup in Python without an IndexError on an empty list.
         event_prs = [] if event == "workflow_dispatch" else [
-            NS(base=NS(ref=base_ref)),
+            NS(base=NS(ref=base_ref)) if has_pr else None,
         ]
         context = {
             "github": NS(
@@ -781,6 +784,7 @@ def test_qa_nonmain_workflow_run_skips_before_resolution_and_release_stays_neutr
         return eval(expression, {"__builtins__": {}}, context)
 
     assert admitted("workflow_run", "freebuff/review-branch") is False
+    assert admitted("workflow_run", None, has_pr=False) is False
     assert admitted("workflow_run", "main") is True
     assert admitted("workflow_dispatch", None) is True
     assert admitted("workflow_run", "main", repository="foreign/WOW-Dashboard") is False
