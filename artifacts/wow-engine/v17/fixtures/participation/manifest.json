@@ -49,19 +49,19 @@
     "espn_nfl_athlete_injuries_2026.json": {
       "sha256": "5cf2e815731bf434cc7e58fccc419ae8404be6347b332b116f79a456ea7855a5",
       "bytes": 552,
-      "endpoint": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241457",
+      "endpoint": "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/4241457",
       "kind": "ESPN_NFL_ATHLETE_INJURY"
     },
     "espn_nfl_athlete_unparsed_2026.json": {
       "sha256": "9c3218fb85485d81a923a8dbcd8ca30052fa933bc7d7525375770b14b3310962",
       "bytes": 222,
-      "endpoint": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241458",
+      "endpoint": "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/4241458",
       "kind": "ESPN_NFL_ATHLETE_INJURY_UNPARSED"
     },
     "espn_nfl_athlete_clear_2026.json": {
       "sha256": "04e711d6172789acc21e0bd7718f772df29287e8e8613549f859fac03cb6287d",
       "bytes": 207,
-      "endpoint": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/athletes/4241459",
+      "endpoint": "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/4241459",
       "kind": "ESPN_NFL_ATHLETE_CLEAR"
     }
   }
