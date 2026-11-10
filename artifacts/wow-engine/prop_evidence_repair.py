@@ -11,6 +11,7 @@ can_execute is always false.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -22,7 +23,28 @@ REPAIRABLE_EVIDENCE_CODES = {
     "PROP_EVIDENCE_INCOMPLETE",
     "PROP_EVIDENCE_STALE",
 }
-MAX_GOVERNED_SNAPSHOT_FALLBACKS = 1
+# Read two observations to detect a non-unique maximum capture time.
+# An older PASS row is never a fallback after newer evidence.
+MAX_AUTHORITY_OBSERVATIONS = 2
+AMBIGUOUS_LATEST_SNAPSHOT = "PROP_LATEST_SNAPSHOT_AMBIGUOUS"
+
+
+class SnapshotAuthorityAmbiguous(ValueError):
+    """Cannot prove a unique, timezone-aware latest observation."""
+
+
+def _captured_instant(row: dict[str, Any]) -> datetime:
+    raw = row.get("captured_at")
+    if not isinstance(raw, str) or not raw.strip():
+        raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+    try:
+        instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT) from exc
+    if instant.utcoffset() is None:
+        raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+    return instant.astimezone(timezone.utc)
+
 
 
 def _attempt(
@@ -68,18 +90,28 @@ def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
         .eq("line", req.line)
         .lt("captured_at", req.event_start_time)
         .order("captured_at", desc=True)
-        .limit(MAX_GOVERNED_SNAPSHOT_FALLBACKS)
+        .limit(MAX_AUTHORITY_OBSERVATIONS)
     )
     response = query.execute()
     rows = response.data or []
-    ids: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        value = row.get("source_snapshot_id")
-        if value:
-            ids.append(str(value))
-    return ids
+    if not isinstance(rows, list):
+        raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+    if not rows:
+        return []
+    if not isinstance(rows[0], dict):
+        raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+    newest_time = _captured_instant(rows[0])
+    if len(rows) > 1:
+        if not isinstance(rows[1], dict):
+            raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+        if _captured_instant(rows[1]) == newest_time:
+            # Different immutable snapshots at one capture instant have no
+            # ordering authority. Never arbitrarily select a clean one.
+            raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+    newest_id = rows[0].get("source_snapshot_id")
+    if not newest_id:
+        raise SnapshotAuthorityAmbiguous(AMBIGUOUS_LATEST_SNAPSHOT)
+    return [str(newest_id)]
 
 
 def _authority_hold(blocker: str) -> dict[str, Any]:
@@ -124,6 +156,13 @@ def repair_prop_evidence(
         # Always prove latest identity before accepting a caller-selected ID.
         try:
             newest_ids = _fallback_snapshot_ids(client, req)
+        except SnapshotAuthorityAmbiguous:
+            return _annotate(
+                _authority_hold(AMBIGUOUS_LATEST_SNAPSHOT),
+                requested_source_snapshot_id=requested_id,
+                attempts=attempts,
+                repair_status="LATEST_AUTHORITY_AMBIGUOUS",
+            )
         except Exception:
             return _annotate(
                 _authority_hold("PROP_EVIDENCE_BRIDGE_UNAVAILABLE"),
@@ -193,6 +232,13 @@ def repair_prop_evidence(
 
     try:
         fallback_ids = _fallback_snapshot_ids(client, req)
+    except SnapshotAuthorityAmbiguous:
+        return _annotate(
+            _authority_hold(AMBIGUOUS_LATEST_SNAPSHOT),
+            requested_source_snapshot_id=requested_id,
+            attempts=attempts,
+            repair_status="LATEST_AUTHORITY_AMBIGUOUS",
+        )
     except Exception as exc:
         attempts.append(
             _attempt(

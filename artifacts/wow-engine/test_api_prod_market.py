@@ -168,7 +168,7 @@ def _install_common(monkeypatch, score_fn):
             return self
 
         def limit(self, count):
-            assert count == 1
+            assert count == 2  # inspect the runner-up for equal-time ambiguity
             return self
 
         def execute(self):

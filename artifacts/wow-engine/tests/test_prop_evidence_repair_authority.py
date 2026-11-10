@@ -218,3 +218,60 @@ def test_ready_primary_holds_when_authority_lookup_unavailable():
     assert result["blockers"] == ["PROP_EVIDENCE_BRIDGE_UNAVAILABLE"]
     assert result["acquisition_repair_status"] == "LATEST_AUTHORITY_LOOKUP_FAILED"
     assert result["can_execute"] is False
+
+def test_same_capture_time_two_snapshots_always_hold():
+    """An observed real-data ambiguity, not a valid newest-source identity."""
+    db = _DB([
+        _row("older_uuid", "2026-11-19T00:00:00+00:00"),
+        _row("newer_uuid", "2026-11-19T00:00:00+00:00"),
+    ])
+    calls = []
+
+    def fetch(request):
+        calls.append(request.source_snapshot_id)
+        return _ready(request.source_snapshot_id)
+
+    result = repair_prop_evidence(_request("older_uuid"), primary_fetch=fetch, client=db)
+    assert calls == ["older_uuid"]
+    assert result["ok"] is False
+    assert result["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["blockers"] == ["PROP_LATEST_SNAPSHOT_AMBIGUOUS"]
+    assert result["acquisition_repair_status"] == "LATEST_AUTHORITY_AMBIGUOUS"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_missing_id_does_not_recover_one_of_two_equal_timestamp_snapshots():
+    db = _DB([
+        _row("clean_older_uuid", "2026-11-19T00:00:00+00:00"),
+        _row("blocked_other_uuid", "2026-11-19T00:00:00+00:00", hydration="FAILED"),
+    ])
+    calls = []
+
+    def fetch(request):
+        calls.append(request.source_snapshot_id)
+        if request.source_snapshot_id == "missing":
+            return {"ok": False, "code": "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"}
+        return _ready(request.source_snapshot_id)
+
+    result = repair_prop_evidence(_request("missing"), primary_fetch=fetch, client=db)
+    assert calls == ["missing"]
+    assert result["blockers"] == ["PROP_LATEST_SNAPSHOT_AMBIGUOUS"]
+    assert result["acquisition_repair_status"] == "LATEST_AUTHORITY_AMBIGUOUS"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_equal_utc_instants_in_different_offsets_hold():
+    db = _DB([
+        _row("first", "2026-11-19T00:00:00+00:00"),
+        _row("second", "2026-11-18T18:00:00-06:00"),
+    ])
+    result = repair_prop_evidence(
+        _request("first"),
+        primary_fetch=lambda req: _ready(req.source_snapshot_id),
+        client=db,
+    )
+    assert result["blockers"] == ["PROP_LATEST_SNAPSHOT_AMBIGUOUS"]
+    assert result["can_execute"] is False
+
