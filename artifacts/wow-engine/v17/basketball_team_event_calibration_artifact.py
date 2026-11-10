@@ -46,6 +46,7 @@ def build_shadow_binary_calibration_artifact(
     timestamps: Sequence[str],
     fit: PlattFitOutcome,
 ) -> tuple[dict[str, Any], str]:
+    """Build a hash-bound shadow binary calibrator; never certifies or publishes."""
     normalized = str(sport or "").strip().upper()
     if normalized not in {"NBA", "WNBA"}:
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_SPORT_UNSUPPORTED")

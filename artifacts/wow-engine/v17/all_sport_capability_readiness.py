@@ -102,6 +102,7 @@ def _readiness(
     sport: str,
     health: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Compute operational readiness fields for one sport from bridge health."""
     normalized = str(sport or "").upper()
     registered = bool(health.get("registered"))
     scorer = bool(health.get("scorer_resolvable"))
@@ -232,6 +233,7 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
         return readiness
 
     def readiness_health() -> dict[str, dict[str, Any]]:
+        """Annotate bridge health with operational readiness without enabling execute."""
         base = original_health()
         out: dict[str, dict[str, Any]] = {}
         for sport in EXPECTED_TEAM_EVENT_SPORTS:
@@ -253,6 +255,7 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
         sport: str,
         bridge_health: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Build parity readiness; skip re-merge when health is already overlaid."""
         health = dict(bridge_health or {})
         state = dict(original_state_for(sport, health))
         # Health from readiness_health() is already overlay-complete. Re-merging
