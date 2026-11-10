@@ -92,7 +92,10 @@ def _coerce_outcome(value: GovernedOutcome | Mapping[str, Any]) -> GovernedOutco
             "calibrated_lower_bound",
             "calibrated_upper_bound",
         ):
-            if isinstance(value[key], bool):
+            # Reject non-numeric scalars *before* float conversion. In
+            # particular numpy.bool_ is not a Python bool and float(np.bool_)
+            # would silently turn a boolean into an invented probability.
+            if isinstance(value[key], bool) or not isinstance(value[key], (int, float)):
                 raise ValueError(f"probability_out_of_range:{value['label']}")
         outcome = GovernedOutcome(
             label=str(value["label"]),
