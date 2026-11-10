@@ -454,16 +454,14 @@ def test_emitted_error_payload_may_mention_echo():
 
 
 def test_printf_named_step_does_not_hide_emitted_provider_error():
-    # Actions prepends timestamps and step names. A step named "printf-check"
-    # is not itself a shell printf command or an unevaluated script echo.
-    log = "\\n".join([
-        "2026-11-10T15:00:01Z [printf-check] echo \\"::error::OPENAI_API_KEY is required\\"",
+    # A step named "printf-check" is not an executable printf command.
+    log = "\n".join([
+        '2026-11-10T15:00:01Z [printf-check] echo "::error::OPENAI_API_KEY is required"',
         "2026-11-10T15:00:02Z [printf-check] ##[error]insufficient_quota",
     ])
     result = _classifier()("openai", log)
     assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
     assert result.failover_eligible is True
-
 
 def test_script_text_alone_is_not_a_typed_outcome():
     result = _classifier()("anthropic", _delivery_shell())
