@@ -19,7 +19,7 @@
 
 - `wow_predictions`: 4709 rows; newest `2026-11-09T15:38:05Z` (predates safety deploy window).
 - `wow_nfl_event_predictions`: 1741 rows; `can_execute` never true; all rows currently stamp `model_probability_publishable=true` while champion publication remains held — exact #2512 false-green provenance defect still present in stored history.
-- Newest Daily async run: `v17-daily-async-92c5c484-...` completed `2026-11-09T15:35:36Z` with balanced reconciliation (`12` in / `1` completed / `11` rejected). No Daily result after the #2554 safety deploy — post-safety scoring run is **absent**, not failed.
+- Newest Daily async run: `v17-daily-async-92c5c484-...` completed `2026-11-09T15:35:36Z` with balanced reconciliation (`12` in / `1` completed / `11` rejected). No post-safety async submission or Daily detail row was observed in `wow_v17_daily_async_runs` / `wow_v17_daily_run_row_detail`; the status of any synchronous Daily endpoint response is **unverified**.
 - Newest Daily row-detail cohort carries `terminal_reduction` on every sampled row with `terminal_upgraded_from_rejection=false` and `can_execute=false`.
 
 ## Secondary item disposition (no paid retries)
@@ -40,7 +40,7 @@ Regression suite re-run for secondary contracts (local `.venv`):
 
 - Forward grades: **94 / 100** required (`INSUFFICIENT_FORWARD_EVIDENCE`, `DO_NOT_CERTIFY_YET`, blocker `FORWARD_GRADED_N_94_LT_100`).
 - #2552 (aged schedule recheck) **merged** to protected `main` at `e82af6a9…` (not yet the live Render tip).
-- #2512 (publishability provenance) remains open for exact-head re-check after docstring/coverage follow-ups.
+- #2512 (publishability provenance) **merged** at `2026-11-10T16:01:53Z` (`d3260b09…`) — not yet on the live Render tip; stored history still carries pre-merge publishability stamps.
 - Legitimate forward grading continues via `/internal/v17/nfl-forward-shadow` (OIDC). This session could not invoke that path (no workflow dispatch / OIDC from the agent).
 
 ### NBA / NHL model capability (not infrastructure-only)
@@ -58,7 +58,7 @@ Regression suite re-run for secondary contracts (local `.venv`):
 | `/governance` | `can_execute=false`, `V17_TERMINAL_REDUCER`, `deployment_gates.status=PASS`, `deployed_sha=e7384b9d…` |
 | `wow_predictions` | 4709 rows; newest still `2026-11-09T15:38:05Z` |
 | `wow_nfl_event_predictions` | 1741 rows; `can_execute` never true; all 1741 still `model_probability_publishable=true` (#2512 residual in stored history) |
-| Newest Daily | `v17-daily-async-92c5c484-…` completed `2026-11-09T15:35:36Z` (still pre-safety); post-safety Daily **ABSENT** |
+| Newest Daily | `v17-daily-async-92c5c484-…` completed `2026-11-09T15:35:36Z` (still pre-safety); **0** post-safety async/detail rows observed; sync Daily status unverified |
 | NFL forward health | `graded_n=94` / `minimum_forward_required=100`; `INSUFFICIENT_FORWARD_EVIDENCE`; `DO_NOT_CERTIFY_YET`; blocker `FORWARD_GRADED_N_94_LT_100` |
 | NBA / NHL live | NBA `MODEL_UNAVAILABLE` / unregistered; NHL `REGISTERED_NOT_READY` (`model_artifact_present=false`) |
 | NFL forward Action | Legitimate grading is `workflow_dispatch` / daily cron `wow-v17-nfl-forward-shadow` only (OIDC). Agent cannot mint OIDC or dispatch that workflow from this session. |
@@ -85,8 +85,8 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 | Pre-safety Daily workflow | Scheduled `wow-v17-daily-snapshot` run `42801795794` at **10:45 UTC** succeeded OIDC + full-slate snapshot — **pre-safety**, not closure proof |
 | Persisted Daily after safety | Latest `wow_v17_daily_async_runs.submitted_at` = `2026-11-09T15:33:38Z`; latest `wow_v17_daily_run_row_detail.captured_at` = `2026-11-10T10:46:10Z`; **0** detail rows at/after `2026-11-10T13:23:22Z` |
 | Post-safety Action receipts | **Four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422s (`13:23:31`, `13:23:34`, `14:36:36`, `14:36:40` UTC), all `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`, `can_execute=false` — startup probes only; not three-field scoring-attempted acceptance |
-| Residual exercise caveat | A scheduled MONEYLINE-only Daily may never emit `max_props=0` PROP `REQUESTED_ROW_LIMIT_ZERO` or the three-field Action split — do not infer closure from workflow green |
-| Next observation window | Existing OIDC scheduled Daily ~17:00 UTC; verify persisted run ID **and** the specific residuals, not merely CI success |
+| Residual exercise caveat | Scheduled `wow-v17-daily-snapshot` requests only `lanes: ["MONEYLINE"]`, so it cannot produce either required PROPS residual (`ZERO_ROW_REASON_MISCLASSIFIED` / three-field Action split). Keep ~17:00 as a separate post-safety Daily observation; residual closure needs a permitted unpaid PROPS/Action path, not snapshot green |
+| Next observation window | Existing OIDC scheduled Daily ~17:00 UTC: verify persisted async/detail rows (and sync status if logged). Residual observations remain a separate unpaid PROPS/Action path |
 
 ## Independent re-verify (2026-11-10T16:05Z, unpaid)
 
@@ -102,7 +102,7 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 | Action receipts post-safety | Still exactly **four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422 `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` (`can_execute=false`) — no new receipts since 14:36 UTC |
 | NFL forward health | Still `graded_n=94` / `minimum_forward_required=100`; `INSUFFICIENT_FORWARD_EVIDENCE`; `DO_NOT_CERTIFY_YET`; blocker `FORWARD_GRADED_N_94_LT_100` (row `created_at=2026-11-09T22:36:02Z`) |
 | Parallel PR delta | `#2512` **merged** at `2026-11-10T16:01:53Z` (`d3260b09…`) — not yet on the live Render tip; stored `wow_nfl_event_predictions` history still carries pre-merge publishability stamps |
-| Next observation | Existing OIDC scheduled Daily ~17:00 UTC; closure still requires both secondary residual observations, not workflow green alone |
+| Next observation | Existing OIDC scheduled Daily ~17:00 UTC observes post-safety MONEYLINE persistence only; both PROPS residual observations still require a separate unpaid Action/PROPS path |
 
 ## Closure gate
 
@@ -111,7 +111,8 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
-post_safety_daily_scoring_run = ABSENT
-post_safety_scoring_attempted_observation = ABSENT
+post_safety_async_or_detail_rows = NOT_OBSERVED
+post_safety_sync_daily_status = UNVERIFIED
+post_safety_scoring_attempted_observation = NOT_OBSERVED
 ledger_state = DEPLOYED_PENDING_VERIFY
 ```
