@@ -30,7 +30,9 @@ from v17.d1_bulk_candidate_registry import persist_source_events_bulk
 from v17.d1_candidate_registry import D1RegistryError
 from v17.nhl_fitted_specialist import (
     NHLFittedSpecialistError,
+    build_reingest_timeline_receipt,
     load_nhl_season_events,
+    persist_nhl_season_timeline_receipt,
 )
 
 if TYPE_CHECKING:
@@ -447,6 +449,27 @@ def run_nhl_source_reingest(
         ):
             provenanced.add(event_id)
     complete = expected_events <= provenanced and distinct == expected_events
+    timeline_receipt: dict[str, Any] | None = None
+    # Full-season scope only: partial team filters must never mint a scoring receipt.
+    if complete and teams is None:
+        try:
+            receipt = build_reingest_timeline_receipt(
+                verified,
+                season=effective_season,
+                ingest_code_sha=sha,
+            )
+            timeline_receipt = persist_nhl_season_timeline_receipt(db, receipt)
+        except Exception as exc:  # noqa: BLE001 - receipt persist is a typed boundary
+            return _blocked(
+                "NHL_SOURCE_TIMELINE_RECEIPT_PERSIST_FAILED",
+                stage="SOURCE_VERIFICATION",
+                detail={
+                    "error_type": type(exc).__name__,
+                    "retryable": True,
+                    "persistence": persistence,
+                    "provenance_complete": complete,
+                },
+            )
     return {
         "status": (
             "NHL_SOURCE_REINGEST_PERSISTED"
@@ -458,6 +481,8 @@ def run_nhl_source_reingest(
         "distinct_source_event_n": len(distinct),
         "provenanced_event_n": len(provenanced),
         "persistence": persistence,
+        "timeline_receipt": timeline_receipt,
+        "timeline_receipt_persisted": timeline_receipt is not None,
         "provenance_version": SOURCE_PROVENANCE_VERSION,
         "ingest_code_sha": sha,
         "provenance_complete": complete,

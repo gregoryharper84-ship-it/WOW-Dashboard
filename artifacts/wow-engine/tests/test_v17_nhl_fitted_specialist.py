@@ -26,15 +26,21 @@ def _candidate_row() -> dict:
 
 
 class _Query:
-    def __init__(self, rows):
-        self.rows = [dict(row) for row in rows]
+    def __init__(self, db, table_name):
+        self.db = db
+        self.table_name = table_name
+        self.rows = db.tables.setdefault(table_name, [])
         self.filters: list[tuple[str, object]] = []
         self.order_field: str | None = None
         self.desc = False
         self.limit_n: int | None = None
         self.range_: tuple[int, int] | None = None
+        self.mode = "select"
+        self.payload: list[dict] = []
+        self.on_conflict = ""
 
     def select(self, *args):
+        self.mode = "select"
         return self
 
     def eq(self, key, value):
@@ -54,7 +60,30 @@ class _Query:
         self.range_ = (start, end)
         return self
 
+    def upsert(self, payload, *, on_conflict=None, ignore_duplicates=False):
+        del ignore_duplicates
+        self.mode = "upsert"
+        self.payload = [dict(item) for item in payload]
+        self.on_conflict = str(on_conflict or "")
+        return self
+
     def execute(self):
+        if self.mode == "upsert":
+            keys = tuple(key for key in self.on_conflict.split(",") if key)
+            inserted: list[dict] = []
+            for payload in self.payload:
+                if keys:
+                    self.rows[:] = [
+                        existing
+                        for existing in self.rows
+                        if not all(
+                            existing.get(key) == payload.get(key) for key in keys
+                        )
+                    ]
+                row = dict(payload)
+                self.rows.append(row)
+                inserted.append(row)
+            return SimpleNamespace(data=inserted)
         rows = [
             row
             for row in self.rows
@@ -70,14 +99,15 @@ class _Query:
 
 
 class _DB:
-    def __init__(self, *, candidates=None, events=None):
+    def __init__(self, *, candidates=None, events=None, receipts=None):
         self.tables = {
             nhl.CANDIDATE_TABLE: candidates if candidates is not None else [_candidate_row()],
             nhl.SOURCE_TABLE: events if events is not None else _events(),
+            nhl.TIMELINE_RECEIPT_TABLE: receipts if receipts is not None else [],
         }
 
     def table(self, name):
-        return _Query(self.tables.get(name, []))
+        return _Query(self, name)
 
 
 def _event(index: int, home: str, away: str, home_score: int, away_score: int) -> dict:
@@ -226,7 +256,8 @@ def _reconstruction(db=None):
 @pytest.fixture(autouse=True)
 def _install_test_timeline_receipt_provider():
     """Score path must not trust caller evidence; use a synthetic server seam."""
-    def _provider(*, season, event_start_time, home_team="", away_team="", session=None):
+    def _provider(*, season, event_start_time, home_team="", away_team="", session=None, db=None, **_kwargs):
+        del session, db
         return _timeline_receipt(
             _events(),
             home=str(home_team or "BOS"),
@@ -501,6 +532,54 @@ def test_score_current_ignores_caller_supplied_timeline_receipt(monkeypatch):
     package = nhl.score_current_nhl_event(request, db=_DB(), now_utc=NOW)
     assert package["can_execute"] is False
     assert "NHL_SOURCE_TIMELINE_INCOMPLETE" not in package.get("blockers", [])
+
+
+def test_resolve_timeline_receipt_uses_persisted_full_season_receipt(monkeypatch):
+    nhl.reset_nhl_timeline_receipt_provider()
+    events = _events()
+    stored = nhl.build_reingest_timeline_receipt(
+        events,
+        season=SEASON,
+        ingest_code_sha="b" * 40,
+    )
+    db = _DB(events=events, receipts=[])
+    nhl.persist_nhl_season_timeline_receipt(db, stored)
+
+    fetch_calls: list[object] = []
+
+    def _boom(*_args, **_kwargs):
+        fetch_calls.append(True)
+        raise AssertionError("score path must not fetch club schedules")
+
+    monkeypatch.setattr("nhl_candidate_pipeline.fetch_historical_games", _boom)
+    receipt = nhl.resolve_nhl_timeline_receipt(
+        season=int(SEASON),
+        event_start_time=START,
+        db=db,
+    )
+    assert fetch_calls == []
+    assert receipt["provenance_complete"] is True
+    assert receipt["settled_prior_event_ids"] == _timeline_receipt(events)["settled_prior_event_ids"]
+
+
+def test_resolve_timeline_receipt_fail_closed_without_persisted_receipt(monkeypatch):
+    nhl.reset_nhl_timeline_receipt_provider()
+    fetch_calls: list[object] = []
+
+    def _boom(*_args, **_kwargs):
+        fetch_calls.append(True)
+        raise AssertionError("score path must not fetch club schedules")
+
+    monkeypatch.setattr("nhl_candidate_pipeline.fetch_historical_games", _boom)
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.resolve_nhl_timeline_receipt(
+            season=int(SEASON),
+            event_start_time=START,
+            db=_DB(receipts=[]),
+        )
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
+    assert caught.value.detail["reason"] == "SOURCE_TIMELINE_RECEIPT_MISSING"
+    assert fetch_calls == []
 
 
 def test_feature_reconstruction_requires_minimum_prior_games():

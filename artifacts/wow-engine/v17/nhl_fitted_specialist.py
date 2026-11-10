@@ -46,6 +46,7 @@ FEATURE_SCHEMA_VERSION = "NHL_REGULAR_SEASON_FEATURES_V1"
 SOURCE_POLICY_ID = "NHL_PUBLIC_WEB_API"
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
 SOURCE_TABLE = "wow_d1_source_events"
+TIMELINE_RECEIPT_TABLE = "wow_nhl_season_timeline_receipts"
 
 # Exact training constants/feature order. A regression test asserts these stay
 # identical to nhl_candidate_pipeline so the registry artifact cannot be fed a
@@ -1084,6 +1085,7 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         event_start_time=target_start,
         home_team=home_team,
         away_team=away_team,
+        db=client,
     )
     reconstruction = reconstruct_nhl_pregame_features(
         events,
@@ -1103,6 +1105,171 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
     )
 
 
+def persist_nhl_season_timeline_receipt(db: Any, receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist a verified full-season timeline receipt for later scoring."""
+    if db is None:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_STORE_UNAVAILABLE"},
+        )
+    if receipt.get("provenance_complete") is not True:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_INCOMPLETE"},
+        )
+    season = str(receipt.get("season") or "").strip()
+    settled = receipt.get("settled_events")
+    if not season or not isinstance(settled, list):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_INVALID"},
+        )
+    row = {
+        "season": season,
+        "provenance_complete": True,
+        "season_scope": "FULL_SEASON",
+        "settled_events": list(settled),
+        "verified_at": str(receipt.get("verified_at") or datetime.now(timezone.utc).isoformat()),
+        "ingest_code_sha": str(receipt.get("ingest_code_sha") or ""),
+        "source": str(receipt.get("source") or "NHL_SOURCE_REINGEST"),
+        "can_execute": False,
+    }
+    result = (
+        db.table(TIMELINE_RECEIPT_TABLE)
+        .upsert([row], on_conflict="season")
+        .execute()
+    )
+    return {
+        "status": "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED",
+        "season": season,
+        "settled_event_n": len(settled),
+        "written": len(getattr(result, "data", None) or []),
+        "can_execute": False,
+    }
+
+
+def load_nhl_season_timeline_receipt(db: Any, *, season: int | str) -> dict[str, Any] | None:
+    """Load the newest verified full-season timeline receipt for one season."""
+    if db is None:
+        return None
+    query = (
+        db.table(TIMELINE_RECEIPT_TABLE)
+        .select(
+            "season,provenance_complete,season_scope,settled_events,"
+            "verified_at,ingest_code_sha,source"
+        )
+        .eq("season", str(season))
+        .order("verified_at", desc=True)
+        .limit(1)
+    )
+    result = query.execute()
+    rows = [dict(item) for item in (getattr(result, "data", None) or []) if isinstance(item, Mapping)]
+    return rows[0] if rows else None
+
+
+def timeline_receipt_for_target(
+    stored: Mapping[str, Any],
+    *,
+    event_start_time: datetime,
+    season: int | str,
+) -> dict[str, Any]:
+    """Project a persisted season receipt onto priors strictly before the target."""
+    if stored.get("provenance_complete") is not True:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_INCOMPLETE"},
+        )
+    if str(stored.get("season_scope") or "") != "FULL_SEASON":
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_PARTIAL_SCOPE"},
+        )
+    if str(stored.get("season") or "") != str(season):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SEASON_MISMATCH"},
+        )
+    settled = stored.get("settled_events")
+    if not isinstance(settled, list):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_INVALID"},
+        )
+    prior_ids: set[str] = set()
+    for item in settled:
+        if not isinstance(item, Mapping):
+            continue
+        start = _aware(item.get("event_start_time"))
+        if start is None or start >= event_start_time:
+            continue
+        event_id = str(item.get("official_event_id") or "").strip()
+        if event_id:
+            prior_ids.add(event_id)
+    return {
+        "provenance_complete": True,
+        "season": str(season),
+        "settled_prior_event_ids": sorted(prior_ids),
+        "source": str(stored.get("source") or "NHL_SOURCE_REINGEST"),
+        "verified_at": str(stored.get("verified_at") or ""),
+    }
+
+
+def build_reingest_timeline_receipt(
+    verified_rows: Iterable[Mapping[str, Any]],
+    *,
+    season: int | str,
+    ingest_code_sha: str,
+) -> dict[str, Any]:
+    """Build a persistable full-season receipt from verified V2 settled rows."""
+    settled_events: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in verified_rows:
+        if not isinstance(row, Mapping):
+            continue
+        event_id = str(row.get("official_event_id") or "").strip()
+        if not event_id or event_id in seen:
+            continue
+        outcome = row.get("outcome_json")
+        if not isinstance(outcome, Mapping):
+            continue
+        if outcome.get("provenance_version") != SOURCE_PROVENANCE_VERSION:
+            continue
+        if type(outcome.get("game_type")) is not int or outcome.get("game_type") != 2:
+            continue
+        if type(outcome.get("neutral_site")) is not bool:
+            continue
+        if str(outcome.get("game_state") or "").upper() not in {"FINAL", "OFF"}:
+            continue
+        start = _aware(row.get("event_start_time"))
+        if start is None:
+            continue
+        seen.add(event_id)
+        settled_events.append(
+            {
+                "official_event_id": event_id,
+                "event_start_time": start.isoformat(),
+            }
+        )
+    settled_events.sort(key=lambda item: (item["event_start_time"], item["official_event_id"]))
+    return {
+        "season": str(season),
+        "provenance_complete": True,
+        "season_scope": "FULL_SEASON",
+        "settled_events": settled_events,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "ingest_code_sha": str(ingest_code_sha or ""),
+        "source": "NHL_SOURCE_REINGEST",
+        "can_execute": False,
+    }
+
+
 def resolve_nhl_timeline_receipt(
     *,
     season: int,
@@ -1110,20 +1277,34 @@ def resolve_nhl_timeline_receipt(
     home_team: str = "",
     away_team: str = "",
     session: Any = None,
+    db: Any = None,
 ) -> dict[str, Any]:
-    """Resolve the server-side season timeline receipt for scoring."""
+    """Resolve the server-side season timeline receipt for scoring.
+
+    Scoring never fetches club schedules. It uses a verified receipt persisted
+    by full-season re-ingest, or a test-only provider seam.
+    """
+    del session  # retained for provider/call-site compatibility; unused on score path
     if _TIMELINE_RECEIPT_PROVIDER is not None:
         return _TIMELINE_RECEIPT_PROVIDER(
             season=season,
             event_start_time=event_start_time,
             home_team=home_team,
             away_team=away_team,
-            session=session,
+            session=None,
+            db=db,
         )
-    return build_official_season_timeline_receipt(
-        season=season,
+    stored = load_nhl_season_timeline_receipt(db, season=season)
+    if stored is None:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_MISSING"},
+        )
+    return timeline_receipt_for_target(
+        stored,
         event_start_time=event_start_time,
-        session=session,
+        season=season,
     )
 
 
@@ -1235,12 +1416,16 @@ __all__ = [
     "PROBABILITY_PUBLISHABLE",
     "SOURCE_POLICY_ID",
     "SOURCE_TABLE",
+    "TIMELINE_RECEIPT_TABLE",
     "build_official_club_timeline_receipt",
     "build_official_season_timeline_receipt",
+    "build_reingest_timeline_receipt",
     "install_nhl_fitted_registry_provider",
     "install_nhl_timeline_receipt_provider",
     "load_nhl_fitted_candidate",
     "load_nhl_season_events",
+    "load_nhl_season_timeline_receipt",
+    "persist_nhl_season_timeline_receipt",
     "reconstruct_nhl_pregame_features",
     "reset_nhl_fitted_registry_provider",
     "reset_nhl_timeline_receipt_provider",
@@ -1248,4 +1433,5 @@ __all__ = [
     "score_current_nhl_event",
     "score_nhl_fitted_candidate",
     "score_nhl_fitted_team_event",
+    "timeline_receipt_for_target",
 ]

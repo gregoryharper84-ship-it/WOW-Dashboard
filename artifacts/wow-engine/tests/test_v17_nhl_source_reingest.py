@@ -93,6 +93,14 @@ class _Query:
                     ) if keys else False
                     if duplicate and self.ignore_duplicates:
                         continue
+                    if duplicate and keys:
+                        rows[:] = [
+                            existing
+                            for existing in rows
+                            if not all(
+                                existing.get(key) == payload.get(key) for key in keys
+                            )
+                        ]
                     row = dict(payload)
                     row.setdefault("source_event_id", f"source-{len(rows)}")
                     if self.table_name == fitted.CANDIDATE_TABLE:
@@ -718,6 +726,50 @@ def test_reingest_rejects_coerced_raw_neutral_site_evidence(raw_neutral):
     with pytest.raises(reingest.NHLSourceReingestError) as caught:
         reingest.build_reingest_rows([game], ingest_code_sha=INGEST_SHA)
     assert caught.value.code == "NHL_SOURCE_NEUTRAL_SITE_UNVERIFIED"
+
+
+def test_partial_team_reingest_does_not_persist_season_timeline_receipt():
+    db = _FakeDB()
+    result = _run(db, teams=("BOS", "PIT"))
+    assert result["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    assert result["provenance_complete"] is True
+    assert result["timeline_receipt_persisted"] is False
+    assert result["timeline_receipt"] is None
+    assert fitted.TIMELINE_RECEIPT_TABLE not in db.rows
+
+
+def test_full_season_reingest_persists_season_timeline_receipt_for_scoring():
+    db = _FakeDB()
+    result = _run(db, teams=None)
+    assert result["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    assert result["provenance_complete"] is True
+    assert result["timeline_receipt_persisted"] is True
+    assert result["timeline_receipt"]["status"] == "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED"
+    stored = fitted.load_nhl_season_timeline_receipt(db, season=SEASON)
+    assert stored is not None
+    assert stored["season_scope"] == "FULL_SEASON"
+    assert stored["provenance_complete"] is True
+    assert len(stored["settled_events"]) == 32
+
+    fitted.reset_nhl_timeline_receipt_provider()
+    try:
+        receipt = fitted.resolve_nhl_timeline_receipt(
+            season=int(SEASON),
+            event_start_time=_target_start(),
+            db=db,
+        )
+    finally:
+        # restore autouse-equivalent only for this module's subsequent tests
+        pass
+    assert receipt["provenance_complete"] is True
+    assert len(receipt["settled_prior_event_ids"]) == len(
+        [
+            row
+            for row in db.rows["wow_d1_source_events"]
+            if datetime.fromisoformat(row["event_start_time"].replace("Z", "+00:00"))
+            < _target_start()
+        ]
+    )
 
 
 def test_reingest_retry_recovers_from_a_partial_write(monkeypatch):
