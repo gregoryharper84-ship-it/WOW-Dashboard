@@ -25,8 +25,13 @@ def _install_isolated(monkeypatch):
         }
 
     monkeypatch.setattr(core, "_snapshot_payload", original)
-    monkeypatch.delattr(core, installer._SNAPSHOT_PATCH_ATTR, raising=False)
-    monkeypatch.delattr(facade, installer._SNAPSHOT_PATCH_ATTR, raising=False)
+    # The installer creates facade attributes at runtime: register them with
+    # monkeypatch first so teardown restores the original global routing.
+    monkeypatch.setattr(
+        facade, "_snapshot_payload", facade.__dict__.get("_snapshot_payload"), raising=False
+    )
+    monkeypatch.setattr(core, installer._SNAPSHOT_PATCH_ATTR, False, raising=False)
+    monkeypatch.setattr(facade, installer._SNAPSHOT_PATCH_ATTR, False, raising=False)
     installer._patch_snapshot_payload()
 
     # The production route looks up _snapshot_payload on the core, not facade.
