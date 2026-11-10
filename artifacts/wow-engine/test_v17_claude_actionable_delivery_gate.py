@@ -464,7 +464,7 @@ def test_printf_named_step_does_not_hide_emitted_provider_error():
     assert result.failover_eligible is True
 
 def test_echo_receipt_step_label_does_not_hide_real_emitted_provider_error():
-    log = "\\n".join([
+    log = "\n".join([
         '2026-11-10T15:00:01Z [Echo receipt] echo "::error::OPENAI_API_KEY is required"',
         "2026-11-10T15:00:02Z [Echo receipt] ##[error]insufficient_quota",
     ])
