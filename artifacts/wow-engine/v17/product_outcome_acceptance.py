@@ -37,7 +37,11 @@ def valid_numeric_package(row: Mapping[str, Any]) -> bool:
     return all(_nonempty(row.get(key)) for key in (
         "controlling_specialist", "model_artifact_id", "model_timestamp",
         "terminal_receipt_ref",
-    )) and row.get("probability_receipt_verified") is True
+    )) and all(row.get(key) is True for key in (
+        "probability_receipt_verified", "terminal_receipt_verified",
+        "model_invoked_verified", "fitted_specialist_certified",
+        "calibration_evidence_verified",
+    ))
 
 
 def audit_handoffs(handoffs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -67,12 +71,17 @@ def product_outcome_scorecard(
     """
     issues: list[str] = []
     seen: set[tuple[str, str]] = set()
+    # A persisted scorer/terminal receipt cannot certify two different source rows.
+    seen_scored_receipts: set[str] = set()
     per_request: dict[str, list[str]] = defaultdict(list)
+    per_request_ids: dict[str, set[str]] = defaultdict(set)
+    integrity_failed_requests: set[str] = set()
     counts: Counter[str] = Counter()
     by_lane: dict[str, Counter[str]] = defaultdict(Counter)
     eligible_count = 0
     rank_eligible_count = 0
     unknown_eligibility = False
+    unattributed_row_present = False
 
     for i, row in enumerate(rows):
         request_id = row.get("request_id")
@@ -80,27 +89,59 @@ def product_outcome_scorecard(
         state = row.get("disposition")
         if not _nonempty(request_id) or not _nonempty(candidate_id):
             issues.append(f"ROW_{i}_IDENTITY_MISSING")
+            unattributed_row_present = True
             continue
         key = (request_id, candidate_id)
         if key in seen:
             issues.append(f"ROW_{i}_DUPLICATE_CANONICAL_ID")
+            integrity_failed_requests.add(request_id)
+            unknown_eligibility = True
             continue
         seen.add(key)
-        valid = state in ALL_DISPOSITIONS and _nonempty(row.get("current_owner"))
+        # The audit must not launder a caller-claimed disposition into an
+        # authoritative terminal result or an executable wagering decision.
+        valid = (
+            state in ALL_DISPOSITIONS
+            and _nonempty(row.get("current_owner"))
+            and row.get("terminal_authority") == TERMINAL_AUTHORITY
+            and row.get("can_execute") is False
+        )
         if state in {"HELD", "REJECTED", "PURGED", "PENDING"}:
             valid = valid and all(_nonempty(row.get(k)) for k in (
                 "failure_code", "evidence_ref", "next_action", "reentry_trigger",
             ))
         if state == "SCORED":
             valid = valid and valid_numeric_package(row)
+            # A boolean receipt flag is insufficient without the exact source
+            # candidate, official event and market bound to that same receipt.
+            binding_valid = (
+                row.get("terminal_receipt_identity_verified") is True
+                and _nonempty(row.get("event_id"))
+                and _nonempty(row.get("market_identity"))
+                and row.get("terminal_receipt_source_candidate_id") == candidate_id
+                and row.get("terminal_receipt_event_id") == row.get("event_id")
+                and row.get("terminal_receipt_market_identity") == row.get("market_identity")
+            )
+            if not binding_valid:
+                issues.append(f"ROW_{i}_TERMINAL_RECEIPT_IDENTITY_UNVERIFIED")
+                valid = False
+            receipt_ref = row.get("terminal_receipt_ref")
+            if _nonempty(receipt_ref):
+                if receipt_ref in seen_scored_receipts:
+                    issues.append(f"ROW_{i}_TERMINAL_RECEIPT_REUSED")
+                    valid = False
+                else:
+                    seen_scored_receipts.add(receipt_ref)
             if row.get("event_status") == "LIVE":
                 valid = valid and row.get("dedicated_live_specialist_certified") is True
         if row.get("rank_eligible") is True:
             valid = valid and state == "SCORED" and row.get("terminal_rank_eligible_verified") is True
         if not valid:
             issues.append(f"ROW_{i}_UNPROVEN_DISPOSITION")
+            integrity_failed_requests.add(request_id)
             state = "UNRESOLVED"
         per_request[request_id].append(state)
+        per_request_ids[request_id].add(candidate_id)
         counts[state] += 1
         lane = str(row.get("sport") or "UNSPECIFIED") + "/" + str(row.get("market_family") or "UNSPECIFIED")
         by_lane[lane][state] += 1
@@ -111,11 +152,16 @@ def product_outcome_scorecard(
         elif row.get("eligible") is not False:
             unknown_eligibility = True
             issues.append(f"ROW_{i}_ELIGIBILITY_UNATTESTED")
+            integrity_failed_requests.add(request_id)
 
     unique_requests: set[str] = set()
     supported_count = 0
+    supported_request_ids: set[str] = set()
     completed_count = 0
     first_pass_count = 0
+    missing_rows = 0
+    unknown_scope = unattributed_row_present
+    unknown_eligibility = unknown_eligibility or unattributed_row_present
     for i, req in enumerate(requests):
         rid = req.get("request_id")
         if not _nonempty(rid) or rid in unique_requests:
@@ -127,11 +173,61 @@ def product_outcome_scorecard(
                 issues.append(f"REQUEST_{i}_SUPPORT_UNATTESTED")
             continue
         supported_count += 1
+        supported_request_ids.add(rid)
         dispositions = per_request.get(rid, [])
-        empty_verified = not dispositions and req.get("no_current_candidates_verified") is True
+        expected = req.get("expected_canonical_count")
+        # The source/discovery inventory must attest the intended denominator.
+        # Eight terminal rows from a 27-market board are never a 100% result.
+        if type(expected) is not int or expected < 0 or not _nonempty(req.get("scope_evidence_ref")):
+            issues.append(f"REQUEST_{i}_SCOPE_UNATTESTED")
+            integrity_failed_requests.add(rid)
+            unknown_scope = True
+            continue
+        missing_for_request = max(0, expected - len(dispositions))
+        if len(dispositions) != expected:
+            issues.append(f"REQUEST_{i}_SCOPE_COUNT_MISMATCH:{len(dispositions)}/{expected}")
+            integrity_failed_requests.add(rid)
+            if len(dispositions) > expected:
+                unknown_scope = True
+        # A matching row count does not prove the same original market labels
+        # survived. Multi-candidate boards must supply the exact source IDs.
+        expected_ids = req.get("expected_candidate_ids")
+        if expected > 0 or expected_ids is not None:
+            ids_valid = (
+                isinstance(expected_ids, (list, tuple))
+                and len(expected_ids) == expected
+                and all(_nonempty(value) for value in expected_ids)
+                and len(set(expected_ids)) == expected
+            )
+            if not ids_valid:
+                issues.append(f"REQUEST_{i}_CANONICAL_IDENTITY_SCOPE_UNATTESTED")
+                integrity_failed_requests.add(rid)
+                unknown_scope = True
+            else:
+                declared = set(expected_ids)
+                missing_ids = declared - per_request_ids[rid]
+                extra_ids = per_request_ids[rid] - declared
+                missing_for_request = max(missing_for_request, len(missing_ids))
+                if missing_ids or extra_ids:
+                    issues.append(
+                        f"REQUEST_{i}_IDENTITY_MISMATCH:"
+                        f"{len(missing_ids)}_MISSING_{len(extra_ids)}_EXTRA"
+                    )
+                    integrity_failed_requests.add(rid)
+                    if extra_ids:
+                        # Unknown submitted IDs cannot inflate scored coverage.
+                        unknown_scope = True
+        missing_rows += missing_for_request
+        empty_verified = expected == 0 and req.get("no_current_candidates_verified") is True
+        if expected == 0 and not empty_verified:
+            issues.append(f"REQUEST_{i}_EMPTY_SCOPE_NOT_INDEPENDENTLY_VERIFIED")
+            integrity_failed_requests.add(rid)
         complete = (
-            req.get("output_delivered_verified") is True
-            and (empty_verified or (bool(dispositions) and all(s in TERMINAL_DISPOSITIONS for s in dispositions)))
+            not unattributed_row_present
+            and req.get("output_delivered_verified") is True
+            and rid not in integrity_failed_requests
+            and len(dispositions) == expected
+            and (empty_verified or (expected > 0 and all(s in TERMINAL_DISPOSITIONS for s in dispositions)))
         )
         if complete:
             completed_count += 1
@@ -141,9 +237,23 @@ def product_outcome_scorecard(
     for rid in per_request:
         if rid not in unique_requests:
             issues.append("ROW_REQUEST_NOT_IN_INVENTORY:" + rid)
+            unknown_scope = True
+            unknown_eligibility = True
+        elif rid not in supported_request_ids:
+            issues.append("ROW_REQUEST_NOT_SUPPORTED:" + rid)
+            unknown_scope = True
+            unknown_eligibility = True
 
     canonical_count = len(seen)
+    accounted_count = canonical_count + missing_rows
+    # Duplicate identities cannot substantiate a complete conserved board.
+    if any("DUPLICATE_CANONICAL_ID" in finding for finding in issues):
+        unknown_scope = True
     terminal_count = sum(counts[s] for s in TERMINAL_DISPOSITIONS)
+    # Empty/unupported-only inventory is not a certified clean board.
+    # Do not mint an audit PASS when no supported scope was ever attested.
+    if supported_count == 0:
+        issues.append("NO_SUPPORTED_VERIFIED_REQUEST_SCOPE")
     return {
         "can_execute": False,
         "terminal_authority": TERMINAL_AUTHORITY,
@@ -151,14 +261,17 @@ def product_outcome_scorecard(
         "findings": issues,
         "rows_unique": canonical_count,
         "rows_terminal": terminal_count,
-        "rows_unresolved": canonical_count - terminal_count,
-        "candidate_conservation_rate": terminal_count / canonical_count if canonical_count else None,
+        "rows_missing_from_declared_scope": missing_rows,
+        "rows_unresolved": accounted_count - terminal_count,
+        "candidate_conservation_rate": (
+            terminal_count / accounted_count if accounted_count and not unknown_scope else None
+        ),
         "supported_requests": supported_count,
         "completed_requests": completed_count,
         "product_outcome_completion_rate": completed_count / supported_count if supported_count else None,
         "first_pass_completion_rate": first_pass_count / supported_count if supported_count else None,
         "eligible_candidates": eligible_count if not unknown_eligibility else None,
-        "rank_eligible_candidates": rank_eligible_count,
+        "rank_eligible_candidates": rank_eligible_count if not unknown_eligibility else None,
         "reliable_decision_availability": (
             rank_eligible_count / eligible_count if eligible_count and not unknown_eligibility else None
         ),
@@ -188,6 +301,55 @@ def model_restoration_acceptance(
             blockers.append("PRODUCT_" + key.upper() + "_UNPROVEN")
     if not valid_numeric_package(product_receipt):
         blockers.append("PRODUCT_NUMERIC_PACKAGE_UNPROVEN")
+    # Closing an entire restoration is stronger than observing a syntactically
+    # valid fitted package. The persisted terminal receipt must bind to the
+    # same immutable source candidate, official event and exact market.
+    candidate_id = product_receipt.get("candidate_id")
+    event_id = product_receipt.get("event_id")
+    market_id = product_receipt.get("market_identity")
+    if not (
+        _nonempty(candidate_id)
+        and _nonempty(event_id)
+        and _nonempty(market_id)
+        and product_receipt.get("terminal_receipt_identity_verified") is True
+        and product_receipt.get("terminal_receipt_source_candidate_id") == candidate_id
+        and product_receipt.get("terminal_receipt_event_id") == event_id
+        and product_receipt.get("terminal_receipt_market_identity") == market_id
+    ):
+        blockers.append("PRODUCT_TERMINAL_RECEIPT_IDENTITY_UNPROVEN")
+    expected = product_receipt.get("requested_canonical_count")
+    terminal = product_receipt.get("verified_terminal_count")
+    if (type(expected) is not int or expected < 1
+            or type(terminal) is not int or terminal != expected
+            or not _nonempty(product_receipt.get("scope_evidence_ref"))
+            or product_receipt.get("terminal_receipts_reconciled_verified") is not True):
+        blockers.append("PRODUCT_EXACT_SCOPE_RECEIPTS_UNPROVEN")
+    # Receipt totals (including 27/27) are not proof the ORIGINAL offered
+    # markets were reconciled. Require an independently sourced exact identity
+    # inventory and an equal, unique terminal inventory: substitution, missing
+    # rows and duplicate IDs all fail closed even when total counts agree.
+    requested_ids = product_receipt.get("requested_candidate_ids")
+    terminal_ids = product_receipt.get("verified_terminal_candidate_ids")
+    valid_requested = (
+        type(expected) is int and expected >= 1
+        and isinstance(requested_ids, (list, tuple))
+        and len(requested_ids) == expected
+        and all(_nonempty(value) for value in requested_ids)
+        and len(set(requested_ids)) == expected
+    )
+    valid_terminal = (
+        type(terminal) is int and terminal >= 1
+        and isinstance(terminal_ids, (list, tuple))
+        and len(terminal_ids) == terminal
+        and all(_nonempty(value) for value in terminal_ids)
+        and len(set(terminal_ids)) == terminal
+    )
+    if not (
+        valid_requested and valid_terminal
+        and set(requested_ids) == set(terminal_ids)
+        and candidate_id in requested_ids
+    ):
+        blockers.append("PRODUCT_EXACT_SCOPE_IDENTITIES_UNPROVEN")
     if product_receipt.get("event_status") == "LIVE" and product_receipt.get("dedicated_live_specialist_certified") is not True:
         blockers.append("PRODUCT_LIVE_MODEL_UNCERTIFIED")
     if product_receipt.get("run_id") != closure_receipt.get("action_run_id"):
