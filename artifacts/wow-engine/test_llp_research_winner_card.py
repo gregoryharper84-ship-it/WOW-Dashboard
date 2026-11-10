@@ -86,6 +86,26 @@ def test_timestamps_duplicate_or_extra_events_fail_closed():
     assert audit([event(),event()],[pick()])['board_complete'] is False
 
 
+def test_duplicate_selection_does_not_expose_last_pick_evidence():
+    first = pick()
+    second = pick(
+        research_confidence="HIGH", model_status="CERTIFIED",
+        research_sources=[
+            {"publisher":"bogus1.example","source_type":"NON_MARKET","available_to_user_at_utc":ASOF},
+            {"publisher":"bogus2.example","source_type":"NON_MARKET","available_to_user_at_utc":ASOF},
+        ],
+    )
+    report = audit([event()], [first, second])
+    row = report["rows"][0]
+    assert report["board_complete"] is False
+    assert "DUPLICATE_RESEARCH_SELECTION" in report["board_blockers"]
+    assert "MISSING_OR_DUPLICATE_WINNER" in row["selection_blockers"]
+    assert row["selected_side"] is None
+    assert row["selection_class"] == "RESEARCH_INVALID"
+    assert row["source_publishers_verified"] == 0
+    assert row["model_status"] == "UNKNOWN"
+
+
 def test_unverified_slate_must_not_claim_full_board():
     r=audit([event()],[pick()],verified=False)
     assert r['all_sides_selected'] is True
