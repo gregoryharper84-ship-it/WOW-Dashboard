@@ -44,8 +44,10 @@ latest_nfl_health AS (
 ),
 prop_model_counts AS (
     SELECT sport, count(*)::int AS fitted_artifact_count,
-           count(*) FILTER (WHERE active AND promoted AND probability_publishable)::int
-               AS active_promoted_artifacts
+           count(*) FILTER (
+               WHERE active AND promoted
+                 AND lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')
+           )::int AS active_promoted_artifacts
     FROM public.wow_prop_fitted_model_artifacts
     GROUP BY sport
 ),
@@ -69,7 +71,9 @@ SELECT rt.sport, 'LLP_TEAM_BETTING_ENGINE'::text AS routed_lane,
        bs.capability_status AS basketball_candidate_status,
        bs.reason_code AS basketball_candidate_reason,
        CASE WHEN rt.sport = 'NFL'
-                 AND (nh.certification_recommendation = 'DO_NOT_CERTIFY_YET'
+                 AND (nh.graded_n IS NULL
+                      OR nh.minimum_forward_required IS NULL
+                      OR nh.certification_recommendation IS DISTINCT FROM 'FORWARD_EVIDENCE_PASS'
                       OR nh.graded_n < nh.minimum_forward_required)
             THEN 'DO_NOT_CERTIFY_YET'
             WHEN cert.certification_id IS NULL
