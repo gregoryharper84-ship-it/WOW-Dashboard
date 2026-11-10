@@ -197,3 +197,17 @@ def test_all_alternative_intervals_checked_not_just_highest_point_estimate():
     assert result.upset_candidate == "AWAY"
     assert result.alert is True
     assert result.probability_gap == pytest.approx(0.40)
+
+
+def test_missing_outcome_probability_mass_fails_closed():
+    """Reject incomplete distributions, not only sums above one."""
+    with pytest.raises(ValueError, match="governed_outcome_probabilities_not_normalized"):
+        evaluate_favorite_upset_alert(
+            sport="NBA",
+            market_favorite="A",
+            market_favorite_verified=True,
+            governed_outcomes=(
+                outcome("A", 0.6, 0.5, 0.7),
+                outcome("B", 0.2, 0.1, 0.3),
+            ),
+        )
