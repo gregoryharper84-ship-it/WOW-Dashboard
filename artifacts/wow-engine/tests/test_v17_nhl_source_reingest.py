@@ -872,7 +872,9 @@ def test_reingest_never_reports_complete_for_an_already_conflicted_season():
     assert len(rows) == 33
 
 
-@pytest.mark.parametrize("season", [20262027.5, True, "20262027.0", "2026-2027"])
+@pytest.mark.parametrize(
+    "season", [20262027.5, True, "20262027.0", "2026-2027", "٢٠٢٦٢٠٢٧"]
+)
 def test_reingest_rejects_inexact_season_evidence(season):
     db = _FakeDB()
     result = reingest.run_nhl_source_reingest(

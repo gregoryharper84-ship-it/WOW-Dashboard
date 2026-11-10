@@ -566,12 +566,14 @@ def _supplied_season(value: Any) -> int | None:
     """Return an exact numeric season id, or None for malformed evidence."""
     if type(value) is int:
         return value
-    if isinstance(value, str) and value.strip().isdigit():
-        try:
-            return int(value.strip())
-        except ValueError:
-            # Unicode Nd digits pass str.isdigit() but are not base-10 int literals.
-            return None
+    if isinstance(value, str):
+        text = value.strip()
+        # Require ASCII digits: Unicode Nd can pass isdigit() and convert via int().
+        if text and text.isascii() and text.isdigit():
+            try:
+                return int(text)
+            except ValueError:
+                return None
     return None
 
 
@@ -1001,7 +1003,7 @@ def _fitted_http_failure(req: Any, exc: NHLFittedSpecialistError):
     from v17.team_event_bridge_runtime import _model_failure_detail
 
     status_code = {
-        "MODEL_UNAVAILABLE": 503,
+        "MODEL_UNAVAILABLE": 409,
         "MODEL_INPUTS_INSUFFICIENT": 422,
         "MODEL_OUTPUT_INVALID": 500,
     }.get(exc.code, 500)

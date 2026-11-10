@@ -78,12 +78,14 @@ def _exact_season_id(value: Any) -> int | None:
     """Return an exact season id; floats and booleans are never coerced."""
     if type(value) is int:
         return value
-    if isinstance(value, str) and value.strip().isdigit():
-        try:
-            return int(value.strip())
-        except ValueError:
-            # Unicode Nd digits pass str.isdigit() but are not base-10 int literals.
-            return None
+    if isinstance(value, str):
+        text = value.strip()
+        # Require ASCII digits: Unicode Nd can pass isdigit() and convert via int().
+        if text and text.isascii() and text.isdigit():
+            try:
+                return int(text)
+            except ValueError:
+                return None
     return None
 
 

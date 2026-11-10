@@ -587,7 +587,7 @@ def test_batch_boundary_resolves_full_club_names_to_the_selected_side():
 
 
 def test_current_event_rejects_mismatched_or_malformed_season_evidence():
-    for bad_season in ("20252026", "not-a-season", "²", 20252026, True):
+    for bad_season in ("20252026", "not-a-season", "²", "٢٠٢٥٢٠٢٦", 20252026, True):
         with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
             nhl.score_current_nhl_event(
                 _request(season=bad_season), db=_DB(), now_utc=NOW
@@ -596,7 +596,7 @@ def test_current_event_rejects_mismatched_or_malformed_season_evidence():
         assert "NHL_SEASON_IDENTITY_INVALID" in caught.value.blockers
 
 
-@pytest.mark.parametrize("bad_season", ["20252026", "not-a-season", "²"])
+@pytest.mark.parametrize("bad_season", ["20252026", "not-a-season", "²", "٢٠٢٥٢٠٢٦"])
 def test_reconstruction_rejects_mismatched_or_malformed_season_evidence(bad_season):
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl.reconstruct_nhl_pregame_features(
@@ -650,6 +650,40 @@ def test_bridge_preserves_fitted_specialist_typed_blockers(monkeypatch):
     assert caught.value.detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
     assert "NHL_PRIOR_GAMES_INSUFFICIENT" in caught.value.detail["blockers"]
     assert caught.value.detail["can_execute"] is False
+
+
+def test_fitted_http_failure_maps_model_unavailable_to_bridge_409(monkeypatch):
+    """Align NHL fitted MODEL_UNAVAILABLE with shared bridge 409 semantics."""
+    from fastapi import HTTPException
+
+    import v17.team_event_request_runtime as host_routing
+
+    monkeypatch.setattr(
+        host_routing,
+        "resolve_host_route",
+        lambda *_args: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
+            candidate_family="NHL",
+        ),
+    )
+    request = SimpleNamespace(
+        sport="NHL",
+        league="NHL",
+        event_key="NHL:2026029001",
+        requester_host_identity="test-requester-host",
+        candidate_family="NHL",
+    )
+    failure = nhl._fitted_http_failure(
+        request,
+        nhl.NHLFittedSpecialistError(
+            "MODEL_UNAVAILABLE", ["NHL_FITTED_REGISTRY_UNAVAILABLE"]
+        ),
+    )
+    assert isinstance(failure, HTTPException)
+    assert failure.status_code == 409
+    assert failure.detail["code"] == "MODEL_UNAVAILABLE"
+    assert "NHL_FITTED_REGISTRY_UNAVAILABLE" in failure.detail["blockers"]
 
 
 def test_score_one_preserves_fitted_http_goalie_stale_hold(monkeypatch):
