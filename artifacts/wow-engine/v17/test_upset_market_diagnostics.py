@@ -31,11 +31,17 @@ def _quotes():
     return [
         {
             "book": "Book A", "source_snapshot_id": "a1",
+            "official_event_id": "official-match-id",
+            "market_type": "FULL_MATCH_TWO_WAY",
+            "settlement_basis": "including_overtime_if_applicable",
             "captured_at_utc": "2026-11-10T17:40:00Z",
             "american_odds": {"FAVORITE": -200, "DOG": 175},
         },
         {
             "book": "Book B", "source_snapshot_id": "b1",
+            "official_event_id": "official-match-id",
+            "market_type": "FULL_MATCH_TWO_WAY",
+            "settlement_basis": "including_overtime_if_applicable",
             "captured_at_utc": "2026-11-10T17:45:00Z",
             "american_odds": {"FAVORITE": -185, "DOG": 170},
         },
@@ -167,14 +173,34 @@ def test_three_way_market_keeps_draw_distinct():
         settlement_basis="90_minutes_plus_stoppage",
         book_quotes=[
             {
-                "book": "A", "source_snapshot_id": "a1", "captured_at_utc": "2026-11-10T17:40:00Z",
+                "book": "A", "source_snapshot_id": "a1",
+                "official_event_id": "official-match-id",
+                "market_type": "REGULATION_THREE_WAY",
+                "settlement_basis": "90_minutes_plus_stoppage", "captured_at_utc": "2026-11-10T17:40:00Z",
                 "american_odds": {"HOME": 115, "DRAW": 250, "AWAY": 240},
             },
             {
-                "book": "B", "source_snapshot_id": "b1", "captured_at_utc": "2026-11-10T17:45:00Z",
+                "book": "B", "source_snapshot_id": "b1",
+                "official_event_id": "official-match-id",
+                "market_type": "REGULATION_THREE_WAY",
+                "settlement_basis": "90_minutes_plus_stoppage", "captured_at_utc": "2026-11-10T17:45:00Z",
                 "american_odds": {"HOME": 110, "DRAW": 255, "AWAY": 245},
             },
         ],
     )
     assert set(result["outcomes"]) == {"HOME", "DRAW", "AWAY"}
     assert result["market_favorite"] == "HOME"
+
+
+def test_same_teams_but_different_market_settlement_is_rejected():
+    quotes = _quotes()
+    quotes[1]["settlement_basis"] = "regulation_only"
+    with pytest.raises(ValueError, match="MARKET_BOOK_EVENT_OR_SETTLEMENT_MISMATCH"):
+        _evaluate(book_quotes=quotes)
+
+
+def test_other_event_market_quote_does_not_cross_contaminate():
+    quotes = _quotes()
+    quotes[1]["official_event_id"] = "different-official-event"
+    with pytest.raises(ValueError, match="MARKET_BOOK_EVENT_OR_SETTLEMENT_MISMATCH"):
+        _evaluate(book_quotes=quotes)
