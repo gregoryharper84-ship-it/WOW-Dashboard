@@ -111,5 +111,5 @@ backend.
 | B | NFL clearance impossible from the current official source; explicitly held |
 | C | Not advanced; no fabricated probability |
 | D | Separation preserved; active-sport market evidence unproven |
-| E | Pagination/determinism/idempotency proven; transport and restart unproven |
+| E | In-memory pagination and terminal repeatability tested; durable idempotency unproven; transport and restart unproven |
 | F | Blocked on authorization and credentials |

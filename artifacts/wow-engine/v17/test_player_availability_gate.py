@@ -275,3 +275,46 @@ def test_playable_designation_cannot_clear_a_provisional_basis(designation):
     assert decision.status == AVAILABILITY_AVAILABLE
     assert decision.requires_revalidation is True
     assert decision.risk is True
+
+
+@pytest.mark.parametrize("basis", ["FRESH_OFFICIAL_REPORT_UNLISTED", "FRESH_OFFICIAL_REPORT_CLEARED"])
+@pytest.mark.parametrize("complete", ["missing", None, False, 0, 1, "true", "false", {}, []])
+@pytest.mark.parametrize("designation", [None, "AVAILABLE"])
+def test_report_clearance_requires_literal_complete_true(basis, complete, designation):
+    evidence = _availability("AVAILABLE", designation)
+    evidence["basis"] = basis
+    if complete != "missing":
+        evidence["report_complete"] = complete
+    decision = evaluate_player_availability({"availability": evidence})
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+    assert decision.reason == "AVAILABILITY_REPORT_INCOMPLETE"
+    assert decision.can_execute is False
+
+
+@pytest.mark.parametrize("basis", ["FRESH_OFFICIAL_REPORT_UNLISTED", "FRESH_OFFICIAL_REPORT_CLEARED", "CONFIRMED_STARTER", "POSTED_BATTING_ORDER", "PROBABLE_STARTER"])
+def test_complete_report_and_other_official_bases_preserve_clearance(basis):
+    evidence = _availability("UNVERIFIED", None)
+    evidence["basis"] = basis
+    if basis.startswith("FRESH_OFFICIAL_REPORT"):
+        evidence["report_complete"] = True
+    decision = evaluate_player_availability({"availability": evidence})
+    assert decision.status == AVAILABILITY_AVAILABLE
+    assert decision.requires_revalidation is (basis == "PROBABLE_STARTER")
+    assert decision.can_execute is False
+
+
+@pytest.mark.parametrize("basis", ["FRESH_OFFICIAL_REPORT_UNLISTED", "FRESH_OFFICIAL_REPORT_CLEARED"])
+def test_report_completeness_never_erases_explicit_rule_out(basis):
+    evidence = _availability("OUT", "OUT")
+    evidence["basis"] = basis
+    decision = evaluate_player_availability({"availability": evidence})
+    assert decision.status == AVAILABILITY_UNAVAILABLE
+    assert decision.blocker == PLAYER_RULED_OUT
+    assert decision.can_execute is False
+
+
+def test_explicit_incomplete_report_still_blocks_other_bases():
+    evidence = _availability("AVAILABLE", "AVAILABLE")
+    evidence.update(basis="CONFIRMED_STARTER", report_complete=False)
+    assert evaluate_player_availability({"availability": evidence}).blocker == PLAYER_AVAILABILITY_UNVERIFIED

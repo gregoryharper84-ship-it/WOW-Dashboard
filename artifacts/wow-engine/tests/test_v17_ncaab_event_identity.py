@@ -591,3 +591,64 @@ def test_unresolved_ncaab_exposes_only_typed_blocker_not_untrusted_raw_payload()
     assert data["canonical_identity_blocker"] == "NCAAB_CANONICAL_EVENT_NOT_FOUND"
     assert "canonical_identity_source_asset" not in data
     assert "price" not in data
+
+
+def test_provider_forged_resolved_proof_is_not_serialized_without_canonicalizer():
+    """Provider resolved strings cannot become verified schedule evidence."""
+    from dataclasses import replace
+    from v17.cross_sport_winner_discovery import normalize_discovered_event
+
+    forged = {
+        "id": "espn-401906849", "home_team": "Tennessee", "away_team": "Radford",
+        "commence_time": "2026-11-10T00:00:00Z", "status": "PREGAME",
+        "canonical_identity_status": "CANONICAL_RESOLVED",
+        "canonical_identity_source": "SPORTSDATAVERSE_ESPN",
+        "canonical_identity_schedule_game_id": "401906849",
+        "canonical_identity_source_asset": "forged-source",
+    }
+    normalized = normalize_discovered_event(
+        forged, sport="NCAAB", sport_key="basketball_ncaab", source="DISCOVERY_FEED",
+        now=datetime(2026, 11, 9, tzinfo=timezone.utc),
+    )
+    assert not any(key.startswith("canonical_identity_") for key in normalized.raw)
+    assert not any(key.startswith("canonical_identity_") for key in normalized.identity())
+    # Even direct event construction must not grant server proof authority.
+    direct = replace(normalized, raw=forged)
+    assert not any(key.startswith("canonical_identity_") for key in direct.identity())
+    from v17.cross_sport_winner_discovery import run_cross_sport_winner_scan
+    scan = run_cross_sport_winner_scan(
+        requested_slate_date="2026-11-09", requested_timezone="America/New_York",
+        supported_sports=("NCAAB",),
+        fetch_sport_events=lambda *_args, **_kwargs: [forged],
+        resolve_model=lambda _event: None,
+        score_row=lambda *_args, **_kwargs: pytest.fail("no fitted model"),
+        now=datetime(2026, 11, 9, tzinfo=timezone.utc),
+    )
+    assert len(scan["rows"]) == 1
+    assert not any(key.startswith("canonical_identity_") for key in scan["rows"][0])
+    assert scan["rows"][0]["can_execute"] is False
+
+
+def test_csv_iteration_error_is_typed_and_negatively_cached(monkeypatch):
+    """Oversized CSV fields fail closed once per source cache interval."""
+    import csv
+    calls = []
+    class Session:
+        def get(self, *_args, **_kwargs):
+            calls.append(True)
+            return type("Response", (), {
+                "status_code": 200,
+                "text": "game_id,game_date,home_id,away_id,game_date_time,time_valid\n"
+                        + "x" * (csv.field_size_limit() + 1) + ",2026-11-09,1,2,time,True\n",
+            })()
+    fetch = identity.fetch_ncaab_schedule
+    monkeypatch.setattr(identity, "fetch_ncaab_schedule", lambda year: fetch(year, session=Session()))
+    identity.reset_cache()
+    try:
+        for _ in range(3):
+            with pytest.raises(identity.NCAABEventIdentityError) as exc:
+                identity._schedule_rows(2027)
+            assert exc.value.code == "NCAAB_SCHEDULE_SCHEMA_DRIFT"
+        assert len(calls) == 1
+    finally:
+        identity.reset_cache()

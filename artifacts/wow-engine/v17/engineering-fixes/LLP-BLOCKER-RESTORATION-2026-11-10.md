@@ -156,3 +156,37 @@ cohort counts or certification thresholds were changed to manufacture readiness.
 5. Independently finish each sport/market certification with real fitted
    artifacts and forward-graded data. Until then retain native hold/unavailable
    semantics; can_execute remains false.
+
+
+## Pre-merge review follow-up
+
+The original 2085af78 source received all five required App-bound checks, after
+adding the missing canonical Incident: #2131 / Parent: #2020 PR metadata.
+The owner authorized protected merge and controlled deployment. Before merge,
+the completed CodeRabbit review published seven findings; merge was held while
+those findings were verified and repaired:
+
+- NCAAB canonical schedule proof now needs a private in-process marker set by
+  the real schedule canonicalizer. Provider-supplied canonical_identity_* fields
+  are stripped, including when the scan runs without a canonicalizer.
+- CSV header/iteration errors are typed NCAAB_SCHEDULE_SCHEMA_DRIFT and enter
+  the existing negative cache instead of triggering per-event reacquisition.
+- Report-based clearance requires report_complete is literally True; absence,
+  null and other nonboolean values no longer clear availability.
+- The base WNBA parser uses the shared immediate-status parser, so a teammate's
+  later OUT status cannot become a false ruling for the target participant.
+- Daily processes ordered history incrementally by event-start group, rather
+  than retaining every raw historical row. Detailed exclusions are limited to
+  the first 50 plus current-receipt reconciliation rows. Complete raw/merged and
+  exclusion reason counts remain independent of that display budget.
+- An empty lane with excluded candidates now reports
+  ALL_CANONICAL_CANDIDATES_EXCLUDED instead of NO_CANONICAL_CANDIDATES.
+- The Phase E summary now discloses in-memory repeatability and does not assert
+  durable persistence idempotency.
+
+Tests reproduced the original defects before fixes. Combined focused checks:
+153 passed, plus a 12-test Daily chain run including the cross-page newest-blocker
+case. Read-only development review found no critical/important issue and ran
+149 focused tests, including receipt reconciliation beyond the detail limit.
+The new source requires fresh exact-head checks; previous-head receipts do not
+attest these follow-up changes. Model certification/activation is unchanged.

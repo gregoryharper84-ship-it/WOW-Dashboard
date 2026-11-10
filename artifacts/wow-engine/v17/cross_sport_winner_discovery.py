@@ -533,6 +533,9 @@ _LIVE_TOKENS = ("LIVE", "IN_PROGRESS", "INPROGRESS", "STARTED", "PLAYING", "HALF
 _PREGAME_TOKENS = ("PREGAME", "SCHEDULED", "NOT_STARTED", "NOTSTARTED", "UPCOMING", "STATUS_SCHEDULED")
 
 
+_NCAAB_SCHEDULE_PROOF = object()
+
+
 @dataclass(frozen=True)
 class DiscoveredEvent:
     """One discovered winner candidate, before any model question is asked."""
@@ -553,6 +556,9 @@ class DiscoveredEvent:
     provider: str | None = None
     provider_sport_id: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+    # In-process capability: provider payloads cannot supply this object.
+    _ncaab_schedule_proof: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def event_key(self) -> str:
@@ -584,7 +590,8 @@ class DiscoveredEvent:
         if self.sport == "NCAAB" and isinstance(self.raw, Mapping):
             raw = self.raw
             if (
-                raw.get("canonical_identity_status") == "CANONICAL_RESOLVED"
+                self._ncaab_schedule_proof is _NCAAB_SCHEDULE_PROOF
+                and raw.get("canonical_identity_status") == "CANONICAL_RESOLVED"
                 and self.official_event_id
                 and str(self.official_event_id) == (
                     f"espn-{raw.get('canonical_identity_schedule_game_id')}"
@@ -781,7 +788,13 @@ def normalize_discovered_event(
         regime=target.regime if target is not None else registry.REGULAR_SEASON,
         provider=target.provider if target is not None else None,
         provider_sport_id=target.sport_id if target is not None else None,
-        raw=dict(raw),
+        raw={
+            key: value for key, value in raw.items()
+            if not (
+                normalize_team_event_identity(sport, league) == "NCAAB"
+                and str(key).startswith("canonical_identity_")
+            )
+        },
     )
 
 

@@ -114,15 +114,18 @@ def fetch_ncaab_schedule(
     if status != 200:
         raise NCAABEventIdentityError("NCAAB_SCHEDULE_SOURCE_UNAVAILABLE", f"HTTP_{status}")
     text = str(getattr(response, "text", "") or "").lstrip("\ufeff")
-    reader = csv.DictReader(io.StringIO(text))
-    fieldnames = {str(value or "").strip() for value in (reader.fieldnames or [])}
-    missing = [column for column in _REQUIRED_COLUMNS if column not in fieldnames]
-    if missing:
-        raise NCAABEventIdentityError(
-            "NCAAB_SCHEDULE_SCHEMA_DRIFT",
-            ",".join(missing),
-        )
-    return [dict(row) for row in reader]
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        fieldnames = {str(value or "").strip() for value in (reader.fieldnames or [])}
+        missing = [column for column in _REQUIRED_COLUMNS if column not in fieldnames]
+        if missing:
+            raise NCAABEventIdentityError(
+                "NCAAB_SCHEDULE_SCHEMA_DRIFT",
+                ",".join(missing),
+            )
+        return [dict(row) for row in reader]
+    except csv.Error as exc:
+        raise NCAABEventIdentityError("NCAAB_SCHEDULE_SCHEMA_DRIFT", str(exc)) from exc
 
 
 def _schedule_rows(

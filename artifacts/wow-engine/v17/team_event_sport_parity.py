@@ -487,7 +487,7 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
     if not home_alias or not away_alias:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "NCAAB_PROVIDER_TEAM_ALIAS_MISSING"
-        return replace(event, official_event_id=None, raw=raw)
+        return replace(event, official_event_id=None, raw=raw, _ncaab_schedule_proof=None)
 
     from v17.ncaab_event_identity import resolve_ncaab_current_event_identity
 
@@ -502,13 +502,13 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, official_event_id=None, raw=raw)
+        return replace(event, official_event_id=None, raw=raw, _ncaab_schedule_proof=None)
 
     canonical_event_id = str(resolution.get("event_id") or "").strip()
     if not canonical_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "NCAAB_CANONICAL_EVENT_ID_MISSING"
-        return replace(event, official_event_id=None, raw=raw)
+        return replace(event, official_event_id=None, raw=raw, _ncaab_schedule_proof=None)
 
     if provider_event_id:
         raw["provider_event_id"] = provider_event_id
@@ -530,7 +530,12 @@ def canonicalize_ncaab_discovery_identity(event: Any) -> Any:
     raw["canonical_identity_source_asset"] = resolution.get("identity_source_asset")
     raw["canonical_identity_market_features_used"] = False
     raw["prediction_authority"] = False
-    return replace(event, official_event_id=canonical_event_id, raw=raw)
+    from v17.cross_sport_winner_discovery import _NCAAB_SCHEDULE_PROOF
+
+    return replace(
+        event, official_event_id=canonical_event_id, raw=raw,
+        _ncaab_schedule_proof=_NCAAB_SCHEDULE_PROOF,
+    )
 
 
 def canonicalize_ncaaf_discovery_identity(event: Any) -> Any:

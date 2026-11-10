@@ -333,7 +333,10 @@ def evaluate_player_availability(role_status: Any) -> AvailabilityDecision:
                 blocker=PLAYER_AVAILABILITY_UNVERIFIED,
                 reason="AVAILABILITY_EVIDENCE_STALE",
             )
-        if report_complete is False:
+        if report_complete is False or (
+            basis in {"FRESH_OFFICIAL_REPORT_UNLISTED", "FRESH_OFFICIAL_REPORT_CLEARED"}
+            and report_complete is not True
+        ):
             return _decision(
                 **shared,
                 status=AVAILABILITY_UNVERIFIED,

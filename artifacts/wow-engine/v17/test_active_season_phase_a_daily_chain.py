@@ -386,3 +386,69 @@ def test_acquired_blocked_snapshot_is_an_explicit_handoff_exclusion(monkeypatch)
     assert handoff["missing_persisted_snapshot_ids"] == []
     assert handoff["persisted_to_canonical_balanced"] is True
     assert "PROP_SNAPSHOT_INGESTION_EMPTY" not in payload["blockers"]
+    assert payload["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "ALL_CANONICAL_CANDIDATES_EXCLUDED"
+
+
+def test_history_is_processed_in_start_groups_with_bounded_exclusion_detail(monkeypatch):
+    import v17.daily_snapshot_runtime as runtime
+    original = runtime.canonicalize_prop_manifest
+    largest_group = 0
+    def canonicalize(rows):
+        nonlocal largest_group
+        rows = list(rows)
+        largest_group = max(largest_group, len(rows))
+        return original(rows)
+    monkeypatch.setattr(runtime, "canonicalize_prop_manifest", canonicalize)
+    historical = [_snapshot(f"Past {i}", start=(NOW - timedelta(days=3) + timedelta(minutes=i)).isoformat(), index=i)
+                  for i in range(1000)]
+    payload = _run(_DB(historical + [_snapshot("Current", index=1001)]), _Market())
+    accounting = payload["prop_candidate_accounting"]
+    assert largest_group <= 250
+    assert accounting["raw_rows_read"] == 1001
+    assert accounting["excluded_rows"] == 1000
+    assert accounting["excluded_by_reason"] == {"EVENT_NOT_PREGAME": 1000}
+    assert len(accounting["exclusions"]) == 50
+    assert accounting["exclusions_truncated"] == 950
+    assert accounting["balanced"] is True
+
+
+def test_exclusion_receipt_reconciles_beyond_the_detail_budget(monkeypatch):
+    historical = [_snapshot(f"Past {i}", start=(NOW - timedelta(days=3) + timedelta(minutes=i)).isoformat(), index=i)
+                  for i in range(100)]
+    db = _DB(historical)
+    blocked = _snapshot("New Blocked", blockers=["PLAYER_RULED_OUT"], index=1001)
+    def acquire(**_):
+        db.snapshots.append(blocked)
+        return {"status": "COMPLETED", "attempted": 1, "persisted": 1,
+                "snapshot_write_succeeded": 1,
+                "receipts": [{"write_status": "SNAPSHOT_WRITE_SUCCEEDED",
+                              "source_snapshot_id": blocked["source_snapshot_id"]}]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    payload = _run(db, _Market())
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["excluded_rows"] == 101
+    assert len(accounting["exclusions"]) == 50
+    assert accounting["balanced"] is True
+    handoff = payload["lane_reconciliation"]["PROPS"]["handoff_reconciliation"]
+    assert handoff["explicit_precanonical_exclusions"] == 1
+    assert handoff["persisted_to_canonical_balanced"] is True
+    assert "PROP_SNAPSHOT_INGESTION_EMPTY" not in payload["blockers"]
+
+
+def test_newest_blocker_spanning_a_page_boundary_is_not_lost(monkeypatch):
+    history = [_snapshot(f"Past {i}", start=(NOW - timedelta(days=3) + timedelta(minutes=i)).isoformat(), index=i)
+               for i in range(249)]
+    older = _snapshot("Boundary Player", index=1001)
+    newer = {**older, "source_snapshot_id": "boundary-newer",
+             "captured_at": (NOW + timedelta(seconds=1)).isoformat(),
+             "blockers": ["PLAYER_AVAILABILITY_UNVERIFIED"]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB(history + [older, newer]), _Market(publishable={"Boundary Player"}))
+    assert payload["rows"] == []
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["raw_rows_read"] == 251
+    assert accounting["canonical_merged_rows"] == 1
+    assert accounting["excluded_rows"] == 250
+    assert accounting["excluded_by_reason"]["EVIDENCE_BLOCKED"] == 1
+    assert accounting["balanced"] is True
