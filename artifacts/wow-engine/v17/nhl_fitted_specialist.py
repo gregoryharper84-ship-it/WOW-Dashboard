@@ -88,6 +88,7 @@ class NHLFittedSpecialistError(RuntimeError):
     """Typed fail-closed error carrying the exact blocker vocabulary."""
 
     def __init__(self, code: str, blockers: Iterable[str], detail: Any = None):
+        """Store a typed NHL specialist failure code and blocker list."""
         self.code = str(code)
         self.blockers = tuple(dict.fromkeys(str(v) for v in blockers if v))
         self.detail = detail
@@ -107,6 +108,7 @@ def _sha256(payload: Any) -> str:
 
 
 def _aware(value: Any) -> datetime | None:
+    """Parse a timestamp into an aware UTC datetime, or None if invalid."""
     token = str(value or "").strip()
     if not token:
         return None
@@ -120,6 +122,7 @@ def _aware(value: Any) -> datetime | None:
 
 
 def _number(value: Any) -> float | None:
+    """Coerce a finite numeric value, or return None when malformed."""
     if isinstance(value, bool):
         return None
     try:
@@ -130,11 +133,13 @@ def _number(value: Any) -> float | None:
 
 
 def _probability(value: Any) -> float | None:
+    """Clamp a probability into the open unit interval used by scoring."""
     parsed = _number(value)
     return parsed if parsed is not None and 0.0 < parsed < 1.0 else None
 
 
 def _sigmoid(value: float) -> float:
+    """Map a real-valued score through the logistic sigmoid."""
     if value >= 0:
         return 1.0 / (1.0 + math.exp(-value))
     exp_value = math.exp(value)
@@ -142,6 +147,7 @@ def _sigmoid(value: float) -> float:
 
 
 def _hash64(value: Any) -> bool:
+    """Hash ordered bytes into a stable 64-bit digest for provenance."""
     token = str(value or "").strip().lower()
     return len(token) == 64 and all(ch in "0123456789abcdef" for ch in token)
 
@@ -180,6 +186,7 @@ class NHLFittedCandidate:
 
     @property
     def selected_calibrator_method(self) -> str:
+        """Return the selected calibrator method for the fitted candidate."""
         return str(self.calibrator.get("method") or "")
 
     @property
@@ -203,6 +210,7 @@ class NHLFeatureReconstruction:
 
 
 def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
+    """Verify fitted-candidate registry fields fail-closed before scoring."""
     blockers: list[str] = []
     if str(row.get("sport") or "").upper() != "NHL":
         blockers.append("NHL_FITTED_ARTIFACT_SPORT_MISMATCH")
@@ -417,6 +425,7 @@ def load_nhl_fitted_candidate(
 
 
 def _project_source_event(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one source-event row into the reconstruction identity."""
     blockers: list[str] = []
     event_id = str(row.get("official_event_id") or "").strip()
     start = _aware(row.get("event_start_time"))
@@ -536,6 +545,7 @@ def load_nhl_season_events(db: Any, *, season: int) -> list[dict[str, Any]]:
 
 
 def _recent_metrics(recent: deque[tuple[int, int, int]]) -> tuple[float, float, float, float]:
+    """Aggregate recent win and goal differentials for form features."""
     n = len(recent)
     wins = sum(item[0] for item in recent)
     goals_for = sum(item[1] for item in recent)
@@ -544,6 +554,7 @@ def _recent_metrics(recent: deque[tuple[int, int, int]]) -> tuple[float, float, 
 
 
 def _season_start_year(event_time: datetime) -> int:
+    """Derive the NHL season start year from an event timestamp."""
     return event_time.year if event_time.month >= 7 else event_time.year - 1
 
 
@@ -757,6 +768,7 @@ def reconstruct_nhl_pregame_features(
 
 
 def _apply_calibrator(raw: float, calibrator: Mapping[str, Any]) -> tuple[float, float | None, float | None]:
+    """Apply the certified calibrator to a raw model probability."""
     method = str(calibrator.get("method") or "")
     if method == IDENTITY_CALIBRATION_METHOD:
         return raw, None, None
@@ -916,6 +928,7 @@ def score_nhl_fitted_candidate(
 
 
 def _evidence(req: Any) -> dict[str, Any]:
+    """Copy sport-specific evidence from the request into a plain dict."""
     value = getattr(req, "sport_specific_evidence", None)
     return dict(value) if isinstance(value, Mapping) else {}
 

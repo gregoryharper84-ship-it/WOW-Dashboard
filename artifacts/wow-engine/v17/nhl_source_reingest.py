@@ -44,6 +44,7 @@ SETTLED_GAME_STATES = frozenset({"FINAL", "OFF"})
 
 class NHLSourceReingestError(RuntimeError):
     def __init__(self, code: str, detail: Any = None):
+        """Store a typed NHL specialist failure code and blocker list."""
         self.code = str(code)
         self.detail = detail
         super().__init__(f"{self.code}:{detail}" if detail is not None else self.code)
@@ -52,6 +53,7 @@ class NHLSourceReingestError(RuntimeError):
 def default_season_id(now: datetime | None = None) -> int:
     # nhl_candidate_pipeline owns sklearn-backed training imports. Keep it off
     # the production route-construction path; re-ingest only needs it on call.
+    """Compute the current NHL season id from wall-clock UTC."""
     from nhl_candidate_pipeline import season_id
 
     current = now or datetime.now(timezone.utc)
@@ -60,6 +62,7 @@ def default_season_id(now: datetime | None = None) -> int:
 
 
 def _season_start_year(value: Any) -> int:
+    """Derive the NHL season start year from an event timestamp."""
     from nhl_candidate_pipeline import season_id
 
     token = str(value or "").strip()
@@ -76,7 +79,11 @@ def _exact_season_id(value: Any) -> int | None:
     if type(value) is int:
         return value
     if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
+        try:
+            return int(value.strip())
+        except ValueError:
+            # Unicode Nd digits pass str.isdigit() but are not base-10 int literals.
+            return None
     return None
 
 
@@ -466,6 +473,7 @@ def install_nhl_source_reingest_route(
     auth_dependency: Any,
     db_client_fn: Any,
 ) -> None:
+    """Install the governed NHL source re-ingest HTTP route."""
     path = "/internal/v17/nhl-source-reingest"
     if any(getattr(route, "path", None) == path for route in app.router.routes):
         return
