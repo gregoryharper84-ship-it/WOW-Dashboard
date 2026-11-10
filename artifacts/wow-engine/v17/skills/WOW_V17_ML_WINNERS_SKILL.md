@@ -47,6 +47,12 @@ For every difficult matchup, deepen independent research rather than stop: corro
 
 Before publishing, run read-only v17.llp_research_winner_card.audit_research_winner_card with an independently verified official manifest and one research selection for each event. Selection blockers prevent a complete-card claim; evidence warnings demand transparent uncertainty and more research but do not automatically change the winner to a pass. Missing/invalid/late picks remain incomplete: this validator never generates a selection. Keep the research user card, the governed certified leaderboard, the upset-watch alternatives, GH's submitted card and the official-result postmortem separated. No pick for genuinely cancelled/postponed events; no wagering or automatic submission.
 
+## Required full-game matchup media + scenario brief
+
+Alongside each researched winner (NFL/NBA/NHL), include: 1–3 current *linked, attributed, timestamped* real media headlines; key narrative/storyline and source; the competing viewpoint; expected win script; opponent upset script; material stress script; and concrete swing factors. Treat media sentiment as context, not a fitted variable, model probability or prediction proof. The user must still receive a preferred winner, even for divided or sparse reporting. Never substitute fictional coverage. Show source gaps as evidence warnings.
+
+The unweighted research scenario summary may say "preferred side supported in more documented scripts" or "script-sensitive" but must never display numeric scenario *win probabilities* or claim measured robustness without authenticated fitted/validated conditional outcome distributions. Preserve a pregame snapshot; the retrospective later tests whether the predicted mechanisms actually occurred, without backfilling hindsight. Read-only v17.llp_matchup_media_script_audit is part of the winner-card validation; it never changes the official governed winner or terminal.
+
 ## Cash/profitability handoff — P0 invariant
 When the user asks to use a PrizePicks Game Winner as a cash single, in a profitability plan, or in any paid-card/value context, this skill stops at the sporting-probability package and hands the row downstream.
 
