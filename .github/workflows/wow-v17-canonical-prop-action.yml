@@ -233,14 +233,16 @@ jobs:
               raise AssertionError(f"DAILY_ZERO: requested_row_limit={zero_lane.get('requested_row_limit')}")
           if zero_lane.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
               raise AssertionError(f"DAILY_ZERO: zero_row_reason={zero_lane.get('zero_row_reason')}")
-          if int(zero_lane.get("scored_count") or -1) != 0:
-              raise AssertionError(f"DAILY_ZERO: scored_count={zero_lane.get('scored_count')}")
+          # scored_count=0 is the success case; do not use `or` (0 is falsy).
+          zero_scored = zero_lane.get("scored_count")
+          if zero_scored is None or int(zero_scored) != 0:
+              raise AssertionError(f"DAILY_ZERO: scored_count={zero_scored}")
           print(json.dumps({
               "status": "REQUESTED_ROW_LIMIT_ZERO_CAPTURED",
               "daily_zero_row_run_id": zero.get("run_id"),
               "props_zero_row_reason": zero_lane.get("zero_row_reason"),
               "props_requested_row_limit": zero_lane.get("requested_row_limit"),
-              "props_scored_count": zero_lane.get("scored_count"),
+              "props_scored_count": zero_scored,
               "can_execute": False,
               "global_terminal_authority": "V17_TERMINAL_REDUCER",
           }, sort_keys=True))
