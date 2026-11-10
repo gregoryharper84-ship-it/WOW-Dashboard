@@ -1,4 +1,5 @@
 """Append-only NHL provenance re-ingest and genuine 2026-27 replay proof."""
+# Exact-head CI requeue after #2509 reopen.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
