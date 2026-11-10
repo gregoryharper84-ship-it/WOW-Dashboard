@@ -35,8 +35,8 @@ SIRT_REVIEW_TITLE = re.compile(
 # Preserve "SIRT Intake/Review/Assurance" routing without silently dropping
 # e.g. "SIRT: fix verification script timeout" or "[SIRT] audit log repair".
 SIRT_REPAIR_TITLE = re.compile(
-    r"^(?:\\[[^\\]]*\\bSIRT\\b[^\\]]*\\]|(?:P[0-3]\\s+)?SIRT\\b|P[0-3]\\s*:\\s*SIRT\\b)"
-    r"[\\s:—-]*(?:fix|repair|restore|recover|debug|resolve|rebuild|implement|audit\\s+log\\s+repair)\\b",
+    r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)"
+    r"[\s:—-]*(?:fix|repair|restore|recover|debug|resolve|rebuild|implement|audit\s+log\s+repair)\b",
     re.IGNORECASE,
 )
 LEASE_GROUP = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
