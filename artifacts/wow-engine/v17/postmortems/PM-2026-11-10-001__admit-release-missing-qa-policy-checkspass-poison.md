@@ -50,8 +50,11 @@ Root cause status: CONFIRMED, confidence HIGH.
 3. Duplicate artifacts remain fail-closed even with the opt-in.
 4. Existing superseded/draft neutrality and admission-diagnostic contracts still pass.
 5. `can_execute=false` and V17 terminal authority are unchanged.
-6. Change class is **Class P** (admission trust path): exact-head CI plus independent
-   QA/Release App sign-off required; no unattended R-class merge.
+6. Change class is **Class P** (admission trust path): exact-head CI,
+   Independent QA App (5245832), Release Authority App (5245853), and
+   attributable independent non-author security/release sign-off are **all**
+   required before a governed merge; App approvals alone are insufficient.
+   No unattended R-class merge.
 
 ## Linked Engineering Fixes
 
