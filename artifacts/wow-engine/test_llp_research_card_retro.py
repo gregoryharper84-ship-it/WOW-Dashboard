@@ -92,6 +92,24 @@ def test_postfreeze_evidence_cannot_be_used_in_frozen_replay():
     assert report['preferred']['graded'] == 0
 
 
+@pytest.mark.parametrize("missing", [None, [], ()])
+def test_missing_or_empty_research_inputs_must_hold(missing):
+    row = pick()
+    if missing is None:
+        row.pop("research_inputs")
+    else:
+        row["research_inputs"] = missing
+    report = audit_research_card(
+        [row], [result()], official_slate=manifest(("NFL", "nfl-a")),
+        official_slate_verified=True, official_slate_receipt_id="manifest-1",
+    )
+    assert report["rows"][0]["grade_status"] == "HELD"
+    assert "RESEARCH_INPUTS_INVALID" in report["rows"][0]["blockers"]
+    assert report["preferred"]["graded"] == 0
+    assert report["board_complete"] is False
+    assert report["headline_accuracy"] is None
+
+
 def test_unverified_or_unsettled_result_is_held():
     report = audit_research_card([pick()], [result(independently_verified=False)])
     assert report['preferred']['graded'] == 0
