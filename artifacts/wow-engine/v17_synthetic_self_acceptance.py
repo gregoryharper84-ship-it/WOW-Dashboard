@@ -352,6 +352,8 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
 
     required_ok = prop_ok and team_ok and (projected_ok is not False)
     status = "PASS" if required_ok else "FAIL"
+    # The overall PASS describes diagnostics only, never model-qualified scoring.
+    status_scope = "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
     synthetic_negative_probes = {
         "status": "PASS" if (prop_ok and team_ok) else "FAIL",
         "lane": "SYNTHETIC_NEGATIVE_PROBES",
@@ -417,14 +419,14 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
                     calibrated_lower_bound = None
             source_backed.update(
                 {
-                    "status": "PASS",
+                    "status": "HELD",
                     "lane": "SOURCE_BACKED_PROJECTED_TEAM_EVENT",
                     "calibrated_lower_bound": calibrated_lower_bound,
                     "calibrated_home_lower_bound": home_lb,
                     "calibrated_away_lower_bound": away_lb,
                     "reducer_authority": projected_receipt.get("global_terminal_authority"),
                     "immutable_prediction_id": projected_receipt.get("prediction_id"),
-                    "blocker": "",
+                    "blocker": "LINEUP_CONFIRMATION_PENDING",
                 }
             )
         else:
@@ -440,18 +442,14 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
                 or projected_detail.get("global_terminal_authority")
             )
 
-    scoring_acceptance_proven = bool(
-        source_backed.get("status") == "PASS"
-        and source_backed.get("calibrated_lower_bound") is not None
-        and source_backed.get("reducer_authority") == "V17_TERMINAL_REDUCER"
-        and source_backed.get("request_id")
-        and source_backed.get("official_event_id")
-        and source_backed.get("source_snapshot_id")
-        and source_backed.get("fitted_route")
-    )
+    # This runner exercises synthetic negatives and an unconfirmed projected
+    # lineup. It cannot attest a persisted exact-line/model/reducer receipt:
+    # a projected numerical response remains held even if it carries an ID.
+    scoring_acceptance_proven = False
 
     result = {
         "status": status,
+        "status_scope": status_scope,
         "scoring_acceptance_proven": scoring_acceptance_proven,
         "synthetic_negative_probes": synthetic_negative_probes,
         "source_backed_pregame_scoring": source_backed,
