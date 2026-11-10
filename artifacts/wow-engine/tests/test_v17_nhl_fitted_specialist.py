@@ -1,5 +1,5 @@
 """Fitted NHL specialist: registry provenance, chronological replay, typed holds."""
-# Exact-head CI requeue after merging #2512 provenance tip.
+# Replacement PR #2569 unique tip for Actions enqueue.
 from __future__ import annotations
 
 from dataclasses import replace
