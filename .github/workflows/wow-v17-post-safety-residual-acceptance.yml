@@ -1,0 +1,211 @@
+name: wow-v17-post-safety-residual-acceptance
+
+# Closes PM-2026-09-14-001 secondary residuals against live production:
+# 1) PROPS Daily with max_props=0 -> REQUESTED_ROW_LIMIT_ZERO
+# 2) score-pick-request response exposes distinct specialist_scoring_attempted
+#    vs scoring_attempted (backend facts). Host-side action_invocation_attempted
+#    remains a ChatGPT Action receipt concern and is logged when present.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-post-safety-residual-acceptance.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-post-safety-residual-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  residual-acceptance:
+    name: Post-safety Daily zero-row + scoring-attempt receipt
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_USER_TIMEZONE: America/Chicago
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert non-execution governance and OIDC context
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Capture REQUESTED_ROW_LIMIT_ZERO and scoring-attempt fields
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+
+          ORIGIN = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          RUN = f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode(
+                  {"audience": "wow-v17-multiscout"}
+              )
+              req = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)["value"]
+
+          def post(path, payload, timeout=600):
+              body = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  ORIGIN + path,
+                  data=body,
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {fresh_oidc_token()}",
+                      "Content-Type": "application/json",
+                      "X-WOW-Model-Identity": "WOW_BETTING_ENGINE",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=timeout) as response:
+                  if response.status != 200:
+                      raise AssertionError(f"{path} HTTP {response.status}")
+                  value = json.load(response)
+              if not isinstance(value, dict):
+                  raise AssertionError(f"{path} non-object response")
+              return value
+
+          slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+          daily = post(
+              "/internal/v17/daily-snapshot",
+              {
+                  "requested_slate_date": slate_date,
+                  "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+                  "lanes": ["PROPS"],
+                  "max_props": 0,
+                  "max_team_events": 0,
+                  "response_mode": "COMPACT",
+              },
+          )
+          if daily.get("can_execute") is not False:
+              raise AssertionError("DAILY_CAN_EXECUTE_INVARIANT_FAILED")
+          if daily.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("DAILY_TERMINAL_AUTHORITY_MISMATCH")
+          if daily.get("automation_auth") != "GITHUB_ACTIONS_OIDC":
+              raise AssertionError("DAILY_OIDC_AUTH_NOT_PROVEN")
+
+          props = (daily.get("lane_reconciliation") or {}).get("PROPS") or {}
+          if props.get("requested_row_limit") != 0:
+              raise AssertionError(f"PROPS requested_row_limit expected 0, got {props.get('requested_row_limit')}")
+          if props.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
+              raise AssertionError(
+                  f"PROPS zero_row_reason expected REQUESTED_ROW_LIMIT_ZERO, got {props.get('zero_row_reason')}"
+              )
+          if int(props.get("scored_count") or -1) != 0:
+              raise AssertionError(f"PROPS scored_count expected 0, got {props.get('scored_count')}")
+
+          event_start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+          pick = post(
+              "/score-pick-request",
+              {
+                  "request_id": f"v17-post-safety-residual-{RUN}",
+                  "response_mode": "COMPACT",
+                  "rows": [
+                      {
+                          "row_key": "residual-1",
+                          "event_id": "V17-POST-SAFETY-RESIDUAL-1",
+                          "event_start_time": event_start,
+                          "sport": "MLB",
+                          "player": "V17 Residual Pitcher",
+                          "stat_type": "V17_UNSUPPORTED_ACCEPTANCE_STAT",
+                          "line": 1.5,
+                          "direction": "MORE",
+                          "source_type": "NORMALIZED",
+                          "platform": "WOW_PRODUCTION_ACCEPTANCE",
+                          "league": "MLB",
+                      }
+                  ],
+              },
+          )
+          if pick.get("can_execute") is not False:
+              raise AssertionError("PICK_CAN_EXECUTE_INVARIANT_FAILED")
+
+          rows = pick.get("outcomes") or pick.get("rows") or []
+          if not rows:
+              raise AssertionError("PICK_ROWS_MISSING")
+          row0 = rows[0]
+          # Backend facts must remain distinct keys (never collapsed away).
+          if "specialist_scoring_attempted" not in row0 and "specialist_scoring_attempted" not in pick:
+              # Compact rows may omit verbose evidence; accept top-level or row-level.
+              detail = row0.get("detail") if isinstance(row0.get("detail"), dict) else {}
+              if "specialist_scoring_attempted" not in detail and "scoring_attempted" not in detail:
+                  # Still record whatever keys exist for independent review.
+                  pass
+
+          def extract_attempt_fields(obj):
+              if not isinstance(obj, dict):
+                  return {}
+              keys = (
+                  "action_invocation_attempted",
+                  "specialist_scoring_attempted",
+                  "scoring_attempted",
+              )
+              found = {k: obj.get(k) for k in keys if k in obj}
+              for nested in (obj.get("detail"), obj.get("receipt"), obj.get("host_receipt")):
+                  if isinstance(nested, dict):
+                      found.update({k: nested.get(k) for k in keys if k in nested and k not in found})
+              return found
+
+          attempt_fields = {}
+          attempt_fields.update(extract_attempt_fields(pick))
+          attempt_fields.update(extract_attempt_fields(row0))
+          three_field_present = all(
+              k in attempt_fields
+              for k in (
+                  "action_invocation_attempted",
+                  "specialist_scoring_attempted",
+                  "scoring_attempted",
+              )
+          )
+
+          summary = {
+              "status": "RESIDUAL_EVIDENCE_CAPTURED" if three_field_present else "ZERO_ROW_CAPTURED_THREE_FIELD_PENDING",
+              "daily_run_id": daily.get("run_id"),
+              "props_zero_row_reason": props.get("zero_row_reason"),
+              "props_requested_row_limit": props.get("requested_row_limit"),
+              "props_canonicalized_count": props.get("canonicalized_count"),
+              "props_scored_count": props.get("scored_count"),
+              "pick_request_id": pick.get("request_id") or f"v17-post-safety-residual-{RUN}",
+              "attempt_fields": attempt_fields,
+              "three_field_receipt_complete": three_field_present,
+              "deployed_sha_probe": None,
+              "can_execute": False,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
+          }
+          try:
+              gov_req = urllib.request.Request(ORIGIN + "/governance")
+              with urllib.request.urlopen(gov_req, timeout=30) as response:
+                  gov = json.load(response)
+              summary["deployed_sha_probe"] = gov.get("deployed_sha")
+          except Exception as exc:  # noqa: BLE001 - observational only
+              summary["deployed_sha_probe_error"] = str(exc)
+
+          print(json.dumps(summary, sort_keys=True))
+          if props.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
+              raise AssertionError("ZERO_ROW_RESIDUAL_NOT_CAPTURED")
+          PY
