@@ -60,6 +60,8 @@ def test_bridge_installs_once_and_uses_server_owned_runtime(monkeypatch):
     app = FastAPI()
     market_api = _MarketApi()
     captured = {}
+    serving_sha = "a" * 40
+    monkeypatch.setenv("RENDER_GIT_COMMIT", serving_sha)
 
     monkeypatch.setattr(
         bridge,
@@ -103,6 +105,35 @@ def test_bridge_installs_once_and_uses_server_owned_runtime(monkeypatch):
     assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+    assert result["deployed_sha"] == serving_sha
+
+
+def test_bridge_deployed_sha_stays_null_when_render_commit_missing(monkeypatch):
+    app = FastAPI()
+    market_api = _MarketApi()
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.setattr(
+        bridge,
+        "authorize_action_key_or_multiscout_oidc",
+        lambda authorization: "GITHUB_ACTIONS_OIDC",
+    )
+    monkeypatch.setattr(
+        daily_runtime,
+        "run_daily_snapshot",
+        lambda *args, **kwargs: {
+            "run_id": "v17-daily-test",
+            "run_status": "COMPLETED",
+            "rows": [],
+            "can_execute": False,
+        },
+    )
+    assert bridge.install_daily_snapshot_oidc_bridge(app=app, market_api=market_api) is True
+    req = bridge.InternalDailySnapshotRequest(
+        requested_slate_date="2026-09-15",
+        requested_timezone="America/Chicago",
+    )
+    result = _route(app).endpoint(req, authorization="Bearer oidc-token")
+    assert result["deployed_sha"] is None
 
 
 def test_bridge_fails_closed_on_invalid_automation_auth(monkeypatch):

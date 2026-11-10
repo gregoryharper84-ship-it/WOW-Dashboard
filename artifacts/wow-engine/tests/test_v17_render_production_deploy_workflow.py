@@ -277,10 +277,13 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
-    # Request-time Render tip must appear in the unpaid Daily summary (not checkout head).
+    # Preflight GET is observational; run attribution uses POST deployed_sha.
     assert "read_serving_sha_at_request" in text
-    assert 'serving_sha_at_request' in text
+    assert "serving_sha_preflight" in text
+    assert "serving_sha_at_request" in text
     assert "DAILY_SNAPSHOT_SERVING_SHA_MISSING" in text
+    assert "DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING" in text
+    assert 'daily_snapshot_response_deployed_sha' in text
     assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
     # Governance preflight must retry cold-start / gateway failures like the Daily POST.
     assert "def read_serving_sha_at_request" in text

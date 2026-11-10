@@ -137,14 +137,16 @@ jobs:
               if governance.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
                   raise AssertionError("DAILY_SNAPSHOT_GOVERNANCE_TERMINAL_AUTHORITY_MISMATCH")
               return {
-                  "serving_sha_at_request": serving_sha,
-                  "serving_sha_observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "serving_sha_preflight": serving_sha,
+                  "serving_sha_preflight_observed_at": datetime.now(timezone.utc).strftime(
+                      "%Y-%m-%dT%H:%M:%SZ"
+                  ),
                   "governance_can_execute": False,
                   "governance_terminal_authority": "V17_TERMINAL_REDUCER",
               }
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
-          serving_provenance = read_serving_sha_at_request(origin)
+          serving_preflight = read_serving_sha_at_request(origin)
 
           slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
           payload = {
@@ -197,6 +199,11 @@ jobs:
           if result.get("automation_auth") != "GITHUB_ACTIONS_OIDC":
               raise AssertionError("DAILY_SNAPSHOT_OIDC_AUTH_NOT_PROVEN")
 
+          # Attribute run_id to the server-owned deployed_sha from the successful POST.
+          serving_sha_for_run = str(result.get("deployed_sha") or "").strip()
+          if not serving_sha_for_run:
+              raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING")
+
           reconciliation = result.get("reconciliation") or {}
           if reconciliation.get("balanced") is not True:
               raise AssertionError("DAILY_SNAPSHOT_ROW_RECONCILIATION_FAILED")
@@ -227,7 +234,10 @@ jobs:
               "probability_values_logged": False,
               "global_terminal_authority": "V17_TERMINAL_REDUCER",
               "can_execute": False,
-              **serving_provenance,
+              # Preflight GET is observational only; run attribution uses POST deployed_sha.
+              **serving_preflight,
+              "serving_sha_at_request": serving_sha_for_run,
+              "serving_sha_source": "daily_snapshot_response_deployed_sha",
           }
           print(json.dumps(summary, sort_keys=True))
           PY
