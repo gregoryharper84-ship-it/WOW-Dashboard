@@ -13,6 +13,7 @@ import time
 import httpx
 
 from prop_auto_hydration_workload import WORKLOAD_STATS, hydrate_mlb_workload_evidence
+from v17.player_availability_gate import participation_evidence
 from prop_hydration_resilience import (
     fetch_cross_season_pitching_splits,
     normalized_name,
@@ -516,6 +517,19 @@ def auto_hydrate_prop_evidence(
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
             "source": "MLB StatsAPI official schedule/probablePitcher",
+            # Official pregame participation: MLB listed this player as the
+            # probable starting pitcher for the matched game. Absence of that
+            # listing fails earlier, so this is positive official evidence.
+            "availability": participation_evidence(
+                basis="PROBABLE_STARTER",
+                confirmation="PROBABLE",
+                source="MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER",
+                captured_at=timestamp,
+                fresh=True,
+                athlete_id=player_id,
+                event_id=schedule["official_game_pk"],
+                team=schedule["team"],
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {
@@ -535,3 +549,134 @@ def auto_hydrate_prop_evidence(
     if opponent_context is not None:
         payload["opponent_context"] = opponent_context
     return payload
+
+
+MLB_STARTER_RECHECK_SOURCE = "MLB_STATS_API_OFFICIAL_STARTER_RECHECK"
+
+
+def _confirmed_starting_pitcher(
+    game_pk: int,
+    *,
+    side: str,
+    player_id: int,
+    http_get: Callable[..., Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Read the official game boxscore for confirmed starter evidence.
+
+    MLB's schedule only ever labels a pitcher ``probablePitcher``. The official
+    boxscore is the source that names an actual starter, and it is only treated
+    as confirmation once the official batting orders have posted for both
+    clubs -- before that exchange the pitching entry is still the probable
+    listing. A missing or different first pitcher is *not* a rule-out; it leaves
+    the obligation unresolved.
+    """
+    payload = _request_json(
+        f"{MLB_STATS_API_BASE}/game/{game_pk}/boxscore",
+        params={},
+        http_get=http_get,
+    )
+    teams = payload.get("teams") if isinstance(payload.get("teams"), dict) else {}
+    sides: dict[str, Any] = {}
+    orders_posted = True
+    for name in ("home", "away"):
+        team = teams.get(name) if isinstance(teams.get(name), dict) else {}
+        batting_order = team.get("battingOrder") if isinstance(team.get("battingOrder"), list) else []
+        pitchers = team.get("pitchers") if isinstance(team.get("pitchers"), list) else []
+        first_pitcher = _int(pitchers[0]) if pitchers else 0
+        posted = len([pid for pid in batting_order if _int(pid) > 0]) >= 9
+        orders_posted = orders_posted and posted
+        sides[name] = {
+            "batting_order_posted": posted,
+            "first_pitcher": first_pitcher,
+        }
+    target = sides.get(str(side or "").strip().lower(), {})
+    confirmed = bool(orders_posted and target.get("first_pitcher") == player_id)
+    return confirmed, {
+        "lineups_posted": orders_posted,
+        "sides": sides,
+        "target_first_pitcher": target.get("first_pitcher"),
+    }
+
+
+def recheck_mlb_probable_starter(
+    *,
+    player: str,
+    event_start_time: str,
+    team: Optional[str] = None,
+    http_get: Callable[..., Any] = httpx.get,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Re-read the official source at final refresh for a probable starter.
+
+    Returns a fresh availability block for the gate adjudicator. Only a
+    confirmed starter basis can clear the provisional obligation; every other
+    outcome is a typed, still-provisional observation. This function never
+    computes a probability and never writes anything.
+    """
+    captured = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    event_start = _aware(event_start_time)
+    if event_start <= captured:
+        raise PropAutoHydrationError(
+            "EVENT_ALREADY_STARTED",
+            "provisional participation cannot be rechecked after event start",
+        )
+    player_id, _official_name = _resolve_player_id(
+        player,
+        event_start=event_start,
+        http_get=http_get,
+    )
+    try:
+        schedule = _schedule_context(player_id, event_start=event_start, http_get=http_get)
+    except PropAutoHydrationError as exc:
+        return participation_evidence(
+            source=MLB_STARTER_RECHECK_SOURCE,
+            captured_at=captured.isoformat(),
+            evidence_status="RETRIEVAL_FAILED",
+            fresh=True,
+            athlete_id=player_id,
+            event_id=None,
+            team=team,
+            recheck_status="OFFICIAL_LISTING_UNRESOLVED",
+            recheck_detail=exc.code,
+        )
+
+    game_pk = _int(schedule.get("official_game_pk"))
+    resolved_team = schedule.get("team") or team
+    try:
+        confirmed, detail = _confirmed_starting_pitcher(
+            game_pk,
+            side=str(schedule.get("side") or ""),
+            player_id=player_id,
+            http_get=http_get,
+        )
+    except PropAutoHydrationError as exc:
+        return participation_evidence(
+            source=MLB_STARTER_RECHECK_SOURCE,
+            captured_at=captured.isoformat(),
+            evidence_status="RETRIEVAL_FAILED",
+            fresh=True,
+            athlete_id=player_id,
+            event_id=game_pk or None,
+            team=resolved_team,
+            recheck_status="OFFICIAL_BOXSCORE_UNAVAILABLE",
+            recheck_detail=exc.code,
+        )
+
+    if confirmed:
+        basis, confirmation, status = "CONFIRMED_STARTER", "CONFIRMED", "CONFIRMED_STARTER"
+    else:
+        basis, confirmation = "PROBABLE_STARTER", "PROBABLE"
+        status = "LINEUPS_POSTED_ROLE_UNCONFIRMED" if detail.get("lineups_posted") else "LINEUPS_NOT_POSTED"
+    return participation_evidence(
+        basis=basis,
+        confirmation=confirmation,
+        source=MLB_STARTER_RECHECK_SOURCE,
+        captured_at=captured.isoformat(),
+        fresh=True,
+        report_complete=True,
+        athlete_id=player_id,
+        event_id=game_pk or None,
+        team=resolved_team,
+        recheck_status=status,
+        recheck_detail=detail,
+    )
