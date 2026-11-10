@@ -101,7 +101,7 @@ def analyze_upset_market_snapshot(
 ) -> dict[str, Any]:
     """Evaluate source-visible market disagreement, never a certified edge.
 
-    Each book quote requires book, source_snapshot_id, captured_at_utc, and
+    Each book quote requires official_event_id, market_type, settlement_basis,\n    book, source_snapshot_id, captured_at_utc, and
     american_odds for the complete matching market outcome space. Historical
     empirical reference probabilities require a separately identified,
     pre-decision reference-class receipt. No informational edge is assumed
@@ -151,6 +151,14 @@ def analyze_upset_market_snapshot(
     book_probs: list[dict[str, float]] = []
     sources: list[str] = []
     for quote in quotes:
+        # Each independently sourced book quote must identify the same event
+        # and exact settlement market as the controlling snapshot request.
+        if (
+            str(quote.get("official_event_id") or "").strip() != official_event_id
+            or str(quote.get("market_type") or "").strip() != market_type
+            or str(quote.get("settlement_basis") or "").strip() != settlement_basis
+        ):
+            raise ValueError("MARKET_BOOK_EVENT_OR_SETTLEMENT_MISMATCH")
         book, snapshot = str(quote.get("book") or "").strip(), str(quote.get("source_snapshot_id") or "").strip()
         if not book or not snapshot or book.casefold() in seen_books:
             raise ValueError("MARKET_BOOK_OR_SOURCE_INVALID")
