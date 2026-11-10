@@ -45,6 +45,15 @@ after-kickoff or different-settlement quote may contribute to an edge claim.
 The existing alert governs favorite vulnerability from a complete model package.
 The diagnostic measures *separate* market disagreement.
 
+Do not confuse **within-event winner selection** with **cross-event confidence
+ranking**. If the objective is maximum expected correct selections, the
+mathematical within-event decision is the highest calibrated probability among
+the complete mutually exclusive winner outcomes, subject to the controlling
+Event Decision Governor and all stricter model/terminal gates. The existing
+cross-event leaderboard can rank accepted winner selections by calibrated
+lower bound as a separate reliability ordering. Never override a stricter
+governed decision with research-only argmax or a market-derived probability.
+
 For requested tennis winner research, include ATP/WTA scheduled matches in the
 research slate when identity and source coverage permit, but route through a
 fitted certified tennis specialist only when genuinely available. Never
