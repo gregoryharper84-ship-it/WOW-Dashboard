@@ -140,3 +140,60 @@ def test_invalid_probability_package_fails_closed():
                 outcome("B", 0.40, 0.30, 0.45),
             ),
         )
+
+
+def test_nan_and_infinite_probabilities_rejected_instead_of_silent_alert():
+    for bad in (float("nan"), float("inf"), -float("inf")):
+        with pytest.raises(ValueError, match="probability_out_of_range"):
+            evaluate_favorite_upset_alert(
+                sport="TENNIS",
+                market_favorite="A",
+                market_favorite_verified=True,
+                governed_outcomes=(
+                    outcome("A", bad, 0.1, 0.9),
+                    outcome("B", 0.4, 0.3, 0.5),
+                ),
+            )
+
+
+def test_boolean_probability_cannot_be_coerced_into_one():
+    with pytest.raises(ValueError, match="probability_out_of_range"):
+        evaluate_favorite_upset_alert(
+            sport="NFL",
+            market_favorite="A",
+            market_favorite_verified=True,
+            governed_outcomes=(
+                outcome("A", True, 0.5, 1.0),
+                outcome("B", 0.4, 0.3, 0.5),
+            ),
+        )
+
+
+def test_non_normalized_outcome_space_is_held():
+    with pytest.raises(ValueError, match="governed_outcome_probabilities_not_normalized"):
+        evaluate_favorite_upset_alert(
+            sport="NBA",
+            market_favorite="A",
+            market_favorite_verified=True,
+            governed_outcomes=(
+                outcome("A", 0.6, 0.5, 0.7),
+                outcome("B", 0.6, 0.5, 0.7),
+            ),
+        )
+
+
+def test_all_alternative_intervals_checked_not_just_highest_point_estimate():
+    result = evaluate_favorite_upset_alert(
+        sport="SOCCER",
+        market_favorite="HOME",
+        market_favorite_verified=True,
+        governed_outcomes=(
+            outcome("HOME", 0.46, 0.40, 0.52),
+            outcome("DRAW", 0.40, 0.31, 0.39),
+            outcome("AWAY", 0.14, 0.04, 0.43),
+        ),
+    )
+    assert result.status == "UPSET_ALERT_UNCERTAINTY_OVERLAP"
+    assert result.upset_candidate == "AWAY"
+    assert result.alert is True
+    assert result.probability_gap == pytest.approx(0.32)
