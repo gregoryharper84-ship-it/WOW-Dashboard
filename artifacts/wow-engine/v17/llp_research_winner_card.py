@@ -10,6 +10,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
+from v17.llp_matchup_media_script_audit import audit_script_robustness_and_media
+
 SPORTS = frozenset({"NFL", "NBA", "NHL"})
 CHECKS = {
     "NFL": ("starting_qb", "key_injuries", "turnover_volatility"),
@@ -153,6 +155,14 @@ def audit_research_winner_card(
                 script_primary = primary
                 script_adverse = adverse
                 script_swings = list(swings)
+        media_script_audit = audit_script_robustness_and_media(
+            chosen,
+            selected_side=side,
+            home_team=home,
+            away_team=away,
+            selected_at_utc=_text(chosen.get("selected_at_utc")),
+        )
+        warnings.extend(media_script_audit["research_warnings"])
         if _text(chosen.get("research_confidence")).upper() == "HIGH" and warnings:
             warnings.append("HIGH_CONFIDENCE_UNSUPPORTED")
         rows.append({
@@ -171,6 +181,11 @@ def audit_research_winner_card(
             "game_script_primary_win_path": script_primary,
             "game_script_opponent_win_path": script_adverse,
             "game_script_swing_factors": script_swings,
+            "script_robustness": media_script_audit["script_robustness"],
+            "media_headlines": media_script_audit["media_headlines"],
+            "media_storylines": media_script_audit["media_storylines"],
+            "media_counter_narrative": media_script_audit["media_counter_narrative"],
+            "media_evidence_status": media_script_audit["media_evidence_status"],
             "governed_probability": None,
             "governed_lower_bound": None,
         })
