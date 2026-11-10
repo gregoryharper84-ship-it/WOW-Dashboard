@@ -176,6 +176,47 @@ def _matching_slate(row: dict[str, Any], requested_date: str, requested_timezone
         return False
 
 
+def _snapshot_captured_at(row: dict[str, Any]) -> datetime:
+    raw = str(row.get("captured_at") or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.utcoffset() is not None:
+            return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        pass
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _evidence_not_ready(row: dict[str, Any]) -> bool:
+    hydration = str(row.get("hydration_status") or "").strip().upper()
+    return hydration != "PASS" or bool(row.get("blockers"))
+
+
+def _merge_prop_evidence_authority(
+    previous: dict[str, Any] | None, row: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Newest snapshot wins; same-time conflicts fail closed to non-ready evidence.
+
+    Do not prefilter PASS in SQL: a newer FAILED/blocked observation must remain
+    visible to canonicalization so an older clean PASS cannot clear it.
+    """
+    peers = [item for item in (previous, row) if item is not None]
+    candidates = canonicalize_prop_manifest(peers)
+    if not candidates:
+        return None
+    chosen = candidates[0]
+    newest_ts = max(_snapshot_captured_at(peer) for peer in peers)
+    newest_peers = [peer for peer in peers if _snapshot_captured_at(peer) == newest_ts]
+    blocked_newest = next((peer for peer in newest_peers if _evidence_not_ready(peer)), None)
+    if blocked_newest is None:
+        return chosen
+    merged = dict(blocked_newest)
+    merged["source_snapshot_ids"] = list(chosen.get("source_snapshot_ids") or [])
+    merged["source_instance_count"] = chosen.get("source_instance_count")
+    merged["canonical_sporting_key"] = chosen.get("canonical_sporting_key")
+    return merged
+
+
 def _prop_manifest_rows(
     db: Any,
     requested_date: str,
@@ -190,7 +231,8 @@ def _prop_manifest_rows(
 
     Sporting identity includes event start time, so rows from a finished ordered
     group cannot supersede later groups. Newest selection still precedes blocker
-    filtering. Historical exclusions are counted rather than retained in full;
+    filtering, and the SQL read must not hide non-PASS hydration before that
+    selection. Historical exclusions are counted rather than retained in full;
     keep bounded display detail plus rows needed for current write receipts.
     """
     selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
@@ -216,7 +258,7 @@ def _prop_manifest_rows(
             reason = "EVENT_NOT_PREGAME"
         elif not _matching_slate(row, requested_date, requested_timezone):
             reason = "NOT_REQUESTED_SLATE"
-        elif row.get("blockers"):
+        elif _evidence_not_ready(row):
             reason = "EVIDENCE_BLOCKED"
         else:
             manifest.append(row)
@@ -237,7 +279,14 @@ def _prop_manifest_rows(
             })
 
     while True:
-        query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time").order("source_snapshot_id")
+        # Intentionally no hydration_status=PASS SQL prefilter: newer FAILED or
+        # blocked evidence must participate in canonical newest-wins selection.
+        query = (
+            db.table("wow_prop_evidence_snapshots")
+            .select(selected)
+            .order("event_start_time")
+            .order("source_snapshot_id")
+        )
         ranged = getattr(query, "range", None)
         if callable(ranged):
             batch = ranged(offset, offset + page_size - 1).execute().data or []
@@ -263,9 +312,9 @@ def _prop_manifest_rows(
                 merged += 1
             seen_keys.add(key)
             previous = active.get(key)
-            candidates = canonicalize_prop_manifest([previous, row] if previous is not None else [row])
-            if candidates:
-                active[key] = candidates[0]
+            selected_row = _merge_prop_evidence_authority(previous, row)
+            if selected_row is not None:
+                active[key] = selected_row
             else:
                 active.pop(key, None)
         if stats is not None:

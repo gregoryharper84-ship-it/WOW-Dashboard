@@ -294,6 +294,162 @@ def test_prop_manifest_pages_through_1000_rows_without_truncation():
     assert manifest[-1]["source_snapshot_id"]=="snap-999"
 
 
+class _FilteringPropQuery:
+    """DB fake that actually applies hydration_status equality filters."""
+
+    def __init__(self, data):
+        self._all = list(data)
+        self._filters = []
+        self._start = 0
+        self._end = len(data) - 1
+        self.orders = []
+
+    def select(self, *_):
+        return self
+
+    def eq(self, name, value):
+        self._filters.append((name, value))
+        return self
+
+    def order(self, name, *_, **__):
+        self.orders.append(name)
+        return self
+
+    def range(self, start, end):
+        self._start = start
+        self._end = end
+        return self
+
+    def execute(self):
+        rows = [
+            row for row in self._all
+            if all(row.get(name) == value for name, value in self._filters)
+        ]
+        return Result(rows[self._start:self._end + 1])
+
+
+class _FilteringPropDB:
+    def __init__(self, rows):
+        self.rows = rows
+        self.last_query = None
+
+    def table(self, name):
+        assert name == "wow_prop_evidence_snapshots"
+        self.last_query = _FilteringPropQuery(self.rows)
+        return self.last_query
+
+
+def _manifest_row(source, captured, *, hydration="PASS", blockers=None, player="P"):
+    return {
+        "source_snapshot_id": source,
+        "captured_at": captured,
+        "event_id": "MLB:1",
+        "event_start_time": FUTURE,
+        "sport": "MLB",
+        "player": player,
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": 5.5,
+        "hydration_status": hydration,
+        "blockers": list(blockers or []),
+    }
+
+
+def test_newer_failed_observation_is_not_hidden_by_older_pass_prefilter():
+    """DB PASS prefilter must not erase a newer FAILED observation before canonicalize."""
+    db = _FilteringPropDB([
+        _manifest_row("older-pass", "2026-11-18T00:00:00+00:00"),
+        _manifest_row(
+            "newer-failed",
+            "2026-11-19T00:00:00+00:00",
+            hydration="FAILED",
+            blockers=["PLAYER_AVAILABILITY_UNVERIFIED"],
+        ),
+    ])
+    exclusions = []
+    stats = {}
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions, stats=stats
+    )
+    assert manifest == []
+    assert stats["excluded_by_reason"]["EVIDENCE_BLOCKED"] == 1
+    assert exclusions[0]["source_snapshot_id"] == "newer-failed"
+    assert exclusions[0]["blockers"] == ["PLAYER_AVAILABILITY_UNVERIFIED"]
+    assert db.last_query is not None
+    assert ("hydration_status", "PASS") not in db.last_query._filters
+
+
+def test_same_time_conflicting_observations_fail_closed_to_blocked():
+    db = _FilteringPropDB([
+        _manifest_row("pass-a", "2026-11-19T00:00:00+00:00"),
+        _manifest_row(
+            "failed-b",
+            "2026-11-19T00:00:00+00:00",
+            hydration="FAILED",
+            blockers=["PLAYER_RULED_OUT"],
+        ),
+    ])
+    exclusions = []
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions
+    )
+    assert manifest == []
+    assert exclusions[0]["source_snapshot_id"] == "failed-b"
+    assert exclusions[0]["blockers"] == ["PLAYER_RULED_OUT"]
+
+
+def test_prop_manifest_pagination_remains_deterministic_with_mixed_hydration():
+    rows = []
+    for index in range(40):
+        hydration = "FAILED" if index % 5 == 0 else "PASS"
+        blockers = ["PLAYER_AVAILABILITY_UNVERIFIED"] if hydration == "FAILED" else []
+        rows.append(
+            {
+                "source_snapshot_id": f"snap-{index:03d}",
+                "captured_at": f"2026-11-19T00:00:{index:02d}+00:00",
+                "event_id": f"MLB:{index}",
+                "event_start_time": FUTURE,
+                "sport": "MLB",
+                "player": f"P{index}",
+                "stat_type": "PITCHER_STRIKEOUTS",
+                "line": 5.5,
+                "hydration_status": hydration,
+                "blockers": blockers,
+            }
+        )
+    db = _FilteringPropDB(rows)
+    exclusions = []
+    stats = {}
+    manifest = _prop_manifest_rows(
+        db,
+        SLATE_DATE,
+        "America/Chicago",
+        page_size=7,
+        exclusions=exclusions,
+        stats=stats,
+    )
+    assert stats["read_complete"] is True
+    assert stats["raw_rows_read"] == 40
+    assert len(manifest) == 32
+    assert all(row["hydration_status"] == "PASS" for row in manifest)
+    assert stats["excluded_by_reason"]["EVIDENCE_BLOCKED"] == 8
+    assert db.last_query.orders == ["event_start_time", "source_snapshot_id"]
+
+
+def test_stale_pass_cannot_clear_newer_failed_without_blockers_list():
+    """Non-PASS hydration alone is enough to block even when blockers is empty."""
+    db = _FilteringPropDB([
+        _manifest_row("older-pass", "2026-11-18T00:00:00+00:00"),
+        _manifest_row("newer-failed", "2026-11-19T00:00:00+00:00", hydration="FAILED"),
+    ])
+    exclusions = []
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions
+    )
+    assert manifest == []
+    assert exclusions[0]["source_snapshot_id"] == "newer-failed"
+    assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+
+
 # ---------------------------------------------------------------------------
 # Cross-sport MONEYLINE discovery
 #
