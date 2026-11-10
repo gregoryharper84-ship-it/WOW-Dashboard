@@ -4,8 +4,10 @@ Status date: 2026-11-09. Branch audited: `freebuff/ce25c36cad5716d2677d452e`.
 Baseline/HEAD: `4c8c1fb0` (`test(v17): chronology evidence fail-closed audit (#2540)`).
 Production: `https://wow-governed-probability-engine.onrender.com` reports
 `deployed_sha=4c8c1fb0d375b01352fcf35eea3a7be6a0999295`, so production code equals
-this audit baseline. The availability repair below is **not deployed** (it is
-uncommitted), so it is not part of the verified production capability.
+this audit baseline. At audit time, the availability repair below was **not
+deployed**, so it was not part of verified production capability. Subsequent
+committed PR work is separately tracked in #2551 and integrated #2554; CI is
+not evidence of deployed parity or model certification.
 
 Invariants preserved everywhere: `can_execute=false`,
 `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`,
@@ -79,9 +81,9 @@ Clearance is recorded on three separate dimensions so they cannot be conflated:
 - provenance — `source`, `athlete_id`, `event_id`, `team`, `captured_at`,
   `fresh`, `report_complete`.
 
-`PROVISIONAL_BASES` (`PROBABLE_STARTER`) clear availability but set `risk=True`,
-which flags the row for the final pregame refresh to recheck the same official
-source. `fresh=False` (stale), `report_complete=False` (incomplete/not-submitted
+`PROVISIONAL_BASES` (`PROBABLE_STARTER`) return `AVAILABLE` with `risk=True`
+and `requires_revalidation=True`. The runtime holds Verified-Pool admission
+until the final official pregame refresh discharges that obligation. `fresh=False` (stale), `report_complete=False` (incomplete/not-submitted
 report) and any failed retrieval resolve to `UNVERIFIED` even when a playable
 basis is present. An explicit `OUT` designation still wins over any basis.
 
@@ -261,7 +263,7 @@ durability contract but does not establish production deployment or replay.
 | Availability enforcement | local verified, PR #2551 open |
 | Fresh all-sports prop acquisition | not started |
 | Real platform-offer / exact-line verification | blocked: no licensed market feed |
-| Candidate coverage / Daily reconciliation | not started |
+| Candidate coverage / Daily reconciliation | Daily PROPS candidate accounting implemented locally; comprehensive cross-sport/live coverage not established |
 | Market, payout, settlement binding | blocked: no licensed market feed |
 | Specialist certification (12 families) | blocked: no labeled corpora / Class C certification |
 | Arithmetic audit persistence | not started |
@@ -360,8 +362,8 @@ production behavior, and the uncommitted repair is not deployed.
 - Service `wow-governed-probability-engine`, runtime `V17_ACTIVE`,
   `can_execute=false`, `/health` live check returned `status=ok` with
   `deployed_sha=4c8c1fb0d375b01352fcf35eea3a7be6a0999295` = local HEAD.
-- Because the repair is uncommitted, production does **not** yet contain the
-  availability block.
+- At audit time, production did **not** yet contain the availability block;
+  subsequent PR commits require independent acceptance and deployed-SHA proof.
 
 ## 8. Changed files
 
