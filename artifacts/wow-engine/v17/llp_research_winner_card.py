@@ -76,7 +76,8 @@ def audit_research_winner_card(
         sport, event_id = _key(event)
         home, away = _text(event.get("home_team")), _text(event.get("away_team"))
         kickoff = _utc(event.get("event_start_time_utc"))
-        chosen = pick_lookup.get((sport, event_id), {})
+        # Never attribute evidence to whichever duplicate happened to be last.
+        chosen = pick_lookup.get((sport, event_id), {}) if pick_counts[(sport, event_id)] == 1 else {}
         side = _text(chosen.get("selected_side"))
         when = _utc(chosen.get("selected_at_utc"))
         issues: list[str] = []
