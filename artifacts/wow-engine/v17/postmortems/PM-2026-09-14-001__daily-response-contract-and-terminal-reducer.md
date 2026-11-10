@@ -105,12 +105,24 @@ receipt appeared in that window). This record therefore reflects the ledger
 in `FIX-2026-09-14-001`'s own status: `DEPLOYED — PRIMARY and CRITICAL
 VERIFIED IN PRODUCTION`, not a global `FIXED_VERIFIED`.
 
+## Closure Evidence (2026-11-10)
+
+Item 4 (`REQUESTED_ROW_LIMIT_ZERO`) independently observed in production after
+safety deploy `6018482f2` via allowlisted canary run
+`42895886635` / Daily `v17-daily-3420226d-759b-4c1c-ba1a-7135131464f6`:
+`lane_reconciliation.PROPS.zero_row_reason=REQUESTED_ROW_LIMIT_ZERO`,
+`requested_row_limit=0`, `scored_count=0`, `can_execute=false`.
+
+Item 5 (distinct `action_invocation_attempted` vs `specialist_scoring_attempted`)
+remains **not host-observed**; backend attempt-pair probing continues under the
+canonical prop canary. Status stays `DEPLOYED_PENDING_VERIFY` until item 5
+(and remaining secondary items) are independently observed.
+
 ## Prevention / Follow-up
 
-- Owner-run Action replay to close out items 3–6: read `/governance` for the
-  declared 1IP lane, run Daily once with `max_props=0` to confirm
-  `REQUESTED_ROW_LIMIT_ZERO`, and check one receipt for
-  `action_invocation_attempted` vs `specialist_scoring_attempted`.
+- Remaining owner/host Action replay for item 5+: confirm one ChatGPT Action
+  receipt exposes distinct `action_invocation_attempted`,
+  `specialist_scoring_attempted`, and `scoring_attempted` without collapse.
 - This record was retroactively created on 2026-09-21 to close a ledger
   drift gap: `FIX-2026-09-14-001` existed on disk and was merged/deployed
   (PR #413) with no corresponding `PM-*.md` file and no `incident-ledger.json`
