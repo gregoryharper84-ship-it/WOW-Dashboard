@@ -27,3 +27,19 @@ The live Render web service auto-deploys on `checksPass` independently of the Gi
 - Because the migration is absent from current production, **merging the pre-deploy setting prematurely would intentionally halt new deployments**. Keep this a draft until migration authorization and source reconciliation are complete.
 
 Safety invariants: `custom_gpt_identity=WOW_BETTING_ENGINE`; `runtime_generation=V17_ACTIVE`; `terminal_authority=V17_TERMINAL_REDUCER`; `can_execute=false`; `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`.
+
+## 2026-11-10 live compatibility probes for the new wiring
+
+The separately reported, still-uncommitted `v17/nba_verification_wiring.py` introduces a read-only `verification_prerequisites(client)` query before NBA fitting. Its stated contract probes `public.wow_independent_verification_receipts` and the `calibration_sha256` / `calibration_fit_end` columns on `public.wow_basketball_team_event_calibrators`. The source module was **not** found on protected `main` or this branch at the time of these checks; the author's reported 130 local passing tests are not independently reproduced by this record.
+
+Real `wow-engine-validation` PostgreSQL SELECT probes returned:
+
+| Query target | Observed PostgreSQL SQLSTATE | Expected failure semantics |
+| --- | --- | --- |
+| `public.wow_independent_verification_receipts` | `42P01` relation missing | `NBA_VERIFICATION_LEDGER_MISSING` |
+| `wow_basketball_team_event_calibrators.calibration_sha256` | `42703` column missing | `NBA_VERIFICATION_CALIBRATOR_EVIDENCE_MISSING` |
+| `wow_basketball_team_event_calibrators.calibration_fit_end` | Absent in `information_schema.columns` | Same typed calibrator hold |
+
+**Critical schema-contract mismatch:** this draft migration creates `public.wow_nba_team_event_verification_receipts`, not the new wiring's stated `public.wow_independent_verification_receipts`, and does not add either required column to `public.wow_basketball_team_event_calibrators`. Both the draft ledger and its read-only schema RPC remain absent in validation. Applying this draft unchanged cannot satisfy the new wiring's ready-state probe. Do not infer the two ledgers are aliases or auto-rename them: recover the committed wiring/verifier source first and bind one canonical migration contract to its exact read/write fields.
+
+**Readback result:** OLD_SCHEMA_HOLD confirmed against a real database. NEW_SCHEMA_PASS was **not exercised** and cannot be claimed. No schema DDL, migration, fitting, artifact persistence, certification, or live orders were performed in this compatibility audit. Production database project authority was not established by this readback. Keep this protected P candidate disabled until the corrected schema, authentic PostgREST service-role probe, rollback/no-partial-fit negative test, and independent sign-off all pass at the exact head.
