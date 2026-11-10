@@ -99,11 +99,12 @@ rows, `row_status=COMPLETED` count zero for that cohort). `can_execute=false`
 held on all 850 rows.
 
 Items 3 and 6 were independently observed on 2026-11-10 without paid retries
-(live `/v17/governance-detail` 1IP hold-only declaration; unpaid DB recount of
-422 PROPS row-detail rows / 55 Daily runs under live SHA `e7384b9d…` with
-`verdict_class=MODEL_REJECTED`, `model_evaluated=true`,
-`infrastructure_blocked=false`, and concurrent market blockers preserved —
-sanitized receipt from `v17-daily-a2b7f50e-…` at `2026-11-09T15:35:34Z`).
+(live `/v17/governance-detail` 1IP hold-only declaration; unpaid decision-level
+DB recount of 806 PROPS direction decisions / 422 rows / 55 Daily runs under
+live SHA `e7384b9d…` with `verdict_class=MODEL_REJECTED`,
+`model_evaluated=true`, `infrastructure_blocked=false`, and non-empty
+`concurrent_infrastructure_blockers` on the same rejected decision — sanitized
+receipt from `v17-daily-a2b7f50e-…` at `2026-11-09T15:35:34Z`).
 Items 4–5 (`REQUESTED_ROW_LIMIT_ZERO`, Action vs specialist scoring split)
 remain deployed but not independently observed. Ledger status stays
 `DEPLOYED_PENDING_VERIFY` until those two residual observations land. Evidence:
@@ -115,8 +116,10 @@ remain deployed but not independently observed. Ledger status stays
   with `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO` **and**
   `lane_reconciliation.PROPS.canonicalized_count > 0`; (2) observe a real
   invoked Action receipt on a selected PROPS row with
-  `action_invocation_attempted=true` and `specialist_scoring_attempted=false`
-  (both-true is insufficient; `test_receipt_semantics_split.py`).
+  `action_invocation_attempted=true`, `specialist_scoring_attempted=false`,
+  and host-alias `scoring_attempted=true` (the original defect was
+  `scoring_attempted=false` after invocation; both-true is insufficient;
+  `test_receipt_semantics_split.py`).
 - This record was retroactively created on 2026-09-21 to close a ledger
   drift gap: `FIX-2026-09-14-001` existed on disk and was merged/deployed
   (PR #413) with no corresponding `PM-*.md` file and no `incident-ledger.json`

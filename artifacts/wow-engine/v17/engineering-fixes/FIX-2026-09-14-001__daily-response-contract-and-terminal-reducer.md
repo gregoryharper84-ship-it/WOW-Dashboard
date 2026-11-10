@@ -282,21 +282,26 @@ previously counted these rows as held will see the count move to purged.
   `1ST_INNING_PITCHES_THROWN` as `SUPPORTED_HOLD_ONLY` /
   `publication_allowed=false` / exact-line OOD policy. See
   `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
-- `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — unpaid recount while live SHA
-  `e7384b9d2fed3256681b25715516dff2e97d3233`: 422 PROPS row-detail rows /
-  55 Daily runs with embedded `verdict_class=MODEL_REJECTED`,
-  `model_evaluated=true`, `infrastructure_blocked=false`, and concurrent market
-  blockers preserved (not pre-model `MODEL_JUDGMENT` alone). Evidence window
-  `2026-09-15T15:28:06Z`–`2026-11-09T15:35:34Z`; sanitized receipt from
-  `v17-daily-a2b7f50e-…` shows `NO_LOW_PROBABILITY` + `PAYOUT_UNRESOLVED`.
+- `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — unpaid decision-level recount
+  while live SHA `e7384b9d2fed3256681b25715516dff2e97d3233`: 806 PROPS
+  direction decisions / 422 rows / 55 Daily runs where the same rejected
+  decision carries `verdict_class=MODEL_REJECTED`, `model_evaluated=true`,
+  `infrastructure_blocked=false`, and non-empty
+  `concurrent_infrastructure_blockers` (not pre-model `MODEL_JUDGMENT` alone).
+  Structured JSON-path query recorded in
+  `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
+  Evidence window `2026-09-15T15:28:06Z`–`2026-11-09T15:35:34Z`; sanitized
+  receipt from `v17-daily-a2b7f50e-…` shows `NO_LOW_PROBABILITY` +
+  `PAYOUT_UNRESOLVED`.
 
 **Still not independently verified in production** (deployed, but not observed):
 `ZERO_ROW_REASON_MISCLASSIFIED` (no `REQUESTED_ROW_LIMIT_ZERO` Daily run yet),
 and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` (compact Daily row-detail does not
 currently persist attempt fields). Closure requires a real Action receipt with
-`action_invocation_attempted=true` and `specialist_scoring_attempted=false` on
-a selected PROPS row (`test_receipt_semantics_split.py`). The Will Warren 16.5
-`REJECT_OOD` gate remains covered by `test_mlb_1ip_exact_line_contract.py`.
+`action_invocation_attempted=true`, `specialist_scoring_attempted=false`, and
+host-alias `scoring_attempted=true` on a selected PROPS row
+(`test_receipt_semantics_split.py`). The Will Warren 16.5 `REJECT_OOD` gate
+remains covered by `test_mlb_1ip_exact_line_contract.py`.
 
 ## Rollback
 
@@ -336,8 +341,10 @@ can_execute = false
   `lane_reconciliation.PROPS.canonicalized_count > 0` (a bare `max_props=0`
   without that candidate condition does not close the item); (2) observe a
   real invoked Action receipt on a selected PROPS row with
-  `action_invocation_attempted=true` and `specialist_scoring_attempted=false`
-  (both-true is insufficient; see `test_receipt_semantics_split.py`).
+  `action_invocation_attempted=true`, `specialist_scoring_attempted=false`,
+  and host-alias `scoring_attempted=true` (the original defect was
+  `scoring_attempted=false` after invocation; both-true is insufficient; see
+  `test_receipt_semantics_split.py`).
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).
