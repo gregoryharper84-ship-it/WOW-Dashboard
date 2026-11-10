@@ -357,15 +357,39 @@ def test_source_outcome_rejects_missing_or_unscoped_v2_commitment():
         "game_type": 2,
         "neutral_site": False,
         "game_state": "FINAL",
+        "ingest_code_sha": INGEST_SHA,
         "payload_hash_scope": pipeline.SOURCE_PAYLOAD_HASH_SCOPE,
     }
+    # Missing commitment is incomplete V2, not a malformed commitment value.
     with pytest.raises(D1RegistryError) as caught:
         source_outcome_json(base)
+    assert caught.value.code == "D1_SOURCE_PROVENANCE_INCOMPLETE"
+
+    with pytest.raises(D1RegistryError) as caught:
+        source_outcome_json(
+            {**base, "source_payload_commitment": "zz" * 32}
+        )
     assert caught.value.code == "D1_SOURCE_PAYLOAD_COMMITMENT_INVALID"
 
     with pytest.raises(D1RegistryError) as caught:
-        source_outcome_json({**base, "source_payload_commitment": "a" * 64, "payload_hash_scope": "WRONG_SCOPE"})
+        source_outcome_json(
+            {
+                **base,
+                "source_payload_commitment": "a" * 64,
+                "payload_hash_scope": "WRONG_SCOPE",
+            }
+        )
     assert caught.value.code == "D1_SOURCE_PAYLOAD_HASH_SCOPE_INVALID"
+
+    with pytest.raises(D1RegistryError) as caught:
+        source_outcome_json(
+            {
+                **base,
+                "source_payload_commitment": "a" * 64,
+                "ingest_code_sha": "not-a-sha",
+            }
+        )
+    assert caught.value.code == "D1_SOURCE_INGEST_CODE_SHA_INVALID"
 
 
 def test_source_outcome_rejects_partial_v2_provenance():
@@ -381,7 +405,20 @@ def test_source_outcome_rejects_partial_v2_provenance():
                 "game_state": "FINAL",
             }
         )
-    assert caught.value.code == "D1_SOURCE_GAME_TYPE_UNVERIFIED"
+    assert caught.value.code == "D1_SOURCE_PROVENANCE_INCOMPLETE"
+
+    # Any lone V2 field (without provenance_version) also requires the full set.
+    with pytest.raises(D1RegistryError) as caught:
+        source_outcome_json(
+            {
+                "official_event_id": "2026020257",
+                "home_score": 2,
+                "away_score": 6,
+                "positive_outcome": False,
+                "game_type": 2,
+            }
+        )
+    assert caught.value.code == "D1_SOURCE_PROVENANCE_INCOMPLETE"
 
 
 def test_reingest_rows_reject_non_regular_season_games():

@@ -32,6 +32,12 @@ def _is_sha256(value: Any) -> bool:
     return len(token) == 64 and all(char in "0123456789abcdef" for char in token)
 
 
+def _is_git_sha(value: Any) -> bool:
+    """Accept short or full lowercase git commit SHAs (Render ingest heads)."""
+    token = str(value or "").strip().lower()
+    return 7 <= len(token) <= 40 and all(char in "0123456789abcdef" for char in token)
+
+
 def _validate_governance(row: Mapping[str, Any], *, prefix: str) -> None:
     if row.get("can_execute") is not False:
         raise D1RegistryError(f"{prefix}_CAN_EXECUTE_FORBIDDEN", "can_execute must be false")
@@ -39,45 +45,56 @@ def _validate_governance(row: Mapping[str, Any], *, prefix: str) -> None:
         raise D1RegistryError(f"{prefix}_PROBABILITY_PUBLICATION_FORBIDDEN", "candidate registry is non-publishable")
 
 
+_V2_PROVENANCE_KEYS = (
+    "game_type",
+    "neutral_site",
+    "game_state",
+    "provenance_version",
+    "ingest_code_sha",
+    "source_payload_commitment",
+    "payload_hash_scope",
+)
+
+
 def source_outcome_json(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Build the append-only source outcome, preserving optional provenance.
 
     Legacy rows carry only scores. NHL provenance V2 rows additionally commit
-    the regular-season game type, neutral-site flag and settled state. If a
-    provenance marker is present, every required field is validated; a partial
-    V2 row is rejected rather than silently downgraded to legacy shape.
+    the regular-season game type, neutral-site flag and settled state. If any
+    V2 field is supplied, the complete V2 provenance set is required — including
+    a valid ingest_code_sha — and a partial row is rejected rather than silently
+    downgraded to legacy shape.
     """
     outcome: dict[str, Any] = {
         "home_score": raw.get("home_score"),
         "away_score": raw.get("away_score"),
         "positive_outcome": raw.get("positive_outcome"),
     }
-    for key in (
-        "game_type",
-        "neutral_site",
-        "game_state",
-        "provenance_version",
-        "ingest_code_sha",
-        "source_payload_commitment",
-        "payload_hash_scope",
-    ):
-        value = raw.get(key)
-        if value is not None:
-            outcome[key] = value
-    if outcome.get("provenance_version") is not None:
-        event_id = str(raw.get("official_event_id") or "")
-        if type(outcome.get("game_type")) is not int or outcome["game_type"] != 2:
-            raise D1RegistryError("D1_SOURCE_GAME_TYPE_UNVERIFIED", event_id)
-        if type(outcome.get("neutral_site")) is not bool:
-            raise D1RegistryError("D1_SOURCE_NEUTRAL_SITE_UNVERIFIED", event_id)
-        if str(outcome.get("game_state") or "").upper() not in {"FINAL", "OFF"}:
-            raise D1RegistryError("D1_SOURCE_GAME_STATE_UNVERIFIED", event_id)
-        if not str(outcome.get("provenance_version") or "").strip():
-            raise D1RegistryError("D1_SOURCE_PROVENANCE_INVALID", event_id)
-        if not _is_sha256(outcome.get("source_payload_commitment")):
-            raise D1RegistryError("D1_SOURCE_PAYLOAD_COMMITMENT_INVALID", event_id)
-        if outcome.get("payload_hash_scope") != SOURCE_PAYLOAD_HASH_SCOPE:
-            raise D1RegistryError("D1_SOURCE_PAYLOAD_HASH_SCOPE_INVALID", event_id)
+    present_v2 = [key for key in _V2_PROVENANCE_KEYS if raw.get(key) is not None]
+    for key in present_v2:
+        outcome[key] = raw.get(key)
+    if not present_v2:
+        return outcome
+
+    event_id = str(raw.get("official_event_id") or "")
+    # Any supplied V2 field requires the complete V2 contract.
+    missing = [key for key in _V2_PROVENANCE_KEYS if outcome.get(key) is None]
+    if missing:
+        raise D1RegistryError("D1_SOURCE_PROVENANCE_INCOMPLETE", f"{event_id}:{missing[0]}")
+    if type(outcome.get("game_type")) is not int or outcome["game_type"] != 2:
+        raise D1RegistryError("D1_SOURCE_GAME_TYPE_UNVERIFIED", event_id)
+    if type(outcome.get("neutral_site")) is not bool:
+        raise D1RegistryError("D1_SOURCE_NEUTRAL_SITE_UNVERIFIED", event_id)
+    if str(outcome.get("game_state") or "").upper() not in {"FINAL", "OFF"}:
+        raise D1RegistryError("D1_SOURCE_GAME_STATE_UNVERIFIED", event_id)
+    if not str(outcome.get("provenance_version") or "").strip():
+        raise D1RegistryError("D1_SOURCE_PROVENANCE_INVALID", event_id)
+    if not _is_git_sha(outcome.get("ingest_code_sha")):
+        raise D1RegistryError("D1_SOURCE_INGEST_CODE_SHA_INVALID", event_id)
+    if not _is_sha256(outcome.get("source_payload_commitment")):
+        raise D1RegistryError("D1_SOURCE_PAYLOAD_COMMITMENT_INVALID", event_id)
+    if outcome.get("payload_hash_scope") != SOURCE_PAYLOAD_HASH_SCOPE:
+        raise D1RegistryError("D1_SOURCE_PAYLOAD_HASH_SCOPE_INVALID", event_id)
     return outcome
 
 

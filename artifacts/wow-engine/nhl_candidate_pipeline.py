@@ -114,6 +114,20 @@ def _hash_payload(value: Any) -> str:
     ).hexdigest()
 
 
+def _exact_nonneg_int(value: Any) -> int | None:
+    """Accept only exact non-negative integer scores; never truncate fractions."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return None
+    text = str(value or "").strip()
+    if not text or not text.isdigit():
+        return None
+    return int(text)
+
+
 def season_id(start_year: int) -> int:
     year = int(start_year)
     if year < 2000 or year > 2100:
@@ -193,9 +207,9 @@ def normalize_game(
         # for malformed ones; both are invalid start evidence. Non-strict mode
         # drops the row, strict re-ingest fails closed as a typed block.
         return _drop("NHL_SOURCE_EVENT_TIME_INVALID", "startTimeUTC")
-    try:
-        home_score, away_score = int(hs), int(aws)
-    except (TypeError, ValueError):
+    home_score = _exact_nonneg_int(hs)
+    away_score = _exact_nonneg_int(aws)
+    if home_score is None or away_score is None:
         return _drop("NHL_SOURCE_SCORE_INVALID", "score")
     try:
         parsed_season = int(raw_season)

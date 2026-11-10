@@ -99,6 +99,30 @@ def test_normalize_accepts_only_settled_regular_season_games():
     assert nhl.normalize_game(raw_game(3, game_type=3), source_uri="u", retrieved_at="x") is None
 
 
+@pytest.mark.parametrize(
+    "bad_score",
+    [3.7, 3.0, "3.7", "3.0", True, False, -1, "-1", "", None],
+)
+def test_normalize_rejects_non_exact_integer_scores(bad_score):
+    """Fractional or non-integer scores must fail closed — never truncate via int()."""
+    raw = raw_game(10, home_score=bad_score, away_score=2)
+    assert nhl.normalize_game(raw, source_uri="u", retrieved_at="x") is None
+    with pytest.raises(nhl.NHLCandidateError) as caught:
+        nhl.normalize_game(raw, source_uri="u", retrieved_at="x", strict=True)
+    assert caught.value.code == "NHL_SOURCE_SCORE_INVALID"
+
+
+def test_normalize_accepts_digit_string_scores():
+    parsed = nhl.normalize_game(
+        raw_game(11, home_score="4", away_score="2"),
+        source_uri="u",
+        retrieved_at="x",
+    )
+    assert parsed is not None
+    assert parsed.home_score == 4
+    assert parsed.away_score == 2
+
+
 def test_team_season_fetch_fails_closed_on_schema_drift():
     class Response:
         status_code = 200
