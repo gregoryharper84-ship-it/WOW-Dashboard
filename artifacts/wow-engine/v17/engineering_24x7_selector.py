@@ -31,6 +31,14 @@ SIRT_REVIEW_TITLE = re.compile(
     r"(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)",
     re.IGNORECASE,
 )
+# Explicit repair verbs are implementation work, not independent SIRT review.
+# Preserve "SIRT Intake/Review/Assurance" routing without silently dropping
+# e.g. "SIRT: fix verification script timeout" or "[SIRT] audit log repair".
+SIRT_REPAIR_TITLE = re.compile(
+    r"^(?:\\[[^\\]]*\\bSIRT\\b[^\\]]*\\]|(?:P[0-3]\\s+)?SIRT\\b|P[0-3]\\s*:\\s*SIRT\\b)"
+    r"[\\s:—-]*(?:fix|repair|restore|recover|debug|resolve|rebuild|implement|audit\\s+log\\s+repair)\\b",
+    re.IGNORECASE,
+)
 LEASE_GROUP = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 PRIORITY = {
     "production-down": 0,
@@ -65,7 +73,8 @@ def eligible(issue: dict) -> tuple[int, int] | None:
         return None
     # SIRT-owned review/assurance tickets are not implementation assignments.
     title = issue.get("title")
-    if isinstance(title, str) and SIRT_REVIEW_TITLE.match(title.strip()):
+    if (isinstance(title, str) and SIRT_REVIEW_TITLE.match(title.strip())
+            and not SIRT_REPAIR_TITLE.match(title.strip())):
         return None
     number = issue.get("number")
     if type(number) is not int or number <= 0:
@@ -339,13 +348,16 @@ def main() -> None:
     parser.add_argument("--retry-after-run-id", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    manifest_input = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if manifest_input is None:
+        raise ValueError("dispatch manifest invalid: null CLI manifest")
     result = plan(
         json.loads(args.issues.read_text(encoding="utf-8")),
         json.loads(args.prs.read_text(encoding="utf-8")),
         target=args.target,
         runs=json.loads(args.runs.read_text(encoding="utf-8")) if args.runs else [],
         retry_after_run_id=args.retry_after_run_id,
-        manifest=json.loads(args.manifest.read_text(encoding="utf-8")),
+        manifest=manifest_input,
     )
     args.output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
