@@ -41,6 +41,14 @@ A missing or uncertain input is a typed risk or hydration blocker where the fitt
 
 For settled losses, compare only the frozen knowable features to independently verified outcomes. Register sport-specific hypotheses for out-of-time baseline/challenger replay; **one losing game does not prove any particular feature coefficient was wrong**. Preserve immutable original grades and require independent forward validation before changing calibrators or publishing improved-model claims.
 
+## Escalation for mandatory full-slate research winner selections
+
+For user-requested NFL/NBA/NHL full-game winner cards, uncertain or contradictory evidence triggers *more independent source reconciliation* and explicit available/unavailable or alternate-lineup scenarios, **not** a discretionary pass in the user-facing research card. Preserve any governed-model HELD status independently and never treat market implied probabilities as fitted model output.
+
+Prioritize: NFL starting QB and protection, defensive personnel and turnover volatility; NBA actual star availability versus a questionable designation, replacement rotations, opponent shooting variance and back-to-backs; NHL confirmed rather than projected starting goalie, rest/travel, special teams and full-game OT/shootout exposure. Across sports compare opener and current favorite with as-of timestamps, resolve disagreements and distinguish known, unknown and contradictory evidence.
+
+Seek at least two independent nonmarket publishers per matchup, time-stamp material research and mark source shortfalls, stale/future inputs, unresolved market conflicts and unsupported HIGH confidence as research-quality warnings. These never authorize fake model probabilities or automatic probability changes. Use the read-only audit_research_winner_card preflight; grade postmortems only against frozen pregame evidence and independent official finals.
+
 ## Market evidence typing
 Every external market observation must be classified as one of:
 - `EXACT_LINE`: same participant/event/stat/line/side identity as the candidate; may support exact-line no-vig/economics analysis.
