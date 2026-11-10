@@ -190,6 +190,25 @@ jobs:
           trap 'kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true; cat "$RUNNER_TEMP/wow-agent-worker.log" || true; cat "$RUNNER_TEMP/rest-v1-proxy.log" || true' EXIT
           sleep 3
           python -m pytest -q test_agent_runtime_postgres_integration.py test_prop_snapshot_min3_postgres.py
+
+          # P-class acceptance: require the actual source, never count skips
+          # or fabricated substitute tests as PostgreSQL/PostgREST proof.
+          nba_verification_tests=(
+            test_v17_nba_verification_wiring.py
+            tests/test_v17_nba_team_event_verification.py
+            test_v17_nba_verification_prerequisites_postgres.py
+            test_v17_nba_verification_prerequisites_postgrest.py
+          )
+          for test_file in "${nba_verification_tests[@]}"; do
+            if [ ! -f "$test_file" ]; then
+              echo "::error::NBA_VERIFICATION_INTEGRATION_SOURCE_MISSING: $test_file"
+              exit 1
+            fi
+          done
+          export WOW_TEST_POSTGRES_DSN="postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+          # The existing loopback gateway rewrites /rest/v1 to PostgREST /.
+          export WOW_TEST_POSTGREST_URL="http://127.0.0.1:3000"
+          python -m pytest -q --tb=short -rs "${nba_verification_tests[@]}"
           kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
           wait "$WORKER_PID" 2>/dev/null || true
           wait "$PROXY_PID" 2>/dev/null || true
