@@ -35,7 +35,7 @@ These are questions to test on historical point-in-time data. Variance and unexp
 ## Implemented contract (read-only)
 
 - New `v17.llp_research_card_retro.audit_research_card` grades one immutable research `PREFERRED` and an optional distinct `UPSET_WATCH` per official event, only with independent pregame and settlement receipt attestations.
-- Strict kickoff, frozen-as-of, visible-before-lock and research-availability timestamps block hindsight leakage. Duplicates, unresolved official identity, stale/invalid settlement and incomplete official-slate coverage fail closed.
+- Strict kickoff, frozen-as-of, visible-before-lock and nonempty research-input availability timestamps block hindsight leakage. Duplicates, unresolved official identity, invalid settlement and incomplete official-slate coverage fail closed. Settlement freshness, including any later corrected or superseding official final, is **not independently established by this audit**: the upstream independent settlement verifier must check the receipt is current and not superseded before asserting `independently_verified=True`.
 - The only overall headline research accuracy is for a complete verified official event set; otherwise show partial typed grades and blockers, with headline accuracy null.
 - Separate preferred/upset grading, same-game counterfactual comparison and pregame-feature review questions are diagnostics. No official model probability is generated and no automatic upset flip is allowed.
 - Optional `v17.llp_postmortem_recalibration.build_llp_learning_report` arguments append the research audit in a distinct `research_card` field without changing fitted-model Brier/log-loss/calibration.
