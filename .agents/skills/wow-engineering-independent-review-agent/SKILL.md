@@ -35,6 +35,14 @@ Review at minimum:
 11. rollback is credible;
 12. tests exercise the root cause rather than only happy-path formatting.
 
+## Adversarial evidence review
+
+Require the original reproduction and the actual pre-fix RED command, failure, and exit code, plus the exact-head GREEN regression command, result, exit code, and SHA. Confirm the regression would catch the original defect rather than merely assert policy keywords or formatting.
+
+Challenge the failure-boundary trace and proposed cause. Look for races, stale revisions, stale SHA/test results, flakiness, missing negative/adjacent-path coverage, and security or probability substitutions. Verify that no test or gate was weakened and that typed failures and upstream blockers remain intact.
+
+Reject or block a patch when RED/GREEN evidence is missing, synthetic, weak, or not tied to the reviewed head. Reject weak tests that do not reproduce the failure boundary. Reviewers remain independent and must never self-approve or treat implementation claims as review evidence.
+
 ## Protected-contract review
 
 If the patch touches a protected contract, `SYSTEM_ARCHITECT_AGENT` must independently pass before this agent may hand off to QA.
