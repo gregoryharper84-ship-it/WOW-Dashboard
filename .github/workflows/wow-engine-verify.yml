@@ -208,7 +208,22 @@ jobs:
           export WOW_TEST_POSTGRES_DSN="postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
           # The existing loopback gateway rewrites /rest/v1 to PostgREST /.
           export WOW_TEST_POSTGREST_URL="http://127.0.0.1:3000"
-          python -m pytest -q --tb=short -rs "${nba_verification_tests[@]}"
+          python -m pytest -q --tb=short -rs \
+            --junitxml="$RUNNER_TEMP/nba-verification-integration.xml" \
+            "${nba_verification_tests[@]}"
+          # Pytest returns 0 when its integration tests skip. A green CI job
+          # must prove the real PostgreSQL (6) + PostgREST (1) tests ran.
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          report = Path(os.environ["RUNNER_TEMP"]) / "nba-verification-integration.xml"
+          cases = list(ET.parse(report).getroot().iter("testcase"))
+          if len(cases) < 7 or any(case.find("skipped") is not None for case in cases):
+              raise SystemExit("NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED")
+          print(f"NBA_VERIFICATION_INTEGRATION_EXECUTED tests={len(cases)}")
+          PY
           kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
           wait "$WORKER_PID" 2>/dev/null || true
           wait "$PROXY_PID" 2>/dev/null || true
