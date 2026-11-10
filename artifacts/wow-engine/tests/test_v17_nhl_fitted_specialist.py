@@ -1,4 +1,5 @@
 """Fitted NHL specialist: registry provenance, chronological replay, typed holds."""
+# Exact-head CI requeue after merging #2512 provenance tip.
 from __future__ import annotations
 
 from dataclasses import replace
