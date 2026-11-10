@@ -246,3 +246,17 @@ def test_books_with_clear_opposite_favorites_cannot_be_overridden_by_average():
     assert result["outcomes"]["DOG"]["is_non_market_favorite"] is False
     assert result["outcomes"]["DOG"]["information_edge_proven"] is False
     assert result["can_execute"] is False
+
+
+def test_power_de_vig_extreme_prices_require_adaptive_root_above_64():
+    """Regress an extreme but solvable root; fixed-64 bisection was wrong."""
+    result = no_vig_probabilities({"A": -10000, "B": -11000}, method="power")
+    assert result["A"] == pytest.approx(0.4835675804, abs=1e-7)
+    assert result["B"] == pytest.approx(0.5164324196, abs=1e-7)
+    assert sum(result.values()) == pytest.approx(1.0)
+
+
+def test_power_de_vig_unbracketed_infinite_like_odds_fails_closed():
+    """Reject float-saturated inputs rather than normalizing a bogus root."""
+    with pytest.raises(ValueError, match="MARKET_POWER_NO_VIG_NOT_CONVERGED"):
+        no_vig_probabilities({"A": -1e20, "B": -1e20}, method="power")
