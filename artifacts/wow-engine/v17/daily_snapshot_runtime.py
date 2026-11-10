@@ -628,10 +628,27 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             reason_counts["MAX_PROPS_LIMIT"] = (
                 reason_counts.get("MAX_PROPS_LIMIT", 0) + eligible_not_scored
             )
-        seen = len(prop_manifest) + len(prop_exclusions)
-        accounted = scored_prop_rows + eligible_not_scored + len(prop_exclusions)
+        raw_read = prop_manifest_stats.get("raw_rows_read")
+        canonical_rows = prop_manifest_stats.get("canonical_rows")
+        merged_rows = prop_manifest_stats.get("canonical_merged_rows")
+        accounted = (
+            scored_prop_rows + eligible_not_scored + len(prop_exclusions)
+            + (merged_rows or 0)
+        )
+        # Independent read-stage counts prevent a tautological accounting PASS.
+        # Native PROP_SNAPSHOT_QUERY_FAILED remains the reason for no readback.
+        balanced = None if raw_read is None else bool(
+            raw_read == accounted
+            and raw_read == canonical_rows + merged_rows
+            and canonical_rows == len(prop_manifest) + len(prop_exclusions)
+            and scored_prop_rows == len(prop_rows)
+            and scored_prop_rows + eligible_not_scored == len(prop_manifest)
+        )
         prop_candidate_accounting = {
-            "manifest_rows_seen": seen,
+            "manifest_rows_seen": raw_read,
+            "raw_rows_read": raw_read,
+            "canonical_rows": canonical_rows,
+            "canonical_merged_rows": merged_rows,
             "eligible_rows": len(prop_manifest),
             "scored_rows": scored_prop_rows,
             "eligible_not_scored_rows": eligible_not_scored,
@@ -640,10 +657,10 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             "excluded_by_reason": reason_counts,
             "exclusions": prop_exclusions[:50],
             "exclusions_truncated": max(len(prop_exclusions) - 50, 0),
-            "balanced": accounted == seen,
+            "balanced": balanced,
             "can_execute": False,
         }
-        if accounted != seen:
+        if balanced is False:
             blockers.append("RUN_INVALID_PROP_CANDIDATE_ACCOUNTING")
 
     cross_sport_audit: dict[str, Any] | None = None
