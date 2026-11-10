@@ -73,6 +73,13 @@ def no_vig_probabilities(
     if method == "multiplicative":
         return {key: value / total for key, value in raw.items()}
     lower, upper = 1.0, 64.0
+    # Extreme but representable prices may require a power exponent above
+    # 64. Never silently normalize an unbracketed bisection result, which
+    # would manufacture a distorted market reference probability.
+    while sum(value ** upper for value in raw.values()) > 1.0 and upper < 1048576.0:
+        lower, upper = upper, upper * 2.0
+    if sum(value ** upper for value in raw.values()) > 1.0:
+        raise ValueError("MARKET_POWER_NO_VIG_NOT_CONVERGED")
     for _ in range(90):
         exponent = (lower + upper) / 2.0
         if sum(value ** exponent for value in raw.values()) > 1.0:
@@ -82,6 +89,8 @@ def no_vig_probabilities(
     exponent = (lower + upper) / 2.0
     adjusted = {key: value ** exponent for key, value in raw.items()}
     normalizer = sum(adjusted.values())
+    if normalizer <= 0.0 or not isfinite(normalizer) or abs(normalizer - 1.0) > 1e-8:
+        raise ValueError("MARKET_POWER_NO_VIG_NOT_CONVERGED")
     return {key: value / normalizer for key, value in adjusted.items()}
 
 
