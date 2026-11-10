@@ -1,7 +1,7 @@
 # FIX-2026-11-10-001 — Neutralize absent QA policy on main-scoped admission
 
 - status: IMPLEMENTATION_COMPLETE_PENDING_REVIEW
-- risk: R1
+- risk: Class P (QA/Release admission trust path; not unattended R-class)
 - primary_subsystem: DEPLOYMENT_RUNTIME
 - linked_postmortem: PM-2026-11-10-001
 - created_utc: 2026-11-10T15:45:00Z
@@ -19,16 +19,20 @@ policy resolution.
 In `.github/scripts/independent_source_review_receipt.py` `resolve_qa_review_policy`:
 
 - when inventory matches for `wow-v17-qa-policy-{run}-{attempt}` are empty **and**
-  `allow_superseded_target` is true, return
-  `{disposition: neutral, reason: RELEASE_QA_POLICY_ARTIFACT_ABSENT}`;
+  `allow_superseded_target` is true, validate the QA workflow, event, main
+  branch and SHA format, repositories, status, and conclusion. Return
+  `{disposition: neutral, reason: RELEASE_QA_POLICY_ARTIFACT_ABSENT}` only
+  if those checks pass; otherwise raise `QA_POLICY_RUN_PROVENANCE_MISMATCH`;
 - otherwise keep `QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING` fail-closed for
   missing (strict path) and duplicate (all paths).
 
 Register `RELEASE_QA_POLICY_ARTIFACT_ABSENT` in `failure_codes.md`.
+Neutral means no Release check is produced (not success/approval).
 
 ## Tests
 
 - `test_main_scoped_admission_neutralizes_absent_qa_policy_artifact`
+- `test_missing_policy_neutral_requires_authenticated_qa_run`
 - existing missing/duplicate/expired strict rejects
 - existing superseded neutrality
 - `test_v17_release_admission_diagnostics`

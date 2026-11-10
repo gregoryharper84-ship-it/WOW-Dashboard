@@ -43,10 +43,15 @@ Root cause status: CONFIRMED, confidence HIGH.
 1. Strict resolve (no opt-in) still raises `QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING`
    when the policy artifact is missing or duplicated.
 2. With `allow_superseded_target=True`, a missing policy artifact returns
-   `disposition=neutral` / `reason=RELEASE_QA_POLICY_ARTIFACT_ABSENT`.
+   `disposition=neutral` / `reason=RELEASE_QA_POLICY_ARTIFACT_ABSENT` **only after**
+   the upstream QA run passes provenance checks (workflow, event, main branch/SHA,
+   repositories, completed status, success/failure conclusion); forged/incomplete
+   runs raise `QA_POLICY_RUN_PROVENANCE_MISMATCH`.
 3. Duplicate artifacts remain fail-closed even with the opt-in.
 4. Existing superseded/draft neutrality and admission-diagnostic contracts still pass.
 5. `can_execute=false` and V17 terminal authority are unchanged.
+6. Change class is **Class P** (admission trust path): exact-head CI plus independent
+   QA/Release App sign-off required; no unattended R-class merge.
 
 ## Linked Engineering Fixes
 
