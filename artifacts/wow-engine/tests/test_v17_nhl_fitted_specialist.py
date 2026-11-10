@@ -652,7 +652,11 @@ def test_bridge_preserves_fitted_specialist_typed_blockers(monkeypatch):
 
 
 def test_score_one_preserves_fitted_http_goalie_stale_hold(monkeypatch):
-    """Production MODEL_SCORERS['NHL'] emits HTTPException; keep 422 + blockers."""
+    """Production MODEL_SCORERS['NHL'] emits HTTPException; keep 422 + blockers.
+
+    Regression for the wrapper path that previously collapsed typed NHL holds
+    into MODEL_SCORER_FAILED.
+    """
     from fastapi import HTTPException
 
     import v17.multisport_team_event_bridges as bridges
