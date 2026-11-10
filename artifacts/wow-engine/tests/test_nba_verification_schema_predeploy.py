@@ -100,7 +100,7 @@ def _migration_sql_without_comments():
 
 
 def test_wiring_ledger_is_backed_by_an_actual_migration():
-    """Red until the reported NBA pre-fit verifier and schema agree by name."""
+    """Require the canonical verifier ledger DDL in the versioned migration."""
     import re
     sql = _migration_sql_without_comments()
     assert re.search(
@@ -108,9 +108,9 @@ def test_wiring_ledger_is_backed_by_an_actual_migration():
         r"(?:public\.)?wow_independent_verification_receipts\b",
         sql, flags=re.IGNORECASE,
     ), (
-        "NBA_VERIFICATION_LEDGER_MISSING: draft migration creates "
-        "wow_nba_team_event_verification_receipts, but new NBA pre-fit wiring "
-        "requires wow_independent_verification_receipts; do not enable predeploy."
+        "NBA_VERIFICATION_LEDGER_MISSING: canonical "
+        "20261110_v17_independent_verification_receipts.sql must CREATE "
+        "public.wow_independent_verification_receipts; do not enable predeploy."
     )
 
 
