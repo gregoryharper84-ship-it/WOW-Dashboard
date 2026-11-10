@@ -77,11 +77,12 @@ Verdict: `SAFETY_MILESTONE_HELD_AND_PM_STILL_PENDING_VERIFY`. Evidence packet: c
 
 ## Closure gate
 
-`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the two remaining secondary observations land **or** Reporter explicitly scopes them out with a typed residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
+`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until **both** remaining secondary observations are recorded (`ZERO_ROW_REASON_MISCLASSIFIED` and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`). A Reporter-scoped residual, if ever filed, is recorded as **unverified** and does **not** authorize a ledger status change. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
 
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
 post_safety_daily_scoring_run = ABSENT
 post_safety_scoring_attempted_observation = ABSENT
+ledger_state = DEPLOYED_PENDING_VERIFY
 ```
