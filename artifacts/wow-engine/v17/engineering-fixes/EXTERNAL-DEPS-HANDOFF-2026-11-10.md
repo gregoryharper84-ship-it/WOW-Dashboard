@@ -121,10 +121,16 @@ Hard blockers that keep (B) closed today:
 3. **Controller run is not a dry run.**
    When admission later returns `POST_ONCE`, the workflow calls the Render
    deploy API for the configured service; it does **not** pause for receipt
-   inspection. A true no-POST dry run is a verified preflight that never reaches
-   POST (journal HOLD / writer-off / credential HOLD). Label any enabled
-   controller run that can reach `POST_ONCE` as a **potential production
-   deploy**, never a dry run. Never claim deploy success from a HOLD receipt.
+   inspection. Native auto-deploy **off** (`writer-off`) is a POST-eligibility
+   condition in `plan_release_admission` (`_writer_state` returns ready), **not**
+   a no-POST preflight — once the credential gate is also cleared, writer-off
+   alone can admit `POST_ONCE` and deploy. A true dry run requires an **explicit
+   HOLD receipt** from admission (for example
+   `RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED` or another typed HOLD) **or** a
+   separately verified no-POST preflight that cannot call Render deploy. Label
+   any enabled controller run that can reach `POST_ONCE` as a **potential
+   production deploy**, never a dry run. Never claim deploy success from a HOLD
+   receipt.
 
 If those blockers are later cleared under separate review, an authorized admin
 would still need: Lean V4 decision recorded; web (and any authorized worker
