@@ -420,6 +420,25 @@ def test_source_outcome_rejects_partial_v2_provenance():
         )
     assert caught.value.code == "D1_SOURCE_PROVENANCE_INCOMPLETE"
 
+    # Explicit null V2 fields are incomplete V2, not a silent legacy downgrade.
+    with pytest.raises(D1RegistryError) as caught:
+        source_outcome_json(
+            {
+                "official_event_id": "2026020257",
+                "home_score": 2,
+                "away_score": 6,
+                "positive_outcome": False,
+                "game_type": None,
+                "neutral_site": None,
+                "game_state": None,
+                "provenance_version": None,
+                "ingest_code_sha": None,
+                "source_payload_commitment": None,
+                "payload_hash_scope": None,
+            }
+        )
+    assert caught.value.code == "D1_SOURCE_PROVENANCE_INCOMPLETE"
+
 
 def test_reingest_rows_reject_non_regular_season_games():
     games = _normalized_games(_fixture())

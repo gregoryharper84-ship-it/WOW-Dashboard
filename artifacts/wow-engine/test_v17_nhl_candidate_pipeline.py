@@ -101,7 +101,7 @@ def test_normalize_accepts_only_settled_regular_season_games():
 
 @pytest.mark.parametrize(
     "bad_score",
-    [3.7, 3.0, "3.7", "3.0", True, False, -1, "-1", "", None],
+    [3.7, 3.0, "3.7", "3.0", True, False, -1, "-1", "", None, "²", "١", "９"],
 )
 def test_normalize_rejects_non_exact_integer_scores(bad_score):
     """Fractional or non-integer scores must fail closed — never truncate via int()."""

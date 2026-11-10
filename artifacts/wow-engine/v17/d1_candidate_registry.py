@@ -28,6 +28,7 @@ def _one(result: Any) -> dict[str, Any] | None:
 
 
 def _is_sha256(value: Any) -> bool:
+    """True when value is a 64-char lowercase hex SHA-256 digest."""
     token = str(value or "").strip().lower()
     return len(token) == 64 and all(char in "0123456789abcdef" for char in token)
 
@@ -70,7 +71,9 @@ def source_outcome_json(raw: Mapping[str, Any]) -> dict[str, Any]:
         "away_score": raw.get("away_score"),
         "positive_outcome": raw.get("positive_outcome"),
     }
-    present_v2 = [key for key in _V2_PROVENANCE_KEYS if raw.get(key) is not None]
+    # Key presence (including explicit null) enters V2 validation; absent keys
+    # alone keep the legacy score-only shape.
+    present_v2 = [key for key in _V2_PROVENANCE_KEYS if key in raw]
     for key in present_v2:
         outcome[key] = raw.get(key)
     if not present_v2:

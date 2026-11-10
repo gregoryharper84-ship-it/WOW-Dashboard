@@ -123,9 +123,14 @@ def _exact_nonneg_int(value: Any) -> int | None:
     if isinstance(value, float):
         return None
     text = str(value or "").strip()
-    if not text or not text.isdigit():
+    # Require ASCII digits: Unicode Nd (e.g. "²") can pass isdigit() while int()
+    # raises, and other Nd forms can convert silently to a different numeral.
+    if not text or not text.isascii() or not text.isdigit():
         return None
-    return int(text)
+    try:
+        return int(text)
+    except ValueError:
+        return None
 
 
 def season_id(start_year: int) -> int:
@@ -167,6 +172,7 @@ def normalize_game(
     game cannot disappear before reconciliation.
     """
     def _drop(code: str, detail: str = "") -> None:
+        """Raise in strict re-ingest; otherwise drop the malformed row."""
         if strict:
             raise NHLCandidateError(code, detail)
         return None
