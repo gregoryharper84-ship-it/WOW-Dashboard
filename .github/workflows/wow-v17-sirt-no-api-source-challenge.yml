@@ -1,0 +1,129 @@
+name: wow-v17-sirt-no-api-source-challenge
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  actions: read
+concurrency:
+  group: wow-sirt-source-pinned-1932
+  cancel-in-progress: false
+jobs:
+  source:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    environment: wow-sirt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Verify pinned target and isolated SIRT App
+        env:
+          PR: ${{ inputs.pr_number }}
+          SHA: ${{ inputs.head_sha }}
+          APP: ${{ vars.WOW_SIRT_APP_ID }}
+          KEY: ${{ secrets.WOW_SIRT_APP_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$PR" = 1932 ] && [ "$SHA" = 2e40b78c6aa7e5cecc363b5b607f6e61227dfd7d ] || {
+            echo "::error::SIRT_TARGET_NOT_PINNED"; exit 1;
+          }
+          [[ "$APP" =~ ^[1-9][0-9]*$ ]] && [ "$KEY" = true ] || {
+            echo "::error::SIRT_APP_CREDENTIAL_MISSING"; exit 1;
+          }
+          case "$APP" in
+            15368|5245832|5245853) echo "::error::SIRT_APP_NOT_DISTINCT"; exit 1 ;;
+          esac
+      - name: Read authenticated live source evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP: ${{ vars.WOW_SIRT_APP_ID }}
+          GLOBAL_REVIEW: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          gh api "repos/$repo/pulls/1932" > "$RUNNER_TEMP/pr.json"
+          gh api "repos/$repo/branches/main" > "$RUNNER_TEMP/main.json"
+          gh api "repos/$repo/rulesets/24907422" > "$RUNNER_TEMP/ruleset.json"
+          gh api --paginate "repos/$repo/pulls/1932/files?per_page=100" |
+            jq -s 'add' > "$RUNNER_TEMP/files.json"
+          gh api "repos/$repo/commits/2e40b78c6aa7e5cecc363b5b607f6e61227dfd7d/check-runs?per_page=100" > "$RUNNER_TEMP/checks.json"
+          case "$GLOBAL_REVIEW" in
+            ''|false) active=false ;;
+            true) active=true ;;
+            *) echo "::error::SIRT_REVIEW_MODE_INVALID"; exit 1 ;;
+          esac
+          jq -n --slurpfile p "$RUNNER_TEMP/pr.json" \
+            --slurpfile m "$RUNNER_TEMP/main.json" \
+            --slurpfile r "$RUNNER_TEMP/ruleset.json" \
+            --slurpfile f "$RUNNER_TEMP/files.json" \
+            --slurpfile c "$RUNNER_TEMP/checks.json" \
+            --argjson app "$APP" --argjson global "$active" \
+            '{pr:$p[0],main:$m[0],ruleset:$r[0],files:$f[0],
+              checks:$c[0],sirt_app_id:$app,global_review_active:$global}' \
+            > "$RUNNER_TEMP/sirt-source-bundle.json"
+      - name: Verify exact-head source without API or PR checkout
+        id: assess
+        shell: bash
+        run: |
+          set -uo pipefail
+          python artifacts/wow-engine/v17/sirt_no_api_source_challenge.py \
+            --bundle "$RUNNER_TEMP/sirt-source-bundle.json" \
+            --output "$RUNNER_TEMP/sirt-source-decision.json"
+          echo "result=$?" >> "$GITHUB_OUTPUT"
+          jq -r '.source_disposition, (.reasons | join("; "))' \
+            "$RUNNER_TEMP/sirt-source-decision.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Mint separate checks-only SIRT App token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.WOW_SIRT_APP_ID }}
+          private-key: ${{ secrets.WOW_SIRT_APP_PRIVATE_KEY }}
+          repositories: WOW-Dashboard
+          permission-checks: write
+      - name: Publish SOURCE-ONLY check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          decision="$RUNNER_TEMP/sirt-source-decision.json"
+          if [ "$(jq -r .source_disposition "$decision")" = SOURCE_EVIDENCE_PASS ]; then verdict=success; else verdict=failure; fi
+          reason=$(jq -r '.reasons | join("; ")' "$decision")
+          [ -n "$reason" ] || reason="Source verified, but final independent SIRT security/rollback signoff still required."
+          jq -n --arg result "$verdict" --arg summary "$reason" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{name:"WOW SIRT #1932 source challenge",head_sha:"2e40b78c6aa7e5cecc363b5b607f6e61227dfd7d",
+              status:"completed",conclusion:$result,details_url:$url,
+              output:{title:"Source only; NOT merge or security approval",summary:$summary}}' |
+            gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input - >/dev/null
+      - name: Keep typed receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wow-sirt-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sirt-source-decision.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Fail closed if source evidence did not pass
+        if: steps.assess.outputs.result != '0'
+        run: |
+          echo "::error::SIRT_SOURCE_EVIDENCE_HOLD"
+          exit 1
