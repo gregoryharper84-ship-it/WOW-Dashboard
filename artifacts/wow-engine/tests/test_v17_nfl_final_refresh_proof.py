@@ -108,6 +108,11 @@ def test_event_not_pregame_is_held(monkeypatch, delta):
 
 
 def test_stale_canonical_capture_does_not_count_as_refresh(monkeypatch):
+    # Do not perform real network I/O in a deterministic unit test.
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: {"source_status": "CAPTURED_EMPTY"},
+    )
     proof = _refresh(
         monkeypatch,
         snapshot=_new_snapshot(
