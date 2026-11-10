@@ -140,6 +140,20 @@ def test_script_echo_quota_still_ignored_when_stderr_absent() -> None:
     assert result.failover_eligible is False
 
 
+def test_actions_script_warning_echo_cannot_arm_persistent_quota_breaker() -> None:
+    module = _load_module()
+    log = "\n".join([
+        "##[group]Run perform safe provider gate",
+        'echo "::warning::Quota exceeded"',
+        'printf "::notice::insufficient_quota"',
+        "##[endgroup]",
+        "##[error]Process completed with exit code 1.",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "UNCLASSIFIED_PROVIDER_OR_WORKFLOW_FAILURE"
+    assert result.failover_eligible is False
+
+
 def test_openai_auth_and_rate_limits_are_failover_eligible() -> None:
     module = _load_module()
     auth = module.classify_provider_failure("openai", "invalid_api_key")
