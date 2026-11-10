@@ -188,12 +188,12 @@ def test_all_alternative_intervals_checked_not_just_highest_point_estimate():
         market_favorite="HOME",
         market_favorite_verified=True,
         governed_outcomes=(
-            outcome("HOME", 0.46, 0.40, 0.52),
-            outcome("DRAW", 0.40, 0.31, 0.39),
-            outcome("AWAY", 0.14, 0.04, 0.43),
+            outcome("HOME", 0.50, 0.46, 0.56),
+            outcome("DRAW", 0.40, 0.31, 0.43),
+            outcome("AWAY", 0.10, 0.04, 0.47),
         ),
     )
     assert result.status == "UPSET_ALERT_UNCERTAINTY_OVERLAP"
     assert result.upset_candidate == "AWAY"
     assert result.alert is True
-    assert result.probability_gap == pytest.approx(0.32)
+    assert result.probability_gap == pytest.approx(0.40)
