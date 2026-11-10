@@ -30,6 +30,10 @@ CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
 LEASE_SECONDS = 900
 POLL_SECONDS = 2.0
+# Bounded evidence reads are not a probability/qualification threshold.
+# A source exceeding the budget retains a typed noncertified terminal state.
+SCOUT_HANDOFF_MAX_EVENT_ROWS = 50_000
+SCOUT_HANDOFF_MAX_EVENT_PAGES = 128
 
 def _release_process_memory() -> None:
     """Best-effort RSS reclamation after an in-process specialist job.
@@ -604,6 +608,74 @@ def read_run_status(db: Any, source_run_id: str) -> dict[str, Any]:
     }
 
 
+def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
+    """Read the complete state ledger, not just PostgREST's first 1,000 rows.
+
+    event_id is the immutable BIGINT primary key. Keyset pagination prevents
+    the first-page truncation that falsely reported no specialist-worker events
+    for the 2026-10-31 Scout source run (2,499 event rows). Always request the
+    next page until empty: a server-side row cap can be lower than our limit.
+    Reject missing, repeated or non-monotone IDs rather than certify an
+    incomplete terminal receipt. No model scoring or execution occurs here.
+    """
+    events: list[dict[str, Any]] = []
+    last_id = 0
+    max_events = SCOUT_HANDOFF_MAX_EVENT_ROWS
+    # A slow or adversarial backend must not force tens of thousands of
+    # network round trips. Stop after a bounded number of pages and fail
+    # closed; this is a read-budget, NOT an acceptance or model threshold.
+    # The observed 2,499-event production cohort needs 4 reads at a 1,000
+    # row cap, or 34 reads at a 75-row cap.
+    max_page_requests = SCOUT_HANDOFF_MAX_EVENT_PAGES
+    for _ in range(max_page_requests):
+        # At capacity, query one more row only to prove no overflow exists.
+        # Before capacity, request no more than the remaining admissible rows.
+        remaining = max_events - len(events)
+        requested = min(1000, remaining) if remaining else 1
+        result = (
+            db.table("wow_scout_handoff_state_events")
+            .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
+            .eq("source_run_id", source_run_id)
+            .gt("event_id", last_id)
+            .order("event_id")
+            .limit(requested)
+            .execute()
+        )
+        # data=None is NOT an empty page; it could be a database or schema
+        # failure. Never claim a complete ledger on an ambiguous response.
+        raw_data = getattr(result, "data", None)
+        if not isinstance(raw_data, list):
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        if any(not isinstance(row, dict) for row in raw_data):
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        if remaining == 0:
+            # This is an existence-only overflow probe. Never append its
+            # witness to any returned evidence: a nonempty result is a HOLD.
+            if raw_data:
+                raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+            return events
+        # Only the declared columns may leave this reader. Do not propagate
+        # unrelated backend metadata or arbitrary injected keys downstream.
+        fields = ("event_id", "candidate_id", "target_lane", "state",
+                  "code", "can_execute", "created_at")
+        batch = [{field: row.get(field) for field in fields} for row in raw_data]
+        if not batch:
+            return events
+        # A full ledger may make one final 1-row existence probe. Never
+        # append or allocate an oversized page beyond the bounded budget.
+        if len(events) + len(batch) > max_events:
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        for row in batch:
+            event_id = row.get("event_id")
+            if type(event_id) is not int or event_id <= last_id:
+                raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+            last_id = event_id
+            events.append(row)
+    # This is a resource budget, not evidence that the worker did not run.
+    # Distinguish it from corrupt IDs and incomplete DB responses.
+    raise RuntimeError("SCOUT_STATE_EVENT_READ_BUDGET_EXCEEDED")
+
+
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
     result = (
         db.table("wow_scout_handoff_jobs")
@@ -612,15 +684,11 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         .order("created_at")
         .execute()
     )
-    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
-    event_result = (
-        db.table("wow_scout_handoff_state_events")
-        .select("candidate_id,target_lane,state,code,can_execute,created_at")
-        .eq("source_run_id", source_run_id)
-        .order("created_at")
-        .execute()
-    )
-    events = [dict(row) for row in (getattr(event_result, "data", None) or [])]
+    raw_jobs = getattr(result, "data", None)
+    if not isinstance(raw_jobs, list) or any(not isinstance(row, dict) for row in raw_jobs):
+        raise RuntimeError("SCOUT_HANDOFF_JOBS_READ_INVALID")
+    rows = [dict(row) for row in raw_jobs]
+    events = _read_all_state_events(db, source_run_id)
 
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
