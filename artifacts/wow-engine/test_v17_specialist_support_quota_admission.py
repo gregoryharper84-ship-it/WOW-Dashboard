@@ -84,7 +84,8 @@ def test_provider_guard_precedes_any_paid_agent_and_receipt_is_typed():
     assert "steps.provider_admission.outputs.reason" in _step("Record specialist support receipt")["run"]
     hold = _step("Surface quota-admission hold without invoking Codex")
     assert "steps.target.outputs.action != 'NO_ACTION'" in hold["if"]
-    assert "exit 1" in hold["run"]
+    assert "exit 1" in hold["run"]  # unexpected admission reasons still fail closed
+    assert "exit 0" in hold["run"]  # typed provider holds do not block deployment
     assert "can_execute: false" in _step("Record specialist support receipt")["run"]
 
 
@@ -123,3 +124,56 @@ def test_no_failure_or_missing_key_or_unverified_inventory(tmp_path):
     assert missing == {"admit": "false", "reason": "OPENAI_API_KEY_MISSING"}
     inventory = _run_preflight(tmp_path / "inventory", inventory_error=True)
     assert inventory == {"admit": "false", "reason": "PRIMARY_WORKER_INVENTORY_UNVERIFIED"}
+
+
+def _run_hold(tmp_path, reason):
+    summary = tmp_path / "summary"
+    summary.touch()
+    env = dict(os.environ)
+    env.update({"PROVIDER_REASON": reason, "GITHUB_STEP_SUMMARY": str(summary)})
+    proc = subprocess.run(["bash", "-c", _step("Surface quota-admission hold without invoking Codex")["run"]],
+                          env=env, text=True, capture_output=True, check=False)
+    return proc, summary.read_text()
+
+
+def test_expected_provider_unavailable_is_recorded_hold_not_failed_check(tmp_path):
+    for i, reason in enumerate([
+        "OPENAI_API_KEY_MISSING",
+        "CIRCUIT_BREAKER:OPENAI_API_KEY_MISSING",
+        "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED",
+        "CIRCUIT_BREAKER:OPENAI_API_RATE_LIMITED",
+    ]):
+        d = tmp_path / str(i)
+        d.mkdir()
+        proc, summary = _run_hold(d, reason)
+        assert proc.returncode == 0, reason
+        assert "::warning::SUPPORT_HOLD" in proc.stdout
+        assert "BLOCKED_WITH_EXACT_REASON:" + reason in proc.stdout
+        assert "::error::" not in proc.stdout
+        assert "paid_retry_attempted: false" in summary
+        assert reason in summary
+
+
+def test_unexpected_admission_reasons_still_fail_the_job(tmp_path):
+    for i, reason in enumerate([
+        "PROVIDER_INVENTORY_UNVERIFIED",
+        "PRIMARY_WORKER_INVENTORY_UNVERIFIED",
+        "SPECIALIST_FAILURE_INVENTORY_UNVERIFIED",
+        "PRIMARY_PROVIDER_EVIDENCE_UNAVAILABLE",
+        "SPECIALIST_PROVIDER_EVIDENCE_UNAVAILABLE",
+        "",
+    ]):
+        d = tmp_path / str(i)
+        d.mkdir()
+        proc, _ = _run_hold(d, reason)
+        assert proc.returncode == 1, reason
+        assert "::error::BLOCKED_WITH_EXACT_REASON:" + reason in proc.stdout
+
+
+def test_hold_step_never_invokes_paid_agent_and_paid_step_stays_gated():
+    paid = _step("Specialist support subagent")
+    assert "steps.provider_admission.outputs.admit == 'true'" in paid["if"]
+    hold = _step("Surface quota-admission hold without invoking Codex")
+    assert "secrets." not in hold["run"]
+    assert "env" not in hold or "OPENAI_API_KEY" not in hold["env"]
+    assert "codex exec" not in hold["run"].lower()
