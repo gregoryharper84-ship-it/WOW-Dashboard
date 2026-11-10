@@ -11,7 +11,11 @@ from v17.basketball_team_event_calibration_artifact import (
     REVIEW_REQUIRED,
     build_shadow_binary_calibration_artifact,
 )
-from v17.multisport_team_event_calibration import BINARY_ARTIFACT_TYPE
+from v17.multisport_team_event_calibration import (
+    BINARY_ARTIFACT_TYPE,
+    apply_binary_artifact,
+    apply_platt_coefficients,
+)
 
 
 def _fit():
@@ -68,6 +72,40 @@ def test_shadow_artifact_is_hash_bound_and_not_self_certified():
     assert artifact["platt_a"] == pytest.approx(0.9)
     assert artifact["platt_b"] == pytest.approx(-0.1)
     assert 0 < artifact["residual_quantile_90"] < 1
+
+
+def test_tail_probability_matches_scoring_platt_contract_not_fit_apply():
+    """Extreme tails must use scoring clamp/clip, not PlattCoefficients.apply."""
+    # Fit stores intercept/slope as PlattCoefficients(a,b); scoring uses
+    # platt_a=slope and platt_b=intercept with 1e-6 clamp + [0.001, 0.999] clip.
+    raw_p = 1e-8
+    scoring = apply_platt_coefficients(raw_p, slope=0.2, intercept=0.0)
+    legacy_fit_apply = PlattCoefficients(a=0.0, b=0.2).apply(raw_p)
+    assert scoring == pytest.approx(0.059351, abs=1e-5)
+    assert abs(scoring - legacy_fit_apply) > 0.01
+
+    artifact = {
+        "artifact_type": BINARY_ARTIFACT_TYPE,
+        "sport": "NBA",
+        "model_family": "BASKETBALL_TEAM_EVENT_LOGISTIC_V1",
+        "model_version": "NBA_TEST",
+        "calibration_method": str(CalibrationStatus.PLATT_TIME_SPLIT_V1),
+        "calibration_version": "NBA_TEST_PLATT",
+        "training_n": 240,
+        "platt_a": 0.2,
+        "platt_b": 0.0,
+        "residual_quantile_90": 0.1,
+        "brier_score": 0.2,
+        "log_loss": 0.6,
+        "calibration_error": 0.04,
+        "source_data_hash": "a" * 64,
+        "split_hash": "b" * 64,
+        "fit_end": "2025-01-01T00:00:00+00:00",
+        "health_status": "PASS",
+        "certification_status": "PASS",
+    }
+    applied = apply_binary_artifact(raw_p, artifact, "NBA")
+    assert applied["calibrated_probability"] == pytest.approx(scoring)
 
 
 def test_shadow_artifact_rejects_short_history():

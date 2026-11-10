@@ -16,6 +16,7 @@ import numpy as np
 from calibration import CalibrationStatus, PlattFitOutcome
 from v17.multisport_team_event_calibration import (
     BINARY_ARTIFACT_TYPE,
+    apply_platt_coefficients,
     calibration_payload_sha256,
 )
 
@@ -129,7 +130,18 @@ def build_shadow_binary_calibration_artifact(
 
     raw = np.asarray(raw_probabilities, dtype=float)
     y = np.asarray(outcomes, dtype=float)
-    calibrated = np.asarray([fit.coefficients.apply(float(p)) for p in raw], dtype=float)
+    # Fit stores intercept/slope as PlattCoefficients(a,b). Scoring stores
+    # platt_a=slope and platt_b=intercept and applies the multisport contract.
+    # Residual evidence must use that same contract, not calibration.apply().
+    slope = float(fit.coefficients.b)
+    intercept = float(fit.coefficients.a)
+    calibrated = np.asarray(
+        [
+            apply_platt_coefficients(float(p), slope=slope, intercept=intercept)
+            for p in raw
+        ],
+        dtype=float,
+    )
     if not np.all(np.isfinite(calibrated)) or not np.all((calibrated > 0.0) & (calibrated < 1.0)):
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATED_HISTORY_NONFINITE")
 

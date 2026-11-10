@@ -157,3 +157,39 @@ def test_readiness_overlay_preserves_nba_hydration_blocker(monkeypatch):
     assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in nba["readiness_blockers"]
     assert "TEAM_EVENT_CERTIFICATION_NOT_ACTIVE" in nba["readiness_blockers"]
     assert nba["can_execute"] is False
+
+
+def test_installed_health_to_parity_keeps_request_dependent_certification(monkeypatch):
+    """Parity must not re-merge overlay blockers into a false REGISTERED_NOT_READY."""
+    import v17.team_event_sport_parity as parity
+
+    monkeypatch.setattr(
+        bridge_runtime, "_v17_all_sport_capability_readiness_installed", False, raising=False
+    )
+    install_all_sport_capability_readiness()
+
+    # Synthetic certified request-dependent health already annotated by overlay.
+    overlaid = {
+        **_health(),
+        "readiness_contract_version": "V17_TEAM_EVENT_OPERATIONAL_READINESS_V1",
+        "request_scoring_path_ready": True,
+        "model_capability_ready": False,
+        "operational_readiness_status": "CERTIFIED_REQUEST_DEPENDENT",
+        "operational_certification_status": "CERTIFIED_DEPENDENCIES_UNBOUND",
+        "certification_identity_status": "CERTIFIED",
+        "runtime_artifact_certification_status": "NOT_APPLICABLE",
+        "readiness_blockers": [
+            "SERVER_CALIBRATION_ARTIFACT_NOT_BOUND",
+            "BACKEND_SPORT_EVIDENCE_HYDRATOR_NOT_BOUND",
+        ],
+        "calibration_dependency_satisfied": False,
+        "hydration_dependency_satisfied": False,
+        "calibration_mode": "REQUEST_SUPPLIED_CERTIFIED_ARTIFACT",
+        "request_evidence_injection_supported": True,
+    }
+    state = parity._state_for("WNBA", overlaid)
+    assert state["request_scoring_path_ready"] is True
+    assert state["operational_readiness_status"] == "CERTIFIED_REQUEST_DEPENDENT"
+    assert state["model_capability_ready"] is False
+    assert "SERVER_CALIBRATION_ARTIFACT_NOT_BOUND" in state["readiness_blockers"]
+    assert state["can_execute"] is False

@@ -255,9 +255,15 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
     ) -> dict[str, Any]:
         health = dict(bridge_health or {})
         state = dict(original_state_for(sport, health))
-        readiness = _merge_bridge_blockers(
-            health, _readiness(str(sport or "").upper(), health)
-        )
+        # Health from readiness_health() is already overlay-complete. Re-merging
+        # would treat overlay diagnostic blockers as bridge-native and wrongly
+        # downgrade CERTIFIED_REQUEST_DEPENDENT sports during parity capture.
+        if str(health.get("readiness_contract_version") or "") == READINESS_CONTRACT_VERSION:
+            readiness = health
+        else:
+            readiness = _merge_bridge_blockers(
+                health, _readiness(str(sport or "").upper(), health)
+            )
         state.update(
             {
                 "model_capability_ready": readiness["model_capability_ready"],
@@ -272,7 +278,7 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
                     "operational_certification_status"
                 ],
                 "operational_readiness_status": readiness["operational_readiness_status"],
-                "readiness_blockers": readiness["readiness_blockers"],
+                "readiness_blockers": list(readiness.get("readiness_blockers") or []),
                 "calibration_dependency_satisfied": readiness[
                     "calibration_dependency_satisfied"
                 ],

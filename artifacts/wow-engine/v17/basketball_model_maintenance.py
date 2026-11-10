@@ -130,6 +130,11 @@ _PUBLIC_FAILURE_CODE_MAP = {
         "WNBA_TRAINING_CORPUS_STALE",
         "NBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
         "WNBA_FEATURE_REPLAY_DUPLICATE_GAME_IDS",
+        "NBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS",
+        "WNBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS",
+        "NBA_CANONICAL_DAY_READBACK_FAILED",
+        "NBA_CANONICAL_DAY_READBACK_INCOMPLETE",
+        "NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED",
         # Current-season persisted readback literals must stay typed through
         # the public mapper; otherwise provenance failures collapse to the
         # generic READBACK_FAILED fallback and hide the real blocker.

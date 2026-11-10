@@ -207,8 +207,11 @@ def test_backdated_created_at_is_replaced_with_server_clock(db):
     assert row["created_at"] != supplied
 
 
-def test_transaction_start_is_not_used_as_the_receipt_time():
+def test_transaction_start_is_not_used_as_the_receipt_time(db):
     """Reject the stale transaction-start timestamp in a delayed insert."""
+    # Require the module `db` fixture so the shadow table exists before the
+    # separate transactional connection inserts a receipt on a fresh database.
+    assert db is not None
     with _connect(autocommit=False) as tx:
         transaction_start = tx.execute("select now() as t").fetchone()["t"]
         tx.execute("select pg_sleep(0.25)")

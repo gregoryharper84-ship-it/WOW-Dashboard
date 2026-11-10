@@ -87,6 +87,21 @@ def _platt(raw_probability: float, a: float, b: float) -> float:
     return min(max(_sigmoid(a * _logit(raw_probability) + b), 0.001), 0.999)
 
 
+def apply_platt_coefficients(
+    raw_probability: float,
+    *,
+    slope: float,
+    intercept: float,
+) -> float:
+    """Apply the exact multisport scoring Platt contract.
+
+    Logit inputs are clamped at ``1e-6`` and outputs are clipped to
+    ``[0.001, 0.999]``. Basketball residual replay must use this same path so
+    calibration evidence matches later ``apply_binary_artifact`` scoring.
+    """
+    return _platt(float(raw_probability), float(slope), float(intercept))
+
+
 def _common_blockers(artifact: Mapping[str, Any], sport: str) -> list[str]:
     blockers: list[str] = []
     if str(artifact.get("sport") or "").upper() != sport.upper():
@@ -158,10 +173,10 @@ def validate_multiclass_artifact(artifact: Mapping[str, Any], sport: str = "SOCC
 
 def apply_binary_artifact(raw_probability: float, artifact: Mapping[str, Any], sport: str) -> dict[str, Any]:
     valid = validate_binary_artifact(artifact, sport)
-    calibrated = _platt(
+    calibrated = apply_platt_coefficients(
         raw_probability,
-        float(valid["platt_a"]),
-        float(valid["platt_b"]),
+        slope=float(valid["platt_a"]),
+        intercept=float(valid["platt_b"]),
     )
     return {
         "calibrated_probability": calibrated,
@@ -347,6 +362,7 @@ __all__ = [
     "CAN_EXECUTE",
     "CalibrationArtifactDigestError",
     "CalibrationArtifactInvalid",
+    "apply_platt_coefficients",
     "MIN_CALIBRATION_N",
     "MULTICLASS_ARTIFACT_TYPE",
     "apply_binary_artifact",

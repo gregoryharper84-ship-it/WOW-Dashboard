@@ -1098,7 +1098,27 @@ def test_typed_maintenance_failure_codes_never_expose_provider_or_db_details():
     assert maintenance._public_failure_code(
         RuntimeError("WNBA_TRAINING_CORPUS_EMPTY"),
         "BASKETBALL_TRAINING_REPLAY_BLOCKED",
-) == "WNBA_TRAINING_CORPUS_EMPTY"
+    ) == "WNBA_TRAINING_CORPUS_EMPTY"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError("NBA_CANONICAL_DAY_READBACK_FAILED"),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "NBA_CANONICAL_DAY_READBACK_FAILED"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError("NBA_CANONICAL_DAY_READBACK_INCOMPLETE"),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "NBA_CANONICAL_DAY_READBACK_INCOMPLETE"
+    assert maintenance._public_failure_code(
+        maintenance.BasketballHydrationError("NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED"),
+        "BASKETBALL_HYDRATION_FAILED",
+    ) == "NBA_CANONICAL_DAY_PROVIDER_UNVERIFIED"
+    assert maintenance._public_failure_code(
+        RuntimeError("NBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS sample=1,2"),
+        "BASKETBALL_TRAINING_REPLAY_BLOCKED",
+    ) == "NBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS"
+    assert maintenance._public_failure_code(
+        RuntimeError("WNBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS sample=9"),
+        "BASKETBALL_TRAINING_REPLAY_BLOCKED",
+    ) == "WNBA_TRAINING_PAGINATION_DUPLICATE_GAME_IDS"
     assert maintenance._public_failure_code(
         RuntimeError("NBA_SECRET_DATABASE_PASSWORD"),
         "BASKETBALL_HYDRATION_FAILED",
