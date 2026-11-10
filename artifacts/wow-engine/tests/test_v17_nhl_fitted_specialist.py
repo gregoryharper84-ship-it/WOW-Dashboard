@@ -1263,6 +1263,17 @@ def test_fitted_registry_bridge_output_keeps_identity_hold_and_requires_provenan
     assert unmarked_caught.value.status_code == 409
     assert unmarked_caught.value.detail["code"] == "MODEL_OUTPUT_INVALID"
 
+    for bypass_attempt in (
+        # Hold blocker and null bounds, but a non-identity calibrator.
+        {**hold, "calibration_method": nhl.EMPIRICAL_CALIBRATION_METHOD},
+        # Identity calibrator and null bounds, but no hold blocker.
+        {**hold, "blockers": []},
+    ):
+        with pytest.raises(HTTPException) as bypass_caught:
+            bridge_runtime._validate_standard_bridge_output(request, bypass_attempt)
+        assert bypass_caught.value.status_code == 409
+        assert bypass_caught.value.detail["code"] == "MODEL_OUTPUT_INVALID"
+
     broken = dict(hold)
     broken.pop("candidate_id")
     broken.pop("prediction_id")
