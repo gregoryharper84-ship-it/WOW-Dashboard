@@ -326,9 +326,13 @@ can_execute = false
 - DONE (2026-11-10): live `/governance` 1IP declaration and production
   `infrastructure_blocked=false` under concurrent market blockers.
 - Remaining owner/free Action path to close the last two
-  `DEPLOYED_NOT_OBSERVED` items: run Daily once with `max_props=0` to confirm
-  `REQUESTED_ROW_LIMIT_ZERO`, and check one Action receipt for
-  `action_invocation_attempted` vs `specialist_scoring_attempted`.
+  `DEPLOYED_NOT_OBSERVED` items: (1) observe a Daily response that reports
+  `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO` **and**
+  `lane_reconciliation.PROPS.canonicalized_count > 0` (a bare `max_props=0`
+  without that candidate condition does not close the item); (2) check one
+  owner Action receipt readback for `action_invocation_attempted` vs
+  `specialist_scoring_attempted` on a persisted PROPS row — `max_props=0`
+  cannot supply those attempt fields because it selects no PROPS rows.
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).

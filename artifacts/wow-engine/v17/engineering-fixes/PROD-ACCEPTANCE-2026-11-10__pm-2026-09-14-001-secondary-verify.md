@@ -27,8 +27,8 @@
 | --- | --- | --- |
 | `1IP_CAPABILITY_MANIFEST_DRIFT` | **FIXED_VERIFIED** | Live `/v17/governance-detail` declares `MLB / 1ST_INNING_PITCHES_THROWN` as `SUPPORTED_HOLD_ONLY`, `route_active=true`, `declared_skill_status=TEST_ONLY`, `publication_allowed=false`, `exact_line_support_policy=EXACT_CERTIFIED_LINES_ONLY_REJECT_OOD`. Strikeouts remain `CERTIFIED_PRODUCTION`. |
 | `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` | **FIXED_VERIFIED** | 418 production PROPS rows with `terminal_cause=MODEL_JUDGMENT` and `infrastructure_blocked=false` while concurrent market blockers (`MARKET_DATA_UNAVAILABLE`, `PAYOUT_UNRESOLVED`, `SETTLEMENT_RULE_UNRESOLVED`) remain listed separately. |
-| `ZERO_ROW_REASON_MISCLASSIFIED` | **DEPLOYED_NOT_OBSERVED** | Zero production Daily runs with `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO`. Unit acceptance suite still green (`48` passed including zero-row typing). |
-| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | **DEPLOYED_NOT_OBSERVED** | Compact Daily row-detail persistence does not currently store `action_invocation_attempted` / `specialist_scoring_attempted` (0 matching rows). Unit receipt-split tests remain green. Needs one owner Action/receipt readback or a free `max_props=0` Daily that persists those fields. |
+| `ZERO_ROW_REASON_MISCLASSIFIED` | **DEPLOYED_NOT_OBSERVED** | Zero production Daily runs with `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO`. Unit acceptance suite still green (`48` passed including zero-row typing). A future observational Daily must also show `lane_reconciliation.PROPS.canonicalized_count > 0` before this item can close — a bare `max_props=0` response without that candidate condition is not sufficient. |
+| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | **DEPLOYED_NOT_OBSERVED** | Compact Daily row-detail persistence does not currently store `action_invocation_attempted` / `specialist_scoring_attempted` (0 matching rows). Unit receipt-split tests remain green. Close only via owner Action/receipt readback that persists those attempt fields on a PROPS row — a `max_props=0` Daily cannot persist attempt fields because no PROPS rows are selected. |
 
 Regression suite re-run for secondary contracts (local `.venv`):  
 `test_receipt_semantics_split.py`, `test_daily_response_contract_acceptance.py`, `test_prop_capability_manifest.py`, `test_daily_terminal_reduction.py` → **48 passed**.
@@ -46,6 +46,20 @@ Regression suite re-run for secondary contracts (local `.venv`):
 - Live governance: NBA `MODEL_UNAVAILABLE` / unregistered; NHL registered but `model_artifact_present=false` / `REGISTERED_NOT_READY`.
 - Persistence: NBA/WNBA fitted artifact + calibrator rows exist (`promoted=false`, `active=false` for all 114 NBA model artifacts). Certification table empty. Confirms need for current-pregame hydration + publication bridge (#2472 family) rather than more plumbing.
 - Restorative PRs: #2509 NHL fitted specialist refreshed onto main (tests 30 passed locally); #2472 NBA remains CONFLICTING and is the canonical restorative path.
+
+## Independent re-verify (2026-11-10T14:55Z, unpaid)
+
+| Probe | Result |
+| --- | --- |
+| Live web deploy | `dep-dbpin52vcj2c73d9c1g0` SHA `e7384b9d2fed3256681b25715516dff2e97d3233` status `live` |
+| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| `/governance` | `can_execute=false`, `V17_TERMINAL_REDUCER`, `deployment_gates.status=PASS`, `deployed_sha=e7384b9d…` |
+| `wow_predictions` | 4709 rows; newest still `2026-11-09T15:38:05Z` |
+| `wow_nfl_event_predictions` | 1741 rows; `can_execute` never true; all 1741 still `model_probability_publishable=true` (#2512 residual in stored history) |
+| Newest Daily | `v17-daily-async-92c5c484-…` completed `2026-11-09T15:35:36Z` (still pre-safety); post-safety Daily **ABSENT** |
+| NFL forward health | `graded_n=94` / `minimum_forward_required=100`; `INSUFFICIENT_FORWARD_EVIDENCE`; `DO_NOT_CERTIFY_YET`; blocker `FORWARD_GRADED_N_94_LT_100` |
+| NBA / NHL live | NBA `MODEL_UNAVAILABLE` / unregistered; NHL `REGISTERED_NOT_READY` (`model_artifact_present=false`) |
+| NFL forward Action | Legitimate grading is `workflow_dispatch` / daily cron `wow-v17-nfl-forward-shadow` only (OIDC). Agent cannot mint OIDC or dispatch that workflow from this session. |
 
 ## Closure gate
 
