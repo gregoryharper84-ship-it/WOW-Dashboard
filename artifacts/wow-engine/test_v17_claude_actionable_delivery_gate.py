@@ -463,6 +463,16 @@ def test_printf_named_step_does_not_hide_emitted_provider_error():
     assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
     assert result.failover_eligible is True
 
+def test_echo_receipt_step_label_does_not_hide_real_emitted_provider_error():
+    log = "\\n".join([
+        '2026-11-10T15:00:01Z [Echo receipt] echo "::error::OPENAI_API_KEY is required"',
+        "2026-11-10T15:00:02Z [Echo receipt] ##[error]insufficient_quota",
+    ])
+    result = _classifier()("openai", log)
+    assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
+    assert result.failover_eligible is True
+
+
 def test_script_text_alone_is_not_a_typed_outcome():
     result = _classifier()("anthropic", _delivery_shell())
     assert not result.code.startswith("ACTIONABLE_REPAIR_")
