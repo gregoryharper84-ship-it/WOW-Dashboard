@@ -18,6 +18,7 @@ CONTRACT = "V17_UPSET_MARKET_DIAGNOSTICS_RESEARCH_V1"
 
 
 def _timestamp(raw: Any) -> datetime:
+    """Require an absolute timestamp so future and stale quotes can be rejected."""
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("MARKET_TIMESTAMP_MISSING")
     try:
@@ -30,6 +31,7 @@ def _timestamp(raw: Any) -> datetime:
 
 
 def _probability(raw: Any, code: str) -> float:
+    """Accept only finite numeric probabilities, excluding coerced booleans."""
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise ValueError(code)
     value = float(raw)
@@ -39,6 +41,7 @@ def _probability(raw: Any, code: str) -> float:
 
 
 def _american_implied(raw: Any) -> float:
+    """Convert valid American odds to a raw implied probability with vig."""
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise ValueError("MARKET_ODDS_INVALID")
     odds = float(raw)
