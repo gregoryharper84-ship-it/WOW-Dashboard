@@ -188,3 +188,120 @@ def test_refresh_pass_never_upgrades_a_prior_sql_hold():
     assert out["rank_eligible"] is False
     assert out["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert out["llp_governance"]["final_refresh"]["final_refresh_status"] == "PASS"
+
+
+def _remote_capture(**overrides):
+    return {
+        "source_status": "CAPTURED",
+        "content_sha256": HASH,
+        "fetched_at": (NOW - timedelta(minutes=1)).isoformat(),
+        "row_count": 1000,
+        "resolved_url": "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv",
+        **overrides,
+    }
+
+
+def test_aged_identical_immutable_schedule_is_rechecked_without_mutation(monkeypatch):
+    old = _new_snapshot(
+        canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+    )
+    calls = []
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: calls.append("remote") or _remote_capture(),
+    )
+    proof = _refresh(monkeypatch, snapshot=old)
+    assert calls == ["remote"]
+    assert proof["final_refresh_status"] == "PASS"
+    assert proof["reasons"] == []
+    assert proof["refresh_source_snapshot_id"] == "latest-snapshot"
+    assert proof["refresh_origin"] == "ALLOWLISTED_REMOTE_SOURCE_RECHECK"
+    assert proof["remote_refresh_content_sha256"] == HASH
+    assert proof["remote_refresh_stored_snapshot"] is False
+    assert proof["rerun_required"] is False
+    assert proof["can_execute"] is False
+
+
+def test_aged_remote_schedule_with_different_bytes_requires_model_rerun(monkeypatch):
+    old = _new_snapshot(
+        canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+    )
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: _remote_capture(content_sha256="b" * 64),
+    )
+    proof = _refresh(monkeypatch, snapshot=old)
+    assert proof["final_refresh_status"] == "HOLD"
+    assert "FINAL_REFRESH_MATERIAL_SOURCE_CHANGED" in proof["reasons"]
+    assert proof["probability_invalidated"] is True
+    assert proof["rerun_required"] is True
+
+
+def test_aged_remote_schedule_failure_stays_held_not_model_unavailable(monkeypatch):
+    old = _new_snapshot(
+        canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+    )
+    def fails():
+        raise TimeoutError("upstream timeout")
+    monkeypatch.setattr(nfl, "_remote_nfl_schedule_recheck", fails)
+    proof = _refresh(monkeypatch, snapshot=old)
+    assert proof["final_refresh_status"] == "HOLD"
+    assert "FINAL_REFRESH_SOURCE_UNAVAILABLE" in proof["reasons"]
+    assert "FINAL_REFRESH_SOURCE_STALE_OR_INVALID" in proof["reasons"]
+    assert proof["can_execute"] is False
+
+
+@pytest.mark.parametrize("invalid", [
+    {"source_status": "CAPTURED_EMPTY"},
+    {"content_sha256": "not-a-sha"},
+    {"row_count": 0},
+    {"fetched_at": "no-timestamp"},
+    {"resolved_url": ""},
+])
+def test_aged_remote_capture_requires_valid_source_proof(monkeypatch, invalid):
+    old = _new_snapshot(
+        canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+    )
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: _remote_capture(**invalid),
+    )
+    proof = _refresh(monkeypatch, snapshot=old)
+    assert proof["final_refresh_status"] == "HOLD"
+    assert "FINAL_REFRESH_SOURCE_UNAVAILABLE" in proof["reasons"]
+    assert proof["can_execute"] is False
+
+
+def test_remote_recheck_never_masks_changed_stored_snapshot(monkeypatch):
+    old = _new_snapshot(
+        schedule_content_sha256="b" * 64,
+        canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+    )
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: pytest.fail("different stored bytes must require rerun"),
+    )
+    proof = _refresh(monkeypatch, snapshot=old)
+    assert "FINAL_REFRESH_MATERIAL_SOURCE_CHANGED" in proof["reasons"]
+    assert proof["rerun_required"] is True
+
+
+def test_fresh_source_does_not_trigger_extra_remote_download(monkeypatch):
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: pytest.fail("fresh stored source must not require remote download"),
+    )
+    assert _refresh(monkeypatch)["final_refresh_status"] == "PASS"
+
+
+def test_remote_recheck_future_capture_fails_closed(monkeypatch):
+    old = _new_snapshot(
+        canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+    )
+    monkeypatch.setattr(
+        nfl, "_remote_nfl_schedule_recheck",
+        lambda: _remote_capture(fetched_at=(NOW + timedelta(seconds=5)).isoformat()),
+    )
+    proof = _refresh(monkeypatch, snapshot=old)
+    assert "FINAL_REFRESH_SOURCE_STALE_OR_INVALID" in proof["reasons"]
+    assert proof["final_refresh_status"] == "HOLD"
