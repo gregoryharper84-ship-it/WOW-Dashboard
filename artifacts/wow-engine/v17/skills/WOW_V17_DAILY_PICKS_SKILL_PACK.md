@@ -67,6 +67,12 @@ Use when a PrizePicks board/PDF/screenshots/pasted board is supplied and the use
 5. Preserve individual sporting probabilities exactly. Card-level independence estimates are portfolio math only and must never be relabeled governed sporting probability.
 6. Shrink the card rather than add filler or unresolved dependent legs.
 
+## Explicit full-slate game-winner card (NFL/NBA/NHL)
+
+When the user requests all NFL, NBA and NHL game winners rather than a shortlist or cash singles, discover and independently verify every official scheduled playable event and use the existing LLP team/event synthesis owner. Present exactly **one researched winner per playable event**. No discretionary PASS for weak evidence, conflicting sources or missing certified probability: deepen injury, QB/goalie, rotation, volatility, scenario and current market reconciliation. Keep qualitative uncertainty visible, without asserting certified Full Model provenance.
+
+Run read-only v17.llp_research_winner_card.audit_research_winner_card as the research user-card coverage preflight. Report its board_complete separately from research_evidence_fully_reconciled and from qualified fitted-model coverage. An unverified slate or incomplete/late/duplicate selection is an actual incomplete result, never silently filled by the validator. Model/terminal HOLD is preserved. Keep upset watch, fitted probabilities, research winners and submitted NFL Pick'em entries separated. Never mutate the shared Sheet, wager or automatically submit an entry.
+
 ## Retrospective research winner-card discipline
 
 When reviewing yesterday's NFL/NBA/NHL research-only preferred winner card, run the read-only `v17.llp_research_card_retro.audit_research_card` contract with authentic frozen pregame receipts, an independently verified official slate, and independent settled results. Report `PREFERRED` and `UPSET_WATCH` cohorts separately; show missing receipts/results as HELD, and do not show an overall headline accuracy when slate reconciliation fails.
