@@ -707,6 +707,17 @@ def main(argv: list[str] | None = None) -> int:
         result = {"status": "HELD", "code": "GEMINI_ADMISSION_OR_EVIDENCE_INVALID",
                   "error_type": type(exc).__name__, "can_execute": False,
                   "terminal_authority": MODEL_AUTHORITY}
+    # The workflow redirects our structured receipt to a private artifact. Its
+    # generic GEMINI_MODEL_TYPED_FAILURE summary otherwise hides the exact,
+    # already-redacted classifier code from engineering and automatic triage.
+    # Emit only a fixed-vocabulary code; never echo stderr, response text,
+    # provider exceptions, source prompts, paths or credentials into CI logs.
+    if args.action == "classify" and result["status"] != "COMPLETED":
+        observed = result.get("code")
+        safe_code = (observed if isinstance(observed, str)
+                     and re.fullmatch(r"GEMINI_[A-Z0-9_]+", observed)
+                     else "GEMINI_CLASSIFIER_FAILED")
+        print(f"::error::WOW_GEMINI_CLASSIFIED_FAILURE:{safe_code}", file=sys.stderr)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
         "SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TRUSTED",
