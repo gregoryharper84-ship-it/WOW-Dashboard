@@ -347,6 +347,9 @@ def test_research_card_retro_is_separate_from_fitted_calibration_and_not_automat
         "frozen_at_utc": "2026-11-08T15:00:00Z",
         "available_to_user_at_utc": "2026-11-08T15:00:00Z",
         "source_as_of_utc": "2026-11-08T14:00:00Z",
+        "research_inputs": [
+            {"factor": "TEAM_AVAILABILITY", "available_to_user_at_utc": "2026-11-08T14:00:00Z"},
+        ],
     }
     settled = {
         "sport": "NFL", "official_event_id": "fixture-nfl-01",
