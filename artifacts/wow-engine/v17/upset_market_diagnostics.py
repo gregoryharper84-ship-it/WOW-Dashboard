@@ -54,9 +54,11 @@ def no_vig_probabilities(
 ) -> dict[str, float]:
     """Explicit, deterministic margin removal for exact two/three-way markets.
 
-    'power' solves sum(raw_i ** exponent) == 1; 'multiplicative'
-    divides each raw probability by the sum. Neither is presumed superior
-    until tested against the sport/market's held-out historical results.
+    'power' solves sum(raw_i ** exponent) == 1, pinned as this
+    RESEARCH contract's primary reference; 'multiplicative' divides
+    probabilities by their sum and is strictly a sensitivity comparator.
+    Their longshot results differ. Neither constitutes a model or
+    independently validated sporting information edge.
     """
     if method not in {"power", "multiplicative"}:
         raise ValueError("MARKET_NO_VIG_METHOD_UNSUPPORTED")
@@ -101,7 +103,8 @@ def analyze_upset_market_snapshot(
 ) -> dict[str, Any]:
     """Evaluate source-visible market disagreement, never a certified edge.
 
-    Each book quote requires official_event_id, market_type, settlement_basis,\n    book, source_snapshot_id, captured_at_utc, and
+    Each book quote requires official_event_id, market_type, settlement_basis,
+    book, source_snapshot_id, captured_at_utc, and
     american_odds for the complete matching market outcome space. Historical
     empirical reference probabilities require a separately identified,
     pre-decision reference-class receipt. No informational edge is assumed
@@ -193,7 +196,10 @@ def analyze_upset_market_snapshot(
             "governed_upper_bound_unchanged": hi,
             "no_vig_market_probability": market_p,
             "cross_book_probability_range": max(per_book) - min(per_book),
+            # This is a difference between two separately sourced probability
+            # claims; it does not establish model skill or betting value.
             "market_disagreement": p - market_p,
+            "market_disagreement_reason_code": "MODEL_MARKET_DISAGREEMENT_UNVALIDATED",
             "conservative_disagreement": lo - max(per_book),
             "reference_class_bias_component": (
                 refs[label] - market_p if refs is not None else None
@@ -202,6 +208,10 @@ def analyze_upset_market_snapshot(
                 p - refs[label] if refs is not None else None
             ),
             "is_non_market_favorite": favorite is not None and label != favorite,
+            "information_edge_status": (
+                "BIAS_DECOMPOSITION_AVAILABLE_INFORMATION_EDGE_UNPROVEN"
+                if refs is not None else "REFERENCE_CLASS_UNAVAILABLE_INFORMATION_EDGE_UNPROVEN"
+            ),
             "information_edge_proven": False,
             "automatic_pick_promotion": False,
         }
@@ -218,6 +228,8 @@ def analyze_upset_market_snapshot(
         "source_snapshot_ids": sources,
         "governed_receipt_id": governed_receipt_id,
         "no_vig_method": method,
+        "no_vig_method_role": "PRIMARY_RESEARCH" if method == "power" else "SENSITIVITY_ONLY",
+        "no_vig_method_contract_version": "V17_POWER_PRIMARY_V1",
         "reference_class_receipt_id": reference_class_receipt_id if refs is not None else None,
         "outcomes": detail,
         "market_probability_is_sporting_model": False,
