@@ -47,7 +47,7 @@ from v17.daily_terminal_reduction import (
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
-from v17.prop_canonical_identity import canonical_source_snapshot_ids, canonical_sporting_key, canonicalize_prop_manifest
+from v17.prop_canonical_identity import canonical_event_start_time, canonical_source_snapshot_ids, canonical_sporting_key, canonicalize_prop_manifest
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
@@ -198,6 +198,7 @@ def _prop_manifest_rows(
     excluded: list[dict[str, Any]] = []
     excluded_count = 0
     reason_counts: dict[str, int] = {}
+    retained_by_reason: dict[str, int] = {}
     retain_ids = retain_exclusion_snapshot_ids or set()
     active: dict[tuple[str, ...], dict[str, Any]] = {}
     seen_keys: set[tuple[str, ...]] = set()
@@ -211,19 +212,20 @@ def _prop_manifest_rows(
 
     def account(row: dict[str, Any]) -> None:
         nonlocal excluded_count
-        if row.get("blockers"):
-            reason = "EVIDENCE_BLOCKED"
-        elif not _future(row.get("event_start_time")):
+        if not _future(row.get("event_start_time")):
             reason = "EVENT_NOT_PREGAME"
         elif not _matching_slate(row, requested_date, requested_timezone):
             reason = "NOT_REQUESTED_SLATE"
+        elif row.get("blockers"):
+            reason = "EVIDENCE_BLOCKED"
         else:
             manifest.append(row)
             return
         excluded_count += 1
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
         ids = canonical_source_snapshot_ids([row])
-        if len(excluded) < 50 or ids & retain_ids:
+        if retained_by_reason.get(reason, 0) < 50 or ids & retain_ids:
+            retained_by_reason[reason] = retained_by_reason.get(reason, 0) + 1
             excluded.append({
                 **{key: row.get(key) for key in (
                     "source_snapshot_id", "event_id", "sport", "player", "stat_type", "line",
@@ -245,7 +247,7 @@ def _prop_manifest_rows(
             row = dict(raw)
             raw_count += 1
             key = canonical_sporting_key(row)
-            row_time = key[2] if key is not None else str(row.get("event_start_time") or "")
+            row_time = canonical_event_start_time(row.get("event_start_time"))
             if group_time is not None and row_time != group_time:
                 for candidate in active.values():
                     account(candidate)
@@ -273,6 +275,10 @@ def _prop_manifest_rows(
         offset += page_size
     for candidate in active.values():
         account(candidate)
+    excluded.sort(key=lambda row: (
+        0 if canonical_source_snapshot_ids([row]) & retain_ids else 1,
+        0 if row["reason"] == "EVIDENCE_BLOCKED" else 1,
+    ))
     if exclusions is not None:
         exclusions.extend(excluded)
     if stats is not None:
@@ -403,7 +409,7 @@ def _lane_reconciliation(
             # canonical lane is empty. Reporting NO_CANONICAL_CANDIDATES here
             # misattributes a client-requested bound to missing upstream data.
             zero_row_reason = "REQUESTED_ROW_LIMIT_ZERO"
-        elif exclusions:
+        elif any(row.get("reason") == "EVIDENCE_BLOCKED" for row in (exclusions or [])):
             zero_row_reason = "ALL_CANONICAL_CANDIDATES_EXCLUDED"
         else:
             zero_row_reason = "NO_CANONICAL_CANDIDATES"
@@ -818,6 +824,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     true_zero_upstream = (
         "PROPS" in requested_lanes
         and not prop_manifest
+        and not (prop_read_stats.get("excluded_by_reason") or {}).get("EVIDENCE_BLOCKED")
         and prop_counts["lane_discovered_raw"] == 0
         and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
         and not any(x in blockers for x in ("PROP_SNAPSHOT_INGESTION_EMPTY", "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"))
