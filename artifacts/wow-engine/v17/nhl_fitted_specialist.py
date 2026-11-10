@@ -768,7 +768,7 @@ def reconstruct_nhl_pregame_features(
 
 
 def _apply_calibrator(raw: float, calibrator: Mapping[str, Any]) -> tuple[float, float | None, float | None]:
-    """Apply the certified calibrator to a raw model probability."""
+    """Apply a candidate calibrator to a raw model probability."""
     method = str(calibrator.get("method") or "")
     if method == IDENTITY_CALIBRATION_METHOD:
         return raw, None, None

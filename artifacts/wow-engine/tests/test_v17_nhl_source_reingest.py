@@ -951,4 +951,10 @@ def test_reingest_maps_an_unexpected_post_write_verification_failure(monkeypatch
     assert "persistence" in result["detail"]
     assert result["can_execute"] is False
     # Persistence already landed; typed verification failure must not erase that fact.
-    assert "wow_d1_source_events" in db.rows
+    # Preflight select can create the table key via setdefault — require real writes.
+    written = db.rows.get("wow_d1_source_events") or []
+    assert len(written) > 0
+    assert any(
+        table == "wow_d1_source_events" and mode == "upsert" and count > 0
+        for table, mode, count in db.operations
+    )
