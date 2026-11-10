@@ -226,3 +226,123 @@ approximate; they are not dispositions and must not be treated as outcomes.
 | `SOCCER_RESULT_FORM_1X2_PRIOR_V1` | `v17/soccer_multiclass_certification_evidence.py` |
 
 <!-- sport-status-registry:SOCCER:end -->
+
+<!-- sport-status-registry:MLB:begin -->
+## MLB success and informational dispositions (November 2026)
+
+Emitted by the modules named below. Every disposition is informational only:
+none of them grants probability or publication authority, and none may be read
+as a certification.
+
+| Code | Emitting function | Emitting module | Meaning | Grants authority? |
+|---|---|---|---|---|
+| `MLB_1IP_EXACT_LINE_EXPANSION_CERTIFIED` | `run_mlb_1ip_line_expansion_maintenance` | `v17/mlb_1ip_line_expansion_maintenance.py` | Informational disposition emitted by `run_mlb_1ip_line_expansion_maintenance`; grants no authority. | None |
+| `MLB_1IP_LINE_EXPANSION_ALREADY_CERTIFIED` | `run_mlb_1ip_line_expansion_maintenance` | `v17/mlb_1ip_line_expansion_maintenance.py` | Informational disposition emitted by `run_mlb_1ip_line_expansion_maintenance`; grants no authority. | None |
+| `MLB_RUN_LINE_FORWARD_SHADOW_COMPLETE` | `run_mlb_run_line_forward_shadow` | `v17/mlb_run_line_shadow.py` | Informational disposition emitted by `run_mlb_run_line_forward_shadow`; grants no authority. | None |
+| `MLB_RUN_LINE_FORWARD_SHADOW_READY` | `run_mlb_run_line_shadow_preflight` | `v17/mlb_run_line_shadow.py` | Informational disposition emitted by `run_mlb_run_line_shadow_preflight`; grants no authority. | None |
+| `MLB_TEAM_EVENT_CALLER_EVIDENCE_FALLBACK_READY` | `_caller_fallback` | `v17/mlb_team_event_hydration.py` | Informational disposition emitted by `_caller_fallback`; grants no authority. | None |
+| `MLB_TEAM_EVENT_CANONICAL_ACQUISITION_ATTEMPTED` | `_capture_requested_slate` | `v17/mlb_team_event_hydration.py` | Informational disposition emitted by `_capture_requested_slate`; grants no authority. | None |
+| `MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY` | `resolve_mlb_team_event_evidence` | `v17/mlb_team_event_hydration.py` | Informational disposition emitted by `resolve_mlb_team_event_evidence`; grants no authority. | None |
+
+### MLB literals that are not governed codes
+
+Model families, artifact/feature versions, table and metric names, and capture
+stream names. They are listed so the coverage check is exact rather than
+approximate; they are not dispositions and must not be treated as outcomes.
+
+| Literal | Emitting module |
+|---|---|
+| `MLB_1IP_BF_CONDITIONAL_TOTAL_PITCH_PMF_V1` | `mlb_1ip_empirical_pmf.py` |
+| `MLB_1IP_BF_DIRICHLET_SHRINKAGE_V1` | `mlb_1ip_bf_model.py` |
+| `MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1` | `mlb_1ip_empirical_pmf.py` |
+| `MLB_1IP_EMPIRICAL_CAL_V1` | `mlb_1ip_artifact_pipeline.py` |
+| `MLB_1IP_EMPIRICAL_SPECIALIST` | `mlb_1ip_ingress_runtime.py` |
+| `MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1` | `mlb_1ip_empirical_pmf.py` |
+| `MLB_1IP_EVENT_TREE_EMPIRICAL_V1` | `mlb_1ip_artifact_pipeline.py` |
+| `MLB_1IP_EVENT_TREE_TRANSFORM_V1` | `mlb_1ip_artifact_pipeline.py` |
+| `MLB_1IP_EXACT_LINE_EXPANSION_14_5_16_5_INDEPENDENT_EARLY_2026` | `v17/mlb_1ip_line_expansion_maintenance.py` |
+| `MLB_1IP_FEATURES_V1` | `mlb_1ip_artifact_pipeline.py` |
+| `MLB_1IP_PLAYER_CONDITIONED_BF_MIXTURE_V1` | `mlb_1ip_player_conditioned.py` |
+| `MLB_1IP_PLAYER_CONDITIONED_TEMPORAL_CAL_V1` | `mlb_1ip_player_conditioned.py` |
+| `MLB_1IP_PLAYER_SHIFTED_AGGREGATE_WILSON_V1` | `mlb_1ip_player_conditioned.py` |
+| `MLB_EXTRA_INNING_FINAL_MARGIN_EMPIRICAL_V1` | `v17/mlb_extra_inning_margin_challenger.py` |
+| `MLB_EXTRA_INNING_MARGIN_EVIDENCE_V1` | `v17/mlb_extra_inning_margin_challenger.py` |
+| `MLB_GAME_WIN_PAIRED_RUN_FEATURES_V1` | `v17/mlb_game_winner_shadow_evaluation.py` |
+| `MLB_GAME_WIN_SHADOW_FEATURES_V1` | `v17/mlb_game_winner_shadow_challenger.py` |
+| `MLB_GAME_WIN_SHADOW_PLATT_V1` | `v17/mlb_game_winner_shadow_challenger.py` |
+| `MLB_GAME_WIN_SHADOW_SHARPNESS_V17` | `v17/mlb_game_winner_shadow_challenger.py` |
+| `MLB_GAME_WIN_SHADOW_SHARPNESS_V17_R1` | `v17/mlb_game_winner_shadow_challenger.py` |
+| `MLB_LINEUP_PLATOON_SHRINK_V1` | `mlb_event_specialist_v16.py` |
+| `MLB_MSD_V17_DYNAMIC_CALIBRATION_V1` | `v17/mlb_starter_sequencing_dispersion_contract.py` |
+| `MLB_MSD_V17_FEATURES_V1` | `v17/mlb_starter_sequencing_dispersion_contract.py` |
+| `MLB_OFFICIAL_FEED_WEATHER_V1` | `mlb_event_specialist_v16.py` |
+| `MLB_STARTER_SEQUENCING_DISPERSION_V17` | `v17/mlb_starter_sequencing_dispersion_contract.py` |
+| `MLB_STATS_API_1IP_PLAYBYPLAY` | `mlb_1ip_live_acquisition.py` |
+| `MLB_STATS_API_CROSS_SEASON_HISTORY` | `v17/mlb_pitcher_fantasy_score_hydration.py` |
+| `MLB_STATS_API_LINEUP` | `mlb_1ip_live_acquisition.py` |
+| `MLB_STATS_API_OFFICIAL_1IP_V1` | `mlb_1ip_live_acquisition.py` |
+| `MLB_STATS_API_OFFICIAL_PITCHER_FANTASY_SCORE_V1` | `v17/mlb_pitcher_fantasy_score_hydration.py` |
+| `MLB_STATS_API_OFFICIAL_V1` | `v17/mlb_prop_evidence_control_plane.py` |
+| `MLB_STATS_API_PITCHING_GAME_LOG` | `v17/mlb_pitcher_fantasy_score_hydration.py` |
+| `MLB_STATS_API_PLAYER_IDENTITY` | `v17/mlb_pitcher_fantasy_score_hydration.py` |
+| `MLB_STATS_API_PROBABLE_PITCHER` | `mlb_1ip_live_acquisition.py` |
+| `MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER` | `v17/mlb_pitcher_fantasy_score_hydration.py` |
+| `MLB_V16_V2D_CONTEXT_SHARED_SIM_R1` | `mlb_event_specialist_v16.py` |
+| `MLB_V16_V2D_RUN_LINE_SHADOW_V1` | `v17/mlb_run_line_shadow.py` |
+| `MLB_V2D_2024_TRAIN_2022_2024_HOME_PRIOR_R1` | `v17/mlb_event_feature_contract.py` |
+| `MLB_V2D_CONTEXT_V1` | `mlb_event_specialist_v16.py` |
+
+<!-- sport-status-registry:MLB:end -->
+
+<!-- sport-status-registry:WNBA:begin -->
+## WNBA success and informational dispositions (November 2026)
+
+Emitted by the modules named below. Every disposition is informational only:
+none of them grants probability or publication authority, and none may be read
+as a certification.
+
+| Code | Emitting function | Emitting module | Meaning | Grants authority? |
+|---|---|---|---|---|
+| `WNBA_COMPOSITE_CANDIDATE_REGISTERED` | `derive_and_register_candidate` | `v17/wnba_composite_candidate_registry.py` | Informational disposition emitted by `derive_and_register_candidate`; grants no authority. | None |
+| `WNBA_COMPOSITE_CANDIDATE_REGISTRATION_COMPLETE` | `derive_and_register_candidate` | `v17/wnba_composite_candidate_registry.py` | Informational disposition emitted by `derive_and_register_candidate`; grants no authority. | None |
+| `WNBA_COMPOSITE_RESEARCH_EVIDENCE_ONLY` | `candidate_preflight` | `v17/wnba_composite_candidate_bridge.py` | Informational disposition emitted by `candidate_preflight`; grants no authority. | None |
+| `WNBA_RAW_HISTORY_PERSISTED` | `hydrate_wnba_history` | `wnba_history_runtime.py` | Informational disposition emitted by `hydrate_wnba_history`; grants no authority. | None |
+
+### WNBA literals that are not governed codes
+
+Model families, artifact/feature versions, table and metric names, and capture
+stream names. They are listed so the coverage check is exact rather than
+approximate; they are not dispositions and must not be treated as outcomes.
+
+| Literal | Emitting module |
+|---|---|
+| `WNBA_CDN_SCHEDULE_CURRENT` | `v17/wnba_prop_evidence_control_plane.py` |
+| `WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE` | `v17/wnba_official_schedule_web_fallback.py` |
+| `WNBA_COMPOSITE` | `v17/wnba_composite_candidate_bridge.py` |
+| `WNBA_COMPOSITE_EMPIRICAL_RESIDUAL_JOINT_V1` | `v17/wnba_composite_fitted_candidate.py` |
+| `WNBA_COMPOSITE_FROM_JOINT_COMPONENT_RESIDUAL_V1` | `v17/wnba_composite_candidate_registry.py` |
+| `WNBA_FANTASY_SCORE_EMPIRICAL_RESIDUAL` | `v17/wnba_composite_candidate_registry.py` |
+| `WNBA_LIVEDATA_SCOREBOARD_10_RENDER_RECOVERY` | `v17/wnba_prop_evidence_control_plane.py` |
+| `WNBA_LIVEDATA_SCOREBOARD_RECOVERY_USED` | `v17/wnba_prop_evidence_control_plane.py` |
+| `WNBA_OFFICIAL_INJURY_REPORT` | `v17/wnba_composite_auto_hydration.py` |
+| `WNBA_OFFICIAL_SCHEDULE_API` | `v17/wnba_official_schedule_web_fallback.py` |
+| `WNBA_OFFICIAL_SCHEDULE_CURRENT_ROSTERS` | `v17/wnba_prop_evidence_acquisition.py` |
+| `WNBA_OFFICIAL_SCHEDULE_WEB_SSR` | `v17/wnba_official_schedule_web_fallback.py` |
+| `WNBA_OFFICIAL_STATS_CDN_FORWARD_V1` | `v17/wnba_prop_evidence_acquisition.py` |
+| `WNBA_OFFICIAL_STATS_CDN_INJURY_COMPOSITE_V1` | `v17/wnba_composite_auto_hydration.py` |
+| `WNBA_OFFICIAL_STATS_CDN_INJURY_V1` | `wnba_prop_auto_hydration.py` |
+| `WNBA_PRECALIBRATION_MOVING_BLOCK_BOOTSTRAP_V1` | `wnba_prop_calibration_adapter.py` |
+| `WNBA_PROP_POISSON_LOGGLM_V1` | `v17/wnba_prop_candidate_registry.py` |
+| `WNBA_PROP_PRECALIBRATION_BOOTSTRAP_V1` | `wnba_prop_calibration_adapter.py` |
+| `WNBA_ROTATION_PLAYER` | `v17/wnba_composite_auto_hydration.py` |
+| `WNBA_SCHEDULE_URL` | `v17/wnba_prop_evidence_control_plane.py` |
+| `WNBA_STATS_COMMON_TEAM_ROSTER` | `v17/wnba_composite_auto_hydration.py` |
+| `WNBA_STATS_LEAGUE_GAME_LOG` | `v17/wnba_composite_auto_hydration.py` |
+| `WNBA_STATS_SCOREBOARD_V3` | `v17/wnba_spread_event_identity.py` |
+| `WNBA_STATS_SCOREBOARD_V3_RECOVERY_USED` | `v17/wnba_prop_evidence_control_plane.py` |
+| `WNBA_STATS_SCOREBOARD_V3_RENDER_RECOVERY` | `v17/wnba_prop_evidence_control_plane.py` |
+| `WNBA_STATS_TO_ESPN_ABBREVIATION` | `v17/wnba_team_identity_aliases.py` |
+| `WNBA_TRAINING_INGEST_PRE_SOURCE` | `wnba_prop_training_contract.py` |
+| `WNBA_TRAINING_SOURCE_PRE_RESULT` | `wnba_prop_training_contract.py` |
+
+<!-- sport-status-registry:WNBA:end -->

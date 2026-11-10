@@ -30,12 +30,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FAILURE_DOC = ROOT / "docs" / "failure_codes.md"
 STATUS_DOC = ROOT / "docs" / "sport_status_registries.md"
 
-SPORTS = ("NFL", "NBA", "NCAAF", "NCAAB", "TENNIS", "SOCCER")
+SPORTS = ("NFL", "NBA", "NCAAF", "NCAAB", "MLB", "WNBA", "TENNIS", "SOCCER")
 SPORT_LABEL = {
     "NFL": "NFL",
     "NBA": "NBA",
     "NCAAF": "NCAAF",
     "NCAAB": "NCAAB",
+    "MLB": "MLB",
+    "WNBA": "WNBA",
     "TENNIS": "Tennis",
     "SOCCER": "Soccer",
 }
@@ -52,12 +54,14 @@ FAILURE_TOKENS = (
     "CONTRADICTION", "REQUIRED", "NONFINITE", "NONNUMERIC", "REUSED",
     "UNCALIBRATED", "AFTER_FEATURE", "AFTER_KICKOFF", "AFTER_CUTOFF",
     "IN_FUTURE", "TOO_LARGE", "NEGATIVE", "ROW_LIMIT", "UNRECOGNIZED",
+    "CONTRADICTS", "EXCEPTION", "OUTSIDE", "BLOCKERS", "BELOW",
+    "UNEXPECTED", "UNMAPPED",
 )
 
 STATUS_TOKENS = (
     "PERSISTED", "BUILT", "COMPLETE", "COMPLETED", "REGISTERED", "CONFIRMED",
     "RECONCILED", "READY", "ELIGIBLE", "SUPPORTED", "PASS", "RESEARCH_ONLY",
-    "EVIDENCE_ONLY",
+    "EVIDENCE_ONLY", "CERTIFIED", "ATTEMPTED",
 )
 
 # Model families, artifact/feature schema versions, table names, metric names
@@ -77,8 +81,15 @@ EXCLUDED_EXACT = {
     "NCAAF_WATCH", "NCAAF_TRUSTED", "NCAAF_TEST_ONLY", "NCAAF_SCALE_ELIGIBLE",
     "NCAAF_PRIMARY_CANDIDATE", "NCAAF_SETTLED_PRIOR_RESULTS_RECONSTRUCTION_V1",
     "NCAAF_PROP_CANONICAL_STAT_NORMALIZATION_AND_TRAINING_CORPUS",
+    "MLB_1IP_EMPIRICAL_SPECIALIST",
+    "WNBA_COMPOSITE", "WNBA_SCHEDULE_URL", "WNBA_ROTATION_PLAYER",
+    "WNBA_TRAINING_INGEST_PRE_SOURCE", "WNBA_TRAINING_SOURCE_PRE_RESULT",
     "SOCCER_1X2_MULTINOMIAL_LOGIT_V1", "SOCCER_1X2_MULTINOMIAL_LOGIT_V1_",
 }
+LABEL_PREFIXES = (
+    "MLB_STATS_API_", "WNBA_STATS_", "WNBA_CDN_", "WNBA_LIVEDATA_",
+    "WNBA_OFFICIAL_",
+)
 YEAR_RE = re.compile(r"(?:19|20)\d\d")
 
 
@@ -98,7 +109,7 @@ def is_status_name(code: str) -> bool:
 def is_label_name(code: str) -> bool:
     if is_failure_name(code) or is_status_name(code):
         return False
-    if code in EXCLUDED_EXACT:
+    if code in EXCLUDED_EXACT or code.startswith(LABEL_PREFIXES):
         return True
     if VERSION_RE.search(code):
         return True

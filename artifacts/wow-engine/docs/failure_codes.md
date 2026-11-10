@@ -1918,3 +1918,336 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `SOCCER_TRAINING_CODE_SHA_REQUIRED` | No inline message; terminal code raised in `train_all`. | `v17/soccer_openfootball_candidate.py` | — | No |
 
 <!-- sport-failure-registry:SOCCER:end -->
+
+<!-- sport-failure-registry:MLB:begin -->
+## MLB failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing MLB code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `MLB_1IP_ACTIVE_AGGREGATE_ARTIFACT_MISMATCH` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ACTIVE_ARTIFACT_AMBIGUOUS` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ACTIVE_ARTIFACT_GOVERNANCE_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ACTIVE_PAYLOAD_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ARTIFACT_BUCKETS_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | `mlb_1ip_player_conditioned.py` | No |
+| `MLB_1IP_ARTIFACT_BUCKET_EMPTY` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | `mlb_1ip_player_conditioned.py` | No |
+| `MLB_1IP_ARTIFACT_FORMAT_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_ARTIFACT_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_ARTIFACT_SUPPORT_COUNT_MISMATCH` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_AUTO_HYDRATION_INTERNAL_ERROR` | No inline message; terminal code raised in `score_mlb_1ip_ingress`. | `mlb_1ip_ingress_runtime.py` | — | No |
+| `MLB_1IP_BF_ALPHA_INVALID` | No inline message; terminal code raised in `score_pitcher`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_BUCKET_SUPPORT_INSUFFICIENT` | No inline message; terminal code raised in `fit_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_BF_COUNTS_EMPTY` | No inline message; terminal code raised in `_normalize_counts`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_BUCKET_INVALID` | No inline message; terminal code raised in `counts_from_buckets`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_COUNT_INVALID` | No inline message; terminal code raised in `score_pitcher`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_EXCEEDS_CERTIFIED_WINDOW` | No inline message; terminal code raised in `score_pitcher`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_INVALID` | No inline message; terminal code raised in `_bucket_counts`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_BF_HISTORY_LIMIT_INVALID` | No inline message; terminal code raised in `history_buckets`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_INVALID` | No inline message; terminal code raised in `bf_bucket`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_METRIC_INPUT_INVALID` | No inline message; terminal code raised in `multiclass_brier`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `fit_league_prior`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_CERTIFIED_ARTIFACT_FAMILY_INVALID` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_ARTIFACT_FEATURE_SCHEMA_INVALID` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_ARTIFACT_NOT_READY` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_LINE_SUPPORT_INVALID` | No inline message; terminal code raised in `_certified_lines`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_LINE_SUPPORT_MISSING` | No inline message; terminal code raised in `_certified_lines`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CURRENT_LINE_CERTIFICATION_UNEXPECTED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_DIRECTION_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | `mlb_1ip_player_conditioned.py` | No |
+| `MLB_1IP_EMPIRICAL_VALIDATION_NOT_PASSED` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_EXACT_EVENT_TREE_SETTLEMENT_UNAVAILABLE` | No inline message; terminal code raised in `_settle_mlb_1ip_or_delegate`. | `v17/mlb_1ip_exact_settlement_overlay.py` | — | No |
+| `MLB_1IP_INDEPENDENT_REVIEW_REQUIRED` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_promotion.py` | No |
+| `MLB_1IP_LINE_EXPANSION_ACTIVATION_FAILED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_AGGREGATE_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ARTIFACT_ID_MISSING` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ATTESTATION_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ATTESTATION_MISSING` | No inline message; terminal code raised in `_load_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ATTESTATION_PURPOSE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_BF_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_EXECUTION_GOVERNANCE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_LINEAGE_HASH_MISSING` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_LINES_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_POST_ACTIVATION_VERIFY_FAILED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_PUBLICATION_GOVERNANCE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_REVIEW_STATE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_SAMPLE_POLICY_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_STAGED_METADATA_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_STAGE_INSERT_FAILED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_TARGET_AMBIGUOUS` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_VALIDATION_NOT_PASSED` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_VERSION_COLLISION` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_PLAYER_AGGREGATE_ARTIFACT_INVALID` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_AGGREGATE_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_ARTIFACT_FAMILY_INVALID` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_ARTIFACT_FORMAT_INVALID` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_CONDITIONED_ARTIFACT_NOT_ACTIVE` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_PLAYER_CONDITIONING_HISTORY_INSUFFICIENT` | No inline message; terminal code raised in `_bucket_counts`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_CONDITIONING_INPUTS_INSUFFICIENT` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `_acquisition_failure`. | `mlb_1ip_ingress_runtime.py` | `mlb_1ip_live_acquisition.py` | No |
+| `MLB_1IP_PROMOTION_ARTIFACT_CHECKSUM_INVALID` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_ARTIFACT_FORMAT_MISMATCH` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_BRIER_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_CODE_SHA_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_ECE_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_EXPECTED_CHECKSUM_INVALID` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_EXPECTED_SPLIT_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_FEATURE_SCHEMA_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_MODEL_FAMILY_MISMATCH` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SAFETY_INVARIANT_VIOLATION` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SHADOW_STATE_REQUIRED` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SOURCE_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SOURCE_LINEAGE_MISSING` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SPLIT_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SPLIT_HASH_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_TRAINING_DATASET_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATED_LINE_SUPPORT_MISMATCH` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATION_LINEAGE_MISSING` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATION_METRICS_OUT_OF_BOUNDS` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATION_NOT_PASSED` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REGISTRY_ROW_CERTIFICATION_REQUIRED` | No inline message; terminal code raised in `registry_row_from_promoted`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REGISTRY_ROW_CONTRACT_INVALID` | No inline message; terminal code raised in `registry_row_from_promoted`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REGISTRY_ROW_PROMOTION_REQUIRED` | No inline message; terminal code raised in `registry_row_from_promoted`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REVIEW_EVIDENCE_INVALID` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_promotion.py` | No |
+| `MLB_1IP_REVIEW_NOT_APPROVED` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_promotion.py` | No |
+| `MLB_1IP_TRAINING_CODE_SHA_INVALID` | No inline message; terminal code raised in `fit_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `fit_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_pmf.py` | No |
+| `MLB_1IP_VALIDATION_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_LINEAGE_MISSING` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_PROBABILITY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_SOURCE_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_TARGET_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_BASELINE_SCORER_BLOCKED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_BASELINE_SCORER_CALL_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_BASELINE_SCORE_LOOKUP_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_BASELINE_SCORE_RELOAD_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_EVENT_MODEL_NOT_AVAILABLE` | No inline message; terminal code raised in `classify_mlb_prospective_failure`. | `v17/mlb_prospective_failure_taxonomy.py` | — | No |
+| `MLB_EVENT_MODEL_NOT_REGISTERED` | No inline message; terminal code raised in `score_event_v17_bridge`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_EVENT_SCORER_RESOLVE_FAILED` | No inline message; terminal code raised in `score_event_v17_bridge`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_DATE_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_DUPLICATE_GAME` | training evidence contains duplicate game keys | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_GAME_KEY_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_HOLDOUT_EMPTY` | No inline message; terminal code raised in `evaluate_extra_inning_margin_candidate`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_HOLDOUT_LEAKAGE` | every holdout game must be strictly after the training cutoff | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_SIDE_SAMPLE_INSUFFICIENT` | need at least 40 winner-conditioned rows per side | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_TRAINING_INSUFFICIENT` | need at least 100 extra-inning games | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_WINNER_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_SAMPLES_INVALID` | No inline message; terminal code raised in `resolve_tied_nine_inning_samples`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_WIN_PROBABILITY_INVALID` | extra-inning home-win probability must be in [0,1] | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_FAILURE_REGIME_MIXTURE_V1` | No inline message; terminal code raised in `module scope`. | `mlb_event_specialist_v16.py` | — | No |
+| `MLB_PITCHER_FANTASY_SCORE_HISTORY_INSUFFICIENT` | fewer than ten official prior starts contained every required Pitcher Fantasy Score component | `v17/mlb_pitcher_fantasy_score_hydration.py` | — | No |
+| `MLB_PROSPECTIVE_SCORER_NOT_CALLABLE` | No inline message; terminal code raised in `_resolve_direct_scorer`. | `v17/mlb_event_bridge_repair.py` | `v17/mlb_feature_contract_binding.py` | No |
+| `MLB_RUN_LINE_DISTRIBUTION_UNAVAILABLE` | governed MLB run distribution state is unavailable | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_EVENT_IDENTITY_UNAVAILABLE` | score snapshot is missing its shadow event identity | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_EXECUTION_INVARIANT_VIOLATION` | MLB run-line score snapshot must preserve can_execute=false | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_EXTRA_INNING_WIN_EVIDENCE_UNAVAILABLE` | extra-inning winner evidence is unavailable | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_GOVERNED_EVIDENCE_UNAVAILABLE` | No inline message; terminal code raised in `run_mlb_run_line_forward_shadow`. | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_INVALID` | No inline message; terminal code raised in `score_final_run_line_samples`. | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SAMPLES_INVALID` | home/away final score samples must be non-empty and aligned | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SCORE_SNAPSHOT_NOT_PREGAME_SCORED` | MLB run-line requires a governed pregame-scored snapshot | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SCORE_SNAPSHOT_UNAVAILABLE` | governed MLB forward score snapshot is unavailable | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SIMULATION_COUNT_INSUFFICIENT` | need at least {MIN_SIMULATIONS} simulations | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_SCHEDULE_DISCOVERY_FAILED` | No inline message; terminal code raised in `run_live_self_acceptance`. | `mlb_1ip_live_self_acceptance.py` | — | No |
+| `MLB_STARTER_STATUS_UNRESOLVED` | No inline message; terminal code raised in `_acquisition_failure`. | `mlb_1ip_ingress_runtime.py` | — | No |
+| `MLB_TEAM_EVENT_CALLER_EVIDENCE_CONTRADICTS_CANONICAL` | No inline message; terminal code raised in `resolve_mlb_team_event_evidence`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_ACQUISITION_FAILED` | No inline message; terminal code raised in `_capture_requested_slate`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_team_event_hydration.py` | `v17/mlb_event_bridge_repair.py` | No |
+| `MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS` | No inline message; terminal code raised in `_identity_join_rows`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH` | No inline message; terminal code raised in `resolve_mlb_team_event_evidence`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_LINEUP_QUERY_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_team_event_hydration.py` | `v17/mlb_event_bridge_repair.py` | No |
+| `MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE` | No inline message; terminal code raised in `_raw_canonical_diagnostic`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_team_event_hydration.py` | `v17/mlb_event_bridge_repair.py` | No |
+| `MLB_TEAM_EVENT_FROZEN_SPEC_UNAVAILABLE` | No inline message; terminal code raised in `_capture_requested_slate`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_HYDRATION_NOT_READY` | No inline message; terminal code raised in `_raw_canonical_diagnostic`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_LINEUP_NOT_YET_AVAILABLE` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_TEAM_EVENT_REQUESTED_SLATE_DATE_MISSING` | No inline message; terminal code raised in `_capture_requested_slate`. | `v17/mlb_team_event_hydration.py` | — | No |
+
+<!-- sport-failure-registry:MLB:end -->
+
+<!-- sport-failure-registry:WNBA:begin -->
+## WNBA failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing WNBA code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `WNBA_CHECKED_ROUTE_SET_INCOMPLETE` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_COMPOSITE_ARTIFACT_VERSION_COLLISION` | No inline message; terminal code raised in `derive_and_register_candidate`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_CALIBRATION_NOT_CERTIFIED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/wnba_composite_fitted_candidate.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_AMBIGUOUS` | Multiple research candidates resolved for WNBA {stat} | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_FORMAT_UNSUPPORTED` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_NOT_FOUND` | No activated research candidate exists for WNBA {stat} | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_REGISTRY_UNAVAILABLE` | WNBA composite candidate artifact registry lookup failed | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_AUTHORITY_CONFLICT` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_DERIVATION_FAILED` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_LIFECYCLE_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_NOT_CERTIFIED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/wnba_composite_fitted_candidate.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_NOT_RESEARCH_ACTIVE` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ROUTE_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_SCORER_EXCEPTION` | WNBA composite candidate scorer threw an unexpected exception | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_SCORER_INVALID` | No inline message; terminal code raised in `score_wnba_composite_candidate_research`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_SPECIALIST_MISMATCH` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_UNCALIBRATED` | No inline message; terminal code raised in `score_wnba_composite_candidate_research`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANONICAL_ACTION_CANARY_MISSING` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_EVIDENCE_BRIDGE_FAILED` | WNBA composite evidence retrieval failed | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_EVIDENCE_INCOMPLETE` | WNBA composite candidate inputs are incomplete | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_EXACT_LINE_CALIBRATION_MISSING` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_FORWARD_COHORT_NOT_CERTIFIED` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_FULL_MODEL_CONTEXT_NOT_CERTIFIED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/wnba_composite_fitted_candidate.py` | — | No |
+| `WNBA_COMPOSITE_ROUTE_UNSUPPORTED` | No inline message; terminal code raised in `score_wnba_composite_candidate_research`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_ARTIFACT_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_ARTIFACT_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_CHECKSUM_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_PROVENANCE_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_PROVIDER_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_FROZEN_SOURCE_ASSET_MANIFEST_INCOMPLETE` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_ASSET_MANIFEST_INVALID` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_MANIFEST_INVALID` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_MANIFEST_MISSING` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_HISTORY_GAME_DATE_INVALID` | No inline message; terminal code raised in `_game_date`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_MINUTES_INVALID` | No inline message; terminal code raised in `_minutes`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_PERSISTENCE_UNAVAILABLE` | No inline message; terminal code raised in `persist_raw_game_logs`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_REQUIRED_FIELD_MISSING` | No inline message; terminal code raised in `_text`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_ROW_NOT_OBJECT` | No inline message; terminal code raised in `normalize_raw_game_log_row`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_SOURCE_ROWS_REJECTED` | No inline message; terminal code raised in `hydrate_wnba_history`. | `wnba_history_runtime.py` | — | No |
+| `WNBA_HISTORY_STAT_INVALID` | No inline message; terminal code raised in `_int_stat`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_INJURY_REPORT_EVENT_UNRESOLVED` | fresh official injury report did not contain the target matchup/team | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_NOT_SUBMITTED` | target team has not submitted its official WNBA injury report | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_PLAYER_STATUS_UNRESOLVED` | target player name was empty after normalization | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_SECTION_INCOMPLETE` | opponent section header was not parsed, so the target section cannot be bounded | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_UNAVAILABLE` | no fresh official WNBA injury report could be retrieved and parsed | `wnba_prop_auto_hydration.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_DATE_MISMATCH` | WNBA liveData scoreboard does not represent the requested slate date | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_GAME_IDENTITY_INVALID` | WNBA liveData scoreboard team identity was missing | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_INVALID` | WNBA liveData response was missing scoreboard | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_UNAVAILABLE` | WNBA liveData scoreboard request failed | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_OFFICIAL_GAME_AND_PLAYER_ID_REQUIRED` | No inline message; terminal code raised in `_settle_composite`. | `v17/wnba_composite_settlement_overlay.py` | — | No |
+| `WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY` | official WNBA schedule page did not yield exact game/team identities | `v17/wnba_official_schedule_web_fallback.py` | — | No |
+| `WNBA_OFFICIAL_SOURCE_UNAVAILABLE` | all official WNBA schedule transports were unavailable or invalid | `v17/wnba_prop_evidence_control_plane.py` | `v17/wnba_official_schedule_web_fallback.py`, `wnba_prop_auto_hydration.py` | No |
+| `WNBA_OIDC_SCHEDULE_BRIDGE_INCOMPLETE` | No inline message; terminal code raised in `acquire_wnba_forward_evidence_batch`. | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_OIDC_SCHEDULE_BRIDGE_INVALID` | No inline message; terminal code raised in `acquire_wnba_forward_evidence_batch`. | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID` | OIDC official schedule bridge payload was not an object | `v17/wnba_official_schedule_web_fallback.py` | — | No |
+| `WNBA_OIDC_SCHEDULE_PROVIDER_INVALID` | OIDC schedule bridge provider was not the governed official-CDN bridge | `v17/wnba_official_schedule_web_fallback.py` | — | No |
+| `WNBA_PLAYER_AVAILABILITY_NOT_CLEAR` | player has an explicit current official injury/availability designation; unconditional model adjustment is not certified | `wnba_injury_status.py` | — | No |
+| `WNBA_PLAYER_HISTORY_BELOW_MINIMUM` | No inline message; terminal code raised in `training_readiness`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_PROP_ARTIFACT_CHECKSUM_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_FORMAT_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_PAYLOAD_IDENTITY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_VERSION_COLLISION` | No inline message; terminal code raised in `register_candidates`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_BOX_SCORE_FIELDS_MISSING` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_CANDIDATE_GOVERNANCE_FLAGS_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_CANDIDATE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_CANDIDATE_LIFECYCLE_REQUIRED` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_DUPLICATE_STAT_ROUTE` | No inline message; terminal code raised in `register_candidates`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_EXPECTED_COUNT_OUTSIDE_SUPPORT` | No inline message; terminal code raised in `wnba_prop_poisson_logglm_v1_adapter`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_FEATURE_SCHEMA_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FEATURE_VECTOR_OOD` | No inline message; terminal code raised in `wnba_prop_poisson_logglm_v1_adapter`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISMATCH` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_LICENSE_MISMATCH` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_LICENSE_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_METRICS_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_METRICS_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_PROVIDER_MISMATCH` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_PROVIDER_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_HISTORY_DATE_DUPLICATE` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_DATE_INVALID` | No inline message; terminal code raised in `_date_key`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_MINUTES_INVALID` | No inline message; terminal code raised in `_minutes`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_MISALIGNED` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_MISSING` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_STAT_INVALID` | No inline message; terminal code raised in `_count`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_LINEAR_PREDICTOR_INVALID` | No inline message; terminal code raised in `expected_count`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_NUMERIC_CANONICALIZATION_INVALID` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_OFFLINE_CERTIFICATION_ELIGIBILITY_NOT_PASS` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_PMF_INVALID` | No inline message; terminal code raised in `poisson_pmf`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_PROVIDER_IDENTITY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_SPORT_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_STAT_TYPE_UNSUPPORTED` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_SUPPORTED_LINE_RANGE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_TRAINING_CODE_SHA_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_TRAINING_DATASET_HASH_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_TRAINING_ROWS_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_VALIDATION_BLOCKERS_PRESENT` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_VALIDATION_GOVERNANCE_FLAGS_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_VALIDATION_NOT_PASS` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_RECENT_GAMES_INSUFFICIENT` | fewer than ten official prior WNBA games with aligned composite components were available | `v17/wnba_composite_auto_hydration.py` | `wnba_prop_auto_hydration.py` | No |
+| `WNBA_REPLAY_CODE_SHA_NOT_SINGLETON` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_REPLAY_ROUTE_SET_INCOMPLETE` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SCHEDULE_INVALID` | No inline message; terminal code raised in `_schedule_players`. | `v17/wnba_prop_evidence_acquisition.py` | `wnba_prop_auto_hydration.py` | No |
+| `WNBA_SCHEDULE_TEAM_INVALID` | No inline message; terminal code raised in `_team_node`. | `wnba_prop_auto_hydration.py` | — | No |
+| `WNBA_SOURCE_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_DOMAIN_NOT_SPORTING` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_LICENSE_NOT_PINNED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_LICENSE_URL_MISSING` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_MANIFEST_EXECUTION_FORBIDDEN` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_MANIFEST_VERSION_INVALID` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_NOT_REGISTERED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_RIGHTS_NOT_APPROVED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_UNEXPECTED_CREDENTIAL_REQUIREMENT` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND` | No inline message; terminal code raised in `_canonical_official_event_for_espn_alias`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_CANONICAL_IDENTITY_AMBIGUOUS` | No inline message; terminal code raised in `_canonical_official_event_for_espn_alias`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_CANONICAL_SOURCE_UNAVAILABLE` | official WNBA schedule reconciliation failed: {code} | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_ESPN_IDENTITY_REQUIRED` | No inline message; terminal code raised in `resolve_wnba_current_event_identity`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_IDENTITY_AMBIGUOUS` | exact WNBA Stats event identity could not be resolved | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `resolve_wnba_current_event_identity`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_NOT_FOUND` | exact WNBA Stats event identity could not be resolved | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_NOT_PREGAME` | WNBA Stats event is not a future pregame event | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_TIME_MISMATCH` | WNBA Stats event start differs from requested start by more than five minutes | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_IDENTITY_SOURCE_INVALID` | No inline message; terminal code raised in `resolve_wnba_current_event_identity`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_IDENTITY_SOURCE_UNAVAILABLE` | official WNBA identity re-verification failed: stats={stats_code}; livedata={live_code} | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_STATS_IDENTITY_REQUIRED` | WNBA Stats event identity plus ESPN-keyed team aliases are required | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_TEAM_IDENTITY_MISMATCH` | WNBA Stats event teams do not match requested governed ESPN aliases | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_TEAM_IDENTITY_UNMAPPED` | WNBA Stats team identity is not in the audited ESPN alias registry | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_STATS_BASE_URL_NOT_APPROVED` | No inline message; terminal code raised in `__init__`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_HEADERS_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_HTTP_ERROR` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_INVALID_JSON` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_INVALID_RESPONSE` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_LEAGUE_GAME_LOG_MISSING` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_REQUEST_FAILED` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_RESULT_SET_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_prop_auto_hydration.py` | — | No |
+| `WNBA_STATS_RESULT_SET_MISSING` | No inline message; terminal code raised in `_result_rows`. | `wnba_prop_auto_hydration.py` | `wnba_stats_client.py` | No |
+| `WNBA_STATS_ROWS_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_ROW_SHAPE_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_prop_auto_hydration.py` | `wnba_stats_client.py` | No |
+| `WNBA_STATS_SCOREBOARD_V3_GAME_IDENTITY_INVALID` | WNBA Stats scoreboard team identity was missing | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_STATS_SCOREBOARD_V3_INVALID` | WNBA Stats Scoreboard V3 response was missing scoreboard.games | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE` | WNBA Stats Scoreboard V3 request failed | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_STATS_SEASON_OUT_OF_RANGE` | Regular Season | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_SEASON_TYPE_UNSUPPORTED` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_TRAINING_GAME_DATE_INVALID` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `_nonempty`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_MINUTES_INVALID` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_ROLE_INVALID` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_ROWS_BELOW_MINIMUM` | No inline message; terminal code raised in `training_readiness`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_SEASONS_EMPTY` | No inline message; terminal code raised in `training_readiness`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_SPORT_MISMATCH` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_STAT_INVALID` | No inline message; terminal code raised in `_integer_stat`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_STAT_UNSUPPORTED` | No inline message; terminal code raised in `canonical_stat`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_aware_datetime`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_TIMESTAMP_TIMEZONE_REQUIRED` | No inline message; terminal code raised in `_aware_datetime`. | `wnba_prop_training_contract.py` | — | No |
+
+<!-- sport-failure-registry:WNBA:end -->
