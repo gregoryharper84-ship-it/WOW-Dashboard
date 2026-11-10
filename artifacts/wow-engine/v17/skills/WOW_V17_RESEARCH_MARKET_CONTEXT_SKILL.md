@@ -49,6 +49,15 @@ Prioritize: NFL starting QB and protection, defensive personnel and turnover vol
 
 Seek at least two independent nonmarket publishers per matchup, time-stamp material research and mark source shortfalls, stale/future inputs, unresolved market conflicts and unsupported HIGH confidence as research-quality warnings. These never authorize fake model probabilities or automatic probability changes. Use the read-only audit_research_winner_card preflight; grade postmortems only against frozen pregame evidence and independent official finals.
 
+## Pregame game-script analysis (all full-game winner selections)
+
+Every NFL/NBA/NHL full-slate research winner should carry a timestamped scenario pair and explicit swing drivers:
+- **NFL:** early lead versus trailing/game pace, QB pass volume and efficiency, protection and pressure, rushing balance, turnover/field-position variation, weather and late-game coaching decisions.
+- **NBA:** fast/slow possession and pace environment, half-court efficiency, transition chances, three-point shooting variance, star availability and replacement rotations, foul trouble, back-to-back fatigue and late-game free throws.
+- **NHL:** 5v5 shot/quality/possession control, starting goalie and rebound variance, penalties/power play, rest and travel, empty-net effects and full-game OT/shootout branches.
+
+Record game_script.primary_win_path, game_script.opponent_win_path, game_script.swing_factors, and game_script.as_of_utc per researched event, supported by actually pre-selection-available sources. The primary and opponent scripts must describe **distinct plausible paths**, not just a home/away label swap. If incomplete, late or contradictory, the research-card preflight exposes quality warnings but preserves the researched side. Do not claim certified numeric scenario probabilities from the research narrative or treat an older v16/shadow script simulator as V17 certified. Postmortem compares predicted pregame script mechanisms with actual game evolution **without hindsight rewriting**, independently of win/loss grading.
+
 ## Market evidence typing
 Every external market observation must be classified as one of:
 - `EXACT_LINE`: same participant/event/stat/line/side identity as the candidate; may support exact-line no-vig/economics analysis.
