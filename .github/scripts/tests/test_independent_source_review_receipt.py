@@ -868,7 +868,8 @@ def test_qa_policy_rejects_missing_duplicate_or_expired_artifacts(mutation, reas
         )
 
 
-def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact():
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact(conclusion):
     """Automatic workflow_run admission must not poison checksPass.
 
     Observed on main tip e82af6a (2026-11-10): upstream QA failed before
@@ -877,6 +878,9 @@ def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact():
     opt-in main-scoped callback may exit neutral with no Release check.
     """
     routes, archive = qa_policy_routes()
+    # Both successful and failed authenticated QA producers may have no policy;
+    # neither outcome must create a main-scoped Release failure or approval.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}"]["conclusion"] = conclusion
     routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
         "artifacts": [],
     }
