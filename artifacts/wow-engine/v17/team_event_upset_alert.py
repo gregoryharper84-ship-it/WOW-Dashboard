@@ -27,6 +27,7 @@ class GovernedOutcome:
     calibrated_upper_bound: float
 
     def validate(self) -> None:
+        """Reject invalid bounds before this read-only alert interprets them."""
         values = (
             self.calibrated_probability,
             self.calibrated_lower_bound,
@@ -82,6 +83,7 @@ class UpsetAlert:
 
 
 def _coerce_outcome(value: GovernedOutcome | Mapping[str, Any]) -> GovernedOutcome:
+    """Normalize a governed outcome without manufacturing a new probability."""
     if isinstance(value, GovernedOutcome):
         outcome = value
     else:
