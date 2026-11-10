@@ -291,8 +291,6 @@ def plan(issues: list, prs: list, *, target: int | None = None,
     resumable = None
     for tier, _negative_updated, number, _issue in ranked:
         lease_group = _lease_group_for(number, tier, manifest_records)
-        if lease_group is None:
-            continue
         related_all = [
             pr for pr in prs
             if isinstance(pr, dict) and pr.get("state") == "open"
@@ -317,6 +315,10 @@ def plan(issues: list, prs: list, *, target: int | None = None,
                     "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
                     "can_execute": False,
                 }
+            continue
+        # An existing PR is safe to inspect even when its former P0 lease has
+        # disappeared. Only a new BUILD needs a current manifest-authorized lease.
+        if lease_group is None:
             continue
         # Paid attempt history governs new BUILD only. It must never prevent
         # resuming an existing, identity-valid source PR through CI/review.
