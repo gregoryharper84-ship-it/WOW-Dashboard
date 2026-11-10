@@ -386,3 +386,19 @@ def test_governed_outcome_non_mapping_package_is_typed_hold():
     """Top-level non-dictionary packages must fail before outcome iteration."""
     with pytest.raises(ValueError, match="MARKET_GOVERNED_OUTCOME_SPACE_INVALID"):
         _evaluate(governed_outcomes=None)
+
+
+@pytest.mark.parametrize("bad_quotes", [None, "not-a-quote-list", {"book": "A"}])
+def test_malformed_book_quote_container_fails_with_typed_hold(bad_quotes):
+    """The quote container must not leak TypeError into the research pipeline."""
+    with pytest.raises(ValueError, match="MARKET_BOOK_QUOTES_MISSING"):
+        _evaluate(book_quotes=bad_quotes)
+
+
+@pytest.mark.parametrize("bad_entry", [None, "not-a-quote", 4])
+def test_non_mapping_quote_entry_fails_with_typed_hold(bad_entry):
+    """Every source quote must be a mapping before accessing its fields."""
+    quotes = _quotes()
+    quotes[1] = bad_entry
+    with pytest.raises(ValueError, match="MARKET_BOOK_OR_SOURCE_INVALID"):
+        _evaluate(book_quotes=quotes)
