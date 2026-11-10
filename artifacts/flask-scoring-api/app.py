@@ -22198,8 +22198,15 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
-_bt("startup daemon spawned — app fully ready")
+# Under CI, import-time daemon DDL can race pytest's environment patches and
+# test-owned PostgreSQL teardown. It has caused psycopg2/libpq segfaults in
+# required-three services tests (#1794). Tests own schema setup explicitly;
+# preserve the full asynchronous warmup unchanged for production imports.
+if os.environ.get("WOW_CI", "").strip().lower() not in {"1", "true", "yes"}:
+    _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+    _bt("startup daemon spawned — app fully ready")
+else:
+    _bt("startup daemon disabled under CI; explicit test setup owns DB")
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
@@ -22887,6 +22894,15 @@ def gate_engine_run():
     NOTE: This endpoint is a data/classification layer only.
     Final approval remains with WOW/LLP. can_approve_bets = false.
     """
+    # Import manifest audit contract before any return branch. A local import
+    # below the session-ledger failure branch causes UnboundLocalError while
+    # composing its fail-closed invocation audit (#1914, CI gate-engine route).
+    from gate_engine.wow_runtime_manifest import (
+        determine_required_skills as _det_req_skills,
+        resolve_lowest_ceiling    as _resolve_ceiling,
+        MANIFEST_GOVERNANCE_HASH,
+    )
+
     body = request.get_json(silent=True) or {}
 
     # -------------------------------------------------------------------
@@ -23497,11 +23513,6 @@ def gate_engine_run():
     # Must be present in every 200 response regardless of terminal outcome.
     # The GPT treats a response without this block as incomplete runtime evidence
     # and returns NO_PLAY.
-    from gate_engine.wow_runtime_manifest import (
-        determine_required_skills as _det_req_skills,
-        resolve_lowest_ceiling    as _resolve_ceiling,
-        MANIFEST_GOVERNANCE_HASH,
-    )
     # Use the full row set (prop + outright) so the audit correctly reflects
     # which skills were required by the entire request.
     _skills_req  = _det_req_skills(_all_raw_rows_for_audit)
