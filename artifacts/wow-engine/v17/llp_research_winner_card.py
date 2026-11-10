@@ -123,6 +123,36 @@ def audit_research_winner_card(
                 warnings.append("MARKET_CONTEXT_UNVERIFIED_OR_FUTURE")
             elif _text(market.get("favorite")).casefold() not in {"", side.casefold()} and chosen.get("market_disagreement_reviewed") is not True:
                 warnings.append("MARKET_CONFLICT_NOT_RECONCILED")
+        # Research game scripts are narrative scenarios, not fitted distributions.
+        # Never accept post-selection scripts as original pregame evidence.
+        game_script = chosen.get("game_script")
+        script_primary = None
+        script_adverse = None
+        script_swings = None
+        script_verified = False
+        if not isinstance(game_script, Mapping):
+            warnings.append("GAME_SCRIPT_NOT_REVIEWED")
+        else:
+            primary = _text(game_script.get("primary_win_path"))
+            adverse = _text(game_script.get("opponent_win_path"))
+            swings = game_script.get("swing_factors")
+            script_time = _utc(game_script.get("as_of_utc"))
+            if not primary or not adverse or primary.casefold() == adverse.casefold():
+                warnings.append("GAME_SCRIPT_SCENARIOS_INCOMPLETE")
+            if not isinstance(swings, (list, tuple)) or not swings or any(not _text(v) for v in swings):
+                warnings.append("GAME_SCRIPT_SWING_FACTORS_MISSING")
+            if script_time is None or when is None or script_time > when:
+                warnings.append("GAME_SCRIPT_TIME_UNVERIFIED_OR_FUTURE")
+            if any(field in game_script for field in (
+                "probability", "scenario_probability", "win_probability",
+                "primary_probability", "opponent_probability", "scenario_weights",
+            )):
+                warnings.append("UNVERIFIED_GAME_SCRIPT_PROBABILITY")
+            script_verified = not any(w.startswith(("GAME_SCRIPT_", "UNVERIFIED_GAME_SCRIPT_")) for w in warnings)
+            if script_verified:
+                script_primary = primary
+                script_adverse = adverse
+                script_swings = list(swings)
         if _text(chosen.get("research_confidence")).upper() == "HIGH" and warnings:
             warnings.append("HIGH_CONFIDENCE_UNSUPPORTED")
         rows.append({
@@ -137,6 +167,10 @@ def audit_research_winner_card(
             "selection_blockers": list(dict.fromkeys(issues)),
             "evidence_warnings": list(dict.fromkeys(warnings)),
             "source_publishers_verified": len(publishers),
+            "game_script_verified_pregame": script_verified,
+            "game_script_primary_win_path": script_primary,
+            "game_script_opponent_win_path": script_adverse,
+            "game_script_swing_factors": script_swings,
             "governed_probability": None,
             "governed_lower_bound": None,
         })
