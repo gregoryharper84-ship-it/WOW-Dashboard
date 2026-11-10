@@ -179,6 +179,11 @@ def analyze_upset_market_snapshot(
         if not isclose(sum(refs.values()), 1.0, rel_tol=0.0, abs_tol=1e-4):
             raise ValueError("MARKET_REFERENCE_CLASS_INVALID")
 
+    # Research receipts require an iterable of structured source records.
+    # Reject malformed containers and entries with typed reason codes rather
+    # than leaking TypeError/AttributeError into the governed caller.
+    if isinstance(book_quotes, (str, bytes, Mapping)) or not isinstance(book_quotes, Iterable):
+        raise ValueError("MARKET_BOOK_QUOTES_MISSING")
     quotes = tuple(book_quotes)
     if not quotes:
         raise ValueError("MARKET_BOOK_QUOTES_MISSING")
@@ -186,6 +191,8 @@ def analyze_upset_market_snapshot(
     book_probs: list[dict[str, float]] = []
     sources: list[str] = []
     for quote in quotes:
+        if not isinstance(quote, Mapping):
+            raise ValueError("MARKET_BOOK_OR_SOURCE_INVALID")
         # Each independently sourced book quote must identify the same event
         # and exact settlement market as the controlling snapshot request.
         if (
