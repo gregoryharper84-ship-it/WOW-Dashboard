@@ -30,3 +30,12 @@ The conversation reported an eight-of-twelve result and discussed player availab
 Seven local focused synthetic tests passed, including three-sport coverage under model HOLD, contrary evidence without pass conversion, bad/source-late and market discrepancies, duplicate/late/missing picks, unverified slate, and no numeric model spoofing. These synthetic tests do NOT validate an actual sport selection or prove live operational integration.
 
 Remaining gates: hosted exact-head CI on current branch, independent semantic/QA/SIRT review, protected authorized merge, deployed exact SHA readback, Custom GPT/editor sync and true full-slate/frozen-real-result evidence. This patch is not operationally released.
+
+
+## Addendum — 2026-11-10 game-script learning
+
+The prior patch checked injuries, team efficiencies and market conflicts but did not explicitly require game scripts. Every user-requested full-slate research winner now needs a pre-selection scenario record: (1) selected team's expected winning path; (2) opponent's distinct upset path; (3) concrete swing factors; (4) scenario as-of timestamp. Matchup findings should explain why the preferred side wins across the better-supported scripts while openly identifying the contrary path. The preflight flags missing, late, duplicate-path or incomplete scripts; these are evidence-quality warnings rather than discretionary PASS commands.
+
+Sport-specific examples: NFL early-lead vs trailing run/pass balance, QB pressure/turnovers; NBA transition vs half-court pace, three-point swings, rotations and foul trouble; NHL 5v5 control, goalie performance, penalties/special teams, late empty-net and OT/SO variance.
+
+Implementation: optional research game_script input audited in llp_research_winner_card.py with focused tests. It does not recalculate a selected side, assign scenario weights, supply certified model p/bounds or invoke the legacy/shadow game-state simulator. The separate certified LLP team/event route and V17_TERMINAL_REDUCER remain unmodified. A later postmortem may evaluate pre-registered script mechanisms only against timestamped independent play-by-play evidence; no hindsight reclassification. Hosted CI and independent exact-head review remain required.
