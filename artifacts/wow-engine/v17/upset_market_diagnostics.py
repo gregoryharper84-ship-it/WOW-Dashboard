@@ -135,11 +135,24 @@ def analyze_upset_market_snapshot(
         raise ValueError("MARKET_DECISION_NOT_PREGAME")
     if isinstance(max_quote_age_minutes, bool) or not isinstance(max_quote_age_minutes, int) or max_quote_age_minutes < 0:
         raise ValueError("MARKET_MAX_QUOTE_AGE_INVALID")
+    if not isinstance(governed_outcomes, Mapping):
+        raise ValueError("MARKET_GOVERNED_OUTCOME_SPACE_INVALID")
     labels = set(governed_outcomes)
-    if len(labels) not in (2, 3) or any(not str(label).strip() for label in labels):
+    if (
+        len(labels) not in (2, 3)
+        or any(not isinstance(label, str) or not label.strip() for label in labels)
+    ):
         raise ValueError("MARKET_GOVERNED_OUTCOME_SPACE_INVALID")
     model = {}
     for label, data in governed_outcomes.items():
+        # Missing, non-mapping or mis-typed source rows are invalid evidence.
+        # Never leak KeyError/TypeError to consumers expecting typed holds.
+        if not isinstance(data, Mapping) or not {
+            "calibrated_probability",
+            "calibrated_lower_bound",
+            "calibrated_upper_bound",
+        }.issubset(data):
+            raise ValueError("MARKET_MODEL_PROBABILITY_INVALID")
         p = _probability(data["calibrated_probability"], "MARKET_MODEL_PROBABILITY_INVALID")
         lo = _probability(data["calibrated_lower_bound"], "MARKET_MODEL_BOUNDS_INVALID")
         hi = _probability(data["calibrated_upper_bound"], "MARKET_MODEL_BOUNDS_INVALID")
