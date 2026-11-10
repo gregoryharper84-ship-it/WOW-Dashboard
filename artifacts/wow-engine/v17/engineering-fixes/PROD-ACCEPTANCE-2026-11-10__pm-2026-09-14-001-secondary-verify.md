@@ -86,7 +86,7 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 | Persisted Daily after safety | Latest `wow_v17_daily_async_runs.submitted_at` = `2026-11-09T15:33:38Z`; latest `wow_v17_daily_run_row_detail.captured_at` = `2026-11-10T10:46:10Z`; **0** detail rows at/after `2026-11-10T13:23:22Z` |
 | Post-safety Action receipts | **Four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422s (`13:23:31`, `13:23:34`, `14:36:36`, `14:36:40` UTC), all `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`, `can_execute=false` — startup probes only; not three-field scoring-attempted acceptance |
 | Residual exercise caveat | Scheduled `wow-v17-daily-snapshot` requests only `lanes: ["MONEYLINE"]`, so it cannot produce either required PROPS residual (`ZERO_ROW_REASON_MISCLASSIFIED` / three-field Action split). Keep ~17:00 as a separate post-safety Daily observation; residual closure needs a permitted unpaid PROPS/Action path, not snapshot green |
-| Next observation window | Existing OIDC scheduled Daily ~17:00 UTC: verify persisted async/detail rows (and sync status if logged). Residual observations remain a separate unpaid PROPS/Action path |
+| Next observation window | Existing OIDC scheduled `wow-v17-daily-snapshot` ~17:00 UTC calls `/internal/v17/daily-snapshot` synchronously — verify the workflow-logged `run_id` and any matching detail rows; do **not** require an async-run row. Residual PROPS observations remain a separate unpaid Action path |
 
 ## Independent re-verify (2026-11-10T16:05Z, unpaid)
 
@@ -102,7 +102,7 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 | Action receipts post-safety | Still exactly **four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422 `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` (`can_execute=false`) — no new receipts since 14:36 UTC |
 | NFL forward health | Still `graded_n=94` / `minimum_forward_required=100`; `INSUFFICIENT_FORWARD_EVIDENCE`; `DO_NOT_CERTIFY_YET`; blocker `FORWARD_GRADED_N_94_LT_100` (row `created_at=2026-11-09T22:36:02Z`) |
 | Parallel PR delta | `#2512` **merged** at `2026-11-10T16:01:53Z` (`d3260b09…`) — not yet on the live Render tip; stored `wow_nfl_event_predictions` history still carries pre-merge publishability stamps |
-| Next observation | Existing OIDC scheduled Daily ~17:00 UTC observes post-safety MONEYLINE persistence only; both PROPS residual observations still require a separate unpaid Action/PROPS path |
+| Next observation | ~17:00 sync snapshot: prove post-safety MONEYLINE via logged `run_id` (+ detail rows if present); async-run absence alone is not a failure. PROPS residuals still need a separate unpaid Action path |
 
 ## Closure gate
 
