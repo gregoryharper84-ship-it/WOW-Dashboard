@@ -23,6 +23,7 @@ class D1RegistryError(RuntimeError):
 
 
 def _one(result: Any) -> dict[str, Any] | None:
+    """Return the first row from a PostgREST-like result, if any."""
     data = getattr(result, "data", None) or []
     return dict(data[0]) if data else None
 
@@ -40,6 +41,7 @@ def _is_git_sha(value: Any) -> bool:
 
 
 def _validate_governance(row: Mapping[str, Any], *, prefix: str) -> None:
+    """Reject any row that claims execution or probability publication authority."""
     if row.get("can_execute") is not False:
         raise D1RegistryError(f"{prefix}_CAN_EXECUTE_FORBIDDEN", "can_execute must be false")
     if row.get("probability_publishable") not in (None, False):
@@ -102,6 +104,7 @@ def source_outcome_json(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def persist_source_events(db: Any, rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Append-only insert of immutable source events; identical payloads are no-ops."""
     inserted_n = 0
     existing_n = 0
     for raw in rows:
@@ -151,6 +154,7 @@ def persist_training_rows(
     *,
     model_family: str,
 ) -> dict[str, int]:
+    """Persist reconstructed feature rows without market features or publication."""
     inserted_n = 0
     existing_n = 0
     for raw in rows:
@@ -202,6 +206,7 @@ def persist_training_rows(
 
 
 def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Register an inert CANDIDATE artifact; identical checksums are idempotent."""
     _validate_governance(raw, prefix="D1_CANDIDATE")
     if raw.get("lifecycle_state") != "CANDIDATE":
         raise D1RegistryError("D1_CANDIDATE_LIFECYCLE_INVALID", str(raw.get("lifecycle_state")))
@@ -265,6 +270,7 @@ def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def persist_candidate_package(db: Any, package: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist source events, training rows, and the inert candidate as one package."""
     if package.get("can_execute") is not False or package.get("probability_publishable") is not False:
         raise D1RegistryError("D1_PACKAGE_GOVERNANCE_INVALID", "package must be inert")
     candidate = dict(package.get("candidate") or {})

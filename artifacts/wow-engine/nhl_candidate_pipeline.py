@@ -102,6 +102,7 @@ def _utcnow() -> datetime:
 
 
 def _aware(value: Any) -> datetime:
+    """Parse an aware ISO timestamp and normalize it to UTC."""
     parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     if parsed.utcoffset() is None:
         raise NHLCandidateError("NHL_EVENT_TIME_INVALID", str(value))
@@ -134,6 +135,7 @@ def _exact_nonneg_int(value: Any) -> int | None:
 
 
 def season_id(start_year: int) -> int:
+    """Encode an NHL season as the official YYYYZZZZ integer label."""
     year = int(start_year)
     if year < 2000 or year > 2100:
         raise ValueError("invalid NHL season start year")
@@ -249,6 +251,7 @@ def fetch_team_season_games(
     timeout: int = 20,
     strict: bool = False,
 ) -> list[NHLGame]:
+    """Fetch and normalize one team's settled regular-season games for a season."""
     readiness = source_readiness(SOURCE_ID)
     if not readiness.ready_for_candidate_training:
         raise NHLCandidateError("NHL_SOURCE_NOT_READY", ",".join(readiness.blockers))
@@ -303,6 +306,7 @@ def fetch_historical_games(
     session: Any = requests,
     strict: bool = False,
 ) -> list[NHLGame]:
+    """Acquire the deduplicated chronological training corpus across seasons."""
     by_id: dict[str, NHLGame] = {}
     explicit_teams = tuple(teams) if teams is not None else None
     for year in sorted({int(v) for v in start_years}):
@@ -349,6 +353,7 @@ def _state(team: str, season: int) -> _TeamState:
 
 
 def _recent_metrics(state: _TeamState) -> tuple[float, float, float, float]:
+    """Derive recent win rate and scoring differentials from prior games only."""
     if not state.recent:
         raise NHLCandidateError("NHL_RECENT_HISTORY_EMPTY", "prior games required")
     n = len(state.recent)
@@ -359,6 +364,7 @@ def _recent_metrics(state: _TeamState) -> tuple[float, float, float, float]:
 
 
 def _rest_days(state: _TeamState, start: datetime) -> float:
+    """Compute capped rest days from the team's previous game start."""
     if state.last_start is None:
         raise NHLCandidateError("NHL_REST_HISTORY_EMPTY", "prior game required")
     value = (start - state.last_start).total_seconds() / 86400.0
@@ -368,6 +374,7 @@ def _rest_days(state: _TeamState, start: datetime) -> float:
 
 
 def reconstruct_training_rows(games: Sequence[NHLGame]) -> tuple[list[BinaryTrainingRow], list[dict[str, Any]]]:
+    """Rebuild chronological pregame features without look-ahead leakage."""
     ordered = sorted(games, key=lambda row: (row.event_start_time, row.game_id))
     if list(games) != ordered:
         raise NHLCandidateError("NHL_GAMES_NOT_CHRONOLOGICAL", "games must be sorted")
@@ -471,6 +478,7 @@ def reconstruct_training_rows(games: Sequence[NHLGame]) -> tuple[list[BinaryTrai
 
 
 def fit_nhl_candidate(games: Sequence[NHLGame]) -> tuple[BinaryCandidate, list[dict[str, Any]]]:
+    """Fit the research-only NHL logistic candidate on reconstructed rows."""
     rows, feature_records = reconstruct_training_rows(games)
     try:
         candidate = train_binary_candidate(
@@ -509,6 +517,7 @@ def game_record(game: NHLGame) -> dict[str, Any]:
 
 
 def candidate_record(candidate: BinaryCandidate, *, training_code_sha: str) -> dict[str, Any]:
+    """Serialize an inert CANDIDATE artifact with auditable training provenance."""
     sha = str(training_code_sha or "").strip()
     if len(sha) < 7:
         raise NHLCandidateError("NHL_TRAINING_CODE_SHA_REQUIRED", "auditable code SHA required")
@@ -555,6 +564,7 @@ def candidate_record(candidate: BinaryCandidate, *, training_code_sha: str) -> d
 
 
 def build_candidate(start_years: Iterable[int], *, training_code_sha: str, session: Any = requests) -> dict[str, Any]:
+    """Acquire, fit, and package an NHL research candidate without promotion."""
     games = fetch_historical_games(start_years, session=session)
     candidate, features = fit_nhl_candidate(games)
     return {
