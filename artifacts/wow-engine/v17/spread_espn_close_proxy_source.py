@@ -189,6 +189,7 @@ def acquire_wnba_close_proxies(
         "bound_event_n": len(evidence),
         "coverage": len(evidence) / len(set(test_event_ids)) if test_event_ids else 0.0,
         "blocker_counts": dict(sorted(counts.items())),
+        "blockers_by_event": dict(sorted(blockers.items())),
         "aggregate_source_payload_sha256": aggregate_hash,
         "event_identity": "EXACT_PERSISTED_ESPN_GAME_AND_TEAM_IDS",
         "source_provider": "ESPN_FINAL_SUMMARY_PICKCENTER",
