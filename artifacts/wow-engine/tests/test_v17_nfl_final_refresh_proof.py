@@ -342,3 +342,58 @@ def test_kickoff_during_successful_remote_recheck_stays_held(monkeypatch):
     assert "FINAL_REFRESH_EVENT_NOT_PREGAME" in proof["reasons"]
     assert proof["probability_invalidated"] is True
     assert proof["can_execute"] is False
+
+
+def test_kickoff_during_failed_remote_recheck_stays_held(monkeypatch):
+    """A failed slow recheck that spans kickoff must still report NOT_PREGAME."""
+    from datetime import datetime as RealDateTime
+
+    clock_calls = []
+    class Clock(RealDateTime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = NOW if not clock_calls else NOW + timedelta(minutes=3)
+            clock_calls.append(instant)
+            return instant.astimezone(tz) if tz is not None else instant
+
+    def fails():
+        raise TimeoutError("upstream timeout after kickoff")
+
+    monkeypatch.setattr(nfl, "datetime", Clock)
+    monkeypatch.setattr(
+        nfl, "resolve_nfl_team_event_evidence",
+        lambda req, *, db: _new_snapshot(
+            canonical_snapshot_timestamp=(NOW - timedelta(hours=25)).isoformat(),
+        ),
+    )
+    monkeypatch.setattr(nfl, "_remote_nfl_schedule_recheck", fails)
+    request = _req(event_start_time_utc=(NOW + timedelta(minutes=2)).isoformat())
+    proof = nfl._nfl_final_refresh(request, _score(), db=object())
+    assert len(clock_calls) == 2
+    assert proof["final_refresh_status"] == "HOLD"
+    assert "FINAL_REFRESH_SOURCE_UNAVAILABLE" in proof["reasons"]
+    assert "FINAL_REFRESH_EVENT_NOT_PREGAME" in proof["reasons"]
+    assert proof["probability_invalidated"] is True
+    assert proof["can_execute"] is False
+
+
+def test_remote_recheck_passes_hard_wall_clock_and_byte_bounds(monkeypatch):
+    """Scoring-path recheck must not rely on inactivity timeout alone."""
+    seen = {}
+
+    def fake_download(asset, workdir, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(
+            source_status="CAPTURED",
+            content_sha256=HASH,
+            fetched_at=NOW.isoformat(),
+            row_count=10,
+            resolved_url="https://raw.githubusercontent.com/nflverse/example.csv",
+        )
+
+    monkeypatch.setattr(nfl, "download_asset", fake_download)
+    capture = nfl._remote_nfl_schedule_recheck()
+    assert capture["source_status"] == "CAPTURED"
+    assert seen["timeout_seconds"] == nfl._NFL_REMOTE_RECHECK_TIMEOUT_SECONDS
+    assert seen["max_total_seconds"] == nfl._NFL_REMOTE_RECHECK_MAX_TOTAL_SECONDS
+    assert seen["max_bytes"] == nfl._NFL_REMOTE_RECHECK_MAX_BYTES
