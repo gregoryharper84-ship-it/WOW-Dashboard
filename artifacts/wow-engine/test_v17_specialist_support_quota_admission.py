@@ -177,3 +177,43 @@ def test_hold_step_never_invokes_paid_agent_and_paid_step_stays_gated():
     assert "secrets." not in hold["run"]
     assert "env" not in hold or "OPENAI_API_KEY" not in hold["env"]
     assert "codex exec" not in hold["run"].lower()
+
+
+def test_every_recognized_provider_breaker_code_is_a_hold_and_allowlist_has_no_drift(tmp_path):
+    import re
+    import sys
+    sys.path.insert(0, str(ROOT / "artifacts/wow-engine/v17"))
+    from engineering_provider_failover import OPENAI_FAILOVER_ELIGIBLE
+
+    run = _step("Surface quota-admission hold without invoking Codex")["run"]
+    listed = set(re.findall(r"CIRCUIT_BREAKER:(OPENAI_API_[A-Z_]+)", run))
+    assert listed == set(OPENAI_FAILOVER_ELIGIBLE)
+    for i, code in enumerate(sorted(OPENAI_FAILOVER_ELIGIBLE)):
+        d = tmp_path / str(i)
+        d.mkdir()
+        proc, summary = _run_hold(d, "CIRCUIT_BREAKER:" + code)
+        assert proc.returncode == 0, code
+        assert "::error::" not in proc.stdout
+        assert "paid_retry_attempted: false" in summary
+
+
+def test_unrecognized_or_malformed_breaker_reason_still_fails(tmp_path):
+    for i, reason in enumerate([
+        "CIRCUIT_BREAKER:NOT_A_PROVIDER_FAILURE",
+        "CIRCUIT_BREAKER:",
+        "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED_EXTRA",
+        "circuit_breaker:OPENAI_API_QUOTA_EXCEEDED",
+        "OPENAI_API_QUOTA_EXCEEDED",
+    ]):
+        d = tmp_path / str(i)
+        d.mkdir()
+        proc, _ = _run_hold(d, reason)
+        assert proc.returncode == 1, reason
+        assert "::error::" in proc.stdout
+
+
+def test_hold_step_reason_is_bound_to_admission_output():
+    hold = _step("Surface quota-admission hold without invoking Codex")
+    assert hold["env"]["PROVIDER_REASON"] == "${{ steps.provider_admission.outputs.reason }}"
+    admission = _step("Check shared OpenAI provider admission")
+    assert admission["id"] == "provider_admission"
