@@ -95,7 +95,7 @@
         "FIX-2026-09-14-001"
       ],
       "created_utc": "2026-09-14T00:00:00Z",
-      "updated_utc": "2026-11-10T20:34:41Z",
+      "updated_utc": "2026-11-10T22:13:20Z",
       "engineering_fixes": {
         "FIX-2026-09-14-001": {
           "title": "Daily response contract, terminal reducer, and lane/receipt semantics",
@@ -103,10 +103,10 @@
           "state": "DEPLOYED_PENDING_VERIFY",
           "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-14-001__daily-response-contract-and-terminal-reducer.md",
           "created_utc": "2026-09-14T00:00:00Z",
-          "updated_utc": "2026-11-10T20:34:41Z",
+          "updated_utc": "2026-11-10T22:13:20Z",
           "merge_commit": "171673b24fda17d1c87056e7379457dacc718909",
-          "production_deploy": "6018482f2bedf172b4a7a1014f2bfa1c2db95210",
-          "note": "PRIMARY/CRITICAL verified earlier. 2026-11-10: ZERO_ROW_REASON_MISCLASSIFIED observed live (canary 42895886635 / v17-daily-3420226d). Remaining: scoring_attempted host/backend split, infrastructure_blocked semantics, 1IP manifest observation."
+          "production_deploy": "4a49977fc768481ec4a4d2dfe998b36057215cbc",
+          "note": "PRIMARY/CRITICAL verified earlier. ZERO_ROW re-verified 2026-11-10 canary 42910074320 / v17-daily-ebc1ba5b (GREEN soft-hold). Backend attempt pair captured (BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING); host action_invocation_attempted still pending. Remaining: host three-field receipt, infrastructure_blocked semantics, 1IP manifest observation."
         }
       }
     },

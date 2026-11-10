@@ -302,8 +302,8 @@ INCIDENT_STATUS = REPAIRED
 DAILY_RESPONSE_SERIALIZATION_TOO_LARGE = FIXED_VERIFIED
 TERMINAL_REDUCER_UPGRADE = FIXED_VERIFIED
 1IP_CAPABILITY_MANIFEST_DRIFT = DEPLOYED_NOT_OBSERVED
-ZERO_ROW_REASON_MISCLASSIFIED = FIXED_VERIFIED_IN_PRODUCTION (2026-11-10 canary 42895886635 / v17-daily-3420226d)
-SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = DEPLOYED_NOT_OBSERVED
+ZERO_ROW_REASON_MISCLASSIFIED = FIXED_VERIFIED_IN_PRODUCTION (2026-11-10 canary 42910074320 / v17-daily-ebc1ba5b; prior 42895886635 / v17-daily-3420226d)
+SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = BACKEND_PAIR_OBSERVED_HOST_PENDING (2026-11-10 canary 42910074320 BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING)
 INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = DEPLOYED_NOT_OBSERVED
 can_execute = false
 ```
@@ -313,10 +313,13 @@ can_execute = false
 - DONE: `v17/sql/20260914_v17_daily_run_row_detail.sql` applied to the governed
   production project and verified least-privilege. The file header still reads
   "repository source only" as the standing rule for re-application elsewhere.
-- DONE (2026-11-10): live PROPS `max_props=0` returned `REQUESTED_ROW_LIMIT_ZERO`.
+- DONE (2026-11-10): live PROPS `max_props=0` returned `REQUESTED_ROW_LIMIT_ZERO`
+  (re-verified GREEN with soft-hold on canary `42910074320`).
+- DONE (2026-11-10): backend exposes distinct `specialist_scoring_attempted` and
+  `scoring_attempted` on FULL `/score-pick-request`.
 - Remaining owner/host Action replay for scoring-attempted semantics:
-  confirm one ChatGPT Action receipt exposes distinct
-  `action_invocation_attempted` vs `specialist_scoring_attempted`.
+  confirm one ChatGPT Action receipt also exposes `action_invocation_attempted`
+  without collapsing the backend pair.
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).

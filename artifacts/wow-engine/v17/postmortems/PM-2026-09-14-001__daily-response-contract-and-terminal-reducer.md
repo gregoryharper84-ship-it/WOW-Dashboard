@@ -113,10 +113,17 @@ safety deploy `6018482f2` via allowlisted canary run
 `lane_reconciliation.PROPS.zero_row_reason=REQUESTED_ROW_LIMIT_ZERO`,
 `requested_row_limit=0`, `scored_count=0`, `can_execute=false`.
 
-Item 5 (distinct `action_invocation_attempted` vs `specialist_scoring_attempted`)
-remains **not host-observed**; backend attempt-pair probing continues under the
-canonical prop canary. Status stays `DEPLOYED_PENDING_VERIFY` until item 5
-(and remaining secondary items) are independently observed.
+Re-verified GREEN on canary `42910074320` / Daily
+`v17-daily-ebc1ba5b-a346-40be-8ed3-2f846d89a15f` after #2585 soft-hold
+(`DAILY_MAX_PROPS_4_HOLD_EMPTY_INVENTORY`) while live Render was
+`4a49977fc768481ec4a4d2dfe998b36057215cbc`.
+
+Item 5 backend pair independently observed on the same canary as
+`BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING`
+(`specialist_scoring_attempted` and `scoring_attempted` present and distinct;
+`action_invocation_attempted` absent — ChatGPT Action host gate). Status stays
+`DEPLOYED_PENDING_VERIFY` until the host three-field receipt (and remaining
+secondary items) are independently observed.
 
 ## Prevention / Follow-up
 
