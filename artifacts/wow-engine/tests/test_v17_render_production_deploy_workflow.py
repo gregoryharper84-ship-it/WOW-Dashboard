@@ -282,6 +282,10 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert 'serving_sha_at_request' in text
     assert "DAILY_SNAPSHOT_SERVING_SHA_MISSING" in text
     assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
+    # Governance preflight must retry cold-start / gateway failures like the Daily POST.
+    assert "def read_serving_sha_at_request" in text
+    assert text.count("except (urllib.error.URLError, TimeoutError):") >= 2
+    assert "max_attempts = 10" in text
 
 
 def test_post_deploy_canary_classifier_accepts_observation_timeout_as_hold():

@@ -105,11 +105,28 @@ jobs:
 
               Unpaid acceptance requires request-time serving provenance in the
               workflow summary; checkout head SHA alone is not sufficient.
+              Retry transient cold-start / gateway failures so this preflight
+              matches the Daily POST resiliency model.
               """
               governance_url = origin.rstrip("/") + "/governance"
               request = urllib.request.Request(governance_url, method="GET")
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  governance = json.load(response)
+              governance = None
+              transient_statuses = {404, 502, 503, 504}
+              max_attempts = 10
+              retry_delay_seconds = 10
+              for attempt in range(1, max_attempts + 1):
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          governance = json.load(response)
+                      break
+                  except urllib.error.HTTPError as exc:
+                      if exc.code not in transient_statuses or attempt == max_attempts:
+                          raise
+                      time.sleep(retry_delay_seconds)
+                  except (urllib.error.URLError, TimeoutError):
+                      if attempt == max_attempts:
+                          raise
+                      time.sleep(retry_delay_seconds)
               if not isinstance(governance, dict):
                   raise RuntimeError("DAILY_SNAPSHOT_GOVERNANCE_RESPONSE_MISSING")
               serving_sha = str(governance.get("deployed_sha") or "").strip()
