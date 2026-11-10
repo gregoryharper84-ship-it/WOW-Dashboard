@@ -67,3 +67,14 @@ def test_prop_registry_uses_canonical_certified_lifecycle_not_publish_flag():
     assert 'WHERE active AND promoted AND probability_publishable' not in sql
     assert "'PROP_REGISTRY_FLAGS_PRESENT_REQUIRES_CERTIFIED_ROUTE_REPLAY'" in sql
     assert 'FALSE AS preflight_authorizes_publication' in sql
+
+
+def test_prop_inventory_is_per_stat_family_and_requires_calibrator_and_line_range():
+    sql = SQL.read_text()
+    assert 'GROUP BY sport, stat_type' in sql
+    assert 'LEFT JOIN prop_model_counts pm ON pm.sport=rp.sport' in sql
+    assert "'__NO_FITTED_ARTIFACT_ROWS__'" in sql
+    assert 'calibrator_version IS NOT NULL' in sql
+    assert 'supported_line_min IS NOT NULL' in sql
+    assert 'FALSE AS preflight_authorizes_publication' in sql
+    assert 'FALSE AS can_execute' in sql

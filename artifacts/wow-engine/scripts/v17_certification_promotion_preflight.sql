@@ -43,13 +43,18 @@ latest_nfl_health AS (
     LIMIT 1
 ),
 prop_model_counts AS (
-    SELECT sport, count(*)::int AS fitted_artifact_count,
+    -- Exact (sport, stat_type) family: an artifact for one stat family must never
+    -- authorize another family. Line range is reported, never assumed.
+    SELECT sport, stat_type, count(*)::int AS fitted_artifact_count,
            count(*) FILTER (
                WHERE active AND promoted
                  AND lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')
+                 AND calibrator_version IS NOT NULL
+                 AND supported_line_min IS NOT NULL
+                 AND supported_line_max IS NOT NULL
            )::int AS active_promoted_artifacts
     FROM public.wow_prop_fitted_model_artifacts
-    GROUP BY sport
+    GROUP BY sport, stat_type
 ),
 requested_props(sport) AS (
     VALUES ('MLB'), ('NBA'), ('NFL'), ('WNBA')
@@ -100,7 +105,7 @@ CROSS JOIN ncaaf_model_counts nm
 CROSS JOIN ncaaf_calibrator_counts nc
 LEFT JOIN latest_nfl_health nh ON rt.sport='NFL'
 UNION ALL
-SELECT rp.sport, 'WOW_PROP_LANE'::text, 'EXACT_LINE_PER_STAT'::text,
+SELECT rp.sport, 'WOW_PROP_LANE'::text, COALESCE(pm.stat_type,'__NO_FITTED_ARTIFACT_ROWS__'),
        COALESCE(pm.fitted_artifact_count,0),
        COALESCE(pm.active_promoted_artifacts,0),
        NULL::int, NULL::text, NULL::text, NULL::text,
@@ -113,4 +118,4 @@ SELECT rp.sport, 'WOW_PROP_LANE'::text, 'EXACT_LINE_PER_STAT'::text,
        FALSE AS can_execute
 FROM requested_props rp
 LEFT JOIN prop_model_counts pm ON pm.sport=rp.sport
-ORDER BY routed_lane, sport;
+ORDER BY routed_lane, sport, market_key;
