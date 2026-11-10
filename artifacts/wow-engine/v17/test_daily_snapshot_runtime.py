@@ -476,6 +476,7 @@ def test_post_acquisition_blocked_prop_is_counted_not_silently_dropped(monkeypat
     assert ledger["balanced"] is True
     assert ledger["exclusions"][0]["source_snapshot_id"] == "new-unverified"
     assert ledger["exclusions"][0]["blockers"] == ["PLAYER_AVAILABILITY_UNVERIFIED"]
+    assert "PROP_SNAPSHOT_INGESTION_EMPTY" not in result["blockers"]
     assert not any(row["lane"] == "PROPS" for row in result["rows"])
 
 
