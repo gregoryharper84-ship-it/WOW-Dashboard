@@ -22,7 +22,7 @@ REPAIRABLE_EVIDENCE_CODES = {
     "PROP_EVIDENCE_INCOMPLETE",
     "PROP_EVIDENCE_STALE",
 }
-MAX_GOVERNED_SNAPSHOT_FALLBACKS = 3
+MAX_GOVERNED_SNAPSHOT_FALLBACKS = 1
 
 
 def _attempt(
@@ -57,7 +57,7 @@ def _annotate(
 
 
 def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
-    """Return newest exact-identity snapshots captured strictly before start."""
+    """Return only the latest exact-identity observation before event start."""
     query = (
         client.table("wow_prop_evidence_snapshots")
         .select("source_snapshot_id,captured_at")
@@ -66,8 +66,7 @@ def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
         .eq("player", req.player)
         .eq("stat_type", req.stat_type)
         .eq("line", req.line)
-        .eq("hydration_status", "PASS")
-        .lt("captured_at", req.event_start_time)
+                .lt("captured_at", req.event_start_time)
         .order("captured_at", desc=True)
         .limit(MAX_GOVERNED_SNAPSHOT_FALLBACKS)
     )
@@ -93,7 +92,8 @@ def repair_prop_evidence(
 
     Every fallback is passed back through the original evidence validator. The
     repair layer never treats a raw table row as model-ready evidence, and the
-    lookup excludes snapshots captured at or after event start.
+    lookup excludes snapshots captured at or after event start. A newer failed
+    observation is authoritative, not a reason to search older PASS records.
     """
     requested_id = str(req.source_snapshot_id)
     primary = primary_fetch(req)
@@ -113,6 +113,17 @@ def repair_prop_evidence(
             requested_source_snapshot_id=requested_id,
             attempts=attempts,
             repair_status="NOT_NEEDED",
+        )
+
+    # The RPC includes its stored blockers on incomplete snapshots. Replacing
+    # an explicit hold with an earlier clean observation would defeat the
+    # source-authoritative participation gate.
+    if isinstance(primary, dict) and primary.get("blockers"):
+        return _annotate(
+            primary,
+            requested_source_snapshot_id=requested_id,
+            attempts=attempts,
+            repair_status="NOT_REPAIRABLE",
         )
 
     if primary_code not in REPAIRABLE_EVIDENCE_CODES:
@@ -187,6 +198,14 @@ def repair_prop_evidence(
                 attempts=attempts,
                 repair_status="RECOVERED_FROM_GOVERNED_SNAPSHOT",
             )
+        # Never continue to older PASS records after the newest observation
+        # failed validation: doing so could resurrect a ruled-out player.
+        return _annotate(
+            candidate if isinstance(candidate, dict) else primary,
+            requested_source_snapshot_id=requested_id,
+            attempts=attempts,
+            repair_status="NEWEST_EVIDENCE_NOT_READY",
+        )
 
     return _annotate(
         primary,
