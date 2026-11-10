@@ -352,8 +352,109 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
 
     required_ok = prop_ok and team_ok and (projected_ok is not False)
     status = "PASS" if required_ok else "FAIL"
+    synthetic_negative_probes = {
+        "status": "PASS" if (prop_ok and team_ok) else "FAIL",
+        "lane": "SYNTHETIC_NEGATIVE_PROBES",
+        "prop_ok": prop_ok,
+        "team_event_ok": team_ok,
+        "scores_as_scoring_acceptance": False,
+        "can_execute": False,
+    }
+
+    # Source-backed pregame scoring is a separate evidence lane. Synthetic
+    # fail-closed probes never prove Action scoring acceptance by themselves.
+    source_backed: dict[str, Any] = {
+        "status": "BLOCKED",
+        "lane": "SOURCE_BACKED_PREGAME_SCORING",
+        "request_id": None,
+        "official_event_id": projected_event_id,
+        "exact_offer": None,
+        "source_snapshot_id": (
+            str(projected_candidate.get("snapshot_id"))
+            if isinstance(projected_candidate, dict) and projected_candidate.get("snapshot_id")
+            else None
+        ),
+        "fitted_route": "score-team-event" if projected_candidate is not None else None,
+        "calibrated_lower_bound": None,
+        "reducer_authority": None,
+        "immutable_prediction_id": None,
+        "blocker": "NO_ELIGIBLE_SOURCE_BACKED_PREGAME_CANDIDATE",
+        "can_execute": False,
+    }
+    if projected_candidate is not None and projected_response is not None:
+        try:
+            raw_projected_for_receipt = projected_response.json()
+        except ValueError:
+            raw_projected_for_receipt = {}
+        projected_receipt = (
+            raw_projected_for_receipt if isinstance(raw_projected_for_receipt, dict) else {}
+        )
+        projected_detail = _typed_response_detail(projected_receipt)
+        source_backed["request_id"] = (
+            str(
+                projected_receipt.get("request_id")
+                or projected_receipt.get("research_run_id")
+                or projected_detail.get("request_id")
+                or ""
+            ).strip()
+            or None
+        )
+        source_backed["exact_offer"] = {
+            "home_team": projected_candidate.get("home_team"),
+            "away_team": projected_candidate.get("away_team"),
+            "official_date": projected_candidate.get("official_date"),
+            "event_start_time": projected_candidate.get("event_start_time"),
+        }
+        if projected_ok:
+            home_lb = projected_receipt.get("calibrated_home_lower_bound")
+            away_lb = projected_receipt.get("calibrated_away_lower_bound")
+            try:
+                calibrated_lower_bound = float(home_lb)
+            except (TypeError, ValueError):
+                try:
+                    calibrated_lower_bound = float(away_lb)
+                except (TypeError, ValueError):
+                    calibrated_lower_bound = None
+            source_backed.update(
+                {
+                    "status": "PASS",
+                    "lane": "SOURCE_BACKED_PROJECTED_TEAM_EVENT",
+                    "calibrated_lower_bound": calibrated_lower_bound,
+                    "calibrated_home_lower_bound": home_lb,
+                    "calibrated_away_lower_bound": away_lb,
+                    "reducer_authority": projected_receipt.get("global_terminal_authority"),
+                    "immutable_prediction_id": projected_receipt.get("prediction_id"),
+                    "blocker": "",
+                }
+            )
+        else:
+            source_backed["status"] = "BLOCKED"
+            source_backed["blocker"] = str(
+                projected_blocker_code
+                or projected_code
+                or projected_detail.get("blocker_code")
+                or "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+            )
+            source_backed["reducer_authority"] = (
+                projected_receipt.get("global_terminal_authority")
+                or projected_detail.get("global_terminal_authority")
+            )
+
+    scoring_acceptance_proven = bool(
+        source_backed.get("status") == "PASS"
+        and source_backed.get("calibrated_lower_bound") is not None
+        and source_backed.get("reducer_authority") == "V17_TERMINAL_REDUCER"
+        and source_backed.get("request_id")
+        and source_backed.get("official_event_id")
+        and source_backed.get("source_snapshot_id")
+        and source_backed.get("fitted_route")
+    )
+
     result = {
         "status": status,
+        "scoring_acceptance_proven": scoring_acceptance_proven,
+        "synthetic_negative_probes": synthetic_negative_probes,
+        "source_backed_pregame_scoring": source_backed,
         "prop_http_status": prop_response.status_code,
         "prop_ok": prop_ok,
         "prop_terminal_label": prop_row.get("terminal_label") or prop_row.get("code"),
