@@ -984,7 +984,13 @@ def score_nhl_fitted_candidate(
         "calibration_sample_scope": "NHL_HISTORICAL_TIME_SPLIT",
         "effective_sample_n": candidate.training_rows + candidate.calibration_rows,
         "immutable_model_timestamp": candidate.created_at.isoformat(),
-        "source_snapshot_id": f"NHL_FITTED:{candidate.candidate_id}:{candidate.dataset_hash[:16]}",
+        # Truthful provenance from registry + caller/source receipts — never invent.
+        "candidate_id": candidate.candidate_id,
+        "source_snapshot_id": str(evidence.get("source_snapshot_id") or "").strip(),
+        "source_snapshot_timestamp": str(
+            evidence.get("source_snapshot_timestamp") or ""
+        ).strip(),
+        "outcome_space": FULL_GAME_SETTLEMENT,
         "feature_reconstruction": {
             "season": reconstruction.season,
             "feature_as_of": reconstruction.feature_as_of.isoformat(),
@@ -1004,6 +1010,8 @@ def score_nhl_fitted_candidate(
                 "injury_report",
                 "rest_travel",
                 "settlement_basis",
+                "source_snapshot_id",
+                "source_snapshot_timestamp",
             )
         },
         "fitted_registry_scoring": True,
@@ -1014,6 +1022,9 @@ def score_nhl_fitted_candidate(
         "automatic_certification": False,
         "automatic_promotion": False,
         "event_prediction_id": (
+            f"NHL:{candidate.model_version}:{reconstruction.official_event_id}"
+        ),
+        "prediction_id": (
             f"NHL:{candidate.model_version}:{reconstruction.official_event_id}"
         ),
         "can_execute": False,
@@ -1093,6 +1104,16 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         db=client,
         as_of_utc=now,
     )
+    scoring_evidence = dict(evidence)
+    # Prefer caller snapshot time; otherwise use the server timeline receipt time.
+    if not str(scoring_evidence.get("source_snapshot_timestamp") or "").strip():
+        verified_at = str(receipt.get("verified_at") or "").strip()
+        if not verified_at:
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_SNAPSHOT_TIMESTAMP_MISSING"],
+            )
+        scoring_evidence["source_snapshot_timestamp"] = verified_at
     reconstruction = reconstruct_nhl_pregame_features(
         events,
         official_event_id=official_id,
@@ -1107,7 +1128,7 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         candidate,
         reconstruction,
         event_key=str(getattr(req, "event_key", "") or f"NHL:{official_id}"),
-        evidence=evidence,
+        evidence=scoring_evidence,
     )
 
 

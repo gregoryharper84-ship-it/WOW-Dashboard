@@ -195,6 +195,8 @@ def _timeline_receipt(
         "provenance_complete": True,
         "season": str(season),
         "settled_prior_event_ids": sorted(prior_ids),
+        "verified_at": NOW.isoformat(),
+        "source": "TEST_TIMELINE_RECEIPT",
     }
 
 
@@ -223,6 +225,7 @@ def _request(**evidence_overrides):
         "injury_report": {"home": [], "away": []},
         "rest_travel": {"home_days": 2, "away_days": 3},
         "source_snapshot_id": "nhl-source-snapshot-20261119",
+        "source_snapshot_timestamp": (NOW - timedelta(minutes=15)).isoformat(),
         "season": SEASON,
         "neutral_site": False,
     }
@@ -333,11 +336,15 @@ def test_registry_loader_skips_malformed_newest_candidate_and_falls_back():
 def test_identity_calibrator_scores_deterministically_and_withholds_bounds():
     candidate = nhl.load_nhl_fitted_candidate(_DB(), as_of_utc=NOW)
     reconstruction = _reconstruction()
+    evidence = {
+        "source_snapshot_id": "nhl-source-snapshot-20261119",
+        "source_snapshot_timestamp": (NOW - timedelta(minutes=15)).isoformat(),
+    }
     first = nhl.score_nhl_fitted_candidate(
-        candidate, reconstruction, event_key="NHL:2026029001", evidence={}
+        candidate, reconstruction, event_key="NHL:2026029001", evidence=evidence
     )
     second = nhl.score_nhl_fitted_candidate(
-        candidate, reconstruction, event_key="NHL:2026029001", evidence={}
+        candidate, reconstruction, event_key="NHL:2026029001", evidence=evidence
     )
     assert first["raw_home_probability"] == second["raw_home_probability"]
     assert 0.0 < first["calibrated_probability"] < 1.0
@@ -350,6 +357,11 @@ def test_identity_calibrator_scores_deterministically_and_withholds_bounds():
     assert first["can_execute"] is False
     assert first["model_version"] == candidate.model_version
     assert first["feature_reconstruction"]["timeline_hash"] == reconstruction.timeline_hash
+    assert first["candidate_id"] == candidate.candidate_id
+    assert first["prediction_id"] == first["event_prediction_id"]
+    assert first["outcome_space"] == nhl.FULL_GAME_SETTLEMENT
+    assert first["source_snapshot_id"] == evidence["source_snapshot_id"]
+    assert first["source_snapshot_timestamp"] == evidence["source_snapshot_timestamp"]
 
 
 def test_empirical_calibrator_bounds_contain_the_selected_probability():
@@ -1165,6 +1177,57 @@ def test_nhl_bridge_registration_uses_the_fitted_server_scorer():
     assert MODEL_SCORERS["NHL"] is score_nhl_fitted_team_event
     assert "calibration_artifact" not in SPORT_MODEL_INPUTS["NHL"]
     assert "goalie_identity_snapshot_id" in SPORT_MODEL_INPUTS["NHL"]
+
+
+def test_fitted_registry_bridge_output_keeps_identity_hold_and_requires_provenance():
+    from fastapi import HTTPException
+
+    import v17.team_event_bridge_runtime as bridge_runtime
+    import v17.team_event_request_runtime as host_routing
+
+    request = _request()
+    request.requester_host_identity = "test-requester-host"
+    request.candidate_family = "NHL"
+    host_routing.resolve_host_route = lambda *_args: SimpleNamespace(
+        requester_host_identity="test-requester-host",
+        controlling_engine_identity="V17_TEAM_EVENT_BRIDGE",
+        candidate_family="NHL",
+    )
+    package = {
+        "fitted_registry_scoring": True,
+        "candidate_id": "06a765ad-845f-4a57-986e-62a8d9adfaed",
+        "prediction_id": "NHL:NHL_RS_LOGISTIC_V1:2026029001",
+        "immutable_model_timestamp": NOW.isoformat(),
+        "calibration_method": nhl.IDENTITY_CALIBRATION_METHOD,
+        "calibration_version": "FORWARD_CALIBRATION_SELECTION_V2",
+        "source_snapshot_id": "nhl-source-snapshot-20261119",
+        "source_snapshot_timestamp": (NOW - timedelta(minutes=15)).isoformat(),
+        "outcome_space": nhl.FULL_GAME_SETTLEMENT,
+        "calibrated_probability": 0.55,
+        "calibrated_lower_bound": None,
+        "calibrated_upper_bound": None,
+        "blockers": ["NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE"],
+        "rank_eligible": True,
+        "probability_publishable": True,
+        "can_execute": False,
+    }
+    validated = bridge_runtime._validate_standard_bridge_output(request, package)
+    assert validated["rank_eligible"] is False
+    assert validated["probability_publishable"] is False
+    assert validated["can_execute"] is False
+    assert "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in validated["blockers"]
+
+    broken = dict(package)
+    broken.pop("candidate_id")
+    broken.pop("prediction_id")
+    with pytest.raises(HTTPException) as caught:
+        bridge_runtime._validate_standard_bridge_output(request, broken)
+    assert caught.value.status_code == 409
+    assert caught.value.detail["code"] == "MODEL_OUTPUT_INVALID"
+    assert (
+        "CANDIDATE_ID_REQUIRED" in caught.value.detail["blockers"]
+        or "PREDICTION_ID_OR_CANDIDATE_ID_REQUIRED" in caught.value.detail["blockers"]
+    )
 
 
 def test_registered_nhl_path_applies_reducer_and_publication_guard(monkeypatch):

@@ -218,8 +218,74 @@ def _finite_probability(value: Any) -> bool:
     return isfinite(parsed) and 0.0 <= parsed <= 1.0
 
 
+def _validate_fitted_registry_bridge_output(
+    req: Any, result: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate NHL fitted-registry packages without inventing provenance.
+
+    Identity-calibrator holds intentionally omit calibrated bounds. Those must
+    remain typed holds, not be reclassified as MODEL_OUTPUT_INVALID. Empirical
+    packages still go through the full governed scoring contract.
+    """
+    blockers = [str(item) for item in (result.get("blockers") or []) if str(item or "").strip()]
+    identity_hold = "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in blockers
+    required_fields = (
+        "candidate_id",
+        "immutable_model_timestamp",
+        "calibration_method",
+        "calibration_version",
+        "source_snapshot_id",
+        "source_snapshot_timestamp",
+        "outcome_space",
+    )
+    missing = [
+        f"{field.upper()}_REQUIRED"
+        for field in required_fields
+        if not str(result.get(field) or "").strip()
+    ]
+    if not (
+        str(result.get("prediction_id") or "").strip()
+        or str(result.get("candidate_id") or "").strip()
+    ):
+        missing.append("PREDICTION_ID_OR_CANDIDATE_ID_REQUIRED")
+    if missing:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_OUTPUT_INVALID,
+            blocker=missing[0],
+            status_code=409,
+            extra={"missing_fields": missing, "model_invoked": True},
+        )
+    if identity_hold:
+        out = dict(result)
+        out["rank_eligible"] = False
+        out["probability_publishable"] = False
+        out["can_execute"] = False
+        return out
+    audit = validate_governed_scoring_package(result)
+    if audit.status != PASS:
+        code = audit.status if audit.status != MODEL_OUTPUT_INVALID else MODEL_OUTPUT_INVALID
+        raise _model_failure_detail(
+            req,
+            code=code,
+            blocker=(audit.blockers[0] if audit.blockers else "GOVERNED_PACKAGE_INVALID"),
+            status_code=409,
+            extra={"governed_package_audit": audit.as_dict()},
+        )
+    out = dict(result)
+    out["rank_eligible"] = bool(result.get("rank_eligible") is True and audit.rank_eligible)
+    out["probability_publishable"] = bool(
+        result.get("probability_publishable") is True and audit.scoring_allowed
+    )
+    out["can_execute"] = False
+    return out
+
+
 def _validate_standard_bridge_output(req: Any, result: dict[str, Any]) -> dict[str, Any]:
     """Validate the canonical package for newly registered non-MLB adapters."""
+    if result.get("fitted_registry_scoring") is True:
+        return _validate_fitted_registry_bridge_output(req, result)
+
     audit = validate_governed_scoring_package(result)
     if audit.status != PASS:
         # Stale governed packages have their own typed status in the scoring
