@@ -86,8 +86,12 @@ def test_research_diagnostics_never_certify_promote_or_rewrite_probability():
     assert result["status"] == "RESEARCH_ONLY"
     assert result["market_favorite"] == "FAVORITE"
     assert result["no_vig_method"] == "power"
+    assert result["no_vig_method_role"] == "PRIMARY_RESEARCH"
+    assert result["no_vig_method_contract_version"] == "V17_POWER_PRIMARY_V1"
     assert result["outcomes"]["DOG"]["governed_probability_unchanged"] == 0.42
     assert result["outcomes"]["DOG"]["market_disagreement"] > 0
+    assert result["outcomes"]["DOG"]["market_disagreement_reason_code"] == "MODEL_MARKET_DISAGREEMENT_UNVALIDATED"
+    assert result["outcomes"]["DOG"]["information_edge_status"] == "REFERENCE_CLASS_UNAVAILABLE_INFORMATION_EDGE_UNPROVEN"
     assert result["outcomes"]["DOG"]["conservative_disagreement"] > 0
     assert result["outcomes"]["DOG"]["reference_class_bias_component"] is None
     assert result["outcomes"]["DOG"]["information_edge_proven"] is False
@@ -114,6 +118,7 @@ def test_bias_decomposition_is_only_displayed_with_pregame_reference_receipt():
         == pytest.approx(dog["market_disagreement"])
     )
     assert dog["information_edge_proven"] is False
+    assert dog["information_edge_status"] == "BIAS_DECOMPOSITION_AVAILABLE_INFORMATION_EDGE_UNPROVEN"
 
 
 def test_reference_class_without_point_in_time_provenance_fails_closed():
@@ -204,3 +209,22 @@ def test_other_event_market_quote_does_not_cross_contaminate():
     quotes[1]["official_event_id"] = "different-official-event"
     with pytest.raises(ValueError, match="MARKET_BOOK_EVENT_OR_SETTLEMENT_MISMATCH"):
         _evaluate(book_quotes=quotes)
+
+
+def test_multiplicative_market_baseline_is_sensitivity_not_primary():
+    result = _evaluate(method="multiplicative")
+    assert result["no_vig_method"] == "multiplicative"
+    assert result["no_vig_method_role"] == "SENSITIVITY_ONLY"
+    assert result["outcomes"]["DOG"]["information_edge_proven"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
+
+
+def test_no_reference_class_never_calls_disagreement_real_information_edge():
+    result = _evaluate()
+    dog = result["outcomes"]["DOG"]
+    assert dog["market_disagreement"] > 0
+    assert dog["information_edge_status"] == "REFERENCE_CLASS_UNAVAILABLE_INFORMATION_EDGE_UNPROVEN"
+    assert dog["reference_class_bias_component"] is None
+    assert dog["reference_class_residual_disagreement"] is None
+    assert dog["automatic_pick_promotion"] is False
