@@ -88,7 +88,48 @@ ROUTE_POLICY_STATUS: dict[tuple[str, str], RoutePolicyStatus] = {
 # state: engineering can be complete while empirical/governance approval remains
 # outstanding. Tests and future reviewed release PRs may pass an explicit map to
 # the pure audit function without mutating this production registry.
-REVIEWED_ROUTE_POLICIES: dict[tuple[str, str], PropCalibrationCertificationPolicy] = {}
+#
+# MLB PITCHER_STRIKEOUTS: PROPOSED for owner review (merging is the review).
+# Judges only rows scored by a fitted Platt calibrator; Phase-A rows can never
+# satisfy it.  Brier/log-loss caps are the constant-0.5 reference; the no-skill
+# floor additionally requires beating the cohort's own base rate.  ECE/bias
+# limits sit at the ~95th percentile of pure sampling noise for a perfectly
+# calibrated n=200 cohort, so they reject real miscalibration, not chance.
+REVIEWED_ROUTE_POLICIES: dict[tuple[str, str], PropCalibrationCertificationPolicy] = {
+    ("MLB", "PITCHER_STRIKEOUTS"): PropCalibrationCertificationPolicy(
+        policy_id="V17_MLB_PITCHER_STRIKEOUTS_FORWARD_CERT_POLICY_V1",
+        min_settled_predictions=PHASE_B_MIN_N,
+        max_brier_score=0.25,
+        max_log_loss=0.6931,
+        max_ece=0.10,
+        max_abs_calibration_bias=0.07,
+        min_lower_bound_reliability_margin=0.0,
+        eligible_calibration_statuses=("PLATT_TIME_SPLIT_V1",),
+        require_skill_over_base_rate=True,
+    ),
+}
+def validate_reviewed_route_policies(
+    policies: Mapping[tuple[str, str], PropCalibrationCertificationPolicy],
+) -> None:
+    """Fail closed at import if a reviewed policy is malformed or too lenient."""
+    for key, policy in policies.items():
+        policy.validate()
+        if key not in ROUTE_POLICY_STATUS:
+            raise ValueError(f"reviewed policy for undeclared prop lane {key}")
+        if policy.min_settled_predictions < PHASE_B_MIN_N:
+            raise ValueError("reviewed policy cannot certify below the Phase-B forward minimum")
+
+
+validate_reviewed_route_policies(REVIEWED_ROUTE_POLICIES)
+for _key, _policy in REVIEWED_ROUTE_POLICIES.items():
+    ROUTE_POLICY_STATUS[_key] = RoutePolicyStatus(
+        sport=_key[0],
+        stat_type=_key[1],
+        policy_id=_policy.policy_id,
+        review_status="APPROVED",
+        min_forward_settled_n=_policy.min_settled_predictions,
+        blocker=None,
+    )
 
 
 def _rows(result: Any) -> list[dict[str, Any]]:
@@ -345,12 +386,21 @@ def audit_artifact_certification(
         }
 
     packet = build_calibration_certification_packet(observations, policy=policy)
+    # Upstream runtime blockers (Phase-B ladder minimum, Phase-A cohort) must
+    # survive the policy packet: a downstream stage may never erase them, and
+    # a packet PASS cannot override them.
+    merged_blockers = list(dict.fromkeys([*blockers, *packet.blockers]))
+    status = packet.status
+    if blockers and status == CALIBRATION_CERTIFIED_PASS:
+        status = CALIBRATION_EVIDENCE_REQUIRED
     return {
         **packet.as_dict(),
+        "status": status,
+        "blockers": merged_blockers,
         "policy_review_status": "APPROVED",
         "calibration_states": calibration_states,
         "metrics": metrics,
-        "promotion_package_ready": packet.status == CALIBRATION_CERTIFIED_PASS,
+        "promotion_package_ready": status == CALIBRATION_CERTIFIED_PASS and not merged_blockers,
         "counting_basis": EXACT_ARTIFACT_COHORT_ONLY,
         "can_execute": False,
     }
@@ -397,5 +447,5 @@ __all__ = [
     "CAN_EXECUTE", "EXACT_ARTIFACT_COHORT_ONLY", "POLICY_REVIEW_REQUIRED",
     "REVIEWED_ROUTE_POLICIES", "ROUTE_POLICY_STATUS", "PropCertificationAuditRequest",
     "RoutePolicyStatus", "audit_artifact_certification", "build_independent_observations",
-    "run_prop_certification_audit",
+    "run_prop_certification_audit", "validate_reviewed_route_policies",
 ]
