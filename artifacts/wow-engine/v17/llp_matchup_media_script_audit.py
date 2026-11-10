@@ -86,7 +86,9 @@ def audit_script_robustness_and_media(
         accepted: list[Mapping[str, Any]] = []
         ids: set[str] = set()
         paths: set[str] = set()
-        for candidate in scenarios:
+        if len(scenarios) > 8:
+            warnings.append("SCENARIO_LIMIT_TRUNCATED")
+        for candidate in scenarios[:8]:
             if not isinstance(candidate, Mapping):
                 warnings.append("SCENARIO_MALFORMED")
                 continue
@@ -171,6 +173,8 @@ def audit_script_robustness_and_media(
                 warnings.append("MEDIA_HEADLINES_LIMIT_TRUNCATED")
             if not headlines:
                 warnings.append("NO_ADMISSIBLE_PREGAME_HEADLINES")
+            elif len({h["publisher"].casefold() for h in headlines}) < 2:
+                warnings.append("MEDIA_SOURCE_DIVERSITY_INSUFFICIENT")
         raw_storylines = media.get("storylines")
         if not isinstance(raw_storylines, (list, tuple)) or not raw_storylines:
             warnings.append("MATCHUP_STORYLINES_MISSING")
@@ -187,6 +191,12 @@ def audit_script_robustness_and_media(
                     or any(not isinstance(ref, str) or ref not in valid_ids for ref in sources)):
                     warnings.append("STORYLINE_INVALID_OR_UNSOURCED")
                     continue
+                supporting_stances = {
+                    h["stance"] for h in headlines if h["headline_id"] in sources
+                }
+                if stance != "CONTEXT" and stance not in supporting_stances:
+                    warnings.append("STORYLINE_STANCE_NOT_SUPPORTED_BY_SOURCE")
+                    continue
                 storylines.append({"claim": claim, "stance": stance,
                                    "headline_ids": list(dict.fromkeys(sources))})
             if len(raw_storylines) > 6:
@@ -197,8 +207,13 @@ def audit_script_robustness_and_media(
         if isinstance(raw_counter, Mapping):
             claim = _txt(raw_counter.get("claim"), max_length=500)
             refs = raw_counter.get("headline_ids")
+            challenging_ids = {
+                headline["headline_id"] for headline in headlines
+                if headline["stance"] == "CHALLENGES_PICK"
+            }
             if (claim and isinstance(refs, (list, tuple)) and refs
-                and all(isinstance(hid, str) and hid in valid_ids for hid in refs)):
+                and all(isinstance(hid, str) and hid in valid_ids for hid in refs)
+                and any(hid in challenging_ids for hid in refs)):
                 counter = {"claim": claim, "headline_ids": list(dict.fromkeys(refs))}
         if counter is None:
             warnings.append("COUNTER_NARRATIVE_UNSOURCED")
