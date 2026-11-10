@@ -9,6 +9,7 @@ NO_PICK threshold, cash gate, portfolio rule, or terminal decision.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from math import isclose, isfinite
 from typing import Any, Iterable, Mapping
 
 CAN_EXECUTE = False
@@ -31,7 +32,16 @@ class GovernedOutcome:
             self.calibrated_lower_bound,
             self.calibrated_upper_bound,
         )
-        if any(value < 0.0 or value > 1.0 for value in values):
+        if not self.label.strip():
+            raise ValueError("governed_outcome_label_empty")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(value)
+            or value < 0.0
+            or value > 1.0
+            for value in values
+        ):
             raise ValueError(f"probability_out_of_range:{self.label}")
         if not (
             self.calibrated_lower_bound
@@ -75,6 +85,13 @@ def _coerce_outcome(value: GovernedOutcome | Mapping[str, Any]) -> GovernedOutco
     if isinstance(value, GovernedOutcome):
         outcome = value
     else:
+        for key in (
+            "calibrated_probability",
+            "calibrated_lower_bound",
+            "calibrated_upper_bound",
+        ):
+            if isinstance(value[key], bool):
+                raise ValueError(f"probability_out_of_range:{value['label']}")
         outcome = GovernedOutcome(
             label=str(value["label"]),
             calibrated_probability=float(value["calibrated_probability"]),
@@ -137,6 +154,15 @@ def evaluate_favorite_upset_alert(
     by_label = {outcome.label.casefold(): outcome for outcome in outcomes}
     if len(by_label) != len(outcomes):
         raise ValueError("duplicate_governed_outcome_label")
+    # Never interpret an incomplete/non-normalized winner distribution as an
+    # upset, even when upstream says that the outcome space is complete.
+    if not isclose(
+        sum(outcome.calibrated_probability for outcome in outcomes),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-4,
+    ):
+        raise ValueError("governed_outcome_probabilities_not_normalized")
     favorite = by_label.get(normalized_favorite.casefold())
     if favorite is None:
         raise ValueError("market_favorite_not_in_governed_outcome_space")
@@ -153,12 +179,27 @@ def evaluate_favorite_upset_alert(
     probability_gap = favorite.calibrated_probability - strongest.calibrated_probability
 
     reasons: list[str] = []
+    overlapping_alternatives = [
+        outcome for outcome in alternatives
+        if outcome.calibrated_upper_bound >= favorite.calibrated_lower_bound
+    ]
     if strongest.calibrated_probability > favorite.calibrated_probability:
         status = "UPSET_ALERT_MODEL_FLIP"
         severity = "HIGH"
         alert = True
         reasons.append("GOVERNED_MODEL_PREFERS_NON_FAVORITE_OUTCOME")
-    elif strongest.calibrated_upper_bound >= favorite.calibrated_lower_bound:
+    elif overlapping_alternatives:
+        # The highest point-estimate alternative need not be the one whose
+        # uncertainty interval threatens the favorite.
+        strongest = max(
+            overlapping_alternatives,
+            key=lambda outcome: (
+                outcome.calibrated_upper_bound,
+                outcome.calibrated_probability,
+                outcome.label,
+            ),
+        )
+        probability_gap = favorite.calibrated_probability - strongest.calibrated_probability
         status = "UPSET_ALERT_UNCERTAINTY_OVERLAP"
         severity = "ELEVATED"
         alert = True
