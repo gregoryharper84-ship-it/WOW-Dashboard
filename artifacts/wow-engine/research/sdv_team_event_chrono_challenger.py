@@ -51,7 +51,13 @@ def load_sport(sport: str, csv_paths: list[Path]) -> pd.DataFrame:
         d = d.rename(columns={"home_team_abbr": "home", "away_team_abbr": "away"}); d["neutral"] = 0.0
     else:
         d = d[d.status.astype(str) == "STATUS_FINAL"]
-        d = d.rename(columns={"home_id": "home", "away_id": "away"}); d["neutral"] = d.neutral_site.astype(str).str.lower().eq("true").astype(float)
+        d = d.rename(columns={"home_id": "home", "away_id": "away"})
+        # Missing/unknown neutral-site flags are NOT evidence of a home game.
+        # SportsDataverse CSV releases may encode booleans as TRUE/FALSE or 1/0.
+        neutral = d.neutral_site.astype("string").str.strip().str.lower()
+        if not bool(neutral.isin(("true", "false", "1", "0")).all()):
+            raise EvidenceError("SDV_SOURCE_NEUTRAL_SITE_UNVERIFIED")
+        d["neutral"] = neutral.isin(("true", "1")).astype(float)
     d = d.dropna(subset=["home_score", "away_score"]).copy()
     d["game_id"] = d["game_id"].astype(str)
     if d.game_id.duplicated().any(): raise EvidenceError("SDV_SOURCE_DUPLICATE_EVENT_IDENTITY")
