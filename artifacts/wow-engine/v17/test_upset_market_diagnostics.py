@@ -151,6 +151,7 @@ def test_single_book_research_is_explicitly_partial():
 def test_bogus_governed_probability_distribution_is_rejected():
     invalid = _outcomes()
     invalid["DOG"]["calibrated_probability"] = 0.58
+    invalid["DOG"]["calibrated_upper_bound"] = 0.65
     with pytest.raises(ValueError, match="MARKET_MODEL_OUTCOMES_NOT_NORMALIZED"):
         _evaluate(governed_outcomes=invalid)
 
