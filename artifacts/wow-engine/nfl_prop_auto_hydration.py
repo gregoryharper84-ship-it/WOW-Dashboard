@@ -23,12 +23,23 @@ from typing import Any, Callable, Mapping, Optional
 
 import httpx
 
+from v17.player_availability_gate import normalize_designation
+
 PROVIDER_ID = "NFL_ESPN_IDENTITY_NFLVERSE_STATS_V1"
 EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 ESPN_SEARCH_URL = "https://site.api.espn.com/apis/search/v2"
 ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_TEAM_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/schedule"
+# The site/v2 athlete path returns HTTP 404 for NFL athletes (verified
+# 2026-11-09 against athlete 4241457). The common/v3 profile endpoint serves the
+# same official record, including the `injuries` entries this hydrator reads.
+ESPN_ATHLETE_URL = "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}"
+ESPN_ATHLETE_FALLBACK_URLS = (
+    "https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}",
+    "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{athlete_id}",
+)
+AVAILABILITY_SOURCE = "ESPN_NFL_ATHLETE_INJURY_REPORT"
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 HTTP_TIMEOUT_SECONDS = 12.0
 HTTP_ATTEMPTS = 2
@@ -688,6 +699,123 @@ def _history(
     return game_log, box, hashes, player_id
 
 
+def _injury_entries(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    entries: list[Mapping[str, Any]] = []
+    for container in (payload, payload.get("athlete")):
+        if not isinstance(container, Mapping):
+            continue
+        raw = container.get("injuries")
+        if isinstance(raw, list):
+            entries.extend(item for item in raw if isinstance(item, Mapping))
+    return entries
+
+
+def _athlete_availability(
+    athlete_id: str,
+    *,
+    http_get: Callable[..., Any],
+    captured: datetime,
+) -> dict[str, Any]:
+    """Read the official injury designation for the target athlete.
+
+    Roster identity is already established by ``_athlete_team``; participation
+    is a separate fact. A failed retrieval is reported as ``UNVERIFIED`` with
+    its own reason so a downstream gate can distinguish "no designation on the
+    report" from "the report was never read".
+    """
+    base: dict[str, Any] = {
+        "source": AVAILABILITY_SOURCE,
+        "captured_at": captured.isoformat(),
+        "evidence_status": "RETRIEVED",
+        # A fetch timestamp is not an independently published injury-report
+        # timestamp. The athlete-profile endpoint does not certify a complete
+        # official report, even when its injuries list is empty.
+        "fresh": False,
+        "report_complete": False,
+        "athlete_id": athlete_id,
+    }
+    payload: Mapping[str, Any] | None = None
+    endpoint_used: str | None = None
+    failures: list[str] = []
+    for url_template in ESPN_ATHLETE_FALLBACK_URLS:
+        url = url_template.format(athlete_id=athlete_id)
+        try:
+            payload = _request(url, http_get=http_get)
+        except Exception as exc:
+            failures.append(f"{type(exc).__name__}:{url}")
+            continue
+        endpoint_used = url
+        break
+    if payload is None:
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "RETRIEVAL_FAILED",
+            "source_endpoint": None,
+            "reason": f"INJURY_REPORT_RETRIEVAL_FAILED:{failures[-1].split(':', 1)[0] if failures else 'UNKNOWN'}",
+            "retrieval_failures": failures[-3:],
+        }
+    base["source_endpoint"] = endpoint_used
+    athlete = payload.get("athlete") if isinstance(payload.get("athlete"), Mapping) else payload
+    provider_id = str(athlete.get("id") or "").strip() if isinstance(athlete, Mapping) else ""
+    if provider_id != str(athlete_id):
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "ATHLETE_IDENTITY_UNVERIFIED",
+            "reason": "INJURY_SOURCE_ATHLETE_IDENTITY_MISMATCH",
+        }
+    entries = _injury_entries(payload)
+    if not entries:
+        # Missing/empty athlete-profile injuries are NOT proof that the current
+        # complete team injury report was retrieved. Avoid false AVAILABLE
+        # even after valid event/team identity binding.
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED",
+            "reason": "COMPLETE_PUBLISHED_INJURY_REPORT_NOT_VERIFIED",
+        }
+    latest = max(entries, key=lambda entry: str(entry.get("date") or ""))
+    designation = normalize_designation(latest.get("status")) or normalize_designation(latest.get("type"))
+    if not designation:
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "INJURY_DESIGNATION_UNPARSED",
+            "reason": "INJURY_DESIGNATION_UNPARSED",
+        }
+    return {
+        **base,
+        "status": designation,
+        "designation": designation,
+        "reason": f"OFFICIAL_DESIGNATION_{designation}",
+    }
+
+
+def bind_availability_to_event(
+    availability: Mapping[str, Any],
+    *,
+    team: str,
+    event_id: str,
+) -> dict[str, Any]:
+    """Attach the resolved event/team identity to availability evidence.
+
+    The athlete injury record is read without knowing which game it will be
+    used for. Binding happens after the target event resolves so the gate sees
+    one athlete, one event, and one team, exactly as the provenance contract
+    requires for clearance.
+    """
+    bound = dict(availability)
+    bound["team"] = str(team or "").strip() or None
+    bound["event_id"] = str(event_id or "").strip() or None
+    return bound
+
+
 def hydrate_nfl_prop_evidence(
     *,
     player: str,
@@ -710,8 +838,12 @@ def hydrate_nfl_prop_evidence(
         )
 
     athlete_id, official_name = _resolve_espn_athlete(player, http_get=http_get)
+    availability = _athlete_availability(athlete_id, http_get=http_get, captured=captured)
     team = _athlete_team(athlete_id, http_get=http_get)
     target = _target_event(event_start=event_start, team=team, opponent=opponent, http_get=http_get)
+    # Availability must name the event and team it was captured for, otherwise
+    # the gate cannot distinguish this game's report from a stale one.
+    availability = bind_availability_to_event(availability, team=team, event_id=target["event_id"])
     official_start = _aware(target["provider_event_start_time"])
     if captured >= official_start:
         raise NFLPropHydrationError("EVENT_ALREADY_STARTED", "NFL prop capture must precede the official kickoff")
@@ -734,6 +866,7 @@ def hydrate_nfl_prop_evidence(
         "box_score_log": box_score_log,
         "role_status": {
             "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+            "availability": availability,
             "player": official_name,
             "espn_athlete_id": athlete_id,
             "nflverse_player_id": nflverse_player_id,
@@ -758,6 +891,7 @@ def hydrate_nfl_prop_evidence(
             "source": "NFLVERSE_WEEKLY_PLAYER_STATS",
         },
         "source_timestamps": {
+            AVAILABILITY_SOURCE: captured.isoformat(),
             "ESPN_NFL_IDENTITY_SCOREBOARD": captured.isoformat(),
             "NFLVERSE_WEEKLY_PLAYER_STATS": captured.isoformat(),
             "ESPN_NFL_TEAM_SCHEDULE": captured.isoformat(),
