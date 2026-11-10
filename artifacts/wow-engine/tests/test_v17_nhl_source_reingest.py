@@ -740,7 +740,19 @@ def test_partial_team_reingest_does_not_persist_season_timeline_receipt():
 
 def test_full_season_reingest_persists_season_timeline_receipt_for_scoring(monkeypatch):
     db = _FakeDB()
-    result = _run(db, teams=None)
+    session = _Session(_by_team(_fixture()))
+    result = _run(db, session=session, teams=None)
+    # Assert full-season acquisition independently of the production team helper.
+    expected_clubs = {
+        "ANA", "BOS", "BUF", "CAR", "CBJ", "CGY", "CHI", "COL",
+        "DAL", "DET", "EDM", "FLA", "LAK", "MIN", "MTL", "NJD",
+        "NSH", "NYI", "NYR", "OTT", "PHI", "PIT", "SEA", "SJS",
+        "STL", "TBL", "TOR", "UTA", "VAN", "VGK", "WPG", "WSH",
+    }
+    assert len(session.calls) == 32
+    assert {
+        url.rstrip("/").rsplit("/", 2)[-2] for url in session.calls
+    } == expected_clubs
     assert result["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
     assert result["provenance_complete"] is True
     assert result["timeline_receipt_persisted"] is True
