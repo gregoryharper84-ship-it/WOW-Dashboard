@@ -140,3 +140,20 @@ can_execute: false
 ```
 
 If any applicable field cannot pass, return to Engineering or classify the actual hard blocker. Do not produce a partial `QA_PASS`.
+
+## Fresh exact-head verification
+
+Independently reproduce the defect and run targeted,
+negative, neighboring, and applicable full regressions.
+
+Record actual command, exit code, failing-test count,
+commit SHA, and source environment.
+
+Verify that the new regression catches the original
+defect. Do not treat keyword checks as behavioral proof.
+
+Distinguish successful CI from deployment, production
+health, Action acceptance, model capability, and
+prediction persistence.
+
+Do not approve stale, partial, or self-produced evidence.
