@@ -1,82 +1,50 @@
-# WOW V17 — NBA verification receipt pre-deploy candidate (2026-11-10)
+# WOW V17 — NBA verifier receipt predeploy candidate (2026-11-10)
 
-**CLASS P (deployment config / schema); DRAFT ONLY. Do not merge or apply the migration without independent exact-head acceptance and confirmed production DB identity.**
+**CLASS P / DRAFT ONLY. No merge, migration application, Blueprint activation, production deploy, certification, publication, or execution until independent exact-head acceptance and the authorized production DB identity are established.**
 
-## Mechanism / falsifiable prediction
+## Current V2 design (authoritative for this draft)
 
-The live Render web service auto-deploys on `checksPass` independently of the GitHub deployment workflow. A gate confined to that workflow does not cover the active deployment path. Its paid instance is `1c-2g` while the versioned Blueprint still declares `free`. Therefore a schema-incompatible candidate could reach startup without the new receipt contract being checked. A Render `preDeployCommand` that makes a read-only authenticated RPC call must fail before startup when the database lacks the immutable receipt schema.
+The live Render web service uses `checksPass` auto-deploy, so a GitHub deployment-workflow-only guard does not cover its active release path. The versioned `render.yaml` now matches the observed paid plan `1c-2g` and proposes a read-only `preDeployCommand`. This is source configuration; **it is not evidence the live Render predeploy command is configured**.
 
-- The proposed migration creates an NBA **SHADOW evidence-only** receipt ledger; it does not touch `wow_team_event_specialist_certifications`, model parameters, thresholds, publication or execution.
-- The schema RPC verifies the versioned contract, 15 expected columns, RLS, expected constrained unique identity, enabled immutable UPDATE/DELETE trigger, and service-role SELECT/INSERT-only grants.
-- The Python pre-deploy fails closed on missing secrets, unavailable/malformed RPC, wrong contract version, or any suggestion of publishability or execution.
-- `render.yaml` matches the already-observed paid live plan and adds the pre-deploy command. **Source YAML does not prove the live Render service picked up that configuration.**
+- **One ledger:** `public.wow_independent_verification_receipts` is created by the canonical `20261110_v17_independent_verification_receipts.sql` migration in the stacked verifier base PR. This P migration creates **no competing table**.
+- **Evidence contract:** the `security invoker` RPC `wow_nba_team_event_verification_receipt_schema_ready` checks the 27-column canonical ledger, validated independent-verifier checks, append-only UPDATE/DELETE and TRUNCATE guards, service-role SELECT/INSERT access, restricted client access, and `calibration_sha256` / `calibration_fit_end` registry columns. The RPC returns `NBA_TEAM_EVENT_VERIFICATION_RECEIPTS_V2` and nonpublishable/nonexecutable flags.
+- **Additional exact-head hardening:** the RPC source now attests the separate `can_execute=false` and `publishable_scope='NONE'` CHECK expressions; the BEFORE TRUNCATE statement trigger event; absence of service-role TRUNCATE permission; and absence of prohibited column-level SELECT/UPDATE grants. These changes require a new hosted verdict.
+- **Probe:** `v17/nba_verification_schema_predeploy.py` fails closed on missing secrets, RPC failure, an unexpected contract version, incompatible schema, or publishable/executable output. It cannot migrate schema or make an artifact certifiable.
 
-## Tests actually run
+Safety invariants: `custom_gpt_identity=WOW_BETTING_ENGINE`, `runtime_generation=V17_ACTIVE`, `terminal_authority=V17_TERMINAL_REDUCER`, `can_execute=false`, and `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`.
 
-1. `PYTHONPATH=artifacts/wow-engine pytest -q artifacts/wow-engine/tests/test_nba_verification_schema_predeploy.py` in a local isolated source copy: **5 passed**. The positive/negative Python RPC cases use fakes, not an actual PostgREST round trip.
-2. Read-only `wow-engine-validation` PostgreSQL inventory: `wow_nba_team_event_verification_receipts` absent, original D1 receipts and immutable trigger function present. This project's production authority is **not** established.
-3. A **single explicit transaction** executed the candidate DDL in `wow-engine-validation`, then verified the schema RPC reported compatible, appended and read back one exact-bundle test receipt, and rejected UPDATE, DELETE, and a duplicate bundle. Result: `MIGRATED_SCHEMA_ACCEPTED_INSERT_IMMUTABLE_DUPLICATE_REJECT`.
-4. That transaction ended in **ROLLBACK**. A fresh read-only check showed **the new table and RPC both absent again**, and the old D1 table still present. No lasting schema change.
-5. Render `get_service` readback: web `branch=main`, `autoDeployTrigger=checksPass`, and paid compute plan `1c-2g`. The actual pre-deploy command was **not independently observed as configured**.
+## Verified evidence and limits
 
-## Remains unverified / not authorized
+**Previous hosted baseline (head `823db73ce2021131a6797105ad4eb5b45daaa367`, not the current hardening head):** GitHub Actions run [42847354150](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/42847354150) completed 153 basketball maintenance tests and a prerequisite job with 34 wiring, 6 real PostgreSQL, and 1 real PostgREST tests. This proved isolated CI old/ready classifications and immutable-receipt rejection under its fixtures. The result does **not** verify the live Supabase service-role grants/cache or production migration state.
 
-- Missing November 10 **uncommitted** `nba_team_event_verification.py` verifier/wiring. This branch is a separately constructed candidate, not recovered original code. Do not assert each fit archives receipts yet.
-- Training artifact/calibrator digest and fit-end values for an actual new SHADOW run; historical records cannot be manufactured.
-- Exact migration contract match to verifier V1–V12, authenticated service-role PostgREST round trip, production database identity, independent SIRT semantic approval, protected native/hosted CI and Release Authority at exact head, Blueprint promotion, live release parity, and end-to-end immutable receipt.
-- Because the migration is absent from current production, **merging the pre-deploy setting prematurely would intentionally halt new deployments**. Keep this a draft until migration authorization and source reconciliation are complete.
+**Earlier isolated PostgreSQL 16.2 V2 compatibility report:** `compatible=true` with the canonical ledger and both calibrator columns; `false` with missing ledger or either column. This was **local/isolated** verification, not an authenticated production PostgREST readiness RPC call. Historical observations of SQLSTATE `42P01` (missing ledger) and `42703` (missing calibrator evidence) in `wow-engine-validation` were negative schema observations, not proof of production identity.
 
-Safety invariants: `custom_gpt_identity=WOW_BETTING_ENGINE`; `runtime_generation=V17_ACTIVE`; `terminal_authority=V17_TERMINAL_REDUCER`; `can_execute=false`; `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`.
+**New draft work in this review cycle:** real PostgreSQL negative tests now mutate direct nonexecution constraints, trigger event/enabled state, ledger business constraints, privileges, and calibrator evidence; hosted CI now reads JUnit XML and requires >=6 PostgreSQL plus >=1 PostgREST case with zero skips. These are source changes until the new head's CI result is inspected. A passing previous run cannot be transferred to a new SHA.
 
-## 2026-11-10 live compatibility probes for the new wiring
+**Superseded V1 history (not current evidence):** the original P candidate briefly proposed `wow_nba_team_event_verification_receipts`, a second 15-column table, and reported 5 local source tests and a rolled-back DDL trial. That design did not match the canonical verifier. It was removed in favor of the V2 27-column canonical ledger. Prior comments saying the structural tests remain deliberately RED or `NEW_SCHEMA_PASS` was not exercised referred to different stages and must not be interpreted as current V2 acceptance.
 
-The separately reported, still-uncommitted `v17/nba_verification_wiring.py` introduces a read-only `verification_prerequisites(client)` query before NBA fitting. Its stated contract probes `public.wow_independent_verification_receipts` and the `calibration_sha256` / `calibration_fit_end` columns on `public.wow_basketball_team_event_calibrators`. The source module was **not** found on protected `main` or this branch at the time of these checks; the author's reported 130 local passing tests are not independently reproduced by this record.
+## Authorized read-only production HTTP proof — still outstanding
 
-Real `wow-engine-validation` PostgreSQL SELECT probes returned:
+`tests/test_nba_verification_postgrest_http.py` is an opt-in test requiring all of `WOW_TEST_SUPABASE_URL`, `WOW_TEST_SUPABASE_SERVICE_KEY`, and `WOW_TEST_NBA_SCHEMA_STATE=old|ready`. It must remain GET-only; requests must refuse redirects, never print credentials, and distinguish typed missing-schema responses from successful 200 readback. A missing environment variable is **SKIP**, never PASS. This test is separate from the ephemeral PostgreSQL/PostgREST CI service tests.
 
-| Query target | Observed PostgreSQL SQLSTATE | Expected failure semantics |
-| --- | --- | --- |
-| `public.wow_independent_verification_receipts` | `42P01` relation missing | `NBA_VERIFICATION_LEDGER_MISSING` |
-| `wow_basketball_team_event_calibrators.calibration_sha256` | `42703` column missing | `NBA_VERIFICATION_CALIBRATOR_EVIDENCE_MISSING` |
-| `wow_basketball_team_event_calibrators.calibration_fit_end` | Absent in `information_schema.columns` | Same typed calibrator hold |
-
-**Schema contract reconciled (2026-11-10):** the draft previously created `public.wow_nba_team_event_verification_receipts`, a table the verifier wiring never read or wrote, and added neither calibrator evidence column. It now creates **no table**. The single ledger is `public.wow_independent_verification_receipts` from `20261110_v17_independent_verification_receipts.sql`, with `calibration_sha256` / `calibration_fit_end` added to the calibrator registry. The read-only RPC attests that exact contract — 27 named columns, the three `wow_ivr_*` constraints, the immutable and truncate triggers, service-role SELECT/INSERT only and no anon/authenticated SELECT — plus both calibrator columns, and returns `NBA_TEAM_EVENT_VERIFICATION_RECEIPTS_V2`.
-
-Exercised on a real PostgreSQL 16.2: `compatible: true` with the canonical ledger applied, `false` without it, and `false` after either calibrator column is dropped. The two structural contract tests that were deliberately red (ledger name, calibrator columns) now pass, and a new test binds the RPC's `contract_version` to the probe's `CONTRACT` so the two cannot drift apart silently.
-
-**Readback result:** OLD_SCHEMA_HOLD confirmed against a real database. NEW_SCHEMA_PASS was **not exercised** and cannot be claimed. No schema DDL, migration, fitting, artifact persistence, certification, or live orders were performed in this compatibility audit. Production database project authority was not established by this readback. Keep this protected P candidate disabled until the corrected schema, authentic PostgREST service-role probe, rollback/no-partial-fit negative test, and independent sign-off all pass at the exact head.
-
-
-## Opt-in PostgREST HTTP acceptance test — draft
-
-The read-only HTTP acceptance test is `tests/test_nba_verification_postgrest_http.py` (added in `f4bb4c3`). It is a **different test** from the reported, still-uncommitted six-test PostgreSQL/psycopg integration file. This test uses Python standard-library `urllib` to issue only two credentialed GET requests, with redirects disabled to protect API keys. It accepts the legacy JWT `Authorization: Bearer` header only for legacy service_role JWTs; Supabase `sb_secret_...` keys are sent solely in `apikey`. It never logs response bodies or key material.
-
-Explicit test command from a controlled, authorized environment, using a scoped **service-role** key and the exact intended Supabase project:
+Run only inside an authorized secret-managed environment against the **explicit approved project**:
 
 ```bash
-# Supply WOW_TEST_SUPABASE_SERVICE_KEY through the authorized secret manager.
 export WOW_TEST_SUPABASE_URL="https://PROJECT_REF.supabase.co"
+# Load WOW_TEST_SUPABASE_SERVICE_KEY from the authorized secret manager.
 WOW_TEST_NBA_SCHEMA_STATE=old PYTHONPATH=artifacts/wow-engine \
   pytest -q artifacts/wow-engine/tests/test_nba_verification_postgrest_http.py
 ```
 
-Prefer exporting secrets through the existing protected environment/secrets manager rather than pasting them into shell history. Repeat with `WOW_TEST_NBA_SCHEMA_STATE=ready` **only after** the independently accepted canonical schema migration has been applied in the authorized project. Without all three opt-in variables the real HTTP test is **SKIPPED**, not PASS. The other three tests cover expected response contract and header/redirect behavior with dummy inputs; they do not prove a live HTTP call. As of this note, the authenticated real-HTTP test has **not** been executed here.
+Repeat `ready` only after the two independently accepted canonical/attestation migrations have been applied to the verified authoritative project. Both table readback **and the actual readiness RPC GET** must be exercised with service-role authorization before claiming readiness. No authorized real-HTTP proof or production database DDL application is established by the GitHub CI results.
 
-**Release invariant:** the draft currently does **not** satisfy the new wiring's ledger/column requirements; the two intentional red structural contract tests on this branch must be made green by the actual verified migration and producer/consumer wiring, not by removing or loosening those checks. No schema write or fitted-model change is authorized by these test instructions.
+## Release hold / remaining acceptance
 
+- Exact-head hosted CI green on the latest source, including RPC-positive and mutation-negative real PostgreSQL checks and the JUnit executed-case guard.
+- CodeRabbit findings resolved on the latest head; independent SIRT semantic acceptance and Release Authority checks remain separate and mandatory.
+- Real Supabase service-role PostgREST readback for missing-schema HOLD, migrated-schema READY, RPC schema-cache visibility, constrained grants, and append-only receipts.
+- Proven production database identity and a governed migration-first rollout. Applying the Render predeploy gate **before** the approved schema migration would halt deployments intentionally.
+- Proof of no partial SHADOW fit/artifact persistence on schema HOLD and immutable independent receipt after a genuine nonproduction verification attempt; no model certification is implied.
+- Live Render configuration readback after authorized release. No release or migration is authorized by this draft.
 
-## CI source-and-execution acceptance (protected P draft)
-
-The real-server proof lives in the dedicated `verification-prerequisites` job in `.github/workflows/wow-v17-basketball-model-maintenance.yml`, which provisions `postgres:16` and the CI-pinned PostgREST 12.2.3, gives each integration file its own database, and fails the job on any skipped case. This draft no longer duplicates that block inside `wow-engine-verify.yml`'s `agent-runtime-integration` job; it only extends the dedicated job's path triggers to the predeploy RPC and probe it depends on.
-
-That job requires these source files at the candidate head:
-- `test_v17_nba_verification_wiring.py`
-- `tests/test_v17_nba_team_event_verification.py`
-- `test_v17_nba_verification_prerequisites_postgres.py`
-- `test_v17_nba_verification_prerequisites_postgrest.py`
-
-The job sets `WOW_TEST_POSTGRES_DSN` to its isolated PostgreSQL 16 service and `WOW_TEST_POSTGREST_URL` to its existing localhost:3000 gateway, runs the four files with pytest, writes a JUnit XML report, and rejects missing source, zero/insufficient executed cases (minimum seven real-server cases), and **any skipped test** even if pytest exits zero. Canonical codes: `NBA_VERIFICATION_INTEGRATION_SOURCE_MISSING` and `NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED`.
-
-**Status (2026-11-10): stacked on the canonical verifier PR, hosted verdict outstanding.** The verifier source, wiring, ledger migration and their tests now live in one canonical pull request, and this draft is based on it rather than restating them. The duplicated acceptance block was removed from `wow-engine-verify.yml`: the dedicated `verification-prerequisites` job already runs those files against PostgreSQL 16 and PostgREST 12.2.3, isolates each integration file in its own database, and fails on a skip. This draft keeps only the predeploy gate and widens that job's triggers to cover it. Run locally against real PostgreSQL 16.2 and PostgREST 12.2.3: **6 + 1 cases, no skips**. The ledger/calibrator schema mismatch is closed.
-
-Still open: a completed hosted verdict at the exact head, and production Supabase service-role HTTP grant/cache behavior under its own authorized read-only acceptance. Do not mark this P candidate release-ready on this change alone.
+The prior V1 table, conflicting status sentences, and historical local test counts are superseded, not parallel acceptance evidence. Keep this candidate draft and fail closed.
