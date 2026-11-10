@@ -262,7 +262,7 @@ def test_durable_row_detail_agrees_with_the_compact_response_and_pages():
     assert all(row["detail"]["can_execute"] is False for row in details)
 
 
-def test_duplicate_run_is_idempotent_and_ruled_out_stays_purged():
+def test_repeated_runs_have_consistent_terminals_and_ruled_out_stays_purged():
     class RuledOutMarket(_Market):
         def score_prop(self, req, _identity):
             if str(req.kwargs.get("player") or "") != "Late Scratch":
@@ -291,16 +291,197 @@ def test_duplicate_run_is_idempotent_and_ruled_out_stays_purged():
     scratch = next(row for row in first["rows"] if row["identity"]["player"] == "Late Scratch")
     assert scratch["row_status"] == "PURGED"
     assert scratch["probability_publishable"] is False
-    # The default Daily response is COMPACT; full nested evidence lives in
-    # the durable paged readback, not on the transport row.
-    page = read_row_detail_page(db, run_id=first["run_id"])
-    assert page["status"] == "OK"
-    detail = next(
-        row["detail"] for row in page["rows"]
-        if row["identity"]["player"] == "Late Scratch"
-    )
-    assert detail["result"]["probability_publishable"] is False
-    assert detail["result"]["rank_eligible"] is False
-    assert detail["can_execute"] is False
     assert first["reconciliation"]["rows_purged"] == 1
     assert first["reconciliation"]["balanced"] is True
+
+
+def test_purged_publication_flags_are_false_in_full_and_persisted_detail():
+    class ContradictoryMarket(_Market):
+        def score_prop(self, req, _identity):
+            return {
+                "terminal_label": "PLAYER_RULED_OUT",
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "probability_qualification": {"rank_eligible": True},
+                "can_execute": False,
+            }
+
+    db = _DB([_snapshot("Late Scratch", index=1)])
+    payload = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE,
+                             requested_timezone="America/Chicago",
+                             lanes=["PROPS"], response_mode="FULL"),
+        db=db, market_api=ContradictoryMarket(), event_api=object(),
+    )
+    row = payload["rows"][0]
+    assert row["row_status"] == "PURGED"
+    for effective in (row["result"], db.row_detail[0]["detail"]["result"], row):
+        assert effective["probability_publishable"] is False
+        assert effective["rank_eligible"] is False
+    for outcome in row["result"]["outcomes"]:
+        assert outcome["payload"]["probability_publishable"] is False
+        assert outcome["payload"]["rank_eligible"] is False
+        assert outcome["payload"]["probability_qualification"]["rank_eligible"] is False
+    assert payload["reconciliation"]["rows_purged"] == 1
+    assert payload["can_execute"] is False
+
+
+def test_newest_blocked_snapshot_prevents_older_clean_snapshot_scoring(monkeypatch):
+    old = _snapshot("Same Player", index=1)
+    newer = {**old, "source_snapshot_id": "new-blocked", "captured_at": (NOW + timedelta(seconds=1)).isoformat(),
+             "blockers": ["PLAYER_AVAILABILITY_UNVERIFIED"]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([old, newer]), _Market(publishable={"Same Player"}))
+    assert payload["rows"] == []
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["excluded_rows"] == 1
+    assert accounting["exclusions"][0]["source_snapshot_id"] == "new-blocked"
+    assert accounting["raw_rows_read"] == 2
+    assert accounting["canonical_merged_rows"] == 1
+    assert accounting["balanced"] is True
+
+
+def test_post_acquisition_exclusions_replace_the_initial_read(monkeypatch):
+    old = _snapshot("Same Player", blockers=["PLAYER_RULED_OUT"], index=1)
+    db = _DB([old])
+    def acquire(**_):
+        db.snapshots[:] = [_snapshot("Same Player", index=1),
+                           _snapshot("New Blocked Player", blockers=["PLAYER_AVAILABILITY_UNVERIFIED"], index=2)]
+        return {"status": "COMPLETED", "attempted": 0, "persisted": 0}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    payload = _run(db, _Market())
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["scored_rows"] == 1
+    assert accounting["excluded_rows"] == 1
+    assert accounting["exclusions"][0]["player"] == "New Blocked Player"
+    assert accounting["raw_rows_read"] == 2
+    assert accounting["balanced"] is True
+
+
+def test_independent_raw_count_detects_candidate_lost_in_canonicalization(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.canonicalize_prop_manifest", lambda rows: [])
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([_snapshot("Lost Player", index=1)]), _Market())
+    assert payload["prop_candidate_accounting"]["raw_rows_read"] == 1
+    assert payload["prop_candidate_accounting"]["balanced"] is False
+    assert "RUN_INVALID_PROP_CANDIDATE_ACCOUNTING" in payload["blockers"]
+
+
+def test_acquired_blocked_snapshot_is_an_explicit_handoff_exclusion(monkeypatch):
+    db = _DB([])
+    blocked = _snapshot("Unavailable Player", blockers=["PLAYER_RULED_OUT"], index=1)
+    def acquire(**_):
+        db.snapshots[:] = [blocked]
+        return {"status": "COMPLETED", "attempted": 1, "persisted": 1,
+                "snapshot_write_succeeded": 1,
+                "receipts": [{"write_status": "SNAPSHOT_WRITE_SUCCEEDED",
+                              "source_snapshot_id": blocked["source_snapshot_id"]}]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    payload = _run(db, _Market())
+    handoff = payload["lane_reconciliation"]["PROPS"]["handoff_reconciliation"]
+    assert payload["rows"] == []
+    assert handoff["explicit_precanonical_exclusions"] == 1
+    assert handoff["missing_persisted_snapshot_ids"] == []
+    assert handoff["persisted_to_canonical_balanced"] is True
+    assert "PROP_SNAPSHOT_INGESTION_EMPTY" not in payload["blockers"]
+    assert payload["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "ALL_CANONICAL_CANDIDATES_EXCLUDED"
+
+
+def test_history_is_processed_in_start_groups_with_bounded_exclusion_detail(monkeypatch):
+    import v17.daily_snapshot_runtime as runtime
+    original = runtime.canonicalize_prop_manifest
+    largest_group = 0
+    def canonicalize(rows):
+        nonlocal largest_group
+        rows = list(rows)
+        largest_group = max(largest_group, len(rows))
+        return original(rows)
+    monkeypatch.setattr(runtime, "canonicalize_prop_manifest", canonicalize)
+    historical = [_snapshot(f"Past {i}", start=(NOW - timedelta(days=3) + timedelta(minutes=i)).isoformat(), index=i)
+                  for i in range(1000)]
+    payload = _run(_DB(historical + [_snapshot("Current", index=1001)]), _Market())
+    accounting = payload["prop_candidate_accounting"]
+    assert largest_group <= 250
+    assert accounting["raw_rows_read"] == 1001
+    assert accounting["excluded_rows"] == 1000
+    assert accounting["excluded_by_reason"] == {"EVENT_NOT_PREGAME": 1000}
+    assert len(accounting["exclusions"]) == 50
+    assert accounting["exclusions_truncated"] == 950
+    assert accounting["balanced"] is True
+
+
+def test_exclusion_receipt_reconciles_beyond_the_detail_budget(monkeypatch):
+    historical = [_snapshot(f"Past {i}", start=(NOW - timedelta(days=3) + timedelta(minutes=i)).isoformat(), index=i)
+                  for i in range(100)]
+    db = _DB(historical)
+    blocked = _snapshot("New Blocked", blockers=["PLAYER_RULED_OUT"], index=1001)
+    def acquire(**_):
+        db.snapshots.append(blocked)
+        return {"status": "COMPLETED", "attempted": 1, "persisted": 1,
+                "snapshot_write_succeeded": 1,
+                "receipts": [{"write_status": "SNAPSHOT_WRITE_SUCCEEDED",
+                              "source_snapshot_id": blocked["source_snapshot_id"]}]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    payload = _run(db, _Market())
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["excluded_rows"] == 101
+    assert accounting["exclusions"][0]["player"] == "New Blocked"
+    assert len(accounting["exclusions"]) == 50
+    assert accounting["balanced"] is True
+    handoff = payload["lane_reconciliation"]["PROPS"]["handoff_reconciliation"]
+    assert handoff["explicit_precanonical_exclusions"] == 1
+    assert handoff["persisted_to_canonical_balanced"] is True
+    assert "PROP_SNAPSHOT_INGESTION_EMPTY" not in payload["blockers"]
+
+
+def test_newest_blocker_spanning_a_page_boundary_is_not_lost(monkeypatch):
+    history = [_snapshot(f"Past {i}", start=(NOW - timedelta(days=3) + timedelta(minutes=i)).isoformat(), index=i)
+               for i in range(249)]
+    older = _snapshot("Boundary Player", index=1001)
+    newer = {**older, "source_snapshot_id": "boundary-newer",
+             "captured_at": (NOW + timedelta(seconds=1)).isoformat(),
+             "blockers": ["PLAYER_AVAILABILITY_UNVERIFIED"]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB(history + [older, newer]), _Market(publishable={"Boundary Player"}))
+    assert payload["rows"] == []
+    accounting = payload["prop_candidate_accounting"]
+    assert accounting["raw_rows_read"] == 251
+    assert accounting["canonical_merged_rows"] == 1
+    assert accounting["excluded_rows"] == 250
+    assert accounting["excluded_by_reason"]["EVIDENCE_BLOCKED"] == 1
+    assert accounting["balanced"] is True
+
+
+def test_keyless_equivalent_timestamp_cannot_split_a_canonical_group(monkeypatch):
+    old = _snapshot("Same Player", index=1)
+    incomplete = _snapshot("Incomplete", index=2)
+    incomplete["line"] = None
+    incomplete["event_start_time"] = FUTURE.replace("+00:00", "Z")
+    new = {**old, "source_snapshot_id": "newer-blocked",
+           "captured_at": (NOW + timedelta(seconds=1)).isoformat(),
+           "blockers": ["PLAYER_RULED_OUT"]}
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([old, incomplete, new]), _Market(publishable={"Same Player"}))
+    assert all(row["identity"]["player"] != "Same Player" for row in payload["rows"])
+    assert payload["prop_candidate_accounting"]["canonical_merged_rows"] == 1
+    assert payload["prop_candidate_accounting"]["balanced"] is True
+
+
+def test_history_only_empty_slate_does_not_claim_current_candidates_excluded(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([_snapshot("Past Blocked", start=PAST, blockers=["PLAYER_RULED_OUT"], index=1)]), _Market())
+    assert payload["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "NO_CANONICAL_CANDIDATES"
+    assert "NO_CANONICAL_PREGAME_SNAPSHOTS" in payload["blockers"]
+
+
+def test_current_excluded_candidates_do_not_claim_no_canonical_snapshots(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+                        lambda **_: {"status": "COMPLETED", "attempted": 0, "persisted": 0})
+    payload = _run(_DB([_snapshot("Current Blocked", blockers=["PLAYER_RULED_OUT"], index=1)]), _Market())
+    assert payload["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "ALL_CANONICAL_CANDIDATES_EXCLUDED"
+    assert "NO_CANONICAL_PREGAME_SNAPSHOTS" not in payload["blockers"]

@@ -4,10 +4,8 @@ Status date: 2026-11-09. Branch audited: `freebuff/ce25c36cad5716d2677d452e`.
 Baseline/HEAD: `4c8c1fb0` (`test(v17): chronology evidence fail-closed audit (#2540)`).
 Production: `https://wow-governed-probability-engine.onrender.com` reports
 `deployed_sha=4c8c1fb0d375b01352fcf35eea3a7be6a0999295`, so production code equals
-this audit baseline. At audit time, the availability repair below was **not
-deployed**, so it was not part of verified production capability. Subsequent
-committed PR work is separately tracked in #2551 and integrated #2554; CI is
-not evidence of deployed parity or model certification.
+this audit baseline. The availability repair below is **not deployed** (it is
+uncommitted), so it is not part of the verified production capability.
 
 Invariants preserved everywhere: `can_execute=false`,
 `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`,
@@ -81,9 +79,9 @@ Clearance is recorded on three separate dimensions so they cannot be conflated:
 - provenance — `source`, `athlete_id`, `event_id`, `team`, `captured_at`,
   `fresh`, `report_complete`.
 
-`PROVISIONAL_BASES` (`PROBABLE_STARTER`) return `AVAILABLE` with `risk=True`
-and `requires_revalidation=True`. The runtime holds Verified-Pool admission
-until the final official pregame refresh discharges that obligation. `fresh=False` (stale), `report_complete=False` (incomplete/not-submitted
+`PROVISIONAL_BASES` (`PROBABLE_STARTER`) clear availability but set `risk=True`,
+which flags the row for the final pregame refresh to recheck the same official
+source. `fresh=False` (stale), `report_complete=False` (incomplete/not-submitted
 report) and any failed retrieval resolve to `UNVERIFIED` even when a playable
 basis is present. An explicit `OUT` designation still wins over any basis.
 
@@ -208,13 +206,15 @@ source confirmed the start. The recheck is now implemented end to end.
   inside a six-hour pregame window, so an ordinary research score days out is
   unchanged, and it persists the outcome as `acquisition.availability_recheck`.
   A cleared row loses the blocker and the persisted snapshot records the
-  confirming basis; a failed recheck records `SOURCE_UNAVAILABLE` and keeps the
-  hold.
+  confirming basis. A returned `RETRIEVAL_FAILED` observation records
+  `INCONCLUSIVE` and persists `PLAYER_AVAILABILITY_UNVERIFIED`; a provider
+  exception records `SOURCE_UNAVAILABLE` with the recheck-required hold.
 
 Evidence: 6 adjudicator tests, 6 official-fetch tests with injected payloads,
 and 3 route-level tests (confirmation completes the row with an empty blocker
-list, a rule-out rejects before the scorer, an unavailable source keeps the
-hold). The pre-existing provisional route test now asserts `NOT_DUE` outside
+list, an injected OUT ruling rejects before the scorer, an unavailable source
+keeps the hold). The injected ruling tests adjudication, not MLB provider
+coverage: removal from the probable list yields RETRIEVAL_FAILED, not OUT. The pre-existing provisional route test now asserts `NOT_DUE` outside
 the window.
 
 Honest limitation: MLB is out of season here and no live pregame game feed was
@@ -263,7 +263,7 @@ durability contract but does not establish production deployment or replay.
 | Availability enforcement | local verified, PR #2551 open |
 | Fresh all-sports prop acquisition | not started |
 | Real platform-offer / exact-line verification | blocked: no licensed market feed |
-| Candidate coverage / Daily reconciliation | Daily PROPS candidate accounting implemented locally; comprehensive cross-sport/live coverage not established |
+| Candidate coverage / Daily reconciliation | not started |
 | Market, payout, settlement binding | blocked: no licensed market feed |
 | Specialist certification (12 families) | blocked: no labeled corpora / Class C certification |
 | Arithmetic audit persistence | not started |
@@ -295,7 +295,9 @@ Run from `artifacts/wow-engine` with the project virtualenv:
   suites in a focused run: **127 passed**.
 - Prop + WNBA + snapshot surface, source contracts, pick-request and schema
   suites with the ephemeral Postgres enabled: **1114 passed, 0 skipped**.
-  Without a database the same set is **880 passed, 15 skipped**; the 15 are the
+  A separate no-database run was recorded as **880 passed, 15 skipped**; its
+  collected scope was not reconciled with the 1114-test run, so these counts
+  must not be presented as the same test set. The 15 skips were the
   `test_prop_snapshot_min3_postgres.py` acceptance cases.
 - Action/editor schema compatibility: **33 passed**
   (`test_pick_request_action_contract.py`, `tests/test_v17_live_editor_compat.py`,
@@ -362,8 +364,8 @@ production behavior, and the uncommitted repair is not deployed.
 - Service `wow-governed-probability-engine`, runtime `V17_ACTIVE`,
   `can_execute=false`, `/health` live check returned `status=ok` with
   `deployed_sha=4c8c1fb0d375b01352fcf35eea3a7be6a0999295` = local HEAD.
-- At audit time, production did **not** yet contain the availability block;
-  subsequent PR commits require independent acceptance and deployed-SHA proof.
+- Because the repair is uncommitted, production does **not** yet contain the
+  availability block.
 
 ## 8. Changed files
 

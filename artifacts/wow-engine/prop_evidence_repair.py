@@ -66,7 +66,7 @@ def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
         .eq("player", req.player)
         .eq("stat_type", req.stat_type)
         .eq("line", req.line)
-                .lt("captured_at", req.event_start_time)
+        .lt("captured_at", req.event_start_time)
         .order("captured_at", desc=True)
         .limit(MAX_GOVERNED_SNAPSHOT_FALLBACKS)
     )

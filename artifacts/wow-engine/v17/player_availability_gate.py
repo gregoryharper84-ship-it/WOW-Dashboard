@@ -333,7 +333,10 @@ def evaluate_player_availability(role_status: Any) -> AvailabilityDecision:
                 blocker=PLAYER_AVAILABILITY_UNVERIFIED,
                 reason="AVAILABILITY_EVIDENCE_STALE",
             )
-        if report_complete is False:
+        if report_complete is False or (
+            basis in {"FRESH_OFFICIAL_REPORT_UNLISTED", "FRESH_OFFICIAL_REPORT_CLEARED"}
+            and report_complete is not True
+        ):
             return _decision(
                 **shared,
                 status=AVAILABILITY_UNVERIFIED,
@@ -370,11 +373,13 @@ def evaluate_player_availability(role_status: Any) -> AvailabilityDecision:
                     reason="AVAILABILITY_PROVENANCE_INCOMPLETE",
                 )
         if designation in PLAYABLE_DESIGNATIONS:
+            provisional = basis in PROVISIONAL_BASES
             return _decision(
                 **shared,
                 status=AVAILABILITY_AVAILABLE,
                 designation=designation,
-                risk=designation in RISK_DESIGNATIONS,
+                risk=designation in RISK_DESIGNATIONS or provisional,
+                requires_revalidation=provisional,
                 blocker=None,
                 reason=f"OFFICIAL_DESIGNATION_{designation}",
             )

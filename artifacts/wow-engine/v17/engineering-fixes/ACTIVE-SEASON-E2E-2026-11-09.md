@@ -21,23 +21,24 @@ requested scoring ceiling.
 The ledger reconciles:
 
 ```text
-manifest_rows_seen = scored_rows + eligible_not_scored_rows + excluded_rows
+raw_rows_read = scored_rows + eligible_not_scored_rows + excluded_rows + canonical_merged_rows
 ```
 
 with `balanced` and a blocking `RUN_INVALID_PROP_CANDIDATE_ACCOUNTING` if that
-identity ever fails. It is present on compact and FULL responses.
+independently measured raw-read equation fails. Newest snapshots are selected before blocker filtering, and each post-acquisition read replaces the earlier ledger. It is present on compact and FULL responses.
 
 Proven by the new tests, against the real `run_daily_snapshot`:
 
 - Every acquired candidate has exactly one disposition, and excluded ones never
   become scored rows.
 - Reconciliation balances and every row terminates once.
-- A 49-candidate slate with 12 publishable rows is represented without reading
+- A 49-candidate slate with 12 players configured publishable, scoring at most six rows under the default max_props=6, is represented without reading
   as full qualification; `rows_completed < manifest_rows_seen`.
-- Durable row detail, read back through paged retrieval, agrees row-for-row on
-  identity and terminal status with the compact response.
-- Repeating the run produces identical terminals and reconciliation
-  (idempotent row identity), and a late `PLAYER_RULED_OUT` stays `PURGED` even
+- Row detail read back through the in-memory _DB test double agrees on event_id
+  and terminal status with the compact response. This does not prove durable
+  database writes or full identity equivalence.
+- Repeating the run produces identical terminal statuses grouped by event_id
+  and reconciliation values (separate run_ids; persistence idempotency unproven), and a late `PLAYER_RULED_OUT` stays `PURGED` even
   when the same payload claims `probability_publishable`/`rank_eligible`.
 
 Not proven: availability is enforced at the snapshot write boundary (persisted
@@ -110,5 +111,5 @@ backend.
 | B | NFL clearance impossible from the current official source; explicitly held |
 | C | Not advanced; no fabricated probability |
 | D | Separation preserved; active-sport market evidence unproven |
-| E | Pagination/determinism/idempotency proven; transport and restart unproven |
+| E | In-memory pagination and terminal repeatability tested; durable idempotency unproven; transport and restart unproven |
 | F | Blocked on authorization and credentials |

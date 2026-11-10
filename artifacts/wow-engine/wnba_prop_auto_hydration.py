@@ -26,6 +26,7 @@ import httpx
 from pypdf import PdfReader
 
 from v17.player_availability_gate import participation_evidence
+from wnba_injury_status import WNBAInjuryStatusError, availability_from_report
 
 
 WNBA_SCHEDULE_URL = "https://cdn.wnba.com/static/json/staticData/scheduleLeagueV2.json"
@@ -462,120 +463,18 @@ def _availability_from_report(
     matchup: str,
     game_date: str,
 ) -> dict[str, Any]:
-    """Read one team's section of the official WNBA injury report.
-
-    The section is bounded by the report's two team headers (the page covers a
-    single matchup). An absence is read as "no reported designation" only after
-    the bounded section is shown to contain parsed designation rows; a missing
-    opponent header or a section with no status rows raises instead of clearing.
-
-    An explicit ``OUT`` is a settled participation fact and is returned so the
-    gate can terminate the row as ``PLAYER_RULED_OUT``. ``QUESTIONABLE`` and
-    ``DOUBTFUL`` still raise: they are playable, but unconditional model
-    adjustment for them is not certified.
-    """
-    compact = " ".join(str(text).replace("\u00a0", " ").split())
-    normalized = _name_key(compact)
-    matchup_key = _name_key(matchup)
-    team_key = _name_key(team_name)
-    opponent_key = _name_key(opponent_name)
-    if matchup_key not in normalized or team_key not in normalized:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_EVENT_UNRESOLVED",
-            "fresh official injury report did not contain the target matchup/team",
-            detail={"matchup": matchup, "team": team_name, "game_date": game_date},
+    """Use the shared, immediate-status parser without requiring router setup."""
+    try:
+        return availability_from_report(
+            text,
+            player_name=player_name,
+            team_name=team_name,
+            opponent_name=opponent_name,
+            matchup=matchup,
+            game_date=game_date,
         )
-
-    team_pos = normalized.find(team_key)
-    if "not yet submitted" in normalized[team_pos : team_pos + 250]:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_NOT_SUBMITTED",
-            "target team has not submitted its official WNBA injury report",
-            detail={"team": team_name, "game_date": game_date},
-        )
-
-    opponent_pos = normalized.find(opponent_key) if opponent_key else -1
-    if not opponent_key or opponent_pos < 0:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
-            "opponent section header was not parsed, so the target section cannot be bounded",
-            detail={"team": team_name, "opponent": opponent_name, "game_date": game_date},
-        )
-    if opponent_pos > team_pos:
-        section = normalized[team_pos:opponent_pos]
-    else:
-        # The opponent is listed first; otherwise a slice to EOF can consume
-        # subsequent games and falsely certify this player's absence.
-        report_lines = str(text).replace("\u00a0", " ").splitlines()
-        target_headers = [
-            idx for idx, line in enumerate(report_lines)
-            if _name_key(line) == team_key
-        ]
-        if len(target_headers) != 1:
-            raise WNBAPropHydrationError(
-                "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
-                "second-listed team header is not uniquely identifiable",
-                detail={"team": team_name, "game_date": game_date},
-            )
-        following = report_lines[target_headers[0]:]
-        next_matchup = next(
-            (
-                idx for idx, line in enumerate(following[1:], start=1)
-                if re.match(r"^\s*[A-Z0-9]{2,4}\s*@\s*[A-Z0-9]{2,4}(?:\s|$)", line)
-            ),
-            len(following),
-        )
-        section = _name_key(" ".join(following[:next_matchup]))
-    if not section.strip():
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
-            "target team section was empty",
-            detail={"team": team_name, "game_date": game_date},
-        )
-    if "no injuries" not in section and not re.search(
-        r"\b(out|doubtful|questionable|probable|available)\b", section
-    ):
-        # Nothing in the section parsed as a status row, so the absence of this
-        # player proves nothing about the report.
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
-            "target team section contained no parsed participation designations",
-            detail={"team": team_name, "game_date": game_date},
-        )
-
-    name_parts = _name_key(player_name).split()
-    forward = " ".join(name_parts)
-    reverse = " ".join(reversed(name_parts)) if len(name_parts) >= 2 else forward
-    positions = [p for p in (section.find(forward), section.find(reverse)) if p >= 0]
-    if not positions:
-        return {
-            "availability": "NOT_LISTED_ON_FRESH_OFFICIAL_INJURY_REPORT",
-            "designation": None,
-            "injury_reason": None,
-        }
-
-    pos = min(positions)
-    after = section[pos + len(forward) : pos + len(forward) + 180]
-    designation = None
-    for label in ("out", "doubtful", "questionable", "probable", "available"):
-        if re.search(rf"\b{label}\b", after):
-            designation = label.upper()
-            break
-    if designation is None:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_PLAYER_STATUS_UNRESOLVED",
-            "player appeared on the official injury report but the designation was not parsed",
-            detail={"player": player_name, "team": team_name},
-        )
-    if designation == "OUT":
-        return {"availability": "UNAVAILABLE", "designation": "OUT", "injury_reason": None}
-    if designation != "AVAILABLE":
-        raise WNBAPropHydrationError(
-            "WNBA_PLAYER_AVAILABILITY_NOT_CLEAR",
-            "player has an explicit current official injury/availability designation; unconditional model adjustment is not certified",
-            detail={"player": player_name, "team": team_name, "designation": designation},
-        )
-    return {"availability": "AVAILABLE", "designation": designation, "injury_reason": None}
+    except WNBAInjuryStatusError as exc:
+        raise WNBAPropHydrationError(exc.code, str(exc), detail=exc.detail) from exc
 
 
 def hydrate_wnba_prop_evidence(
