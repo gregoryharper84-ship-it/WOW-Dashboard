@@ -167,10 +167,40 @@ def test_recheck_window_is_pregame_and_short():
     assert RECHECK_WINDOW == timedelta(hours=6)
 
 
-def test_positive_recheck_without_retrieval_time_cannot_confirm():
-    decision, receipt = resolve_provisional_recheck(
-        provisional=_provisional(), observed=_observed(),
-    )
-    assert decision.status != AVAILABILITY_AVAILABLE
-    assert decision.requires_revalidation is True
-    assert receipt["status"] == RECHECK_INCONCLUSIVE
+def test_confirmed_recheck_missing_or_naive_clock_never_clears():
+    for clock in (None, datetime(2026, 11, 9, 21, 5)):
+        decision, receipt = resolve_provisional_recheck(
+            provisional=_provisional(), observed=_observed(), now=clock,
+        )
+        assert decision.status != AVAILABILITY_AVAILABLE
+        assert decision.blocker == PLAYER_AVAILABILITY_RECHECK_REQUIRED
+        assert decision.requires_revalidation is True
+        assert receipt["status"] == RECHECK_INCONCLUSIVE
+        assert receipt["reason"] == "PROVISIONAL_RECHECK_CAPTURE_INVALID_OR_NOT_NEWER"
+        assert receipt["can_execute"] is False
+
+
+def test_incomplete_identity_on_either_side_never_clears_confirmation():
+    checked = datetime(2026, 11, 9, 21, 5, tzinfo=timezone.utc)
+    for field in ("athlete_id", "event_id", "team"):
+        omitted_observed = _observed()
+        omitted_observed.pop(field)
+        decision, receipt = resolve_provisional_recheck(
+            provisional=_provisional(), observed=omitted_observed, now=checked,
+        )
+        assert decision.status != AVAILABILITY_AVAILABLE
+        assert decision.blocker == PLAYER_AVAILABILITY_RECHECK_REQUIRED
+        assert receipt["status"] == RECHECK_IDENTITY_MISMATCH
+        assert field in receipt["mismatched_fields"]
+
+        provisional = _provisional()
+        provenance = dict(provisional["provenance"])
+        provenance.pop(field)
+        provisional["provenance"] = provenance
+        decision, receipt = resolve_provisional_recheck(
+            provisional=provisional, observed=_observed(), now=checked,
+        )
+        assert decision.status != AVAILABILITY_AVAILABLE
+        assert decision.blocker == PLAYER_AVAILABILITY_RECHECK_REQUIRED
+        assert receipt["status"] == RECHECK_IDENTITY_MISMATCH
+        assert field in receipt["mismatched_fields"]

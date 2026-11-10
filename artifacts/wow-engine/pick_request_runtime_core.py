@@ -372,6 +372,21 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     }
 
 
+def _premodel_availability_blockers(normalized: dict[str, Any]) -> list[str]:
+    """Recompute availability holds at the source snapshot writer.
+
+    The writer must not trust caller-supplied blocker lists: every direct
+    Daily or scoring call preserves unverified/recheck status in storage.
+    """
+    if normalized.get("availability_requires_revalidation") is True:
+        return [PLAYER_AVAILABILITY_RECHECK_REQUIRED]
+    if normalized.get("availability_status") == AVAILABILITY_UNVERIFIED:
+        return [PLAYER_AVAILABILITY_UNVERIFIED]
+    if normalized.get("availability_status") == AVAILABILITY_UNAVAILABLE:
+        return [PLAYER_RULED_OUT]
+    return []
+
+
 def _snapshot_payload(
     row: PickRequestRow,
     normalized: dict[str, Any],
@@ -392,6 +407,8 @@ def _snapshot_payload(
     """
     if row.evidence is None:
         raise ValueError("EVIDENCE_MISSING_AFTER_ACQUISITION")
+
+    snapshot_blockers = list(dict.fromkeys([*(blockers or []), *_premodel_availability_blockers(normalized)]))
 
     fingerprint_input = {
         "event_id": normalized["event_id"],
@@ -445,7 +462,7 @@ def _snapshot_payload(
         "opportunity_ledger": row.evidence.opportunity_ledger,
         "source_timestamps": normalized["source_timestamps"],
         "hydration_status": "PASS",
-        "blockers": list(blockers or []),
+        "blockers": snapshot_blockers,
         "evidence_version": str(row.evidence.evidence_version).strip(),
         "can_execute": False,
     }
