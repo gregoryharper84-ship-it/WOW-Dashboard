@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-daily-snapshot.yml"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-daily-snapshot.yml"
@@ -320,5 +325,106 @@ jobs:
               "probability_values_logged": False,
               "global_terminal_authority": result.get("global_terminal_authority"),
               "can_execute": False,
+          }, sort_keys=True))
+          PY
+
+  props-zero-row-residual:
+    name: Capture PROPS REQUESTED_ROW_LIMIT_ZERO residual
+    # PM-2026-09-14-001 secondary residual: PROPS Daily with max_props=0.
+    # Uses this allowlisted workflow identity (OIDC). Runs on schedule and on
+    # push of this workflow file to main; skipped on pull_request verify-only.
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_USER_TIMEZONE: America/Chicago
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert non-execution governance and OIDC context
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Run PROPS max_props=0 Daily and assert REQUESTED_ROW_LIMIT_ZERO
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode(
+                  {"audience": "wow-v17-multiscout"}
+              )
+              req = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)["value"]
+
+          slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+          payload = {
+              "requested_slate_date": slate_date,
+              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+              "lanes": ["PROPS"],
+              "max_props": 0,
+              "max_team_events": 0,
+              "response_mode": "COMPACT",
+          }
+          req = urllib.request.Request(
+              os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/daily-snapshot",
+              data=json.dumps(payload).encode("utf-8"),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {fresh_oidc_token()}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=600) as response:
+              result = json.load(response)
+
+          if not isinstance(result, dict):
+              raise AssertionError("DAILY_RESPONSE_NOT_OBJECT")
+          if result.get("can_execute") is not False:
+              raise AssertionError("DAILY_CAN_EXECUTE_INVARIANT_FAILED")
+          if result.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("DAILY_TERMINAL_AUTHORITY_MISMATCH")
+          if result.get("automation_auth") != "GITHUB_ACTIONS_OIDC":
+              raise AssertionError("DAILY_OIDC_AUTH_NOT_PROVEN")
+
+          props = (result.get("lane_reconciliation") or {}).get("PROPS") or {}
+          if props.get("requested_row_limit") != 0:
+              raise AssertionError(f"PROPS_LIMIT_NOT_ZERO:{props.get('requested_row_limit')}")
+          if props.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
+              raise AssertionError(f"PROPS_ZERO_ROW_REASON:{props.get('zero_row_reason')}")
+          if int(props.get("scored_count") or -1) != 0:
+              raise AssertionError(f"PROPS_SCORED_COUNT:{props.get('scored_count')}")
+
+          print(json.dumps({
+              "status": "PASS",
+              "code": "REQUESTED_ROW_LIMIT_ZERO",
+              "run_id": result.get("run_id"),
+              "requested_slate_date": result.get("requested_slate_date"),
+              "props_requested_row_limit": props.get("requested_row_limit"),
+              "props_zero_row_reason": props.get("zero_row_reason"),
+              "props_canonicalized_count": props.get("canonicalized_count"),
+              "props_scored_count": props.get("scored_count"),
+              "can_execute": False,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
           }, sort_keys=True))
           PY
