@@ -317,3 +317,108 @@ them.
   pinned receipts
 
 `can_execute=false` throughout.
+
+---
+
+## 8. E2E observation (2026-11-10T17:59Z) — engineering complete, gates still external
+
+This section records the end-to-end **observation** pass executed by the same
+principal after the preparation packet. It does not clear any hard boundary.
+
+### 8.1 Docs PR exact-head CI (`#2573` / `70083b3d`)
+
+| Check | Result |
+|---|---|
+| WOW required-three regression | SUCCESS |
+| WOW additional required regression | SUCCESS |
+| WOW Render and Action release contracts | SUCCESS |
+| Release / Production Verification agent | SUCCESS |
+| WOW Independent QA exact-head | **FAILURE** — `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS` (PR body lacked standalone `Incident: #N`) |
+| WOW Release Authority exact-head | Not yet PASS on this head (queued/waiting after QA) |
+
+Remediation within this principal: add exactly one `Incident: #2020` line to the
+PR description (parent production-restoration incident used by `#2558`) and
+push a fresh tip so Apps re-attest. Merge remains external.
+
+### 8.2 Production health / governance (LIVE)
+
+GET `https://wow-governed-probability-engine.onrender.com/health/live`:
+
+```json
+{"status": "ok", "can_execute": false}
+```
+
+GET `/governance` (selected fields):
+
+- `can_execute=false`
+- `global_terminal_authority=V17_TERMINAL_REDUCER`
+- `deployed_sha=e7384b9d2fed3256681b25715516dff2e97d3233`
+- `deployment_gates.status=PASS` (11 gates, none failed)
+- `probability_publishable` remains row-scoped / null at diagnostics
+- team-event `model_capability_ready_sport_names=["MLB","NFL"]` (capability ≠ certification)
+
+### 8.3 Lean production readback (GET-only)
+
+Workflow run `42868150127` (schedule, expected SHA `d3260b09…`) receipt:
+
+```json
+{
+  "can_execute": false,
+  "expected_sha": "d3260b09b7ca366c482194f8f27bdc00c0bd6e48",
+  "model_ready": "UNVERIFIED",
+  "production_verified": false,
+  "reason": "RENDER_LIVE_SHA_MISMATCH:web",
+  "status": "READBACK_HOLD"
+}
+```
+
+Web + worker LIVE deploys both still at `e7384b9d…` (`dep-dbpin52vcj2c73d9c1g0` /
+`dep-dbpin52vcj2c73d9c3b0`), `autoDeployTrigger=checksPass`. Protected `main` is
+**26 commits ahead** of LIVE. Native deploy catch-up is pending Render/CI — not
+an API-controller flip. SIRT acceptance remains `PENDING`.
+
+### 8.4 Unpaid Daily schedule (no paid dispatch)
+
+Latest `schedule` run of `wow-v17-daily-snapshot`: `42801795794` at 2026-11-10T10:45Z.
+
+```json
+{
+  "run_id": "v17-daily-68ec9b47-162a-40ec-8435-fad7355e3d24",
+  "run_status": "COMPLETED",
+  "requested_slate_date": "2026-11-10",
+  "moneyline_rows": 24,
+  "rows_completed": 0,
+  "rows_held": 24,
+  "rows_rejected": 0,
+  "can_execute": false,
+  "global_terminal_authority": "V17_TERMINAL_REDUCER",
+  "cross_sport_row_reconciliation": "PASS",
+  "blockers": []
+}
+```
+
+Observation only: full-board held (0 completed). Does not invent market lines
+or clear P0-3. Next unpaid cron watch remains schedule-bound (no
+`workflow_dispatch` from this principal).
+
+### 8.5 NFL forward grades (unchanged)
+
+Still `graded_events=94`, `DO_NOT_CERTIFY_YET` from main run `42713206143`. No
+newer main forward-shadow since 2026-11-09T22:35Z. 94→95 still needs a real
+post-final capture.
+
+### 8.6 Gate-by-gate e2e disposition
+
+| Gate | E2E disposition | Missing principal / clock |
+|---|---|---|
+| 1 Independent QA/Release/SIRT | `BLOCKED_HARD_BOUNDARY` | Separate Apps (after incident metadata fix) + owner merge + SIRT |
+| 2 Re-enable API deploy workflow | `BLOCKED_HARD_BOUNDARY` / Lean V4 prefers leave disabled | Admin only; LIVE uses native `checksPass` |
+| 3 P0-3 current offers | `BLOCKED_HARD_BOUNDARY` | Lawful feed or real USER_SUPPLIED line |
+| 4 Source rights | `BLOCKED_HARD_BOUNDARY` | Independent rights determination |
+| 5 NFL certification | `BLOCKED_HARD_BOUNDARY` | Real games to ≥100 + SIRT |
+| 6 Class C promotion | `BLOCKED_HARD_BOUNDARY` | Governed promotion review |
+| 7 NBA migration + NHL goalie dual sources | `BLOCKED_HARD_BOUNDARY` | Authorized migrate path + two official goalie sources |
+
+**Reporter-style closure for this engineering lane:**
+`BLOCKED_HARD_BOUNDARY` — preparation + e2e observation complete; no gate cleared
+unilaterally; `can_execute=false`.
