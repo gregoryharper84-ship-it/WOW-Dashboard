@@ -61,3 +61,18 @@ WOW_TEST_NBA_SCHEMA_STATE=old PYTHONPATH=artifacts/wow-engine \
 Prefer exporting secrets through the existing protected environment/secrets manager rather than pasting them into shell history. Repeat with `WOW_TEST_NBA_SCHEMA_STATE=ready` **only after** the independently accepted canonical schema migration has been applied in the authorized project. Without all three opt-in variables the real HTTP test is **SKIPPED**, not PASS. The other three tests cover expected response contract and header/redirect behavior with dummy inputs; they do not prove a live HTTP call. As of this note, the authenticated real-HTTP test has **not** been executed here.
 
 **Release invariant:** the draft currently does **not** satisfy the new wiring's ledger/column requirements; the two intentional red structural contract tests on this branch must be made green by the actual verified migration and producer/consumer wiring, not by removing or loosening those checks. No schema write or fitted-model change is authorized by these test instructions.
+
+
+## CI source-and-execution acceptance (protected P draft)
+
+The existing `.github/workflows/wow-engine-verify.yml` job `agent-runtime-integration` already provisions `postgres:16`, `postgrest/postgrest:v12.2.3`, and an in-process localhost `/rest/v1` rewrite proxy to PostgREST's root routes. The P draft adds source existence and non-skipping integration checks **inside that existing job**; no new workflow, service, vendor, or paid infra is introduced.
+
+It explicitly requires these source files at the candidate head:
+- `test_v17_nba_verification_wiring.py`
+- `tests/test_v17_nba_team_event_verification.py`
+- `test_v17_nba_verification_prerequisites_postgres.py`
+- `test_v17_nba_verification_prerequisites_postgrest.py`
+
+The job sets `WOW_TEST_POSTGRES_DSN` to its isolated PostgreSQL 16 service and `WOW_TEST_POSTGREST_URL` to its existing localhost:3000 gateway, runs the four files with pytest, writes a JUnit XML report, and rejects missing source, zero/insufficient executed cases (minimum seven real-server cases), and **any skipped test** even if pytest exits zero. Canonical codes: `NBA_VERIFICATION_INTEGRATION_SOURCE_MISSING` and `NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED`.
+
+**Expected current result: RED / source not committed.** None of those four reported source files is present on the draft branch; the new job is a fail-closed mechanical contract, not a completed integration receipt. Even after the source is committed and tests run in Docker CI, production Supabase service-role HTTP grant/cache behavior still needs its own authorized read-only acceptance, and the ledger/calibrator schema mismatch remains open. Do not mark this P candidate release-ready on this change alone.
