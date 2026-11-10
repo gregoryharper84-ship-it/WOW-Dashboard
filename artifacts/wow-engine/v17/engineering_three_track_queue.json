@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "program": "WOW_V17_TRIPLE_TRACK_ENGINEERING",
+  "control_plane": "WOW_ECOSYSTEM_CONDUCTOR",
+  "no_new_dispatcher": true,
+  "can_execute": false,
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "source_of_truth": "GitHub existing issues + existing Engineering/AMRT receipt ledger",
+  "tracks": [
+    {
+      "id": "TRACK_1_RECOVERY",
+      "tracking_issue": 2078,
+      "owner": "WOW Engineering / AMRT under existing Conductor",
+      "scope": "Debug/Dissolve/Deploy verification: NFL #1562 (active parent), NBA #1950 plus NBA props #1988, NHL #1952, NCAAF #1951, shared acquisition #823; verify each issue remains open at admission, retain one accountable incident owner and existing writer lease per issue",
+      "acceptance": "First failing boundary, reproducible source, exact-head regression, separate QA/Release approval, deployed SHA, real Action->scorer->terminal->persistence receipt; preserve unresolved MODEL_UNAVAILABLE or typed input/scorer errors",
+      "change_classes": [
+        "A",
+        "B"
+      ],
+      "next_step": "Admit existing P0 incidents through current Conductor; do not create duplicate incidents or override active sport authors",
+      "can_execute": false,
+      "may_approve_own_work": false
+    },
+    {
+      "id": "TRACK_2_MODEL_SCIENCE",
+      "tracking_issue": 1128,
+      "owner": "MODEL_IMPROVEMENT_EXPERIMENT_AGENT / certified sport-science owners",
+      "scope": "Receive Track 1 authenticated root-cause evidence and form non-serving challengers for model coverage, calibration, failure-path and scored-row accuracy using immutable pregame data",
+      "acceptance": "One evidence-backed hypothesis per existing model lane, executable replay, counterexamples, time-held-out validation, regression and no unsupported calibration/lower-bound promotion",
+      "change_classes": [
+        "A",
+        "B",
+        "C_RESEARCH_ONLY"
+      ],
+      "next_step": "Queue non-serving model experiments under existing workflow; Class C serving promotion remains with certified fitted specialist review",
+      "can_execute": false,
+      "may_approve_own_work": false
+    },
+    {
+      "id": "TRACK_3_PREVENTION",
+      "tracking_issue": 1563,
+      "owner": "Independent SIRT / existing product QA and observability functions",
+      "scope": "Consume Track 2 validated experiment/defect evidence; add detection/regression and production-verification proposals without accepting implementer self-approval",
+      "acceptance": "Independent adversarial check covering proven failure, nearest good counterexample, exact model/Action/CI/Render receipts, typed recurrence alert and 7/30 day recurrence tracking",
+      "change_classes": [
+        "A",
+        "B"
+      ],
+      "next_step": "Queue SIRT independent assurance review, then delegate any verified regression defect back to the same existing incident owner",
+      "can_execute": false,
+      "may_approve_own_work": false
+    }
+  ],
+  "handoff_policy": {
+    "order": [
+      "TRACK_1_RECOVERY",
+      "TRACK_2_MODEL_SCIENCE",
+      "TRACK_3_PREVENTION"
+    ],
+    "per_incident_fingerprint": true,
+    "stage1_to_stage2": "ROOT_CAUSE_CONFIRMED or PATCH_CANDIDATE or PRODUCTION_EVIDENCE_RECORDED plus immutable source SHA and referenced reproduction/regression evidence",
+    "stage2_to_stage3": "RESEARCH_VALIDATED non-serving experiment with exact upstream incident/SHA match, replay, counterexample, holdout and regression refs",
+    "no_mandatory_full_portfolio_recovery_for_offline_research": true,
+    "no_self_approval": true,
+    "no_new_scheduler": true,
+    "do_not_change_sporting_model_probability": true
+  },
+  "governance": {
+    "production_promotion_allowed": false,
+    "model_probability_authority": "CERTIFIED_CONTROLLING_SPECIALIST_ONLY",
+    "terminal_publisher": "V17_TERMINAL_REDUCER",
+    "dry_run_only": true
+  }
+}
