@@ -13732,10 +13732,11 @@ CM_SLIP_POSITIVE_NET_RETURN_PRIMARY   = True   # PATCH-017: positive_net_return 
 
 _CM_SCHEMA_READY = False
 _CM_SLIP_MIGRATE_READY = False
-# After a lock-timeout on optional slip DDL, skip further ALTER retries this
-# process until slip columns are proven ready. Non-lock failures still retry on
-# the next call without a timed cooldown.
-_CM_SLIP_MIGRATE_LOCK_DEFERRED = False
+# After a lock-timeout on optional slip DDL, defer ALTER retries until this
+# monotonic deadline. Keeps retry rate bounded without permanently disabling
+# slip migration for the process lifetime. Non-lock failures still retry next call.
+_CM_SLIP_MIGRATE_LOCK_COOLDOWN_SEC = 60.0
+_CM_SLIP_MIGRATE_RETRY_AFTER = 0.0
 _CM_SCHEMA_LOCK  = threading.Lock()
 
 _CM_SCHEMA_DDL = """
@@ -13960,15 +13961,20 @@ def _cm_slip_migrate_lock_timeout(exc: Exception) -> bool:
 
 def _cm_ensure_schema():
     """Create required CM schema with bounded DDL; isolate optional migrations."""
-    global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY, _CM_SLIP_MIGRATE_LOCK_DEFERRED
+    global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY, _CM_SLIP_MIGRATE_RETRY_AFTER
     # Required schema stays ready after first success. Optional slip columns
     # retry on the next call after non-lock failures; lock-timeout failures
-    # defer further ALTER retries for this process so every _cm_db() call does
-    # not re-wait under _CM_SCHEMA_LOCK.
-    if _CM_SCHEMA_READY and (_CM_SLIP_MIGRATE_READY or _CM_SLIP_MIGRATE_LOCK_DEFERRED):
+    # defer ALTER retries until the monotonic cooldown expires so every
+    # _cm_db() call does not re-wait under _CM_SCHEMA_LOCK, while still
+    # recovering after a transient lock.
+    if _CM_SCHEMA_READY and (
+        _CM_SLIP_MIGRATE_READY or time.monotonic() < _CM_SLIP_MIGRATE_RETRY_AFTER
+    ):
         return
     with _CM_SCHEMA_LOCK:
-        if _CM_SCHEMA_READY and (_CM_SLIP_MIGRATE_READY or _CM_SLIP_MIGRATE_LOCK_DEFERRED):
+        if _CM_SCHEMA_READY and (
+            _CM_SLIP_MIGRATE_READY or time.monotonic() < _CM_SLIP_MIGRATE_RETRY_AFTER
+        ):
             return
         try:
             with get_db_conn() as conn:
@@ -14005,7 +14011,14 @@ def _cm_ensure_schema():
                 conn.commit()
             _CM_SCHEMA_READY = True
             _CM_SLIP_MIGRATE_READY = slip_ready
-            _CM_SLIP_MIGRATE_LOCK_DEFERRED = bool(slip_lock_deferred and not slip_ready)
+            if slip_ready:
+                _CM_SLIP_MIGRATE_RETRY_AFTER = 0.0
+            elif slip_lock_deferred:
+                _CM_SLIP_MIGRATE_RETRY_AFTER = (
+                    time.monotonic() + _CM_SLIP_MIGRATE_LOCK_COOLDOWN_SEC
+                )
+            else:
+                _CM_SLIP_MIGRATE_RETRY_AFTER = 0.0
             app.logger.info("CM required schema ready (optional migration failures logged separately)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")

@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -18,8 +19,10 @@ def _bootstrap_namespace(connection):
     namespace = {
         "_CM_SCHEMA_READY": False,
         "_CM_SLIP_MIGRATE_READY": False,
-        "_CM_SLIP_MIGRATE_LOCK_DEFERRED": False,
+        "_CM_SLIP_MIGRATE_LOCK_COOLDOWN_SEC": 60.0,
+        "_CM_SLIP_MIGRATE_RETRY_AFTER": 0.0,
         "_CM_SCHEMA_LOCK": threading.Lock(),
+        "time": time,
         "get_db_conn": lambda: connection,
         "app": SimpleNamespace(logger=logging.getLogger(__name__)),
     }
@@ -113,7 +116,7 @@ def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema(
     ns["_cm_ensure_schema"]()
     assert ns["_CM_SCHEMA_READY"]
     assert not ns["_CM_SLIP_MIGRATE_READY"]
-    assert not ns["_CM_SLIP_MIGRATE_LOCK_DEFERRED"]
+    assert ns["_CM_SLIP_MIGRATE_RETRY_AFTER"] == 0.0
     conn.fail = None
     ns["_cm_ensure_schema"]()
     assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
@@ -124,8 +127,8 @@ def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema(
     assert len(conn.statements) == count
 
 
-def test_cm_optional_slip_lock_timeout_defers_further_retries():
-    """Persistent lock timeouts must not make every later call re-ALTER cm_slips."""
+def test_cm_optional_slip_lock_timeout_defers_then_retries_after_cooldown():
+    """Lock timeouts bound immediate retries, then resume after the cooldown."""
     class LockTimeout(RuntimeError):
         pgcode = "55P03"
 
@@ -136,14 +139,25 @@ def test_cm_optional_slip_lock_timeout_defers_further_retries():
             raise LockTimeout("canceling statement due to lock timeout")
     conn.execute = execute
     ns = _bootstrap_namespace(conn)
+    ns["_CM_SLIP_MIGRATE_LOCK_COOLDOWN_SEC"] = 30.0
     ns["_cm_ensure_schema"]()
     assert ns["_CM_SCHEMA_READY"]
     assert not ns["_CM_SLIP_MIGRATE_READY"]
-    assert ns["_CM_SLIP_MIGRATE_LOCK_DEFERRED"]
+    assert ns["_CM_SLIP_MIGRATE_RETRY_AFTER"] > time.monotonic()
     count = len(conn.statements)
     ns["_cm_ensure_schema"]()
     assert len(conn.statements) == count
     assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 1
+    # After the cooldown, slip migration is attempted again.
+    ns["_CM_SLIP_MIGRATE_RETRY_AFTER"] = time.monotonic() - 0.1
+    conn.fail = None
+    def execute_ok(statement):
+        conn.statements.append(statement)
+    conn.execute = execute_ok
+    ns["_cm_ensure_schema"]()
+    assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
+    assert ns["_CM_SLIP_MIGRATE_READY"]
+    assert ns["_CM_SLIP_MIGRATE_RETRY_AFTER"] == 0.0
 
 
 def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):

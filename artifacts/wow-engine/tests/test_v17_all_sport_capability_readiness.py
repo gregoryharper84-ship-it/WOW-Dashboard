@@ -1,7 +1,11 @@
 from pathlib import Path
 
-from v17.all_sport_capability_readiness import _readiness
+from v17.all_sport_capability_readiness import (
+    _readiness,
+    install_all_sport_capability_readiness,
+)
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
+import v17.team_event_bridge_runtime as bridge_runtime
 
 
 REQUEST_DEPENDENT = {"WNBA", "NHL", "SOCCER", "TENNIS", "MMA"}
@@ -132,3 +136,24 @@ def test_canonical_action_contract_exposes_sport_specific_evidence():
     team_event = schema.split("    TeamEventRequest:", 1)[1]
     assert "sport_specific_evidence:" in team_event
     assert "additionalProperties: true" in team_event
+
+
+def test_readiness_overlay_preserves_nba_hydration_blocker(monkeypatch):
+    """Bridge-native HOLDs must survive the capability readiness overlay."""
+    monkeypatch.setattr(
+        bridge_runtime,
+        "TEAM_EVENT_BRIDGES",
+        dict(bridge_runtime.TEAM_EVENT_BRIDGES),
+    )
+    monkeypatch.setattr(
+        bridge_runtime, "_v17_all_sport_capability_readiness_installed", False, raising=False
+    )
+    install_all_sport_capability_readiness()
+    assert bridge_runtime._register_nba_bridge_if_available() is True
+    nba = bridge_runtime.team_event_bridge_health()["NBA"]
+    assert nba["registered"] is True
+    assert nba["status"] == "BLOCKED"
+    assert nba["request_scoring_path_ready"] is False
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in nba["readiness_blockers"]
+    assert "TEAM_EVENT_CERTIFICATION_NOT_ACTIVE" in nba["readiness_blockers"]
+    assert nba["can_execute"] is False

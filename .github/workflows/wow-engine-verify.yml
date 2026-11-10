@@ -373,10 +373,7 @@ jobs:
           set -euo pipefail
           migration="migrations/20261102_basketball_certified_calibrator_artifact_rpc.sql"
           contract="tests/test_v17_basketball_calibrator_rpc_postgres.py"
-          if [ ! -f "$migration" ] && [ ! -f "$contract" ]; then
-            echo "NBA_CALIBRATOR_DB_CONTRACT_NOT_APPLICABLE: no migration or tests in this source revision"
-            exit 0
-          fi
+          # Fail closed: deleting both files must not silently skip the proof.
           if [ ! -f "$migration" ] || [ ! -f "$contract" ]; then
             echo "NBA_CALIBRATOR_DB_CONTRACT_INCOMPLETE: migration and tests must both be present"
             exit 1
@@ -442,10 +439,7 @@ jobs:
           set -euo pipefail
           migration="migrations/20261103_nba_event_shadow_prediction_receipts.sql"
           contract="tests/test_v17_nba_event_shadow_prediction_receipts_postgres.py"
-          if [ ! -f "$migration" ] && [ ! -f "$contract" ]; then
-            echo "NBA_SHADOW_DB_CONTRACT_NOT_APPLICABLE: no migration or tests in this source revision"
-            exit 0
-          fi
+          # Fail closed: deleting both files must not silently skip the proof.
           if [ ! -f "$migration" ] || [ ! -f "$contract" ]; then
             echo "NBA_SHADOW_DB_CONTRACT_INCOMPLETE: migration and tests must both be present"
             exit 1

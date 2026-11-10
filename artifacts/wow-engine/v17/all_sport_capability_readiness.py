@@ -209,6 +209,28 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
     original_health = bridges.team_event_bridge_health
     original_state_for = parity._state_for
 
+    def _merge_bridge_blockers(
+        row: dict[str, Any],
+        readiness: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep bridge-native HOLDs (e.g. NBA hydration) visible under readiness."""
+        bridge_blockers = [
+            str(code).strip()
+            for code in (row.get("readiness_blockers") or [])
+            if str(code or "").strip()
+        ]
+        merged = list(dict.fromkeys([*bridge_blockers, *readiness["readiness_blockers"]]))
+        readiness["readiness_blockers"] = merged
+        if bridge_blockers:
+            readiness["request_scoring_path_ready"] = False
+            readiness["model_capability_ready"] = False
+            if readiness.get("operational_readiness_status") in {
+                "READY",
+                "CERTIFIED_REQUEST_DEPENDENT",
+            }:
+                readiness["operational_readiness_status"] = "REGISTERED_NOT_READY"
+        return readiness
+
     def readiness_health() -> dict[str, dict[str, Any]]:
         base = original_health()
         out: dict[str, dict[str, Any]] = {}
@@ -216,12 +238,14 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
             row = dict(base.get(sport) or {})
             if sport == "NFL" and row.get("registered"):
                 row.update(_nfl_runtime_champion_probe())
-            row.update(_readiness(sport, row))
+            readiness = _merge_bridge_blockers(row, _readiness(sport, row))
+            row.update(readiness)
             out[sport] = row
         for sport, value in base.items():
             if sport not in out:
                 row = dict(value)
-                row.update(_readiness(sport, row))
+                readiness = _merge_bridge_blockers(row, _readiness(sport, row))
+                row.update(readiness)
                 out[sport] = row
         return out
 
@@ -231,7 +255,9 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
     ) -> dict[str, Any]:
         health = dict(bridge_health or {})
         state = dict(original_state_for(sport, health))
-        readiness = _readiness(str(sport or "").upper(), health)
+        readiness = _merge_bridge_blockers(
+            health, _readiness(str(sport or "").upper(), health)
+        )
         state.update(
             {
                 "model_capability_ready": readiness["model_capability_ready"],
