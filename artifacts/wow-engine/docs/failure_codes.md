@@ -595,3 +595,9 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+## SportsDataverse NHL/NCAAF candidate-only source normalization
+
+| Typed code | Owning lane / stage | Precise failure class | Rank eligible? |
+|---|---|---|---:|
+| `SDV_SOURCE_NEUTRAL_SITE_UNVERIFIED` | NCAAF chronological SportsDataverse challenger, offline input normalization | A final game's neutral-site indicator is missing or is not an unambiguous boolean TRUE/FALSE or 1/0. Reject the entire candidate data source before calculating features; do not silently code it as non-neutral, use home advantage, or substitute a heuristic. Research-only. | No |
