@@ -58,17 +58,35 @@ def test_missing_credentials_rejected_without_logging_secrets(monkeypatch, capsy
     assert capsys.readouterr().err.strip() == module.HOLD
 
 
-def test_migration_is_immutable_restricted_and_non_certifying():
-    sql = (ROOT / "migrations" / "20261110_nba_team_event_verification_receipts.sql").read_text().lower()
+def test_canonical_ledger_is_immutable_restricted_and_non_certifying():
+    sql = (ROOT / "migrations" / "20261110_v17_independent_verification_receipts.sql").read_text().lower()
+    assert "create table if not exists public.wow_independent_verification_receipts" in sql
     assert "before update or delete" in sql
+    assert "before truncate" in sql
     assert "enable row level security" in sql
     assert "grant select, insert" in sql
-    assert "security invoker" in sql
-    assert "calibrator_fit_end timestamptz not null" in sql
-    assert "probability_publishable = false" in sql
+    assert "publishable_scope = 'none'" in sql
     assert "can_execute = false" in sql
-    assert "create function public.wow_nba_team_event_verification_receipt_schema_ready()" in sql
+    assert "add column if not exists calibration_sha256" in sql
+    assert "add column if not exists calibration_fit_end" in sql
     assert "insert into public.wow_team_event_specialist_certifications" not in sql
+
+
+def test_predeploy_attestation_binds_the_canonical_ledger():
+    """The predeploy RPC must attest the ledger the verifier reads and writes."""
+    sql = (ROOT / "migrations" / "20261110_nba_team_event_verification_receipts.sql").read_text()
+    lowered = sql.lower()
+    assert "security invoker" in lowered
+    assert "wow_independent_verification_receipts" in lowered
+    # One ledger only: the draft table that the wiring never read is retired.
+    assert "create table" not in lowered
+    assert (
+        "create or replace function public.wow_nba_team_event_verification_receipt_schema_ready()"
+        in lowered
+    )
+    assert f"'contract_version', '{module.CONTRACT}'" in sql
+    assert "'calibration_sha256','calibration_fit_end'" in lowered
+    assert "insert into public.wow_team_event_specialist_certifications" not in lowered
 
 
 def _migration_sql_without_comments():

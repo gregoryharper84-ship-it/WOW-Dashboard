@@ -9,7 +9,10 @@ import os
 import sys
 from typing import Any
 
-CONTRACT = "NBA_TEAM_EVENT_VERIFICATION_RECEIPTS_V1"
+# V2 attests the canonical ledger (wow_independent_verification_receipts) and
+# the calibrator evidence columns. The superseded V1 named a separate draft
+# table that the verifier wiring never read or wrote.
+CONTRACT = "NBA_TEAM_EVENT_VERIFICATION_RECEIPTS_V2"
 RPC = "wow_nba_team_event_verification_receipt_schema_ready"
 HOLD = "NBA_VERIFICATION_RECEIPT_SCHEMA_INCOMPATIBLE"
 CAN_EXECUTE = False

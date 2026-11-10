@@ -205,12 +205,53 @@ jobs:
               exit 1
             fi
           done
-          export WOW_TEST_POSTGRES_DSN="postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
-          # The existing loopback gateway rewrites /rest/v1 to PostgREST /.
-          export WOW_TEST_POSTGREST_URL="http://127.0.0.1:3000"
+          # The two integration files need separate databases: the psycopg check
+          # asserts the pre-migration state and cannot share a database the
+          # PostgREST check has already migrated.
+          python - <<'PY'
+          import psycopg
+
+          admin = "postgresql://wow_agent_ci:wow_agent_ci@127.0.0.1:5432/wow_agent_ci"
+          with psycopg.connect(admin, autocommit=True) as conn:
+              exists = conn.execute(
+                  "select 1 from pg_database where datname = 'wow_verification_pg'"
+              ).fetchone()
+              if not exists:
+                  conn.execute('create database "wow_verification_pg"')
+          PY
+
+          # The job's own PostgREST service authenticates as `anon`, which holds
+          # no grant on the verification ledger by design, so the schema-read
+          # checks get their own instance instead of a broadened grant.
+          docker rm -f nba-verification-postgrest >/dev/null 2>&1 || true
+          docker run -d --name nba-verification-postgrest --network host \
+            -e PGRST_DB_URI="postgresql://wow_agent_ci:wow_agent_ci@127.0.0.1:5432/wow_agent_ci" \
+            -e PGRST_DB_SCHEMAS=public \
+            -e PGRST_DB_ANON_ROLE=wow_agent_ci \
+            -e PGRST_JWT_SECRET="wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes" \
+            -e PGRST_SERVER_HOST=127.0.0.1 \
+            -e PGRST_SERVER_PORT=3001 \
+            -e PGRST_LOG_LEVEL=error \
+            postgrest/postgrest:v12.2.3
+          for _ in $(seq 1 120); do
+            curl -fsS -o /dev/null http://127.0.0.1:3001/ 2>/dev/null && break
+            sleep 0.5
+          done
+          curl -fsS -o /dev/null http://127.0.0.1:3001/ \
+            || { echo "::error::NBA_VERIFICATION_POSTGREST_NOT_READY"; docker logs nba-verification-postgrest || true; exit 1; }
+
           python -m pytest -q --tb=short -rs \
-            --junitxml="$RUNNER_TEMP/nba-verification-integration.xml" \
-            "${nba_verification_tests[@]}"
+            test_v17_nba_verification_wiring.py tests/test_v17_nba_team_event_verification.py
+          WOW_TEST_POSTGRES_DSN="postgresql://wow_agent_ci:wow_agent_ci@127.0.0.1:5432/wow_verification_pg" \
+            python -m pytest -q --tb=short -rs \
+            --junitxml="$RUNNER_TEMP/nba-verification-postgres.xml" \
+            test_v17_nba_verification_prerequisites_postgres.py
+          WOW_TEST_POSTGRES_DSN="postgresql://wow_agent_ci:wow_agent_ci@127.0.0.1:5432/wow_agent_ci" \
+          WOW_TEST_POSTGREST_URL="http://127.0.0.1:3001" \
+            python -m pytest -q --tb=short -rs \
+            --junitxml="$RUNNER_TEMP/nba-verification-postgrest.xml" \
+            test_v17_nba_verification_prerequisites_postgrest.py
+
           # Pytest returns 0 when its integration tests skip. A green CI job
           # must prove the real PostgreSQL (6) + PostgREST (1) tests ran.
           python - <<'PY'
@@ -218,12 +259,27 @@ jobs:
           from pathlib import Path
           from xml.etree import ElementTree as ET
 
-          report = Path(os.environ["RUNNER_TEMP"]) / "nba-verification-integration.xml"
-          cases = list(ET.parse(report).getroot().iter("testcase"))
-          if len(cases) < 7 or any(case.find("skipped") is not None for case in cases):
+          root = Path(os.environ["RUNNER_TEMP"])
+          reports = [
+              root / "nba-verification-postgres.xml",
+              root / "nba-verification-postgrest.xml",
+          ]
+          cases = [
+              case
+              for report in reports
+              for case in ET.parse(report).getroot().iter("testcase")
+          ]
+          classnames = " ".join(case.get("classname", "") for case in cases)
+          if (
+              len(cases) < 7
+              or any(case.find("skipped") is not None for case in cases)
+              or "prerequisites_postgres" not in classnames
+              or "prerequisites_postgrest" not in classnames
+          ):
               raise SystemExit("NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED")
           print(f"NBA_VERIFICATION_INTEGRATION_EXECUTED tests={len(cases)}")
           PY
+          docker rm -f nba-verification-postgrest >/dev/null 2>&1 || true
           kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
           wait "$WORKER_PID" 2>/dev/null || true
           wait "$PROXY_PID" 2>/dev/null || true

@@ -17,7 +17,9 @@ import pytest
 
 LEDGER = "wow_independent_verification_receipts"
 CALIBRATOR = "wow_basketball_team_event_calibrators"
-LEDGER_FIELDS = "receipt_id,verification_status,can_execute,probability_publishable"
+# Field names follow the canonical ledger (20261110_v17_independent_verification_receipts.sql),
+# not the retired draft table: status and scope have different column names.
+LEDGER_FIELDS = "receipt_id,independent_verification_status,can_execute,publishable_scope"
 CALIBRATOR_FIELDS = "calibration_sha256,calibration_fit_end"
 SCHEMA_STATE = "WOW_TEST_NBA_SCHEMA_STATE"
 URL_ENV = "WOW_TEST_SUPABASE_URL"
@@ -112,7 +114,7 @@ def _require_ready_schema(ledger, calibrator):
     for row in ledger[2]:
         assert type(row) is dict
         assert row.get("can_execute") is False
-        assert row.get("probability_publishable") is False
+        assert row.get("publishable_scope") == "NONE"
 
 
 @pytest.mark.parametrize("state", ["old", "ready"])
