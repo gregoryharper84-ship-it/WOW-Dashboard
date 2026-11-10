@@ -16,6 +16,7 @@ from v17.model_evidence_bundle_contract import (
     TEAM_EVENT_BUNDLE_REQUIREMENTS,
     ModelBundleScope,
     assess_model_bundle,
+    missing_component_fields,
 )
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.team_event_model_development_manifest import TEAM_EVENT_MODEL_DEVELOPMENT
@@ -23,6 +24,7 @@ from v17.team_event_model_development_manifest import TEAM_EVENT_MODEL_DEVELOPME
 
 CHECKSUM = "a" * 64
 CORPUS_SHA = "b" * 64
+CALIBRATION_SHA = "9" * 64
 CALIBRATOR_SHA = "c" * 64
 FEATURE_SHA = "d" * 64
 ARTIFACT_SHA = "e" * 64
@@ -75,7 +77,7 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         "calibrator_checksum": CALIBRATOR_SHA,
         "calibration_method": "PLATT_TIME_SPLIT_V1",
         "calibration_training_n": 2500,
-        "calibration_cohort_sha256": CORPUS_SHA,
+        "calibration_cohort_sha256": CALIBRATION_SHA,
         "holdout_evidence_sha256": CHECKSUM,
         "bounds_method_version": "PREDICTIVE_BOUNDS_V1",
         "chronological_replay_verified": True,
@@ -190,6 +192,11 @@ def test_missing_component_is_its_own_blocker(missing, typed):
     ("calibrator", "sport", "WNBA"),
     ("calibrator", "model_artifact_version", "OTHER_ARTIFACT"),
     ("calibrator", "model_artifact_checksum", "f"*64),
+    ("calibrator", "model_artifact_checksum", ""),
+    ("calibrator", "model_artifact_checksum", "invalid-hash"),
+    ("calibrator", "calibration_cohort_sha256", CORPUS_SHA),
+    ("calibrator", "holdout_evidence_sha256", CALIBRATION_SHA),
+    ("calibrator", "holdout_evidence_sha256", CORPUS_SHA),
     ("calibrator", "calibrator_checksum", None),
     ("calibrator", "calibrated_lower_bound_verified", False),
     ("calibrator", "chronological_replay_verified", False),
@@ -200,6 +207,8 @@ def test_missing_component_is_its_own_blocker(missing, typed):
     ("pregame_corpus", "sport", "NFL"),
     ("pregame_corpus", "model_artifact_version", "OTHER_ARTIFACT"),
     ("pregame_corpus", "model_artifact_checksum", "f"*64),
+    ("pregame_corpus", "model_artifact_checksum", ""),
+    ("pregame_corpus", "model_artifact_checksum", "invalid-hash"),
     ("pregame_corpus", "feature_schema_version", "OTHER_SCHEMA"),
     ("pregame_corpus", "official_event_id", "OTHER_EVENT"),
     ("pregame_corpus", "source_payload_independently_verified", False),
@@ -218,6 +227,24 @@ def test_mismatches_or_unverified_components_fail_closed(component, field, value
     assert "MODEL_BUNDLE_" + component.upper() + "_INVALID_OR_UNVERIFIED" in result["blockers"]
     assert result["bundle_complete"] is False
     assert result["rank_eligible"] is False
+
+
+def test_team_event_market_family_must_be_empty_in_all_components():
+    scope, artifact, calibrator, pregame = _valid()
+    for component in ("artifact", "calibrator", "pregame_corpus"):
+        rows = {"artifact": dict(artifact), "calibrator": dict(calibrator),
+                "pregame_corpus": dict(pregame)}
+        rows[component]["market_family"] = "SPREAD"
+        result = assess_model_bundle(scope, **rows).as_dict()
+        assert result["status"] == "BLOCKED"
+        assert not result["bundle_complete"]
+        assert f"MODEL_BUNDLE_{component.upper()}_INVALID_OR_UNVERIFIED" in result["blockers"]
+
+
+def test_whitespace_only_required_field_is_reported_as_missing():
+    assert "calibrator_id" in missing_component_fields(
+        "calibrator", {"calibrator_id": "  "}
+    )
 
 
 def test_material_update_after_features_invalidates_pregame_corpus():
