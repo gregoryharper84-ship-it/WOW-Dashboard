@@ -167,3 +167,54 @@ def test_missing_snapshot_still_recovers_from_latest_clean_observation():
     assert result["effective_source_snapshot_id"] == "newer"
     assert result["acquisition_repair_status"] == "RECOVERED_FROM_GOVERNED_SNAPSHOT"
     assert result["can_execute"] is False
+
+
+def test_direct_older_ready_cannot_override_newer_ruled_out_snapshot():
+    db = _DB([
+        _row("older", "2026-11-18T00:00:00+00:00"),
+        _row("newer", "2026-11-19T00:00:00+00:00", "FAILED"),
+    ])
+    seen = []
+
+    def fetch(request):
+        seen.append(request.source_snapshot_id)
+        return _ready("older") if request.source_snapshot_id == "older" else _blocked("PLAYER_RULED_OUT")
+
+    result = repair_prop_evidence(_request("older"), primary_fetch=fetch, client=db)
+    assert result["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["blockers"] == ["PLAYER_RULED_OUT"]
+    assert result["acquisition_repair_status"] == "LATEST_OBSERVATION_NOT_READY"
+    assert seen == ["older", "newer"]
+    assert result["can_execute"] is False
+
+
+def test_older_ready_is_replaced_by_actual_newest_ready():
+    db = _DB([
+        _row("older", "2026-11-18T00:00:00+00:00"),
+        _row("newer", "2026-11-19T00:00:00+00:00"),
+    ])
+    result = repair_prop_evidence(
+        _request("older"),
+        primary_fetch=lambda request: _ready(request.source_snapshot_id),
+        client=db,
+    )
+    assert result["effective_source_snapshot_id"] == "newer"
+    assert result["acquisition_repair_status"] == "LATEST_OBSERVATION_SELECTED"
+    assert result["can_execute"] is False
+
+
+def test_ready_primary_holds_when_authority_lookup_unavailable():
+    class BrokenDB:
+        def table(self, _name):
+            raise TimeoutError("newest evidence could not be verified")
+
+    result = repair_prop_evidence(
+        _request("older"),
+        primary_fetch=lambda request: _ready("older"),
+        client=BrokenDB(),
+    )
+    assert result["ok"] is False
+    assert result["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["blockers"] == ["PROP_EVIDENCE_BRIDGE_UNAVAILABLE"]
+    assert result["acquisition_repair_status"] == "LATEST_AUTHORITY_LOOKUP_FAILED"
+    assert result["can_execute"] is False

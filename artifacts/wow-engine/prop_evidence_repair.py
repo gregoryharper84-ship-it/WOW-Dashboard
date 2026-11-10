@@ -82,6 +82,18 @@ def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
     return ids
 
 
+def _authority_hold(blocker: str) -> dict[str, Any]:
+    """Fail closed when latest-snapshot authority cannot be established."""
+    return {
+        "ok": False,
+        "code": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+        "hydration_status": "FAILED",
+        "blockers": [blocker],
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def repair_prop_evidence(
     req: Any,
     *,
@@ -108,6 +120,51 @@ def repair_prop_evidence(
     ]
 
     if isinstance(primary, dict) and primary.get("ok") is True and primary_code == "PROP_EVIDENCE_READY":
+        # A requested READY snapshot can predate a newer ruled-out player.
+        # Always prove latest identity before accepting a caller-selected ID.
+        try:
+            newest_ids = _fallback_snapshot_ids(client, req)
+        except Exception:
+            return _annotate(
+                _authority_hold("PROP_EVIDENCE_BRIDGE_UNAVAILABLE"),
+                requested_source_snapshot_id=requested_id,
+                attempts=attempts,
+                repair_status="LATEST_AUTHORITY_LOOKUP_FAILED",
+            )
+        if not newest_ids:
+            return _annotate(
+                _authority_hold("PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"),
+                requested_source_snapshot_id=requested_id,
+                attempts=attempts,
+                repair_status="LATEST_AUTHORITY_UNVERIFIED",
+            )
+        newest_id = newest_ids[0]
+        if newest_id != requested_id:
+            try:
+                newest_result = primary_fetch(req.model_copy(update={"source_snapshot_id": newest_id}))
+            except Exception:
+                newest_result = _authority_hold("PROP_EVIDENCE_BRIDGE_UNAVAILABLE")
+            newest_code = str(newest_result.get("code") or "") if isinstance(newest_result, dict) else ""
+            ready = (
+                isinstance(newest_result, dict)
+                and newest_result.get("ok") is True
+                and newest_code == "PROP_EVIDENCE_READY"
+            )
+            attempts.append(
+                _attempt(
+                    path="LATEST_SNAPSHOT_AUTHORITY",
+                    source_snapshot_id=newest_id,
+                    code=newest_code or None,
+                    status="PASS" if ready else "FAILED",
+                )
+            )
+            return _annotate(
+                newest_result if isinstance(newest_result, dict)
+                else _authority_hold("PROP_EVIDENCE_BRIDGE_INVALID_RESPONSE"),
+                requested_source_snapshot_id=requested_id,
+                attempts=attempts,
+                repair_status="LATEST_OBSERVATION_SELECTED" if ready else "LATEST_OBSERVATION_NOT_READY",
+            )
         return _annotate(
             primary,
             requested_source_snapshot_id=requested_id,
