@@ -781,7 +781,7 @@ def test_qa_nonmain_workflow_run_skips_before_resolution_and_release_stays_neutr
                 WOW_QA_ZERO_CREDIT_MODE="false",
             ),
         }
-        return eval(expression, {"__builtins__": {}}, context)
+        return bool(eval(expression, {"__builtins__": {}}, context))
 
     assert admitted("workflow_run", "freebuff/review-branch") is False
     assert admitted("workflow_run", None, has_pr=False) is False
