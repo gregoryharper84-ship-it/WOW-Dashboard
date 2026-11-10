@@ -109,6 +109,7 @@ GOVERNANCE_BLOCKED_CODES = frozenset({"ACTIONABLE_REPAIR_POLICY_BOUNDARY"})
 # Actions --log-failed dumps unevaluated `echo "::error::..."` script lines.
 # Those script echoes are not provider evidence; only emitted error payloads are.
 _ACTIONS_MARKER_RE = re.compile(r"(?:##\[(?:group|endgroup|error|warning)\]|::(?:error|warning|notice)::)")
+_ACTIONS_CONTROL_RE = re.compile(r"##\[(?:group|endgroup|warning)\]")
 # Only executable shell commands followed by whitespace are script echoes.
 # Log/step prefixes such as "printf-check" are not shell commands.
 _SCRIPT_COMMAND_RE = re.compile(r"(?<![\w-])(?:echo|printf)[ \t]+", re.IGNORECASE)
@@ -118,6 +119,7 @@ _LOG_TIMESTAMP_RE = re.compile(r"(?:^|[\t ])20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2
 _LOG_STEP_LABEL_RE = re.compile(r"^\s*(?:\[[^\]\n]+\]\s*)+")
 _EMITTED_ERROR_RE = re.compile(r"(?:##\[error\]|::error::)(.+)$")
 _PROCESS_COMPLETED_RE = re.compile(r"^process completed with exit code\b", re.IGNORECASE)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 NON_PROVIDER_MARKERS = (
     "eacces:",
@@ -130,35 +132,53 @@ NON_PROVIDER_MARKERS = (
 )
 
 
+def _strip_actions_log_prefix(line: str) -> str:
+    """Drop gh --log-failed job/step/timestamp display prefixes."""
+    cleaned = _ANSI_RE.sub("", line)
+    timestamp = _LOG_TIMESTAMP_RE.search(cleaned)
+    if timestamp:
+        cleaned = cleaned[timestamp.end():]
+    return _LOG_STEP_LABEL_RE.sub("", cleaned).strip()
+
+
 def _provider_match_text(log_text: str) -> str:
     """Return text that may classify a provider failure.
 
     Plain non-Actions logs keep full-text matching for unit/direct callers.
-    GitHub Actions logs only contribute emitted `::error::` / `##[error]`
-    payloads, never unevaluated workflow script echoes.
+    GitHub Actions logs contribute:
+    1. emitted `::error::` / `##[error]` payloads (never unevaluated script echoes);
+    2. unannotated stderr/stdout lines (Codex CLI quota/auth often has no
+       Actions annotation). Control markers and script echoes stay excluded.
     """
     text = str(log_text or "")
     if not _ACTIONS_MARKER_RE.search(text):
         return text
     emitted: list[str] = []
+    unannotated: list[str] = []
     for line in text.splitlines():
-        match = _EMITTED_ERROR_RE.search(line)
-        if not match:
+        body = _strip_actions_log_prefix(line)
+        if not body:
             continue
-        # Ignore display-only job/step labels (which can be named "Echo receipt")
-        # but still reject actual unevaluated `echo "::error::..."` commands.
-        prefix = line[:match.start()]
-        timestamp = _LOG_TIMESTAMP_RE.search(prefix)
-        if timestamp:
-            prefix = prefix[timestamp.end():]
-        prefix = _LOG_STEP_LABEL_RE.sub("", prefix)
-        if _SCRIPT_COMMAND_RE.search(prefix):
+        match = _EMITTED_ERROR_RE.search(body)
+        if match:
+            # Ignore display-only job/step labels (which can be named "Echo receipt")
+            # but still reject actual unevaluated `echo "::error::..."` commands.
+            prefix = body[:match.start()]
+            if _SCRIPT_COMMAND_RE.search(prefix):
+                continue
+            payload = match.group(1).strip()
+            if not payload or _PROCESS_COMPLETED_RE.match(payload):
+                continue
+            emitted.append(payload)
             continue
-        payload = match.group(1).strip()
-        if not payload or _PROCESS_COMPLETED_RE.match(payload):
+        if _ACTIONS_CONTROL_RE.search(body):
             continue
-        emitted.append(payload)
-    return "\n".join(emitted)
+        # Unevaluated workflow script that only prints a synthetic ::error::
+        # must not become provider evidence.
+        if _SCRIPT_COMMAND_RE.search(body) and "::error::" in body:
+            continue
+        unannotated.append(body)
+    return "\n".join(emitted + unannotated)
 
 
 @dataclass(frozen=True)

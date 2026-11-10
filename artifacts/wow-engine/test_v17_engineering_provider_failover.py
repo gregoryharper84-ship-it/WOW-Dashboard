@@ -91,6 +91,55 @@ def test_specialist_hold_script_echo_is_not_quota_exceeded() -> None:
     assert result.failover_eligible is False
 
 
+def test_actions_wrapped_codex_stderr_quota_remains_classified() -> None:
+    """Codex CLI often prints quota failures to unannotated stderr.
+
+    When that stderr is captured inside a GitHub Actions --log-failed blob
+    that also contains ##[group]/##[error] markers, those markers must not
+    hide the real provider failure. Script-echo quota strings still stay out.
+    """
+    module = _load_module()
+    log = "\n".join([
+        "ChatGPT engineering\tRun Codex\t2026-11-10T16:00:00.0000000Z ##[group]Run Codex engineering worker",
+        "ChatGPT engineering\tRun Codex\t2026-11-10T16:00:00.1000000Z ##[endgroup]",
+        "ChatGPT engineering\tRun Codex\t2026-11-10T16:00:01.0000000Z ERROR: Quota exceeded. Check your plan and billing details.",
+        "ChatGPT engineering\tRun Codex\t2026-11-10T16:00:01.0500000Z insufficient_quota",
+        "ChatGPT engineering\tRun Codex\t2026-11-10T16:00:01.1000000Z ##[error]Process completed with exit code 1.",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
+    assert result.failover_eligible is True
+    assert module.circuit_breaker_active(result.code, age_minutes=10_000)
+
+
+def test_actions_wrapped_codex_stderr_auth_remains_classified() -> None:
+    module = _load_module()
+    log = "\n".join([
+        "##[group]Run Codex engineering worker",
+        "##[endgroup]",
+        "invalid_api_key: Incorrect API key provided",
+        "##[error]Process completed with exit code 1.",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "OPENAI_API_AUTH_FAILED"
+    assert result.failover_eligible is True
+
+
+def test_script_echo_quota_still_ignored_when_stderr_absent() -> None:
+    module = _load_module()
+    log = "\n".join([
+        "##[group]Run Surface quota-admission hold without invoking Codex",
+        'if [[ "$PROVIDER_REASON" == *OPENAI_API_QUOTA_EXCEEDED* ]]; then',
+        '  echo "::error::Quota exceeded: BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"',
+        "fi",
+        "##[endgroup]",
+        "##[error]BLOCKED_WITH_EXACT_REASON:CIRCUIT_BREAKER:OPENAI_API_KEY_MISSING; Codex not invoked",
+    ])
+    result = module.classify_provider_failure("openai", log)
+    assert result.code == "UNCLASSIFIED_PROVIDER_OR_WORKFLOW_FAILURE"
+    assert result.failover_eligible is False
+
+
 def test_openai_auth_and_rate_limits_are_failover_eligible() -> None:
     module = _load_module()
     auth = module.classify_provider_failure("openai", "invalid_api_key")
