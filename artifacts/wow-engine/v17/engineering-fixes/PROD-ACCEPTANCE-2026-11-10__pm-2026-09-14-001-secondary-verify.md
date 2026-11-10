@@ -71,9 +71,22 @@ Verdict: `SAFETY_MILESTONE_HELD_AND_PM_STILL_PENDING_VERIFY`. Evidence packet: c
 | --- | --- |
 | Safety ancestry | Live SHA contains deactivated `#2554` safety commit `98a56157…` as ancestor (`behind_by=0`) |
 | Post-safety Daily / prediction rows | Still **0** after safety finish; newest Daily remains `2026-11-09T15:35:36Z` |
-| Post-safety Action receipts | Three `wow_action_invocation_receipts` rows at/after safety: all `caller_class=SELF_ACCEPTANCE`, `POST /score-prop`, HTTP 422, `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`. Startup probes only — they do **not** close `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` |
+| Post-safety Action receipts | See owner delta below — earlier three-receipt count is superseded |
 | Attempt / zero-row fields in Daily detail | Across 28180 row-detail docs: 0 of `REQUESTED_ROW_LIMIT_ZERO`, `action_invocation_attempted`, `specialist_scoring_attempted`, `scoring_attempted` |
 | Exact-head QA on this PR | Pre-`Incident:` body failed `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS`. Body now carries exactly one `Incident: #2020` (parallel-restoration epic; not a PM-specific issue). A later QA pass clears PR identity wiring only — it does **not** close the postmortem |
+
+## Owner read-only post-safety delta (2026-11-10, PR comment)
+
+Mechanism under test: a green OIDC Daily workflow **before** the safety boundary cannot prove post-safety reducer/host residuals.
+
+| Probe | Result |
+| --- | --- |
+| Live web / worker | Same live SHA `e7384b9d…` (`dep-dbpin52vcj2c73d9c1g0` / `dep-dbpin52vcj2c73d9c3b0`, finished 14:36 UTC); prior availability `98a56157…` at 13:23 UTC |
+| Pre-safety Daily workflow | Scheduled `wow-v17-daily-snapshot` run `42801795794` at **10:45 UTC** succeeded OIDC + full-slate snapshot — **pre-safety**, not closure proof |
+| Persisted Daily after safety | Latest `wow_v17_daily_async_runs.submitted_at` = `2026-11-09T15:33:38Z`; latest `wow_v17_daily_run_row_detail.captured_at` = `2026-11-10T10:46:10Z`; **0** detail rows at/after `2026-11-10T13:23:22Z` |
+| Post-safety Action receipts | **Four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422s (`13:23:31`, `13:23:34`, `14:36:36`, `14:36:40` UTC), all `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND`, `can_execute=false` — startup probes only; not three-field scoring-attempted acceptance |
+| Residual exercise caveat | A scheduled MONEYLINE-only Daily may never emit `max_props=0` PROP `REQUESTED_ROW_LIMIT_ZERO` or the three-field Action split — do not infer closure from workflow green |
+| Next observation window | Existing OIDC scheduled Daily ~17:00 UTC; verify persisted run ID **and** the specific residuals, not merely CI success |
 
 ## Closure gate
 
