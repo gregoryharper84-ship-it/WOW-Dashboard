@@ -63,6 +63,7 @@ NFL_CANONICAL_TEAM_CODES = frozenset(NFL_TEAM_NAME_TO_ABBREVIATION.values())
 
 
 def _paginate(query: Any, page_size: int = 500) -> list[dict[str, Any]]:
+    """Yield successive PostgREST pages until the result set ends."""
     rows: list[dict[str, Any]] = []
     start = 0
     while True:
@@ -76,6 +77,7 @@ def _paginate(query: Any, page_size: int = 500) -> list[dict[str, Any]]:
 
 
 def _raw_object_path(uri: str) -> str:
+    """Build the storage object path for a raw schedule snapshot."""
     prefix = f"supabase://{RAW_BUCKET}/"
     if not str(uri or "").startswith(prefix):
         raise NFLModelInputsInsufficient("NFL_SCHEDULE_RAW_OBJECT_URI_INVALID")
@@ -86,6 +88,7 @@ def _raw_object_path(uri: str) -> str:
 
 
 def _load_latest_schedule_snapshot(db: Any) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Load the newest verified NFL schedule snapshot for evidence."""
     result = (
         db.table("wow_nfl_source_snapshots")
         .select("snapshot_id,dataset_name,content_sha256,fetched_at,raw_object_uri,source_status")
@@ -111,10 +114,12 @@ def _load_latest_schedule_snapshot(db: Any) -> tuple[dict[str, Any], list[dict[s
 
 
 def _has_score(row: dict[str, Any]) -> bool:
+    """Return True when both team scores are present and numeric."""
     return str(row.get("home_score") or "").strip() != "" or str(row.get("away_score") or "").strip() != ""
 
 
 def _canonical_team(value: Any) -> str | None:
+    """Normalize a team token into the canonical publication identity."""
     raw = " ".join(str(value or "").strip().split())
     if not raw:
         return None
@@ -125,6 +130,7 @@ def _canonical_team(value: Any) -> str | None:
 
 
 def _aware_datetime(value: Any) -> datetime | None:
+    """Parse a timestamp into a timezone-aware UTC datetime."""
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -135,6 +141,7 @@ def _aware_datetime(value: Any) -> datetime | None:
 
 
 def _prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, team: str, target_date: date) -> int:
+    """Count completed prior games for the requested event evidence."""
     n = 0
     for row in schedule_rows:
         try:
@@ -150,6 +157,7 @@ def _prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, 
 
 
 def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
+    """Resolve fail-closed NFL team/event evidence for scoring."""
     snapshot, schedule_rows = _load_latest_schedule_snapshot(db)
     provider_event_id = str(req.official_event_id or "").strip()
     requested_home = _canonical_team(req.home_team)
@@ -319,6 +327,7 @@ def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
 
 
 def _load_history(db: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load prior completed-game history for the current-season specialist."""
     games = _paginate(db.table("wow_nfl_training_games").select("*").order("season").order("week").order("gameday").order("game_id"))
     summaries = _paginate(db.table("wow_nfl_game_team_summaries").select("*").order("game_id").order("team"))
     if not games or not summaries:
@@ -377,6 +386,7 @@ def _prediction_identity_key(
 
 
 def _load_existing_prediction(db: Any, prediction_identity_key: str) -> dict[str, Any] | None:
+    """Load an immutable stored prediction row when present."""
     result = (
         db.table("wow_nfl_event_predictions")
         .select("*")
@@ -397,6 +407,7 @@ def _reused_prediction_result(
     evidence: dict[str, Any],
     model_probability_publishable: bool,
 ) -> dict[str, Any]:
+    """Rebuild a reused prediction while preserving stored publication holds."""
     snapshot = row.get("model_output_snapshot")
     if not isinstance(snapshot, dict):
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_REUSE_SNAPSHOT_MISSING")
@@ -438,6 +449,7 @@ def _reused_prediction_result(
 
 
 def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
+    """Score an NFL team/event request through the fitted specialist path."""
     evidence = dict(req.sport_specific_evidence or {})
     required = (
         "season",

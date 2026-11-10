@@ -97,6 +97,7 @@ class _PredictionInsert:
         return self
 
     def execute(self):
+        """Fake client execute hook for the history-repair regression harness."""
         if self.mode == "select":
             matches = [
                 row for row in self.rows
@@ -140,9 +141,11 @@ def _patch_model(monkeypatch, *, publishable=True):
 
 
 def test_stale_current_season_history_refreshes_once_then_scores(monkeypatch):
+    """Stale history triggers one refresh, then scores with repaired evidence."""
     calls = {"features": 0, "refresh": 0}
 
     def feature_row(**kwargs):
+        """Build a minimal feature row for the repair/scoring test harness."""
         calls["features"] += 1
         return _feature(0, 1) if calls["features"] == 1 else _feature(2, 2)
 
@@ -167,6 +170,7 @@ def test_stale_current_season_history_refreshes_once_then_scores(monkeypatch):
 
 
 def test_refresh_must_close_exact_history_gap_or_route_remains_held(monkeypatch):
+    """Partial refresh that leaves the gap open keeps the route held."""
     calls = {"refresh": 0}
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(0, 1))
     monkeypatch.setattr(
@@ -187,6 +191,7 @@ def test_refresh_must_close_exact_history_gap_or_route_remains_held(monkeypatch)
 
 
 def test_refresh_source_failure_stays_typed_inputs_insufficient(monkeypatch):
+    """Refresh transport failure stays MODEL_INPUTS_INSUFFICIENT."""
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(0, 1))
 
     def fail_refresh(db, *, season):
@@ -199,6 +204,7 @@ def test_refresh_source_failure_stays_typed_inputs_insufficient(monkeypatch):
 
 
 def test_overcount_never_triggers_repair_or_model(monkeypatch):
+    """Overcounted history does not invent a repair or invoke the model."""
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(3, 2))
     monkeypatch.setattr(
         refresh,
