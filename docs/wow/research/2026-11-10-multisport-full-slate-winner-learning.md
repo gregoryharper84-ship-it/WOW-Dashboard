@@ -25,6 +25,14 @@ The conversation reported an eight-of-twelve result and discussed player availab
 - Postmortem: grade immutable pregame picks only with independent official finals; analyze the explanation separately from winner correctness and compare to a timestamp-matched market-favorite baseline.
 - Future model changes require pre-registered chronological challenger and untouched holdout, calibration validation, and independent QA/SIRT/Release acceptance. No automatic model promotion, shared Google Sheet changes, wagers, or submission.
 
+## Addendum — media headlines, narratives and three-script sensitivity
+
+A complete matchup research finding includes attributed current media headlines with real HTTPS links and chronologically eligible publication/source timestamps, source-linked storylines, an explicit counter-narrative, the favored winner script, the opponent upset script and a third stress scenario. The research sensitivity summary counts valid **unweighted** distinct scenarios favoring each team; this is not calibrated probability or validated scenario robustness. Headlines, analyst opinions, media buzz and market popularity do not directly change sporting probabilities or certify a winner.
+
+Read-only module v17.llp_matchup_media_script_audit audits source metadata, source-linked narratives and time restrictions. The existing v17.llp_research_winner_card integrates it as nonterminal evidence warnings, independent of a full official-slate selection. Late/fake/unsourced news is excluded from the research summary and cannot be fed to frozen pregame model grades. Source receipt IDs and verification booleans here are **not** publisher authenticity proofs: future live intake must do independent source/ledger readback before any claim of independent verification.
+
+Tests include scenario preference counts, split and contradicted scripts, future and uncalibrated scenario numbers, linked headlines/storylines and counter narrative, future news, invalid URLs, and missing media. Protect can_execute=false and sole V17 terminal authority. Do not alter the Google Sheet, fitted weights, calibration, line prices or automatic submission.
+
 ## Verification and release status
 
 Seven local focused synthetic tests passed, including three-sport coverage under model HOLD, contrary evidence without pass conversion, bad/source-late and market discrepancies, duplicate/late/missing picks, unverified slate, and no numeric model spoofing. These synthetic tests do NOT validate an actual sport selection or prove live operational integration.
