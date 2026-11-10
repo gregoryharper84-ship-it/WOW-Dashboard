@@ -104,6 +104,30 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 | Parallel PR delta | `#2512` **merged** at `2026-11-10T16:01:53Z` (`d3260b09…`) — not yet on the live Render tip; stored `wow_nfl_event_predictions` history still carries pre-merge publishability stamps |
 | Next observation | ~17:00 sync snapshot: prove post-safety MONEYLINE via workflow-logged `run_id` (+ detail rows if present) **and** record the serving deployment SHA + safety-ancestry at request time; mark unverified unless that deploy provenance is established. Async-run absence alone is not a failure. PROPS residuals still need a separate unpaid Action path |
 
+## Independent re-verify (2026-11-10T17:02Z–17:11Z, unpaid, ~17:00 window)
+
+Verdict: `SAFETY_MILESTONE_HELD_AND_PM_STILL_PENDING_VERIFY`. Serving deploy provenance for this window is established; the scheduled sync Daily itself is **not** yet observed.
+
+| Probe | Result |
+| --- | --- |
+| Live web deploy | Still `dep-dbpin52vcj2c73d9c1g0` SHA `e7384b9d2fed3256681b25715516dff2e97d3233` status `live` (Render workspace `tea-da7s2ggu01pc73br7gg0`) |
+| Safety ancestry | `98a56157…` (`#2554`) remains ancestor of live tip (`behind_by=0`, `ahead_by=6`) |
+| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| `/governance` | `can_execute=false`, `V17_TERMINAL_REDUCER`, `deployment_gates.status=PASS`, `deployed_sha=e7384b9d…` |
+| Live sport readiness | NFL `model_capability_ready=true` / `CANDIDATE_REGISTERED_UNCERTIFIED` / `can_execute=false`; NBA `MODEL_UNAVAILABLE` / unregistered; NHL `operational_readiness_status=REGISTERED_NOT_READY` (`model_artifact_present=false`) |
+| Scheduled `wow-v17-daily-snapshot` (`cron: 0 17 * * *`) | **NOT_YET_OBSERVED** as of `2026-11-10T17:11:39Z`. Newest schedule run remains `42801795794` at `2026-11-10T10:45:14Z` (pre-safety for this gate). PR-path `verify` jobs on the same workflow at 16:57/17:00 are not the governed sync Daily. Workflow file remains `active`. |
+| Workflow-logged sync `run_id` | **UNVERIFIED** — no post-safety schedule run to read |
+| `wow_v17_daily_async_runs` | newest `submitted_at=2026-11-09T15:33:38Z`; **0** rows at/after safety `2026-11-10T13:23:22Z` (async absence alone is not a failure for sync snapshot) |
+| `wow_v17_daily_run_row_detail` | newest `captured_at=2026-11-10T10:46:10Z`; **0** post-safety |
+| `wow_predictions` | newest `created_at=2026-11-09T15:38:05Z`; **0** post-safety |
+| Action receipts post-safety | Still exactly **four** `SELF_ACCEPTANCE` `/score-prop` HTTP 422 `PROP_EVIDENCE_SNAPSHOT_NOT_FOUND` (`can_execute=false`) — no new receipts since 14:36 UTC |
+| `ZERO_ROW_REASON_MISCLASSIFIED` | Still **DEPLOYED_NOT_OBSERVED** (0 `REQUESTED_ROW_LIMIT_ZERO` / attempt-field detail rows; MONEYLINE-only snapshot cannot close this) |
+| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Still **DEPLOYED_NOT_OBSERVED** (no three-field Action split receipt) |
+| NFL forward health | Still `graded_n=94` / `minimum_forward_required=100`; `INSUFFICIENT_FORWARD_EVIDENCE`; `DO_NOT_CERTIFY_YET`; blocker `FORWARD_GRADED_N_94_LT_100` (row `created_at=2026-11-09T22:36:02Z`). No new scheduled OIDC `wow-v17-nfl-forward-shadow` run observed in this window |
+| `wow_nfl_event_predictions` | 1741 rows; `can_execute` never true; all 1741 still `model_probability_publishable=true`; newest `2026-11-10T09:48:46Z` (pre-safety; `#2512` still not on live tip) |
+| Parallel PR delta | `#2560` tip `be05c789…` still merge-ready on governed tip success, but required-check rollup again shows cancelled-race FAILURE aggregates; `#2571` (NHL restoration replacement for `#2569`/`#2509`) tip `79ed02b46…` CI in progress with no hard failures at observation time; `#2512` remains on `main` (`d3260b09…`) ahead of live Render |
+| Next observation | Wait for delayed GitHub `0 17` schedule (or next cron `0 23`) — require workflow-logged sync Daily `run_id` under the same serving SHA + safety ancestry. Do **not** workflow_dispatch paid Daily. PROPS residuals remain a separate unpaid Action path |
+
 ## Closure gate
 
 `PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until **both** remaining secondary observations are recorded (`ZERO_ROW_REASON_MISCLASSIFIED` and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`). A Reporter-scoped residual, if ever filed, is recorded as **unverified** and does **not** authorize a ledger status change. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
@@ -111,8 +135,10 @@ Mechanism under test: a green OIDC Daily workflow **before** the safety boundary
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
+serving_sha_at_17utc_window = e7384b9d2fed3256681b25715516dff2e97d3233
+safety_ancestor_at_17utc_window = 98a56157a5916c6d25ee1c51bab3d183448e23c8
 post_safety_async_or_detail_rows = NOT_OBSERVED
-post_safety_sync_daily_status = UNVERIFIED
+post_safety_sync_daily_status = SCHEDULE_NOT_YET_OBSERVED
 post_safety_scoring_attempted_observation = NOT_OBSERVED
 ledger_state = DEPLOYED_PENDING_VERIFY
 ```

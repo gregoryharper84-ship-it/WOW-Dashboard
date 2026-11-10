@@ -345,6 +345,12 @@ can_execute = false
   and host-alias `scoring_attempted=true` (the original defect was
   `scoring_attempted=false` after invocation; both-true is insufficient; see
   `test_receipt_semantics_split.py`).
+- 2026-11-10T17:02–17:11Z unpaid window: live SHA `e7384b9d…` + safety
+  ancestor `98a56157…` reconfirmed; scheduled `wow-v17-daily-snapshot`
+  `cron: 0 17` was still `NOT_YET_OBSERVED` (workflow `active`; newest
+  schedule run remains `42801795794` at 10:45Z). Sync Daily `run_id` stays
+  unverified; PROPS residual path unchanged. Evidence:
+  `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).
