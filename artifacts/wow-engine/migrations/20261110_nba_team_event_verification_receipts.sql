@@ -80,11 +80,11 @@ begin
                     and t.tgfoid = pg_catalog.to_regprocedure('public.wow_independent_verification_receipts_no_truncate()'))
       and pg_catalog.has_table_privilege('service_role', v_table, 'SELECT')
       and pg_catalog.has_table_privilege('service_role', v_table, 'INSERT')
-      and not pg_catalog.has_table_privilege('service_role', v_table, 'UPDATE')
+      and not pg_catalog.has_any_column_privilege('service_role', v_table, 'UPDATE')
       and not pg_catalog.has_table_privilege('service_role', v_table, 'DELETE')
       and not pg_catalog.has_table_privilege('service_role', v_table, 'TRUNCATE')
-      and not pg_catalog.has_table_privilege('anon', v_table, 'SELECT')
-      and not pg_catalog.has_table_privilege('authenticated', v_table, 'SELECT')
+      and not pg_catalog.has_any_column_privilege('anon', v_table, 'SELECT')
+      and not pg_catalog.has_any_column_privilege('authenticated', v_table, 'SELECT')
       -- V7/V10 cannot verify a calibrator it cannot identify, so the additive
       -- evidence columns are part of the same contract.
       and (select count(*) from pg_catalog.pg_attribute a
