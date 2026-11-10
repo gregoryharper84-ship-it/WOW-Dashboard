@@ -6,6 +6,12 @@ Render/Supabase core. V17 activation never authorizes wager execution.
 """
 from __future__ import annotations
 
+# Datadog APM: must load before FastAPI and other libraries so auto-instrumentation can patch them.
+import os
+
+os.environ.setdefault("DD_VERSION", os.environ.get("RENDER_GIT_COMMIT", "unknown"))
+import ddtrace.auto  # noqa: E402,F401
+
 import asyncio
 import json
 import logging
