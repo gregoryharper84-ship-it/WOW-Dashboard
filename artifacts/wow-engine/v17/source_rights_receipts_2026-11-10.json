@@ -117,6 +117,25 @@
    "retrieved_at": "2026-11-09",
    "carried_from": "prior-session-receipt",
    "carried_hash_prefix16": "f353fb26206be647"
+  },
+  {
+   "source_id": "NFLVERSE",
+   "finding": "DATASET_SPLIT_CCBY_MAJORITY_FTN_SA",
+   "evidence_grade": "SEARCH_SNIPPET",
+   "url": "https://github.com/nflverse",
+   "excerpt": "Publisher org page: most releases CC-BY 4.0 (commercial use allowed with attribution); FTN datasets (charting; participation from 2023) CC-BY-SA 4.0 (derivatives must share alike); dataset-specific licenses marked on release pages. Upstream NFL data owners' terms stated separately by nflreadr (via secondary report).",
+   "excerpt_sha256": "6b68b2300227dee94d9653f992a007610c05450510c316cfb221cd6d987fbea6",
+   "retrieved_at": "2026-11-10",
+   "upstream_unverified": true
+  },
+  {
+   "source_id": "NOAA_NCEI",
+   "finding": "TERMS_NOT_ADDRESSED_NO_AUTH_STATED",
+   "evidence_grade": "SUMMARY",
+   "url": "https://www.ncei.noaa.gov/support/access-data-service-api-user-documentation",
+   "excerpt": "Access Data Service v1 docs: plain HTTPS GET; no token or rate limit stated; warns not all datasets are available; no license/citation terms on page; cloud-migration notice of possible access delays.",
+   "excerpt_sha256": "b712ec76660fff4424861697bf7ebd2648f763e4821b149b2add133fc9dce26d",
+   "retrieved_at": "2026-11-10"
   }
  ]
 }
