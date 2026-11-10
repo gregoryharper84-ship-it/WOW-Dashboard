@@ -33,6 +33,11 @@ from nflverse_historical_adapter import NFLVerseHistoricalAdapterError, parse_nf
 from v17 import team_event_request_runtime as team_runtime
 from v17.cross_sport_resilience_overlay import model_invocation_limit
 from v17.daily_response_contract import persist_row_detail
+from v17.daily_terminal_reduction import (
+    assert_no_terminal_upgrade,
+    classify_stage_status,
+    reduce_row_terminal,
+)
 from v17.nfl_pickem_pool_optimizer import DECISION_OBJECTIVE, build_pickem_board
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
 from v17.nfl_total_points_tiebreaker_specialist import (
@@ -372,6 +377,62 @@ def _score_event(
     return out
 
 
+def _pickem_governed_stage(source: dict[str, Any]) -> str:
+    """Classify canonical NFL producer proof before global terminal reduction.
+
+    The fitted producer in nfl_daily_stage_receipts.py emits nfl_stage_receipt
+    at the result root; publication wrappers may provide qualified/detail
+    scopes. Arbitrary nested research JSON is not certification authority.
+    """
+    stage = classify_stage_status(source)
+    if stage != "COMPLETED":
+        return stage
+    # Only the global V17 terminal reducer can authorize publication.
+    # A completed numerical scorer or a PASS-labelled NFL side receipt is not
+    # sufficient if the global terminal authority was lost or replaced.
+    if (source.get("global_terminal_authority") != "V17_TERMINAL_REDUCER"
+            or source.get("can_execute") is not False):
+        return "HELD"
+
+    qualification = source.get("probability_qualification")
+    if qualification is not None and not isinstance(qualification, Mapping):
+        return "HELD"
+    scopes = [source]
+    if isinstance(qualification, Mapping):
+        scopes.append(qualification)
+    for parent in (source, qualification):
+        if isinstance(parent, Mapping) and isinstance(parent.get("detail"), Mapping):
+            scopes.append(parent["detail"])
+
+    # NFL needs canonical fitted certification, not contradictory wrapper
+    # booleans, market projections or numerical completion by themselves.
+    found_stage = False
+    for item in scopes:
+        ceiling = str(item.get("terminal_ceiling") or "").strip().upper()
+        label = str(item.get("terminal_label") or "").strip().upper()
+        if ceiling and ceiling != "FINAL_APPROVED":
+            return "HELD"
+        if label and label != "FINAL_APPROVED":
+            return "HELD"
+        if "nfl_stage_receipt" not in item:
+            continue
+        found_stage = True
+        receipt = item["nfl_stage_receipt"]
+        if not isinstance(receipt, Mapping):
+            return "HELD"
+        if str(receipt.get("status") or "").strip().upper() != "PASS":
+            return "HELD"
+        if receipt.get("blockers"):
+            return "HELD"
+        if str(receipt.get("forward_certification_status") or "").strip().upper() != "PASS":
+            return "HELD"
+        if any(receipt.get(flag) is False for flag in (
+            "probability_publishable", "rank_eligible", "probability_rank_eligible"
+        )):
+            return "HELD"
+    return "COMPLETED" if found_stage else "HELD"
+
+
 def _audit_row(source: Mapping[str, Any]) -> dict[str, Any]:
     envelope = source.get("candidate_envelope")
     envelope = envelope if isinstance(envelope, Mapping) else {}
@@ -382,13 +443,26 @@ def _audit_row(source: Mapping[str, Any]) -> dict[str, Any]:
         "home_team": envelope.get("home_team") or source.get("home_team"),
         "away_team": envelope.get("away_team") or source.get("away_team"),
     }
-    completed = source.get("sporting_probability_completed") is True
+    # "sporting_probability_completed" means that the fitted model returned
+    # numbers, not that V17 authorized publication. The persisted row must use
+    # the controlling terminal, including any forward-certification ceiling.
+    scored = dict(source)
+    stage_status = _pickem_governed_stage(scored)
+    reduction = assert_no_terminal_upgrade(reduce_row_terminal([stage_status]))
+    final_terminal = reduction["final_terminal"]
     return {
         "lane": "MONEYLINE",
         "identity": identity,
-        "row_status": "COMPLETED" if completed else "HELD",
-        "probability_publishable": source.get("probability_publishable") is True,
-        "result": dict(source),
+        "row_status": final_terminal,
+        # Use the classifier's already-governed ranking decision, including
+        # probability_rank_eligible / qualified aliases. Rechecking only the
+        # top-level rank_eligible key creates contradictory saved rows
+        # (COMPLETED with probability_publishable=False) for valid aliases.
+        "probability_publishable": bool(
+            final_terminal == "COMPLETED" and stage_status == "COMPLETED"
+        ),
+        "result": scored,
+        "terminal_reduction": reduction,
         "terminal": True,
         "can_execute": False,
     }

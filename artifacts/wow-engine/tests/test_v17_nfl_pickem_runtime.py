@@ -91,6 +91,12 @@ def _governed_result(req, *, hold: bool = False):
         "model_probability_available": True,
         "probability_publishable": not hold,
         "rank_eligible": not hold,
+        "nfl_stage_receipt": {
+            "status": "HOLD" if hold else "PASS",
+            "forward_certification_status": "HOLD" if hold else "PASS",
+            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"] if hold else [],
+            "can_execute": False,
+        },
         "terminal_label": "MODEL_QUALIFIED_HOLD" if hold else "FINAL_APPROVED",
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
         "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN" if hold else "GOVERNED_PROBABILITY_PUBLISHED",
@@ -164,9 +170,215 @@ def test_week_runtime_uses_canonical_schedule_scores_all_16_in_bounded_batches(m
     assert persisted["run_id"] == out["run_id"]
     assert len(persisted["rows"]) == 16
     assert all(row["lane"] == "MONEYLINE" for row in persisted["rows"])
+    assert sum(row["row_status"] == "HELD" for row in persisted["rows"]) == 1
+    assert sum(row["row_status"] == "COMPLETED" for row in persisted["rows"]) == 15
+    assert all(row["terminal_reduction"]["final_terminal"] == row["row_status"] for row in persisted["rows"])
+    held = next(row for row in persisted["rows"] if row["row_status"] == "HELD")
+    assert held["result"]["sporting_probability_completed"] is True
+    assert held["result"]["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert held["probability_publishable"] is False
+    assert held["terminal_reduction"]["stage_terminals"] == ["HELD"]
     assert out["source_receipt_persistence"]["rows_persisted"] == 16
     assert out["tiebreaker"]["status"] == "UNAVAILABLE"
     assert out["can_execute"] is False
+
+
+
+def test_pickem_row_audit_retains_controlling_forward_hold_with_numeric_model():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "calibrated_probability": 0.697,
+        "calibrated_lower_bound": 0.641,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "terminal_label": "MODEL_QUALIFIED_HOLD",
+        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+        "nfl_stage_receipt": {
+            "status": "HOLD",
+            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+        },
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["result"]["sporting_probability_completed"] is True
+    assert row["result"]["nfl_stage_receipt"]["status"] == "HOLD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["stage_terminals"] == ["HELD"]
+    assert row["terminal_reduction"]["lowest_stage_terminal"] == "HELD"
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+    assert row["can_execute"] is False
+
+
+def test_pickem_row_audit_does_not_trust_outer_approval_over_controlling_ceiling():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+        "nfl_stage_receipt": {"status": "HOLD"},
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+    assert row["can_execute"] is False
+
+
+def test_pickem_audit_uses_classifier_rank_aliases_consistently():
+    base = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "nfl_stage_receipt": {
+            "status": "PASS",
+            "forward_certification_status": "PASS",
+            "blockers": [],
+        },
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+    for rank_key in ("rank_eligible", "probability_rank_eligible"):
+        row = runtime._audit_row({**base, rank_key: True})
+        assert row["row_status"] == "COMPLETED"
+        assert row["probability_publishable"] is True
+        assert row["terminal_reduction"]["final_terminal"] == "COMPLETED"
+        assert row["can_execute"] is False
+
+    qualified = runtime._audit_row({
+        **base,
+        "probability_qualification": {"rank_eligible": True},
+    })
+    assert qualified["row_status"] == "COMPLETED"
+    assert qualified["probability_publishable"] is True
+    assert qualified["can_execute"] is False
+
+
+@pytest.mark.parametrize("authority,can_execute", [
+    (None, False),
+    ("UNVERIFIED_TERMINAL", False),
+    ("V17_TERMINAL_REDUCER", True),
+    ("V17_TERMINAL_REDUCER", None),
+])
+def test_pickem_refuses_final_publication_without_global_reducer_authority(
+    authority, can_execute,
+):
+    payload = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "global_terminal_authority": authority,
+        "can_execute": can_execute,
+        "nfl_stage_receipt": {
+            "status": "PASS",
+            "forward_certification_status": "PASS",
+            "blockers": [],
+        },
+    }
+    row = runtime._audit_row(payload)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+    assert row["can_execute"] is False
+
+
+def test_pickem_without_actual_fitted_nfl_stage_proof_stays_held():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "terminal_label": "FINAL_APPROVED",
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+
+
+def test_pickem_stage_pass_with_forward_hold_cannot_publish():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "terminal_label": "FINAL_APPROVED",
+        "nfl_stage_receipt": {
+            "status": "PASS",
+            "forward_certification_status": "HOLD",
+            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+        },
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["result"]["sporting_probability_completed"] is True
+    assert row["terminal_reduction"]["can_execute"] is False
+
+
+def test_persisted_pickem_row_nested_hold_wins_over_outer_approved_flags(monkeypatch):
+    rows = _schedule_rows()[:2]
+    snapshot = {"snapshot_id": "snap", "fetched_at": "2026-09-30T12:00:00+00:00"}
+    monkeypatch.setattr(runtime, "_load_latest_schedule_snapshot", lambda db: (snapshot, rows))
+    monkeypatch.setattr(runtime, "model_invocation_limit", lambda: 12)
+
+    def scorer(req, *, event_api, canonical_hydration_required=False):
+        scored = _governed_result(req)
+        if str(req.official_event_id) == rows[0]["game_id"]:
+            scored["probability_qualification"] = {
+                "nfl_stage_receipt": {
+                    "status": "HOLD",
+                    "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+                },
+            }
+            # Deliberately contradictory wrapper flags: a real final
+            # certification HOLD cannot become a persisted COMPLETED row.
+            assert scored["sporting_probability_completed"] is True
+            assert scored["probability_publishable"] is True
+            assert scored["rank_eligible"] is True
+        return scored
+
+    monkeypatch.setattr(runtime.team_runtime, "score_team_event_request", scorer)
+    saved = {}
+
+    def persist(db, *, run_id, rows):
+        saved["run_id"] = run_id
+        saved["rows"] = rows
+        return {
+            "status": "PERSISTED",
+            "detail_available": True,
+            "rows_persisted": len(rows),
+            "blockers": [],
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(runtime, "persist_row_detail", persist)
+    out = runtime.run_nfl_pickem_board(
+        runtime.NFLPickemBoardRequest(
+            requested_slate_dates=["2026-10-01", "2026-10-04"],
+            expected_game_count=2,
+        ),
+        db_client_fn=lambda: object(),
+        event_api=object(),
+    )
+    assert saved["run_id"] == out["run_id"]
+    held = next(r for r in saved["rows"]
+                if r["identity"]["official_event_id"] == rows[0]["game_id"])
+    assert held["result"]["sporting_probability_completed"] is True
+    assert held["result"]["probability_publishable"] is True
+    assert held["result"]["probability_qualification"]["nfl_stage_receipt"]["status"] == "HOLD"
+    assert held["row_status"] == "HELD"
+    assert held["probability_publishable"] is False
+    assert held["terminal_reduction"]["lowest_stage_terminal"] == "HELD"
+    assert held["terminal_reduction"]["final_terminal"] == "HELD"
+    assert held["can_execute"] is False
+    assert all(row["can_execute"] is False for row in saved["rows"])
 
 
 def test_runtime_preserves_typed_scorer_failure_and_marks_board_incomplete(monkeypatch):
