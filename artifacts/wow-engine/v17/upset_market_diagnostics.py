@@ -152,7 +152,10 @@ def analyze_upset_market_snapshot(
     refs = None
     if empirical_reference_probs is not None:
         if (set(empirical_reference_probs) != labels
-                or not reference_class_receipt_id
+                or not (
+                    isinstance(reference_class_receipt_id, str)
+                    and reference_class_receipt_id.strip()
+                )
                 or reference_class_as_of_utc is None
                 or _timestamp(reference_class_as_of_utc) > decision):
             raise ValueError("MARKET_REFERENCE_CLASS_UNVERIFIED")
