@@ -313,10 +313,19 @@ def test_repository_writer_inventory_and_workflow_keep_release_safeguards():
     inventory = inventory_render_writers(texts)
     assert inventory["complete"] is True
     assert inventory["foreign_posts"] == []
-    assert {
-        "wow-v17-secret-sync.yml",
-        "wow-v17-mcp-remote-acceptance.yml",
-    } <= set(inventory["credential_holders"])
+    # Renaming a Render account credential does not establish provider scope.
+    assert inventory["credential_holders"] == ["wow-v17-secret-sync.yml"]
+    assert journal_module.RENDER_CREDENTIAL_SCOPE_ATTESTED is False
+    sync_text = texts["wow-v17-secret-sync.yml"]
+    mcp_text = texts["wow-v17-mcp-remote-acceptance.yml"]
+    assert "secrets.WOW_RENDER_SYNC_KEY" in sync_text
+    assert "secrets.WOW_MCP_AUTH_TOKEN" in mcp_text
+    assert "secrets.RENDER_API_KEY" not in sync_text
+    assert "secrets.RENDER_API_KEY" not in mcp_text
+    assert "RENDER_API_KEY" not in mcp_text
+    result = _admit(MemoryGitHub(), workflow_texts=texts)
+    assert result["status"] == "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert result["credential_holders"] == ["wow-v17-secret-sync.yml"]
     workflow = yaml.safe_load((REPO / ".github/workflows" / CONTROLLER_FILENAME).read_text())
     job = workflow["jobs"]["deploy-production"]
     assert job["environment"] == "wow-release"
@@ -324,6 +333,24 @@ def test_repository_writer_inventory_and_workflow_keep_release_safeguards():
     assert job["env"]["WOW_REPOSITORY_NODE_ID"] == "${{ github.event.repository.node_id }}"
     script = next(step["run"] for step in job["steps"] if "github_graphql" in str(step.get("run") or ""))
     compile(script.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0], CONTROLLER_FILENAME, "exec")
+
+
+def test_foreign_render_deploy_writer_blocks_admission_without_reserving():
+    foreign = {
+        **_workflow_texts(),
+        "foreign-writer.yml": 'requests.post("/services/srv-other/deploys", json=payload)\n',
+    }
+    inventory = inventory_render_writers(foreign)
+    assert inventory["foreign_posts"] == ["foreign-writer.yml"]
+
+    store = MemoryGitHub()
+    result = _admit(store, workflow_texts=foreign)
+
+    assert result["action"] == "HOLD"
+    assert result["status"] == "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"
+    assert result["blockers"] == ["RENDER_FOREIGN_DEPLOY_WRITER"]
+    assert store.calls == []
+    assert store.refs == {}
 
 
 def test_full_page_at_pagination_bound_fails_closed():

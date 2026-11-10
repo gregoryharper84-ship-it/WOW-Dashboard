@@ -21,6 +21,8 @@ SECRET_BRACKET_REF_RE = re.compile(r"\bsecrets\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\
 
 CONTROL_PLANE_KEYS = {
     "RENDER_API_KEY",
+    "WOW_RENDER_SYNC_KEY",
+    "WOW_MCP_AUTH_TOKEN",
     "WOW_GITHUB_SECRET_SYNC_TOKEN",
     "SUPABASE_SERVICE_ROLE_KEY",
 }
@@ -30,6 +32,13 @@ class SecretSyncError(RuntimeError):
     def __init__(self, reason_code: str, message: str):
         super().__init__(message)
         self.reason_code = reason_code
+
+
+def _require_read_only_scope() -> None:
+    raise SecretSyncError(
+        "RENDER_CREDENTIAL_SCOPE_UNATTESTED",
+        "Secret synchronization writes are held until provider credential scope is independently attested",
+    )
 
 
 @dataclass(frozen=True)
@@ -129,6 +138,7 @@ class RenderClient:
         return data["value"]
 
     def set_env(self, name: str, value: str) -> None:
+        _require_read_only_scope()
         data = self._request(
             "PUT",
             f"/services/{quote(self.service_id, safe='')}/env-vars/{quote(name, safe='')}",
@@ -162,6 +172,7 @@ class GitHubSecretWriter:
         self.repository = repository
 
     def set_secret(self, name: str, value: str) -> None:
+        _require_read_only_scope()
         env = os.environ.copy()
         env["GH_TOKEN"] = self.token
         try:
@@ -288,6 +299,8 @@ def sync_github_to_render(
     dry_run: bool = False,
     on_secret_changed: Callable[[], None] | None = None,
 ) -> tuple[int, int, int]:
+    if not dry_run:
+        _require_read_only_scope()
     checked = changed = skipped = 0
     for entry in _github_entries(manifest):
         value = str(environ.get(entry.name, ""))
@@ -325,6 +338,8 @@ def sync_render_to_github(
     *,
     dry_run: bool = False,
 ) -> tuple[int, int, int]:
+    if not dry_run:
+        _require_read_only_scope()
     checked = changed = skipped = 0
     for name in render_owned_candidates(manifest, repo_root):
         checked += 1
@@ -349,12 +364,14 @@ def run_sync(
     github_writer: GitHubSecretWriter | None = None,
     release_request_file: Path | None = None,
 ) -> SyncSummary:
+    if not dry_run:
+        _require_read_only_scope()
     env = dict(os.environ if environ is None else environ)
-    render_api_key = str(env.get("RENDER_API_KEY", ""))
+    render_api_key = str(env.get("WOW_RENDER_SYNC_KEY", ""))
     if not render_api_key:
         raise SecretSyncError(
-            "BOOTSTRAP_RENDER_API_KEY_UNCONFIGURED",
-            "RENDER_API_KEY is required to synchronize Render environment variables",
+            "BOOTSTRAP_SYNC_RENDER_CREDENTIAL_UNCONFIGURED",
+            "WOW_RENDER_SYNC_KEY must be configured for the isolated secret-sync principal",
         )
 
     reverse_token = str(env.get("WOW_GITHUB_SECRET_SYNC_TOKEN", ""))
