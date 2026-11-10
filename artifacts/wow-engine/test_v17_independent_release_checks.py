@@ -959,7 +959,11 @@ def _workflow_on(path):
 
 def test_prless_workflow_run_skips_qa_before_target_resolution():
     job_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
-    assert "github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]" in job_if
+    assert (
+        "(github.event_name != 'workflow_run' || "
+        "(github.event.workflow_run.pull_requests[0] && "
+        "github.event.workflow_run.pull_requests[0].base.ref == 'main'))"
+    ) in job_if
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in job_if
     script = _step_script(QA_WF, "Resolve one exact-head QA target")
     assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in script
