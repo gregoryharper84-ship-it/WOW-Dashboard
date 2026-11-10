@@ -37,6 +37,14 @@ This skill remains probability-only. A high ranking here is **not** permission t
 - Report the primary and upset-watch exact win/loss grades side by side. Never award credit for a close loss, market movement, a postgame explanation, or an upside hypothesis that did not win.
 - Keep GH's actually submitted Pick'em card, research-preferred card, upset-watch alternatives and fitted-model card as four distinct provenances; no transfer of credit across them.
 
+## User-requested full-slate research winners — no discretionary pass
+
+When GH explicitly requests a straight-up NFL/NBA/NHL winner for **every scheduled game**, independently reconcile the authoritative complete slate first, including unusual kickoff windows, postponed games and correct full-game OT/SO settlement. Deliver **exactly one selected winner per scheduled playable event** in an additional RESEARCH_PROVISIONAL user card when certified probabilities are missing. Do not substitute PASS, SKIP, NO_PICK or a preferred shortlist merely because the matchup is uncertain. Record a research winner even when the governed model route remains HELD or MODEL_UNAVAILABLE. This research selection is *not* fitted and cannot fill a governed model field, terminal, certification receipt, calibrated probability or lower bound.
+
+For every difficult matchup, deepen independent research rather than stop: corroborate starters, injuries, expected replacement effects, matchup efficiencies, rest/travel, availability scenarios and timestamped opener/current market direction. Document contradictory evidence and the strongest counterargument. Seek two independent nonmarket publishers with as-of times; if sources are unavailable, disclose the deficiency. Use qualitative confidence only, no invented precise probabilities.
+
+Before publishing, run read-only v17.llp_research_winner_card.audit_research_winner_card with an independently verified official manifest and one research selection for each event. Selection blockers prevent a complete-card claim; evidence warnings demand transparent uncertainty and more research but do not automatically change the winner to a pass. Missing/invalid/late picks remain incomplete: this validator never generates a selection. Keep the research user card, the governed certified leaderboard, the upset-watch alternatives, GH's submitted card and the official-result postmortem separated. No pick for genuinely cancelled/postponed events; no wagering or automatic submission.
+
 ## Cash/profitability handoff — P0 invariant
 When the user asks to use a PrizePicks Game Winner as a cash single, in a profitability plan, or in any paid-card/value context, this skill stops at the sporting-probability package and hands the row downstream.
 
