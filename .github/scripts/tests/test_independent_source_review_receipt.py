@@ -915,6 +915,43 @@ def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact():
         review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_id", 1),
+        ("path", ".github/workflows/foreign.yml"),
+        ("event", "pull_request_target"),
+        ("head_branch", "feature/foreign"),
+        ("head_sha", "not-a-sha"),
+        ("repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("head_repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("status", "in_progress"),
+        ("conclusion", "cancelled"),
+    ],
+)
+def test_missing_policy_neutral_requires_authenticated_qa_run(field, value):
+    """Foreign or unfinished producer evidence can never become neutral."""
+    routes, archive = qa_policy_routes()
+    run_id = PRODUCER_RUN["id"]
+    routes[f"/actions/runs/{run_id}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    routes[f"/actions/runs/{run_id}"][field] = value
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_RUN_PROVENANCE_MISMATCH",
+    ):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=run_id,
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+            allow_superseded_target=True,
+        )
+
+
 def test_qa_policy_rejects_pr_movement_checksum_and_canary_scope_replay():
     routes, archive = qa_policy_routes()
     moved_pr = pr()
