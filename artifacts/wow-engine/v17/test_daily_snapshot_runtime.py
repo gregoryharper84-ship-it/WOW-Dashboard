@@ -327,6 +327,8 @@ class _FilteringPropQuery:
             row for row in self._all
             if all(row.get(name) == value for name, value in self._filters)
         ]
+        for name in reversed(self.orders):
+            rows.sort(key=lambda row, key=name: str(row.get(key) or ""))
         return Result(rows[self._start:self._end + 1])
 
 
@@ -380,6 +382,31 @@ def test_newer_failed_observation_is_not_hidden_by_older_pass_prefilter():
     assert ("hydration_status", "PASS") not in db.last_query._filters
 
 
+def test_source_order_does_not_allow_older_pass_to_override_newer_failed():
+    """Source ID ordering is irrelevant to captured_at chronology."""
+    older = _manifest_row("z-older-pass", "2026-11-18T00:00:00+00:00")
+    newer = _manifest_row("a-newer-failed", "2026-11-19T00:00:00+00:00", hydration="FAILED")
+    for rows in ((older, newer), (newer, older)):
+        excluded = []
+        manifest = _prop_manifest_rows(
+            _FilteringPropDB(rows), SLATE_DATE, "America/Chicago", exclusions=excluded
+        )
+        assert manifest == []
+        assert excluded[0]["source_snapshot_id"] == "a-newer-failed"
+
+
+def test_newer_verified_pass_can_recover_from_older_failed_observation():
+    """A historical failure alone never permanently blocks newer clear evidence."""
+    older = _manifest_row("z-older-failed", "2026-11-18T00:00:00+00:00", hydration="FAILED")
+    newer = _manifest_row("a-newer-pass", "2026-11-19T00:00:00+00:00")
+    for rows in ((older, newer), (newer, older)):
+        manifest = _prop_manifest_rows(
+            _FilteringPropDB(rows), SLATE_DATE, "America/Chicago"
+        )
+        assert len(manifest) == 1
+        assert manifest[0]["source_snapshot_id"] == "a-newer-pass"
+
+
 def test_same_time_conflicting_observations_fail_closed_to_blocked():
     db = _FilteringPropDB([
         _manifest_row("pass-a", "2026-11-19T00:00:00+00:00"),
@@ -418,7 +445,7 @@ def test_prop_manifest_pagination_remains_deterministic_with_mixed_hydration():
                 "blockers": blockers,
             }
         )
-    db = _FilteringPropDB(rows)
+    db = _FilteringPropDB(list(reversed(rows)))
     exclusions = []
     stats = {}
     manifest = _prop_manifest_rows(
