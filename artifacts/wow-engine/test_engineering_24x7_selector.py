@@ -81,9 +81,15 @@ class Test24x7(unittest.TestCase):
                 self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
                 self.assertFalse(result["can_execute"])
         # Explicit targeting must not convert independent assurance into coding.
-        review = issue(2469, "P1",
-                       title="SIRT: independent verification failed in production")
-        self.assertEqual(mod.plan([review], [], target=2469)["action"], "IDLE")
+        for title in (
+            "SIRT: independent verification failed in production",
+            "SIRT: review production regression",
+            "SIRT: intake of production outage",
+            "SIRT: audit production failure",
+        ):
+            with self.subTest(title=title):
+                review = issue(2469, "P1", title=title)
+                self.assertEqual(mod.plan([review], [], target=2469)["action"], "IDLE")
 
     def test_cli_explicit_null_manifest_does_not_fall_back_to_global(self):
         with tempfile.TemporaryDirectory() as directory:
