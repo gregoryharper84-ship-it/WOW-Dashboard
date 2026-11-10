@@ -1,5 +1,4 @@
 name: wow-verify
-# exact-head requeue for PR 2509 after main merge
 
 on:
   pull_request:
