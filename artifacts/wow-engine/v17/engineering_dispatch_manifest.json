@@ -232,6 +232,24 @@
       "change_class": "B",
       "can_execute": false,
       "amrt_accountable_owner": "gregoryharper84-ship-it"
+    },
+    {
+      "issue_number": 2178,
+      "severity": "P0",
+      "priority_rank": 8,
+      "execution_lane": "RAPID",
+      "rapid_stream": "SOCCER_RESTORE",
+      "lease_group": "P0_SOCCER_RESTORE",
+      "conflict_keys": [
+        "SOCCER_CANONICAL_EVENTS",
+        "SOCCER_1X2_MODEL",
+        "SOCCER_PREGAME_FEATURES",
+        "SOCCER_MODEL_CALIBRATION"
+      ],
+      "amrt_owned": true,
+      "change_class": "B",
+      "can_execute": false,
+      "amrt_accountable_owner": "gregoryharper84-ship-it"
     }
   ],
   "acceleration": []
