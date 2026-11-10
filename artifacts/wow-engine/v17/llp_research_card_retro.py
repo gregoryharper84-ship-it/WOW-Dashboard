@@ -65,8 +65,8 @@ def _verify_pick(row: Mapping[str, Any]) -> list[str]:
         issues.append("PREGAME_VISIBILITY_UNVERIFIED")
     if as_of is None or frozen is None or as_of > frozen:
         issues.append("RESEARCH_AS_OF_NOT_PREGAME_FROZEN")
-    inputs = row.get("research_inputs", [])
-    if not isinstance(inputs, (list, tuple)):
+    inputs = row.get("research_inputs")
+    if not isinstance(inputs, (list, tuple)) or not inputs:
         issues.append("RESEARCH_INPUTS_INVALID")
     else:
         for item in inputs:
