@@ -109,7 +109,7 @@ GOVERNANCE_BLOCKED_CODES = frozenset({"ACTIONABLE_REPAIR_POLICY_BOUNDARY"})
 # Actions --log-failed dumps unevaluated `echo "::error::..."` script lines.
 # Those script echoes are not provider evidence; only emitted error payloads are.
 _ACTIONS_MARKER_RE = re.compile(r"(?:##\[(?:group|endgroup|error|warning)\]|::(?:error|warning|notice)::)")
-_SCRIPT_ECHO_ERROR_RE = re.compile(r"""echo\s+['"]::error::""")
+_SCRIPT_COMMAND_RE = re.compile(r"\b(?:echo|printf)\b", re.IGNORECASE)
 _EMITTED_ERROR_RE = re.compile(r"(?:##\[error\]|::error::)(.+)$")
 _PROCESS_COMPLETED_RE = re.compile(r"^process completed with exit code\b", re.IGNORECASE)
 
@@ -136,12 +136,12 @@ def _provider_match_text(log_text: str) -> str:
         return text
     emitted: list[str] = []
     for line in text.splitlines():
-        if _SCRIPT_ECHO_ERROR_RE.search(line) or (
-            "echo" in line and "::error::" in line
-        ):
-            continue
         match = _EMITTED_ERROR_RE.search(line)
         if not match:
+            continue
+        # A shell command preceding the first marker is unevaluated script text.
+        # Keep real emitted errors even when their payload mentions "echo".
+        if _SCRIPT_COMMAND_RE.search(line[:match.start()]):
             continue
         payload = match.group(1).strip()
         if not payload or _PROCESS_COMPLETED_RE.match(payload):
@@ -176,7 +176,8 @@ class ProviderFailure:
 def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
     provider_key = str(provider or "").strip().lower()
     raw = str(log_text or "")
-    text = _provider_match_text(raw).lower()
+    emitted_text = _provider_match_text(raw)
+    text = emitted_text.lower()
 
     patterns = (
         OPENAI_FAILURE_PATTERNS
@@ -189,9 +190,13 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         (code for code, needles in patterns if any(needle in text for needle in needles)),
         None,
     )
-    # Delivery codes are still read from the full Actions log so emitted
-    # ##[error]ACTIONABLE_REPAIR_* lines remain visible after script filtering.
-    delivery = DELIVERY_ERROR_RE.search(raw)
+    # For Actions logs, only vetted emitted payloads are trusted; the raw
+    # script echo can contain other ACTIONABLE_REPAIR_* code strings.
+    delivery = (
+        re.search(r"(?m)^(ACTIONABLE_REPAIR_[A-Z_]+):", emitted_text)
+        if _ACTIONS_MARKER_RE.search(raw)
+        else DELIVERY_ERROR_RE.search(raw)
+    )
     if delivery:
         # A typed delivery outcome is never relabelled as a provider failure. A governance
         # policy boundary never fails over or retries, whatever else the log contains.
