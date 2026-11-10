@@ -101,3 +101,24 @@ def test_code_sha_required_and_dirty_tree_rejected(tmp_path, monkeypatch):
     outs = iter(["a" * 40 + "\n", " M file.py\n"])
     monkeypatch.setattr(cc.subprocess, "check_output", lambda *a, **k: next(outs))
     with pytest.raises(EvidenceError, match="CODE_TREE_DIRTY_NOT_REPRODUCIBLE"): cc.code_provenance()
+
+
+def test_ncaaf_neutral_site_boolean_and_numeric_encoding(tmp_path):
+    rows = [dict(game_id=i, season=2024, game_date=f"2024-09-0{i}",
+                 home_id=i, away_id=100 + i, home_score=20, away_score=10,
+                 status="STATUS_FINAL", neutral_site=n)
+            for i, n in enumerate(("TRUE", "FALSE", "1", "0"), start=1)]
+    p = tmp_path / "neutral.csv"
+    pd.DataFrame(rows).to_csv(p, index=False)
+    d = s.load_sport("NCAAF", [p]).set_index("game_id")
+    assert d["neutral"].to_dict() == {"1": 1.0, "2": 0.0, "3": 1.0, "4": 0.0}
+
+
+@pytest.mark.parametrize("unknown", [None, "unknown", "N/A", "2"])
+def test_ncaaf_unverified_neutral_site_fails_closed(tmp_path, unknown):
+    p = tmp_path / "neutral_missing.csv"
+    pd.DataFrame([dict(game_id=10, season=2024, game_date="2024-09-01",
+                       home_id=1, away_id=2, home_score=20, away_score=10,
+                       status="STATUS_FINAL", neutral_site=unknown)]).to_csv(p, index=False)
+    with pytest.raises(EvidenceError, match="SDV_SOURCE_NEUTRAL_SITE_UNVERIFIED"):
+        s.load_sport("NCAAF", [p])
