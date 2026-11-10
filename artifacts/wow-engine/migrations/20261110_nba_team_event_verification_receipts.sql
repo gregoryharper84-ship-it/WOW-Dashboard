@@ -45,6 +45,25 @@ begin
              and x.conname = any(array[
                'wow_ivr_owner_independence','wow_ivr_pass_is_clean','wow_ivr_fail_not_eligible'
              ])) = 3
+      -- The three wow_ivr_* business-rule checks alone do NOT guarantee the
+      -- hard non-execution invariants. Attest the two independent CHECK
+      -- expressions, not merely their names, before admitting a deployment.
+      and (select count(*) from pg_catalog.pg_constraint x
+           where x.conrelid = v_table and x.convalidated and x.contype = 'c'
+             and (
+               (x.conname = 'wow_independent_verification_receipts_can_execute_check'
+                and pg_catalog.regexp_replace(
+                  pg_catalog.pg_get_expr(x.conbin, x.conrelid),
+                  '[[:space:]()]', '', 'g') = 'can_execute=false')
+               or
+               (x.conname = 'wow_independent_verification_receipts_publishable_scope_check'
+                and pg_catalog.regexp_replace(
+                  pg_catalog.pg_get_expr(x.conbin, x.conrelid),
+                  '[[:space:]()]', '', 'g') = any(array[
+                    'publishable_scope=''NONE''::text',
+                    'publishable_scope=''NONE'''
+                  ]))
+             )) = 2
       and exists (select 1 from pg_catalog.pg_trigger t
                   where t.tgrelid = v_table
                     and t.tgname = 'wow_independent_verification_receipts_immutable'
@@ -55,11 +74,15 @@ begin
                   where t.tgrelid = v_table
                     and t.tgname = 'wow_independent_verification_receipts_no_truncate'
                     and not t.tgisinternal and t.tgenabled = 'O'
+                    -- BEFORE TRUNCATE FOR EACH STATEMENT is tgtype=2|32.
+                    -- Matching a function name on another event is insufficient.
+                    and t.tgtype::int = 34
                     and t.tgfoid = pg_catalog.to_regprocedure('public.wow_independent_verification_receipts_no_truncate()'))
       and pg_catalog.has_table_privilege('service_role', v_table, 'SELECT')
       and pg_catalog.has_table_privilege('service_role', v_table, 'INSERT')
       and not pg_catalog.has_table_privilege('service_role', v_table, 'UPDATE')
       and not pg_catalog.has_table_privilege('service_role', v_table, 'DELETE')
+      and not pg_catalog.has_table_privilege('service_role', v_table, 'TRUNCATE')
       and not pg_catalog.has_table_privilege('anon', v_table, 'SELECT')
       and not pg_catalog.has_table_privilege('authenticated', v_table, 'SELECT')
       -- V7/V10 cannot verify a calibrator it cannot identify, so the additive
