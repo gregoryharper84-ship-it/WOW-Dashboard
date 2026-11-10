@@ -556,7 +556,11 @@ def _supplied_season(value: Any) -> int | None:
     if type(value) is int:
         return value
     if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
+        try:
+            return int(value.strip())
+        except ValueError:
+            # Unicode Nd digits pass str.isdigit() but are not base-10 int literals.
+            return None
     return None
 
 

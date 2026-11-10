@@ -586,7 +586,7 @@ def test_batch_boundary_resolves_full_club_names_to_the_selected_side():
 
 
 def test_current_event_rejects_mismatched_or_malformed_season_evidence():
-    for bad_season in ("20252026", "not-a-season", 20252026, True):
+    for bad_season in ("20252026", "not-a-season", "²", 20252026, True):
         with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
             nhl.score_current_nhl_event(
                 _request(season=bad_season), db=_DB(), now_utc=NOW
@@ -595,7 +595,7 @@ def test_current_event_rejects_mismatched_or_malformed_season_evidence():
         assert "NHL_SEASON_IDENTITY_INVALID" in caught.value.blockers
 
 
-@pytest.mark.parametrize("bad_season", ["20252026", "not-a-season"])
+@pytest.mark.parametrize("bad_season", ["20252026", "not-a-season", "²"])
 def test_reconstruction_rejects_mismatched_or_malformed_season_evidence(bad_season):
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl.reconstruct_nhl_pregame_features(

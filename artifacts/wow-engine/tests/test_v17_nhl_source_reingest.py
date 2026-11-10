@@ -927,4 +927,28 @@ def test_reingest_maps_an_unexpected_preflight_failure_to_a_typed_block(monkeypa
     assert result["detail"]["error_type"] == "RuntimeError"
     assert result["detail"]["retryable"] is True
     assert result["can_execute"] is False
-    assert db.rows == {}
+
+
+def test_reingest_maps_an_unexpected_post_write_verification_failure(monkeypatch):
+    calls = {"n": 0}
+    real_load = reingest.load_nhl_season_events
+
+    def flaky(db, *, season):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_load(db, season=season)
+        raise RuntimeError("verification transport down")
+
+    monkeypatch.setattr(reingest, "load_nhl_season_events", flaky)
+    db = _FakeDB()
+    result = _run(db)
+
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_VERIFICATION_FAILED"
+    assert result["blocked_stage"] == "SOURCE_VERIFICATION"
+    assert result["detail"]["error_type"] == "RuntimeError"
+    assert result["detail"]["retryable"] is True
+    assert "persistence" in result["detail"]
+    assert result["can_execute"] is False
+    # Persistence already landed; typed verification failure must not erase that fact.
+    assert "wow_d1_source_events" in db.rows

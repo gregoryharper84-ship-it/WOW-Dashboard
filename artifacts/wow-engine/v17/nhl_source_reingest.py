@@ -389,6 +389,16 @@ def run_nhl_source_reingest(
             "probability_publishable": False,
             "can_execute": False,
         }
+    except Exception as exc:  # noqa: BLE001 - verification is a typed boundary
+        return _blocked(
+            "NHL_SOURCE_VERIFICATION_FAILED",
+            stage="SOURCE_VERIFICATION",
+            detail={
+                "error_type": type(exc).__name__,
+                "retryable": True,
+                "persistence": persistence,
+            },
+        )
 
     # The preflight is check-then-write, so a concurrent writer or a correction
     # that surfaced mid-run can still land a second identity. Verify the
