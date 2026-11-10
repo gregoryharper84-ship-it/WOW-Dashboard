@@ -151,10 +151,13 @@ def _prop_manifest_rows(
     *,
     page_size: int = 250,
     exclusions: list[dict[str, Any]] | None = None,
+    stats: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Read the complete canonical slate manifest without a first-page truncation."""
+    """Canonicalize before filtering so an older clean snapshot cannot bypass a newer hold."""
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
     selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
-    manifest: list[dict[str, Any]] = []
+    raw_rows: list[dict[str, Any]] = []
     offset = 0
     while True:
         query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time")
@@ -162,40 +165,47 @@ def _prop_manifest_rows(
         if callable(ranged):
             batch = ranged(offset, offset + page_size - 1).execute().data or []
         else:
-            # Compatibility for test doubles/clients without range(); one bounded
-            # read preserves prior behavior while production Supabase uses range().
             batch = query.limit(page_size).execute().data or []
-        batch = [dict(row) for row in batch]
-        for row in batch:
-            blocked = bool(row.get("blockers"))
-            if blocked:
-                reason = "EVIDENCE_BLOCKED"
-            elif not _future(row.get("event_start_time")):
-                reason = "EVENT_NOT_PREGAME"
-            elif not _matching_slate(row, requested_date, requested_timezone):
-                reason = "NOT_REQUESTED_SLATE"
-            else:
-                manifest.append(row)
-                continue
-            # An acquired candidate that cannot be scored must still leave an
-            # explicit, inspectable reason. Dropping it silently made a run look
-            # complete while candidates had already disappeared from the board.
-            if exclusions is not None:
-                snapshot_id = str(row.get("source_snapshot_id") or "")
-                if snapshot_id and any(item.get("source_snapshot_id") == snapshot_id for item in exclusions):
-                    continue
-                exclusions.append({
-                    **{key: row.get(key) for key in (
-                        "source_snapshot_id", "event_id", "sport", "player", "stat_type", "line",
-                    )},
-                    "reason": reason,
-                    "blockers": [str(code) for code in (row.get("blockers") or [])][:4],
-                    "can_execute": False,
-                })
+        raw_rows.extend(dict(row) for row in batch)
         if not callable(ranged) or len(batch) < page_size:
             break
         offset += page_size
-    return canonicalize_prop_manifest(manifest)
+
+    canonical = canonicalize_prop_manifest(raw_rows)
+    if stats is not None:
+        stats.clear()
+        stats.update({
+            "raw_rows_read": len(raw_rows),
+            "canonical_rows": len(canonical),
+            "canonical_merged_rows": len(raw_rows) - len(canonical),
+        })
+    eligible: list[dict[str, Any]] = []
+    for row in canonical:
+        if row.get("blockers"):
+            reason = "EVIDENCE_BLOCKED"
+        elif not _future(row.get("event_start_time")):
+            reason = "EVENT_NOT_PREGAME"
+        elif not _matching_slate(row, requested_date, requested_timezone):
+            reason = "NOT_REQUESTED_SLATE"
+        else:
+            eligible.append(row)
+            continue
+        if exclusions is not None:
+            blockers = row.get("blockers") or []
+            if not isinstance(blockers, (list, tuple, set, frozenset)):
+                blockers = [blockers]
+            exclusions.append({
+                **{key: row.get(key) for key in (
+                    "source_snapshot_id", "event_id", "sport", "player", "stat_type", "line",
+                    "canonical_sporting_key",
+                )},
+                "source_snapshot_ids": list(row.get("source_snapshot_ids") or []),
+                "source_instance_count": row.get("source_instance_count", 1),
+                "reason": reason,
+                "blockers": [str(code) for code in blockers][:4],
+                "can_execute": False,
+            })
+    return eligible
 
 
 def _prop_rows(
