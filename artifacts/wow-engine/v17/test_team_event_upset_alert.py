@@ -211,3 +211,32 @@ def test_missing_outcome_probability_mass_fails_closed():
                 outcome("B", 0.2, 0.1, 0.3),
             ),
         )
+
+
+def test_numpy_boolean_cannot_be_coerced_to_governed_probability():
+    """A numpy.bool_ is not a Python bool; never admit it by float coercion."""
+    np = pytest.importorskip("numpy")
+    with pytest.raises(ValueError, match="probability_out_of_range"):
+        evaluate_favorite_upset_alert(
+            sport="TENNIS",
+            market_favorite="A",
+            market_favorite_verified=True,
+            governed_outcomes=(
+                outcome("A", np.bool_(True), 0.5, 1.0),
+                outcome("B", 0.4, 0.3, 0.5),
+            ),
+        )
+
+
+def test_string_probability_does_not_bypass_numeric_governance():
+    """Numeric-looking strings are not governed numeric probability evidence."""
+    with pytest.raises(ValueError, match="probability_out_of_range"):
+        evaluate_favorite_upset_alert(
+            sport="TENNIS",
+            market_favorite="A",
+            market_favorite_verified=True,
+            governed_outcomes=(
+                outcome("A", "0.6", 0.5, 0.7),
+                outcome("B", 0.4, 0.3, 0.5),
+            ),
+        )
