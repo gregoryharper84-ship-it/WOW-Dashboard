@@ -414,6 +414,7 @@ def test_archive_payload_matches_the_migration_columns():
 # Render predeploy RPC contract: read-only attestation must fail on drift
 # --------------------------------------------------------------------------- #
 def _predeploy_compatible(conn: Any) -> bool:
+    """Read the actual compatible Boolean from the SQL readiness RPC."""
     row = conn.execute(
         "select (public.wow_nba_team_event_verification_receipt_schema_ready()"
         "->>'compatible')::boolean"
@@ -464,3 +465,51 @@ def test_predeploy_schema_rpc_attests_truncate_guard_and_privileges():
             "execute function public.wow_independent_verification_receipts_no_truncate()",
         )
         assert _predeploy_compatible(conn) is False
+
+
+def test_predeploy_schema_rpc_rejects_ledger_calibrator_guard_and_grant_drift():
+    """Exercise fail-closed verdicts against mutated real PostgreSQL schemas."""
+    table = "public.wow_independent_verification_receipts"
+    with _database(apply_ledger=False) as conn:
+        _apply(conn, PREDEPLOY_MIGRATION.read_text(encoding="utf-8"))
+        assert _predeploy_compatible(conn) is False
+
+    with _database(apply_ledger=True) as conn:
+        _apply(conn, PREDEPLOY_MIGRATION.read_text(encoding="utf-8"))
+        assert _predeploy_compatible(conn) is True
+        mutations = (
+            (
+                "alter table public.wow_basketball_team_event_calibrators "
+                "drop column calibration_sha256",
+                "alter table public.wow_basketball_team_event_calibrators "
+                "add column calibration_sha256 text",
+            ),
+            (
+                f"alter table {table} drop constraint wow_ivr_owner_independence",
+                f"alter table {table} add constraint wow_ivr_owner_independence "
+                "check (implementation_owner <> verification_owner)",
+            ),
+            (
+                f"alter table {table} disable trigger "
+                "wow_independent_verification_receipts_immutable",
+                f"alter table {table} enable trigger "
+                "wow_independent_verification_receipts_immutable",
+            ),
+            (
+                f"grant select on {table} to anon",
+                f"revoke select on {table} from anon",
+            ),
+            (
+                f"grant select (receipt_id) on {table} to authenticated",
+                f"revoke select (receipt_id) on {table} from authenticated",
+            ),
+            (
+                f"grant update (receipt_id) on {table} to service_role",
+                f"revoke update (receipt_id) on {table} from service_role",
+            ),
+        )
+        for corrupt, restore in mutations:
+            _apply(conn, corrupt)
+            assert _predeploy_compatible(conn) is False, corrupt
+            _apply(conn, restore)
+            assert _predeploy_compatible(conn) is True, restore
