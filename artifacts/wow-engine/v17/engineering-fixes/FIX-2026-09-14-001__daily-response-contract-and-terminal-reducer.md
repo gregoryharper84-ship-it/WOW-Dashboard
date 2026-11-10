@@ -282,9 +282,12 @@ previously counted these rows as held will see the count move to purged.
   `1ST_INNING_PITCHES_THROWN` as `SUPPORTED_HOLD_ONLY` /
   `publication_allowed=false` / exact-line OOD policy. See
   `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
-- `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — 418 production PROPS rows with
-  `terminal_cause=MODEL_JUDGMENT`, `infrastructure_blocked=false`, and
-  concurrent market blockers preserved separately.
+- `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — unpaid recount while live SHA
+  `e7384b9d2fed3256681b25715516dff2e97d3233`: 422 PROPS row-detail rows /
+  55 Daily runs with embedded `terminal_cause=MODEL_JUDGMENT`,
+  `infrastructure_blocked=false`, and concurrent market blockers preserved.
+  Evidence window `2026-09-15T15:28:06Z`–`2026-11-09T15:35:34Z`; recent runs
+  include `v17-daily-a2b7f50e-…`, `v17-daily-1ca97b06-…`, `v17-daily-c4ca0ab2-…`.
 
 **Still not independently verified in production** (deployed, but not observed):
 `ZERO_ROW_REASON_MISCLASSIFIED` (no `REQUESTED_ROW_LIMIT_ZERO` Daily run yet),

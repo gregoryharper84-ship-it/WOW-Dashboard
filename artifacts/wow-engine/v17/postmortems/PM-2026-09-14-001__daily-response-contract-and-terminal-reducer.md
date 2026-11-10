@@ -99,19 +99,24 @@ rows, `row_status=COMPLETED` count zero for that cohort). `can_execute=false`
 held on all 850 rows.
 
 Items 3 and 6 were independently observed on 2026-11-10 without paid retries
-(live `/v17/governance-detail` 1IP hold-only declaration; 418 PROPS rows with
-`terminal_cause=MODEL_JUDGMENT` and `infrastructure_blocked=false` while
-concurrent market blockers remain listed). Items 4–5
-(`REQUESTED_ROW_LIMIT_ZERO`, Action vs specialist scoring split) remain
-deployed but not independently observed. Ledger status stays
-`DEPLOYED_PENDING_VERIFY` until those two residual observations land. Evidence:
+(live `/v17/governance-detail` 1IP hold-only declaration; unpaid DB recount of
+422 PROPS row-detail rows / 55 Daily runs under live SHA `e7384b9d…` with
+`terminal_cause=MODEL_JUDGMENT`, `infrastructure_blocked=false`, and concurrent
+market blockers preserved — recent run `v17-daily-a2b7f50e-…` at
+`2026-11-09T15:35:34Z`). Items 4–5 (`REQUESTED_ROW_LIMIT_ZERO`, Action vs
+specialist scoring split) remain deployed but not independently observed.
+Ledger status stays `DEPLOYED_PENDING_VERIFY` until those two residual
+observations land. Evidence:
 `engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 
 ## Prevention / Follow-up
 
-- Remaining free/owner Action path for items 4–5: run Daily once with
-  `max_props=0` to confirm `REQUESTED_ROW_LIMIT_ZERO`, and check one Action
-  receipt for `action_invocation_attempted` vs `specialist_scoring_attempted`.
+- Remaining free/owner Action path for items 4–5: (1) observe a Daily response
+  with `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO` **and**
+  `lane_reconciliation.PROPS.canonicalized_count > 0`; (2) check one owner
+  Action receipt readback for `action_invocation_attempted` vs
+  `specialist_scoring_attempted` on a persisted PROPS row (`max_props=0` cannot
+  supply attempt fields).
 - This record was retroactively created on 2026-09-21 to close a ledger
   drift gap: `FIX-2026-09-14-001` existed on disk and was merged/deployed
   (PR #413) with no corresponding `PM-*.md` file and no `incident-ledger.json`
