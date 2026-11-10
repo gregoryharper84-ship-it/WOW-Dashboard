@@ -351,6 +351,8 @@ can_execute = false
   schedule run remains `42801795794` at 10:45Z). Sync Daily `run_id` stays
   unverified; PROPS residual path unchanged. Evidence:
   `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
+- 2026-11-10T17:27Z unpaid recheck: cron `0 17` recorded as
+  `SCHEDULE_DELAYED`; next watch is cron `0 23` without paid dispatch.
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).

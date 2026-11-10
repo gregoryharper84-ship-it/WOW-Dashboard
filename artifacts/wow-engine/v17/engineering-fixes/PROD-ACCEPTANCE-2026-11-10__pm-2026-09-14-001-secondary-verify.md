@@ -128,6 +128,24 @@ Verdict: `SAFETY_MILESTONE_HELD_AND_PM_STILL_PENDING_VERIFY`. Serving deploy pro
 | Parallel PR delta | `#2560` tip `be05c789…` still merge-ready on governed tip success, but required-check rollup again shows cancelled-race FAILURE aggregates; `#2571` (NHL restoration replacement for `#2569`/`#2509`) tip `79ed02b46…` CI in progress with no hard failures at observation time; `#2512` remains on `main` (`d3260b09…`) ahead of live Render |
 | Next observation | Wait for delayed GitHub `0 17` schedule (or next cron `0 23`) — require workflow-logged sync Daily `run_id` under the same serving SHA + safety ancestry. Do **not** workflow_dispatch paid Daily. PROPS residuals remain a separate unpaid Action path |
 
+## Independent re-verify (2026-11-10T17:27Z, unpaid, cron `0 17` recheck)
+
+Verdict: `SCHEDULE_DELAYED`. Serving SHA + safety ancestry still hold; scheduled sync Daily still absent ~27 minutes after cron.
+
+| Probe | Result |
+| --- | --- |
+| Live web deploy | Still `dep-dbpin52vcj2c73d9c1g0` SHA `e7384b9d2fed3256681b25715516dff2e97d3233` status `live` |
+| Safety ancestry | `98a56157…` still ancestor of live tip |
+| `/health/live` / `/governance` | HTTP 200; `can_execute=false`; `V17_TERMINAL_REDUCER`; gates `PASS`; `deployed_sha=e7384b9d…` |
+| Scheduled `wow-v17-daily-snapshot` (`cron: 0 17`) | **SCHEDULE_DELAYED** as of `2026-11-10T17:27:34Z`. Newest schedule run remains `42801795794` at 10:45Z. Later `pull_request` verify jobs (17:00–17:21) are not the governed sync Daily. Workflow still `active`. |
+| Sync Daily `run_id` | Still **UNVERIFIED** |
+| Async / detail / predictions post-safety | Still **0** / newest detail `10:46:10Z` / newest prediction `2026-11-09T15:38:05Z` |
+| Action receipts post-safety | Still exactly **four** SELF_ACCEPTANCE `/score-prop` 422s |
+| `ZERO_ROW_REASON_MISCLASSIFIED` / `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Still **DEPLOYED_NOT_OBSERVED** |
+| NFL forward | Still `graded_n=94` / `FORWARD_GRADED_N_94_LT_100` / `DO_NOT_CERTIFY_YET` |
+| Parallel PR delta | `#2571` tip `61cb37f8c…` — Independent QA exact-head **PASS**, Release Authority exact-head **PASS**, mergeable; only CodeRabbit + codecov/patch pending. `#2560` tip `be05c789…` still MERGEABLE on tip success but required-check rollup still shows cancelled-race FAILURE aggregates |
+| Next observation | Watch cron `0 23` (do not workflow_dispatch). Keep PROPS residual path separate |
+
 ## Closure gate
 
 `PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until **both** remaining secondary observations are recorded (`ZERO_ROW_REASON_MISCLASSIFIED` and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`). A Reporter-scoped residual, if ever filed, is recorded as **unverified** and does **not** authorize a ledger status change. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
@@ -138,7 +156,7 @@ terminal_authority = V17_TERMINAL_REDUCER
 serving_sha_at_17utc_window = e7384b9d2fed3256681b25715516dff2e97d3233
 safety_ancestor_at_17utc_window = 98a56157a5916c6d25ee1c51bab3d183448e23c8
 post_safety_async_or_detail_rows = NOT_OBSERVED
-post_safety_sync_daily_status = SCHEDULE_NOT_YET_OBSERVED
+post_safety_sync_daily_status = SCHEDULE_DELAYED
 post_safety_scoring_attempted_observation = NOT_OBSERVED
 ledger_state = DEPLOYED_PENDING_VERIFY
 ```
