@@ -1,7 +1,20 @@
 # Free sports data / research tooling — source coverage receipt (2026-11-09)
 
-Disposition: **PR_CREATED** (audit tooling) + **BLOCKED_WITH_EXACT_REASON** (live/legal verification).
+Disposition: **AUDIT MERGED** via PR #2541 (2026-11-09) + **BLOCKED_WITH_EXACT_REASON** (live/legal verification).
 Invariants untouched: can_execute=false, DRY_RUN_ONLY, no probability/artifact/calibrator promotion, no secrets, no paid services.
+
+## 2026-11-10 primary-public-text follow-up (not training authorization)
+
+Verification boundary: the linked publisher-controlled web pages were read through an indexed web renderer on 2026-11-10. Raw originating response bytes, their SHA-256 hashes, the live API payload/schema, and source-specific contracts were **not** captured. These are **PRIMARY_PUBLIC_TEXT_OBSERVED / RAW_HASH_ABSENT** observations, *not* completed `license_receipts` or `live_receipts`; do not convert them to readiness booleans. Shell DNS egress remains unavailable for direct byte-level capture. No credentials, spending, fitting or execution occurred.
+
+| Source | Primary publisher-controlled reference | Verified finding | Disposition for WOW fitted training |
+| --- | --- | --- | --- |
+| NHL first-party web/API | https://www.nhl.com/info/terms-of-service (last updated 2025-10-29; sections 1, 7) | NHL's publicly linked service terms limit use to personal, informational, non-commercial purposes and require separate authorization for broader reuse. Whether a particular API has distinct applicable terms remains unverified. | **HOLD**: no affirmative commercial fitted-training grant; retain `RIGHTS_UNDOCUMENTED_FIRST_PARTY`, seek written authorization / independent rights ruling. |
+| MLB Stats/API | https://www.mlb.com/official-information/terms-of-use (section 1) | MLB Digital Properties terms limit use to personal non-commercial use absent permission and prohibit automated collection scripts. No separate statsapi-specific agreement was established. | **HOLD**: catalog presence and JSON accessibility are not permission to collect or fit. Review permitted acquisition path and written use rights before training. |
+| nflverse historical releases | https://github.com/nflverse (Licensing); https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md ; https://github.com/nflverse/nflverse-data/releases | Publisher explicitly says most released datasets are CC-BY-4.0, while FTN datasets are CC-BY-SA-4.0 as of October 2026; dataset-specific exceptions and upstream provider attribution may apply. Its license explicitly disclaims warranty about third-party rights. This distinguishes data licensing from the Python reader's software license. | **REVIEW PER DATASET/RELEASE**: possible open-licensed avenue, not a blanket entitlement. Check specific files, third-party rights, original provider and share-alike implications; registry is still unclassified. |
+| NCEI / NOAA climate history | https://www.ncei.noaa.gov/data-submission ; https://www.ncei.noaa.gov/cdo-web/webservices/v2 ; https://www.ncei.noaa.gov/support/access-data-service-api-user-documentation | NOAA federal data are generally open/public domain unless exempt; NCEI also archives third-party submissions subject to other licenses. CDO v2 specifies an access token and rate limits of 5 requests/second and 10,000/day; the distinct NCEI Access Data Service v1 documents its own endpoint. Neither endpoint was queried in this review. | **DATASET-LEVEL RIGHTS + POINT-IN-TIME HOLD**: verify the selected archive's provenance/license, exact endpoint/quotas, source timestamps, and specialist's pregame-weather need before training. Historical *actuals* are not automatically pregame forecasts. |
+
+Impact: **0/13 sports have newly cleared legal, reproducible training evidence**. Both source-rights and model source-review holds remain in force. A claimed live or license receipt ID must never override a registry gap or undocumented first-party rights; see regression `test_claimed_receipt_ids_never_authorize_undocumented_or_unclassified_training`. The existing `ready_for_candidate_training=True` on `NHL_PUBLIC_WEB_API` and `UFCSTATS_PUBLIC` is a registry-level candidate label, **not** a commercial rights determination or permission to publish a fitted probability. Changing that protected source gate requires separate governed review and exact-head independent acceptance.
 
 ## What changed
 - `v17/source_coverage_audit.py` — read-only matrix derived from the EXISTING `model_source_entitlements` registry and `free_source_catalog`. No competing registry, fetcher, or authority.
@@ -52,3 +65,11 @@ Correction/overlap note (2026-11-10): the addendum above was originally pushed t
 ### Addendum 2026-11-10b — nflverse dataset split, NCEI docs
 - nflverse (publisher org page, search-snippet grade): most releases CC-BY-4.0 (commercial use allowed with attribution); FTN datasets (charting; participation from 2023) CC-BY-SA-4.0; dataset-specific licenses are marked per release. Upstream NFL-owner terms are separate. Repo policy `nflverse_dataset_policy_v1.json` already excludes participation/ftn_charting; new test guards that. Dataset-level candidates (schedules, player_stats, players, play_by_play) are consistent with CC-BY, but each release page notice still needs a raw-text receipt. Registry entry for NFLVERSE NOT added (would flip candidate-readiness: owner/WOW decision).
 - NOAA NCEI Access Data Service docs (summary grade): HTTPS GET, no token or rate limit stated, not all datasets available, no license/citation terms on page, possible access delays. Dataset-level (daily-summaries/GHCND) availability and terms remain unverified. CDO v2 (token-gated) is a different service.
+
+## Reconciliation note 2026-11-10 (merges #2566 and #2567)
+
+This document combines two sections written independently against the same `main`. They differ in evidence grade, not in disposition: both keep every source on hold, and neither authorizes training.
+
+- Where the "primary-public-text follow-up" table and the "rights receipts" addendum describe the same source (NHL, MLB, nflverse, NCEI), the primary-publisher reading in the first table is the higher evidence grade. The addendum's MLB row (secondary-grade) and NCEI row ("fetch failed") are earlier, lower-grade observations and are superseded in grade only; the machine-readable receipts in `source_rights_receipts_2026-11-10.json` keep their own grades and are unchanged.
+- Neither section establishes raw bytes with SHA-256, live schema or an independent rights determination. Result unchanged: 0/13 sports cleared; the license-receipt blocker stays in force.
+- The "Decision needed (owner/SIRT)" item on non-commercial terms remains open and is not an engineering decision.
