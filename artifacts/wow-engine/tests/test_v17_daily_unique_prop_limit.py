@@ -25,3 +25,49 @@ def test_twenty_duplicate_snapshots_do_not_consume_four_prop_limit_slots():
     assert [row["player"] for row in limited] == ["Cristopher Sanchez", "Pitcher Two", "Pitcher Three", "Pitcher Four"]
     assert limited[0]["source_instance_count"] == 20
     assert len(limited[0]["source_snapshot_ids"]) == 20
+
+
+def test_newer_blocked_snapshot_overrides_older_clean_for_same_canonical_prop():
+    old = _row("old-clean", "Cristopher Sanchez", 6.5)
+    old["captured_at"] = "2099-09-19T12:00:00Z"
+    newer = _row("new-unverified", "Cristopher Sanchez", 6.5)
+    newer["captured_at"] = "2099-09-20T12:00:00Z"
+    newer["blockers"] = ["PLAYER_AVAILABILITY_UNVERIFIED"]
+
+    exclusions, stats = [], {}
+    manifest = _prop_manifest_rows(
+        _DB([old, newer]), "2099-09-20", "UTC",
+        page_size=1, exclusions=exclusions, stats=stats,
+    )
+    assert manifest == []  # Never revive old-clean after new-unverified.
+    assert len(exclusions) == 1
+    assert exclusions[0]["source_snapshot_id"] == "new-unverified"
+    assert set(exclusions[0]["source_snapshot_ids"]) == {"old-clean", "new-unverified"}
+    assert exclusions[0]["source_instance_count"] == 2
+    assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+    assert exclusions[0]["blockers"] == ["PLAYER_AVAILABILITY_UNVERIFIED"]
+    assert stats == {
+        "raw_rows_read": 2,
+        "canonical_rows": 1,
+        "canonical_merged_rows": 1,
+    }
+
+
+def test_newer_clean_snapshot_supersedes_older_blocked_without_duplicate_exclusion():
+    old = _row("old-held", "Pitcher", 4.5)
+    old["captured_at"] = "2099-09-19T12:00:00Z"
+    old["blockers"] = ["PLAYER_AVAILABILITY_UNVERIFIED"]
+    newer = _row("new-clear", "Pitcher", 4.5)
+    newer["captured_at"] = "2099-09-20T12:00:00Z"
+
+    exclusions, stats = [], {}
+    manifest = _prop_manifest_rows(
+        _DB([old, newer]), "2099-09-20", "UTC",
+        exclusions=exclusions, stats=stats,
+    )
+    assert len(manifest) == 1
+    assert manifest[0]["source_snapshot_id"] == "new-clear"
+    assert set(manifest[0]["source_snapshot_ids"]) == {"old-held", "new-clear"}
+    assert not exclusions
+    assert stats["raw_rows_read"] == 2
+    assert stats["canonical_merged_rows"] == 1
