@@ -112,7 +112,7 @@
             "verified_utc": "2026-11-10T15:00:00Z",
             "evidence": "artifacts/wow-engine/v17/engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md"
           },
-          "note": "PRIMARY, CRITICAL, 1IP manifest, and infrastructure_blocked semantics independently verified unpaid (422 PROPS rows / 55 Daily runs under live SHA e7384b9d…; recent run v17-daily-a2b7f50e-… @ 2026-11-09T15:35:34Z). ZERO_ROW_REASON_MISCLASSIFIED and SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS remain DEPLOYED_NOT_OBSERVED. Newest Daily still predates the safety deployment."
+          "note": "PRIMARY, CRITICAL, 1IP manifest, and infrastructure_blocked semantics independently verified unpaid (422 MODEL_REJECTED/model_evaluated PROPS rows / 55 Daily runs under live SHA e7384b9d…; sanitized receipt v17-daily-a2b7f50e-… @ 2026-11-09T15:35:34Z). ZERO_ROW_REASON_MISCLASSIFIED and SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS remain DEPLOYED_NOT_OBSERVED (latter requires action_invocation_attempted=true and specialist_scoring_attempted=false). Newest Daily still predates the safety deployment."
         }
       }
     },

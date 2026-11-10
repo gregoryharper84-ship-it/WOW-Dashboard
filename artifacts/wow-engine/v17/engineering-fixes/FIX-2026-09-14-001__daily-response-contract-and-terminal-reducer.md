@@ -284,17 +284,19 @@ previously counted these rows as held will see the count move to purged.
   `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 - `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — unpaid recount while live SHA
   `e7384b9d2fed3256681b25715516dff2e97d3233`: 422 PROPS row-detail rows /
-  55 Daily runs with embedded `terminal_cause=MODEL_JUDGMENT`,
-  `infrastructure_blocked=false`, and concurrent market blockers preserved.
-  Evidence window `2026-09-15T15:28:06Z`–`2026-11-09T15:35:34Z`; recent runs
-  include `v17-daily-a2b7f50e-…`, `v17-daily-1ca97b06-…`, `v17-daily-c4ca0ab2-…`.
+  55 Daily runs with embedded `verdict_class=MODEL_REJECTED`,
+  `model_evaluated=true`, `infrastructure_blocked=false`, and concurrent market
+  blockers preserved (not pre-model `MODEL_JUDGMENT` alone). Evidence window
+  `2026-09-15T15:28:06Z`–`2026-11-09T15:35:34Z`; sanitized receipt from
+  `v17-daily-a2b7f50e-…` shows `NO_LOW_PROBABILITY` + `PAYOUT_UNRESOLVED`.
 
 **Still not independently verified in production** (deployed, but not observed):
 `ZERO_ROW_REASON_MISCLASSIFIED` (no `REQUESTED_ROW_LIMIT_ZERO` Daily run yet),
 and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` (compact Daily row-detail does not
-currently persist `action_invocation_attempted` /
-`specialist_scoring_attempted`). The Will Warren 16.5 `REJECT_OOD` gate remains
-covered by `test_mlb_1ip_exact_line_contract.py`.
+currently persist attempt fields). Closure requires a real Action receipt with
+`action_invocation_attempted=true` and `specialist_scoring_attempted=false` on
+a selected PROPS row (`test_receipt_semantics_split.py`). The Will Warren 16.5
+`REJECT_OOD` gate remains covered by `test_mlb_1ip_exact_line_contract.py`.
 
 ## Rollback
 
@@ -332,10 +334,10 @@ can_execute = false
   `DEPLOYED_NOT_OBSERVED` items: (1) observe a Daily response that reports
   `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO` **and**
   `lane_reconciliation.PROPS.canonicalized_count > 0` (a bare `max_props=0`
-  without that candidate condition does not close the item); (2) check one
-  owner Action receipt readback for `action_invocation_attempted` vs
-  `specialist_scoring_attempted` on a persisted PROPS row — `max_props=0`
-  cannot supply those attempt fields because it selects no PROPS rows.
+  without that candidate condition does not close the item); (2) observe a
+  real invoked Action receipt on a selected PROPS row with
+  `action_invocation_attempted=true` and `specialist_scoring_attempted=false`
+  (both-true is insufficient; see `test_receipt_semantics_split.py`).
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).
