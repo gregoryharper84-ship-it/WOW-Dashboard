@@ -43,3 +43,22 @@ Real `wow-engine-validation` PostgreSQL SELECT probes returned:
 **Critical schema-contract mismatch:** this draft migration creates `public.wow_nba_team_event_verification_receipts`, not the new wiring's stated `public.wow_independent_verification_receipts`, and does not add either required column to `public.wow_basketball_team_event_calibrators`. Both the draft ledger and its read-only schema RPC remain absent in validation. Applying this draft unchanged cannot satisfy the new wiring's ready-state probe. Do not infer the two ledgers are aliases or auto-rename them: recover the committed wiring/verifier source first and bind one canonical migration contract to its exact read/write fields.
 
 **Readback result:** OLD_SCHEMA_HOLD confirmed against a real database. NEW_SCHEMA_PASS was **not exercised** and cannot be claimed. No schema DDL, migration, fitting, artifact persistence, certification, or live orders were performed in this compatibility audit. Production database project authority was not established by this readback. Keep this protected P candidate disabled until the corrected schema, authentic PostgREST service-role probe, rollback/no-partial-fit negative test, and independent sign-off all pass at the exact head.
+
+
+## Opt-in PostgREST HTTP acceptance test — draft
+
+The read-only HTTP acceptance test is \`tests/test_nba_verification_postgrest_http.py\` (added in \`f4bb4c3\`). It is a **different test** from the reported, still-uncommitted six-test PostgreSQL/psycopg integration file. This test uses Python standard-library \`urllib\` to issue only two credentialed GET requests, with redirects disabled to protect API keys. It accepts the legacy JWT \`Authorization: Bearer\` header only for legacy service_role JWTs; Supabase \`sb_secret_...\` keys are sent solely in \`apikey\`. It never logs response bodies or key material.
+
+Explicit test command from a controlled, authorized environment, using a scoped **service-role** key and the exact intended Supabase project:
+
+\`\`\`bash
+WOW_TEST_NBA_SCHEMA_STATE=old \
+WOW_TEST_SUPABASE_URL=https://<authorized-project-ref>.supabase.co \
+WOW_TEST_SUPABASE_SERVICE_KEY='<secret provided by environment, not shell history>' \
+PYTHONPATH=artifacts/wow-engine \
+pytest -q artifacts/wow-engine/tests/test_nba_verification_postgrest_http.py
+\`\`\`
+
+Prefer exporting secrets through the existing protected environment/secrets manager rather than pasting them into shell history. Repeat with \`WOW_TEST_NBA_SCHEMA_STATE=ready\` **only after** the independently accepted canonical schema migration has been applied in the authorized project. Without all three opt-in variables the real HTTP test is **SKIPPED**, not PASS. The other three tests cover expected response contract and header/redirect behavior with dummy inputs; they do not prove a live HTTP call. As of this note, the authenticated real-HTTP test has **not** been executed here.
+
+**Release invariant:** the draft currently does **not** satisfy the new wiring's ledger/column requirements; the two intentional red structural contract tests on this branch must be made green by the actual verified migration and producer/consumer wiring, not by removing or loosening those checks. No schema write or fitted-model change is authorized by these test instructions.
