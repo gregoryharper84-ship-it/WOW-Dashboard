@@ -67,9 +67,9 @@ Prefer exporting secrets through the existing protected environment/secrets mana
 
 ## CI source-and-execution acceptance (protected P draft)
 
-The existing `.github/workflows/wow-engine-verify.yml` job `agent-runtime-integration` already provisions `postgres:16`, `postgrest/postgrest:v12.2.3`, and an in-process localhost `/rest/v1` rewrite proxy to PostgREST's root routes. The P draft adds source existence and non-skipping integration checks **inside that existing job**; no new workflow, service, vendor, or paid infra is introduced.
+The real-server proof lives in the dedicated `verification-prerequisites` job in `.github/workflows/wow-v17-basketball-model-maintenance.yml`, which provisions `postgres:16` and the CI-pinned PostgREST 12.2.3, gives each integration file its own database, and fails the job on any skipped case. This draft no longer duplicates that block inside `wow-engine-verify.yml`'s `agent-runtime-integration` job; it only extends the dedicated job's path triggers to the predeploy RPC and probe it depends on.
 
-It explicitly requires these source files at the candidate head:
+That job requires these source files at the candidate head:
 - `test_v17_nba_verification_wiring.py`
 - `tests/test_v17_nba_team_event_verification.py`
 - `test_v17_nba_verification_prerequisites_postgres.py`
@@ -77,6 +77,6 @@ It explicitly requires these source files at the candidate head:
 
 The job sets `WOW_TEST_POSTGRES_DSN` to its isolated PostgreSQL 16 service and `WOW_TEST_POSTGREST_URL` to its existing localhost:3000 gateway, runs the four files with pytest, writes a JUnit XML report, and rejects missing source, zero/insufficient executed cases (minimum seven real-server cases), and **any skipped test** even if pytest exits zero. Canonical codes: `NBA_VERIFICATION_INTEGRATION_SOURCE_MISSING` and `NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED`.
 
-**Status (2026-11-10): source committed, executed locally, hosted verdict outstanding.** The four files are now on this branch, so the job runs them instead of failing on missing source. The block was also corrected in two respects: the psycopg check gets its own `wow_verification_pg` database, because it asserts the pre-migration state and cannot share one the PostgREST check has already migrated; and the schema-read checks use a dedicated PostgREST on port 3001 whose role can read the ledger, since the job's service authenticates as `anon`, which by design holds no grant on it. Run locally against real PostgreSQL 16.2 and PostgREST 12.2.3: **6 + 1 cases, no skips**. The ledger/calibrator schema mismatch is closed.
+**Status (2026-11-10): stacked on the canonical verifier PR, hosted verdict outstanding.** The verifier source, wiring, ledger migration and their tests now live in one canonical pull request, and this draft is based on it rather than restating them. The duplicated acceptance block was removed from `wow-engine-verify.yml`: the dedicated `verification-prerequisites` job already runs those files against PostgreSQL 16 and PostgREST 12.2.3, isolates each integration file in its own database, and fails on a skip. This draft keeps only the predeploy gate and widens that job's triggers to cover it. Run locally against real PostgreSQL 16.2 and PostgREST 12.2.3: **6 + 1 cases, no skips**. The ledger/calibrator schema mismatch is closed.
 
 Still open: a completed hosted verdict at the exact head, and production Supabase service-role HTTP grant/cache behavior under its own authorized read-only acceptance. Do not mark this P candidate release-ready on this change alone.
