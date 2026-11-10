@@ -32,10 +32,15 @@ When source-visible exact-line market snapshots are available, the analyst may
 run `v17.upset_market_diagnostics.analyze_upset_market_snapshot` alongside the
 existing governed `team_event_upset_alert` interpretation layer. Require matching
 event/outcome space, exact market type/settlement basis, source snapshot IDs,
-timely pregame book quotes, declared power/multiplicative no-vig method and
+timely pregame book quotes, pinned power primary no-vig method (multiplicative sensitivity-only) and
 complete governed outcome probabilities and bounds. Treat cross-book dispersion
 and reference-class favorite–longshot bias as uncertainty, not model evidence.
 A reference-class decomposition requires a separate time-safe receipt.
+Never label `market_disagreement` as proven upset edge. Display descriptive
+`MODEL_MARKET_DISAGREEMENT_UNVALIDATED` until the independently evaluated
+reference-class and forward evidence justify a distinct `UPSET_EDGE_VS_MARKET`
+claim. The pre-existing alert's `probability_gap` is **model favorite minus
+strongest model alternative**, not model-versus-market edge.
 
 All outputs from that helper are `RESEARCH_ONLY` (or explicitly single-book):
 not certified, not rank eligible, not allowed to update sporting probabilities,
@@ -48,10 +53,16 @@ The diagnostic measures *separate* market disagreement.
 Do not confuse **within-event winner selection** with **cross-event confidence
 ranking**. If the objective is maximum expected correct selections, the
 mathematical within-event decision is the highest calibrated probability among
-the complete mutually exclusive winner outcomes, subject to the controlling
+the contest's explicitly scoring-eligible outcomes, subject to the controlling
 Event Decision Governor and all stricter model/terminal gates. The existing
 cross-event leaderboard can rank accepted winner selections by calibrated
-lower bound as a separate reliability ordering. Never override a stricter
+lower bound as a separate reliability ordering. For a three-way soccer game,
+choose HOME/DRAW/AWAY only when the contest allows a draw selection. If it
+requires a participant, with a draw scoring as incorrect for either team,
+choose the higher of **unconditional** P(HOME), P(AWAY); conditional-on-no-draw
+normalization does not change the ranking and must never be misreported as
+unconditional winner probability. If picking who qualifies after extra time,
+use a separately fitted advancement market rather than 90-minute outcomes. Never override a stricter
 governed decision with research-only argmax or a market-derived probability.
 
 For requested tennis winner research, include ATP/WTA scheduled matches in the
