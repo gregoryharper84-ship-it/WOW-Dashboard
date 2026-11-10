@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+import pytest
+
 
 REQUIRED_CHECKS = (
     "WOW additional required regression",
@@ -284,11 +286,45 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "DAILY_SNAPSHOT_SERVING_SHA_MISSING" in text
     assert "DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING" in text
     assert 'daily_snapshot_response_deployed_sha' in text
+    assert 'serving_sha_for_run = str(result.get("deployed_sha") or "").strip()' in text
+    assert '"serving_sha_at_request": serving_sha_for_run' in text
     assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
     # Governance preflight must retry cold-start / gateway failures like the Daily POST.
     assert "def read_serving_sha_at_request" in text
     assert text.count("except (urllib.error.URLError, TimeoutError):") >= 2
     assert "max_attempts = 10" in text
+
+
+def _attribute_daily_serving_sha(*, preflight_sha: str, result: dict) -> dict:
+    """Mirror the unpaid Daily summary attribution contract from the workflow."""
+    serving_sha_for_run = str(result.get("deployed_sha") or "").strip()
+    if not serving_sha_for_run:
+        raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING")
+    return {
+        "serving_sha_preflight": preflight_sha,
+        "serving_sha_at_request": serving_sha_for_run,
+        "serving_sha_source": "daily_snapshot_response_deployed_sha",
+    }
+
+
+def test_daily_serving_sha_attribution_prefers_post_over_distinct_preflight():
+    preflight = "a" * 40
+    post = "b" * 40
+    attributed = _attribute_daily_serving_sha(
+        preflight_sha=preflight,
+        result={"deployed_sha": post, "run_id": "v17-daily-x"},
+    )
+    assert attributed["serving_sha_preflight"] == preflight
+    assert attributed["serving_sha_at_request"] == post
+    assert attributed["serving_sha_source"] == "daily_snapshot_response_deployed_sha"
+
+
+def test_daily_serving_sha_attribution_fails_closed_when_post_sha_missing():
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING"):
+        _attribute_daily_serving_sha(
+            preflight_sha="a" * 40,
+            result={"deployed_sha": None, "run_id": "v17-daily-x"},
+        )
 
 
 def test_post_deploy_canary_classifier_accepts_observation_timeout_as_hold():

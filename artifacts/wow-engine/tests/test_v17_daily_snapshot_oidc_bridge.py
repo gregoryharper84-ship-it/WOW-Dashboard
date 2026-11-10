@@ -108,10 +108,16 @@ def test_bridge_installs_once_and_uses_server_owned_runtime(monkeypatch):
     assert result["deployed_sha"] == serving_sha
 
 
-def test_bridge_deployed_sha_stays_null_when_render_commit_missing(monkeypatch):
+@pytest.mark.parametrize("render_commit", [None, "g" * 40])
+def test_bridge_deployed_sha_stays_null_when_render_commit_invalid(
+    monkeypatch, render_commit
+):
     app = FastAPI()
     market_api = _MarketApi()
-    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    if render_commit is None:
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    else:
+        monkeypatch.setenv("RENDER_GIT_COMMIT", render_commit)
     monkeypatch.setattr(
         bridge,
         "authorize_action_key_or_multiscout_oidc",
