@@ -260,3 +260,87 @@ def test_power_de_vig_unbracketed_infinite_like_odds_fails_closed():
     """Reject float-saturated inputs rather than normalizing a bogus root."""
     with pytest.raises(ValueError, match="MARKET_POWER_NO_VIG_NOT_CONVERGED"):
         no_vig_probabilities({"A": -1e20, "B": -1e20}, method="power")
+
+
+def test_decision_at_kickoff_is_not_pregame():
+    """No post-start decision may become a point-in-time research receipt."""
+    with pytest.raises(ValueError, match="MARKET_DECISION_NOT_PREGAME"):
+        _evaluate(decision_time_utc="2026-11-10T19:00:00Z")
+
+
+def test_missing_book_snapshot_id_rejected():
+    """Every quote needs a concrete source snapshot identifier."""
+    quotes = _quotes()
+    quotes[0]["source_snapshot_id"] = ""
+    with pytest.raises(ValueError, match="MARKET_BOOK_OR_SOURCE_INVALID"):
+        _evaluate(book_quotes=quotes)
+
+
+def test_duplicate_book_not_counted_as_independent_source():
+    """Duplicate book names cannot masquerade as two independent books."""
+    quotes = _quotes()
+    quotes[1]["book"] = "book a"
+    with pytest.raises(ValueError, match="MARKET_BOOK_OR_SOURCE_INVALID"):
+        _evaluate(book_quotes=quotes)
+
+
+def test_reference_class_from_after_decision_is_not_time_safe():
+    """Reference classes must exist strictly before the prediction decision."""
+    with pytest.raises(ValueError, match="MARKET_REFERENCE_CLASS_UNVERIFIED"):
+        _evaluate(
+            empirical_reference_probs={"FAVORITE": 0.6, "DOG": 0.4},
+            reference_class_receipt_id="reference-late",
+            reference_class_as_of_utc="2026-11-10T18:00:01Z",
+        )
+
+
+def test_invalid_american_odds_rejected():
+    """Do not interpret malformed prices as probability evidence."""
+    quotes = _quotes()
+    quotes[0]["american_odds"]["DOG"] = -50
+    with pytest.raises(ValueError, match="MARKET_ODDS_INVALID"):
+        _evaluate(book_quotes=quotes)
+
+
+def test_underround_book_rejected_by_primary_power_method():
+    """An underround requires separate handling; do not silently de-vig it."""
+    quotes = _quotes()
+    quotes[0]["american_odds"] = {"FAVORITE": 200, "DOG": 200}
+    with pytest.raises(ValueError, match="MARKET_UNDERROUND_UNSUPPORTED"):
+        _evaluate(book_quotes=quotes)
+
+
+def test_invalid_governed_bounds_rejected():
+    """Never surface a probability package whose point is outside its bounds."""
+    values = _outcomes()
+    values["DOG"]["calibrated_lower_bound"] = 0.47
+    with pytest.raises(ValueError, match="MARKET_MODEL_BOUNDS_INVALID"):
+        _evaluate(governed_outcomes=values)
+
+
+def test_invalid_reference_class_probabilities_rejected():
+    """A source receipt does not excuse impossible empirical proportions."""
+    with pytest.raises(ValueError, match="MARKET_REFERENCE_CLASS_INVALID"):
+        _evaluate(
+            empirical_reference_probs={"FAVORITE": 1.2, "DOG": -0.2},
+            reference_class_receipt_id="reference-invalid",
+            reference_class_as_of_utc="2026-11-09T12:00:00Z",
+        )
+
+
+def test_quote_exactly_maximum_age_is_not_stale():
+    """Quote age equal to the stated 60-minute boundary is allowed."""
+    quotes = _quotes()
+    quotes[0]["captured_at_utc"] = "2026-11-10T17:00:00Z"
+    result = _evaluate(book_quotes=quotes, max_quote_age_minutes=60)
+    assert result["book_count"] == 2
+    assert result["market_favorite_verified"] is True
+    assert result["market_favorite_tie_tolerance"] == pytest.approx(0.005)
+
+
+def test_incomplete_governed_probability_distribution_rejected():
+    """Catch missing probability mass in market diagnostics as well as alerts."""
+    values = _outcomes()
+    values["DOG"]["calibrated_probability"] = 0.22
+    with pytest.raises(ValueError, match="MARKET_MODEL_OUTCOMES_NOT_NORMALIZED"):
+        _evaluate(governed_outcomes=values)
