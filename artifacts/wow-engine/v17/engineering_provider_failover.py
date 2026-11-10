@@ -141,18 +141,24 @@ def _strip_actions_log_prefix(line: str) -> str:
     return _LOG_STEP_LABEL_RE.sub("", cleaned).strip()
 
 
-def _provider_match_text(log_text: str) -> str:
-    """Return text that may classify a provider failure.
+def _provider_match_parts(log_text: str) -> tuple[str, str]:
+    """Split Actions log evidence into emitted-only and emitted+stderr text.
 
-    Plain non-Actions logs keep full-text matching for unit/direct callers.
-    GitHub Actions logs contribute:
-    1. emitted `::error::` / `##[error]` payloads (never unevaluated script echoes);
-    2. unannotated stderr/stdout lines (Codex CLI quota/auth often has no
-       Actions annotation). Control markers and script echoes stay excluded.
+    Returns ``(emitted_only, classification_text)``.
+
+    Plain non-Actions logs keep full-text matching for both values.
+
+    For GitHub Actions logs:
+    - ``emitted_only`` is vetted `::error::` / `##[error]` payloads only
+      (never unevaluated script echoes). Delivery outcomes use this when
+      deciding whether a provider_signal may arm failover.
+    - ``classification_text`` also keeps unannotated stderr/stdout so Codex
+      CLI quota/auth lines remain classifiable when no delivery code is
+      present. Control markers and script echoes stay excluded.
     """
     text = str(log_text or "")
     if not _ACTIONS_MARKER_RE.search(text):
-        return text
+        return text, text
     emitted: list[str] = []
     unannotated: list[str] = []
     for line in text.splitlines():
@@ -178,7 +184,13 @@ def _provider_match_text(log_text: str) -> str:
         if _SCRIPT_COMMAND_RE.search(body) and "::error::" in body:
             continue
         unannotated.append(body)
-    return "\n".join(emitted + unannotated)
+    emitted_only = "\n".join(emitted)
+    return emitted_only, "\n".join(emitted + unannotated)
+
+
+def _provider_match_text(log_text: str) -> str:
+    """Return classification text (emitted + Codex stderr for Actions logs)."""
+    return _provider_match_parts(log_text)[1]
 
 
 @dataclass(frozen=True)
@@ -207,8 +219,9 @@ class ProviderFailure:
 def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
     provider_key = str(provider or "").strip().lower()
     raw = str(log_text or "")
-    emitted_text = _provider_match_text(raw)
-    text = emitted_text.lower()
+    emitted_only, classification_text = _provider_match_parts(raw)
+    emitted_lower = emitted_only.lower()
+    text = classification_text.lower()
 
     patterns = (
         OPENAI_FAILURE_PATTERNS
@@ -217,22 +230,32 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         if provider_key in {"anthropic", "claude"}
         else ()
     )
-    provider_code = next(
-        (code for code, needles in patterns if any(needle in text for needle in needles)),
-        None,
-    )
-    # For Actions logs, only vetted emitted payloads are trusted; the raw
-    # script echo can contain other ACTIONABLE_REPAIR_* code strings.
+
+    def _match_provider(haystack: str) -> str | None:
+        return next(
+            (
+                code
+                for code, needles in patterns
+                if any(needle in haystack for needle in needles)
+            ),
+            None,
+        )
+
+    # For Actions logs, only vetted emitted payloads are trusted for delivery
+    # codes; the raw script echo can contain other ACTIONABLE_REPAIR_* strings.
     delivery = (
-        re.search(r"(?m)^(ACTIONABLE_REPAIR_[A-Z_]+):", emitted_text)
+        re.search(r"(?m)^(ACTIONABLE_REPAIR_[A-Z_]+):", emitted_only)
         if _ACTIONS_MARKER_RE.search(raw)
         else DELIVERY_ERROR_RE.search(raw)
     )
     if delivery:
         # A typed delivery outcome is never relabelled as a provider failure. A governance
         # policy boundary never fails over or retries, whatever else the log contains.
+        # Provider signal / failover may arm only from emitted error payloads — unmarked
+        # quota noise beside a delivery code must not claim provider failover.
         delivery_code = delivery.group(1)
         blocked = delivery_code in GOVERNANCE_BLOCKED_CODES
+        provider_code = _match_provider(emitted_lower)
         eligible = not blocked and provider_code in OPENAI_FAILOVER_ELIGIBLE
         return ProviderFailure(
             provider=provider_key or "unknown",
