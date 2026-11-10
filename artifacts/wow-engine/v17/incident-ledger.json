@@ -95,7 +95,7 @@
         "FIX-2026-09-14-001"
       ],
       "created_utc": "2026-09-14T00:00:00Z",
-      "updated_utc": "2026-11-10T17:27:00Z",
+"updated_utc": "2026-11-10T23:02:00Z",
       "engineering_fixes": {
         "FIX-2026-09-14-001": {
           "title": "Daily response contract, terminal reducer, and lane/receipt semantics",
@@ -103,16 +103,16 @@
           "state": "DEPLOYED_PENDING_VERIFY",
           "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-14-001__daily-response-contract-and-terminal-reducer.md",
           "created_utc": "2026-09-14T00:00:00Z",
-          "updated_utc": "2026-11-10T17:27:00Z",
+          "updated_utc": "2026-11-10T23:02:00Z",
           "merge_commit": "171673b24fda17d1c87056e7379457dacc718909",
           "production_deploy": {
             "service": "wow-governed-probability-engine",
-            "observed_live_sha": "e7384b9d2fed3256681b25715516dff2e97d3233",
+            "observed_live_sha": "6998b62af5df99cafd87995b9aa7b14fdd0d8110",
             "safety_deploy_sha": "98a56157a5916c6d25ee1c51bab3d183448e23c8",
-            "verified_utc": "2026-11-10T17:27:00Z",
+            "verified_utc": "2026-11-10T23:02:00Z",
             "evidence": "artifacts/wow-engine/v17/engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md"
           },
-          "note": "PRIMARY, CRITICAL, 1IP manifest, and infrastructure_blocked semantics independently verified unpaid under live SHA e7384b9d…. At 2026-11-10T17:27Z unpaid recheck: cron 0 17 SCHEDULE_DELAYED (newest schedule still 10:45Z run 42801795794); serving SHA + safety ancestry reconfirmed; post-safety async/detail/prediction rows still 0; Action receipts still exactly four SELF_ACCEPTANCE /score-prop 422s; ZERO_ROW_REASON_MISCLASSIFIED and SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS remain DEPLOYED_NOT_OBSERVED; NFL forward still 94/100. Next watch cron 0 23 — no paid dispatch."
+          "note": "PRIMARY/CRITICAL + 1IP + infrastructure_blocked independently verified unpaid. ZERO_ROW FIXED_VERIFIED_IN_PRODUCTION via #2585 canary 42910074320 / v17-daily-ebc1ba5b (GREEN soft-hold). SCORING_ATTEMPTED = BACKEND_PAIR_OBSERVED_HOST_PENDING (host action_invocation_attempted still pending). Post-safety sync MONEYLINE Daily observed: delayed cron 0 17 workflow 42875617354 / run_id v17-daily-73c75380-97e8-40b3-8352-cae443ab9047 (18:28Z); schedule 42911461928 / run_id v17-daily-80c514c0-1aff-46fc-b3e7-99722a5b9c78 (22:06Z); both can_execute=false, V17_TERMINAL_REDUCER, 24 MONEYLINE held. Live tip 6998b62af… includes safety ancestor 98a56157…. Cron 0 23 not yet observed as of 23:01Z. NFL forward still 94/100."
         }
       }
     },
@@ -280,7 +280,39 @@
           "rollback": "Revert merge commit 10084e5039ae8a91cf54586388795ef74b497d93."
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-11-10-001",
+      "title": "Main-scoped admit-release poisons checksPass when QA policy is absent",
+      "severity": "P0",
+      "domain": "deployment / CI / release admission",
+      "state": "FIX_IN_PROGRESS",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-11-10-001__admit-release-missing-qa-policy-checkspass-poison.md",
+      "engineering_fix_ids": [
+        "FIX-2026-11-10-001"
+      ],
+      "created_utc": "2026-11-10T15:45:00Z",
+      "updated_utc": "2026-11-10T16:10:00Z",
+      "primary_subsystem": "DEPLOYMENT_RUNTIME",
+      "workflow_stage": "ENGINEERING",
+      "current_owner": "ENGINEERING_AGENT",
+      "risk_class": "Class P",
+      "root_cause": "resolve_qa_review_policy raised QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING for zero matching policy artifacts even when allow_superseded_target was set for main-scoped workflow_run admission, redding the unrelated protected-main tip Render checksPass evaluates.",
+      "root_cause_confidence": "HIGH",
+      "engineering_fixes": {
+        "FIX-2026-11-10-001": {
+          "title": "Neutralize absent QA policy on main admission",
+          "risk": "Class P",
+          "state": "FIX_IN_PROGRESS",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-11-10-001__neutralize-absent-qa-policy-on-main-admission.md",
+          "created_utc": "2026-11-10T15:45:00Z",
+          "updated_utc": "2026-11-10T16:10:00Z",
+          "implementation_owner": "ENGINEERING_AGENT",
+          "rollback": "Revert the merge commit for FIX-2026-11-10-001.",
+          "pull_request": 2565
+        }
+      }
     }
   ],
-  "updated_utc": "2026-09-25T19:31:23Z"
+  "updated_utc": "2026-11-10T16:10:00Z"
 }

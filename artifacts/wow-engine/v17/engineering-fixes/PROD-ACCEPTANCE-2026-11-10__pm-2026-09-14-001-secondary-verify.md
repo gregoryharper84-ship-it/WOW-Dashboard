@@ -28,8 +28,8 @@
 | --- | --- | --- |
 | `1IP_CAPABILITY_MANIFEST_DRIFT` | **FIXED_VERIFIED** | Live `/v17/governance-detail` declares `MLB / 1ST_INNING_PITCHES_THROWN` as `SUPPORTED_HOLD_ONLY`, `route_active=true`, `declared_skill_status=TEST_ONLY`, `publication_allowed=false`, `exact_line_support_policy=EXACT_CERTIFIED_LINES_ONLY_REJECT_OOD`. Strikeouts remain `CERTIFIED_PRODUCTION`. |
 | `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` | **FIXED_VERIFIED** | Unpaid decision-level recount under live SHA `e7384b9d2fed3256681b25715516dff2e97d3233`: **806** PROPS direction decisions / **422** rows / **55** runs where the same rejected decision carries `verdict_class=MODEL_REJECTED`, `model_evaluated=true`, `infrastructure_blocked=false`, and non-empty `concurrent_infrastructure_blockers`. Window `2026-09-15T15:28:06Z` → `2026-11-09T15:35:34Z`. Structured query (project `wow-engine-validation` / `iczfhsmjrrafhvcpmqhr`): expand `detail->result->outcomes[*]`, read markers from `payload.probability_qualification` (fallback `payload`), require all four on that decision. Sanitized receipt from `v17-daily-a2b7f50e-5ebd-4cab-a6c9-20e39edea2cc` @ `2026-11-09T15:35:34Z`: `verdict_class=MODEL_REJECTED`, `terminal_label=NO_LOW_PROBABILITY`, `model_evaluated=true`, `infrastructure_blocked=false`, concurrent `PAYOUT_UNRESOLVED` (no player/odds/probability values retained). |
-| `ZERO_ROW_REASON_MISCLASSIFIED` | **DEPLOYED_NOT_OBSERVED** | Zero production Daily runs with `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO`. Unit acceptance suite still green (`48` passed including zero-row typing). A future observational Daily must also show `lane_reconciliation.PROPS.canonicalized_count > 0` before this item can close — a bare `max_props=0` response without that candidate condition is not sufficient. |
-| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | **DEPLOYED_NOT_OBSERVED** | Compact Daily row-detail persistence does not currently store attempt fields (0 matching rows). Unit suite green via `test_receipt_semantics_split.py`. Close only with a real invoked Action receipt on a selected PROPS row where `action_invocation_attempted=true`, `specialist_scoring_attempted=false`, **and** host-alias `scoring_attempted=true` — the original defect was `scoring_attempted=false` after a real Action call; both-true or a missing alias does not prove the split; `max_props=0` cannot persist these fields. |
+| `ZERO_ROW_REASON_MISCLASSIFIED` | **FIXED_VERIFIED_IN_PRODUCTION** | #2585 canary `42910074320` / Daily `v17-daily-ebc1ba5b…` returned `REQUESTED_ROW_LIMIT_ZERO` with GREEN soft-hold on empty `max_props=4` inventory (prior proof `42895886635` / `v17-daily-3420226d`). Live tip includes merge `4a49977fc…` / docs tip `6998b62af…`. |
+| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | **BACKEND_PAIR_OBSERVED_HOST_PENDING** | Same canary captured distinct backend `specialist_scoring_attempted` / `scoring_attempted` on FULL `/score-pick-request`. Host `action_invocation_attempted` still pending a ChatGPT Action receipt that does not collapse the pair. |
 
 Regression suite re-run for secondary contracts (local `.venv`):  
 `test_receipt_semantics_split.py`, `test_daily_response_contract_acceptance.py`, `test_prop_capability_manifest.py`, `test_daily_terminal_reduction.py` → **48 passed**.
@@ -141,22 +141,42 @@ Verdict: `SCHEDULE_DELAYED`. Serving SHA + safety ancestry still hold; scheduled
 | Sync Daily `run_id` | Still **UNVERIFIED** |
 | Async / detail / predictions post-safety | Still **0** / newest detail `10:46:10Z` / newest prediction `2026-11-09T15:38:05Z` |
 | Action receipts post-safety | Still exactly **four** SELF_ACCEPTANCE `/score-prop` 422s |
-| `ZERO_ROW_REASON_MISCLASSIFIED` / `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Still **DEPLOYED_NOT_OBSERVED** |
+| `ZERO_ROW_REASON_MISCLASSIFIED` / `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Still **DEPLOYED_NOT_OBSERVED** at this timestamp (later closed/advanced by #2585 canary — see 23:02Z section) |
 | NFL forward | Still `graded_n=94` / `FORWARD_GRADED_N_94_LT_100` / `DO_NOT_CERTIFY_YET` |
 | Parallel PR delta | `#2571` tip `61cb37f8c…` — Independent QA exact-head **PASS**, Release Authority exact-head **PASS**, mergeable; only CodeRabbit + codecov/patch pending. `#2560` tip `be05c789…` still MERGEABLE on tip success but required-check rollup still shows cancelled-race FAILURE aggregates |
 | Next observation | Watch cron `0 23` (do not workflow_dispatch). Keep PROPS residual path separate |
 
+## Independent re-verify (2026-11-10T23:02Z, unpaid, post-safety Daily + tip advance)
+
+Verdict: `POST_SAFETY_SYNC_DAILY_OBSERVED_MONEYLINE_ONLY`. Delayed cron `0 17` and a later schedule success both produced governed sync MONEYLINE Dailies under `can_execute=false` / `V17_TERMINAL_REDUCER`. Live tip advanced to `6998b62af…` (includes #2585 soft-hold + residual docs) and still carries safety ancestor `98a56157…`. Cron `0 23` itself is **NOT_YET_OBSERVED** as of `23:01Z`. Host three-field scoring-attempted receipt remains the open secondary residual.
+
+| Probe | Result |
+| --- | --- |
+| Live `/governance` tip | `deployed_sha=6998b62af5df99cafd87995b9aa7b14fdd0d8110` (= `origin/main`); `can_execute=false`; `V17_TERMINAL_REDUCER`; `deployment_gates.status=PASS` |
+| Safety ancestry | `98a56157a5916c6d25ee1c51bab3d183448e23c8` is ancestor of live tip (`git merge-base --is-ancestor` exit 0) |
+| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| Delayed cron `0 17` schedule | Workflow `42875617354` created `2026-11-10T18:28:54Z` on head `d3260b09…` — **success** |
+| Sync Daily `run_id` (0 17 delayed) | `v17-daily-73c75380-97e8-40b3-8352-cae443ab9047` — `run_status=COMPLETED`, `rows_held=24`, `moneyline_rows=24`, `canonical_moneyline_rows=24`, `cross_sport_row_reconciliation=PASS`, `probability_values_logged=false`, `can_execute=false`, `global_terminal_authority=V17_TERMINAL_REDUCER` |
+| Schedule `2026-11-10T22:06:44Z` | Workflow `42911461928` on head `4a49977fc…` (#2585 merge) — **success** (timing is before nominal `0 23`; recorded as observed schedule success, not claimed as the `0 23` fire) |
+| Sync Daily `run_id` (22:06 schedule) | `v17-daily-80c514c0-1aff-46fc-b3e7-99722a5b9c78` — same MONEYLINE-only held shape (`24` held / `0` completed) |
+| Cron `0 23` | **NOT_YET_OBSERVED** as of `2026-11-10T23:01:34Z` (newest schedule still `42911461928` at 22:06Z) |
+| `ZERO_ROW_REASON_MISCLASSIFIED` | **FIXED_VERIFIED_IN_PRODUCTION** via #2585 canary `42910074320` / `v17-daily-ebc1ba5b…` (GREEN soft-hold) — not from MONEYLINE-only snapshot |
+| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | **BACKEND_PAIR_OBSERVED_HOST_PENDING** — backend pair on canary; host `action_invocation_attempted` still missing |
+| Parallel PR delta | `#2560` tip `be05c789…` MERGEABLE but `BEHIND` main; `#2571` tip `e5277998b…` MERGEABLE but `BEHIND` main (Independent QA + Release Authority previously PASS on that tip). Authorized merge remains external. |
+| Next observation | Capture cron `0 23` when GitHub fires it; host Action three-field receipt for scoring-attempted closure; no paid dispatch |
+
 ## Closure gate
 
-`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until **both** remaining secondary observations are recorded (`ZERO_ROW_REASON_MISCLASSIFIED` and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`). A Reporter-scoped residual, if ever filed, is recorded as **unverified** and does **not** authorize a ledger status change. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
+`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Post-safety sync MONEYLINE Daily is observed; MONEYLINE-only cron cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
 
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
-serving_sha_at_17utc_window = e7384b9d2fed3256681b25715516dff2e97d3233
-safety_ancestor_at_17utc_window = 98a56157a5916c6d25ee1c51bab3d183448e23c8
-post_safety_async_or_detail_rows = NOT_OBSERVED
-post_safety_sync_daily_status = SCHEDULE_DELAYED
-post_safety_scoring_attempted_observation = NOT_OBSERVED
+serving_sha_at_23utc_window = 6998b62af5df99cafd87995b9aa7b14fdd0d8110
+safety_ancestor_at_23utc_window = 98a56157a5916c6d25ee1c51bab3d183448e23c8
+post_safety_sync_daily_status = OBSERVED_MONEYLINE (42875617354 / v17-daily-73c75380…; 42911461928 / v17-daily-80c514c0…)
+cron_0_23_status = NOT_YET_OBSERVED
+zero_row_status = FIXED_VERIFIED_IN_PRODUCTION
+scoring_attempted_status = BACKEND_PAIR_OBSERVED_HOST_PENDING
 ledger_state = DEPLOYED_PENDING_VERIFY
 ```

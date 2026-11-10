@@ -314,8 +314,8 @@ remains covered by `test_mlb_1ip_exact_line_contract.py`.
 
 ## Result
 
-**FIXED — PRIMARY, CRITICAL, 1IP MANIFEST, and INFRASTRUCTURE_BLOCKED VERIFIED
-IN PRODUCTION; two secondary repairs still not independently observed.**
+**FIXED — PRIMARY, CRITICAL, 1IP MANIFEST, INFRASTRUCTURE_BLOCKED, and ZERO_ROW
+VERIFIED IN PRODUCTION; scoring-attempted host three-field receipt still pending.**
 
 ```text
 INCIDENT_STATUS = REPAIRED
@@ -323,8 +323,8 @@ DAILY_RESPONSE_SERIALIZATION_TOO_LARGE = FIXED_VERIFIED
 TERMINAL_REDUCER_UPGRADE = FIXED_VERIFIED
 1IP_CAPABILITY_MANIFEST_DRIFT = FIXED_VERIFIED
 INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = FIXED_VERIFIED
-ZERO_ROW_REASON_MISCLASSIFIED = DEPLOYED_NOT_OBSERVED
-SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = DEPLOYED_NOT_OBSERVED
+ZERO_ROW_REASON_MISCLASSIFIED = FIXED_VERIFIED_IN_PRODUCTION (2026-11-10 canary 42910074320 / v17-daily-ebc1ba5b; prior 42895886635 / v17-daily-3420226d)
+SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = BACKEND_PAIR_OBSERVED_HOST_PENDING (2026-11-10 canary 42910074320 BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING)
 can_execute = false
 ```
 
@@ -334,25 +334,22 @@ can_execute = false
   production project and verified least-privilege. The file header still reads
   "repository source only" as the standing rule for re-application elsewhere.
 - DONE (2026-11-10): live `/governance` 1IP declaration and production
-  `infrastructure_blocked=false` under concurrent market blockers.
-- Remaining owner/free Action path to close the last two
-  `DEPLOYED_NOT_OBSERVED` items: (1) observe a Daily response that reports
-  `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO` **and**
-  `lane_reconciliation.PROPS.canonicalized_count > 0` (a bare `max_props=0`
-  without that candidate condition does not close the item); (2) observe a
-  real invoked Action receipt on a selected PROPS row with
-  `action_invocation_attempted=true`, `specialist_scoring_attempted=false`,
-  and host-alias `scoring_attempted=true` (the original defect was
-  `scoring_attempted=false` after invocation; both-true is insufficient; see
-  `test_receipt_semantics_split.py`).
-- 2026-11-10T17:02–17:11Z unpaid window: live SHA `e7384b9d…` + safety
-  ancestor `98a56157…` reconfirmed; scheduled `wow-v17-daily-snapshot`
-  `cron: 0 17` was still `NOT_YET_OBSERVED` (workflow `active`; newest
-  schedule run remains `42801795794` at 10:45Z). Sync Daily `run_id` stays
-  unverified; PROPS residual path unchanged. Evidence:
-  `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
-- 2026-11-10T17:27Z unpaid recheck: cron `0 17` recorded as
-  `SCHEDULE_DELAYED`; next watch is cron `0 23` without paid dispatch.
+  `infrastructure_blocked=false` under concurrent market blockers
+  (`PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`).
+- DONE (2026-11-10): live PROPS `max_props=0` returned `REQUESTED_ROW_LIMIT_ZERO`
+  (re-verified GREEN with soft-hold on canary `42910074320`).
+- DONE (2026-11-10): backend exposes distinct `specialist_scoring_attempted` and
+  `scoring_attempted` on FULL `/score-pick-request`.
+- DONE (2026-11-10): post-safety sync MONEYLINE Daily observed —
+  delayed cron `0 17` workflow `42875617354` /
+  `run_id=v17-daily-73c75380-97e8-40b3-8352-cae443ab9047`; schedule
+  `42911461928` /
+  `run_id=v17-daily-80c514c0-1aff-46fc-b3e7-99722a5b9c78`; live tip
+  `6998b62af…` retains safety ancestor `98a56157…`.
+- Remaining owner/host Action replay for scoring-attempted semantics:
+  confirm one ChatGPT Action receipt also exposes `action_invocation_attempted`
+  without collapsing the backend pair.
+- Cron `0 23` not yet observed as of `2026-11-10T23:01Z` (no paid dispatch).
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).

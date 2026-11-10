@@ -110,16 +110,31 @@ remain deployed but not independently observed. Ledger status stays
 `DEPLOYED_PENDING_VERIFY` until those two residual observations land. Evidence:
 `engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 
+## Closure Evidence (2026-11-10)
+
+Item 4 (`REQUESTED_ROW_LIMIT_ZERO`) independently observed in production after
+safety deploy `6018482f2` via allowlisted canary run
+`42895886635` / Daily `v17-daily-3420226d-759b-4c1c-ba1a-7135131464f6`:
+`lane_reconciliation.PROPS.zero_row_reason=REQUESTED_ROW_LIMIT_ZERO`,
+`requested_row_limit=0`, `scored_count=0`, `can_execute=false`.
+
+Re-verified GREEN on canary `42910074320` / Daily
+`v17-daily-ebc1ba5b-a346-40be-8ed3-2f846d89a15f` after #2585 soft-hold
+(`DAILY_MAX_PROPS_4_HOLD_EMPTY_INVENTORY`) while live Render was
+`4a49977fc768481ec4a4d2dfe998b36057215cbc`.
+
+Item 5 backend pair independently observed on the same canary as
+`BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING`
+(`specialist_scoring_attempted` and `scoring_attempted` present and distinct;
+`action_invocation_attempted` absent — ChatGPT Action host gate). Status stays
+`DEPLOYED_PENDING_VERIFY` until the host three-field receipt (and remaining
+secondary items) are independently observed.
+
 ## Prevention / Follow-up
 
-- Remaining free/owner Action path for items 4–5: (1) observe a Daily response
-  with `zero_row_reason=REQUESTED_ROW_LIMIT_ZERO` **and**
-  `lane_reconciliation.PROPS.canonicalized_count > 0`; (2) observe a real
-  invoked Action receipt on a selected PROPS row with
-  `action_invocation_attempted=true`, `specialist_scoring_attempted=false`,
-  and host-alias `scoring_attempted=true` (the original defect was
-  `scoring_attempted=false` after invocation; both-true is insufficient;
-  `test_receipt_semantics_split.py`).
+- Remaining owner/host Action replay for item 5+: confirm one ChatGPT Action
+  receipt exposes distinct `action_invocation_attempted`,
+  `specialist_scoring_attempted`, and `scoring_attempted` without collapse.
 - This record was retroactively created on 2026-09-21 to close a ledger
   drift gap: `FIX-2026-09-14-001` existed on disk and was merged/deployed
   (PR #413) with no corresponding `PM-*.md` file and no `incident-ledger.json`
