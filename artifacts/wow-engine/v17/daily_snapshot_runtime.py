@@ -610,13 +610,18 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                     outcomes.append({"direction": direction, "status": classify_stage_status(detail), "payload": detail})
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
-            publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
+            reduction = _props_row_reduction(outcomes)
+            publishable = reduction["final_terminal"] == "COMPLETED" and any(
+                x["payload"].get("probability_publishable") is True
+                and x["payload"].get("rank_eligible") is True
+                for x in outcomes
+            )
             rows.append(
                 _terminal_row(
                     "PROPS",
                     identity,
                     {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
-                    _props_row_reduction(outcomes),
+                    reduction,
                 )
             )
 
