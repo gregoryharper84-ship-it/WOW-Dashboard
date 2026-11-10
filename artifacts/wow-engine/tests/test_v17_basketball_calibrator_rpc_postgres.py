@@ -7,9 +7,11 @@ the function as each role.
 
 Two supported targets:
 
-* ``WOW_TEST_POSTGRES_DSN`` -- an authorized disposable database (CI service
-  container or a scratch project). Roles ``anon``, ``authenticated`` and
-  ``service_role`` must exist, as they do in Supabase.
+* ``WOW_TEST_POSTGRES_DSN`` with ``WOW_TEST_POSTGRES_DISPOSABLE=1`` -- an
+  authorized local disposable database (CI service container or local
+  throwaway cluster). Roles ``anon``, ``authenticated`` and ``service_role``
+  must exist, as they do in Supabase. Nonlocal / non-disposable targets are
+  refused before connect.
 * the local ``pgserver`` package -- a throwaway PostgreSQL cluster started by the
   test. Used here when the package and ``psycopg`` are installed.
 
@@ -90,9 +92,11 @@ class _Cluster:
 
 
 def _start_cluster(tmp_path_factory) -> _Cluster:
+    from tests.postgres_disposable_dsn import require_disposable_local_postgres_dsn
+
     dsn = os.environ.get("WOW_TEST_POSTGRES_DSN")
     if dsn:
-        return _Cluster(dsn)
+        return _Cluster(require_disposable_local_postgres_dsn(dsn))
     try:
         import pgserver
     except ImportError:  # pragma: no cover - environment dependent

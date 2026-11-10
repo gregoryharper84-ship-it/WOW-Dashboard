@@ -57,6 +57,8 @@ def test_shadow_artifact_is_hash_bound_and_not_self_certified():
     assert artifact["probability_publishable"] is False
     assert artifact["rank_eligible"] is False
     assert artifact["can_execute"] is False
+    assert not artifact.get("money_qualified_allowed", False)
+    assert not artifact.get("final_approved_allowed", False)
     assert len(artifact["source_data_hash"]) == 64
     assert len(artifact["split_hash"]) == 64
     assert len(artifact["fold_train_audit_hash"]) == 64

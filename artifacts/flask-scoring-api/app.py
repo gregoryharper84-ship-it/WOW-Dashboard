@@ -13732,6 +13732,10 @@ CM_SLIP_POSITIVE_NET_RETURN_PRIMARY   = True   # PATCH-017: positive_net_return 
 
 _CM_SCHEMA_READY = False
 _CM_SLIP_MIGRATE_READY = False
+# After a lock-timeout on optional slip DDL, skip further ALTER retries this
+# process until slip columns are proven ready. Non-lock failures still retry on
+# the next call without a timed cooldown.
+_CM_SLIP_MIGRATE_LOCK_DEFERRED = False
 _CM_SCHEMA_LOCK  = threading.Lock()
 
 _CM_SCHEMA_DDL = """
@@ -13945,13 +13949,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
     ON kalshi_wx_shadow_results (research_snapshot_id, agent_id);
 """
 
+def _cm_slip_migrate_lock_timeout(exc: Exception) -> bool:
+    """True when optional slip DDL failed because a lock wait timed out."""
+    code = getattr(exc, "pgcode", None)
+    if code == "55P03":
+        return True
+    text = str(exc or "").lower()
+    return "lock timeout" in text or "canceling statement due to lock timeout" in text
+
+
 def _cm_ensure_schema():
     """Create required CM schema with bounded DDL; isolate optional migrations."""
-    global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY
-    if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
+    global _CM_SCHEMA_READY, _CM_SLIP_MIGRATE_READY, _CM_SLIP_MIGRATE_LOCK_DEFERRED
+    # Required schema stays ready after first success. Optional slip columns
+    # retry on the next call after non-lock failures; lock-timeout failures
+    # defer further ALTER retries for this process so every _cm_db() call does
+    # not re-wait under _CM_SCHEMA_LOCK.
+    if _CM_SCHEMA_READY and (_CM_SLIP_MIGRATE_READY or _CM_SLIP_MIGRATE_LOCK_DEFERRED):
         return
     with _CM_SCHEMA_LOCK:
-        if _CM_SCHEMA_READY and _CM_SLIP_MIGRATE_READY:
+        if _CM_SCHEMA_READY and (_CM_SLIP_MIGRATE_READY or _CM_SLIP_MIGRATE_LOCK_DEFERRED):
             return
         try:
             with get_db_conn() as conn:
@@ -13967,12 +13984,14 @@ def _cm_ensure_schema():
                     # catching an error alone leaves PostgreSQL aborted.
                     cur.execute("SAVEPOINT cm_slip_migration")
                     slip_ready = False
+                    slip_lock_deferred = False
                     try:
                         cur.execute(_CM_SLIP_MIGRATE_DDL)
                         slip_ready = True
                     except Exception as mig_err:
                         cur.execute("ROLLBACK TO SAVEPOINT cm_slip_migration")
                         app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
+                        slip_lock_deferred = _cm_slip_migrate_lock_timeout(mig_err)
                     finally:
                         cur.execute("RELEASE SAVEPOINT cm_slip_migration")
                     cur.execute("SAVEPOINT cm_shadow_migration")
@@ -13986,6 +14005,7 @@ def _cm_ensure_schema():
                 conn.commit()
             _CM_SCHEMA_READY = True
             _CM_SLIP_MIGRATE_READY = slip_ready
+            _CM_SLIP_MIGRATE_LOCK_DEFERRED = bool(slip_lock_deferred and not slip_ready)
             app.logger.info("CM required schema ready (optional migration failures logged separately)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")

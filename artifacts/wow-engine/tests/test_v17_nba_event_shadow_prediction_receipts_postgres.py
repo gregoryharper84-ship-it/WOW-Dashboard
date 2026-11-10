@@ -26,35 +26,15 @@ TABLE = "public.wow_nba_event_shadow_predictions"
 
 def _dsn() -> str:
     """Return an explicitly authorized local disposable PostgreSQL target."""
+    from tests.postgres_disposable_dsn import require_disposable_local_postgres_dsn
+
     dsn = os.environ.get("WOW_TEST_POSTGRES_DSN")
     if not dsn:
         pytest.skip(
             "WOW_TEST_POSTGRES_UNAVAILABLE: set WOW_TEST_POSTGRES_DSN to an "
             "authorized disposable PostgreSQL database"
         )
-    # Both CI and local pgserver must explicitly opt in to disposable DB use.
-    # Never use a hostless URI as proof of locality: libpq can take the target
-    # from PGHOST, PGHOSTADDR or a service definition.
-    if os.environ.get("WOW_TEST_POSTGRES_DISPOSABLE") != "1":
-        pytest.fail("WOW_TEST_POSTGRES_DISPOSABLE_REQUIRED", pytrace=False)
-    params = psycopg.conninfo.conninfo_to_dict(dsn)
-    host = params.get("host") or os.environ.get("PGHOST")
-    hostaddr = params.get("hostaddr") or os.environ.get("PGHOSTADDR")
-    service = params.get("service") or os.environ.get("PGSERVICE")
-    # Libpq supports comma-delimited failover hosts. Every entry must be
-    # local; a local first entry must not authorize a remote fallback.
-    hosts = host.split(",") if host else []
-    if (
-        hostaddr or service
-        or any(
-            not entry
-            or (entry not in {"localhost", "127.0.0.1", "::1"}
-                and not entry.startswith("/"))
-            for entry in hosts
-        )
-    ):
-        pytest.fail("WOW_TEST_POSTGRES_REMOTE_TARGET_FORBIDDEN", pytrace=False)
-    return dsn
+    return require_disposable_local_postgres_dsn(dsn)
 
 
 def _connect(*, autocommit: bool = True):

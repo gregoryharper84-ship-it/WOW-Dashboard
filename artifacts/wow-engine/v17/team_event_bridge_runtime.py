@@ -418,8 +418,21 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
         registered = registration is not None
         probe = probe_sport(sport)
         certification, certification_id = certification_state(sport, registered=registered)
+        # NBA may be registered while canonical server hydration is still absent.
+        # Keep the typed scorer failure, but do not report health as UP.
+        nba_hydration_blocked = registered and sport == "NBA"
+        scoring_blockers = (
+            ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+            if nba_hydration_blocked else []
+        )
         health[sport] = {
-            "status": "UP" if registered else MODEL_UNAVAILABLE,
+            "status": (
+                "BLOCKED" if nba_hydration_blocked
+                else "UP" if registered
+                else MODEL_UNAVAILABLE
+            ),
+            "request_scoring_path_ready": bool(registered and not nba_hydration_blocked),
+            "readiness_blockers": scoring_blockers,
             "registered": registered,
             "registered_capability": registered,
             "registry_state": resolve_state(sport, registered=registered, probe=probe),

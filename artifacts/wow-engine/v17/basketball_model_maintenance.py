@@ -146,7 +146,8 @@ def _public_failure_code(exc: Exception, fallback: str) -> str:
     if not isinstance(exc, (BasketballHydrationError, RuntimeError)):
         return fallback
     raw = str(exc).strip()[:256]
-    token = raw.split(":", 1)[0].split(None, 1)[0]
+    head = raw.split(":", 1)[0].split(None, 1)
+    token = head[0] if head else ""
     # Values come only from this module's literal allowlist. Unknown prefixes,
     # arbitrary RuntimeError messages and provider/DB details use the fallback.
     return _PUBLIC_FAILURE_CODE_MAP.get(

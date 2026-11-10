@@ -986,6 +986,11 @@ def test_nba_bridge_registration_and_model_invocation(monkeypatch):
     reg = bridge_runtime.TEAM_EVENT_BRIDGES["NBA"]
     assert reg.adapter_name == "V17_NBA_TEAM_EVENT_BRIDGE"
     assert reg.controlling_specialist == "NBA_GAME_WIN_PROBABILITY_EXPERT_V1"
+    nba_health = bridge_runtime.team_event_bridge_health()["NBA"]
+    assert nba_health["registered"] is True
+    assert nba_health["status"] == "BLOCKED"
+    assert nba_health["request_scoring_path_ready"] is False
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in nba_health["readiness_blockers"]
 
     from datetime import datetime, timedelta, timezone
     future_start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()

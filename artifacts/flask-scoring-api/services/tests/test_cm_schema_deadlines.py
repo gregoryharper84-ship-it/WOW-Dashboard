@@ -18,6 +18,7 @@ def _bootstrap_namespace(connection):
     namespace = {
         "_CM_SCHEMA_READY": False,
         "_CM_SLIP_MIGRATE_READY": False,
+        "_CM_SLIP_MIGRATE_LOCK_DEFERRED": False,
         "_CM_SCHEMA_LOCK": threading.Lock(),
         "get_db_conn": lambda: connection,
         "app": SimpleNamespace(logger=logging.getLogger(__name__)),
@@ -29,6 +30,8 @@ def _bootstrap_namespace(connection):
                     "_CM_SCHEMA_DDL", "_CM_SLIP_MIGRATE_DDL", "_CM_SHADOW_RESULT_MIGRATE_DDL"
                 ):
                     namespace[target.id] = ast.literal_eval(node.value)
+        if isinstance(node, ast.FunctionDef) and node.name == "_cm_slip_migrate_lock_timeout":
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(APP), "exec"), namespace)
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(APP), "exec"), namespace)
     return namespace
 
@@ -110,6 +113,7 @@ def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema(
     ns["_cm_ensure_schema"]()
     assert ns["_CM_SCHEMA_READY"]
     assert not ns["_CM_SLIP_MIGRATE_READY"]
+    assert not ns["_CM_SLIP_MIGRATE_LOCK_DEFERRED"]
     conn.fail = None
     ns["_cm_ensure_schema"]()
     assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 2
@@ -118,6 +122,28 @@ def test_cm_optional_slip_failure_is_retried_without_restarting_required_schema(
     count = len(conn.statements)
     ns["_cm_ensure_schema"]()
     assert len(conn.statements) == count
+
+
+def test_cm_optional_slip_lock_timeout_defers_further_retries():
+    """Persistent lock timeouts must not make every later call re-ALTER cm_slips."""
+    class LockTimeout(RuntimeError):
+        pgcode = "55P03"
+
+    conn = Connection()
+    def execute(statement):
+        conn.statements.append(statement)
+        if "ALTER TABLE cm_slips" in statement:
+            raise LockTimeout("canceling statement due to lock timeout")
+    conn.execute = execute
+    ns = _bootstrap_namespace(conn)
+    ns["_cm_ensure_schema"]()
+    assert ns["_CM_SCHEMA_READY"]
+    assert not ns["_CM_SLIP_MIGRATE_READY"]
+    assert ns["_CM_SLIP_MIGRATE_LOCK_DEFERRED"]
+    count = len(conn.statements)
+    ns["_cm_ensure_schema"]()
+    assert len(conn.statements) == count
+    assert conn.statements.count(ns["_CM_SLIP_MIGRATE_DDL"]) == 1
 
 
 def test_cm_real_postgres_held_lock_timeout_and_retry(tmp_path):
