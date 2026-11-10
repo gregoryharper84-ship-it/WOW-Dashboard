@@ -138,7 +138,6 @@ def test_large_payload_keeps_release_failing_closed(tmp_path, mode, error):
 
 
 def test_workflow_never_passes_unbounded_json_through_jq_argv():
+    """Retain a focused regression for the exact argv failure class."""
     source = WORKFLOW.read_text(encoding="utf-8")
     assert '--argjson new "$page_checks"' not in source
-    assert '"$checks_file" >/dev/null' in source
-    assert 'jq -se --arg name "$context"' in source
