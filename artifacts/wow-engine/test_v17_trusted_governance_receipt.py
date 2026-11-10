@@ -691,6 +691,24 @@ def test_v4_postmerge_release_verifies_five_pinned_checks_and_exact_main_lineage
     assert "v4_exact_head_qa_release_checks: VERIFIED" in text
 
 
+def test_release_verifier_uses_deterministic_live_sha_and_agent_is_advisory():
+    """Paid ChatGPT observation must not own release status; retain App/SIRT gates."""
+    text = RELEASE.read_text(encoding="utf-8")
+    assert "deployments: read" in text
+    assert "Verify deterministic exact production state" in text
+    assert "DEPLOYED_SHA_DRIFT" in text
+    assert "deployed_sha" in text
+    assert '"status": "PRODUCTION_VERIFIED"' in text
+    assert '"status": "PENDING"' in text
+    assert "steps.deterministic.outputs.result" in text
+    assert "Provider: Deterministic GitHub/Render exact-SHA receipt" in text
+    agent = text.split("- name: Release / Production Verification agent", 1)[1].split(
+        "- name: Publish release verification receipt", 1
+    )[0]
+    assert "continue-on-error: true" in agent
+    assert "wow-chatgpt-agent" in agent
+
+
 def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     """P1 regression: don't occupy 30min runners on obsolete exact-head SHAs.
 

@@ -15,6 +15,7 @@ permissions:
   actions: read
   checks: read
   contents: read
+  deployments: read
   pull-requests: write
 
 concurrency:
@@ -190,23 +191,119 @@ jobs:
             https://wow-governed-probability-engine.onrender.com/governance \
             > artifacts/wow-engine/v17/.release-evidence/governance.json
 
+      - name: Verify deterministic exact production state
+        if: steps.pr.outputs.number != ''
+        id: deterministic
+        shell: bash
+        env:
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+          RESULT_PATH: ${{ runner.temp }}/deterministic-release-result.json
+        run: |
+          set -euo pipefail
+          result="$RESULT_PATH"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = Path("artifacts/wow-engine/v17/.release-evidence")
+          health = json.loads((evidence / "health-live.json").read_text(encoding="utf-8"))
+          governance = json.loads((evidence / "governance.json").read_text(encoding="utf-8"))
+          main_sha = (evidence / "main-sha.txt").read_text(encoding="utf-8").strip()
+          merge_sha = os.environ["MERGE_SHA"].strip()
+
+          if not isinstance(health, dict) or health.get("status") != "ok":
+              raise SystemExit("RELEASE_HEALTH_LIVE_NOT_OK")
+          if health.get("can_execute") is not False:
+              raise SystemExit("RELEASE_HEALTH_CAN_EXECUTE_MUST_BE_FALSE")
+          if not isinstance(governance, dict):
+              raise SystemExit("RELEASE_GOVERNANCE_NOT_OBJECT")
+          if governance.get("can_execute") is not False:
+              raise SystemExit("RELEASE_GOVERNANCE_CAN_EXECUTE_MUST_BE_FALSE")
+          # Row-scoped publication leaves the global flag null; never allow true.
+          if governance.get("probability_publishable") not in (False, None):
+              raise SystemExit("RELEASE_GOVERNANCE_PROBABILITY_PUBLISHABLE_NOT_ROW_SCOPED")
+
+          live_sha = str(
+              governance.get("deployed_sha")
+              or health.get("deployed_sha")
+              or ""
+          ).strip()
+          if not live_sha:
+              payload = {
+                  "status": "PENDING",
+                  "main_sha": main_sha,
+                  "production_sha": "",
+                  "acceptance": "HEALTH_AND_GOVERNANCE_PASS",
+                  "reconciliation": "DEPLOYED_SHA_MISSING",
+                  "blocker": "DEPLOYED_SHA_MISSING",
+                  "next_action": "Wait for live /governance deployed_sha and rerun release verification",
+                  "can_execute": False,
+              }
+          elif live_sha != main_sha:
+              payload = {
+                  "status": "PENDING",
+                  "main_sha": main_sha,
+                  "production_sha": live_sha,
+                  "acceptance": "HEALTH_AND_GOVERNANCE_PASS",
+                  "reconciliation": "DEPLOYED_SHA_DRIFT",
+                  "blocker": "DEPLOYED_SHA_DRIFT",
+                  "next_action": (
+                      "Deploy protected main through the authorized release path, "
+                      "then confirm web/worker SHA parity and rerun verification"
+                  ),
+                  "can_execute": False,
+              }
+          elif merge_sha and merge_sha != main_sha and live_sha != merge_sha:
+              # Merge commit must be on main already; live tip should equal main.
+              payload = {
+                  "status": "PENDING",
+                  "main_sha": main_sha,
+                  "production_sha": live_sha,
+                  "acceptance": "HEALTH_AND_GOVERNANCE_PASS",
+                  "reconciliation": "MERGE_SHA_NOT_LIVE_TIP",
+                  "blocker": "MERGE_SHA_NOT_LIVE_TIP",
+                  "next_action": "Confirm protected-main tip includes the merge SHA and is live",
+                  "can_execute": False,
+              }
+          else:
+              payload = {
+                  "status": "PRODUCTION_VERIFIED",
+                  "main_sha": main_sha,
+                  "production_sha": live_sha,
+                  "acceptance": "HEALTH_AND_GOVERNANCE_PASS",
+                  "reconciliation": "LIVE_DEPLOYED_SHA_MATCHES_PROTECTED_MAIN",
+                  "blocker": "",
+                  "next_action": "",
+                  "can_execute": False,
+              }
+
+          Path(os.environ["RESULT_PATH"]).write_text(
+              json.dumps(payload, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          compact=$(jq -c . "$result")
+          echo "result=$compact" >> "$GITHUB_OUTPUT"
+          cat "$result" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Release / Production Verification agent
         if: steps.pr.outputs.number != ''
         id: release_agent
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
-            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
-            the merged PR, and artifacts/wow-engine/v17/.release-evidence/**.
-            The workflow verified source-pinned exact-head regression CI and the five
-            deterministic App-pinned release checks, including QA and Release Authority.
-            This does NOT certify independent semantic review. The GitHub merge SHA is
-            on protected main. Independently verify production LIVE SHA, health, model
-            behavior and settlement/persistence. Without exact proof return PENDING.
-            Do not edit, merge, deploy or authorize wagers. Preserve can_execute=false.
+            You are an advisory WOW V17 RELEASE_OBSERVABILITY_AGENT. Deterministic
+            exact-SHA health/governance comparison already owns the published status.
+            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md
+            and artifacts/wow-engine/v17/.release-evidence/** only for advisory notes.
+            Independent SIRT and protected App QA/Release decisions remain authoritative
+            and are not replaced by this advisory step. Preserve can_execute=false.
           output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
 
       - name: Publish release verification receipt
@@ -214,7 +311,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
-          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          RESULT: ${{ steps.deterministic.outputs.result }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
         run: |
@@ -223,7 +320,7 @@ jobs:
           {
             echo "## Release / Production Verification Agent"
             echo
-            echo "Provider: OpenAI/ChatGPT"
+            echo "Provider: Deterministic GitHub/Render exact-SHA receipt"
             echo
             echo "- governed_pr_head_sha: `$HEAD_SHA`"
             echo "- protected_main_merge_sha: `$MERGE_SHA`"
