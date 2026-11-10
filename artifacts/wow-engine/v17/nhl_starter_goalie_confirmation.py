@@ -288,7 +288,9 @@ def confirm_nhl_starter_goalie(
             event_id=event_id,
         )
 
-    observed = max(_time(row.get("observed_at")) for row in usable)  # type: ignore[type-var]
+    # The agreement is only as fresh as its oldest source: the gate's freshness
+    # window must cover every source, not just the most recently observed one.
+    observed = min(_time(row.get("observed_at")) for row in usable)  # type: ignore[type-var]
     binding = {
         "official_event_id": event_id,
         "event_start_time_utc": canonical["event_start_time"].isoformat(),

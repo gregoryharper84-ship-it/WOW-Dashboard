@@ -13,7 +13,6 @@ adapter can produce a probability, rank or execution grant.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
@@ -57,17 +56,6 @@ def _time(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
 
 
-def _header_time(headers: Mapping[str, Any]) -> datetime | None:
-    raw = headers.get("Date") if isinstance(headers, Mapping) else None
-    if not raw:
-        return None
-    try:
-        parsed = parsedate_to_datetime(str(raw))
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
-
-
 def _default_get(url: str, **kwargs: Any) -> Any:
     import requests
 
@@ -98,7 +86,7 @@ def _fetch(
     get: Callable[..., Any],
     timeout_seconds: float,
     max_bytes: int,
-) -> tuple[Mapping[str, Any], bytes, Mapping[str, Any]]:
+) -> tuple[Mapping[str, Any], bytes]:
     try:
         response = get(
             url,
@@ -133,7 +121,7 @@ def _fetch(
         ) from exc
     if not isinstance(payload, Mapping):
         raise NHLStarterSourceError("NHL_STARTER_FEED_SCHEMA_DRIFT", "root")
-    return payload, content, dict(getattr(response, "headers", {}) or {})
+    return payload, content
 
 
 def _abbrev(value: Any, *, error: str = "NHL_STARTER_FEED_SCHEMA_DRIFT") -> str:
@@ -154,7 +142,9 @@ def _goalie_id(value: Any, side: str) -> str:
     return goalie_id
 
 
-def _status(value: Mapping[str, Any], side: str) -> str:
+def _status(value: Any, side: str) -> str:
+    if not isinstance(value, Mapping):
+        raise NHLStarterSourceError("NHL_STARTER_FEED_SCHEMA_DRIFT", f"{side}_goalie")
     status = str(value.get("status") or "").strip().upper()
     if not status:
         raise NHLStarterSourceError("NHL_STARTER_FEED_STATUS_MISSING", side)
@@ -224,13 +214,11 @@ def _receipt(
     }
 
 
-def _observed_at(
-    payload_value: Any,
-    headers: Mapping[str, Any],
-    *,
-    event_id: str,
-) -> datetime:
-    observed = _time(payload_value) or _header_time(headers)
+def _observed_at(payload_value: Any, *, event_id: str) -> datetime:
+    # Only the payload may say when the source observed the lineup. An HTTP
+    # `Date` header is the server's clock, not observation evidence, so it can
+    # never stand in for a missing or unparseable payload timestamp.
+    observed = _time(payload_value)
     if observed is None:
         raise NHLStarterSourceError("NHL_STARTER_FEED_TIMESTAMP_MISSING", event_id)
     return observed
@@ -247,7 +235,7 @@ def collect_club_lineup_receipt(
 ) -> dict[str, Any]:
     """Collect one club pregame lineup contract into a canonical receipt."""
     url = _validate_endpoint(endpoint, CLUB_ALLOWED_HOSTS, CLUB_ENDPOINT_ENV)
-    payload, content, headers = _fetch(
+    payload, content = _fetch(
         url,
         get=get or _default_get,
         timeout_seconds=timeout_seconds,
@@ -270,7 +258,7 @@ def collect_club_lineup_receipt(
         raise NHLStarterSourceError(
             "NHL_STARTER_FEED_STATUS_DIVERGENT", f"{home_status}/{away_status}"
         )
-    observed = _observed_at(payload.get("observedAt"), headers, event_id=event_id)
+    observed = _observed_at(payload.get("observedAt"), event_id=event_id)
     return _receipt(
         provider="NHL_OFFICIAL_CLUB_FEED",
         source_kind="STARTING_LINEUP",
@@ -300,7 +288,7 @@ def collect_league_roster_receipt(
 ) -> dict[str, Any]:
     """Collect one league roster designation contract into a canonical receipt."""
     url = _validate_endpoint(endpoint, LEAGUE_ALLOWED_HOSTS, LEAGUE_ENDPOINT_ENV)
-    payload, content, headers = _fetch(
+    payload, content = _fetch(
         url,
         get=get or _default_get,
         timeout_seconds=timeout_seconds,
@@ -341,7 +329,7 @@ def collect_league_roster_receipt(
         raise NHLStarterSourceError(
             "NHL_STARTER_FEED_STATUS_DIVERGENT", f"{home_status}/{away_status}"
         )
-    observed = _observed_at(payload.get("updatedAt"), headers, event_id=event_id)
+    observed = _observed_at(payload.get("updatedAt"), event_id=event_id)
     return _receipt(
         provider="NHL_OFFICIAL_LINEUP_FEED",
         source_kind="OFFICIAL_ROSTER_DESIGNATION",

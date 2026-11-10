@@ -674,7 +674,7 @@ proves fitted-model absence. A passing gate still means only input completeness.
 | `NHL_STARTER_FEED_START_TIME_MISMATCH` | Receipt kickoff differs from the canonical start by more than 60 seconds. | `v17/nhl_starter_feed_adapters.py` | — | No |
 | `NHL_STARTER_FEED_TEAM_MISMATCH` | Receipt home/away abbreviations differ from the canonical identity. | `v17/nhl_starter_feed_adapters.py` | — | No |
 | `NHL_STARTER_FEED_TEAM_NOT_IN_EVENT` | League roster feed designates a starter for a team outside this event. | `v17/nhl_starter_feed_adapters.py` | — | No |
-| `NHL_STARTER_FEED_TIMESTAMP_MISSING` | Neither the payload observation time nor the HTTP `Date` header supplies a timezone-aware timestamp. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TIMESTAMP_MISSING` | The payload supplies no timezone-aware observation timestamp. An HTTP `Date` header is not accepted as observation evidence. | `v17/nhl_starter_feed_adapters.py` | — | No |
 | `NHL_STARTER_FEED_TIMESTAMP_IN_FUTURE` | Observation time is later than the run instant. | `v17/nhl_starter_feed_adapters.py` | — | No |
 | `NHL_STARTER_FEED_AFTER_KICKOFF` | Observation time is at or after the official start. | `v17/nhl_starter_feed_adapters.py` | — | No |
 | `NHL_STARTER_FEED_STALE` | Observation is older than the 90-minute pregame confirmation window. | `v17/nhl_starter_feed_adapters.py` | — | No |

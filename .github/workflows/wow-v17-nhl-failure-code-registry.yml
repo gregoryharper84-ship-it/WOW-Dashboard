@@ -26,6 +26,10 @@ jobs:
         working-directory: artifacts/wow-engine
     steps:
       - uses: actions/checkout@v4
+        # A pull-request test file runs in this job; the checkout token must not
+        # be readable from .git/config while it does.
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -63,5 +67,5 @@ jobs:
             echo 'Fails when an emitted failure code is unregistered, a documented code is no longer emitted,'
             echo 'a row names the wrong module, a shared emitter is left undocumented, or a generated'
             echo 'sport registry document is stale.'
-            echo '`can_execute=false`'
+            echo 'These guards read documentation and source text; they do not check or grant execution authority.'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -65,7 +65,10 @@ def test_documented_emitter_is_the_actual_emitting_module():
         assert emitter == expected, (code, emitter, expected)
         module = ROOT / expected
         assert module.is_file(), expected
-        assert code in module.read_text(encoding="utf-8"), (code, expected)
+        # The full code must appear as its own quoted literal; a substring match
+        # would let HELD pass on any module containing it inside a longer name.
+        text = module.read_text(encoding="utf-8")
+        assert f'"{code}"' in text or f"'{code}'" in text, (code, expected)
         assert stage.strip(), code
         assert meaning.strip(), code
         assert grants.strip() == "None", code

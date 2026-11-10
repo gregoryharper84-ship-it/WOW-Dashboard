@@ -207,6 +207,17 @@ def test_after_kickoff_stale_and_missing_time_hold():
         club(get=getter(club_payload(observedAt=None)))
     assert missing_exc.value.code == "NHL_STARTER_FEED_TIMESTAMP_MISSING"
 
+    # A well-formed HTTP Date header is the server's clock, not observation
+    # evidence, and must not rescue a payload that carries no timestamp.
+    with pytest.raises(NHLStarterSourceError) as header_exc:
+        club(
+            get=getter(
+                club_payload(observedAt=None),
+                headers={"Date": "Tue, 10 Nov 2026 16:55:00 GMT"},
+            )
+        )
+    assert header_exc.value.code == "NHL_STARTER_FEED_TIMESTAMP_MISSING"
+
 
 def test_divergent_or_missing_goalie_status_holds():
     payload = club_payload()
@@ -220,6 +231,13 @@ def test_divergent_or_missing_goalie_status_holds():
     with pytest.raises(NHLStarterSourceError) as missing:
         club(get=getter(payload))
     assert missing.value.code == "NHL_STARTER_FEED_STATUS_MISSING"
+
+    # A goalie row that is not an object is schema drift, not an AttributeError.
+    payload = club_payload()
+    payload["startingGoalies"]["home"] = "CONFIRMED"
+    with pytest.raises(NHLStarterSourceError) as drift:
+        club(get=getter(payload))
+    assert drift.value.code == "NHL_STARTER_FEED_SCHEMA_DRIFT"
 
 
 def test_league_ambiguous_unknown_team_and_partial_starters_hold():

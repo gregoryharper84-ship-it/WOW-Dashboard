@@ -45,7 +45,9 @@ latest_nfl_health AS (
 prop_model_counts AS (
     -- Props certify per exact sport/stat family, never per sport as a whole.
     -- A certified MLB family cannot stand in for a different stat_type.
-    SELECT sport, stat_type,
+    -- Group on the same case-insensitive identity the registry lookup uses, so
+    -- 'MLB'/'mlb' metadata never splits one family into two findings.
+    SELECT upper(sport) AS sport, upper(stat_type) AS stat_type,
            count(*)::int AS fitted_artifact_count,
            count(*) FILTER (
                WHERE active AND promoted
@@ -58,7 +60,7 @@ prop_model_counts AS (
                  AND supported_line_max IS NOT NULL
            )::int AS certified_line_range_artifacts
     FROM public.wow_prop_fitted_model_artifacts
-    GROUP BY sport, stat_type
+    GROUP BY upper(sport), upper(stat_type)
 ),
 requested_props(sport) AS (
     VALUES ('MLB'), ('NBA'), ('NFL'), ('WNBA')

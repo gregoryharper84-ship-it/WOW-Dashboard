@@ -61,8 +61,10 @@ def test_nfl_missing_incomplete_or_nonpassing_health_is_fail_closed():
 
 def test_prop_preflight_is_per_exact_stat_family_not_per_sport():
     sql = SQL.read_text()
-    # A certified family cannot stand in for a different stat_type.
-    assert 'GROUP BY sport, stat_type' in sql
+    # A certified family cannot stand in for a different stat_type, and the
+    # grouping must match the registry's case-insensitive family identity.
+    assert 'GROUP BY upper(sport), upper(stat_type)' in sql
+    assert 'upper(sport) AS sport, upper(stat_type) AS stat_type' in sql
     assert 'prop_stat_family' in sql
     assert "'PROP_EXACT_LINE_RANGE_NOT_CERTIFIED'" in sql
     assert 'certified_line_range_artifacts' in sql
