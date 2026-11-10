@@ -45,3 +45,25 @@ def test_no_invented_metric_thresholds_or_blanket_promotion():
     for token in ('0.2350','0.0500','9065','500','WILSON_CALIBRATED_LOWER_BOUND',
                   "'CERTIFIED_ACTIVE'", "'SHADOW'::text"):
         assert token not in sql
+
+def test_nfl_missing_incomplete_or_nonpassing_health_is_fail_closed():
+    sql = SQL.read_text()
+    # These guards prevent missing NFL health from being misreported as route-ready.
+    for condition in (
+        'nh.graded_n IS NULL',
+        'nh.minimum_forward_required IS NULL',
+        "nh.certification_recommendation IS DISTINCT FROM 'FORWARD_EVIDENCE_PASS'",
+        'nh.graded_n < nh.minimum_forward_required',
+    ):
+        assert condition in sql
+    assert "THEN 'DO_NOT_CERTIFY_YET'" in sql
+
+
+def test_prop_registry_uses_canonical_certified_lifecycle_not_publish_flag():
+    sql = SQL.read_text()
+    # The prop registry intentionally CHECKs probability_publishable = false;
+    # this inventory must match the certified artifact RPC's lifecycle filter.
+    assert "lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')" in sql
+    assert 'WHERE active AND promoted AND probability_publishable' not in sql
+    assert "'PROP_REGISTRY_FLAGS_PRESENT_REQUIRES_CERTIFIED_ROUTE_REPLAY'" in sql
+    assert 'FALSE AS preflight_authorizes_publication' in sql
