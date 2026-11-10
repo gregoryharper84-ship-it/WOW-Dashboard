@@ -291,5 +291,16 @@ def test_duplicate_run_is_idempotent_and_ruled_out_stays_purged():
     scratch = next(row for row in first["rows"] if row["identity"]["player"] == "Late Scratch")
     assert scratch["row_status"] == "PURGED"
     assert scratch["probability_publishable"] is False
+    assert scratch["result"]["probability_publishable"] is False
+    assert scratch["result"]["rank_eligible"] is False
+    page = read_row_detail_page(db, run_id=first["run_id"])
+    assert page["status"] == "OK"
+    detail = next(
+        row["detail"] for row in page["rows"]
+        if row["identity"]["player"] == "Late Scratch"
+    )
+    assert detail["result"]["probability_publishable"] is False
+    assert detail["result"]["rank_eligible"] is False
+    assert detail["can_execute"] is False
     assert first["reconciliation"]["rows_purged"] == 1
     assert first["reconciliation"]["balanced"] is True
