@@ -422,8 +422,7 @@ def test_retired_governance_review_workflows_have_no_automatic_events():
         "wow-v17-existing-pr-governance-review.yml",
         "wow-v17-simple-security-review.yml",
     ):
-        source = (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
-        triggers = source.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
-        assert triggers.startswith("  workflow_dispatch:\n"), filename
-        for event in ("pull_request_target", "pull_request", "workflow_run", "check_run", "push", "schedule"):
-            assert f"  {event}:" not in triggers, (filename, event)
+        workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text(encoding="utf-8"))
+        triggers = workflow.get(True, workflow.get("on"))
+        events = {triggers} if isinstance(triggers, str) else set(triggers or ())
+        assert events == {"workflow_dispatch"}, filename
