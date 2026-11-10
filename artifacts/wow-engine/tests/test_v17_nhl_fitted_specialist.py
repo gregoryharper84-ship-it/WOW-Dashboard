@@ -143,15 +143,46 @@ def _legacy_event(event: dict) -> dict:
     return legacy
 
 
-def _reconstruct(events: list[dict]):
-    return nhl.reconstruct_nhl_pregame_features(
-        events,
-        official_event_id="2026029001",
-        event_start_time=START.isoformat(),
-        home_team="BOS",
-        away_team="NYR",
-        season=SEASON,
-    )
+def _timeline_receipt(
+    events: list[dict],
+    *,
+    home: str = "BOS",
+    away: str = "NYR",
+    target_start: datetime = START,
+    season: str = SEASON,
+) -> dict:
+    """Test-authority club-prior receipt for a synthetic timeline."""
+    clubs = {home: set(), away: set()}
+    for event in events:
+        start = datetime.fromisoformat(str(event["event_start_time"]).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if start >= target_start:
+            continue
+        event_id = str(event["official_event_id"])
+        for club in (str(event["home_participant"]), str(event["away_participant"])):
+            if club in clubs:
+                clubs[club].add(event_id)
+    return {
+        "provenance_complete": True,
+        "season": str(season),
+        "club_prior_event_ids": {club: sorted(ids) for club, ids in clubs.items()},
+    }
+
+
+def _reconstruct(events: list[dict], **kwargs):
+    params = {
+        "official_event_id": "2026029001",
+        "event_start_time": START.isoformat(),
+        "home_team": "BOS",
+        "away_team": "NYR",
+        "season": SEASON,
+        "source_timeline_receipt": kwargs.get(
+            "source_timeline_receipt", _timeline_receipt(events)
+        ),
+    }
+    params.update(kwargs)
+    return nhl.reconstruct_nhl_pregame_features(events, **params)
 
 
 def _request(**evidence_overrides):
@@ -166,6 +197,7 @@ def _request(**evidence_overrides):
         "source_snapshot_id": "nhl-source-snapshot-20261119",
         "season": SEASON,
         "neutral_site": False,
+        "source_timeline_receipt": _timeline_receipt(_events()),
     }
     evidence.update(evidence_overrides)
     return SimpleNamespace(
@@ -181,13 +213,15 @@ def _request(**evidence_overrides):
 
 
 def _reconstruction(db=None):
+    events = (db or _DB()).table(nhl.SOURCE_TABLE).execute().data
     return nhl.reconstruct_nhl_pregame_features(
-        (db or _DB()).table(nhl.SOURCE_TABLE).execute().data,
+        events,
         official_event_id="2026029001",
         event_start_time=START.isoformat(),
         home_team="BOS",
         away_team="NYR",
         season=SEASON,
+        source_timeline_receipt=_timeline_receipt(events),
     )
 
 
@@ -295,12 +329,90 @@ def test_empirical_calibrator_bounds_contain_the_selected_probability():
     )
     assert package["calibrated_lower_bound"] is not None
     assert package["calibrated_upper_bound"] is not None
-    assert package["calibrated_lower_bound"] <= package["calibrated_probability"]
-    assert package["calibrated_probability"] <= package["calibrated_upper_bound"]
+    # Generic calibrated_* stay home-oriented; selected_* track the winner side.
+    assert package["calibrated_probability"] == package["calibrated_home_probability"]
+    assert package["calibrated_lower_bound"] == package["calibrated_home_lower_bound"]
+    assert package["calibrated_upper_bound"] == package["calibrated_home_upper_bound"]
+    assert (
+        package["selected_calibrated_lower_bound"]
+        <= package["selected_calibrated_probability"]
+        <= package["selected_calibrated_upper_bound"]
+    )
     assert package["blockers"] == []
     assert package["code"] == "SPORTING_PROBABILITY_SCORED_CANDIDATE"
     assert package["probability_publishable"] is False
     assert package["can_execute"] is False
+
+
+def test_generic_calibrated_fields_remain_home_oriented_for_away_selection():
+    candidate = nhl.load_nhl_fitted_candidate(_DB(), as_of_utc=NOW)
+    calibrator = {
+        "method": nhl.EMPIRICAL_CALIBRATION_METHOD,
+        "training_n": 1226,
+        "selection_version": "FORWARD_CALIBRATION_SELECTION_V2",
+        "bins": [
+            {
+                "raw_mean": 0.20,
+                "calibrated_probability": 0.20,
+                "wilson_lower": 0.10,
+                "wilson_upper": 0.30,
+            }
+        ],
+    }
+    # Force a low home lower-bound so the selected participant is away.
+    empirical = replace(candidate, calibrator=calibrator)
+    package = nhl.score_nhl_fitted_candidate(
+        empirical, _reconstruction(), event_key="NHL:2026029001", evidence={}
+    )
+    assert package["selected_participant"] == "NYR"
+    assert package["calibrated_probability"] == package["calibrated_home_probability"]
+    assert package["selected_calibrated_probability"] == package["calibrated_away_probability"]
+    outcome = _completed_registered(
+        TeamEventRequestRow(
+            research_run_id="run",
+            objective_lane="OUTRIGHT_WIN_PROBABILITY",
+            sport="NHL",
+            league="NHL",
+            event_key="NHL:2026029001",
+            event_state="PREGAME",
+            event_date="2026-11-19",
+            timezone="America/Chicago",
+            price_required_for_objective=False,
+            home_team="BOS",
+            away_team="NYR",
+        ),
+        package,
+    )
+    assert outcome["terminal_status"] == "COMPLETED"
+    assert outcome["calibrated_probability"] == package["calibrated_away_probability"]
+
+
+def test_missing_or_mismatched_timeline_receipt_holds_incomplete():
+    events = _events()
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.reconstruct_nhl_pregame_features(
+            events,
+            official_event_id="2026029001",
+            event_start_time=START.isoformat(),
+            home_team="BOS",
+            away_team="NYR",
+            season=SEASON,
+        )
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
+
+    receipt = _timeline_receipt(events)
+    receipt["club_prior_event_ids"]["BOS"].append("2026029999")
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.reconstruct_nhl_pregame_features(
+            events,
+            official_event_id="2026029001",
+            event_start_time=START.isoformat(),
+            home_team="BOS",
+            away_team="NYR",
+            season=SEASON,
+            source_timeline_receipt=receipt,
+        )
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
 
 
 def test_feature_reconstruction_requires_minimum_prior_games():
@@ -313,6 +425,7 @@ def test_feature_reconstruction_requires_minimum_prior_games():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            source_timeline_receipt=_timeline_receipt(events),
         )
     assert "NHL_PRIOR_GAMES_INSUFFICIENT" in caught.value.blockers
 
@@ -328,6 +441,7 @@ def test_feature_reconstruction_rejects_already_settled_target():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            source_timeline_receipt=_timeline_receipt(events),
         )
     assert "NHL_EVENT_ALREADY_SETTLED" in caught.value.blockers
 
@@ -362,6 +476,7 @@ def test_feature_reconstruction_rejects_conflicting_duplicate_identity():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            source_timeline_receipt=_timeline_receipt(events),
         )
     assert "NHL_SOURCE_EVENT_IDENTITY_CONFLICT" in caught.value.blockers
 
@@ -377,6 +492,7 @@ def test_legacy_source_rows_without_provenance_cannot_be_replayed():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            source_timeline_receipt=_timeline_receipt(events),
         )
     assert "NHL_SOURCE_PROVENANCE_UNVERIFIED" in caught.value.blockers
 
@@ -398,6 +514,7 @@ def test_replay_prefers_a_v2_sibling_over_a_legacy_duplicate():
         home_team="BOS",
         away_team="NYR",
         season=SEASON,
+        source_timeline_receipt=_timeline_receipt(events),
     )
     assert reconstruction.home_prior_games == 5
     assert reconstruction.away_prior_games == 5
@@ -429,6 +546,7 @@ def test_replay_rejects_a_tampered_event_envelope():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            source_timeline_receipt=_timeline_receipt(events),
         )
     assert "NHL_SOURCE_PAYLOAD_HASH_MISMATCH" in caught.value.blockers
 
@@ -450,6 +568,7 @@ def test_reconstruction_requires_explicit_neutral_site_boolean():
             home_team="BOS",
             away_team="NYR",
             season=SEASON,
+            source_timeline_receipt=_timeline_receipt(_events()),
             neutral_site="unknown",
         )
     assert "NHL_NEUTRAL_SITE_UNVERIFIED" in caught.value.blockers
@@ -616,14 +735,16 @@ def test_current_event_rejects_mismatched_or_malformed_season_evidence():
 
 @pytest.mark.parametrize("bad_season", ["20252026", "not-a-season", "²", "٢٠٢٥٢٠٢٦"])
 def test_reconstruction_rejects_mismatched_or_malformed_season_evidence(bad_season):
+    events = _DB().table(nhl.SOURCE_TABLE).execute().data
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl.reconstruct_nhl_pregame_features(
-            _DB().table(nhl.SOURCE_TABLE).execute().data,
+            events,
             official_event_id="2026029001",
             event_start_time=START.isoformat(),
             home_team="BOS",
             away_team="NYR",
             season=bad_season,
+            source_timeline_receipt=_timeline_receipt(events),
         )
     assert caught.value.code == "MODEL_INPUTS_INSUFFICIENT"
     assert "NHL_SEASON_IDENTITY_INVALID" in caught.value.blockers

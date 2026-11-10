@@ -219,20 +219,50 @@ def _target_start() -> datetime:
     return datetime.fromisoformat(str(target["startTimeUTC"]).replace("Z", "+00:00"))
 
 
+
+def _timeline_receipt(rows, *, home, away, target_start, season=SEASON):
+    clubs = {home: set(), away: set()}
+    target = datetime.fromisoformat(str(target_start).replace("Z", "+00:00"))
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    for row in rows:
+        start = datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if start >= target:
+            continue
+        event_id = str(row["official_event_id"])
+        for club in (str(row["home_participant"]), str(row["away_participant"])):
+            if club in clubs:
+                clubs[club].add(event_id)
+    return {
+        "provenance_complete": True,
+        "season": str(season),
+        "club_prior_event_ids": {club: sorted(ids) for club, ids in clubs.items()},
+    }
+
 def _reconstruct_target(rows: list[dict]):
     fixture = _fixture()
     target = next(
         game for game in fixture["games"]
         if str(game["id"]) == str(fixture["target_event_id"])
     )
+    home = target["homeTeam"]["abbrev"]
+    away = target["awayTeam"]["abbrev"]
     return fitted.reconstruct_nhl_pregame_features(
         rows,
         official_event_id=str(target["id"]),
         event_start_time=target["startTimeUTC"],
-        home_team=target["homeTeam"]["abbrev"],
-        away_team=target["awayTeam"]["abbrev"],
+        home_team=home,
+        away_team=away,
         season=SEASON,
         neutral_site=bool(target["neutralSite"]),
+        source_timeline_receipt=_timeline_receipt(
+            rows,
+            home=home,
+            away=away,
+            target_start=target["startTimeUTC"],
+        ),
     )
 
 
@@ -482,6 +512,12 @@ def test_genuine_2026_27_event_replay_matches_training_and_scores():
         away_team=away,
         season=SEASON,
         neutral_site=bool(target["neutralSite"]),
+        source_timeline_receipt=_timeline_receipt(
+            prior,
+            home=home,
+            away=away,
+            target_start=target_start,
+        ),
     )
     _, feature_records = pipeline.reconstruct_training_rows(games)
     training = next(

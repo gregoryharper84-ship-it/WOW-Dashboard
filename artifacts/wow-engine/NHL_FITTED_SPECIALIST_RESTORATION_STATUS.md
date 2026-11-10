@@ -156,10 +156,14 @@ exactly and scores with the governed artifact.
 
 This sandbox has no Supabase write credential, so the live append was not
 executed against `wow-engine-validation`. Until the authorized route runs
-there, replay of a genuine November event holds at
-`NHL_SOURCE_PROVENANCE_UNVERIFIED` because no 2026-27 rows are persisted (and at
-`NHL_PRIOR_GAMES_INSUFFICIENT` if the season is too early). The code path itself
-is proven against the recorded official timeline.
+there, replay of a genuine November event with an empty 2026-27 timeline holds
+at `NHL_PRIOR_GAMES_INSUFFICIENT` once a verified club-prior receipt is
+supplied (there is no event to project, so
+`NHL_SOURCE_PROVENANCE_UNVERIFIED` does not fire). Missing receipt /
+incomplete club-prior proof holds at `NHL_SOURCE_TIMELINE_INCOMPLETE`.
+`NHL_SOURCE_PROVENANCE_UNVERIFIED` applies only when legacy rows exist and are
+projected. The code path itself is proven against the recorded official
+timeline.
 
 ## 5. Current governed evidence and blockers
 
@@ -187,8 +191,9 @@ Typed holds preserved:
 - `NHL_EVENT_IDENTITY_UNVERIFIED`, `NHL_EVENT_TIME_INVALID`,
   `NHL_EVENT_NOT_PREGAME`, `NHL_NEUTRAL_SITE_UNVERIFIED`,
   `NHL_SETTLEMENT_BASIS_UNVERIFIED` — invalid or unsupported inputs.
-- `NHL_PRIOR_GAMES_INSUFFICIENT`, `NHL_SOURCE_EVENT_IDENTITY_CONFLICT`,
-  `NHL_EVENT_ALREADY_SETTLED` — incomplete or conflicting chronological replay.
+- `NHL_PRIOR_GAMES_INSUFFICIENT`, `NHL_SOURCE_TIMELINE_INCOMPLETE`,
+  `NHL_SOURCE_EVENT_IDENTITY_CONFLICT`, `NHL_EVENT_ALREADY_SETTLED` —
+  incomplete or conflicting chronological replay.
 - `NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE` — the selected calibrator has no
   empirical residual/Wilson bound.
 - `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED`,
@@ -204,10 +209,12 @@ Typed holds preserved:
 3. `source_review_status = REQUIRED`; no independent source review or
    prospective forward cohort exists.
 4. The persisted NHL source timeline ends 2026-04-17. No 2026-27 settled rows
-   are present, so a genuine November 2026 event currently holds at
-   `NHL_SOURCE_PROVENANCE_UNVERIFIED` rather than scoring. The append-only
-   re-ingest now exists and is proven locally, but it has not been run against
-   the shared validation DB from this sandbox.
+   are present, so a genuine November 2026 event with a verified empty-prior
+   receipt holds at `NHL_PRIOR_GAMES_INSUFFICIENT` rather than scoring.
+   Without that receipt (or matching official club schedule counts), replay
+   holds at `NHL_SOURCE_TIMELINE_INCOMPLETE`. The append-only re-ingest now
+   exists and is proven locally, but it has not been run against the shared
+   validation DB from this sandbox.
 5. `wow_d1_source_events` historically did not persist `game_type` or
    `neutral_site`. The V2 re-ingest closes that gap for newly appended rows;
    replay refuses legacy rows with `NHL_SOURCE_PROVENANCE_UNVERIFIED` rather
