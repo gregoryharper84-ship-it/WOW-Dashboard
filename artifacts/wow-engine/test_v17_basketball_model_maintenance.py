@@ -1,3 +1,4 @@
+# Exact-head CI requeue after merging #2512 provenance tip.
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
