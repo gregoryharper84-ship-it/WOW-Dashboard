@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Mapping
+import unicodedata
 
 import requests
 
@@ -55,6 +56,12 @@ _TEAM_ALIASES = {
     "washingtoncapitals": "WSH",
     # Historical alias retained only for old slates.
     "arizonacoyotes": "ARI",
+    # ESPN short abbreviations that differ from NHL-owned abbrevs.
+    "la": "LAK",
+    "nj": "NJD",
+    "sj": "SJS",
+    "tb": "TBL",
+    "utah": "UTA",
 }
 
 
@@ -66,7 +73,12 @@ class NHLEventIdentityError(RuntimeError):
 
 
 def _norm(value: Any) -> str:
-    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+    # Fold diacritics first: odds/discovery feeds spell "Montréal Canadiens".
+    folded = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(
+        ch for ch in folded.casefold()
+        if ch.isascii() and ch.isalnum()
+    )
 
 
 def team_abbreviation(value: Any) -> str | None:
