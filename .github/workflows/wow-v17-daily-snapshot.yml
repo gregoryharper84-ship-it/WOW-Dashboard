@@ -86,7 +86,7 @@ jobs:
           import urllib.error
           import urllib.parse
           import urllib.request
-          from datetime import datetime
+          from datetime import datetime, timezone
           from zoneinfo import ZoneInfo
 
           def fresh_oidc_token():
@@ -100,6 +100,35 @@ jobs:
               with urllib.request.urlopen(oidc_request, timeout=20) as response:
                   return json.load(response)["value"]
 
+          def read_serving_sha_at_request(origin: str) -> dict:
+              """Capture live Render tip SHA immediately before the Daily POST.
+
+              Unpaid acceptance requires request-time serving provenance in the
+              workflow summary; checkout head SHA alone is not sufficient.
+              """
+              governance_url = origin.rstrip("/") + "/governance"
+              request = urllib.request.Request(governance_url, method="GET")
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  governance = json.load(response)
+              if not isinstance(governance, dict):
+                  raise RuntimeError("DAILY_SNAPSHOT_GOVERNANCE_RESPONSE_MISSING")
+              serving_sha = str(governance.get("deployed_sha") or "").strip()
+              if not serving_sha:
+                  raise AssertionError("DAILY_SNAPSHOT_SERVING_SHA_MISSING")
+              if governance.get("can_execute") is not False:
+                  raise AssertionError("DAILY_SNAPSHOT_GOVERNANCE_CAN_EXECUTE_INVARIANT_FAILED")
+              if governance.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+                  raise AssertionError("DAILY_SNAPSHOT_GOVERNANCE_TERMINAL_AUTHORITY_MISMATCH")
+              return {
+                  "serving_sha_at_request": serving_sha,
+                  "serving_sha_observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "governance_can_execute": False,
+                  "governance_terminal_authority": "V17_TERMINAL_REDUCER",
+              }
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          serving_provenance = read_serving_sha_at_request(origin)
+
           slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
           payload = {
               "requested_slate_date": slate_date,
@@ -110,7 +139,7 @@ jobs:
               "response_mode": "COMPACT",
           }
           body = json.dumps(payload).encode("utf-8")
-          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/daily-snapshot"
+          endpoint = origin + "/internal/v17/daily-snapshot"
 
           result = None
           transient_statuses = {404, 502, 503, 504}
@@ -181,6 +210,7 @@ jobs:
               "probability_values_logged": False,
               "global_terminal_authority": "V17_TERMINAL_REDUCER",
               "can_execute": False,
+              **serving_provenance,
           }
           print(json.dumps(summary, sort_keys=True))
           PY

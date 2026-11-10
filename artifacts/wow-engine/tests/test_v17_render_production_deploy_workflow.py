@@ -277,6 +277,11 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+    # Request-time Render tip must appear in the unpaid Daily summary (not checkout head).
+    assert "read_serving_sha_at_request" in text
+    assert 'serving_sha_at_request' in text
+    assert "DAILY_SNAPSHOT_SERVING_SHA_MISSING" in text
+    assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
 
 
 def test_post_deploy_canary_classifier_accepts_observation_timeout_as_hold():
