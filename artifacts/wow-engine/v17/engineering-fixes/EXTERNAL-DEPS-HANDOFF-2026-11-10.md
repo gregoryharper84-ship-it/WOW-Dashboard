@@ -87,30 +87,56 @@ PATCH live Render writer settings. This principal prepares verification only.
 
 ### Exact admin verification before any flip
 
-If an administrator still chooses to re-enable the API deploy controller, all of
-the following must be true **before** enabling the workflow (otherwise the
-journal refuses POST or creates competing writers):
+**Preferred path (A) — Lean V4:** leave workflow `disabled_manually`; retain
+native `checksPass` on web + worker; verify with
+`wow-v17-lean-production-readback` + SIRT. Do not enable the API controller.
 
-1. Confirm Lean V4 decision: either (A) keep workflow disabled and retain native
-   `checksPass` (current intended path), **or** (B) deliberately switch back to
-   API-controller-only deploys.
-2. For option (B) only:
-   - PATCH web `srv-da7sa9gu01pc73brt80g` and worker `srv-dapkbc0473hc73c1978g`
-     to `autoDeploy=no` and `autoDeployTrigger=off`; GET-verify both.
-   - Independently attest `RENDER_API_KEY` credential scope for environment
-     `wow-release` (journal requires attested scope + readable secret inventory).
-   - Confirm `wow-release` environment: no admin bypass, main-only branch policy,
-     required QA + Release App admission on exact head.
-   - Enable workflow `359018729` via GitHub Actions UI/API (admin).
-   - Dry-run path: trigger after a green `wow-verify` on main and inspect receipt
-     for `POST_ONCE` vs typed HOLD; never claim deploy from a HOLD receipt.
-3. For option (A) (recommended by Lean V4): leave workflow `disabled_manually`;
-   rely on native `checksPass` + `wow-v17-lean-production-readback` + SIRT.
+**Option (B) — re-enable API controller — is currently BLOCKED**, not a runnable
+cutover checklist. Do not PATCH either service's auto-deploy off, and do not
+enable workflow `359018729`, until every blocker below is cleared by authorized
+principals. The current packet documents why B fails closed; it is not
+permission to proceed.
+
+Hard blockers that keep (B) closed today:
+
+1. **Worker deploy path gap.**
+   `.github/workflows/wow-v17-render-production-deploy.yml` sets
+   `WOW_RENDER_SERVICE_ID` only to web `srv-da7sa9gu01pc73brt80g`. The API
+   controller does **not** deploy worker `srv-dapkbc0473hc73c1978g`. Turning the
+   worker's native `checksPass` off without a separately verified authorized
+   worker writer leaves the worker without a documented deployment path. Keep
+   option B blocked until an authorized worker deployment path is designed,
+   reviewed, and verified (GET identity + write path) — not merely asserted in
+   prose.
+2. **Hard-coded credential-scope HOLD.**
+   `v17/github_release_journal.py` sets
+   `RENDER_CREDENTIAL_SCOPE_ATTESTED = False`. While that constant is false,
+   `plan_release_admission` returns HOLD
+   (`RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED`) even if an administrator
+   believes secrets were "attested" out-of-band. Independent verbal attestation
+   alone cannot clear this gate. Clearing it requires a separately reviewed
+   attestation-backed admission-path change that keeps the HOLD explicit until
+   admission is actually authorized — never a silent PASS. Do not bypass the
+   HOLD.
+3. **Controller run is not a dry run.**
+   When admission later returns `POST_ONCE`, the workflow calls the Render
+   deploy API for the configured service; it does **not** pause for receipt
+   inspection. A true no-POST dry run is a verified preflight that never reaches
+   POST (journal HOLD / writer-off / credential HOLD). Label any enabled
+   controller run that can reach `POST_ONCE` as a **potential production
+   deploy**, never a dry run. Never claim deploy success from a HOLD receipt.
+
+If those blockers are later cleared under separate review, an authorized admin
+would still need: Lean V4 decision recorded; web (and any authorized worker
+writer) identities GET-verified; `wow-release` environment with no admin bypass
+and main-only branch policy; required QA + Release App admission on exact head;
+and SIRT acceptance after LIVE SHA/health match. Competing native + API writers
+must never both be enabled.
 
 ### What this principal will not do
 
-Enable the workflow, PATCH Render auto-deploy, rotate secrets, or assert
-`production_verified=true`.
+Enable the workflow, PATCH Render auto-deploy, rotate secrets, flip
+`RENDER_CREDENTIAL_SCOPE_ATTESTED`, or assert `production_verified=true`.
 
 ---
 
