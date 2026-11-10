@@ -47,6 +47,10 @@ from v17.daily_terminal_reduction import (
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
+from v17.player_availability_gate import (
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
+    evaluate_player_availability,
+)
 from v17.prop_canonical_identity import canonical_event_start_time, canonical_source_snapshot_ids, canonical_sporting_key, canonicalize_prop_manifest
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
@@ -187,9 +191,35 @@ def _snapshot_captured_at(row: dict[str, Any]) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _read_side_availability_blocker(row: dict[str, Any]) -> str | None:
+    """Re-evaluate persisted role_status so Daily does not trust blockers alone.
+
+    When ``role_status`` is absent (older rows / unread column), fall back to
+    persisted blockers. When it is present, official availability is authoritative
+    even if ``blockers`` was left empty by a writer-trust gap.
+    """
+    role_status = row.get("role_status")
+    if role_status is None:
+        return None
+    decision = evaluate_player_availability(role_status)
+    if decision.blocker:
+        return str(decision.blocker)
+    if decision.requires_revalidation:
+        return PLAYER_AVAILABILITY_RECHECK_REQUIRED
+    return None
+
+
+def _effective_evidence_blockers(row: dict[str, Any]) -> list[str]:
+    blockers = [str(code) for code in (row.get("blockers") or []) if str(code).strip()]
+    availability_blocker = _read_side_availability_blocker(row)
+    if availability_blocker and availability_blocker not in blockers:
+        blockers.append(availability_blocker)
+    return blockers
+
+
 def _evidence_not_ready(row: dict[str, Any]) -> bool:
     hydration = str(row.get("hydration_status") or "").strip().upper()
-    return hydration != "PASS" or bool(row.get("blockers"))
+    return hydration != "PASS" or bool(_effective_evidence_blockers(row))
 
 
 def _merge_prop_evidence_authority(
@@ -235,7 +265,10 @@ def _prop_manifest_rows(
     selection. Historical exclusions are counted rather than retained in full;
     keep bounded display detail plus rows needed for current write receipts.
     """
-    selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
+    selected = (
+        "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
+        "stat_type,line,hydration_status,blockers,role_status"
+    )
     manifest: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     excluded_count = 0
@@ -254,6 +287,7 @@ def _prop_manifest_rows(
 
     def account(row: dict[str, Any]) -> None:
         nonlocal excluded_count
+        effective_blockers = _effective_evidence_blockers(row)
         if not _future(row.get("event_start_time")):
             reason = "EVENT_NOT_PREGAME"
         elif not _matching_slate(row, requested_date, requested_timezone):
@@ -274,7 +308,7 @@ def _prop_manifest_rows(
                 )},
                 "source_snapshot_ids": sorted(ids & retain_ids),
                 "reason": reason,
-                "blockers": [str(code) for code in (row.get("blockers") or [])][:4],
+                "blockers": effective_blockers[:4],
                 "can_execute": False,
             })
 

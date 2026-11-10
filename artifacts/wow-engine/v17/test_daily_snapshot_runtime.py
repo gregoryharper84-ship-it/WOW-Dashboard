@@ -303,8 +303,10 @@ class _FilteringPropQuery:
         self._start = 0
         self._end = len(data) - 1
         self.orders = []
+        self.selected = None
 
-    def select(self, *_):
+    def select(self, columns, *_):
+        self.selected = columns
         return self
 
     def eq(self, name, value):
@@ -448,6 +450,36 @@ def test_stale_pass_cannot_clear_newer_failed_without_blockers_list():
     assert manifest == []
     assert exclusions[0]["source_snapshot_id"] == "newer-failed"
     assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+
+
+def test_pass_row_with_empty_blockers_is_held_when_role_status_rules_player_out():
+    """Daily must re-evaluate role_status on read; writer-trust on blockers alone is unsafe."""
+    row = _manifest_row("ruled-out-pass", "2026-11-19T00:00:00+00:00")
+    row["role_status"] = {
+        "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+        "availability": {
+            "status": "OUT",
+            "designation": "OUT",
+            "source": "TEST_OFFICIAL_INJURY_REPORT",
+            "captured_at": "2026-11-19T00:00:00+00:00",
+            "evidence_status": "RETRIEVED",
+            "fresh": True,
+            "athlete_id": "1",
+            "event_id": "MLB:1",
+            "team": "TEST",
+        },
+    }
+    db = _FilteringPropDB([row])
+    exclusions = []
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions
+    )
+    assert manifest == []
+    assert exclusions[0]["source_snapshot_id"] == "ruled-out-pass"
+    assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+    assert exclusions[0]["blockers"] == ["PLAYER_RULED_OUT"]
+    assert db.last_query is not None
+    assert "role_status" in str(db.last_query.selected)
 
 
 # ---------------------------------------------------------------------------
