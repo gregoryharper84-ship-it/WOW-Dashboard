@@ -256,8 +256,8 @@ def _reconstruction(db=None):
 @pytest.fixture(autouse=True)
 def _install_test_timeline_receipt_provider():
     """Score path must not trust caller evidence; use a synthetic server seam."""
-    def _provider(*, season, event_start_time, home_team="", away_team="", session=None, db=None, **_kwargs):
-        del session, db
+    def _provider(*, season, event_start_time, home_team="", away_team="", session=None, db=None, as_of_utc=None, **_kwargs):
+        del session, db, as_of_utc
         return _timeline_receipt(
             _events(),
             home=str(home_team or "BOS"),
@@ -580,6 +580,64 @@ def test_resolve_timeline_receipt_fail_closed_without_persisted_receipt(monkeypa
     assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
     assert caught.value.detail["reason"] == "SOURCE_TIMELINE_RECEIPT_MISSING"
     assert fetch_calls == []
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (lambda row: {**row, "provenance_complete": False}, "SOURCE_TIMELINE_RECEIPT_INCOMPLETE"),
+        (lambda row: {**row, "season_scope": "PARTIAL"}, "SOURCE_TIMELINE_RECEIPT_PARTIAL_SCOPE"),
+        (lambda row: {**row, "season": "20992000"}, "SOURCE_TIMELINE_SEASON_MISMATCH"),
+        (lambda row: {**row, "settled_events": {"bad": True}}, "SOURCE_TIMELINE_RECEIPT_INVALID"),
+        (
+            lambda row: {
+                **row,
+                "verified_at": (NOW - timedelta(hours=25)).isoformat(),
+            },
+            "SOURCE_TIMELINE_RECEIPT_STALE",
+        ),
+        (lambda row: {**row, "verified_at": "not-a-timestamp"}, "SOURCE_TIMELINE_RECEIPT_STALE"),
+        (
+            lambda row: {
+                **row,
+                "verified_at": (NOW + timedelta(hours=1)).isoformat(),
+            },
+            "SOURCE_TIMELINE_RECEIPT_STALE",
+        ),
+    ],
+)
+def test_timeline_receipt_for_target_fail_closed_guards(mutate, reason):
+    events = _events()
+    stored = nhl.build_reingest_timeline_receipt(
+        events, season=SEASON, ingest_code_sha="c" * 40
+    )
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.timeline_receipt_for_target(
+            mutate(stored),
+            event_start_time=START,
+            season=SEASON,
+            as_of_utc=NOW,
+        )
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
+    assert caught.value.detail["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda row: {**row, "provenance_complete": False},
+        lambda row: {**row, "season": ""},
+        lambda row: {**row, "settled_events": None},
+    ],
+)
+def test_persist_nhl_season_timeline_receipt_fail_closed(mutate):
+    events = _events()
+    stored = nhl.build_reingest_timeline_receipt(
+        events, season=SEASON, ingest_code_sha="d" * 40
+    )
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl.persist_nhl_season_timeline_receipt(_DB(receipts=[]), mutate(stored))
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
 
 
 def test_feature_reconstruction_requires_minimum_prior_games():

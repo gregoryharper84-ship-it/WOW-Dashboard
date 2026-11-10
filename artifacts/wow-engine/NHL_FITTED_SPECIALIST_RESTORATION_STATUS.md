@@ -198,6 +198,8 @@ Typed holds preserved:
   incomplete or conflicting chronological replay. Timeline receipts must
   cover every settled regular-season prior (Elo is transitive across clubs);
   scoring resolves the receipt server-side and ignores caller evidence.
+  Missing, partial-scope, or stale receipts (`verified_at` unparseable,
+  future-skewed, or older than 24h) hold at `NHL_SOURCE_TIMELINE_INCOMPLETE`.
 - `NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE` — the selected calibrator has no
   empirical residual/Wilson bound.
 - `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED`,

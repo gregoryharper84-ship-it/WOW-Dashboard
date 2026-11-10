@@ -738,7 +738,7 @@ def test_partial_team_reingest_does_not_persist_season_timeline_receipt():
     assert fitted.TIMELINE_RECEIPT_TABLE not in db.rows
 
 
-def test_full_season_reingest_persists_season_timeline_receipt_for_scoring():
+def test_full_season_reingest_persists_season_timeline_receipt_for_scoring(monkeypatch):
     db = _FakeDB()
     result = _run(db, teams=None)
     assert result["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
@@ -751,16 +751,13 @@ def test_full_season_reingest_persists_season_timeline_receipt_for_scoring():
     assert stored["provenance_complete"] is True
     assert len(stored["settled_events"]) == 32
 
-    fitted.reset_nhl_timeline_receipt_provider()
-    try:
-        receipt = fitted.resolve_nhl_timeline_receipt(
-            season=int(SEASON),
-            event_start_time=_target_start(),
-            db=db,
-        )
-    finally:
-        # restore autouse-equivalent only for this module's subsequent tests
-        pass
+    monkeypatch.setattr(fitted, "_TIMELINE_RECEIPT_PROVIDER", None)
+    receipt = fitted.resolve_nhl_timeline_receipt(
+        season=int(SEASON),
+        event_start_time=_target_start(),
+        db=db,
+        as_of_utc=datetime.now(timezone.utc),
+    )
     assert receipt["provenance_complete"] is True
     assert len(receipt["settled_prior_event_ids"]) == len(
         [

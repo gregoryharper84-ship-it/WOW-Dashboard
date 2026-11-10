@@ -47,6 +47,11 @@ SOURCE_POLICY_ID = "NHL_PUBLIC_WEB_API"
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
 SOURCE_TABLE = "wow_d1_source_events"
 TIMELINE_RECEIPT_TABLE = "wow_nhl_season_timeline_receipts"
+# Maximum age of a persisted season timeline receipt before scoring fails closed.
+# Narrows the missing-history window between settlement and the next re-ingest;
+# it does not replace running re-ingest after settlement windows.
+RECEIPT_MAX_AGE = timedelta(hours=24)
+RECEIPT_FUTURE_SKEW = timedelta(minutes=5)
 
 # Exact training constants/feature order. A regression test asserts these stay
 # identical to nhl_candidate_pipeline so the registry artifact cannot be fed a
@@ -1086,6 +1091,7 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
         home_team=home_team,
         away_team=away_team,
         db=client,
+        as_of_utc=now,
     )
     reconstruction = reconstruct_nhl_pregame_features(
         events,
@@ -1175,6 +1181,7 @@ def timeline_receipt_for_target(
     *,
     event_start_time: datetime,
     season: int | str,
+    as_of_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Project a persisted season receipt onto priors strictly before the target."""
     if stored.get("provenance_complete") is not True:
@@ -1201,6 +1208,20 @@ def timeline_receipt_for_target(
             "MODEL_INPUTS_INSUFFICIENT",
             ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
             {"reason": "SOURCE_TIMELINE_RECEIPT_INVALID"},
+        )
+    now = as_of_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("as_of_utc must be timezone-aware")
+    verified_at = _aware(stored.get("verified_at"))
+    if (
+        verified_at is None
+        or verified_at > now + RECEIPT_FUTURE_SKEW
+        or now - verified_at > RECEIPT_MAX_AGE
+    ):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_STALE"},
         )
     prior_ids: set[str] = set()
     for item in settled:
@@ -1278,6 +1299,7 @@ def resolve_nhl_timeline_receipt(
     away_team: str = "",
     session: Any = None,
     db: Any = None,
+    as_of_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Resolve the server-side season timeline receipt for scoring.
 
@@ -1293,6 +1315,7 @@ def resolve_nhl_timeline_receipt(
             away_team=away_team,
             session=None,
             db=db,
+            as_of_utc=as_of_utc,
         )
     stored = load_nhl_season_timeline_receipt(db, season=season)
     if stored is None:
@@ -1305,6 +1328,7 @@ def resolve_nhl_timeline_receipt(
         stored,
         event_start_time=event_start_time,
         season=season,
+        as_of_utc=as_of_utc,
     )
 
 
@@ -1416,6 +1440,8 @@ __all__ = [
     "PROBABILITY_PUBLISHABLE",
     "SOURCE_POLICY_ID",
     "SOURCE_TABLE",
+    "RECEIPT_FUTURE_SKEW",
+    "RECEIPT_MAX_AGE",
     "TIMELINE_RECEIPT_TABLE",
     "build_official_club_timeline_receipt",
     "build_official_season_timeline_receipt",
