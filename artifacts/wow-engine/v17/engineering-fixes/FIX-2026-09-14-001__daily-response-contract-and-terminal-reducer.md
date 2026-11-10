@@ -7,9 +7,9 @@ DEPLOYED — PRIMARY, CRITICAL, 1IP MANIFEST, AND INFRASTRUCTURE_BLOCKED VERIFIE
 Merged and live. The two headline defects plus the 1IP capability manifest and
 infrastructure-blocked semantics are confirmed repaired against live production
 data (see Production Verification and the 2026-11-10 secondary acceptance
-receipt). Two residual secondary observations (`REQUESTED_ROW_LIMIT_ZERO`,
-Action vs specialist scoring split) remain deployed but not independently
-observed, so `FIXED_VERIFIED` is still **partial**, not global.
+receipt). `REQUESTED_ROW_LIMIT_ZERO` is recorded as verified in production via
+the #2585 canary. The host three-field scoring-attempted receipt remains
+pending, so `FIXED_VERIFIED` is still **partial**, not global.
 
 ## Linked Postmortem(s)
 
@@ -294,10 +294,10 @@ previously counted these rows as held will see the count move to purged.
   receipt from `v17-daily-a2b7f50e-…` shows `NO_LOW_PROBABILITY` +
   `PAYOUT_UNRESOLVED`.
 
-**Still not independently verified in production** (deployed, but not observed):
-`ZERO_ROW_REASON_MISCLASSIFIED` (no `REQUESTED_ROW_LIMIT_ZERO` Daily run yet),
-and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` (compact Daily row-detail does not
-currently persist attempt fields). Closure requires a real Action receipt with
+**Still not independently verified in production**:
+The host three-field receipt for `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`
+remains pending (compact Daily row-detail does not currently persist attempt
+fields). Closure requires a real Action receipt with
 `action_invocation_attempted=true`, `specialist_scoring_attempted=false`, and
 host-alias `scoring_attempted=true` on a selected PROPS row
 (`test_receipt_semantics_split.py`). The Will Warren 16.5 `REJECT_OOD` gate

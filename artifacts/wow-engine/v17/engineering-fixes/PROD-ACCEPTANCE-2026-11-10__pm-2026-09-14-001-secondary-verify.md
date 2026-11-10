@@ -148,33 +148,36 @@ Verdict: `SCHEDULE_DELAYED`. Serving SHA + safety ancestry still hold; scheduled
 
 ## Independent re-verify (2026-11-10T23:02Z, unpaid, post-safety Daily + tip advance)
 
-Verdict: `POST_SAFETY_SYNC_DAILY_OBSERVED_MONEYLINE_ONLY`. Delayed cron `0 17` and a later schedule success both produced governed sync MONEYLINE Dailies under `can_execute=false` / `V17_TERMINAL_REDUCER`. Live tip advanced to `6998b62af…` (includes #2585 soft-hold + residual docs) and still carries safety ancestor `98a56157…`. Cron `0 23` itself is **NOT_YET_OBSERVED** as of `23:01Z`. Host three-field scoring-attempted receipt remains the open secondary residual.
+Verdict: `POST_SAFETY_SYNC_DAILY_RUN_IDS_OBSERVED_SERVING_SHA_UNVERIFIED`. Delayed cron `0 17` and a later schedule success both produced governed sync MONEYLINE Daily `run_id`s under `can_execute=false` / `V17_TERMINAL_REDUCER`. Workflow heads and the 23:02Z live tip do **not** prove which Render deployment served those requests — request-time serving SHA + safety ancestry remain **UNVERIFIED**. Cron `0 23` itself is **NOT_YET_OBSERVED** as of `23:01Z`. Host three-field scoring-attempted receipt remains the open secondary residual.
 
 | Probe | Result |
 | --- | --- |
-| Live `/governance` tip | `deployed_sha=6998b62af5df99cafd87995b9aa7b14fdd0d8110` (= `origin/main`); `can_execute=false`; `V17_TERMINAL_REDUCER`; `deployment_gates.status=PASS` |
-| Safety ancestry | `98a56157a5916c6d25ee1c51bab3d183448e23c8` is ancestor of live tip (`git merge-base --is-ancestor` exit 0) |
-| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| Live `/governance` tip (23:02Z observation only) | `deployed_sha=6998b62af5df99cafd87995b9aa7b14fdd0d8110` (= `origin/main`); `can_execute=false`; `V17_TERMINAL_REDUCER`; `deployment_gates.status=PASS` |
+| Safety ancestry (23:02Z tip only) | `98a56157a5916c6d25ee1c51bab3d183448e23c8` is ancestor of live tip (`git merge-base --is-ancestor` exit 0) — **not** request-time proof for 18:28Z / 22:06Z |
+| `/health/live` (23:02Z) | HTTP 200 `{status:ok, can_execute:false}` |
 | Delayed cron `0 17` schedule | Workflow `42875617354` created `2026-11-10T18:28:54Z` on head `d3260b09…` — **success** |
 | Sync Daily `run_id` (0 17 delayed) | `v17-daily-73c75380-97e8-40b3-8352-cae443ab9047` — `run_status=COMPLETED`, `rows_held=24`, `moneyline_rows=24`, `canonical_moneyline_rows=24`, `cross_sport_row_reconciliation=PASS`, `probability_values_logged=false`, `can_execute=false`, `global_terminal_authority=V17_TERMINAL_REDUCER` |
+| Serving SHA / safety ancestry at 18:28Z request | **UNVERIFIED** — workflow logs checkout head `d3260b09…` only; no `deployed_sha` / Render deploy id captured at request time |
 | Schedule `2026-11-10T22:06:44Z` | Workflow `42911461928` on head `4a49977fc…` (#2585 merge) — **success** (timing is before nominal `0 23`; recorded as observed schedule success, not claimed as the `0 23` fire) |
 | Sync Daily `run_id` (22:06 schedule) | `v17-daily-80c514c0-1aff-46fc-b3e7-99722a5b9c78` — same MONEYLINE-only held shape (`24` held / `0` completed) |
+| Serving SHA / safety ancestry at 22:06Z request | **UNVERIFIED** — workflow logs checkout head `4a49977fc…` only; no request-time Render serving SHA |
 | Cron `0 23` | **NOT_YET_OBSERVED** as of `2026-11-10T23:01:34Z` (newest schedule still `42911461928` at 22:06Z) |
 | `ZERO_ROW_REASON_MISCLASSIFIED` | **FIXED_VERIFIED_IN_PRODUCTION** via #2585 canary `42910074320` / `v17-daily-ebc1ba5b…` (GREEN soft-hold) — not from MONEYLINE-only snapshot |
 | `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | **BACKEND_PAIR_OBSERVED_HOST_PENDING** — backend pair on canary; host `action_invocation_attempted` still missing |
 | Parallel PR delta | `#2560` tip `be05c789…` MERGEABLE but `BEHIND` main; `#2571` tip `e5277998b…` MERGEABLE but `BEHIND` main (Independent QA + Release Authority previously PASS on that tip). Authorized merge remains external. |
-| Next observation | Capture cron `0 23` when GitHub fires it; host Action three-field receipt for scoring-attempted closure; no paid dispatch |
+| Next observation | Capture cron `0 23` with request-time serving SHA + safety ancestry; host Action three-field receipt for scoring-attempted closure; no paid dispatch |
 
 ## Closure gate
 
-`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Post-safety sync MONEYLINE Daily is observed; MONEYLINE-only cron cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
+`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Post-safety sync MONEYLINE Daily `run_id`s are observed, but request-time serving SHA attribution stays **UNVERIFIED**. MONEYLINE-only cron cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
 
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
-serving_sha_at_23utc_window = 6998b62af5df99cafd87995b9aa7b14fdd0d8110
-safety_ancestor_at_23utc_window = 98a56157a5916c6d25ee1c51bab3d183448e23c8
-post_safety_sync_daily_status = OBSERVED_MONEYLINE (42875617354 / v17-daily-73c75380…; 42911461928 / v17-daily-80c514c0…)
+serving_sha_observed_at_2302Z = 6998b62af5df99cafd87995b9aa7b14fdd0d8110
+safety_ancestor_of_2302Z_tip = 98a56157a5916c6d25ee1c51bab3d183448e23c8
+post_safety_sync_daily_run_ids = OBSERVED (42875617354 / v17-daily-73c75380…; 42911461928 / v17-daily-80c514c0…)
+post_safety_sync_daily_serving_sha_at_request = UNVERIFIED
 cron_0_23_status = NOT_YET_OBSERVED
 zero_row_status = FIXED_VERIFIED_IN_PRODUCTION
 scoring_attempted_status = BACKEND_PAIR_OBSERVED_HOST_PENDING
