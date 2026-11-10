@@ -75,6 +75,10 @@ Add a concise game-script finding beside each full-game research winner: expecte
 
 Run read-only v17.llp_research_winner_card.audit_research_winner_card as the research user-card coverage preflight. Report its board_complete separately from research_evidence_fully_reconciled and from qualified fitted-model coverage. An unverified slate or incomplete/late/duplicate selection is an actual incomplete result, never silently filled by the validator. Model/terminal HOLD is preserved. Keep upset watch, fitted probabilities, research winners and submitted NFL Pick'em entries separated. Never mutate the shared Sheet, wager or automatically submit an entry.
 
+## Multi-sport winner media brief and scenario sensitivity
+
+For explicit all-game NFL/NBA/NHL winner cards, accompany every selected research winner with linked pregame media headlines (publisher and publication time), a source-supported central storyline, an opposing/counter storyline and the team's plausible game-script paths. Require expected, adverse and stress cases with qualitative script sensitivity and swing factors. Use authentic researched URLs and time-aware source evidence; never make up headlines, news, reporter quotes or calibrated scenario odds. The validator retains all game picks with research-quality warnings when coverage is missing and cannot promote them into Full Model. Keep narrative claims, confirmed personnel facts and market movement as distinguishable evidence classes.
+
 ## Retrospective research winner-card discipline
 
 When reviewing yesterday's NFL/NBA/NHL research-only preferred winner card, run the read-only `v17.llp_research_card_retro.audit_research_card` contract with authentic frozen pregame receipts, an independently verified official slate, and independent settled results. Report `PREFERRED` and `UPSET_WATCH` cohorts separately; show missing receipts/results as HELD, and do not show an overall headline accuracy when slate reconciliation fails.
