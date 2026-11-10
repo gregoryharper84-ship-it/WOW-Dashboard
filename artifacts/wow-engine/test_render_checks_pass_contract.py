@@ -16,6 +16,9 @@ def test_render_checks_pass_matches_main_push_ci_contract():
     production = services["wow-governed-probability-engine"]
 
     assert production["autoDeployTrigger"] == "checksPass"
+    assert production["plan"] == "1c-2g"  # observed paid live service, not a new tier
+    assert production["rootDir"] == "artifacts/wow-engine"
+    assert production["preDeployCommand"] == "python -m v17.nba_verification_schema_predeploy"
     env = {item["key"]: item for item in production["envVars"]}
     assert env["WOW_CAN_EXECUTE"]["value"] == "false"
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
