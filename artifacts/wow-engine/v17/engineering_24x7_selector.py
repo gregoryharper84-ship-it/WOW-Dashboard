@@ -43,7 +43,7 @@ SIRT_REPAIR_TITLE = re.compile(
 # "verification"; independent acceptance/assurance is still review-only.
 SIRT_PRODUCTION_FAILURE_TITLE = re.compile(
     r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)"
-    r"[\s:—-]*(?!.*\b(?:independent|acceptance|assurance|certification)\b)"
+    r"[\s:—-]*(?!.*\b(?:independent|acceptance|assurance|certification|review|intake|audit)\b)"
     r"(?=.*\b(?:fails?|failed|failure|broken|outage|down|regression)\b)"
     r"(?=.*\b(?:production|prod|runtime|alerting|deployment|worker|pipeline|workflow)\b)",
     re.IGNORECASE,
