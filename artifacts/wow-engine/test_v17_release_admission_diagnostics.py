@@ -40,7 +40,9 @@ def test_a_refused_policy_still_exits_nonzero_and_publishes_nothing():
     # The typed-reason block must terminate before the neutral short-circuit.
     reason_block = run.split("if ! bundle=", 1)[1].split("fi", 1)[0]
     assert reason_block.count("exit 1") == 1
-    # Neutrality stays reserved for a resolved policy, never a refusal.
+    # Neutrality stays reserved for a resolved policy bundle (including
+    # RELEASE_QA_POLICY_ARTIFACT_ABSENT under --neutral-if-superseded), never
+    # an unresolved shell refusal.
     assert '.disposition // empty' in run and '"neutral"' in run
 
 

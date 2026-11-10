@@ -1192,6 +1192,17 @@ def resolve_qa_review_policy(
 
     expected_name = f"wow-v17-qa-policy-{run_id}-{run_attempt}"
     matching = [row for row in inventory if row.get("name") == expected_name]
+    # A QA producer that fails before uploading policy (for example
+    # TARGET_PR_IDENTITY_MISMATCH on a draft/retargeted PR) leaves zero
+    # matching artifacts. Strict callers still fail closed. The automatic
+    # main-scoped workflow_run admission opts into allow_superseded_target
+    # so it can exit neutral instead of publishing a failing check on the
+    # unrelated protected-main tip Render's checksPass trigger evaluates.
+    if len(matching) == 0 and allow_superseded_target:
+        return {
+            "disposition": "neutral",
+            "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
+        }
     _require(len(matching) == 1, "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING")
     metadata = matching[0]
     artifact_id = _positive_int(metadata.get("id"), "QA_POLICY_ARTIFACT_ID")
