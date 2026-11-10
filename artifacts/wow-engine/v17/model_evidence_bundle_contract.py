@@ -191,10 +191,7 @@ def _matches_identity(row: Mapping[str, Any], scope: ModelBundleScope) -> bool:
         and _text(row.get("model_family")) == scope.model_family
         and _text(row.get("model_artifact_version")) == scope.model_artifact_version
         and _text(row.get("feature_schema_version")) == scope.feature_schema_version
-        and (
-            scope.market_family is None
-            or _text(row.get("market_family")) == scope.market_family
-        )
+        and _text(row.get("market_family")) == _text(scope.market_family)
     )
 
 
@@ -221,6 +218,7 @@ def _calibrator_valid(
     fit_end = _when(calibrator.get("calibration_fit_end"))
     return (
         _matches_identity(calibrator, scope)
+        and _sha256(calibrator.get("model_artifact_checksum"))
         and _text(calibrator.get("model_artifact_checksum")).lower()
             == _text(artifact.get("artifact_checksum")).lower()
         and bool(_text(calibrator.get("calibrator_id")))
@@ -229,6 +227,13 @@ def _calibrator_valid(
         and bool(_text(calibrator.get("bounds_method_version")))
         and _sha256(calibrator.get("calibration_cohort_sha256"))
         and _sha256(calibrator.get("holdout_evidence_sha256"))
+        # Distinct custody hashes are necessary, though independent overlap
+        # verification remains mandatory for actual cohort disjointness.
+        and len({
+            _text(artifact.get("training_dataset_hash")).lower(),
+            _text(calibrator.get("calibration_cohort_sha256")).lower(),
+            _text(calibrator.get("holdout_evidence_sha256")).lower(),
+        }) == 3
         and calibrator.get("chronological_replay_verified") is True
         and calibrator.get("calibrated_lower_bound_verified") is True
         and type(calibrator.get("calibration_training_n")) is int
@@ -257,6 +262,7 @@ def _pregame_valid(
     game_at = _when(corpus.get("event_start_time"))
     return (
         _matches_identity(corpus, scope)
+        and _sha256(corpus.get("model_artifact_checksum"))
         and _text(corpus.get("model_artifact_checksum")).lower()
             == _text(artifact.get("artifact_checksum")).lower()
         and bool(_text(corpus.get("source_snapshot_id")))
@@ -299,7 +305,7 @@ def missing_component_fields(
     """Return the required fields this row does not supply.
 
     Reporting is intentionally literal: a field is missing when it is absent,
-    ``None`` or an empty string. This function never infers a value from an
+    ``None`` or blank/whitespace-only text. This function never infers a value from an
     adjacent column, a sibling component or a model-family name.
     """
     if component not in COMPONENT_REQUIRED_FIELDS:
@@ -308,7 +314,9 @@ def missing_component_fields(
     if not isinstance(row, Mapping):
         return required
     return tuple(
-        field for field in required if row.get(field) is None or row.get(field) == ""
+        field for field in required
+        if row.get(field) is None
+        or (isinstance(row.get(field), str) and not row[field].strip())
     )
 
 
