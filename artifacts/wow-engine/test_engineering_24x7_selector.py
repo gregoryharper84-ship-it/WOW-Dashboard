@@ -83,6 +83,7 @@ class Test24x7(unittest.TestCase):
         # Explicit targeting must not convert independent assurance into coding.
         for title in (
             "SIRT: independent verification failed in production",
+            "SIRT: independently verify production worker failure",
             "SIRT: review production regression",
             "SIRT: intake of production outage",
             "SIRT: audit production failure",
