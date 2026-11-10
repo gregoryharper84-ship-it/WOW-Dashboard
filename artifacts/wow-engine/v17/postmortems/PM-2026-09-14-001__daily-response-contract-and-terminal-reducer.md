@@ -98,19 +98,20 @@ bytes of row payload (39,094 B/row) now complete instead of failing
 rows, `row_status=COMPLETED` count zero for that cohort). `can_execute=false`
 held on all 850 rows.
 
-Items 3–6 were deployed in the same commit but were **not independently
-observed** in the 2026-09-15T15:28Z–2026-09-16T15:23Z production evidence
-window (no `/governance` read, no `max_props=0` run, and no fresh 1IP Action
-receipt appeared in that window). This record therefore reflects the ledger
-in `FIX-2026-09-14-001`'s own status: `DEPLOYED — PRIMARY and CRITICAL
-VERIFIED IN PRODUCTION`, not a global `FIXED_VERIFIED`.
+Items 3 and 6 were independently observed on 2026-11-10 without paid retries
+(live `/v17/governance-detail` 1IP hold-only declaration; 418 PROPS rows with
+`terminal_cause=MODEL_JUDGMENT` and `infrastructure_blocked=false` while
+concurrent market blockers remain listed). Items 4–5
+(`REQUESTED_ROW_LIMIT_ZERO`, Action vs specialist scoring split) remain
+deployed but not independently observed. Ledger status stays
+`DEPLOYED_PENDING_VERIFY` until those two residual observations land. Evidence:
+`engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 
 ## Prevention / Follow-up
 
-- Owner-run Action replay to close out items 3–6: read `/governance` for the
-  declared 1IP lane, run Daily once with `max_props=0` to confirm
-  `REQUESTED_ROW_LIMIT_ZERO`, and check one receipt for
-  `action_invocation_attempted` vs `specialist_scoring_attempted`.
+- Remaining free/owner Action path for items 4–5: run Daily once with
+  `max_props=0` to confirm `REQUESTED_ROW_LIMIT_ZERO`, and check one Action
+  receipt for `action_invocation_attempted` vs `specialist_scoring_attempted`.
 - This record was retroactively created on 2026-09-21 to close a ledger
   drift gap: `FIX-2026-09-14-001` existed on disk and was merged/deployed
   (PR #413) with no corresponding `PM-*.md` file and no `incident-ledger.json`

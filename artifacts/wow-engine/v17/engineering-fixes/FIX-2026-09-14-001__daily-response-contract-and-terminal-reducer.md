@@ -2,12 +2,14 @@
 
 ## Status
 
-DEPLOYED — PRIMARY and CRITICAL VERIFIED IN PRODUCTION
+DEPLOYED — PRIMARY, CRITICAL, 1IP MANIFEST, AND INFRASTRUCTURE_BLOCKED VERIFIED
 
-Merged and live. The two headline defects are confirmed repaired against live
-production data (see Production Verification). The four secondary repairs are
-deployed in the running image but have not been independently observed in
-production, so `FIXED_VERIFIED` is **partial**, not global.
+Merged and live. The two headline defects plus the 1IP capability manifest and
+infrastructure-blocked semantics are confirmed repaired against live production
+data (see Production Verification and the 2026-11-10 secondary acceptance
+receipt). Two residual secondary observations (`REQUESTED_ROW_LIMIT_ZERO`,
+Action vs specialist scoring split) remain deployed but not independently
+observed, so `FIXED_VERIFIED` is still **partial**, not global.
 
 ## Linked Postmortem(s)
 
@@ -275,13 +277,21 @@ previously counted these rows as held will see the count move to purged.
 - Detail persistence: healthy; no
   `DAILY_ROW_DETAIL_PERSISTENCE_UNAVAILABLE` condition observed.
 
-**NOT independently verified in production** (deployed, but not observed):
-`1IP_CAPABILITY_MANIFEST_DRIFT` (requires reading `/governance`),
-`ZERO_ROW_REASON_MISCLASSIFIED` (no `max_props=0` run in the window),
-`SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`, and
-`INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT`. The Will Warren 16.5 `REJECT_OOD`
-gate is covered by the unchanged `test_mlb_1ip_exact_line_contract.py`; no 1IP
-OOD row appeared in the production window, so it was not re-observed live.
+**Independently verified later without paid retries (2026-11-10):**
+- `1IP_CAPABILITY_MANIFEST_DRIFT` — live `/v17/governance-detail` declares
+  `1ST_INNING_PITCHES_THROWN` as `SUPPORTED_HOLD_ONLY` /
+  `publication_allowed=false` / exact-line OOD policy. See
+  `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
+- `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — 418 production PROPS rows with
+  `terminal_cause=MODEL_JUDGMENT`, `infrastructure_blocked=false`, and
+  concurrent market blockers preserved separately.
+
+**Still not independently verified in production** (deployed, but not observed):
+`ZERO_ROW_REASON_MISCLASSIFIED` (no `REQUESTED_ROW_LIMIT_ZERO` Daily run yet),
+and `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` (compact Daily row-detail does not
+currently persist `action_invocation_attempted` /
+`specialist_scoring_attempted`). The Will Warren 16.5 `REJECT_OOD` gate remains
+covered by `test_mlb_1ip_exact_line_contract.py`.
 
 ## Rollback
 
@@ -294,17 +304,17 @@ OOD row appeared in the production window, so it was not re-observed live.
 
 ## Result
 
-**FIXED — PRIMARY and CRITICAL VERIFIED IN PRODUCTION; four secondary repairs
-deployed but not independently observed.**
+**FIXED — PRIMARY, CRITICAL, 1IP MANIFEST, and INFRASTRUCTURE_BLOCKED VERIFIED
+IN PRODUCTION; two secondary repairs still not independently observed.**
 
 ```text
 INCIDENT_STATUS = REPAIRED
 DAILY_RESPONSE_SERIALIZATION_TOO_LARGE = FIXED_VERIFIED
 TERMINAL_REDUCER_UPGRADE = FIXED_VERIFIED
-1IP_CAPABILITY_MANIFEST_DRIFT = DEPLOYED_NOT_OBSERVED
+1IP_CAPABILITY_MANIFEST_DRIFT = FIXED_VERIFIED
+INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = FIXED_VERIFIED
 ZERO_ROW_REASON_MISCLASSIFIED = DEPLOYED_NOT_OBSERVED
 SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = DEPLOYED_NOT_OBSERVED
-INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = DEPLOYED_NOT_OBSERVED
 can_execute = false
 ```
 
@@ -313,9 +323,11 @@ can_execute = false
 - DONE: `v17/sql/20260914_v17_daily_run_row_detail.sql` applied to the governed
   production project and verified least-privilege. The file header still reads
   "repository source only" as the standing rule for re-application elsewhere.
-- Owner-run Action replay to close out the four `DEPLOYED_NOT_OBSERVED` items:
-  read `/governance` for the declared 1IP lane, run Daily once with
-  `max_props=0` to confirm `REQUESTED_ROW_LIMIT_ZERO`, and check one receipt for
+- DONE (2026-11-10): live `/governance` 1IP declaration and production
+  `infrastructure_blocked=false` under concurrent market blockers.
+- Remaining owner/free Action path to close the last two
+  `DEPLOYED_NOT_OBSERVED` items: run Daily once with `max_props=0` to confirm
+  `REQUESTED_ROW_LIMIT_ZERO`, and check one Action receipt for
   `action_invocation_attempted` vs `specialist_scoring_attempted`.
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
