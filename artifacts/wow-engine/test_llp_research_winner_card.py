@@ -285,3 +285,34 @@ def test_unverified_media_cannot_sneak_unsupported_links_into_summary():
     assert 'NO_ADMISSIBLE_PREGAME_HEADLINES' in row['evidence_warnings']
     assert row['media_counter_narrative'] is None
     assert r['board_complete'] is True
+
+
+def test_counter_narrative_must_cite_an_opposing_headline():
+    p=pick()
+    p['matchup_media']['counter_narrative']['headline_ids']=['h1']
+    r=audit([event()],[p])
+    assert r['rows'][0]['media_counter_narrative'] is None
+    assert 'COUNTER_NARRATIVE_UNSOURCED' in r['rows'][0]['evidence_warnings']
+    assert r['rows'][0]['selected_side']=='Away'
+
+
+def test_news_storyline_stance_requires_matching_reported_viewpoint():
+    p=pick()
+    p['matchup_media']['storylines'][0]['stance']='CHALLENGES_PICK'
+    r=audit([event()],[p])
+    assert 'STORYLINE_STANCE_NOT_SUPPORTED_BY_SOURCE' in r['rows'][0]['evidence_warnings']
+    assert len(r['rows'][0]['media_storylines'])==1
+    assert r['rows'][0]['governed_probability'] is None
+
+
+def test_media_one_publisher_and_oversized_script_are_diagnostic_only():
+    p=pick()
+    p['matchup_media']['headlines'][1]['publisher']='league.com'
+    p['game_script']['scenarios'] *= 4
+    r=audit([event()],[p])
+    w=r['rows'][0]['evidence_warnings']
+    assert 'MEDIA_SOURCE_DIVERSITY_INSUFFICIENT' in w
+    assert 'SCENARIO_LIMIT_TRUNCATED' in w
+    assert r['board_complete'] is True
+    assert r['rows'][0]['selected_side']=='Away'
+    assert r['rows'][0]['script_robustness']['probability'] is None
