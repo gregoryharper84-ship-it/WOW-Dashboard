@@ -155,17 +155,46 @@ jobs:
           # bot (both CLI app/github-actions and github-actions[bot] aliases);
           # untrusted forged markers must never suppress a new intake.
           trusted_owner="${GITHUB_REPOSITORY%%/*}"
+          # A reused ticket must be bound to the current incident and head,
+          # not merely contain an arbitrary (possibly edited) marker string.
+          # The complete canonical workflow issue header also prevents bare
+          # manually inserted markers from impersonating workflow intake.
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
             --search "$marker in:body" --limit 100 \
-            --json number,body,author | jq -r --arg m "$marker" --arg owner "$trusted_owner" '
+            --json number,body,author | jq -r \
+              --arg m "$marker" --arg owner "$trusted_owner" \
+              --arg incident "$INCIDENT" --arg pr "$PR" --arg sha "$SHA" '
               [.[] | select(
-                ((.body // "") | contains($m)) and
+                ((.body // "") | contains("<!-- " + $m + " -->")) and
+                ((.body // "") | contains("## Independent SIRT intake — NOT verification approval")) and
+                ((.body // "") | contains("- Engineering incident: #" + $incident + "\n")) and
+                ((.body // "") | contains("- Engineering PR: #" + $pr + "\n")) and
+                ((.body // "") | contains("- Exact PR head: " + $sha + "\n")) and
+                ((.body // "") | contains("- Intake status: SIRT_REVIEW_REQUIRED")) and
                 ((.author.login // "") == $owner or
                  (.author.login // "") == "github-actions[bot]" or
                  (.author.login // "") == "app/github-actions")
               )][0].number // empty
             ')
+          # Cross-links can fail independently after issue creation. Repair
+          # only missing authenticated links without duplicating review issues.
+          prior_pr_comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100")
           if [ -n "$existing" ]; then
+            existing_url="https://github.com/$GITHUB_REPOSITORY/issues/$existing"
+            existing_link="Independent SIRT intake created: $existing_url. Exact head: $SHA"
+            linked=$(jq -r --arg link "$existing_link" --arg owner "$trusted_owner" '
+              [.[] | select(
+                ((.body // "") | contains($link)) and
+                ((.user.login // "") == $owner or
+                 (.user.login // "") == "github-actions[bot]" or
+                 (.user.login // "") == "app/github-actions")
+              )] | length
+            ' <<<"$prior_pr_comments")
+            if [ "$linked" -eq 0 ]; then
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
+                --body "Independent SIRT intake created: $existing_url. Exact head: $SHA. SIRT and Independent Verification still pending; not a merge or deployment approval."
+              echo "Restored missing PR cross-link to SIRT intake #$existing." >> "$GITHUB_STEP_SUMMARY"
+            fi
             echo "Existing SIRT intake #$existing for PR #$PR at $short." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
