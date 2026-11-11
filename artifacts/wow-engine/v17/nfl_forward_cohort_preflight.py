@@ -30,7 +30,10 @@ from v17.nfl_forward_shadow import (
     MIN_FORWARD_GRADED,
     _client,
     _paginate,
+    grade_forward_predictions,
+    load_outcome_rows,
     load_prediction_rows,
+    select_canonical_forward_predictions,
 )
 
 CAN_EXECUTE = False
@@ -248,13 +251,14 @@ def project_forward_cohort(
         raise ValueError("expected_slate_games must be a positive integer or None")
 
     start, end = slate_window(slate_date)
-    graded_ids = {
+    # Persisted rows are audit history, not the grader's current denominator:
+    # corrected settlements (especially ties) are excluded by the grader but
+    # never delete an old persisted grade.
+    persisted_ids = {
         str(row.get("official_event_id") or "").strip()
         for row in _paginate(db, GRADE_TABLE, "official_event_id")
     }
-    graded_ids.discard("")
-    graded_n = len(graded_ids)
-
+    persisted_ids.discard("")
     prediction_rows = load_prediction_rows(db)
     # The grader validates the whole ledger, so an invalid row outside this
     # slate still prevents every slate game from being graded.
@@ -268,6 +272,22 @@ def project_forward_cohort(
                 "code": violation,
             })
 
+    # Match run_forward_shadow: canonical pregame rows + *current* settlement.
+    # An invalid ledger makes that grader abort, so no counted grade is proven.
+    outcome_rows = load_outcome_rows(db)
+    current_grade_ids = (
+        {grade.official_event_id for grade in grade_forward_predictions(
+            select_canonical_forward_predictions(prediction_rows), outcome_rows
+        )}
+        if not ledger_violations else set()
+    )
+    graded_ids = current_grade_ids
+    graded_n = len(graded_ids)
+    outcome_index = {
+        str(row.get("game_id") or "").strip(): row
+        for row in outcome_rows if str(row.get("game_id") or "").strip()
+    }
+
     by_event: dict[str, list[Mapping[str, Any]]] = {}
     for row in prediction_rows:
         kickoff = _parse_utc(row.get("event_start_time_utc"))
@@ -278,10 +298,16 @@ def project_forward_cohort(
             continue
         by_event.setdefault(event_id, []).append(row)
 
-    events = [
-        assess_slate_event(event_id, rows, already_graded=event_id in graded_ids)
-        for event_id, rows in sorted(by_event.items())
-    ]
+    events = []
+    for event_id, rows in sorted(by_event.items()):
+        event = assess_slate_event(event_id, rows, already_graded=event_id in graded_ids)
+        if event_id not in graded_ids and outcome_index.get(event_id, {}).get("tie") is True:
+            # The game has settled as a tie; it can never enter the binary
+            # forward cohort, even if the pregame prediction was eligible.
+            event["status"] = "CANNOT_GRADE"
+            event["cannot_grade_reason"] = "SETTLED_TIE_EXCLUDED"
+            event["blockers"] = sorted(set(event["blockers"]) | {"SETTLED_TIE_EXCLUDED"})
+        events.append(event)
     eligible_pregame_n = sum(1 for event in events if event["status"] == "ELIGIBLE_PREGAME")
     already_graded_n = sum(1 for event in events if event["status"] == "ALREADY_GRADED")
     cannot_grade = [event for event in events if event["status"] == "CANNOT_GRADE"]
@@ -292,21 +318,26 @@ def project_forward_cohort(
         blockers.append(f"FORWARD_GRADED_PROJECTED_{projected_n}_LT_{min_forward}")
     if cannot_grade:
         blockers.append(f"NFL_FORWARD_SLATE_EVENTS_CANNOT_GRADE:{len(cannot_grade)}")
-    # Without a caller-supplied slate size the ledger cannot prove that every
-    # game on the slate has a prediction row, so readiness is unverified rather
-    # than passing by default.
-    coverage_verified = expected_slate_games is not None
+    # Coverage is verified only when both independently supplied counts agree.
+    # More observed events than expected is a mismatch, not proof of coverage.
+    coverage_verified = expected_slate_games is not None and len(events) == expected_slate_games
     unobserved = 0
-    if not coverage_verified:
+    if expected_slate_games is None:
         blockers.append("NFL_FORWARD_SLATE_COVERAGE_UNVERIFIED")
     elif len(events) < expected_slate_games:
         unobserved = expected_slate_games - len(events)
         blockers.append(f"NFL_FORWARD_SLATE_GAMES_UNOBSERVED:{unobserved}")
+    elif len(events) > expected_slate_games:
+        blockers.append(f"NFL_FORWARD_SLATE_COUNT_MISMATCH:{len(events)}_GT_{expected_slate_games}")
+    if persisted_ids != graded_ids:
+        blockers.append(f"NFL_FORWARD_PERSISTED_GRADE_DRIFT:{len(persisted_ids)}_VS_{graded_n}")
     if ledger_violations:
         blockers.append(f"PREDICTION_LEDGER_WOULD_FAIL_GRADER:{len(ledger_violations)}")
 
     if ledger_violations:
         status = "HOLD_PREDICTION_LEDGER_INVALID"
+    elif persisted_ids != graded_ids:
+        status = "HOLD_PERSISTED_FORWARD_GRADE_DRIFT"
     elif projected_n < min_forward:
         status = "PROJECTED_SHORT_OF_MINIMUM"
     elif not coverage_verified:
@@ -323,6 +354,8 @@ def project_forward_cohort(
         "slate_window_utc": [start.isoformat(), end.isoformat()],
         "minimum_forward_required": int(min_forward),
         "graded_n": graded_n,
+        "persisted_grade_n": len(persisted_ids),
+        "current_cohort_reconciled_with_persisted_grades": persisted_ids == graded_ids,
         "current_gap_to_minimum": max(min_forward - graded_n, 0),
         "expected_slate_games": expected_slate_games,
         "observed_slate_games": len(events),
