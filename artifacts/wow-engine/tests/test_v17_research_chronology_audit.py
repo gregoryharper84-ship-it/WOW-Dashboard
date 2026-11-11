@@ -191,3 +191,41 @@ def test_calibration_holdout_event_overlap_blocks(tmp_path):
     report = audit_chronological_corpus(rows, source_root=tmp_path)
     assert report["status"] == "RESEARCH_AUDIT_HOLD"
     assert "CALIBRATION_HOLDOUT_EVENT_CHRONOLOGY_OVERLAP" in report["blockers"]
+
+
+
+def test_reused_snapshot_id_cannot_change_bytes_or_sport(tmp_path):
+    rows = _example(tmp_path)
+    # Two distinct, genuine source blobs may not claim one immutable ID.
+    rows[1]["source_snapshot_id"] = rows[0]["source_snapshot_id"]
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_HOLD"
+    assert "SOURCE_SNAPSHOT_ID_CONFLICT" in report["blockers"]
+    assert report["row_results"][1]["status"] == "ROW_HOLD"
+    assert report["source_bytes_digest_verified"] is True  # both files hash correctly
+    assert report["probability_publishable"] is False
+
+
+def test_reused_snapshot_id_cannot_rewrite_published_or_capture_time(tmp_path):
+    rows = _example(tmp_path)
+    rows[1]["source_snapshot_id"] = rows[0]["source_snapshot_id"]
+    rows[1]["source_file"] = rows[0]["source_file"]
+    rows[1]["source_payload_sha256"] = rows[0]["source_payload_sha256"]
+    # Same hash but different alleged publication/capture must still fail.
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert "SOURCE_SNAPSHOT_ID_CONFLICT" in report["blockers"]
+
+
+def test_reused_snapshot_id_same_bytes_and_original_times_remains_research_only(tmp_path):
+    rows = _example(tmp_path)
+    rows[1]["source_snapshot_id"] = rows[0]["source_snapshot_id"]
+    for field in ("source_file", "source_payload_sha256",
+                  "source_published_at", "source_captured_at"):
+        rows[1][field] = rows[0][field]
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert report["status"] == "RESEARCH_AUDIT_PASS"
+    assert report["source_bytes_digest_verified"] is True
+    assert report["source_rights_independently_verified"] is False
+    assert report["source_timestamps_independently_verified"] is False
+    assert report["calibration_certified"] is False
+    assert report["can_execute"] is False
