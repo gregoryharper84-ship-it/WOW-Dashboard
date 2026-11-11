@@ -213,6 +213,55 @@ def _persist_rows(client: Any, tour: str, family: str, rows: list[BinaryTraining
         ).execute()
 
 
+
+def _persist_candidate_verified(client: Any, record: dict[str, Any]) -> dict[str, Any]:
+    """Freeze the fitted candidate and read back its *actual* shadow evidence.
+
+    Duplicate-ignoring inserts must never claim an attempted shadow result
+    overwrote a stored result. Conflicting repeat fits are a typed HOLD;
+    no immutable fitted sporting artifact, calibrator or prior receipt changes.
+    """
+    version = str(record["model_artifact_version"])
+    client.table("wow_d1_candidate_artifacts").upsert(
+        record, on_conflict="model_artifact_version", ignore_duplicates=True,
+    ).execute()
+    fetched = (
+        client.table("wow_d1_candidate_artifacts")
+        .select("*")
+        .eq("model_artifact_version", version)
+        .limit(2)
+        .execute()
+    )
+    saved = list(getattr(fetched, "data", None) or [])
+    if len(saved) != 1 or not isinstance(saved[0], dict):
+        raise TennisCandidateUnavailable(
+            "TENNIS_CANDIDATE_READBACK_UNVERIFIED",
+            f"cannot verify persisted candidate version {version}",
+        )
+    stored = saved[0]
+    immutable = (
+        "sport", "league", "market_family", "model_family",
+        "model_artifact_version", "feature_schema_version", "source_policy_id",
+        "training_dataset_hash", "training_code_sha", "artifact_checksum",
+        "artifact_payload", "calibrator_payload", "training_rows",
+        "calibration_rows", "test_rows", "research_screen_pass",
+        "source_review_status", "lifecycle_state", "promoted", "active",
+        "automatic_certification", "automatic_promotion",
+        "probability_publishable", "can_execute",
+    )
+    if any(stored.get(name) != record.get(name) for name in immutable):
+        raise TennisCandidateUnavailable(
+            "TENNIS_CANDIDATE_FROZEN_VERSION_CONFLICT",
+            f"frozen artifact identity mismatch: {version}",
+        )
+    if stored.get("validation_metrics") != record.get("validation_metrics"):
+        raise TennisCandidateUnavailable(
+            "TENNIS_SHADOW_RETRY_EVIDENCE_CONFLICT",
+            f"shadow evidence for frozen artifact was not replaced: {version}",
+        )
+    return stored
+
+
 def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
     code_sha = str(training_code_sha or "").strip().lower()
     if len(code_sha) < 7:
@@ -265,7 +314,7 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
             "retirement_rows_excluded": True, "surface_feature_required": True,
             "supported_categories": sorted(SUPPORTED_CATEGORIES),
         }
-        client.table("wow_d1_candidate_artifacts").upsert({
+        record = {
             "sport": SPORT, "league": tour, "market_family": MARKET_FAMILY,
             "model_family": family, "model_artifact_version": version,
             "feature_schema_version": FEATURE_SCHEMA_VERSION, "source_policy_id": SOURCE_POLICY_ID,
@@ -277,10 +326,13 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
             "source_review_status": "CC_BY_4_0_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
             "promoted": False, "active": False, "automatic_certification": False,
             "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-        }, on_conflict="model_artifact_version", ignore_duplicates=True).execute()
+        }
+        stored = _persist_candidate_verified(client, record)
+        # The output reflects the database readback, NOT a duplicate-ignored
+        # write or an ephemeral result from this attempt.
         output.append({
             "tour": tour, "model_artifact_version": version, "eligible_rows": len(rows),
-            "metrics": metrics, "research_screen_pass": candidate.research_screen_pass,
+            "metrics": stored["validation_metrics"], "research_screen_pass": stored["research_screen_pass"],
             "lifecycle_state": "CANDIDATE", "supported_categories": sorted(SUPPORTED_CATEGORIES),
             "probability_publishable": False, "can_execute": False,
         })
