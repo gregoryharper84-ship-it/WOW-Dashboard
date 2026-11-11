@@ -308,3 +308,33 @@ def test_split_majority_benchmark_excludes_tied_vote_event():
     assert benchmark["user_correct_on_same_games"] == 1
     assert benchmark["difference_vs_user_on_same_games"] == 0
     assert out["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("actual_winner", "majority_correct", "gh_correct", "difference"),
+    [
+        ("A", 1, 0, 1),
+        ("B", 0, 1, -1),
+    ],
+)
+def test_majority_versus_gh_nonzero_retro_benchmark(
+    actual_winner: str,
+    majority_correct: int,
+    gh_correct: int,
+    difference: int,
+):
+    participants = {
+        "GH": {"game-a": "B"},
+        "Jo": {"game-a": "A"},
+        "Tre": {"game-a": "A"},
+    }
+    report = analyze_settled_pickem_week(
+        participants, {"game-a": actual_winner}, user_name="GH"
+    )
+    benchmark = report["visible_majority_benchmark"]
+    assert benchmark["eligible_game_count"] == 1
+    assert benchmark["correct"] == majority_correct
+    assert benchmark["user_correct_on_same_games"] == gh_correct
+    assert benchmark["difference_vs_user_on_same_games"] == difference
+    assert benchmark["prelock_visibility_verified"] is False
+    assert report["prelock_pool_equity_evidence_eligible"] is False
