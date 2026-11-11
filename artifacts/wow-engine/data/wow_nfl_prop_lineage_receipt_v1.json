@@ -121,13 +121,16 @@
         "PASSING_YARDS": false,
         "RECEIVING_YARDS": false,
         "RUSHING_YARDS": false
-      }
+      },
+      "registry_snapshot_project": "iczfhsmjrrafhvcpmqhr (validation project; production identity not asserted)",
+      "registry_snapshot_queried_at_utc": "2026-11-11T07:00:00Z"
     },
     "environment": {
       "original": {
         "conclusion": "success",
         "created_at_utc": "2026-09-20T13:45:52Z",
         "event": "push",
+        "head_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
         "packages": {
           "joblib": "1.6.0",
           "numpy": "2.4.6",

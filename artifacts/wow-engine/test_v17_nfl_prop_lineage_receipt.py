@@ -13,7 +13,12 @@ def test_receipt_safety_flags_and_five_separate_assertions():
     r = v.build_receipt()
     assert r["can_execute"] is False and r["probability_publishable"] is False and r["grants_model_capability"] is False
     assert len(r["assertions"]) == 5
-    assert r["assertions"]["5_verified_production_registration"]["status"] != "VERIFIED"
+    a = r["assertions"]
+    assert a["1_verified_historical_source_identity"]["status"] == "VERIFIED_EXTERNALLY_NOT_IN_REPO_REFS"
+    assert a["2_internal_checksum_consistency"]["status"] == "VERIFIED"
+    assert a["3_independently_reproduced_statistical_results"]["status"] == "REPRODUCED_EXACT"
+    assert a["4_independently_reproduced_artifact_bytes"]["status"] == "REPRODUCED_EXACT"
+    assert a["5_verified_production_registration"]["status"] == "REGISTRY_ROWS_MATCH_VALIDATION_PROJECT_ONLY"
 
 
 def test_committed_receipt_matches_regeneration():
@@ -46,3 +51,31 @@ def test_trainer_bytes_match_recovered_commit_and_no_time_leakage_split():
         m = REP["routes"][lane]
         assert max(m["train_seasons"]) < m["calibration_season"] < m["holdout_season"]
         assert m["whole_week_chronological_split"] is True
+
+
+def _receipt_with(tmp_path, mutate_art=None, mutate_ev=None):
+    arts, ev = copy.deepcopy(ARTS), copy.deepcopy(EV)
+    if mutate_art: mutate_art(arts)
+    if mutate_ev: mutate_ev(ev)
+    (tmp_path / "a.json").write_text(json.dumps(arts)); (tmp_path / "e.json").write_text(json.dumps(ev))
+    return v.build_receipt(artifacts_path=tmp_path / "a.json", evidence_path=tmp_path / "e.json")["assertions"]
+
+
+def test_duplicate_or_missing_lane_not_verified(tmp_path):
+    assert _receipt_with(tmp_path, lambda a: a.pop())["2_internal_checksum_consistency"]["status"] == "FAILED"
+    assert _receipt_with(tmp_path, lambda a: a.__setitem__(3, copy.deepcopy(a[0])))["2_internal_checksum_consistency"]["status"] == "FAILED"
+
+
+def test_registry_publishable_true_is_mismatch(tmp_path):
+    def m(ev): ev["registry_snapshot"]["rows"]["PASSING_YARDS"]["probability_publishable"] = True
+    assert _receipt_with(tmp_path, mutate_ev=m)["5_verified_production_registration"]["status"] == "MISMATCH"
+
+
+def test_commit_not_bound_to_artifacts_is_unverified(tmp_path):
+    def m(ev): ev["training_code"]["commit_sha"] = "0" * 40
+    assert _receipt_with(tmp_path, mutate_ev=m)["1_verified_historical_source_identity"]["status"] == "UNVERIFIED"
+
+
+def test_unavailable_github_resolution_is_unverified(tmp_path):
+    def m(ev): ev["training_code"]["resolvable_via_github_api"] = False
+    assert _receipt_with(tmp_path, mutate_ev=m)["1_verified_historical_source_identity"]["status"] == "UNVERIFIED"

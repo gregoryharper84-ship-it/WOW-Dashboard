@@ -78,16 +78,23 @@ def build_receipt(artifacts_path: Path = DATA / "wow_nfl_prop_artifacts_v1.json"
     registry = verify_registry_matches(artifacts, ev["registry_snapshot"]["rows"])
     trainer_sha = sha256_bytes(trainer_path.read_bytes())
     code = ev["training_code"]
-    same_code = trainer_sha == code["trainer_sha256_at_commit"]
+    commit_bound = (
+        all(a.get("training_code_sha") == code["commit_sha"] for a in artifacts)
+        and ev["refit"].get("env_GITHUB_SHA") == code["commit_sha"]
+        and ev["original_fit_run"].get("head_sha") == code["commit_sha"]
+    )
+    same_code = trainer_sha == code["trainer_sha256_at_commit"] and commit_bound
     repro_files_equal = (
         sha256_bytes(artifacts_bytes) == ev["refit"]["output_artifacts_sha256"]
         and sha256_bytes(report_bytes) == ev["refit"]["output_report_sha256"]
     )
     envs_match = ev["original_fit_run"]["packages"] == ev["refit"]["packages"]
-    all_internal = all(all(v.values()) for v in internal.values())
+    lane_ids = [a.get("stat_type") for a in artifacts]
+    lanes_complete = len(lane_ids) == len(LANES) and set(lane_ids) == set(LANES)
+    all_internal = lanes_complete and all(all(v.values()) for v in internal.values())
     all_registry = all(
         v["registry_row_present"] and v["checksum_equal"] and v["dataset_hash_equal"] and v["code_sha_equal"]
-        and v["training_rows_equal"] for v in registry.values()
+        and v["training_rows_equal"] and v["registry_probability_publishable"] is False for v in registry.values()
     )
     return {
         "schema": RECEIPT_SCHEMA,
@@ -114,6 +121,8 @@ def build_receipt(artifacts_path: Path = DATA / "wow_nfl_prop_artifacts_v1.json"
             "certification_decision": {
                 "registry_lifecycle": {l: r["lifecycle_state"] for l, r in ev["registry_snapshot"]["rows"].items()},
                 "calibrator_version": ev["registry_snapshot"]["calibrator_version"],
+                "registry_snapshot_project": ev["registry_snapshot"]["project"],
+                "registry_snapshot_queried_at_utc": ev["registry_snapshot"]["queried_at_utc"],
                 "registry_probability_publishable": {l: r["probability_publishable"] for l, r in ev["registry_snapshot"]["rows"].items()},
                 "limitation": "Calibration is a bootstrap pre-calibration, not a fitted Phase-B calibrator; no publication authority.",
             },

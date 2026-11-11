@@ -17,6 +17,7 @@
   },
   "original_fit_run": {
     "workflow_run_id": 35514457169,
+    "head_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
     "workflow": "tmp-nfl-prop-train-20260920",
     "event": "push",
     "created_at_utc": "2026-09-20T13:45:52Z",
