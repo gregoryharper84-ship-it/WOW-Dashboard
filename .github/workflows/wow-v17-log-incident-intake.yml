@@ -239,11 +239,18 @@ jobs:
           else
             echo 'status: SOURCE_NOT_READ_OR_VALIDATED' >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Stage validated Reporter artifact
+        if: steps.intake.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/wow-v17-validated"
+          cp "$RUNNER_TEMP/wow-v17-log-intake-validated.json" "$RUNNER_TEMP/wow-v17-validated/wow-v17-log-intake.json"
       - name: Preserve bounded redacted intake artifact
         if: steps.intake.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-log-incident-candidates
-          path: ${{ runner.temp }}/wow-v17-log-intake-validated.json
+          path: ${{ runner.temp }}/wow-v17-validated/wow-v17-log-intake.json
           if-no-files-found: warn
           retention-days: 7
