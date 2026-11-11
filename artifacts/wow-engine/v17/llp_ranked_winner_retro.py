@@ -8,7 +8,7 @@ Independent source/receipt authentication happens upstream, not in this helper.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
@@ -23,6 +23,25 @@ CONTEXT = {
     "NFL": ("starting_qb", "injuries", "turnovers"),
 }
 CAN_EXECUTE = False
+# A single-market-favorite baseline is comparable only near the frozen card.
+# Older pregame lines may be kept as separate historical market context,
+# but cannot stand in for the same-time reference favorite.
+MAX_MARKET_SNAPSHOT_AGE = timedelta(minutes=60)
+MAX_DECIMAL_PRICE = 100_000
+MAX_ABS_HOME_SPREAD = 500
+
+
+def _valid_price(value: Any) -> bool:
+    # Bound BEFORE converting to float; gigantic Python ints overflow on isfinite.
+    return (type(value) in (float, int) and 1 < value <= MAX_DECIMAL_PRICE
+            and isfinite(float(value)))
+
+
+def _valid_home_spread(value: Any) -> bool:
+    return (type(value) in (float, int)
+            and -MAX_ABS_HOME_SPREAD <= value <= MAX_ABS_HOME_SPREAD
+            and isfinite(float(value)))
+
 
 
 def _text(value: Any) -> str:
@@ -61,6 +80,8 @@ def _market(row: Mapping[str, Any], frozen: datetime | None) -> tuple[str | None
         problems.append("MARKET_RECEIPT_UNVERIFIED")
     if when is None or frozen is None or when > frozen:
         problems.append("MARKET_NOT_VISIBLE_AT_FREEZE")
+    elif frozen - when > MAX_MARKET_SNAPSHOT_AGE:
+        problems.append("MARKET_SNAPSHOT_TOO_OLD_FOR_SAME_TIME_BASELINE")
     sport = _text(row.get("sport")).upper()
     expected = {"HOME", "AWAY", "DRAW"} if sport in THREE_WAY else {"HOME", "AWAY"}
     if row.get("market_type") != ("REGULATION_3WAY" if sport in THREE_WAY else "FULL_GAME_2WAY"):
@@ -69,7 +90,7 @@ def _market(row: Mapping[str, Any], frozen: datetime | None) -> tuple[str | None
     if not isinstance(quotes, Mapping) or set(quotes) != expected:
         problems.append("MARKET_OUTCOME_SET_INVALID")
         return None, problems
-    if any(type(v) not in (float, int) or not isfinite(v) or v <= 1 for v in quotes.values()):
+    if any(not _valid_price(v) for v in quotes.values()):
         problems.append("MARKET_PRICE_INVALID")
         return None, problems
     if problems:
@@ -198,8 +219,7 @@ def audit_ranked_winner_retro(
             and _utc(spread.get("available_to_user_at_utc")) is not None
             and _utc(spread.get("available_to_user_at_utc")) <= frozen
             and spread.get("settlement_basis") == expected_basis
-            and type(spread.get("home_line")) in (int, float)
-            and isfinite(spread["home_line"])):
+            and _valid_home_spread(spread.get("home_line"))):
             adjusted = scores[0] - scores[1] + spread["home_line"]
             spread_grade = "HOME_COVER" if adjusted > 0 else "AWAY_COVER" if adjusted < 0 else "PUSH"
         checks = p.get("context_checks")
