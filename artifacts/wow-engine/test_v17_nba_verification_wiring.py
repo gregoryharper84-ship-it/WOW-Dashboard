@@ -574,6 +574,7 @@ def _gate_open_result(**kwargs):
         "hard_blockers": [],
         "deferred_blockers": ["CHECK_FAILED:V10", "CHECK_FAILED:V11"],
         "verification_status": "FAIL",
+        **kwargs,
     }
 
 
