@@ -198,17 +198,36 @@ Verdict: `SCHEDULE_NOT_OBSERVED`. ~2h34m after nominal `0 23`, newest schedule i
 | `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Unchanged **BACKEND_PAIR_OBSERVED_HOST_PENDING** |
 | Stop condition | No further unpaid timers for this `0 23` window. Resume on next nominal cron (`0 3`) only if needed for serving-SHA provenance after `#2587` deploy; host Action receipt remains the PM residual |
 
+## Independent re-verify (2026-11-11T14:45Z, unpaid, post-#2587 live)
+
+Verdict: `REQUEST_TIME_SERVING_SHA_VERIFIED_HOST_RESIDUAL_PENDING`. `#2587` merged to protected `main` as `a1494317e` and is now the live `/governance` tip. OIDC Daily POST attributed `run_id` to that SHA; Supabase exact-row readback matched. Host three-field Action residual remains open. `can_execute=false`.
+
+| Probe | Result |
+| --- | --- |
+| `#2587` merge | `a1494317edc89e4b469e1d17e11e4e803cbf7e17` on `main` at `2026-11-11T14:12:01Z` |
+| Live `/governance` | `deployed_sha=a1494317e…`, `can_execute=false`, `V17_TERMINAL_REDUCER` |
+| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| Safety ancestry | `98a56157…` remains ancestor of live tip |
+| OIDC Daily workflow | `workflow_dispatch` run `43039389826` on head `a1494317e` completed success (`2026-11-11T14:32:06Z`–`14:35:54Z`) |
+| Workflow summary (POST attribution) | `run_id=v17-daily-3f1172cb-d2e4-4a02-a87a-3a0deee6535c`; `run_status=COMPLETED`; `serving_sha_at_request=a1494317e…`; `serving_sha_source=daily_snapshot_response_deployed_sha`; `serving_sha_preflight_matches_post=true`; `moneyline_rows=26`; `can_execute=false` |
+| Supabase exact-row readback | `wow_v17_daily_run_row_detail` project `wow-engine-validation` / `iczfhsmjrrafhvcpmqhr`: **26** MONEYLINE rows for that `run_id`; `captured_at=2026-11-11T14:35:52Z`; **0** `can_execute=true` rows |
+| `ZERO_ROW_REASON_MISCLASSIFIED` | Unchanged **FIXED_VERIFIED_IN_PRODUCTION** |
+| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Unchanged **BACKEND_PAIR_OBSERVED_HOST_PENDING** |
+| Parallel PR delta | `#2560` / `#2571` still await authorized merge |
+
 ## Closure gate
 
-`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Post-safety sync MONEYLINE Daily `run_id`s are observed, but request-time serving SHA attribution stays **UNVERIFIED**. Cron `0 23` ended **SCHEDULE_NOT_OBSERVED** as of `2026-11-11T01:34Z`. MONEYLINE-only cron cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
+`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Request-time serving SHA attribution for a post-#2587 live tip is now **VERIFIED** via OIDC Daily POST `deployed_sha` + Supabase exact-row readback (`v17-daily-3f1172cb…` / `a1494317e…`). MONEYLINE-only Daily cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
 
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
-serving_sha_observed_at_0134Z = 6998b62af5df99cafd87995b9aa7b14fdd0d8110
-safety_ancestor_of_0134Z_tip = 98a56157a5916c6d25ee1c51bab3d183448e23c8
-post_safety_sync_daily_run_ids = OBSERVED (42875617354 / v17-daily-73c75380…; 42911461928 / v17-daily-80c514c0…)
-post_safety_sync_daily_serving_sha_at_request = UNVERIFIED
+serving_sha_observed_at_1445Z = a1494317edc89e4b469e1d17e11e4e803cbf7e17
+safety_ancestor_of_1445Z_tip = 98a56157a5916c6d25ee1c51bab3d183448e23c8
+post_2587_oidc_daily_run_id = v17-daily-3f1172cb-d2e4-4a02-a87a-3a0deee6535c
+post_2587_oidc_daily_workflow_run = 43039389826
+post_safety_sync_daily_serving_sha_at_request = VERIFIED (POST deployed_sha == a1494317e…; preflight match true)
+supabase_exact_row_readback = 26 MONEYLINE rows / 0 can_execute=true
 cron_0_23_status = SCHEDULE_NOT_OBSERVED
 zero_row_status = FIXED_VERIFIED_IN_PRODUCTION
 scoring_attempted_status = BACKEND_PAIR_OBSERVED_HOST_PENDING
