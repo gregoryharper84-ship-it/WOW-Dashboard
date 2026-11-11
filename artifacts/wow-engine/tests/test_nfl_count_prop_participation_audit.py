@@ -173,3 +173,41 @@ def test_active_pfr_collision_remains_fail_closed(sample_cohort):
     with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT"):
         reconcile_player_games(stats, snaps, pd.concat([players, conflict], ignore_index=True))
 
+
+@pytest.mark.parametrize("year,kind", [(2023, "empty"), (2024, "zero")])
+def test_main_rejects_single_empty_or_zero_offense_snap_season(
+    tmp_path, monkeypatch, capsys, year, kind,
+):
+    """A single unobserved year must HOLD even when the other four are valid."""
+    import sys
+    import audit_nfl_count_prop_participation as mod
+
+    stats = pd.DataFrame([{
+        "game_id": "2021_01_ARI_TEN", "season": 2021, "week": 1,
+        "player_id": "00-0031111",
+    }])
+    def fake_verified_csv(path, expected_sha):
+        """Return only synthetic 2021-2025 snapshots to isolate the main guard."""
+        name = path.name
+        if name == "players.csv":
+            raise AssertionError("crosswalk read must not occur after a failed season")
+        current = int(name.split("_")[-1].split(".")[0])
+        one = pd.DataFrame([{
+            "season": current, "game_id": f"{current}_01_ARI_TEN",
+            "week": 1, "game_type": "REG", "position": "QB",
+            "pfr_player_id": "PlayerA01", "offense_snaps": 12,
+        }])
+        return (one.iloc[0:0].copy() if kind == "empty" else one.assign(offense_snaps=0)) if current == year else one
+
+    monkeypatch.setattr(mod, "load_source_files", lambda *args, **kwargs: (
+        stats, {"bundle_sha256": "a" * 64},
+    ))
+    monkeypatch.setattr(mod, "_verified_csv", fake_verified_csv)
+    monkeypatch.setattr(sys, "argv", [
+        "audit", "--stats-dir", str(tmp_path), "--snap-dir", str(tmp_path),
+        "--players-csv", str(tmp_path / "players.csv"),
+    ])
+    with pytest.raises(ValueError, match=f"NFL_PROP_PARTICIPATION_SNAP_EMPTY:{year}"):
+        mod.main()
+    assert capsys.readouterr().out == ""
+

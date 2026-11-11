@@ -662,7 +662,7 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 
 ## Offline NFL count-prop candidate fit codes (2026-11-11)
 
-These are **offline research-builder only** errors from `scripts/train_nfl_missing_prop_candidates.py`, owned by `WOW_PROP_LANE`. Recovery class is indicated per row; they are not runtime scorer failures, do not grant rank eligibility, and must never be collapsed into `MODEL_UNAVAILABLE`. These source diagnostics never authorize model registration, calibration promotion, publication, or wagers.
+These are **offline research-builder and source-coverage audit only** errors from `scripts/train_nfl_missing_prop_candidates.py` and `scripts/audit_nfl_count_prop_participation.py`, owned by `WOW_PROP_LANE`. Recovery class is indicated per row; they are not runtime scorer failures, do not grant rank eligibility, and must never be collapsed into `MODEL_UNAVAILABLE`. These source diagnostics never authorize model registration, calibration promotion, publication, or wagers.
 
 | Typed code | Recovery class | Detection and required recovery | Rank eligible? |
 |---|---|---|---|
