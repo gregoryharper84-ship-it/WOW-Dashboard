@@ -149,9 +149,20 @@ jobs:
           set -euo pipefail
           short="${SHA:0:12}"
           marker="WOW_SIRT_INTAKE_PR_${PR}_HEAD_${SHA}"
+          # An issue body is public input. A matching marker alone is not
+          # evidence that the SIRT intake was created by a trusted actor.
+          # Permit only this repository's authenticated owner or its Actions
+          # bot; untrusted forged markers must never suppress a new intake.
+          trusted_owner="${GITHUB_REPOSITORY%%/*}"
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
             --search "$marker in:body" --limit 100 \
-            --json number,body | jq -r --arg m "$marker" '[.[] | select(.body | contains($m))][0].number // empty')
+            --json number,body,author | jq -r --arg m "$marker" --arg owner "$trusted_owner" '
+              [.[] | select(
+                ((.body // "") | contains($m)) and
+                ((.author.login // "") == $owner or
+                 (.author.login // "") == "github-actions[bot]")
+              )][0].number // empty
+            ')
           if [ -n "$existing" ]; then
             echo "Existing SIRT intake #$existing for PR #$PR at $short." >> "$GITHUB_STEP_SUMMARY"
             exit 0
