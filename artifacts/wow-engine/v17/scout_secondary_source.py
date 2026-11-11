@@ -357,6 +357,19 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
 _EVENT_RELOOKUP_TOLERANCE_SECONDS = 30 * 60
 
 
+def _identity_time(value: Any) -> datetime | None:
+    """Identity matches require explicit source timezone, not a guessed UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
 def _event_matches(event: dict[str, Any], context: dict[str, Any] | None, event_id: str) -> bool:
     requested = str(event_id or "").strip()
     event_identity = str(event.get("id") or "").strip()
@@ -370,16 +383,17 @@ def _event_matches(event: dict[str, Any], context: dict[str, Any] | None, event_
     home, away = _competitors(event)
     expected_home = _norm(context.get("home_team"))
     expected_away = _norm(context.get("away_team"))
-    if expected_home and expected_away:
-        if _norm(_team_name(home)) != expected_home or _norm(_team_name(away)) != expected_away:
-            return False
-    elif not exact_espn_id:
+    if expected_home and _norm(_team_name(home)) != expected_home:
+        return False
+    if expected_away and _norm(_team_name(away)) != expected_away:
+        return False
+    if not exact_espn_id and not (expected_home and expected_away):
         return False
 
     expected_start_raw = context.get("commence_time")
     if expected_start_raw:
-        expected_start = _parse_utc(expected_start_raw)
-        observed_start = _parse_utc(event.get("date"))
+        expected_start = _identity_time(expected_start_raw)
+        observed_start = _identity_time(event.get("date"))
         if (expected_start is None or observed_start is None
                 or abs((observed_start - expected_start).total_seconds())
                 > _EVENT_RELOOKUP_TOLERANCE_SECONDS):
