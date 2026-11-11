@@ -30,7 +30,8 @@ def _selector() -> str:
 
 def _execute(tmp_path: Path, *, valid_source: str = "", broken_source: str = "",
              attempted_missing_source: str = "", broken_jobs_source: str = "",
-             rerun_source: str = "", malformed_jobs_source: str = ""):
+             rerun_source: str = "", malformed_jobs_source: str = "",
+             malformed_job_entry_source: str = ""):
     gh = tmp_path / "gh"
     gh.write_text(
         """#!/usr/bin/env python3
@@ -72,6 +73,9 @@ elif "/actions/runs/" in url and "/jobs" in url:
     payload = {"total_count": len(jobs), "jobs": jobs}
     if source_id == os.environ.get("MOCK_MALFORMED_JOBS_SOURCE"):
         payload["total_count"] += 1
+    if source_id == os.environ.get("MOCK_MALFORMED_JOB_ENTRY_SOURCE"):
+        jobs.append({"status": "completed", "conclusion": "success"})
+        payload["total_count"] = len(jobs)
 elif "/actions/runs/" in url and "/artifacts" in url:
     source_id = re.search(r"/actions/runs/([0-9]+)/artifacts", url).group(1)
     if source_id == os.environ.get("MOCK_BROKEN_SOURCE"):
@@ -122,6 +126,7 @@ print(json.dumps(payload))
             "MOCK_BROKEN_JOBS_SOURCE": broken_jobs_source,
             "MOCK_RERUN_SOURCE": rerun_source,
             "MOCK_MALFORMED_JOBS_SOURCE": malformed_jobs_source,
+            "MOCK_MALFORMED_JOB_ENTRY_SOURCE": malformed_job_entry_source,
         }
     )
     result = subprocess.run(
@@ -210,3 +215,15 @@ def test_incomplete_jobs_inventory_is_logged_and_held(tmp_path):
     assert result.returncode == 2, result.stderr
     assert result.stdout.strip() == ""
     assert "provenance=discovery_not_proven_skipped recovery_class=EVIDENCE_PENDING" in summary
+
+
+def test_malformed_job_entry_does_not_allow_skip(tmp_path):
+    # A second inventory entry without a name invalidates a skipped-discovery claim.
+    result, summary = _execute(
+        tmp_path, valid_source="39974206881",
+        malformed_job_entry_source="39974206880",
+    )
+    assert result.returncode == 2, result.stderr
+    assert result.stdout.strip() == ""
+    assert "recovery_class=EVIDENCE_PENDING" in summary
+    assert "recovery_class=NOT_APPLICABLE" not in summary
