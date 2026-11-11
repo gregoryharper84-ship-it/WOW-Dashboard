@@ -37,7 +37,7 @@ def _fake_pr(**over):
         "number": 2547, "state": "open", "draft": False,
         "body": "Incident: #2076",
         "head": {"sha": SHA, "repo": {"full_name": REPO}},
-        "base": {"repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
     for key, value in over.items():
         pr[key] = value
@@ -93,6 +93,7 @@ def test_manual_entry_denies_stale_or_missing_exact_sha(tmp_path, bad):
 
 @pytest.mark.parametrize("changed", [
     {"draft": True}, {"state": "closed"},
+    {"base": {"ref": "feature", "repo": {"full_name": REPO}}},
     {"head": {"sha": SHA, "repo": {"full_name": "untrusted/fork"}}},
     {"body": "See issue #2076"}, {"body": "Incident: #2076\nIncident: #2020"},
 ])
