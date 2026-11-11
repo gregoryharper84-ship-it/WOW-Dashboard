@@ -70,8 +70,8 @@ timing as (
   -- date-granularity stamp, NOT an observed snapshot time. Pregame safety rests on the feature builder using
   -- strictly earlier dates (tested), not on this column.
   select 'timing_date_only', 'as_of_vs_game_date', count(*),
-         count(*) filter (where as_of::date > game_date)::float,
-         count(*) filter (where as_of >= game_date::timestamptz)::float, null::float, null::float from ho)
+         count(*) filter (where (as_of at time zone 'UTC')::date > game_date)::float,
+         count(*) filter (where as_of >= (game_date::timestamp at time zone 'UTC'))::float, null::float, null::float from ho)
 select * from summary union all select * from loss union all select * from bias
 union all select * from bins union all select * from ece union all select * from seasons
 union all select * from timing
