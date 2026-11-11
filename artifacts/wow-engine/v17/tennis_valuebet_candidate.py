@@ -229,7 +229,26 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         _persist_rows(client, tour, family, rows, metadata)
         artifact = dict(candidate.artifact_payload)
         version = f"{family}_{candidate.dataset_hash[:16]}_{code_sha[:12]}"
+        # Research-only calibration stability replay. This challenger never
+        # replaces the fitted candidate's calibrator, research-screen decision,
+        # artifacts, or promotion state. A replay error remains typed held
+        # evidence and cannot turn into a sporting probability.
+        from v17.tennis_calibration_shadow import (
+            TennisCalibrationShadowError, replay_tennis_calibration_shadow,
+        )
+        try:
+            calibration_shadow = replay_tennis_calibration_shadow(rows, candidate)
+            calibration_shadow_status = "EVALUATED_RESEARCH_ONLY"
+        except TennisCalibrationShadowError as exc:
+            calibration_shadow = {
+                "status": "HELD", "code": exc.code,
+                "automatic_certification": False,
+                "probability_publishable": False, "can_execute": False,
+            }
+            calibration_shadow_status = "HELD"
         metrics = asdict(candidate.metrics) | {
+            "calibration_shadow_status": calibration_shadow_status,
+            "calibration_shadow": calibration_shadow,
             "research_screen_pass": candidate.research_screen_pass, "source_license": SOURCE_LICENSE,
             "market_features_used": False, "training_settlement_scope": "COMPLETED_MATCHES_ONLY",
             "retirement_rows_excluded": True, "surface_feature_required": True,
