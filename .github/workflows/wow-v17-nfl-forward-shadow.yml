@@ -193,9 +193,6 @@ jobs:
 
           body = {"slate_date": slate_date}
           expected = (os.environ.get("EXPECTED_SLATE_GAMES") or "").strip()
-          if expected:
-              body["expected_slate_games"] = int(expected)
-
           endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/nfl-forward-cohort-preflight"
 
           # Readiness reporting must never fail an already completed grading run.
@@ -203,6 +200,12 @@ jobs:
           # says nothing about the cohort, so record an explicit unavailable/HOLD
           # summary and warn instead of failing the step.
           try:
+              # workflow_dispatch number inputs may be fractional; never fail
+              # completed grading just because an optional count is malformed.
+              if expected:
+                  if not expected.isascii() or not expected.isdecimal() or int(expected) <= 0:
+                      raise ValueError("expected_slate_games must be an exact positive integer")
+                  body["expected_slate_games"] = int(expected)
               request = urllib.request.Request(
                   endpoint,
                   data=json.dumps(body).encode("utf-8"),
