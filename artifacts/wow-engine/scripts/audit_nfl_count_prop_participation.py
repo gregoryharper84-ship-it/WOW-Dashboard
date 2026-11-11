@@ -85,6 +85,8 @@ def reconcile_player_games(
     ).any() or (snap["offense_snaps"] < 0).any():
         raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:scope")
     snap = snap.loc[snap.offense_snaps.gt(0)].copy()
+    if snap.empty:
+        raise ValueError("NFL_PROP_PARTICIPATION_SNAP_EMPTY")
     for field in ("game_id", "pfr_player_id"):
         if snap[field].isna().any() or snap[field].astype(str).str.strip().eq("").any():
             raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:" + field)
@@ -144,6 +146,13 @@ def main() -> int:
         if not frame.empty:
             if "season" not in frame.columns or not pd.to_numeric(frame.season, errors="coerce").eq(year).all():
                 raise ValueError("NFL_PROP_PARTICIPATION_SNAP_SEASON_MISMATCH:" + str(year))
+        # A five-season report cannot treat an empty year as complete coverage.
+        if frame.empty or not (
+            frame["game_type"].astype(str).str.upper().eq("REG")
+            & frame["position"].astype(str).str.upper().isin(OFFENSIVE_ROLES)
+            & pd.to_numeric(frame["offense_snaps"], errors="coerce").gt(0)
+        ).any():
+            raise ValueError("NFL_PROP_PARTICIPATION_SNAP_EMPTY:" + str(year))
         snaps.append(frame)
     players = _verified_csv(args.players_csv, PLAYERS_SHA256)
     result = reconcile_player_games(stats, pd.concat(snaps, ignore_index=True), players)
