@@ -210,7 +210,7 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  data.append({'number':9000,'body':content,'author':{'login':'app/github-actions'}})\n"
         "  issues.write_text(json.dumps(data))\n"
         "  calls.open('a').write('issue:create\\n')\n"
-        "  print('https://github.com/example/repo/issues/9000')\n"
+        "  print('https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/issues/9000')\n"
         "elif args[0]=='api' and 'issues/2547/comments' in args[1]:\n"
         "  calls.open('a').write('api:comments\\n')\n"
         "  print(comments.read_text())\n"
