@@ -121,6 +121,33 @@ def reconcile_player_games(
     missing = checked.loc[checked["_present"].eq("left_only")]
     examples = missing.loc[:, ["season", "week", "game_id", "pfr_player_id", "gsis_id", "offense_snaps"]]
     unknown_examples = unmapped.loc[:, ["season", "week", "game_id", "pfr_player_id", "offense_snaps"]]
+    # Diagnostic-only strata: isolate absent event rows from crosswalk gaps.
+    # Never convert a missing participant-game into an observed zero count.
+    matched = checked.loc[checked["_present"].eq("both")]
+
+    def _histogram(frame: pd.DataFrame, dimension: str) -> dict[str, int]:
+        """Count audited rows in a predeclared mutually exclusive stratum."""
+        if dimension == "snap_band":
+            keys = ("1-9", "10-24", "25-49", "50+")
+            labels = pd.cut(
+                frame["offense_snaps"], bins=[0, 9, 24, 49, float("inf")],
+                labels=keys, include_lowest=True,
+            ).astype(str)
+        elif dimension == "position":
+            keys = ("QB", "RB", "WR", "TE")
+            labels = frame["position"].astype(str).str.upper()
+        else:
+            keys = tuple(str(year) for year in SEASONS)
+            labels = frame["season"].astype(str)
+        return {key: int(labels.eq(key).sum()) for key in keys}
+
+    strata = {}
+    for dimension in ("season", "position", "snap_band"):
+        strata[dimension] = {
+            "matched_stats": _histogram(matched, dimension),
+            "mapped_missing_stats": _histogram(missing, dimension),
+            "unmapped_identity": _histogram(unmapped, dimension),
+        }
     defects = len(missing) + len(unmapped)
     return {
         "scope": "2021-2025_REG_QB_RB_WR_TE_OFFENSE_SNAPS_GT_ZERO",
@@ -128,6 +155,7 @@ def reconcile_player_games(
         "player_games_matched": int(len(checked) - len(missing)),
         "missing_player_games": int(len(missing)),
         "unmapped_pfr_player_games": int(len(unmapped)),
+        "participation_breakdown": strata,
         "missing_examples": examples.head(20).to_dict(orient="records"),
         "unmapped_examples": unknown_examples.head(20).to_dict(orient="records"),
         "status": "HOLD_UNRESOLVED_PARTICIPATION" if defects else "RESEARCH_COVERAGE_RECONCILED_ONLY",
