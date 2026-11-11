@@ -19,8 +19,9 @@ def slate():
         {
             "event_id": "SOCCER-102", "sport": "SOCCER", "home": "A",
             "away": "B", "starts_at": "2026-11-11T23:30:00Z",
-            "settlement_basis": "REGULATION_90_MINUTES",
+            "settlement_basis": "REGULATION",
             "eligible_outcomes": ["HOME", "DRAW", "AWAY"],
+            "draw_pick_rule": "DRAW_PICK_ALLOWED",
         },
     ]
 
@@ -37,6 +38,19 @@ def pick(event_id, selection, **extra):
 
 def picks():
     return [pick("NHL-101", "AWAY"), pick("SOCCER-102", "DRAW")]
+
+
+def numeric_context(**overrides):
+    """Unverified caller-declared NHL source snapshot, not a trusted receipt."""
+    values = {
+        "event_id": "NHL-101", "source_kind": "MARKET_NO_VIG",
+        "selection": "AWAY", "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT",
+        "market_type": "FULL_GAME_MONEYLINE", "market_outcomes": ["HOME", "AWAY"],
+        "observed_at": "2026-11-11T17:00:00Z",
+        "source_snapshot_id": "candidate-snapshot-001", "de_vig_method": "POWER",
+    }
+    values.update(overrides)
+    return values
 
 
 def build(events=None, primaries=None, watches=()):
@@ -63,6 +77,7 @@ class WinnerResearchPresentationTests(unittest.TestCase):
         self.assertEqual(card["status"], "PROVISIONAL_RESEARCH_ONLY")
         self.assertEqual(card["immutable_receipt_status"], "NOT_PERSISTED")
         self.assertFalse(card["probability_publishable"])
+        self.assertFalse(card["can_execute"])
         self.assertFalse(card["rows"][0]["rank_eligible"])
 
     def test_missing_game_fails_whole_card(self):
@@ -132,20 +147,112 @@ class WinnerResearchPresentationTests(unittest.TestCase):
 
     def test_numeric_market_provenance_is_labeled_not_calibrated(self):
         good = picks()
-        good[0].update(probability_source="MARKET_NO_VIG", display_probability=.54)
+        good[0].update(probability_source="MARKET_NO_VIG", display_probability=.54,
+                       numeric_source_context=numeric_context())
         card = build(primaries=good)
         self.assertEqual(card["rows"][0]["primary"]["display_probability"], .54)
         self.assertFalse(card["rows"][0]["primary"]["display_probability_is_calibrated"])
+        self.assertEqual(card["rows"][0]["primary"]["numeric_source_context_status"],
+                         "CALLER_DECLARED_MATCH_NOT_INDEPENDENTLY_AUTHENTICATED")
         good[0]["probability_source"] = "QUALITATIVE_RESEARCH"
         with self.assertRaisesRegex(ValueError, "UNSOURCED_NUMERIC_PROBABILITY"):
             build(primaries=good)
 
     def test_malformed_probabilities_are_rejected(self):
-        for numeric in (float("nan"), float("inf"), True, -0.2, 1.2, "0.65"):
+        for numeric in (float("nan"), float("inf"), True, -0.2, 1.2, "0.65", 10**10000):
             bad = picks()
             bad[0].update(probability_source="EXTERNAL_PROJECTION", display_probability=numeric)
             with self.subTest(numeric=numeric), self.assertRaisesRegex(ValueError, "PROBABILITY_INVALID"):
                 build(primaries=bad)
+
+    def test_supported_settlements_and_draw_rules_are_strict(self):
+        for sport, basis in (("NBA", "FULL_GAME_INCLUDING_OVERTIME"),
+                             ("NFL", "FULL_GAME_INCLUDING_OVERTIME"),
+                             ("NCAAB", "FULL_GAME_INCLUDING_OVERTIME"),
+                             ("NCAAF", "FULL_GAME_INCLUDING_OVERTIME")):
+            events = slate()
+            events[0].update(sport=sport, settlement_basis=basis)
+            self.assertEqual(build(events=events)["rows"][0]["sport"], sport)
+            events[0]["settlement_basis"] = "REGULATION"
+            with self.assertRaisesRegex(ValueError, "SETTLEMENT_BASIS_INVALID"):
+                build(events=events)
+            events[0]["settlement_basis"] = basis
+            events[0]["eligible_outcomes"] = ["HOME", "DRAW", "AWAY"]
+            with self.assertRaisesRegex(ValueError, "SETTLEMENT_OUTCOMES_INVALID"):
+                build(events=events)
+
+        unsupported = slate()
+        unsupported[0]["sport"] = "TENNIS"
+        with self.assertRaisesRegex(ValueError, "SPORT_SETTLEMENT_UNSUPPORTED"):
+            build(events=unsupported)
+        soccer = slate()
+        soccer[1].pop("draw_pick_rule")
+        with self.assertRaisesRegex(ValueError, "SOCCER_OUTCOME_RULES_INVALID"):
+            build(events=soccer)
+        soccer = slate()
+        soccer[1]["eligible_outcomes"] = ["HOME", "AWAY"]
+        soccer[1]["draw_pick_rule"] = "DRAW_COUNTS_AS_INCORRECT"
+        participant_card = build(events=soccer, primaries=[picks()[0], pick("SOCCER-102", "HOME")])
+        self.assertEqual(participant_card["rows"][1]["primary"]["selection"], "HOME")
+        soccer[1]["eligible_outcomes"] = ["DRAW"]
+        with self.assertRaisesRegex(ValueError, "SOCCER_OUTCOME_RULES_INVALID"):
+            build(events=soccer)
+
+    def test_numeric_market_context_binds_event_side_basis_outcomes_method(self):
+        base = picks()
+        base[0].update(
+            probability_source="MARKET_NO_VIG", display_probability=.54,
+            numeric_source_context=numeric_context(),
+        )
+        self.assertEqual(build(primaries=base)["rows"][0]["primary"]["display_probability"], .54)
+        mutations = (
+            ({"event_id": "WRONG"}, "MARKET_MISMATCH"),
+            ({"selection": "HOME"}, "MARKET_MISMATCH"),
+            ({"source_kind": "EXTERNAL_PROJECTION"}, "MARKET_MISMATCH"),
+            ({"settlement_basis": "REGULATION"}, "MARKET_MISMATCH"),
+            ({"market_type": "REGULATION_1X2"}, "MARKET_MISMATCH"),
+            ({"market_outcomes": ["HOME", "AWAY", "DRAW"]}, "MARKET_MISMATCH"),
+            ({"market_outcomes": [["HOME"], "AWAY"]}, "MARKET_MISMATCH"),
+            ({"market_outcomes": ["HOME", "HOME"]}, "MARKET_MISMATCH"),
+            ({"observed_at": "2026-11-11T16:59:59Z"}, "TIMESTAMP_MISMATCH"),
+            ({"de_vig_method": "MULTIPLICATIVE"}, "METHOD_INVALID"),
+            ({"source_snapshot_id": ""}, "SOURCE_SNAPSHOT_ID_REQUIRED"),
+        )
+        for override, blocker in mutations:
+            bad = copy.deepcopy(base)
+            bad[0]["numeric_source_context"] = numeric_context(**override)
+            with self.subTest(override=override), self.assertRaisesRegex(ValueError, blocker):
+                build(primaries=bad)
+        bad = copy.deepcopy(base)
+        bad[0].pop("numeric_source_context")
+        with self.assertRaisesRegex(ValueError, "SOURCE_CONTEXT_REQUIRED"):
+            build(primaries=bad)
+
+    def test_stale_numeric_evidence_does_not_appear_as_current(self):
+        stale = picks()
+        stale[0].update(probability_source="MARKET_NO_VIG",
+                        display_probability=.54,
+                        observed_at="2026-11-11T15:59:00Z",
+                        numeric_source_context=numeric_context(observed_at="2026-11-11T15:59:00Z"))
+        with self.assertRaisesRegex(ValueError, "NUMERIC_SOURCE_STALE"):
+            build(primaries=stale)
+
+        older_projection = picks()
+        older_projection[0].update(
+            probability_source="EXTERNAL_PROJECTION",
+            display_probability=.56, observed_at="2026-11-11T11:59:00Z",
+            numeric_source_context=numeric_context(
+                source_kind="EXTERNAL_PROJECTION", observed_at="2026-11-11T11:59:00Z"),
+        )
+        with self.assertRaisesRegex(ValueError, "NUMERIC_SOURCE_STALE"):
+            build(primaries=older_projection)
+
+        current_projection = picks()
+        current_projection[0].update(
+            probability_source="EXTERNAL_PROJECTION", display_probability=.56,
+            numeric_source_context=numeric_context(source_kind="EXTERNAL_PROJECTION"),
+        )
+        self.assertFalse(build(primaries=current_projection)["rows"][0]["primary"]["display_probability_is_calibrated"])
 
     def test_post_freeze_and_post_kickoff_fail(self):
         bad = picks()
