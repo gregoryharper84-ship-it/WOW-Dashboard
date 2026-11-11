@@ -23,6 +23,9 @@ def pick(sport="NCAAB", event="a", side="HOME", **overrides):
                     "home_team": "Home", "away_team": "Away",
                     "event_start_time_utc": START,
                     "available_to_user_at_utc": FREEZE,
+                    "settlement_basis": ("REGULATION" if sport == "UWCL" else
+                                         "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT" if sport == "NHL" else
+                                         "FULL_GAME_INCLUDING_OVERTIME"),
                     "market_type": "REGULATION_3WAY" if sport == "UWCL" else "FULL_GAME_2WAY",
                     "as_of_utc": FREEZE, "independently_verified": True,
                     "receipt_id": "market-" + event,
@@ -313,3 +316,23 @@ def test_three_way_soccer_regulation_pick_with_draw_stays_a_loss():
     assert r["cohort_complete"] is True
     assert r["rows"][0]["selection_grade"] == "LOSS"
     assert r["market_favorite_correct"] == 0
+
+
+def test_nhl_regulation_market_quote_cannot_grade_full_game_favorite():
+    p = pick("NHL", "nhl-market", settlement_basis="FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT")
+    p["market"]["settlement_basis"] = "REGULATION"
+    r = audit([p], [final("NHL", "nhl-market")])
+    assert r["correct"] == 1
+    assert r["rows"][0]["selection_grade"] == "WIN"
+    assert r["market_baseline_complete"] is False
+    assert r["market_favorite_correct"] is None
+    assert "MARKET_SETTLEMENT_BASIS_INVALID" in r["rows"][0]["market_blockers"]
+
+
+def test_missing_market_settlement_basis_is_unavailable_not_inferred():
+    p = pick("NBA", "nba-market")
+    p["market"].pop("settlement_basis")
+    r = audit([p], [final("NBA", "nba-market")])
+    assert r["correct"] == 1
+    assert r["market_baseline_complete"] is False
+    assert r["rows"][0]["market_favorite"] is None
