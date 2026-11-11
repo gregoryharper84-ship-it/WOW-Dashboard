@@ -711,3 +711,17 @@ Produced only by scripts/acquire_nfl_count_prop_sources.py; owned by WOW_PROP_LA
 | `NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE` | TRANSIENT | DNS, connection or timeout prevents official source acquisition | No |
 | `NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED` | SECURITY | GitHub release redirect used an untrusted host or non-HTTPS scheme | No |
 | `NFL_PROP_ACQUIRE_TARGET_RACE` | CONCURRENCY | Concurrent writer occupied frozen target before atomic install | No |
+
+## Offline NFL PBP presence audit failures (2026-11-11)
+
+Produced only by `scripts/audit_nfl_count_prop_pbp_presence.py`, owned by WOW_PROP_LANE. Research-only (P/C PR #2605), not a model or publication gate. Absence of a PBP actor cannot be interpreted as a count-zero, and no source result can enable a wager.
+
+| Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_PBP_PIN_SET_INVALID` | SECURITY | Exact frozen PBP season-to-hash map differs from required 2021–2025 seasons; repair independently verified release pins. | No |
+| `NFL_PROP_PBP_SOURCE_MISSING` | INPUT | Required immutable year gzip is missing or symlinked; reacquire only using approved official release URL. | No |
+| `NFL_PROP_PBP_SOURCE_DIGEST_MISMATCH` | SECURITY | Published compressed size or SHA-256 differs; preserve HOLD, never substitute a caller digest. | No |
+| `NFL_PROP_PBP_SOURCE_UNREADABLE` | INPUT | Verified gzip bytes cannot be parsed without truncation or schema transport failure; repair data provenance, not counts. | No |
+| `NFL_PROP_PBP_EVENT_SCHEMA_INVALID` | INPUT | PBP does not contain required game/season/week/role actor columns, valid season identity, REG scope or even one regular-season game; no presence receipt. | No |
+| `NFL_PROP_PBP_RECONCILIATION_DRIFT` | IDENTITY | PBP evidence selection disagrees with canonical mapped-missing-game count; preserve HOLD, repair joins without guessing PFR↔GSIS. | No |
+| `HOLD_PBP_PRESENCE_ONLY` | RESEARCH_HOLD | All source and actor-presence evidence remains observation-only; no absence-as-zero, fitted specialist, registration, promotion or execution. | No |
