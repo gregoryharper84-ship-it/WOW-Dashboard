@@ -73,3 +73,14 @@
 - prevention_artifact: tests/test_acquire_nfl_count_prop_sources.py; standalone acquisition kit V2 was 10/10 local PASS, while repo exact-head CI requires a fresh run.
 - link: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - production_evidence: None; raw data DNS unavailable in this runtime, no certified fit, can_execute=false.
+
+## Official redirect/midstream source-acquisition HOLD (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED; NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE
+- **mechanism:** Final-only redirect validation allows a request to reach a foreign host before rejection; interrupted response reads can leak raw OSError instead of typed network HOLD. This predicts unauthorized network contact and misleading diagnostic status while partial outputs are cleaned.
+- **detection_point:** CodeRabbit negative-path source-acquisition review, before PR-scoped live-source observation was admitted to a GitHub runner.
+- **fix:** Check HTTPS and approved host on each redirect before following; translate network read errors without swallowing disk-write failures; remove the unguarded urllib opener from the PR-scoped probe.
+- **prevention_artifact:** tests/test_acquire_nfl_count_prop_sources.py — blocked 302 must never contact foreign host, allowed GitHub release 302 must complete, interrupted read must become typed HOLD and clean partial bytes. Isolated stdlib redirect simulations passed locally; targeted repo pytest remains unrun until hosted runner admission.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. Runner was queued with zero jobs at observed c7552f0a; no actual real-source hash verification, fitted model or model activation. Safety unchanged: can_execute=false.
