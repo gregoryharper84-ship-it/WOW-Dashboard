@@ -14,6 +14,17 @@ from typing import Any, Mapping, Sequence
 
 SPORTS = frozenset({"NFL", "NBA", "NHL", "NCAAF", "NCAAB", "UWCL"})
 THREE_WAY = frozenset({"UWCL"})
+# Outcome and time horizons must exactly match both the frozen pick and the
+# independently settled result. "FULL_GAME" alone does not prove whether
+# hockey overtime/shootouts or basketball/football overtime were included.
+SETTLEMENT_BASIS = {
+    "UWCL": "REGULATION",
+    "NHL": "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT",
+    "NFL": "FULL_GAME_INCLUDING_OVERTIME",
+    "NBA": "FULL_GAME_INCLUDING_OVERTIME",
+    "NCAAF": "FULL_GAME_INCLUDING_OVERTIME",
+    "NCAAB": "FULL_GAME_INCLUDING_OVERTIME",
+}
 CONTEXT = {
     "NCAAB": ("opponent_quality", "half_court_defense", "three_point_variance", "venue"),
     "NCAAF": ("rushing_matchup", "turnovers", "quarterback_availability"),
@@ -165,9 +176,15 @@ def audit_ranked_winner_retro(
         if visible is None or frozen is None or visible > frozen:
             errors.append("PREGAME_VISIBILITY_INVALID")
         cohort_row = cohort_map.get((sport, event_id), {})
+        # Compare the immutable submission itself, not merely which team and
+        # event were selected. A postlock replacement receipt or later freeze
+        # must never inherit the original cohort's verification.
         if (not cohort_ok or not _identity(p, cohort_row)
-            or ("selected_side" in cohort_row
-                and _text(cohort_row.get("selected_side")).upper() != chosen)):
+            or _text(cohort_row.get("selected_side")).upper() != chosen
+            or not _text(cohort_row.get("pregame_receipt_id"))
+            or _text(cohort_row.get("pregame_receipt_id")) != _text(p.get("pregame_receipt_id"))
+            or _utc(cohort_row.get("frozen_at_utc")) is None
+            or _utc(cohort_row.get("frozen_at_utc")) != frozen):
             errors.append("RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED")
         if final is None or final_counts[(sport, event_id)] != 1:
             errors.append("OFFICIAL_FINAL_MISSING_OR_DUPLICATE")
@@ -179,7 +196,9 @@ def audit_ranked_winner_retro(
               or _utc(final.get("settled_at_utc")) is None
               or kickoff is None or _utc(final.get("settled_at_utc")) <= kickoff):
             errors.append("OFFICIAL_SETTLEMENT_UNVERIFIED")
-        expected_basis = "REGULATION" if sport in THREE_WAY else "FULL_GAME"
+        expected_basis = SETTLEMENT_BASIS.get(sport)
+        if expected_basis is None or p.get("settlement_basis") != expected_basis:
+            errors.append("PICK_SETTLEMENT_BASIS_INVALID")
         outcome = _text(final.get("outcome")).upper() if final else ""
         if final is not None and (final.get("settlement_basis") != expected_basis
                                   or outcome not in ({"HOME", "AWAY", "DRAW"} if sport in THREE_WAY else {"HOME", "AWAY"})):
