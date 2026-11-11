@@ -29,3 +29,14 @@
 - **prevention_artifact:** tests/test_nfl_missing_prop_candidates.py with two negative-first release-digest tests. Original: 2 RED; patched: 27 targeted PASS.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no actual release bytes fitted or independently certified, can_execute=false.
+
+## Authoritative-hash attestation and unidentified source records (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING; NFL_PROP_SOURCE_IDENTITY_INVALID; NFL_PROP_SOURCE_DIGEST_MISMATCH
+- **mechanism:** A caller-selected matching SHA-256 was mislabeled as verification of the published nflverse release; real 2021 weekly source reportedly has 18 identity-blank REG rows, so unqualified all-row identity validation aborts all five research fits. Silently assigning identities or indiscriminately dropping rows would be a worse data-integrity error.
+- **detection_point:** The source reader before fitting, when provenance claims and player-week identity completeness are observable.
+- **fix:** Separate digest-match evidence from official release-hash verification. Conditionally quarantine only unnamed, non-QB/RB/WR/TE, all-zero modeled-stat records with a valid game/week and leave exact source-row pointers and SHA-256 audit receipts. Any nonzero/missing target, name, eligible role, or invalid event identity still fails closed. No source quarantine is independently adjudicated, and no model is publishable.
+- **prevention artifact:** tests/test_nfl_missing_prop_candidates.py (new 18-row shape case, six negative identity/count/date variants, and caller-vs-authoritative digest flag check); new code remains unmerged and hosted review pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no published real-source training, no model certification, can_execute=false.
