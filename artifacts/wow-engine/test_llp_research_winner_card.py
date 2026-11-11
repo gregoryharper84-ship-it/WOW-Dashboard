@@ -33,6 +33,9 @@ def pick(sport='NFL', identity='game-1', **changes):
                  'opponent_win_path':'Home creates extra possessions and wins late',
                  'swing_factors':['starting personnel', 'pace and possession swing'],
                  'as_of_utc':ASOF,
+                 'primary_favored_side':'Away',
+                 'opponent_favored_side':'Home',
+                 'contradictions_reviewed':True,
                  'scenarios':[
                      {'scenario_id':'baseline','path':'Away controls pace and half-court efficiency',
                       'favored_side':'Away','swing_factors':['pace'],'as_of_utc':ASOF},
@@ -316,3 +319,71 @@ def test_media_one_publisher_and_oversized_script_are_diagnostic_only():
     assert r['board_complete'] is True
     assert r['rows'][0]['selected_side']=='Away'
     assert r['rows'][0]['script_robustness']['probability'] is None
+
+
+def test_slate_attestation_rejects_truthy_nonbooleans():
+    for forged in ('false', 'True', 1, ['verified']):
+        result = audit_research_winner_card(
+            [event()], [pick()], official_slate_verified=forged,
+            official_slate_receipt_id='looks-authentic')
+        assert result['board_complete'] is False
+        assert 'OFFICIAL_SLATE_UNVERIFIED' in result['board_blockers']
+
+
+def test_late_pick_never_exposes_postkickoff_press_or_game_scripts():
+    late = pick(selected_at_utc='2026-11-11T01:10:00Z', research_confidence='HIGH')
+    for headline in late['matchup_media']['headlines']:
+        headline['published_at_utc'] = '2026-11-11T01:05:00Z'
+        headline['available_to_user_at_utc'] = '2026-11-11T01:05:00Z'
+    late['game_script']['as_of_utc'] = '2026-11-11T01:05:00Z'
+    for scenario in late['game_script']['scenarios']:
+        scenario['as_of_utc'] = '2026-11-11T01:05:00Z'
+    row = audit([event()], [late])['rows'][0]
+    assert row['selected_side'] is None
+    assert row['selection_class'] == 'RESEARCH_INVALID'
+    assert 'RESEARCH_PICK_NOT_PREGAME' in row['selection_blockers']
+    assert row['media_headlines'] == []
+    assert row['media_storylines'] == []
+    assert row['media_counter_narrative'] is None
+    assert row['script_robustness']['scenario_count'] == 0
+    assert row['source_publishers_verified'] == 0
+    assert row['game_script_primary_win_path'] is None
+    assert row['media_evidence_status'] == 'NOT_ADMISSIBLE_INVALID_SELECTION'
+    assert row['model_status'] == 'UNKNOWN'
+
+
+def test_unapproved_game_script_likelihood_aliases_are_warned_separately():
+    for alias in ('prob', 'odds', 'weights', 'win_pct', 'scenario_likelihood'):
+        p = pick()
+        p['game_script'][alias] = 0.99
+        row = audit([event()], [p])['rows'][0]
+        assert 'UNVERIFIED_GAME_SCRIPT_PROBABILITY' in row['evidence_warnings']
+        assert row['game_script_verified_pregame'] is False
+        assert row['game_script_primary_win_path'] is None
+        assert row['governed_probability'] is None
+        assert row['selected_side'] == 'Away'
+
+
+def test_contradictory_script_sides_require_explicit_manual_review():
+    for mutation in (
+        {'opponent_favored_side':'Away'},
+        {'primary_favored_side':'Home'},
+        {'contradictions_reviewed':False},
+    ):
+        p = pick()
+        p['game_script'].update(mutation)
+        row = audit([event()], [p])['rows'][0]
+        assert row['game_script_verified_pregame'] is False
+        assert row['game_script_primary_win_path'] is None
+        assert row['selected_side'] == 'Away'
+        assert any(w.startswith('GAME_SCRIPT_') for w in row['evidence_warnings'])
+
+
+def test_missing_or_wrong_event_identity_never_exposes_research_evidence():
+    invalid = event()
+    invalid['away_team'] = 'Home'
+    row = audit([invalid], [pick()])['rows'][0]
+    assert 'OFFICIAL_EVENT_IDENTITY_INVALID' in row['selection_blockers']
+    assert row['media_headlines'] == []
+    assert row['source_publishers_verified'] == 0
+    assert row['selected_side'] is None
