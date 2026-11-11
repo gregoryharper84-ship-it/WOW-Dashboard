@@ -168,36 +168,57 @@ def _writer():
                 if step.get("name") == "Write SIRT independent-intake issue and cross-link")["run"]
 
 
-def _matching_issue(number, author):
-    """Construct an intake with a real marker but independently controlled creator."""
+def _matching_issue(number, author, incident="2076", generated=True):
+    """A matching marker must also have incident-specific intake evidence."""
+    header = "## Independent SIRT intake — NOT verification approval" if generated else "Unverified hand-edited body"
     return {"number": number,
-            "body": "<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_" + SHA + " -->",
+            "body": (
+                "<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_" + SHA + " -->\n" +
+                header + "\n" + "- Engineering incident: #" + incident + "\n" +
+                "- Engineering PR: #2547\n- Exact PR head: " + SHA + "\n" +
+                "- Intake status: SIRT_REVIEW_REQUIRED\n"),
             "author": {"login": author}}
 
 
-def _run_writer(tmp_path, *, initial_issues=None, source_id="dispatch-1"):
-    """Exercise the workflow writer with a stateful fake GitHub issue API."""
+def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
+                source_id="dispatch-1"):
+    """Execute the writer against a persistent fake issue and PR-comment API."""
     issues_file = tmp_path / "issues.json"
     if initial_issues is not None:
         issues_file.write_text(json.dumps(initial_issues))
     elif not issues_file.exists():
         issues_file.write_text("[]")
+    comments_file = tmp_path / "comments.json"
+    if initial_comments is not None:
+        comments_file.write_text(json.dumps(initial_comments))
+    elif not comments_file.exists():
+        comments_file.write_text("[]")
     calls_file = tmp_path / "calls.log"
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n"
         "issues=Path(os.environ['FAKE_ISSUES_FILE'])\n"
+        "comments=Path(os.environ['FAKE_COMMENTS_FILE'])\n"
         "calls=Path(os.environ['FAKE_CALLS_FILE'])\n"
         "args=sys.argv[1:]\n"
         "if args[:2]==['issue','list']:\n"
         "  print(issues.read_text())\n"
         "elif args[:2]==['issue','create']:\n"
         "  data=json.loads(issues.read_text())\n"
-        "  data.append({'number':9000,'body':'<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_'+os.environ['SHA']+' -->','author':{'login':'app/github-actions'}})\n"
+        "  ix=args.index('--body-file')\n"
+        "  content=Path(args[ix+1]).read_text()\n"
+        "  data.append({'number':9000,'body':content,'author':{'login':'app/github-actions'}})\n"
         "  issues.write_text(json.dumps(data))\n"
         "  calls.open('a').write('issue:create\\n')\n"
         "  print('https://github.com/example/repo/issues/9000')\n"
+        "elif args[0]=='api' and 'issues/2547/comments' in args[1]:\n"
+        "  calls.open('a').write('api:comments\\n')\n"
+        "  print(comments.read_text())\n"
         "elif args[:2]==['pr','comment']:\n"
+        "  body=args[args.index('--body')+1]\n"
+        "  data=json.loads(comments.read_text())\n"
+        "  data.append({'body':body,'user':{'login':'app/github-actions'}})\n"
+        "  comments.write_text(json.dumps(data))\n"
         "  calls.open('a').write('pr:comment\\n')\n"
         "else:\n"
         "  print('unexpected GitHub operation',args,file=sys.stderr);sys.exit(51)\n"
@@ -213,6 +234,7 @@ def _run_writer(tmp_path, *, initial_issues=None, source_id="dispatch-1"):
            "INCIDENT": "2076", "SOURCE_ID": source_id,
            "SOURCE_ATTEMPT": "1", "SOURCE_CONCLUSION": "INTAKE_ONLY_NOT_A_REVIEW_VERDICT",
            "FAKE_ISSUES_FILE": str(issues_file),
+           "FAKE_COMMENTS_FILE": str(comments_file),
            "FAKE_CALLS_FILE": str(calls_file)}
     process = subprocess.run(["bash", "-e", "-c", _writer()],
                              env=env, capture_output=True, text=True, timeout=20)
@@ -225,7 +247,7 @@ def test_forged_marker_from_untrusted_creator_cannot_suppress_sirt_intake(tmp_pa
     forged = _matching_issue(77, "untrusted-issue-writer")
     run, calls, issues, _ = _run_writer(tmp_path, initial_issues=[forged])
     assert run.returncode == 0, run.stderr
-    assert calls == ["issue:create", "pr:comment"]
+    assert calls == ["api:comments", "issue:create", "pr:comment"]
     assert len(issues) == 2
     assert issues[-1]["author"]["login"] == "app/github-actions"
 
@@ -235,7 +257,7 @@ def test_marker_reuse_requires_authentic_existing_intake_creator(tmp_path, creat
     trusted = _matching_issue(75, creator)
     run, calls, issues, summary = _run_writer(tmp_path, initial_issues=[trusted])
     assert run.returncode == 0, run.stderr
-    assert calls == []
+    assert calls == ["api:comments", "pr:comment"]
     assert len(issues) == 1
     assert "Existing SIRT intake #75" in summary
 
@@ -246,7 +268,8 @@ def test_two_admitted_routes_same_head_create_exactly_one_intake_and_crosslink(t
     second, second_calls, issues, _ = _run_writer(tmp_path,
                                                    source_id="labeled-pr-2")
     assert first.returncode == second.returncode == 0
-    assert first_calls == second_calls == ["issue:create", "pr:comment"]
+    assert first_calls == ["api:comments", "issue:create", "pr:comment"]
+    assert second_calls == ["api:comments", "issue:create", "pr:comment", "api:comments"]
     assert len(issues) == 1
 
 
@@ -272,3 +295,41 @@ def test_worker_origin_preserves_real_pre_pr_gate_enforcement(tmp_path, gate, al
         assert process.returncode != 0
         assert "found=true" not in output
         assert "SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS" in process.stdout
+
+
+def test_reuse_wrong_incident_must_create_new_matching_intake(tmp_path):
+    stale = _matching_issue(75, "app/github-actions", incident="2020")
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[stale])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments", "issue:create", "pr:comment"]
+    assert len(issues) == 2
+    assert "- Engineering incident: #2076" in issues[-1]["body"]
+
+
+def test_reuse_rejects_unverified_marker_body_even_with_trusted_creator(tmp_path):
+    manually_edited = _matching_issue(75, "app/github-actions", generated=False)
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[manually_edited])
+    assert proc.returncode == 0, proc.stderr
+    assert "issue:create" in calls
+    assert len(issues) == 2
+
+
+def test_retry_repairs_missing_crosslink_without_recreating_issue(tmp_path):
+    existing = _matching_issue(75, "app/github-actions")
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[existing])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments", "pr:comment"]
+    assert len(issues) == 1
+
+
+def test_retry_does_not_duplicate_authenticated_existing_crosslink(tmp_path):
+    existing = _matching_issue(75, "app/github-actions")
+    link = ("Independent SIRT intake created: "
+            "https://github.com/" + REPO + "/issues/75. "
+            "Exact head: " + SHA)
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=[existing],
+        initial_comments=[{"body":link, "user":{"login":"app/github-actions"}}])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments"]
+    assert len(issues) == 1
