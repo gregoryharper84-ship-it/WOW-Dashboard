@@ -290,10 +290,12 @@ def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[s
             return None
         if observed > cutoff or game_day > observed.astimezone(ZoneInfo("America/New_York")).date():
             return None
+        scheduled_start = None
         if raw.get("datetime"):
             event_at = datetime.fromisoformat(str(raw["datetime"]).replace("Z", "+00:00"))
             if event_at.utcoffset() is None or not event_at < observed:
                 return None
+            scheduled_start = event_at.astimezone(timezone.utc).isoformat()
     except (ValueError, TypeError, OverflowError):
         return None
     payload_sha = hashlib.sha256(json.dumps(
@@ -310,6 +312,7 @@ def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[s
         "home_score": int(hs),
         "away_score": int(aws),
         "home_win": int(hs) > int(aws),
+        "scheduled_start_utc": scheduled_start,
         "source_provider": "BALLDONTLIE",
         "source_endpoint": BASE_URLS[sport],
         "source_retrieved_at": observed_text,
@@ -433,6 +436,7 @@ def normalize_sportsdataverse_game(
         "home_score": home_score,
         "away_score": away_score,
         "home_win": home_score > away_score,
+        "scheduled_start_utc": tipoff.astimezone(timezone.utc).isoformat(),
         "source_provider": "SPORTSDATAVERSE_ESPN",
         "source_endpoint": source_url,
         "source_retrieved_at": observed_text,
@@ -513,6 +517,7 @@ def normalize_espn_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> d
         "home_score": home_score,
         "away_score": away_score,
         "home_win": home_score > away_score,
+        "scheduled_start_utc": event_at.astimezone(timezone.utc).isoformat(),
         "source_provider": "ESPN_SCOREBOARD",
         "source_endpoint": ESPN_BASE_URLS[sport],
         "source_retrieved_at": retrieved_at,
