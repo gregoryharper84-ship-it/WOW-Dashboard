@@ -437,10 +437,10 @@ def espn_h2h_payload(event: dict[str, Any], *, primary_failure: str | None = Non
         "bookmakers": [{
             "key": f"espn_backup_{_norm(provider_name) or 'scoreboard'}",
             "title": f"{provider_name} via ESPN backup",
-            "last_update": odds.get("lastUpdated") or event.get("date"),
+            "last_update": odds.get("lastUpdated"),
             "markets": [{
                 "key": "h2h",
-                "last_update": odds.get("lastUpdated") or event.get("date"),
+                "last_update": odds.get("lastUpdated"),
                 "outcomes": [
                     {"name": home_name, "price": home_ml},
                     {"name": away_name, "price": away_ml},
