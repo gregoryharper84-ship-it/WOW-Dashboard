@@ -30,6 +30,7 @@ CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
 LEASE_SECONDS = 900
 POLL_SECONDS = 2.0
+SCOUT_HANDOFF_READ_PAGE_SIZE = 1000
 
 def _release_process_memory() -> None:
     """Best-effort RSS reclamation after an in-process specialist job.
@@ -604,23 +605,74 @@ def read_run_status(db: Any, source_run_id: str) -> dict[str, Any]:
     }
 
 
+def _job_evidence_identity(row: dict[str, Any]) -> str:
+    job_id = str(row.get("job_id") or "").strip()
+    if job_id:
+        return job_id
+    candidate_id = str(row.get("candidate_id") or "").strip()
+    target_lane = str(row.get("target_lane") or "").strip()
+    return f"{candidate_id}|{target_lane}" if candidate_id and target_lane else ""
+
+
+def _job_attempt_count(row: dict[str, Any]) -> int:
+    try:
+        return max(0, int(row.get("attempt_count") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _specialist_receipt_outcome(row: dict[str, Any]) -> dict[str, Any] | None:
+    receipt = row.get("specialist_receipt")
+    if not isinstance(receipt, dict) or receipt.get("can_execute") is not False:
+        return None
+    result = receipt.get("result")
+    if not isinstance(result, dict) or result.get("can_execute") is not False:
+        return None
+    outcome = _receipt_row(result)
+    if not isinstance(outcome, dict) or outcome.get("can_execute") is not False:
+        return None
+    return outcome
+
+
+def _paginate_query(query: Any, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        response = query.range(start, start + page_size - 1).execute()
+        batch = getattr(response, "data", None) or []
+        rows.extend(dict(row) for row in batch if isinstance(row, dict))
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
-    result = (
+    job_query = (
         db.table("wow_scout_handoff_jobs")
         .select("*")
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("job_id")
     )
-    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
-    event_result = (
+    rows = _paginate_query(job_query)
+    event_query = (
         db.table("wow_scout_handoff_state_events")
-        .select("candidate_id,target_lane,state,code,can_execute,created_at")
+        .select("event_id,job_id,candidate_id,target_lane,state,code,can_execute,created_at")
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("event_id")
     )
-    events = [dict(row) for row in (getattr(event_result, "data", None) or [])]
+    if include_receipts:
+        events = _paginate_query(event_query, page_size=SCOUT_HANDOFF_READ_PAGE_SIZE)
+        state_event_read_complete = True
+    else:
+        event_page = event_query.range(0, SCOUT_HANDOFF_READ_PAGE_SIZE - 1).execute()
+        events = [
+            dict(row)
+            for row in (getattr(event_page, "data", None) or [])
+            if isinstance(row, dict)
+        ]
+        state_event_read_complete = len(events) < SCOUT_HANDOFF_READ_PAGE_SIZE
 
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
@@ -636,15 +688,70 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         priority_counts[priority][state] = priority_counts[priority].get(state, 0) + 1
 
     reached: dict[str, set[str]] = {}
+    event_states_by_job: dict[str, set[str]] = {}
     for event in events:
         candidate_id = str(event.get("candidate_id") or "")
         state = str(event.get("state") or "")
         if candidate_id and state:
             reached.setdefault(state, set()).add(candidate_id)
+        job_identity = _job_evidence_identity(event)
+        if job_identity and state:
+            event_states_by_job.setdefault(job_identity, set()).add(state)
 
-    terminal = bool(rows) and all(bool(row.get("terminal")) for row in rows)
-    evaluated = len(reached.get("MODEL_EVALUATED", set()))
+    event_processing_job_ids = {
+        job_id for job_id, states in event_states_by_job.items()
+        if "SPECIALIST_PROCESSING" in states
+    }
+    event_evaluated_job_ids = {
+        job_id for job_id, states in event_states_by_job.items()
+        if "MODEL_EVALUATED" in states
+    }
+    event_qualified_job_ids = {
+        job_id for job_id, states in event_states_by_job.items()
+        if "V17_QUALIFIED" in states
+    }
+    worker_attempted_job_ids = {
+        _job_evidence_identity(row)
+        for row in rows
+        if _job_attempt_count(row) > 0 and _job_evidence_identity(row)
+    }
+    receipt_evaluated_job_ids: set[str] = set()
+    receipt_qualified_job_ids: set[str] = set()
+    for row in rows:
+        job_identity = _job_evidence_identity(row)
+        if not job_identity or _job_attempt_count(row) <= 0:
+            continue
+        state = str(row.get("current_state") or "").upper()
+        outcome = _specialist_receipt_outcome(row)
+        if outcome is None:
+            continue
+        if state in {"MODEL_EVALUATED", "V17_QUALIFIED"}:
+            receipt_evaluated_job_ids.add(job_identity)
+        if state == "V17_QUALIFIED" and _v17_qualified(outcome):
+            receipt_qualified_job_ids.add(job_identity)
+
+    specialist_processing_seen = len(worker_attempted_job_ids | event_processing_job_ids)
+    evaluated_job_ids = receipt_evaluated_job_ids | event_evaluated_job_ids
+    qualified_job_ids = receipt_qualified_job_ids | event_qualified_job_ids
+    evaluated = len(evaluated_job_ids)
+    if include_receipts:
+        worker_processing_event_gap_jobs: int | None = len(worker_attempted_job_ids - event_processing_job_ids)
+        model_evaluated_event_gap_jobs: int | None = len(receipt_evaluated_job_ids - event_evaluated_job_ids)
+        v17_qualified_event_gap_jobs: int | None = len(receipt_qualified_job_ids - event_qualified_job_ids)
+        state_event_coverage_pass: bool | None = not any((
+            worker_processing_event_gap_jobs,
+            model_evaluated_event_gap_jobs,
+            v17_qualified_event_gap_jobs,
+        ))
+    else:
+        # Frequent progress polls intentionally read one bounded event page.
+        # The final include_receipts=True read fetches the complete event ledger.
+        worker_processing_event_gap_jobs = None
+        model_evaluated_event_gap_jobs = None
+        v17_qualified_event_gap_jobs = None
+        state_event_coverage_pass = None
     blocked = counts.get("HANDOFF_BLOCKED", 0)
+    terminal = bool(rows) and all(bool(row.get("terminal")) for row in rows)
     rows_in = len(rows)
     rows_completed = 0
     rows_rejected = 0
@@ -697,9 +804,16 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         "research_interest": len(reached.get("RESEARCH_INTEREST", set())),
         "red_team_passed": len(reached.get("RED_TEAM_PASSED", set())),
         "specialist_handoff_queued": len(reached.get("SPECIALIST_HANDOFF_QUEUED", set())),
-        "specialist_processing_seen": len(reached.get("SPECIALIST_PROCESSING", set())),
+        "specialist_processing_seen": specialist_processing_seen,
+        "worker_claimed_jobs": len(worker_attempted_job_ids),
+        "worker_receipt_jobs": len(receipt_evaluated_job_ids),
         "model_evaluated": evaluated,
-        "v17_qualified": len(reached.get("V17_QUALIFIED", set())),
+        "v17_qualified": len(qualified_job_ids),
+        "worker_processing_event_gap_jobs": worker_processing_event_gap_jobs,
+        "model_evaluated_event_gap_jobs": model_evaluated_event_gap_jobs,
+        "v17_qualified_event_gap_jobs": v17_qualified_event_gap_jobs,
+        "state_event_coverage_pass": state_event_coverage_pass,
+        "state_event_read_complete": state_event_read_complete,
         "handoff_blocked": blocked,
         "rows_in": rows_in,
         "rows_completed": rows_completed,

@@ -357,3 +357,373 @@ def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
     ))
 
     assert stop.is_set()
+
+
+def test_read_run_summary_derives_worker_proof_from_claimed_jobs_when_transition_events_are_missing():
+    def specialist_receipt(status, code):
+        return {
+            "can_execute": False,
+            "result": {
+                "can_execute": False,
+                "rows": [{
+                    "terminal_status": status,
+                    "code": code,
+                    "probability_publishable": status == "COMPLETED",
+                    "rank_eligible": status == "COMPLETED",
+                    "card_admission_eligible": status == "COMPLETED",
+                    "can_execute": False,
+                }],
+            },
+        }
+
+    jobs = [
+        {
+            "job_id": "job-evaluated",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "shared-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "research_priority": "HIGH",
+            "current_state": "MODEL_EVALUATED",
+            "terminal": True,
+            "attempt_count": 1,
+            "specialist_receipt": specialist_receipt("HELD", "MODEL_UNAVAILABLE"),
+            "last_error_code": None,
+            "created_at": "2026-11-07T16:00:00Z",
+        },
+        {
+            "job_id": "job-qualified",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "shared-candidate",
+            "target_lane": "WOW_PROP_LANE",
+            "research_priority": "HIGH",
+            "current_state": "V17_QUALIFIED",
+            "terminal": True,
+            "attempt_count": 1,
+            "specialist_receipt": specialist_receipt("COMPLETED", "V17_QUALIFIED"),
+            "last_error_code": None,
+            "created_at": "2026-11-07T16:00:01Z",
+        },
+        {
+            "job_id": "job-retried",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "retry-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "research_priority": "LOW",
+            "current_state": "SPECIALIST_HANDOFF_QUEUED",
+            "terminal": False,
+            "attempt_count": 1,
+            "specialist_receipt": None,
+            "last_error_code": "PROVIDER_UNAVAILABLE",
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+        {
+            "job_id": "job-unclaimed",
+            "source_run_id": "run-1",
+            "research_run_id": "research-1",
+            "candidate_id": "unclaimed-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "research_priority": "LOW",
+            "current_state": "MODEL_EVALUATED",
+            "terminal": True,
+            "attempt_count": 0,
+            "specialist_receipt": specialist_receipt("HELD", "MODEL_UNAVAILABLE"),
+            "last_error_code": None,
+            "created_at": "2026-11-07T16:00:03Z",
+        },
+    ]
+    events = [
+        {
+            "job_id": "job-evaluated",
+            "candidate_id": "shared-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_PROCESSING",
+            "code": "SPECIALIST_WORKER_CLAIMED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:00Z",
+        },
+        {
+            "job_id": "job-qualified",
+            "candidate_id": "shared-candidate",
+            "target_lane": "WOW_PROP_LANE",
+            "state": "SPECIALIST_HANDOFF_QUEUED",
+            "code": "SPECIALIST_HANDOFF_ENQUEUED",
+            "can_execute": False,
+            "created_at": "2026-11-07T15:59:00Z",
+        },
+        {
+            "job_id": "job-retried",
+            "candidate_id": "retry-candidate",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_HANDOFF_QUEUED",
+            "code": "PROVIDER_UNAVAILABLE",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+    ]
+
+    class _ReadQuery:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args):
+            return self
+
+        def range(self, *_args):
+            return self
+
+        def execute(self):
+            return _Response(self.rows)
+
+    class _ReadDB:
+        def table(self, name):
+            if name == "wow_scout_handoff_jobs":
+                return _ReadQuery(jobs)
+            if name == "wow_scout_handoff_state_events":
+                return _ReadQuery(events)
+            raise AssertionError(f"unexpected table: {name}")
+
+    summary = queue.read_run_summary(_ReadDB(), "run-1", include_receipts=True)
+
+    assert summary["specialist_processing_seen"] == 3
+    assert summary["model_evaluated"] == 2
+    assert summary["v17_qualified"] == 1
+    assert summary["worker_processing_event_gap_jobs"] == 2
+    assert summary["model_evaluated_event_gap_jobs"] == 2
+    assert summary["state_event_coverage_pass"] is False
+
+
+def test_read_run_summary_paginates_state_events_past_postgrest_default_row_limit():
+    outcome = {
+        "terminal_status": "HELD",
+        "code": "MODEL_UNAVAILABLE",
+        "can_execute": False,
+    }
+    jobs = [{
+        "job_id": "job-after-first-page",
+        "source_run_id": "run-paged",
+        "research_run_id": "research-paged",
+        "candidate_id": "candidate-after-first-page",
+        "target_lane": "LLP_TEAM_BETTING_ENGINE",
+        "research_priority": "HIGH",
+        "current_state": "MODEL_EVALUATED",
+        "terminal": True,
+        "attempt_count": 1,
+        "specialist_receipt": {
+            "can_execute": False,
+            "result": {"can_execute": False, "rows": [outcome]},
+        },
+        "last_error_code": None,
+        "created_at": "2026-11-07T16:00:00Z",
+    }]
+    events = [{
+        "job_id": f"filler-{index}",
+        "candidate_id": f"filler-{index}",
+        "target_lane": "LLP_TEAM_BETTING_ENGINE",
+        "state": "DISCOVERED",
+        "code": "DISCOVERED",
+        "can_execute": False,
+        "created_at": f"2026-11-07T15:{index // 60:02d}:{index % 60:02d}Z",
+    } for index in range(1000)]
+    events.extend([
+        {
+            "job_id": "job-after-first-page",
+            "candidate_id": "candidate-after-first-page",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_PROCESSING",
+            "code": "SPECIALIST_WORKER_CLAIMED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:01Z",
+        },
+        {
+            "job_id": "job-after-first-page",
+            "candidate_id": "candidate-after-first-page",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "MODEL_EVALUATED",
+            "code": "SPECIALIST_MODEL_EVALUATED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+    ])
+
+    class _PagedReadQuery:
+        def __init__(self, rows):
+            self.rows = rows
+            self.start = 0
+            self.end = 999
+            self.range_calls = []
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args):
+            return self
+
+        def range(self, start, end):
+            self.start = start
+            self.end = end
+            self.range_calls.append((start, end))
+            return self
+
+        def execute(self):
+            return _Response(self.rows[self.start:self.end + 1])
+
+    class _PagedReadDB:
+        def __init__(self):
+            self.queries = {}
+
+        def table(self, name):
+            rows = jobs if name == "wow_scout_handoff_jobs" else events
+            query = _PagedReadQuery(rows)
+            self.queries[name] = query
+            return query
+
+    db = _PagedReadDB()
+    summary = queue.read_run_summary(db, "run-paged", include_receipts=True)
+
+    assert summary["specialist_processing_seen"] == 1
+    assert summary["model_evaluated"] == 1
+    assert summary["worker_processing_event_gap_jobs"] == 0
+    assert summary["model_evaluated_event_gap_jobs"] == 0
+    assert summary["state_event_coverage_pass"] is True
+    assert db.queries["wow_scout_handoff_state_events"].range_calls == [
+        (0, 999),
+        (1000, 1999),
+    ]
+
+    # Frequent status polls must not fetch every event page on every 2-second
+    # poll. The detailed terminal read above is the one complete event scan.
+    poll_db = _PagedReadDB()
+    poll_summary = queue.read_run_summary(poll_db, "run-paged")
+    assert poll_summary["specialist_processing_seen"] == 1
+    assert poll_summary["model_evaluated"] == 1
+    assert poll_summary["state_event_read_complete"] is False
+    assert poll_summary["state_event_coverage_pass"] is None
+    assert poll_summary["worker_processing_event_gap_jobs"] is None
+    assert poll_db.queries["wow_scout_handoff_state_events"].range_calls == [(0, 999)]
+
+
+def test_state_event_pagination_carries_event_id_for_page_boundary_integrity():
+    """Offset pagination is not a snapshot.
+
+    PostgREST range pagination advances a window, so an insert during the scan
+    shifts rows across the boundary. The projection must therefore carry
+    ``event_id`` -- the ordering tiebreak key -- or the caller cannot detect a
+    duplicated or skipped event after the fact.
+    """
+    outcome = {"terminal_status": "HELD", "code": "MODEL_UNAVAILABLE", "can_execute": False}
+    job_rows = [{
+        "job_id": "job-boundary",
+        "source_run_id": "run-boundary",
+        "research_run_id": "research-boundary",
+        "candidate_id": "candidate-boundary",
+        "target_lane": "LLP_TEAM_BETTING_ENGINE",
+        "research_priority": "HIGH",
+        "current_state": "MODEL_EVALUATED",
+        "terminal": True,
+        "attempt_count": 1,
+        "specialist_receipt": {
+            "can_execute": False,
+            "result": {"can_execute": False, "rows": [outcome]},
+        },
+        "last_error_code": None,
+        "created_at": "2026-11-07T16:00:00Z",
+    }]
+    event_rows = [
+        {
+            "event_id": "event-0001",
+            "job_id": "job-boundary",
+            "candidate_id": "candidate-boundary",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "SPECIALIST_PROCESSING",
+            "code": "SPECIALIST_WORKER_CLAIMED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:01Z",
+        },
+        {
+            "event_id": "event-0002",
+            "job_id": "job-boundary",
+            "candidate_id": "candidate-boundary",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE",
+            "state": "MODEL_EVALUATED",
+            "code": "SPECIALIST_MODEL_EVALUATED",
+            "can_execute": False,
+            "created_at": "2026-11-07T16:00:02Z",
+        },
+    ]
+
+    class _Response:
+        def __init__(self, data):
+            self.data = data
+
+        def execute(self):
+            return self
+
+    class _RecordingQuery:
+        def __init__(self, rows):
+            self.rows = rows
+            self.select_columns = []
+            self.range_calls = []
+
+        def select(self, columns):
+            self.select_columns.append(columns)
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args):
+            return self
+
+        def range(self, start, end):
+            self.range_calls.append((start, end))
+            return _Response(self.rows[start:end + 1])
+
+    class _RecordingDB:
+        def __init__(self):
+            self.queries = {}
+
+        def table(self, name):
+            rows = job_rows if name == "wow_scout_handoff_jobs" else event_rows
+            query = _RecordingQuery(rows)
+            self.queries[name] = query
+            return query
+
+    db = _RecordingDB()
+    summary = queue.read_run_summary(db, "run-boundary", include_receipts=True)
+
+    assert summary["state_event_read_complete"] is True
+    projected = db.queries["wow_scout_handoff_state_events"].select_columns[0].split(",")
+    assert "event_id" in projected, f"state-event projection must carry the tiebreak key, got {projected}"
+
+    # A concurrent insert shifts the offset window, so event-0999 reappears on page 2.
+    pages = [
+        [{"event_id": f"event-{index:04d}"} for index in range(1000)],
+        [{"event_id": "event-0999"}, {"event_id": "event-1000"}],
+    ]
+
+    class _BoundaryQuery:
+        def __init__(self):
+            self.calls = []
+
+        def range(self, start, end):
+            self.calls.append((start, end))
+            return _Response(pages[len(self.calls) - 1])
+
+    boundary_query = _BoundaryQuery()
+    paged = queue._paginate_query(boundary_query, page_size=1000)
+
+    assert boundary_query.calls == [(0, 999), (1000, 1999)]
+    event_ids = [row["event_id"] for row in paged]
+    assert len(event_ids) > len(set(event_ids)), "a shifted page boundary must remain detectable to the caller"

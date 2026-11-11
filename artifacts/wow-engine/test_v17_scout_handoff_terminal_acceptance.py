@@ -156,3 +156,19 @@ def test_wait_for_terminal_timeout_is_typed(monkeypatch):
     assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "SCOUT_TERMINAL_ACCEPTANCE_TIMEOUT" in result["blockers"]
     assert result["can_execute"] is False
+
+
+def test_terminal_acceptance_passes_durable_worker_proof_and_warns_on_event_gaps():
+    summary = _complete_summary()
+    summary.update({
+        "worker_processing_event_gap_jobs": 2,
+        "model_evaluated_event_gap_jobs": 1,
+        "state_event_coverage_pass": False,
+    })
+
+    result = terminal.validate_terminal_summary(summary)
+
+    assert result["status"] == "PASS"
+    assert result["warnings"] == ["SCOUT_STATE_EVENT_WORKER_TRANSITIONS_MISSING"]
+    assert result["worker_processing_event_gap_jobs"] == 2
+    assert result["model_evaluated_event_gap_jobs"] == 1

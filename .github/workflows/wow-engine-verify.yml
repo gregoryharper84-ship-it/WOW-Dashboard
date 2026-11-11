@@ -19,6 +19,9 @@ jobs:
     name: WOW governed backend shard / ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      # Exercise Scout queue SQL/RPC integration against this job's ephemeral Postgres service.
+      WOW_SCOUT_QUEUE_TEST_DATABASE_URL: postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci
     strategy:
       fail-fast: false
       matrix:
