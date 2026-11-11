@@ -685,3 +685,4 @@ These are **offline research-builder only** errors from `scripts/train_nfl_missi
 | `NFL_PROP_CALIBRATION_FACTOR_UNSUPPORTED` | MODEL | Poisson calibration offset nonfinite/extreme; reject research candidate fit. | No |
 | `NFL_PROP_SOURCE_SEASON_MISMATCH` | INPUT | Named source season has regular-season rows for a different season; reject source file and reacquire season-specific bytes. | No |
 | `NFL_PROP_SOURCE_OUTPUT_COLLISION` | SECURITY | Requested candidate output resolves to same file/inode as a frozen training source; reject before any write, preserve source bytes. | No |
+| `NFL_PROP_SOURCE_DIGEST_MISMATCH` | INPUT | A local 2021-2025 NFL player-week source differs from the published frozen nflverse stats_player release SHA-256; reject before parsing/fitting, reacquire exact bytes; never silently refresh pins. | No |

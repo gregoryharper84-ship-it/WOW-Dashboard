@@ -27,6 +27,15 @@ CAN_EXECUTE = False
 MODEL_FAMILY = "NFL_COUNT_PROP_FITTED_CANDIDATE_V1"
 MODEL_KIND = "POISSON_COUNT_CANDIDATE_V1"
 SEASONS = (2021, 2022, 2023, 2024, 2025)
+# Frozen public source digests from https://api.github.com/repos/nflverse/nflverse-data/releases/tags/stats_player
+# Changes to the upstream release require source review; never silently accept drift.
+EXPECTED_RELEASE_SHA256 = {
+    "2021": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48",
+    "2022": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be",
+    "2023": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17",
+    "2024": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759",
+    "2025": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2",
+}
 MIN_PRIOR_GAMES = 10
 FEATURES = (
     "l10_stat_mean", "l5_stat_mean", "last_stat",
@@ -56,7 +65,9 @@ def _json_digest(value: Any) -> str:
     return _sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
 
 
-def load_source_files(directory: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+def load_source_files(
+    directory: Path, *, expected_sha256: dict[str, str] | None = None
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Load only frozen local files, recording actual bytes; never download in a scorer."""
     directory = Path(directory)
     frames = []
@@ -66,17 +77,21 @@ def load_source_files(directory: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
         if not path.is_file():
             raise ValueError(f"NFL_PROP_SOURCE_FILE_MISSING:{season}")
         blob = path.read_bytes()
+        actual_sha256 = _sha256(blob)
+        if expected_sha256 is not None and actual_sha256 != expected_sha256.get(str(season)):
+            raise ValueError(f"NFL_PROP_SOURCE_DIGEST_MISMATCH:{season}")
         frame = pd.read_csv(io.BytesIO(blob), low_memory=False)
         # A filename does not establish season coverage. Validate *each* snapshot
         # before combining seasons so an empty/mislabelled file cannot be masked.
         checked = validate_frame(frame)
         if not checked["season"].eq(season).all():
             raise ValueError(f"NFL_PROP_SOURCE_SEASON_MISMATCH:{season}")
-        assets[str(season)] = {"file": path.name, "sha256": _sha256(blob), "rows": len(frame)}
+        assets[str(season)] = {"file": path.name, "sha256": actual_sha256, "rows": len(frame)}
         frames.append(checked)
     provenance = {
         "provider": "NFLVERSE_STATS_PLAYER", "license_claim": "CC-BY-4.0",
         "source_rights_independently_approved": False,
+        "release_hashes_verified": expected_sha256 is not None,
         "assets": assets, "bundle_sha256": _json_digest(assets),
         "can_execute": False,
     }
@@ -260,7 +275,7 @@ def main() -> int:
         if resolved_output == source.resolve() or (args.out.exists() and source.exists()
                                                     and os.path.samefile(args.out, source)):
             raise ValueError(f"NFL_PROP_SOURCE_OUTPUT_COLLISION:{season}")
-    frame, provenance = load_source_files(args.input_dir)
+    frame, provenance = load_source_files(args.input_dir, expected_sha256=EXPECTED_RELEASE_SHA256)
     candidates = [build_candidate(build_feature_rows(frame, stat), stat, provenance) for stat in ROUTES]
     output = {
         "schema_version": "WOW_NFL_MISSING_COUNT_PROP_CANDIDATES_V1",

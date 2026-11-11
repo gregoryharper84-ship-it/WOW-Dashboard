@@ -281,3 +281,38 @@ def test_cli_output_hardlink_collision_preserves_frozen_source(tmp_path, weekly_
         main()
     assert source.read_bytes() == initial
 
+def test_frozen_source_digest_mismatch_is_rejected_before_parsing(tmp_path, weekly_frame):
+    """An altered but schema-valid file cannot silently stand in for a pinned release."""
+    import hashlib
+    from train_nfl_missing_prop_candidates import load_source_files
+
+    for season in range(2021, 2026):
+        weekly_frame.loc[weekly_frame.season == season].to_csv(tmp_path / f"stats_player_week_{season}.csv", index=False)
+    expected = {
+        str(season): hashlib.sha256((tmp_path / f"stats_player_week_{season}.csv").read_bytes()).hexdigest()
+        for season in range(2021, 2026)
+    }
+    frame, provenance = load_source_files(tmp_path, expected_sha256=expected)
+    assert len(frame) == len(weekly_frame)
+    assert provenance["release_hashes_verified"] is True
+    assert provenance["assets"]["2025"]["sha256"] == expected["2025"]
+
+    path = tmp_path / "stats_player_week_2025.csv"
+    changed = path.read_text().replace("QB 0", "QB changed", 1)
+    assert changed != path.read_text()
+    path.write_text(changed)
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_DIGEST_MISMATCH:2025"):
+        load_source_files(tmp_path, expected_sha256=expected)
+
+
+def test_cli_pins_authoritative_release_sha256_without_override():
+    """The public-model candidate CLI must not accept arbitrary synthetic CSV hashes."""
+    import inspect
+    from train_nfl_missing_prop_candidates import EXPECTED_RELEASE_SHA256, main
+
+    assert len(EXPECTED_RELEASE_SHA256) == 5
+    assert set(EXPECTED_RELEASE_SHA256) == set(str(y) for y in range(2021, 2026))
+    assert all(len(x) == 64 and all(c in "0123456789abcdef" for c in x) for x in EXPECTED_RELEASE_SHA256.values())
+    # Avoid passing a user override for public-source integrity in the CLI.
+    assert "expected_sha256=EXPECTED_RELEASE_SHA256" in inspect.getsource(main)
+
