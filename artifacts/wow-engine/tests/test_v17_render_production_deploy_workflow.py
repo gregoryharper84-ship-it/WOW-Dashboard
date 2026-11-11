@@ -1,5 +1,14 @@
 from pathlib import Path
+import io
+import json
+import os
 import re
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+import pytest
+import urllib.error
+import urllib.request
 
 
 REQUIRED_CHECKS = (
@@ -277,6 +286,272 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+    # Preflight GET is observational; run attribution uses POST deployed_sha.
+    assert "read_serving_sha_at_request" in text
+    assert "serving_sha_preflight" in text
+    assert "serving_sha_at_request" in text
+    assert "DAILY_SNAPSHOT_SERVING_SHA_MISSING" in text
+    assert "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID" in text
+    assert "DAILY_SNAPSHOT_RUN_ID_MISSING" in text
+    assert 'daily_snapshot_response_deployed_sha' in text
+    assert "serving_sha_for_run = str(result.get(\"deployed_sha\") or \"\").strip().lower()" in text
+    assert '"serving_sha_at_request": serving_sha_for_run' in text
+    assert "serving_sha_preflight_matches_post" in text
+    assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
+    # Preflight GET uses the same 40-hex gate as POST attribution (provenance only).
+    assert 'serving_sha = str(governance.get("deployed_sha") or "").strip().lower()' in text
+    assert "len(serving_sha) != 40" in text
+    # Governance preflight must retry cold-start / gateway failures like the Daily POST.
+    assert "def read_serving_sha_at_request" in text
+    assert text.count("except (urllib.error.URLError, TimeoutError):") >= 2
+    assert "max_attempts = 10" in text
+
+
+def _attribute_daily_serving_sha(*, preflight_sha: str, result: dict) -> dict:
+    """Mirror the unpaid Daily summary attribution contract from the workflow."""
+    run_id = str(result.get("run_id") or "").strip()
+    if not run_id:
+        raise AssertionError("DAILY_SNAPSHOT_RUN_ID_MISSING")
+    serving_sha_for_run = str(result.get("deployed_sha") or "").strip().lower()
+    if (
+        len(serving_sha_for_run) != 40
+        or any(ch not in "0123456789abcdef" for ch in serving_sha_for_run)
+    ):
+        raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID")
+    return {
+        "run_id": run_id,
+        "serving_sha_preflight": preflight_sha,
+        "serving_sha_at_request": serving_sha_for_run,
+        "serving_sha_source": "daily_snapshot_response_deployed_sha",
+        "serving_sha_preflight_matches_post": preflight_sha == serving_sha_for_run,
+    }
+
+
+def test_daily_serving_sha_attribution_prefers_post_over_distinct_preflight():
+    preflight = "a" * 40
+    post = "b" * 40
+    attributed = _attribute_daily_serving_sha(
+        preflight_sha=preflight,
+        result={"deployed_sha": post, "run_id": "v17-daily-x"},
+    )
+    assert attributed["serving_sha_preflight"] == preflight
+    assert attributed["serving_sha_at_request"] == post
+    assert attributed["serving_sha_source"] == "daily_snapshot_response_deployed_sha"
+    assert attributed["serving_sha_preflight_matches_post"] is False
+
+
+def test_daily_serving_sha_attribution_fails_closed_when_post_sha_missing():
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID"):
+        _attribute_daily_serving_sha(
+            preflight_sha="a" * 40,
+            result={"deployed_sha": None, "run_id": "v17-daily-x"},
+        )
+
+
+def test_daily_serving_sha_attribution_fails_closed_on_nonhex_post_sha():
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID"):
+        _attribute_daily_serving_sha(
+            preflight_sha="a" * 40,
+            result={"deployed_sha": "g" * 40, "run_id": "v17-daily-x"},
+        )
+
+
+def test_daily_serving_sha_attribution_fails_closed_on_missing_run_id():
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_ID_MISSING"):
+        _attribute_daily_serving_sha(
+            preflight_sha="a" * 40,
+            result={"deployed_sha": "b" * 40, "run_id": ""},
+        )
+
+
+def _daily_snapshot_workflow_python() -> str:
+    """Extract the unpaid Daily snapshot step Python from the workflow YAML."""
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / ".github" / "workflows" / "wow-v17-daily-snapshot.yml").read_text(
+        encoding="utf-8"
+    )
+    marker = "Run server-owned Daily snapshot"
+    assert marker in text
+    section = text.split(marker, 1)[1]
+    match = re.search(r"python - <<'PY'\n(.*?)^\s+PY\s*$", section, re.M | re.S)
+    assert match, "Daily snapshot Python heredoc missing"
+    # YAML indent is 10 spaces before each code line; strip common indent.
+    lines = match.group(1).splitlines()
+    stripped = []
+    for line in lines:
+        if line.startswith("          "):
+            stripped.append(line[10:])
+        else:
+            stripped.append(line)
+    return "\n".join(stripped) + "\n"
+
+
+class _JsonResponse:
+    def __init__(self, payload: dict):
+        self._buf = io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+    def __enter__(self):
+        return self._buf
+
+    def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+        return False
+
+
+def _mock_urlopen_factory(*, governance: dict, daily: dict | Exception):
+    def _urlopen(request, timeout=0):  # noqa: ARG001
+        if isinstance(request, str):
+            url = request
+            method = "GET"
+        else:
+            url = request.full_url
+            method = request.get_method()
+        if url.endswith("/governance") and method == "GET":
+            return _JsonResponse(governance)
+        if "/internal/v17/daily-snapshot" in url and method == "POST":
+            if isinstance(daily, Exception):
+                raise daily
+            return _JsonResponse(daily)
+        if "idtoken" in url.lower() or "audience=" in url:
+            return _JsonResponse({"value": "oidc-token"})
+        raise AssertionError(f"unexpected urlopen target: {url} {method}")
+
+    return _urlopen
+
+
+def _valid_governance(**overrides) -> dict:
+    payload = {
+        "deployed_sha": "a" * 40,
+        "can_execute": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _valid_daily(**overrides) -> dict:
+    payload = {
+        "run_id": "v17-daily-exec-1",
+        "run_status": "COMPLETED",
+        "requested_slate_date": "2026-11-10",
+        "can_execute": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "automation_auth": "GITHUB_ACTIONS_OIDC",
+        "deployed_sha": "b" * 40,
+        "rows": [{"lane": "MONEYLINE"}] * 24,
+        "reconciliation": {
+            "balanced": True,
+            "rows_completed": 0,
+            "rows_held": 24,
+            "rows_rejected": 0,
+        },
+        "lane_reconciliation": {
+            "MONEYLINE": {"requested_row_limit": 24, "canonicalized_count": 24}
+        },
+        "cross_sport_discovery_audit": {
+            "reconciliation": {"row_reconciliation": "PASS"}
+        },
+        "blockers": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _run_daily_snapshot_workflow_python(*, governance: dict, daily: dict | Exception) -> str:
+    code = _daily_snapshot_workflow_python()
+    env = {
+        "WOW_ACTION_ORIGIN": "https://wow-governed-probability-engine.onrender.com",
+        "WOW_USER_TIMEZONE": "America/Chicago",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://example.test/idtoken?audience=x",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "token",
+    }
+    stdout = io.StringIO()
+    with patch.dict(os.environ, env, clear=False):
+        with patch("urllib.request.urlopen", side_effect=_mock_urlopen_factory(governance=governance, daily=daily)):
+            with redirect_stdout(stdout):
+                exec(compile(code, "wow-v17-daily-snapshot-step.py", "exec"), {})
+    return stdout.getvalue()
+
+
+def test_daily_workflow_python_attributes_distinct_post_sha():
+    preflight = "a" * 40
+    post = "b" * 40
+    out = _run_daily_snapshot_workflow_python(
+        governance=_valid_governance(deployed_sha=preflight),
+        daily=_valid_daily(deployed_sha=post, run_id="v17-daily-exec-1"),
+    )
+    summary = json.loads(out.strip().splitlines()[-1])
+    assert summary["serving_sha_preflight"] == preflight
+    assert summary["serving_sha_at_request"] == post
+    assert summary["serving_sha_preflight_matches_post"] is False
+    assert summary["run_id"] == "v17-daily-exec-1"
+    assert summary["can_execute"] is False
+
+
+def test_daily_workflow_python_rejects_missing_post_sha_and_logs_run_id():
+    code = _daily_snapshot_workflow_python()
+    env = {
+        "WOW_ACTION_ORIGIN": "https://wow-governed-probability-engine.onrender.com",
+        "WOW_USER_TIMEZONE": "America/Chicago",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://example.test/idtoken?audience=x",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "token",
+    }
+    stdout = io.StringIO()
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID"):
+        with patch.dict(os.environ, env, clear=False):
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=_mock_urlopen_factory(
+                    governance=_valid_governance(),
+                    daily=_valid_daily(deployed_sha=None, run_id="v17-daily-legacy"),
+                ),
+            ):
+                with redirect_stdout(stdout):
+                    exec(compile(code, "wow-v17-daily-snapshot-step.py", "exec"), {})
+    diagnostic = json.loads(stdout.getvalue().strip().splitlines()[-1])
+    assert diagnostic == {
+        "diagnostic": "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID",
+        "run_id": "v17-daily-legacy",
+    }
+
+
+@pytest.mark.parametrize(
+    ("governance", "daily", "match"),
+    [
+        (
+            _valid_governance(),
+            _valid_daily(deployed_sha="g" * 40),
+            "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID",
+        ),
+        (
+            _valid_governance(),
+            _valid_daily(run_id=""),
+            "DAILY_SNAPSHOT_RUN_ID_MISSING",
+        ),
+        (
+            _valid_governance(deployed_sha=""),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_SERVING_SHA_MISSING",
+        ),
+        (
+            _valid_governance(deployed_sha="unknown"),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_SERVING_SHA_MISSING",
+        ),
+        (
+            _valid_governance(can_execute=True),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_GOVERNANCE_CAN_EXECUTE_INVARIANT_FAILED",
+        ),
+        (
+            _valid_governance(global_terminal_authority="OTHER"),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_GOVERNANCE_TERMINAL_AUTHORITY_MISMATCH",
+        ),
+    ],
+)
+def test_daily_workflow_python_guard_rejects(governance, daily, match):
+    with pytest.raises(AssertionError, match=match):
+        _run_daily_snapshot_workflow_python(governance=governance, daily=daily)
 
 
 def test_post_deploy_canary_classifier_accepts_observation_timeout_as_hold():
