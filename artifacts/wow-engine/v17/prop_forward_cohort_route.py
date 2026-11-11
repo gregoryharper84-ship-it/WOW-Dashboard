@@ -14,6 +14,10 @@ import v17.prop_lifecycle_artifact_identity_overlay as lifecycle_identity_overla
 from v17.fantasy_score_forward_cohort_route import install_fantasy_score_forward_cohort_route
 from v17.phase_a_row_publication import install_phase_a_row_publication
 from v17.prop_action_canary_capture import install_prop_action_canary_capture
+from v17.nba_points_snapshot_capture import (
+    NBAPointsSnapshotCaptureRequest,
+    capture_nba_points_snapshot,
+)
 from v17.prop_certification_runtime import PropCertificationAuditRequest, run_prop_certification_audit
 from v17.prop_exact_route_settlement import ExactRouteSettlementRequest, run_exact_route_settlement
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
@@ -121,6 +125,19 @@ def install_prop_forward_cohort_route(
     )
 
     install_prop_action_canary_capture(app, db_client_fn=db_client_fn)
+
+    if not any(getattr(route, "path", None) == "/v17/nba-points-snapshot-capture" for route in app.router.routes):
+        @app.post(
+            "/v17/nba-points-snapshot-capture",
+            dependencies=[auth_dependency],
+            operation_id="captureWowV17NbaPointsSnapshot",
+        )
+        def nba_points_snapshot_capture(req: NBAPointsSnapshotCaptureRequest):
+            return capture_nba_points_snapshot(
+                db=db_client_fn(),
+                run_id=req.run_id,
+                row_key=req.row_key,
+            )
 
     if not any(getattr(route, "path", None) == "/v17/prop-forward-cohort-run" for route in app.router.routes):
         @app.post(
