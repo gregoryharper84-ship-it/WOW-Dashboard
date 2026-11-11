@@ -264,6 +264,8 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
         )
         note["pbp_status"] = pbp_result["status"]
         note["pbp_presence_counts"] = pbp_result["pbp_presence_counts"]
+        note["pbp_matched_positive_control"] = pbp_result["pbp_matched_positive_control"]
+        note["pbp_actor_id_alignment_observed"] = pbp_result["pbp_actor_id_alignment_observed"]
         note["pbp_game_count"] = len(pbp_games)
     except (ValueError, OSError) as exc:
         note["pbp_status"] = "HOLD_PBP_EVIDENCE_INCOMPLETE"
