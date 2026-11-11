@@ -38,8 +38,8 @@
 ### Task 2: Preserve idempotent issues and honest escalation
 **Files:** Same workflow and test; update documentation.
 
-- [ ] Test no source code checkout, exact identity/incident and duplicate marker.
-- [ ] Implement minimal branch-dependent resolver; preserve pre-PR gate for worker origin.
+- [ ] Test no source code checkout, exact identity/incident, preserved legacy backtick headers and duplicate marker across concurrent entrypoints.
+- [ ] Implement minimal branch-dependent resolver and a single repository-scoped `queue: max` writer lock; preserve pre-PR gate and legacy incident syntax for worker origin.
 - [ ] Verify tests and independent hosted CI.
 - [ ] Record 'SIRT intake only' and zero-credit QA recovery steps.
 
