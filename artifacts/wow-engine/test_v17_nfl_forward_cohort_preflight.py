@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -522,6 +525,48 @@ def test_preflight_route_fails_closed_without_authorizing(monkeypatch):
     assert excinfo.value.detail["projection_is_certification_evidence"] is False
     assert excinfo.value.detail["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
     assert excinfo.value.detail["can_execute"] is False
+
+
+@pytest.mark.parametrize("expected_slate_games", ["12.5", "0", "12"])
+def test_workflow_reporting_failure_paths_warn_without_network(tmp_path, expected_slate_games):
+    """Execute the actual embedded reporting Python with stubbed OIDC and HTTP 404."""
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github" / "workflows" / "wow-v17-nfl-forward-shadow.yml"
+    ).read_text(encoding="utf-8")
+    step = workflow.split("      - name: Report per-slate NFL forward-cohort readiness", 1)[1]
+    block = step.split("          python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    script = "\n".join(line[10:] if line.startswith("          ") else line for line in block.splitlines())
+
+    # No network requests are made. A valid expected count reaches the simulated
+    # undeployed route (404); invalid numeric input fails inside the same HOLD path.
+    stub = """
+import io
+import urllib.error
+import urllib.request
+def fake_urlopen(req, timeout=None):
+    if "fake-oidc.invalid" in req.full_url:
+        return io.BytesIO(b'{"value":"test-oidc-token"}')
+    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", None, None)
+urllib.request.urlopen = fake_urlopen
+"""
+    summary = tmp_path / "report.md"
+    env = {
+        **os.environ,
+        "EXPECTED_SLATE_GAMES": expected_slate_games,
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "WOW_ACTION_ORIGIN": "https://undeployed.invalid",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://fake-oidc.invalid/token",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "not-a-secret",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", stub + "\n" + script],
+        env=env, capture_output=True, text=True, timeout=8, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "::warning::NFL forward cohort readiness" in result.stdout
+    assert "UNAVAILABLE / HOLD_COHORT_READINESS_UNOBSERVED" in summary.read_text()
+    assert ("HTTPError" if expected_slate_games == "12" else "ValueError") in result.stdout
 
 
 def test_daily_workflow_reports_slate_readiness_before_kickoff():
