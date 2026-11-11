@@ -89,6 +89,10 @@ def assemble_provisional_winner_card(
     require a separate new card with explicit provenance, never an upset overlay.
     """
     freeze = _instant(frozen_at, "FROZEN_AT")
+    if (any(not isinstance(event, Mapping) for event in official_events)
+            or any(not isinstance(pick, Mapping) for pick in primary_picks)
+            or any(not isinstance(watch, Mapping) for watch in upset_watch)):
+        raise ValueError("WINNER_CARD_ROW_NOT_OBJECT")
     if not official_events:
         raise ValueError("WINNER_CARD_OFFICIAL_SLATE_EMPTY")
     event_by_id: dict[str, tuple[Mapping[str, Any], datetime, frozenset[str]]] = {}
@@ -103,8 +107,11 @@ def assemble_provisional_winner_card(
         values = event.get("eligible_outcomes")
         if not isinstance(values, (list, tuple, set, frozenset)):
             raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID")
-        eligible = frozenset(values)
-        if not eligible or not eligible.issubset({"HOME", "AWAY", "DRAW"}):
+        try:
+            eligible = frozenset(values)
+        except TypeError as exc:
+            raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID") from exc
+        if len(eligible) != len(values) or not eligible or not eligible.issubset({"HOME", "AWAY", "DRAW"}):
             raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID")
         if sport == "NHL" and basis == "FULL_GAME_INCLUDING_OT_SO" and eligible != {"HOME", "AWAY"}:
             raise ValueError("WINNER_CARD_NHL_SETTLEMENT_OUTCOMES_INVALID")
