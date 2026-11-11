@@ -243,6 +243,37 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             + type(exc).__name__ + ":" + str(exc)[:250]
         )
 
+    # The PBP presence probe is *secondary* to the full official-source
+    # checksum and snap-participation HOLD above. It never makes a zero count.
+    from audit_nfl_count_prop_pbp_presence import (
+        pbp_assets, read_verified_pbp_presence, classify_missing_pbp_presence,
+    )
+    pbp_receipts = []
+    pbp_games = set()
+    pbp_actors = set()
+    try:
+        for relative, digest, size in pbp_assets():
+            receipt = acquire_one(relative, digest, size, tmp_path, timeout=20)
+            season = int(relative.split("_")[-1].split(".")[0])
+            games, actors = read_verified_pbp_presence(tmp_path / relative, season)
+            pbp_games.update(games)
+            pbp_actors.update(actors)
+            pbp_receipts.append(receipt)
+        pbp_result = classify_missing_pbp_presence(
+            stats, snaps, players, pbp_games, pbp_actors,
+        )
+        note["pbp_status"] = pbp_result["status"]
+        note["pbp_presence_counts"] = pbp_result["pbp_presence_counts"]
+        note["pbp_game_count"] = len(pbp_games)
+    except (ValueError, OSError) as exc:
+        note["pbp_status"] = "HOLD_PBP_EVIDENCE_INCOMPLETE"
+        note["pbp_failure"] = type(exc).__name__ + ":" + str(exc)[:160]
+    note["pbp_verified_asset_count"] = len(pbp_receipts)
+    note["pbp_verified_compressed_bytes"] = sum(
+        receipt["size_bytes"] for receipt in pbp_receipts
+    )
+    note["pbp_absence_proves_zero"] = False
+
     pytest.skip(
         "NFL_PROP_OFFLINE_SOURCE_RESEARCH_RECEIPT:"
         + json.dumps(note, sort_keys=True, separators=(",", ":"), default=str)
