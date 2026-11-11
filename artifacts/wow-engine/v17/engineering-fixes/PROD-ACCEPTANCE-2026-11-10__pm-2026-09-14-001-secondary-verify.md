@@ -167,18 +167,34 @@ Verdict: `POST_SAFETY_SYNC_DAILY_RUN_IDS_OBSERVED_SERVING_SHA_UNVERIFIED`. Delay
 | Parallel PR delta | `#2560` tip `be05c789…` MERGEABLE but `BEHIND` main; `#2571` tip `e5277998b…` MERGEABLE but `BEHIND` main (Independent QA + Release Authority previously PASS on that tip). Authorized merge remains external. |
 | Next observation | Capture cron `0 23` with request-time serving SHA + safety ancestry; host Action three-field receipt for scoring-attempted closure; no paid dispatch |
 
+## Independent re-verify (2026-11-11T00:33Z, unpaid, delayed cron `0 23` window)
+
+Verdict: `SCHEDULE_DELAYED`. ~93 minutes after nominal `0 23`, no new schedule run. Newest schedule remains `42911461928` at `2026-11-10T22:06:44Z` (already recorded; not claimed as the `0 23` fire). Workflow still `active`. No paid `workflow_dispatch`.
+
+| Probe | Result |
+| --- | --- |
+| Live `/governance` tip | Still `deployed_sha=6998b62af5df99cafd87995b9aa7b14fdd0d8110`; `can_execute=false`; `V17_TERMINAL_REDUCER` |
+| Safety ancestry | `98a56157…` still ancestor of live tip (`git merge-base --is-ancestor` exit 0) |
+| `/health/live` | HTTP 200 `{status:ok, can_execute:false}` |
+| Scheduled `wow-v17-daily-snapshot` (`cron: 0 23`) | **SCHEDULE_DELAYED** as of `2026-11-11T00:33:15Z`. Newest schedule run remains `42911461928` at 22:06Z |
+| Sync Daily `run_id` for `0 23` | Still **UNVERIFIED** / not separately observed |
+| `ZERO_ROW_REASON_MISCLASSIFIED` | Unchanged **FIXED_VERIFIED_IN_PRODUCTION** (#2585 canary) |
+| `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS` | Unchanged **BACKEND_PAIR_OBSERVED_HOST_PENDING** |
+| Parallel PR delta | `#2587` tip `7760219d0` MERGEABLE/CLEAN with Independent QA + Release Authority PASS (request-time Daily serving SHA provenance) — authorized merge external; `#2560` / `#2571` still BEHIND main |
+| Next observation | Final unpaid watch for a late `0 23` schedule; otherwise stop. Host Action three-field receipt remains the PM residual. No paid dispatch |
+
 ## Closure gate
 
-`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Post-safety sync MONEYLINE Daily `run_id`s are observed, but request-time serving SHA attribution stays **UNVERIFIED**. MONEYLINE-only cron cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
+`PM-2026-09-14-001` remains `DEPLOYED_PENDING_VERIFY` until the host three-field scoring-attempted receipt is independently observed (`action_invocation_attempted` without collapsing the backend pair). `ZERO_ROW_REASON_MISCLASSIFIED` is closed via #2585 production canary. Post-safety sync MONEYLINE Daily `run_id`s are observed, but request-time serving SHA attribution stays **UNVERIFIED**. Cron `0 23` is **SCHEDULE_DELAYED** as of `2026-11-11T00:33Z`. MONEYLINE-only cron cannot manufacture the host Action residual. Safety/availability deployment is independently real; model certification / pick production is not restored. Do not paid-retry a Daily to manufacture residuals. Do not treat a future `#2558` QA PASS as `FIXED_VERIFIED`.
 
 ```text
 can_execute = false
 terminal_authority = V17_TERMINAL_REDUCER
-serving_sha_observed_at_2302Z = 6998b62af5df99cafd87995b9aa7b14fdd0d8110
-safety_ancestor_of_2302Z_tip = 98a56157a5916c6d25ee1c51bab3d183448e23c8
+serving_sha_observed_at_0033Z = 6998b62af5df99cafd87995b9aa7b14fdd0d8110
+safety_ancestor_of_0033Z_tip = 98a56157a5916c6d25ee1c51bab3d183448e23c8
 post_safety_sync_daily_run_ids = OBSERVED (42875617354 / v17-daily-73c75380…; 42911461928 / v17-daily-80c514c0…)
 post_safety_sync_daily_serving_sha_at_request = UNVERIFIED
-cron_0_23_status = NOT_YET_OBSERVED
+cron_0_23_status = SCHEDULE_DELAYED
 zero_row_status = FIXED_VERIFIED_IN_PRODUCTION
 scoring_attempted_status = BACKEND_PAIR_OBSERVED_HOST_PENDING
 ledger_state = DEPLOYED_PENDING_VERIFY
