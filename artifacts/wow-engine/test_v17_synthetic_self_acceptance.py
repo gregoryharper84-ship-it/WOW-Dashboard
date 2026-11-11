@@ -370,3 +370,44 @@ async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monk
         and "scoring_acceptance_proven=False" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_startup_readback_never_infers_qualified_scoring(caplog):
+    logger = logging.getLogger("test-v17-startup-readback")
+    result = {
+        "status": "PASS",
+        "status_scope": "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY",
+        "scoring_acceptance_proven": False,
+        "source_backed_pregame_scoring": {
+            "status": "HELD",
+            "lane": "SOURCE_BACKED_PROJECTED_TEAM_EVENT",
+            "blocker": "LINEUP_CONFIRMATION_PENDING",
+            "calibrated_lower_bound": 0.41,
+        },
+    }
+    mod.log_v17_synthetic_startup_readback(logger, result)
+    line = next(
+        item.getMessage() for item in caplog.records
+        if item.getMessage().startswith("WOW_V17_SYNTHETIC_STARTUP_READBACK ")
+    )
+    assert "status=PASS" in line
+    assert "status_scope=SELF_ACCEPTANCE_DIAGNOSTICS_ONLY" in line
+    assert "scoring_acceptance_proven=False" in line
+    assert "source_backed_status=HELD" in line
+    assert "source_backed_lane=SOURCE_BACKED_PROJECTED_TEAM_EVENT" in line
+    assert "source_backed_blocker=LINEUP_CONFIRMATION_PENDING" in line
+    assert "can_execute=false" in line
+    assert "0.41" not in line  # Do not leak numeric forecast from a held row.
+
+
+def test_startup_readback_missing_result_never_claims_scoring(caplog):
+    logger = logging.getLogger("test-v17-startup-empty")
+    mod.log_v17_synthetic_startup_readback(logger, {"status": "FAILED"})
+    line = next(
+        item.getMessage() for item in caplog.records
+        if item.getMessage().startswith("WOW_V17_SYNTHETIC_STARTUP_READBACK ")
+    )
+    assert "status_scope=DIAGNOSTIC_NOT_COMPLETED" in line
+    assert "scoring_acceptance_proven=False" in line
+    assert "source_backed_status=NOT_ATTEMPTED" in line
+    assert "source_backed_blocker=NO_SOURCE_BACKED_SCORING_PROOF" in line
