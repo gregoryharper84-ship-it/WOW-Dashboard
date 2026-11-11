@@ -20,3 +20,9 @@ python -m pytest -q artifacts/wow-engine/tests/test_v17_research_chronology_audi
 ```
 
 Scope is intentionally separate from PR #2537's production reader, MLB evidence migrations and serving enforcement. Engineering must use independent certification and production-receipt gates after this offline preflight.
+
+## Snapshot-ID integrity hardening (2026-11-11)
+
+The offline audit now rejects `SOURCE_SNAPSHOT_ID_CONFLICT` whenever one `source_snapshot_id` is reused with different purported source bytes, sport, publication time, or capture time. A stable identical snapshot can be reused for later events when all source identity fields agree and every row's chronology passes. This adds a research-provenance preflight, **not** new authority: the audit still cannot attest the publisher's actual historical availability, source rights, canonical official IDs, calibration, or model certification. No collector, source entitlement, model, production route, or execution permission changes.
+
+Run: `python -m pytest -q artifacts/wow-engine/tests/test_v17_research_chronology_audit.py`. All regressions require exact-head CI and independent acceptance before any production claims.
