@@ -256,6 +256,35 @@ def test_partial_game_and_tiered_offers_cannot_be_submitted_as_full_game_standar
         }, field
 
 
+def test_unsupported_period_or_tier_never_spends_external_callback_budget():
+    """Fail-closed ineligible routes before official-ID or offer-refresh calls."""
+    for field, value in (("period_display", "First quarter"), ("offer_type", "goblin")):
+        receipt = board()
+        for row in receipt["directional_candidates"]:
+            row[field] = value
+        external_calls = []
+
+        def instrumented_resolver(row):
+            external_calls.append("official_resolver")
+            return official(row)
+
+        def instrumented_refresh(row):
+            external_calls.append("exact_offer_refresh")
+            return fresh_offer(row)
+
+        out = compile_authorized_prop_handoff(
+            receipt, now=NOW, source_use_permitted=True,
+            official_resolver=instrumented_resolver,
+            exact_offer_refresh=instrumented_refresh,
+        )
+        assert external_calls == [], (field, external_calls)
+        assert out["scoring_input_proposals"] == []
+        assert out["reconciliation_valid"] is True
+        assert {r["typed_blocker"] for r in out["blocked_rows"]} == {
+            "PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED"
+        }
+
+
 def test_bad_discovery_blocker_contract_fails_closed():
     receipt = board()
     receipt["blockers"] = [{"untrusted": "object"}]
