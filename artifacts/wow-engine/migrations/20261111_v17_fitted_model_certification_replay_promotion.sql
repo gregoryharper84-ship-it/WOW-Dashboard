@@ -30,7 +30,9 @@ create table if not exists public.wow_fitted_model_certification_replay_receipts
     probability_publishable boolean not null default false,
     can_execute boolean not null default false,
     created_at timestamptz not null default now(),
-    constraint wow_fitted_replay_surface check (surface in ('TEAM_EVENT','PROP')),
+    constraint wow_fitted_replay_surface check (
+        surface in ('TEAM_EVENT','PROP','__UNIDENTIFIED__')
+    ),
     constraint wow_fitted_replay_status check (
         status in ('CERTIFICATION_REPLAY_PASS','CERTIFICATION_REPLAY_FAILED')
     ),
@@ -41,7 +43,9 @@ create table if not exists public.wow_fitted_model_certification_replay_receipts
     constraint wow_fitted_replay_partition_settled_object check (jsonb_typeof(partition_settled_counts) = 'object'),
     constraint wow_fitted_replay_receipt_hash_shape check (receipt_sha256 ~ '^[0-9a-f]{64}$'),
     constraint wow_fitted_replay_corpus_hash_shape check (
-        received_corpus_sha256 is null or received_corpus_sha256 ~ '^[0-9a-f]{64}$'
+        received_corpus_sha256 is null
+        or received_corpus_sha256 = '__UNIDENTIFIED__'
+        or received_corpus_sha256 ~ '^[0-9a-f]{64}$'
     ),
     constraint wow_fitted_replay_never_publish check (probability_publishable = false),
     constraint wow_fitted_replay_never_execute check (can_execute = false)
@@ -81,7 +85,9 @@ create table if not exists public.wow_fitted_model_promotion_receipts (
     probability_publishable boolean not null default false,
     can_execute boolean not null default false,
     created_at timestamptz not null default now(),
-    constraint wow_fitted_promotion_surface check (surface in ('TEAM_EVENT','PROP')),
+    constraint wow_fitted_promotion_surface check (
+        surface in ('TEAM_EVENT','PROP','__UNIDENTIFIED__')
+    ),
     constraint wow_fitted_promotion_status check (
         status in (
             'PROMOTION_BLOCKED',
@@ -98,7 +104,10 @@ create table if not exists public.wow_fitted_model_promotion_receipts (
     constraint wow_fitted_promotion_packet_object check (
         apply_packet is null or jsonb_typeof(apply_packet) = 'object'
     ),
-    constraint wow_fitted_promotion_replay_hash_shape check (replay_receipt_sha256 ~ '^[0-9a-f]{64}$'),
+    constraint wow_fitted_promotion_replay_hash_shape check (
+        replay_receipt_sha256 = '__UNIDENTIFIED__'
+        or replay_receipt_sha256 ~ '^[0-9a-f]{64}$'
+    ),
     constraint wow_fitted_promotion_packet_hash_shape check (promotion_sha256 ~ '^[0-9a-f]{64}$'),
     constraint wow_fitted_promotion_never_publish check (probability_publishable = false),
     constraint wow_fitted_promotion_never_execute check (can_execute = false)
