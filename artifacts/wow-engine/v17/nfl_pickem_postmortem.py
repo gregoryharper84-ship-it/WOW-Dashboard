@@ -244,7 +244,11 @@ def analyze_settled_pickem_week(
 
     no_minority_card = minority_pick_count == 0
     not_weekly_winner = user_wins < best_wins
-    pool_strategy_shadow_earned = no_minority_card and not_weekly_winner
+    pool_strategy_shadow_research_candidate = no_minority_card and not_weekly_winner
+    # No pre-lock opponent visibility/locking receipts enter this function.
+    # A postsettlement pool pattern can nominate investigation, never earn
+    # an authorized equity replay or production challenger by itself.
+    pool_strategy_shadow_earned = False
 
     learning_actions: list[dict[str, str]] = [
         {
@@ -258,12 +262,12 @@ def analyze_settled_pickem_week(
             "action": "DO_NOT_DOWNGRADE_STRONG_SIDE_SOLELY_BECAUSE_THE_ENTIRE_POOL_MISSED",
         },
     ]
-    if pool_strategy_shadow_earned:
+    if pool_strategy_shadow_research_candidate:
         learning_actions.append(
             {
                 "lane": "POOL_CONSTRUCTION",
-                "learning_state": LEARNING_SHADOW,
-                "action": "RUN_POOL_WIN_EQUITY_SHADOW_ON_FRAGILE_OR_TOSS_UP_ROWS",
+                "learning_state": LEARNING_WATCH,
+                "action": "REQUIRE_AUTHENTIC_PRELOCK_OPPONENT_RECEIPTS_BEFORE_EQUITY_SHADOW",
             }
         )
     elif not_weekly_winner:
@@ -301,6 +305,7 @@ def analyze_settled_pickem_week(
         "prelock_pool_equity_evidence_eligible": False,
         "events": per_event,
         "tiebreaker": tiebreaker,
+        "pool_strategy_shadow_research_candidate": pool_strategy_shadow_research_candidate,
         "pool_strategy_shadow_review_earned": pool_strategy_shadow_earned,
         "production_probability_patch_earned": False,
         "learning_actions": learning_actions,
