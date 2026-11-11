@@ -116,6 +116,9 @@ def audit_ranked_winner_retro(
     For UWCL, team picks lose on regulation draws: no two-way simplification.
     Separate signed spread diagnostics are never graded as winner predictions.
     """
+    if cohort_kind == "VERIFIED_FULL_SLATE":
+        # This helper does not reconcile official full-slate manifests.
+        raise ValueError("FULL_SLATE_SCOPE_UNSUPPORTED")
     if any(not isinstance(r, Mapping) for r in (*picks, *finals, *(ranked_cohort or []))):
         raise ValueError("RANKED_RETRO_ROW_NOT_OBJECT")
     counts = Counter(_key(p) for p in picks)
@@ -132,7 +135,7 @@ def audit_ranked_winner_retro(
                               for p in picks if isinstance(p.get("market"), Mapping)
                               and _text(p["market"].get("receipt_id")))
     cohort_ok = (cohort_verified is True and bool(_text(cohort_receipt_id))
-                 and cohort_kind in {"RANKED_SUBSET", "VERIFIED_FULL_SLATE"}
+                 and cohort_kind == "RANKED_SUBSET"
                  and bool(cohort) and all(c == 1 for c in cohort_counts.values())
                  and set(cohort_counts) == set(counts)
                  and all(v == 1 for v in counts.values()))
@@ -161,7 +164,10 @@ def audit_ranked_winner_retro(
         visible = _utc(p.get("available_to_user_at_utc"))
         if visible is None or frozen is None or visible > frozen:
             errors.append("PREGAME_VISIBILITY_INVALID")
-        if not cohort_ok or (sport, event_id) not in cohort_map or not _identity(p, cohort_map.get((sport, event_id), {})):
+        cohort_row = cohort_map.get((sport, event_id), {})
+        if (not cohort_ok or not _identity(p, cohort_row)
+            or ("selected_side" in cohort_row
+                and _text(cohort_row.get("selected_side")).upper() != chosen)):
             errors.append("RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED")
         if final is None or final_counts[(sport, event_id)] != 1:
             errors.append("OFFICIAL_FINAL_MISSING_OR_DUPLICATE")
@@ -184,7 +190,7 @@ def audit_ranked_winner_retro(
         if final is not None:
             home_score, away_score = final.get("home_score"), final.get("away_score")
             if (type(home_score) is not int or type(away_score) is not int
-                or home_score < 0 or away_score < 0):
+                or not (0 <= home_score <= 10_000) or not (0 <= away_score <= 10_000)):
                 errors.append("OFFICIAL_SCORE_INVALID")
             else:
                 scores = (home_score, away_score)
@@ -246,8 +252,10 @@ def audit_ranked_winner_retro(
     sport_rows = []
     for sport in sorted({r["sport"] for r in rows}):
         group = [r for r in rows if r["sport"] == sport]
-        sport_rows.append({"sport": sport, "graded": sum(r["selection_grade"] != "HELD" for r in group),
-                           "correct": sum(r["selection_grade"] == "WIN" for r in group)})
+        sport_rows.append({"sport": sport,
+                           "graded": sum(r["selection_grade"] != "HELD" for r in group) if complete else None,
+                           "correct": sum(r["selection_grade"] == "WIN" for r in group) if complete else None,
+                           "incomplete_cohort": not complete})
     return {
         "research_scope": cohort_kind,
         "cohort_complete": complete,
