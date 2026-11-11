@@ -268,6 +268,7 @@ def fetch_recent_espn_settlements(
 
 
 def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[str, Any] | None:
+    """Normalize a final BallDontLie game; record a tip-off only when it agrees with the game date."""
     status = str(raw.get("status") or "").lower()
     if not any(token in status for token in ("final", "post", "complete")):
         return None
@@ -295,7 +296,11 @@ def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[s
             event_at = datetime.fromisoformat(str(raw["datetime"]).replace("Z", "+00:00"))
             if event_at.utcoffset() is None or not event_at < observed:
                 return None
-            scheduled_start = event_at.astimezone(timezone.utc).isoformat()
+            # Record the instant only when its North American (ET) calendar day equals the
+            # game's date, the convention this corpus already uses for NBA/WNBA game_date.
+            # Otherwise omit it (NULL) rather than persist unverified timing evidence.
+            if event_at.astimezone(ZoneInfo("America/New_York")).date() == game_day:
+                scheduled_start = event_at.astimezone(timezone.utc).isoformat()
     except (ValueError, TypeError, OverflowError):
         return None
     payload_sha = hashlib.sha256(json.dumps(
@@ -386,6 +391,9 @@ def normalize_sportsdataverse_game(
             return None
         tipoff_text = str(raw.get("game_date_time") or "").strip()
         tipoff = datetime.fromisoformat(tipoff_text.replace("Z", "+00:00"))
+        # Admission keeps its existing ET assumption for a naive source timestamp, but an
+        # assumed-zone instant is not recorded as scheduled-start evidence.
+        tipoff_explicit_offset = tipoff.utcoffset() is not None
         if tipoff.utcoffset() is None:
             tipoff = tipoff.replace(tzinfo=ZoneInfo("America/New_York"))
         if (
@@ -436,7 +444,9 @@ def normalize_sportsdataverse_game(
         "home_score": home_score,
         "away_score": away_score,
         "home_win": home_score > away_score,
-        "scheduled_start_utc": tipoff.astimezone(timezone.utc).isoformat(),
+        "scheduled_start_utc": (
+            tipoff.astimezone(timezone.utc).isoformat() if tipoff_explicit_offset else None
+        ),
         "source_provider": "SPORTSDATAVERSE_ESPN",
         "source_endpoint": source_url,
         "source_retrieved_at": observed_text,
@@ -461,6 +471,7 @@ def _espn_competitors(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[
 
 
 def normalize_espn_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[str, Any] | None:
+    """Normalize a completed regular-season ESPN scoreboard event into a settled row."""
     status = raw.get("status") if isinstance(raw.get("status"), dict) else {}
     status_type = status.get("type") if isinstance(status.get("type"), dict) else {}
     completed = status_type.get("completed") is True
@@ -542,6 +553,26 @@ def _latest_persisted_game_date(client: Any, sport: str) -> date | None:
     return date.fromisoformat(str(rows[0]["game_date"])[:10])
 
 
+def _backfill_scheduled_start(
+    client: Any, sport: str, batch: list[dict[str, Any]], null_start_ids: set[str],
+) -> None:
+    """Fill only a NULL ``scheduled_start_utc`` on already-persisted rows.
+
+    The settled observation (scores, status, source hash, timestamps) is never rewritten. The
+    update is also guarded in the database (``is null``) so a concurrent non-NULL value wins.
+    """
+    for row in batch:
+        start = row.get("scheduled_start_utc")
+        if row["game_id"] in null_start_ids and start:
+            (
+                client.table(TABLES[sport])
+                .update({"scheduled_start_utc": start})
+                .eq("game_id", row["game_id"])
+                .is_("scheduled_start_utc", "null")
+                .execute()
+            )
+
+
 def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
     """Count genuinely new IDs; refuse duplicates and uncertain partial writes."""
     all_ids = [str(row.get("game_id") or "") for row in rows]
@@ -557,13 +588,14 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
             batch = rows[offset:offset + 100]
             ids = all_ids[offset:offset + 100]
             result = (
-                client.table(TABLES[sport]).select("game_id")
+                client.table(TABLES[sport]).select("game_id,scheduled_start_utc")
                 .in_("game_id", ids).execute()
             )
             existing_rows = getattr(result, "data", None)
             if not isinstance(existing_rows, list):
                 raise BasketballHydrationError("BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED")
             existing: set[str] = set()
+            null_start_ids: set[str] = set()
             for existing_row in existing_rows:
                 # A boundary that drops or malforms an existing row can make an
                 # already-present ID look absent, which is the false-new count
@@ -577,12 +609,18 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
                         "BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED"
                     )
                 existing.add(existing_id)
+                # Only an explicit NULL is backfillable; an absent key is unknown, not NULL.
+                if "scheduled_start_utc" in existing_row and existing_row["scheduled_start_utc"] is None:
+                    null_start_ids.add(existing_id)
             canonical_nba = sport == "NBA" and all(
                 row.get("source_provider") == "SPORTSDATAVERSE_ESPN" for row in batch
             )
             if canonical_nba:
                 # A later canonical snapshot may fill missing IDs, but never
                 # rewrite an earlier immutable settled observation/correction.
+                if null_start_ids:
+                    write_attempted = True
+                    _backfill_scheduled_start(client, sport, batch, null_start_ids)
                 batch = [row for row in batch if row["game_id"] not in existing]
                 if not batch:
                     continue
@@ -609,7 +647,16 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
                     raise BasketballHydrationError("BASKETBALL_INSERTED_GAME_IDS_UNVERIFIED")
                 new_ids.update(confirmed)
             else:
-                client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
+                # Keep each upsert's column set uniform and never overwrite a recorded
+                # scheduled start with NULL: rows without one omit the column entirely.
+                with_start = [r for r in batch if r.get("scheduled_start_utc")]
+                without_start = [
+                    {k: v for k, v in r.items() if k != "scheduled_start_utc"}
+                    for r in batch if not r.get("scheduled_start_utc")
+                ]
+                for group in (with_start, without_start):
+                    if group:
+                        client.table(TABLES[sport]).upsert(group, on_conflict="game_id").execute()
                 new_ids.update(set(ids) - existing)
     except Exception as exc:
         if write_attempted:
