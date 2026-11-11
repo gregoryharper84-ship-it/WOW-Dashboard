@@ -25,6 +25,8 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # check runs land on the protected-main SHA they did not produce.
 OPTIONAL_MAIN_SCOPED_JOBS: dict[str, tuple[str, ...]] = {
     "wow-v17-scout-persist-resume.yml": ("resume-persistence",),
+    "wow-v17-lean-production-readback.yml": ("production-readback",),
+    "wow-v17-main-verification-reconciler.yml": ("reconcile",),
     "wow-v17-engineering-auto-repair.yml": (
         "discover",
         "adoption-readonly-preflight",
