@@ -23,8 +23,8 @@ Also, the old `_event_matches` accepted any same-team ESPN event even when an ex
 
 Corrective behavior:
 - Reconstruct the Eastern scoreboard partition for a UTC kickoff only when the original provider dates are missing. Preserve the original source date list when present; do not replace it.
-- Exact ESPN-prefixed IDs remain exact and must agree with any provided home/away and start context.
-- Non-ESPN external IDs may match by teams only when both identities and a kickoff within 30 minutes are present. If multiple different event IDs match, fail with `ESPN_EVENT_RELOOKUP_AMBIGUOUS` (HTTP 409), not an arbitrary first match.
+- Exact ESPN-prefixed IDs remain exact and must agree with each provided home, away, and kickoff field (including partial contexts). Any supplied kickoff must carry an explicit timezone; a naive timestamp is not imputed to UTC.
+- Non-ESPN external IDs may match by teams only when both identities and a timezone-aware kickoff within 30 minutes are present. If multiple different event IDs match, fail with `ESPN_EVENT_RELOOKUP_AMBIGUOUS` (HTTP 409), not an arbitrary first match.
 - A missing or contradictory event remains `SECONDARY_SOURCE_EVENT_NOT_FOUND`; do not relabel it as `MODEL_UNAVAILABLE`.
 - A missing ESPN `odds.lastUpdated` remains an unknown quote timestamp, never backfilled from event kickoff. This permits downstream freshness checks to return `UNAVAILABLE`, rather than misclassifying a future kickoff timestamp as a fresh sportsbook quote.
 - Preserve existing market research-only tagging, `prediction_authority=false`, `can_execute=false`, and independent official-ID crosswalks.
