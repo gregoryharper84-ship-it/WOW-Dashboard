@@ -68,8 +68,6 @@ def reconcile_player_games(
     for field in CROSSWALK_COLUMNS:
         cross[field] = cross[field].astype(str).str.strip()
     cross = cross[(cross.gsis_id != "") & (cross.pfr_id != "")].drop_duplicates()
-    if (cross.duplicated(["pfr_id"]).any() or cross.duplicated(["gsis_id"]).any()):
-        raise ValueError("NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT")
 
     snap = snap_counts.loc[
         snap_counts.game_type.astype(str).str.upper().eq("REG")
@@ -96,6 +94,13 @@ def reconcile_player_games(
         raise ValueError("NFL_PROP_PARTICIPATION_SNAP_DUPLICATE")
     snap["season"] = snap["season"].astype(int)
     snap["week"] = snap["week"].astype(int)
+
+    # The 2026 player dictionary includes PFR aliases of older namesakes.
+    # An unrelated ambiguity must not poison this predeclared participant cohort.
+    # Fail closed for every conflicting identity that actually appears in snaps.
+    cross = cross.loc[cross["pfr_id"].isin(snap["pfr_player_id"])].copy()
+    if (cross.duplicated(["pfr_id"]).any() or cross.duplicated(["gsis_id"]).any()):
+        raise ValueError("NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT")
 
     mapped = snap.merge(
         cross, how="left", left_on="pfr_player_id", right_on="pfr_id",
