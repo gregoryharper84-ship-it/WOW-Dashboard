@@ -73,3 +73,13 @@
 | stats_player_week_2025.csv | 8656387 | e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2 |
 
 **Required next execution (same task, not a new queue):** Fetch the five assets using the already authorized free public GitHub release-download path in a network-enabled engineering workspace; independently recompute SHA-256 from the *same bytes used for parsing* and compare against the table; explicitly reject any hash mismatch or changed release version before fitting. Report exact role/player-week/column coverage, licensing attribution, and observed source hashes. The current chat's GitHub reader returned 404 for the release-asset binary download despite access to release JSON metadata; no source CSV was transferred or fitted here. This is a source-access limitation, not a model scoreability improvement.
+
+## Pending source-identity adjudication and new independent review (2026-11-11)
+
+CodeRabbit independently reports **18 REG 2021 rows lacking player identities** in its pinned-source byte inspection. A separate indexed community schema describes some nflverse player-week records as unattributed team-credit rows; this supports a possible explanation, **not** adjudication of the 18 exact rows or their statistical fields. Current source loader conditionally quarantines only records with no name or eligible route role, verified all-zero modeled count fields, and a valid season/week/game key. Each quarantined row has its original filename and source-line key (season asset + source_line), count/type evidence, and per-row audit digest. A nonzero modeled count, eligible position, named player, or missing game identity causes an explicit hold. Quarantine does not authorize data licensing, candidate fitness, participant identity, calibrator or production publication.
+
+- [ ] Independently fetch and verify actual pinned CSVs in the network-enabled existing engineering runner, then review *all* 18 row lineages. Prove eligible player events were not excluded, even when their modeled counts are zero.
+- [ ] Establish whether any other 2022–2025 record has missing player identity and whether metadata/columns differ.
+- [ ] Run local focused suite at latest commit and hosted exact-head CI, inspect new CodeRabbit/TestDriver findings.
+- [ ] Require independent C-class semantic SIRT acceptance on final head and governed model evaluation/registration path; retain can_execute=false.
+- [ ] Observe main and Render live SHA parity only after actual authorized merges; never count this research PR as deploy/certification.
