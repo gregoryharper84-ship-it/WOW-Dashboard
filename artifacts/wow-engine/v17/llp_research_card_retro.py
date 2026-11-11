@@ -146,6 +146,7 @@ def audit_research_card(
     primary_keys = {_key(r) for r in source_picks if _name(r.get("selection_role")).upper() == "PREFERRED"}
     preferred_sides = {_key(r): _name(r.get("selected_side")).casefold() for r in source_picks if _name(r.get("selection_role")).upper() == "PREFERRED"}
     manifest_keys: set[tuple[str, str]] = set()
+    duplicate_manifest_keys: set[tuple[str, str]] = set()
     manifest_lookup: dict[tuple[str, str], Mapping[str, Any]] = {}
     if official_slate is None or official_slate_verified is not True or not _name(official_slate_receipt_id):
         board_blockers.append("OFFICIAL_SLATE_NOT_VERIFIED")
@@ -155,7 +156,9 @@ def audit_research_card(
                 board_blockers.append("OFFICIAL_SLATE_ROW_INVALID")
                 continue
             key = _key(item)
-            if key in manifest_keys or key[0] not in SPORTS or not key[1]:
+            if key in manifest_keys:
+                duplicate_manifest_keys.add(key)
+            if key in duplicate_manifest_keys or key[0] not in SPORTS or not key[1]:
                 board_blockers.append("OFFICIAL_SLATE_DUPLICATE_OR_INVALID")
             manifest_keys.add(key)
             manifest_lookup[key] = item
@@ -191,6 +194,11 @@ def audit_research_card(
             blocked.append("DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT_ID")
             board_blockers.append("DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT_ID")
         blocked.extend(_verify_final(forecast, final))
+        if (sport, event_id) in duplicate_manifest_keys:
+            # A duplicated official ID is never gradeable even if the last
+            # row happens to match the selection. This removes input-order
+            # dependence from individual picks as well as headline totals.
+            blocked.append("OFFICIAL_SLATE_DUPLICATE_OR_INVALID")
         if manifest_lookup and (sport, event_id) in manifest_lookup and not _same_event(forecast, manifest_lookup[(sport, event_id)]):
             blocked.append("OFFICIAL_SLATE_IDENTITY_CONFLICT")
             board_blockers.append("OFFICIAL_SLATE_IDENTITY_CONFLICT")
