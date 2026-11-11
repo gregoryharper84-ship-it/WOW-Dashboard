@@ -65,12 +65,25 @@ class _ReadOnlyQuery:
 
 class _ReadOnlyDB:
     def __init__(self, *, graded=95, predictions=()):
+        # Historical grades alone are not the grader's current cohort. Supply
+        # immutable pregame predictions and current non-tie outcomes as well.
+        historic_ids = [f"graded-{i:04d}" for i in range(graded)]
+        history = [
+            _prediction(event_id, kickoff="2026-11-01T18:00:00+00:00",
+                        created="2026-11-01T16:00:00+00:00")
+            for event_id in historic_ids
+        ]
         self.rows = {
             "wow_nfl_forward_shadow_grades": [
-                {"grade_id": f"grade-{i:04d}", "official_event_id": f"graded-{i:04d}"}
-                for i in range(graded)
+                {"grade_id": f"grade-{i:04d}", "official_event_id": event_id}
+                for i, event_id in enumerate(historic_ids)
             ],
-            "wow_nfl_event_predictions": list(predictions),
+            "wow_nfl_event_predictions": history + list(predictions),
+            "wow_nfl_training_games": [
+                {"game_id": event_id, "home_score": 20, "away_score": 13,
+                 "home_win": True, "tie": False}
+                for event_id in historic_ids
+            ],
         }
         self.orders = []
 
@@ -238,6 +251,10 @@ def test_latest_valid_pregame_row_wins_and_graded_events_are_not_double_counted(
     db.rows["wow_nfl_forward_shadow_grades"].append(
         {"grade_id": "grade-already", "official_event_id": "already"}
     )
+    db.rows["wow_nfl_training_games"].append(
+        {"game_id": "already", "home_score": 20, "away_score": 13,
+         "home_win": True, "tie": False}
+    )
 
     report = project_forward_cohort(db, slate_date=SLATE, min_forward=100)
 
@@ -267,6 +284,39 @@ def test_expected_slate_larger_than_ledger_events_is_flagged_fail_closed():
     assert "NFL_FORWARD_SLATE_GAMES_UNOBSERVED:2" in report["blockers"]
     assert report["projected_graded_n"] == 105
     # A projection never certifies even when the count is projected to pass.
+    assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+
+
+def test_observed_slate_exceeds_expected_is_a_coverage_hold():
+    db = _ReadOnlyDB(graded=99, predictions=[_prediction("slate-1"), _prediction("slate-2")])
+    report = project_forward_cohort(db, slate_date=SLATE, expected_slate_games=1)
+
+    assert report["observed_slate_games"] == 2
+    assert report["slate_coverage_verified"] is False
+    assert "NFL_FORWARD_SLATE_COUNT_MISMATCH:2_GT_1" in report["blockers"]
+    assert report["status"] == "PROJECTED_TO_REACH_MINIMUM_COVERAGE_UNVERIFIED"
+    assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+
+
+def test_corrected_tie_is_not_still_counted_from_stale_persisted_grade():
+    db = _ReadOnlyDB(graded=99, predictions=[_prediction("slate-tie")])
+    # A previously counted outcome was corrected to a tie; persisted grade
+    # rows are immutable audit history, but the grader excludes current ties.
+    db.rows["wow_nfl_training_games"][0]["tie"] = True
+    db.rows["wow_nfl_training_games"].append(
+        {"game_id": "slate-tie", "home_score": 20, "away_score": 20,
+         "home_win": None, "tie": True}
+    )
+    report = project_forward_cohort(db, slate_date=SLATE, expected_slate_games=1)
+
+    assert report["graded_n"] == 98
+    assert report["persisted_grade_n"] == 99
+    assert report["current_cohort_reconciled_with_persisted_grades"] is False
+    assert report["eligible_pregame_n"] == 0
+    assert report["cannot_grade_n"] == 1
+    assert report["slate_events"][0]["cannot_grade_reason"] == "SETTLED_TIE_EXCLUDED"
+    assert report["projected_graded_n"] == 98
+    assert report["status"] == "HOLD_PERSISTED_FORWARD_GRADE_DRIFT"
     assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
 
 
@@ -493,3 +543,7 @@ def test_daily_workflow_reports_slate_readiness_before_kickoff():
     assert "HOLD_COHORT_READINESS_UNOBSERVED" in workflow
     assert "except (urllib.error.URLError, TimeoutError, ValueError, KeyError)" in workflow
     assert "slate_coverage_verified" in workflow
+    # Fractional workflow_dispatch numbers must enter the existing warning/HOLD
+    # handler instead of raising ValueError before the try/except.
+    assert workflow.index("          try:") < workflow.index('body["expected_slate_games"] = int(expected)')
+    assert "not expected.isascii() or not expected.isdecimal()" in workflow
