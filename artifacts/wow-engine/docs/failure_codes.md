@@ -695,3 +695,4 @@ These are **offline research-builder only** errors from `scripts/train_nfl_missi
 | `NFL_PROP_PARTICIPATION_SNAP_DUPLICATE` | IDENTITY | Repeated participant-game snap row; do not count or silently dedupe without source resolution. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_STATS_DUPLICATE` | IDENTITY | Repeated player/week/game weekly stats identity; reject before gap reconciliation. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_SNAP_SEASON_MISMATCH` | INPUT | Named season snap file contains unexpected season identity; reject before cohort comparison. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_SNAP_EMPTY` | INPUT | Pinned season or combined REG eligible offensive-snap participant cohort is empty; reject rather than falsely report 100% matching. | No |
