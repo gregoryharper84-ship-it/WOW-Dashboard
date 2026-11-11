@@ -79,7 +79,7 @@ def read_verified_pbp_presence(
                         or regular["game_id"].astype(str).str.strip().eq("").any()):
                     raise ValueError(f"NFL_PROP_PBP_EVENT_SCHEMA_INVALID:{season}:game_id")
                 week = pd.to_numeric(regular["week"], errors="coerce")
-                if (week.isna().any() or ~week.between(1, 18).all()
+                if (week.isna().any() or not week.between(1, 18).all()
                         or (week % 1 != 0).any()):
                     raise ValueError(f"NFL_PROP_PBP_EVENT_SCHEMA_INVALID:{season}:week")
                 games.update(regular["game_id"].astype(str).str.strip())
