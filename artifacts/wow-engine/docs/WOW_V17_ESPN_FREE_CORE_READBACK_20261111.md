@@ -26,6 +26,7 @@ Corrective behavior:
 - Exact ESPN-prefixed IDs remain exact and must agree with any provided home/away and start context.
 - Non-ESPN external IDs may match by teams only when both identities and a kickoff within 30 minutes are present. If multiple different event IDs match, fail with `ESPN_EVENT_RELOOKUP_AMBIGUOUS` (HTTP 409), not an arbitrary first match.
 - A missing or contradictory event remains `SECONDARY_SOURCE_EVENT_NOT_FOUND`; do not relabel it as `MODEL_UNAVAILABLE`.
+- A missing ESPN `odds.lastUpdated` remains an unknown quote timestamp, never backfilled from event kickoff. This permits downstream freshness checks to return `UNAVAILABLE`, rather than misclassifying a future kickoff timestamp as a fresh sportsbook quote.
 - Preserve existing market research-only tagging, `prediction_authority=false`, `can_execute=false`, and independent official-ID crosswalks.
 
 ## Regression and acceptance targets
@@ -34,7 +35,7 @@ Run in existing offline test environment:
 
 ```sh
 cd artifacts/wow-engine
-python -m pytest -q tests/test_v17_823_bounded_espn_provider_acquisition.py test_v17_scout_secondary_window.py
+python -m pytest -q tests/test_v17_823_bounded_espn_provider_acquisition.py tests/test_v17_scout_secondary_source.py test_v17_scout_secondary_window.py
 ```
 
 Tests cover all four live-observed sport keys with simulated ESPN day partition, exact-ID mismatch, wrong teams/kickoff, duplicate same-team event ambiguity, and valid NFL empty-slate response. Fixtures are synthetic approximations of the observed JSON structure; no ESPN raw historical corpus is stored.
