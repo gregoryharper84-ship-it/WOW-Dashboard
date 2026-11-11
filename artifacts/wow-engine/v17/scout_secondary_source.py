@@ -352,16 +352,43 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
     }
 
 
+# Require tight point-in-time matching when bridging an outside provider ID to
+# ESPN. Same-team repeat fixtures must never silently acquire another game's odds.
+_EVENT_RELOOKUP_TOLERANCE_SECONDS = 30 * 60
+
+
 def _event_matches(event: dict[str, Any], context: dict[str, Any] | None, event_id: str) -> bool:
-    if str(event.get("id")) == event_id.removeprefix("espn-"):
-        return True
-    if not context:
+    requested = str(event_id or "").strip()
+    event_identity = str(event.get("id") or "").strip()
+    exact_espn_id = requested.startswith("espn-") and event_identity == requested[5:]
+    # When the caller knows the ESPN ID, names cannot override a conflicting ID.
+    if requested.startswith("espn-") and not exact_espn_id:
         return False
+    if not context:
+        return exact_espn_id
+
     home, away = _competitors(event)
-    return (
-        _norm(_team_name(home)) == _norm(context.get("home_team"))
-        and _norm(_team_name(away)) == _norm(context.get("away_team"))
-    )
+    expected_home = _norm(context.get("home_team"))
+    expected_away = _norm(context.get("away_team"))
+    if expected_home and expected_away:
+        if _norm(_team_name(home)) != expected_home or _norm(_team_name(away)) != expected_away:
+            return False
+    elif not exact_espn_id:
+        return False
+
+    expected_start_raw = context.get("commence_time")
+    if expected_start_raw:
+        expected_start = _parse_utc(expected_start_raw)
+        observed_start = _parse_utc(event.get("date"))
+        if (expected_start is None or observed_start is None
+                or abs((observed_start - expected_start).total_seconds())
+                > _EVENT_RELOOKUP_TOLERANCE_SECONDS):
+            return False
+    elif not exact_espn_id:
+        return False
+    # Outside-provider IDs can match only by both teams and a near-identical
+    # kickoff; these matches are additionally required to be unique below.
+    return exact_espn_id or bool(expected_home and expected_away and expected_start_raw)
 
 
 def _moneyline(value: Any) -> int | float | None:
@@ -435,7 +462,10 @@ def _find_event(
             if value and value not in lookup_dates:
                 lookup_dates.append(value)
         if not lookup_dates and context.get("commence_time"):
-            lookup_dates.append(_date_key(str(context.get("commence_time"))))
+            # ESPN partitions US evening fixtures by the Eastern calendar day,
+            # even when their actual UTC kickoff is after midnight next day.
+            # Example: 2026-11-12T00:00Z belongs to ESPN dates=20261111.
+            lookup_dates.append(_scoreboard_date_key(str(context.get("commence_time"))))
 
     if not lookup_dates:
         board = _scoreboard(sport_key, {})
@@ -453,11 +483,16 @@ def _find_event(
                 return board
             boards.append(board)
 
+    candidates: dict[str, dict[str, Any]] = {}
     for board in boards:
         events = board.data.get("events") if isinstance(board.data, dict) else []
         for event in events or []:
             if isinstance(event, dict) and _event_matches(event, context, event_id):
-                return SecondaryResult(True, event, 200)
+                candidates[str(event.get("id"))] = event
+    if len(candidates) > 1:
+        return SecondaryResult(False, status=409, code="ESPN_EVENT_RELOOKUP_AMBIGUOUS")
+    if candidates:
+        return SecondaryResult(True, next(iter(candidates.values())), 200)
     return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_NOT_FOUND")
 
 
