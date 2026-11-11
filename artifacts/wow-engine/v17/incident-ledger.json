@@ -95,7 +95,7 @@
         "FIX-2026-09-14-001"
       ],
       "created_utc": "2026-09-14T00:00:00Z",
-      "updated_utc": "2026-11-11T00:33:00Z",
+      "updated_utc": "2026-11-11T01:34:00Z",
       "engineering_fixes": {
         "FIX-2026-09-14-001": {
           "title": "Daily response contract, terminal reducer, and lane/receipt semantics",
@@ -103,18 +103,18 @@
           "state": "DEPLOYED_PENDING_VERIFY",
           "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-14-001__daily-response-contract-and-terminal-reducer.md",
           "created_utc": "2026-09-14T00:00:00Z",
-          "updated_utc": "2026-11-11T00:33:00Z",
+          "updated_utc": "2026-11-11T01:34:00Z",
           "merge_commit": "171673b24fda17d1c87056e7379457dacc718909",
           "production_deploy": {
             "service": "wow-governed-probability-engine",
             "observed_live_sha": "6998b62af5df99cafd87995b9aa7b14fdd0d8110",
             "safety_deploy_sha": "98a56157a5916c6d25ee1c51bab3d183448e23c8",
-            "verified_utc": "2026-11-11T00:33:00Z",
+            "verified_utc": "2026-11-11T01:34:00Z",
             "evidence": "artifacts/wow-engine/v17/engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md",
             "post_safety_sync_daily_serving_sha_at_request": "UNVERIFIED",
-            "cron_0_23_status": "SCHEDULE_DELAYED"
+            "cron_0_23_status": "SCHEDULE_NOT_OBSERVED"
           },
-          "note": "PRIMARY/CRITICAL + 1IP + infrastructure_blocked independently verified unpaid. ZERO_ROW FIXED_VERIFIED_IN_PRODUCTION via #2585 canary 42910074320 / v17-daily-ebc1ba5b (GREEN soft-hold). SCORING_ATTEMPTED = BACKEND_PAIR_OBSERVED_HOST_PENDING (host action_invocation_attempted still pending). Post-safety sync MONEYLINE Daily run_ids observed (42875617354 / v17-daily-73c75380\u2026 at 18:28Z; 42911461928 / v17-daily-80c514c0\u2026 at 22:06Z) but request-time serving SHA UNVERIFIED. At 2026-11-11T00:33Z unpaid delayed 0 23 window: SCHEDULE_DELAYED (newest schedule still 22:06Z run 42911461928); live tip still 6998b62af\u2026 with safety ancestor 98a56157\u2026. No paid dispatch. NFL forward still 94/100."
+          "note": "PRIMARY/CRITICAL + 1IP + infrastructure_blocked independently verified unpaid. ZERO_ROW FIXED_VERIFIED_IN_PRODUCTION via #2585 canary 42910074320 / v17-daily-ebc1ba5b (GREEN soft-hold). SCORING_ATTEMPTED = BACKEND_PAIR_OBSERVED_HOST_PENDING (host action_invocation_attempted still pending). Post-safety sync MONEYLINE Daily run_ids observed (42875617354 / v17-daily-73c75380\u2026 at 18:28Z; 42911461928 / v17-daily-80c514c0\u2026 at 22:06Z) but request-time serving SHA UNVERIFIED. Final unpaid 0 23 window 2026-11-11T01:34Z: SCHEDULE_NOT_OBSERVED (newest schedule still 22:06Z run 42911461928); live tip still 6998b62af\u2026 with safety ancestor 98a56157\u2026. Stop further 0 23 watches; no paid dispatch."
         }
       }
     },
@@ -316,5 +316,5 @@
       }
     }
   ],
-  "updated_utc": "2026-11-11T00:33:00Z"
+  "updated_utc": "2026-11-11T01:34:00Z"
 }
