@@ -43,3 +43,14 @@ Tests cover all four live-observed sport keys with simulated ESPN day partition,
 **Required before production COMPLETE:** exact-head CI + independent SIRT and QA/Release checks as applicable; current deployed SHA equality; authenticated backend compact ESPN discovery / sports-specific identity/hydration receipts; official league identity and pregame source freshness; source-specific allowed-use review; numerical specialist and calibration acceptance separately. A health endpoint or working ESPN URL never certifies model capability.
 
 **Status:** SOURCE_HTTP_REACHABILITY_OBSERVED; SOURCE_DATA_BYTES_NOT_ARCHIVED; ENGINEERING_REPAIR_PR_PENDING_REVIEW; MODEL_PROBABILITY_UNCHANGED; can_execute=false.
+
+
+## Additional full-slate discovery audit — 2026-11-14
+
+A fresh external ESPN `football/college-football/scoreboard?dates=20261114&limit=1000` probe returned HTTP 200 with exactly **25** events and no `total`/`count` field. `groups=80&limit=1000` returned the same 25 event IDs; `offset=25` and `page=2` yielded the same first/last IDs, not new pages. This does **not** establish either a real server-side 25-row hard cap or complete FBS coverage. An actual all-school schedule/authoritative event union is required to prove the full slate.
+
+The existing ESPN source now carries `_wow_provider_completeness_unverified=true` when an NCAAF daily response contains exactly 25 events, has no explicit total, and was requested with a limit above 25. This is a **conservative evidence flag**, not a claimed numeric source quota. Full-slate `secondary_for_request` holds with the existing typed `ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED`; the authenticated read-only compact diagnostics preserve all 25 source rows, set `status=DISCOVERY_COMPLETENESS_UNVERIFIED`, and `coverage_complete=false`. Verified short/empty boards, explicit total counts, and all other sports retain their former behavior. The heuristic must be challenged against official NCAAF fixtures and future ESPN schema changes; it cannot substitute for verified completeness.
+
+The Sunday `20261115` NFL endpoint also returned HTTP 200 with 12 scheduled events. This provided a non-empty NFL event-shape check in addition to the verified empty Wednesday response.
+
+Regression additions: `tests/test_v17_823_bounded_espn_provider_acquisition.py::test_ncaaf_twenty_five_without_total_cannot_certify_complete_slate` and `::test_ncaaf_small_or_explicit_total_board_not_marked_cap_25`. Do not infer source permits/rights from endpoint reachability and do not promote these research events to an official schedule or prediction.
