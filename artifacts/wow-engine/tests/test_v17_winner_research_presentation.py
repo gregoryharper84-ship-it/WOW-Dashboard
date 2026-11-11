@@ -280,6 +280,112 @@ class WinnerResearchPresentationTests(unittest.TestCase):
             watch = pick("NHL-101", "HOME", reason="goalie")
             build(watches=[watch, watch])
 
+    def test_same_snapshot_distribution_cannot_contradict_itself(self):
+        """One no-vig two-way market cannot imply both teams have a 90% chance."""
+        bad = picks()
+        bad[0].update(
+            probability_source="MARKET_NO_VIG", display_probability=.90,
+            numeric_source_context=numeric_context(),
+        )
+        other = pick(
+            "NHL-101", "HOME", reason="Independent scenario research",
+            probability_source="MARKET_NO_VIG", display_probability=.90,
+            numeric_source_context=numeric_context(selection="HOME"),
+        )
+        with self.assertRaisesRegex(ValueError, "NUMERIC_SNAPSHOT_DISTRIBUTION_CONFLICT"):
+            build(primaries=bad, watches=[other])
+
+        good = copy.deepcopy(bad)
+        good[0]["display_probability"] = .60
+        other["display_probability"] = .40
+        card = build(primaries=good, watches=[other])
+        self.assertEqual(card["rows"][0]["primary"]["selection"], "AWAY")
+        self.assertEqual(card["rows"][0]["upset_watch"][0]["selection"], "HOME")
+        self.assertFalse(card["can_execute"])
+
+        # Different independently labeled snapshots may have differing views,
+        # although their real-world authenticity is NOT verified here.
+        other["numeric_source_context"]["source_snapshot_id"] = "other-quote"
+        other["display_probability"] = .90
+        build(primaries=bad, watches=[other])
+
+        # Full two-way distributions must normalize, not merely sum below one.
+        other["numeric_source_context"]["source_snapshot_id"] = "candidate-snapshot-001"
+        other["display_probability"] = .20
+        with self.assertRaisesRegex(ValueError, "NUMERIC_SNAPSHOT_DISTRIBUTION_CONFLICT"):
+            build(primaries=good, watches=[other])
+
+    def test_shared_snapshot_time_must_match(self):
+        """Reused quote identity at two different times is a conflicting record."""
+        primary = picks()
+        primary[0].update(
+            probability_source="MARKET_NO_VIG", display_probability=.60,
+            numeric_source_context=numeric_context(),
+        )
+        watch = pick(
+            "NHL-101", "HOME", reason="Underdog path",
+            probability_source="MARKET_NO_VIG", display_probability=.40,
+            observed_at="2026-11-11T17:01:00Z",
+            numeric_source_context=numeric_context(
+                selection="HOME", observed_at="2026-11-11T17:01:00Z"),
+        )
+        with self.assertRaisesRegex(ValueError, "NUMERIC_SNAPSHOT_TIME_CONFLICT"):
+            build(primaries=primary, watches=[watch])
+
+    def test_canonical_event_fields_preserved_for_numeric_evidence(self):
+        """Caller whitespace does not trigger a KeyError or rewrite source data."""
+        source_events = slate()
+        source_events[0]["sport"] = " NHL "
+        source_events[0]["settlement_basis"] = " FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT "
+        original_events = copy.deepcopy(source_events)
+        primary = picks()
+        primary[0].update(
+            probability_source="MARKET_NO_VIG", display_probability=.60,
+            numeric_source_context=numeric_context(),
+        )
+        alternative = pick(
+            "NHL-101", "HOME", reason="Alternative goalie scenario",
+            probability_source="MARKET_NO_VIG", display_probability=.40,
+            numeric_source_context=numeric_context(selection="HOME"),
+        )
+        card = build(events=source_events, primaries=primary, watches=[alternative])
+        self.assertEqual(card["rows"][0]["sport"], "NHL")
+        self.assertEqual(card["rows"][0]["settlement_basis"],
+                         "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT")
+        self.assertEqual(source_events, original_events)
+
+    def test_three_way_partial_and_complete_snapshot_constraints(self):
+        """Soccer 1X2 presentation can omit a choice, not a market outcome."""
+        primary = picks()
+        primary[1].update(
+            probability_source="MARKET_NO_VIG", display_probability=.4,
+            numeric_source_context=numeric_context(
+                event_id="SOCCER-102", selection="DRAW",
+                settlement_basis="REGULATION", market_type="REGULATION_1X2",
+                market_outcomes=["HOME", "DRAW", "AWAY"], source_snapshot_id="soccer-1"),
+        )
+        watch_home = pick(
+            "SOCCER-102", "HOME", reason="Set-piece upset",
+            probability_source="MARKET_NO_VIG", display_probability=.35,
+            numeric_source_context=numeric_context(
+                event_id="SOCCER-102", selection="HOME",
+                settlement_basis="REGULATION", market_type="REGULATION_1X2",
+                market_outcomes=["HOME", "DRAW", "AWAY"], source_snapshot_id="soccer-1"),
+        )
+        watch_away = pick(
+            "SOCCER-102", "AWAY", reason="Counterattack upset",
+            probability_source="MARKET_NO_VIG", display_probability=.25,
+            numeric_source_context=numeric_context(
+                event_id="SOCCER-102", selection="AWAY",
+                settlement_basis="REGULATION", market_type="REGULATION_1X2",
+                market_outcomes=["HOME", "DRAW", "AWAY"], source_snapshot_id="soccer-1"),
+        )
+        card = build(primaries=primary, watches=[watch_home, watch_away])
+        self.assertEqual(len(card["rows"][1]["upset_watch"]), 2)
+        watch_away["display_probability"] = .40
+        with self.assertRaisesRegex(ValueError, "NUMERIC_SNAPSHOT_DISTRIBUTION_CONFLICT"):
+            build(primaries=primary, watches=[watch_home, watch_away])
+
     def test_source_only_is_never_fitted_probability(self):
         with self.assertRaisesRegex(ValueError, "NUMERIC_PROBABILITY_REQUIRED"):
             bad = picks()
