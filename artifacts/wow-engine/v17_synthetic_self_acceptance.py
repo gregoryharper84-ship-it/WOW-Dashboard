@@ -503,3 +503,25 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         source_backed["status"], source_backed["lane"], source_backed["blocker"],
     )
     return result
+
+
+
+def log_v17_synthetic_startup_readback(logger, result: dict[str, Any]) -> None:
+    """Log the startup boundary with separate diagnostic and scoring authority.
+
+    Startup must never turn synthetic-negative-probe success into an inference
+    that a source-backed, fitted numerical scoring run has been accepted.
+    This deliberately excludes probability values and other receipt secrets.
+    """
+    source_backed = result.get("source_backed_pregame_scoring") or {}
+    logger.warning(
+        "WOW_V17_SYNTHETIC_STARTUP_READBACK status=%s status_scope=%s "
+        "scoring_acceptance_proven=%s source_backed_status=%s "
+        "source_backed_lane=%s source_backed_blocker=%s can_execute=false",
+        result.get("status", "FAILED"),
+        result.get("status_scope") or "DIAGNOSTIC_NOT_COMPLETED",
+        result.get("scoring_acceptance_proven") is True,
+        source_backed.get("status") or "NOT_ATTEMPTED",
+        source_backed.get("lane") or "SOURCE_BACKED_PREGAME_SCORING",
+        source_backed.get("blocker") or "NO_SOURCE_BACKED_SCORING_PROOF",
+    )
