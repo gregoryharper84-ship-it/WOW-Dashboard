@@ -624,6 +624,12 @@ def run_basketball_model_maintenance(
                 )
                 blocked["independent_verification"] = verification["payload"]
                 blocked["training_replay"] = replay
+                # A verification hold must not erase real hydration/source
+                # status; keep each failure classified in its own lane.
+                blocked["hydration"] = hydration
+                blocked["hydration_status"] = _fresh_acquisition_status(
+                    hydration, hydration_blocker,
+                )
                 results.append(blocked)
                 continue
             row: dict[str, Any] = {
