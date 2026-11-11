@@ -911,8 +911,8 @@ def test_promotion_service_blocks_missing_holdout_metrics(selected_metrics):
     assert stored_replays[0]["receipt_sha256"] == result["replay"]["receipt_sha256"]
 
 
-def test_service_rejects_unsigned_policy_and_authorization():
-    """Verify unsigned policy and authorization requests are rejected."""
+def test_service_rejects_unsigned_policy():
+    """Verify an unsigned policy is rejected."""
     db = _FakeDB()
     request = FittedPromotionRequest(
         artifact=_artifact(),
@@ -926,6 +926,31 @@ def test_service_rejects_unsigned_policy_and_authorization():
     assert result["status"] == "FITTED_MODEL_CERTIFICATION_CONTRACT_FAILED"
     assert result["code"] == "PROMOTION_TRUST_ROOT_INVALID"
     assert "PROMOTION_POLICY_SIGNATURE_INVALID" in result["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_service_rejects_unsigned_authorization():
+    """Verify a signed policy cannot mask an unsigned authorization."""
+    db = _FakeDB()
+    artifact = _artifact()
+    policy = _signed_policy()
+    receipt = replay_fitted_artifact(artifact)
+    authorization = _authorization(receipt, policy, artifact)
+    assert authorization.decision == "APPROVE"
+    assert authorization.evidence_sha256 == receipt["receipt_sha256"]
+    request = FittedPromotionRequest(
+        artifact=artifact,
+        policy=policy.as_dict(),
+        authorization=authorization.as_dict(),
+    )
+    result = run_fitted_model_promotion(
+        request,
+        db=db,
+        approval_key=TEST_APPROVAL_KEY,
+    )
+    assert result["status"] == "FITTED_MODEL_CERTIFICATION_CONTRACT_FAILED"
+    assert result["code"] == "PROMOTION_TRUST_ROOT_INVALID"
+    assert "PROMOTION_AUTHORIZATION_SIGNATURE_INVALID" in result["blockers"]
     assert result["can_execute"] is False
 
 
