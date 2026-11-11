@@ -57,7 +57,8 @@ current state.
 
 ### G1 — Forward cohort reaches 100
 
-- **Requires:** 5 more qualifying settled games.
+- **Requires:** enough additional qualifying settled games to bring the live
+  `graded_n` to 100 (last recorded observation: 5 short).
 - **Enforced by:** `v17/nfl_forward_shadow.py` (`MIN_FORWARD_GRADED`,
   `select_canonical_forward_predictions`, `grade_forward_predictions`).
 - **Clears when:** `graded_n >= 100` in the latest
