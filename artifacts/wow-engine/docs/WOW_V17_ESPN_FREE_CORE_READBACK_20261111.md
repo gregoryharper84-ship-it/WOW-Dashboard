@@ -54,3 +54,19 @@ The existing ESPN source now carries `_wow_provider_completeness_unverified=true
 The Sunday `20261115` NFL endpoint also returned HTTP 200 with 12 scheduled events. This provided a non-empty NFL event-shape check in addition to the verified empty Wednesday response.
 
 Regression additions: `tests/test_v17_823_bounded_espn_provider_acquisition.py::test_ncaaf_twenty_five_without_total_cannot_certify_complete_slate` and `::test_ncaaf_small_or_explicit_total_board_not_marked_cap_25`. Do not infer source permits/rights from endpoint reachability and do not promote these research events to an official schedule or prediction.
+
+
+## Read-only pregame hydration endpoint probes (2026-11-11)
+
+The following endpoints were probed externally with fresh requests and returned HTTP 200 JSON; this confirms only access and top-level response structure. No data retention, authenticated source attestation, production WOW hydration receipt, fitted training or model promotion occurred.
+
+| Sport | Source endpoint | Observed top-level structure | Valid role / limit |
+| --- | --- | --- | --- |
+| NFL | `https://site.api.espn.com/apis/common/v3/sports/football/nfl/athletes/4241457` | `athlete`, `season`, `league`, `playerSwitcher`; athlete id `4241457` | Player identity research only; does not alone prove today's injury/QB status |
+| NBA | `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries` | `timestamp`, `status`, `season`, `injuries`; array of 29 top-level entries | Injury candidate feed, no guarantee of official or exhaustive player availability |
+| NHL | `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary?event=401892690` | `header`, `goalies`, `injuries`, `gameInfo`, `boxscore`; scheduled ESPN event `401892690` | Pregame context research only; goalie structure does NOT establish confirmed starter without independent evidence |
+| NCAAF | `https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401866461` | `header`, `gameInfo`, `boxscore`, `leaders`; scheduled ESPN event `401866461` | Event summary context only; no asserted comprehensive injury evidence or CFBD official ID |
+
+These are provider-local ESPN IDs; preserve exact sport/player/event mapping and source timestamps. Reuse existing `nfl_prop_auto_hydration`, `basketball_event_hydration_runtime`, `nhl_event_identity`, `ncaaf_event_identity`, and sport-specific pregame model gates. A follow-up live backend canary must prove an ESPN observation actually reaches a given accepted hydration field without importing unavailable or future information. This PR does not add alternate collectors or bind ESPN `goalies` to a confirmed lineup automatically.
+
+The Render public `/v17/discovery/espn-compact` endpoint returned HTTP 401 with `Missing or malformed Authorization header` when probed without credentials. This **preserves** an authenticated boundary, but no authorized production readback was available from that request; do not bypass authentication. Last observed Render `live` deployment at audit: `6a6c4b1f105dea14fc6d08bb31a247ca74e94491`, predating this PR.
