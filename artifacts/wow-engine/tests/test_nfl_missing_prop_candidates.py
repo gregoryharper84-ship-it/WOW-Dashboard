@@ -294,7 +294,9 @@ def test_frozen_source_digest_mismatch_is_rejected_before_parsing(tmp_path, week
     }
     frame, provenance = load_source_files(tmp_path, expected_sha256=expected)
     assert len(frame) == len(weekly_frame)
-    assert provenance["release_hashes_verified"] is True
+    assert provenance["caller_expected_hashes_matched"] is True
+    assert provenance["release_hashes_verified"] is False
+    assert provenance["source_identity_quarantine_independently_reviewed"] is False
     assert provenance["assets"]["2025"]["sha256"] == expected["2025"]
 
     path = tmp_path / "stats_player_week_2025.csv"
@@ -316,3 +318,72 @@ def test_cli_pins_authoritative_release_sha256_without_override():
     # Avoid passing a user override for public-source integrity in the CLI.
     assert "expected_sha256=EXPECTED_RELEASE_SHA256" in inspect.getsource(main)
 
+
+def _write_inputs_with_unattributed_rows(tmp_path, weekly_frame, *, count=18, overrides=None):
+    """Create the observed *shape*, not a claim about actual nflverse row meaning."""
+    for season in range(2021, 2026):
+        rows = weekly_frame.loc[weekly_frame.season == season].copy()
+        if season == 2021:
+            phantom = rows.iloc[0].copy()
+            phantom["player_id"] = np.nan
+            phantom["player_display_name"] = np.nan
+            phantom["position"] = "TEAM"
+            for field in ("attempts", "completions", "passing_tds", "receptions", "targets", "carries"):
+                phantom[field] = 0
+            rows = pd.concat([rows, pd.DataFrame([
+                {**phantom.to_dict(), "week": week, "game_id": f"2021_{week:02d}_UNATTR"}
+                for week in range(1, count + 1)
+            ])], ignore_index=True)
+            if overrides:
+                for field, value in overrides.items():
+                    rows.loc[rows.index[-1], field] = value
+        rows.to_csv(tmp_path / f"stats_player_week_{season}.csv", index=False)
+
+
+def test_unattributed_18_zero_stat_records_quarantined_with_provenance(tmp_path, weekly_frame):
+    """No guessed player IDs, erased source rows, or hidden model eligibility."""
+    _write_inputs_with_unattributed_rows(tmp_path, weekly_frame, count=18)
+    frame, prov = load_source_files(tmp_path)
+    assert len(frame) == len(weekly_frame)
+    assert prov["source_identity_quarantine_independently_reviewed"] is False
+    assert len(prov["unattributed_identity_quarantine"]) == 18
+    assert prov["assets"]["2021"]["rows"] == 180 + 18
+    assert prov["assets"]["2021"]["model_rows"] == 180
+    assert prov["assets"]["2021"]["unattributed_identity_rows"] == 18
+    assert {r["week"] for r in prov["unattributed_identity_quarantine"]} == set(range(1, 19))
+    assert all(r["source_identity_unresolved"] and r["count_fields_all_zero"]
+               and len(r["audit_sha256"]) == 64 for r in prov["unattributed_identity_quarantine"])
+    assert not frame.player_id.isna().any()
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("attempts", 1, "NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING"),
+    ("targets", float("nan"), "NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING"),
+    ("position", "QB", "NFL_PROP_SOURCE_IDENTITY_INVALID:player_id"),
+    ("player_display_name", "Unnamed QB", "NFL_PROP_SOURCE_IDENTITY_INVALID:player_id"),
+    ("game_id", float("nan"), "NFL_PROP_SOURCE_IDENTITY_INVALID:player_id"),
+    ("week", 19, "NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE"),
+])
+def test_unattributed_possible_participant_fails_closed(tmp_path, weekly_frame, field, value, error):
+    """Unidentified player exposure must stop fitting rather than be excluded."""
+    _write_inputs_with_unattributed_rows(tmp_path, weekly_frame, count=1, overrides={field: value})
+    with pytest.raises(ValueError, match=error):
+        load_source_files(tmp_path)
+
+
+def test_pinned_release_only_flag_when_digest_map_matches_authoritative(tmp_path, weekly_frame):
+    """An arbitrary matching hash map is not attestation to the official release."""
+    import hashlib
+    from train_nfl_missing_prop_candidates import EXPECTED_RELEASE_SHA256
+    for season in range(2021, 2026):
+        weekly_frame.loc[weekly_frame.season == season].to_csv(tmp_path / f"stats_player_week_{season}.csv", index=False)
+    synthetic_expected = {
+        str(year): hashlib.sha256((tmp_path / f"stats_player_week_{year}.csv").read_bytes()).hexdigest()
+        for year in range(2021, 2026)
+    }
+    assert synthetic_expected != EXPECTED_RELEASE_SHA256
+    _, provenance = load_source_files(tmp_path, expected_sha256=synthetic_expected)
+    assert provenance["caller_expected_hashes_matched"] is True
+    assert provenance["release_hashes_verified"] is False
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_DIGEST_MISMATCH"):
+        load_source_files(tmp_path, expected_sha256=EXPECTED_RELEASE_SHA256)
