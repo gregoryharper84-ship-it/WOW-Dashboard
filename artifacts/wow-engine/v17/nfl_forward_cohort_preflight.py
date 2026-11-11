@@ -342,6 +342,10 @@ def project_forward_cohort(
         status = "PROJECTED_SHORT_OF_MINIMUM"
     elif not coverage_verified:
         status = "PROJECTED_TO_REACH_MINIMUM_COVERAGE_UNVERIFIED"
+    elif cannot_grade:
+        # A high enough numeric projection cannot conceal known irreversible
+        # gaps in the full expected slate.
+        status = "HOLD_SLATE_EVENTS_CANNOT_GRADE"
     else:
         status = "PROJECTED_TO_REACH_MINIMUM"
 
