@@ -377,6 +377,35 @@ def test_promotion_requires_an_explicit_ratified_policy():
     assert "PROMOTION_POLICY_SCOPE_MISMATCH" in scoped_result["blockers"]
 
 
+def test_promotion_requires_all_holdout_metrics_even_if_caller_requests_row_count_only():
+    # Research replay may use a narrow diagnostic. Promotion never may.
+    artifact = _artifact(stored_metrics={"row_n": 1})
+    research = replay_fitted_artifact(artifact, required_metrics=["row_n"])
+    assert research["status"] == REPLAY_PASS
+    assert research["verified_stored_metrics"] == ["row_n"]
+
+    for selected_metrics in (["row_n"], ()):  # empty cannot waive core metrics
+        result = evaluate_fitted_model_promotion(
+            artifact, policy=_policy(), required_metrics=selected_metrics,
+        )
+        assert result["status"] == PROMOTION_BLOCKED
+        assert result["apply_packet"] is None
+        for metric in ("brier", "log_loss", "ece"):
+            assert f"FITTED_CERTIFICATION_STORED_METRIC_MISSING:{metric}" in result["blockers"]
+        assert result["probability_publishable"] is False
+        assert result["can_execute"] is False
+
+    complete = _artifact()
+    complete["stored_metrics"]["row_n"] = 1
+    ready = evaluate_fitted_model_promotion(
+        complete, policy=_policy(), required_metrics=["row_n"],
+    )
+    assert ready["status"] == PROMOTION_READY
+    assert set(ready["replay"]["verified_stored_metrics"]) == {
+        "brier", "log_loss", "ece", "row_n",
+    }
+
+
 def test_policy_metric_gate_failure_remains_shadow():
     artifact = _artifact()
     tight = _policy(max_brier=0.01)
