@@ -164,6 +164,15 @@ jobs:
           gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
             --jq '.[] | select(.pull_request == null)' | jq -s '.' \
             > "$RUNNER_TEMP/engineering-issues.json"
+          # Only the existing governed dispatch manifest can authorize a BUILD
+          # target. Labels and issue text alone cannot grant a coding lease.
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py validate \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json > /dev/null
+          jq --slurpfile manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json '
+            [($manifest[0].restoration + $manifest[0].acceleration)[].issue_number] as $approved |
+            [.[] | select(.number as $n | ($approved | index($n)) != null)]
+          ' "$RUNNER_TEMP/engineering-issues.json" > "$RUNNER_TEMP/approved-issues.json"
+          mv "$RUNNER_TEMP/approved-issues.json" "$RUNNER_TEMP/engineering-issues.json"
           gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
           # Authenticated workflow-run history is denial evidence only.
@@ -435,8 +444,13 @@ jobs:
           prior_ids=$(jq -c '[.[].databaseId]' <<< "$fresh_rows")
           # The current provider worker still independently owns all execution
           # guards, quotas and remote-writer reconciliation.
+          # Derive P0 domain lease from the existing protected manifest.
+          # The target worker independently rechecks exact incident + lease.
+          lease_group=$(python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --lease-for-incident "$INCIDENT")
           gh workflow run "$worker" -R "$GITHUB_REPOSITORY" \
-            --ref main -f target_incident="$INCIDENT" -f lease_group=GLOBAL
+            --ref main -f target_incident="$INCIDENT" -f lease_group="$lease_group"
           # Keep the mutex until the new run is actually visible in GitHub.
           # Unseen dispatch is a typed failure, never evidence of success.
           for observation in 1 2 3 4 5 6; do
