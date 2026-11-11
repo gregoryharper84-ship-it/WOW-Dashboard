@@ -5,6 +5,9 @@ import hashlib
 import io
 import sys
 import urllib.error
+import urllib.request
+import urllib.response
+from email.message import Message
 from pathlib import Path
 import pytest
 
@@ -72,6 +75,54 @@ def test_typed_dns_failure_and_no_partial_output(tmp_path):
     assert not list(tmp_path.rglob("*.part"))
 
 
+def test_interrupted_stream_is_typed_network_hold_and_cleans_part(tmp_path):
+    """A read failure after bytes arrived must leave no published output."""
+    class DropAfterFirstChunk(FakeResponse):
+        def __init__(self):
+            super().__init__(b"partially downloaded")
+            self.reads = 0
+
+        def read(self, length=-1):
+            self.reads += 1
+            if self.reads == 2:
+                raise OSError("connection reset midstream")
+            return super().read(length)
+
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE"):
+        acquire_one("players/players.csv", "a" * 64, 30, tmp_path,
+                    open_url=lambda *a, **k: DropAfterFirstChunk())
+    assert not (tmp_path / "players/players.csv").exists()
+    assert not list(tmp_path.rglob("*.part"))
+
+
+def test_untrusted_302_not_requested_even_once(tmp_path, monkeypatch):
+    """Record requested hosts: the foreign Location must never be fetched."""
+    requested = []
+
+    class RedirectingHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            requested.append(req.full_url)
+            headers = Message()
+            headers["Location"] = "https://example.com/evil.csv"
+            response = urllib.response.addinfourl(
+                io.BytesIO(b""), headers, req.full_url, 302,
+            )
+            response.msg = "Found"
+            return response
+
+    original_build = urllib.request.build_opener
+    monkeypatch.setattr(
+        urllib.request, "build_opener",
+        lambda *handlers: original_build(*handlers, RedirectingHTTPSHandler()),
+    )
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED"):
+        acquire_one("players/players.csv", "a" * 64, 4, tmp_path)
+    assert requested == [
+        "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
+    ]
+    assert not (tmp_path / "players/players.csv").exists()
+
+
 def test_verify_only_missing_is_fail_closed(tmp_path):
     with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_FILE_MISSING"):
         acquire_one("players/players.csv", "a"*64, 9, tmp_path, verify_only=True)
@@ -98,7 +149,6 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     """
     import json
     import os
-    import urllib.request
     import pandas as pd
 
     if (os.environ.get("GITHUB_WORKFLOW") != "wow-v17-rapid-repair"
@@ -109,14 +159,10 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     from acquire_nfl_count_prop_sources import frozen_assets
     assets = frozen_assets()
     downloaded = []
-    # Bound every network attempt, without changing the governed downloader API.
-    def short_network_timeout(request, **_kwargs):
-        return urllib.request.urlopen(request, timeout=20)
-
+    # Every real network request must use the trusted redirect handler.
     for name, digest, size in assets:
         try:
-            receipt = acquire_one(name, digest, size, tmp_path,
-                                  open_url=short_network_timeout)
+            receipt = acquire_one(name, digest, size, tmp_path, timeout=20)
         except (ValueError, OSError) as exc:
             pytest.skip(
                 "NFL_PROP_SOURCE_ACQUIRE_HOLD:"
