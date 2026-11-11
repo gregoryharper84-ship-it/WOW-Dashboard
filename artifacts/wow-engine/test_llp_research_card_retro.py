@@ -262,3 +262,25 @@ def test_missing_manifest_game_is_a_visible_ungraded_held_row():
     assert "OFFICIAL_SLATE_PREFERRED_PICK_MISSING" in missing[0]["blockers"]
     assert report["preferred"]["graded"] == 1
     assert report["headline_accuracy"] is None
+
+
+@pytest.mark.parametrize("sport", ["NFL", "NBA", "NHL"])
+def test_conflicting_duplicate_manifest_event_always_holds_regardless_of_order(sport):
+    """A repeated official ID never inherits whichever team record came last."""
+    key = "order-sensitive"
+    canonical = manifest((sport, key))[0]
+    conflict = {**canonical, "away_team": "Another Club"}
+    outcomes = []
+    for slate in ([canonical, conflict], [conflict, canonical]):
+        report = audit_research_card(
+            [pick(sport, key)], [result(sport, key)],
+            official_slate=slate, official_slate_verified=True,
+            official_slate_receipt_id="immutable-duplicate-slate")
+        row = report["rows"][0]
+        outcomes.append(row["grade_status"])
+        assert row["grade_status"] == "HELD"
+        assert "OFFICIAL_SLATE_DUPLICATE_OR_INVALID" in row["blockers"]
+        assert "OFFICIAL_SLATE_DUPLICATE_OR_INVALID" in report["board_blockers"]
+        assert report["headline_accuracy"] is None
+        assert report["preferred"]["graded"] == 0
+    assert outcomes == ["HELD", "HELD"]
