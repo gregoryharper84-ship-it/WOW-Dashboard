@@ -42,7 +42,8 @@ ACTOR_FIELDS = ("passer_player_id", "receiver_player_id", "rusher_player_id")
 
 def pbp_assets() -> list[tuple[str, str, int]]:
     """Return the five immutably pinned upstream compressed PBP sources."""
-    assert set(PBP_GZ_SHA256) == set(SEASONS)
+    if set(PBP_GZ_SHA256) != set(SEASONS):
+        raise ValueError("NFL_PROP_PBP_PIN_SET_INVALID")
     return [
         (f"pbp/play_by_play_{year}.csv.gz",
          PBP_GZ_SHA256[year],
@@ -70,7 +71,8 @@ def read_verified_pbp_presence(
                 chunksize=50000, low_memory=False,
             )
             for chunk in reader:
-                if not chunk["season"].dropna().eq(str(season)).all():
+                if (chunk["season"].isna().any()
+                        or not chunk["season"].eq(str(season)).all()):
                     raise ValueError(f"NFL_PROP_PBP_EVENT_SCHEMA_INVALID:{season}:season")
                 regular = chunk.loc[chunk["season_type"].eq("REG")].copy()
                 if regular.empty:
@@ -151,7 +153,8 @@ def classify_missing_pbp_presence(
         counts[category] += 1
         if category != "pbp_actor_not_observed" and len(examples) < 8:
             examples.append({"game_id": game_id, "gsis_id": player_id, "classification": category})
-    assert sum(counts.values()) == canonical["missing_player_games"]
+    if sum(counts.values()) != canonical["missing_player_games"]:
+        raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
     return {
         "status": "HOLD_PBP_PRESENCE_ONLY",
         "scope": canonical["scope"],
