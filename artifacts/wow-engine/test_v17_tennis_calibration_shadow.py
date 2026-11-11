@@ -141,3 +141,50 @@ def test_invalid_scale_from_saved_artifact_is_typed_hold():
         replay_tennis_calibration_shadow(
             rows, replace(candidate, artifact_payload=artifact)
         )
+
+
+def test_existing_tennis_maintenance_attaches_shadow_without_model_promotion(monkeypatch):
+    from types import SimpleNamespace
+    from v17 import tennis_valuebet_candidate as tennis
+
+    class FakeDb:
+        def __init__(self):
+            self.rows = []
+
+        def table(self, name):
+            self.name = name
+            return self
+
+        def upsert(self, payload, **kwargs):
+            self.rows.append((self.name, payload))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    monkeypatch.setattr(tennis, "FEATURE_NAMES", NAMES)
+    monkeypatch.setattr(tennis, "fetch_matches", lambda: ([], []))
+    monkeypatch.setattr(
+        tennis, "build_training_rows",
+        lambda matches, *, tour: (_rows(1300, tour), []),
+    )
+    monkeypatch.setattr(tennis, "_persist_rows", lambda *a, **k: None)
+    fake = FakeDb()
+    outcome = tennis.train_all(fake, training_code_sha="a" * 40)
+    assert outcome["ok"] is True
+    assert outcome["probability_publishable"] is False
+    assert outcome["can_execute"] is False
+    assert len(outcome["rows"]) == 2
+    stored = [row for table, row in fake.rows
+              if table == "wow_d1_candidate_artifacts"]
+    assert len(stored) == 2
+    for row in stored:
+        assert row["promoted"] is False
+        assert row["active"] is False
+        assert row["probability_publishable"] is False
+        assert row["can_execute"] is False
+        metrics = row["validation_metrics"]
+        assert metrics["calibration_shadow_status"] == "EVALUATED_RESEARCH_ONLY"
+        assert metrics["calibration_shadow"]["selection_used_untouched_test"] is False
+        assert metrics["calibration_shadow"]["certification_eligible"] is False
+        assert metrics["research_screen_pass"] == row["research_screen_pass"]
