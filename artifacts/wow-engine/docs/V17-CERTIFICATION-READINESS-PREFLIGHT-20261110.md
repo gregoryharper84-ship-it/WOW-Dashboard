@@ -11,7 +11,7 @@ The resulting inventory is **not** a fitted-model promotion, independent sign-of
 
 1. Use an authorized read-only database role or a read-only transaction.
 2. Execute the SQL without migration privileges or production writes.
-3. Confirm one row per requested team sport (five: NBA, NCAAB, NCAAF, NFL, WNBA) plus one row per requested prop stat family — four requested sports, so a sport with two stored `stat_type` families returns two rows and a total above nine is expected. Every row must have `preflight_authorizes_publication=false` and `can_execute=false`.
+3. Confirm one row per requested team sport (five: NBA, NCAAB, NCAAF, NFL, WNBA) plus one row per requested prop stat family — four requested sports, and a sport with two stored `stat_type` families returns two rows, so a total above nine is expected. A requested prop sport with no fitted-artifact rows returns a single `__NO_FITTED_ARTIFACT_ROWS__` row that reports `PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND`. Every row must have `preflight_authorizes_publication=false` and `can_execute=false`.
 4. Preserve typed holds for missing immutable certification, uncalibrated candidates, and missing/nonpassing NFL forward-health records. Never invent a fitted artifact from odds, heuristics, or research.
 5. Compare counts with source tables and keep observations labeled by database and timestamp. Do not infer production from validation.
 
