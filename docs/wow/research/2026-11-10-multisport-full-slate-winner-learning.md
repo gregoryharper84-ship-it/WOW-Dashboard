@@ -59,3 +59,16 @@ Independent inputs required: a frozen verified ranked-card cohort and unique pre
 The baseline compares **number correct against the same-time market favorite**, not bets, implied model probabilities, yield or ROI. `incremental_correct_vs_market=0` is descriptive, not statistical proof of no edge; even a positive single-day difference would not certify one. Signed verified spread outcomes are *separate diagnostics*, not a grade of the original straight-up pick. Narrative explanations (such as college half-court defense or soccer rotation) are candidate hypotheses to be tested on frozen future cohorts, not proven historical causes.
 
 Acceptance: synthetic tests for market-favorite parity, soccer draws, invalid two-way soccer odds, missing/late market, late pick, invalid official final, strict boolean cohort attestation, swapped event, postfreeze availability, and winner-versus-spread separation. No fit, probability, terminal, database schema, calendar, GH Google Sheet, money or automatic action changes. Existing #2547 independent SIRT/QA/Release exact-head gates still apply; no claim of merge, deployed route, live GPT/editor sync or authenticated 15-game audit.
+
+## 2026-11-11 exact-head CodeRabbit/QA remediation and reconciliation
+
+Source research PR #2547, governing incident #2076. Three reviewer findings patched:
+- The pregame full-slate research auditor rejects each row under duplicate official-event identity keys before attributing pregame sources, media or game scripts; a conflicting same-ID manifest cannot borrow evidence from another opponent.
+- The ranked-card same-time market favorite baseline accepts only independently attested event-identical market snapshots at or before the frozen pick, **no older than 60 minutes**. A stale market snapshot suppresses only baseline comparison, not a separately verified winner grade.
+- Decimal odds must be real finite numbers strictly greater than 1 and at most 100,000; signed home-spread inputs must be real finite numbers within +/-500. These are defensive sanity caps, not market-price or fitted-probability estimates. Huge Python integers, NaN and infinity fail safely instead of crashing the entire retrospective.
+
+The existing 10 synthetic ranked-card tests received three additional boundary/overflow tests (13 ranked tests total), and the existing full-slate research-card suite gained one conflicting-identity evidence-isolation test. These are test cases added to source; exact-head hosted execution must be evidenced by matching CI run logs, not inferred from test-file presence.
+
+Branch reconciliation used a two-parent, non-force commit preserving current main code and both independently added skill sections; no protected merge performed at that point. PR description now begins with canonical `Incident: #2076` after QA reported `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS`. Fresh exact-head independent QA and Release Authority verdicts must evaluate that corrected metadata. The earlier QA failure and downstream `RELEASE_QA_FAILED` cannot be relabeled passing.
+
+No SIRT verdict, protected merge, production rollout, Custom GPT sync, market edge certification or fitted-model improvement is implied by this documentation; `can_execute=false`, and `V17_TERMINAL_REDUCER` remains sole terminal authority.
