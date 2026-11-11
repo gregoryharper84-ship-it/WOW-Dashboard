@@ -577,7 +577,7 @@ def _gate_open_result(**kwargs):
     }
 
 
-def test_maintenance_passes_and_declares_the_deferral(monkeypatch):
+def test_maintenance_preserves_deferred_fail_receipt_without_fake_pass(monkeypatch):
     module = _maintenance_module(monkeypatch)
     captured = {}
 
@@ -594,7 +594,9 @@ def test_maintenance_passes_and_declares_the_deferral(monkeypatch):
 
     assert result["status"] == "COMPLETE"
     assert row["status"] == "SHADOW_EVIDENCE_UPDATED"
-    assert row["independent_verification"]["status"] == "PASS"
+    assert row["independent_verification"]["status"] == "GOVERNANCE_DEFERRED"
+    assert row["independent_verification"]["verification_receipt_status"] == "FAIL"
+    assert row["independent_verification"]["probability_publishable"] is False
     assert row["independent_verification"]["deferred_blockers"] == [
         "CHECK_FAILED:V10",
         "CHECK_FAILED:V11",
@@ -603,6 +605,41 @@ def test_maintenance_passes_and_declares_the_deferral(monkeypatch):
     assert captured["defer"] == wiring.DEFERRED_GOVERNANCE_BLOCKERS
     assert captured["model_artifact_version"] == MODEL_VERSION
     assert result["can_execute"] is False
+
+
+def test_maintenance_allows_real_pass_receipt_only_without_deferred_failures(monkeypatch):
+    module = _maintenance_module(monkeypatch)
+    monkeypatch.setattr(
+        module, "verify_and_archive",
+        lambda db, **kwargs: _gate_open_result(
+            verification_status="PASS", deferred_blockers=[], hard_blockers=[],
+        ),
+    )
+    result = module.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2026,)
+    )
+    row = result["rows"][0]
+    assert row["status"] == "SHADOW_EVIDENCE_UPDATED"
+    assert row["independent_verification"]["status"] == "PASS"
+    assert row["independent_verification"]["verification_receipt_status"] == "PASS"
+    assert row["probability_publishable"] is False
+
+
+def test_maintenance_never_trusts_gate_open_when_receipt_status_is_missing(monkeypatch):
+    module = _maintenance_module(monkeypatch)
+    monkeypatch.setattr(
+        module, "verify_and_archive",
+        lambda db, **kwargs: _gate_open_result(verification_status=None),
+    )
+    result = module.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2026,)
+    )
+    row = result["rows"][0]
+    assert result["status"] == "BLOCKED"
+    assert row["code"] == "NBA_INDEPENDENT_VERIFICATION_FAILED"
+    assert row["independent_verification"]["status"] == "FAIL"
+    assert row["independent_verification"]["verification_receipt_status"] == "MISSING"
+    assert row["can_execute"] is False
 
 
 def test_maintenance_blocks_when_verification_fails(monkeypatch):
