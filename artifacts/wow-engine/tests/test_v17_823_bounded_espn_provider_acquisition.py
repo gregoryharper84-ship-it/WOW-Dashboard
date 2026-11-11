@@ -420,3 +420,128 @@ def test_stale_success_does_not_survive_refresh_failure(monkeypatch):
     assert failure.ok is False
     assert failure.code == "ESPN_HTTP_503"
     assert len(observed) == 2
+
+
+@pytest.mark.parametrize("sport_key,espn_id", [
+    ("americanfootball_nfl", "401900001"),
+    ("basketball_nba", "401909966"),
+    ("icehockey_nhl", "401892690"),
+    ("americanfootball_ncaaf", "401866461"),
+])
+def test_espn_relookup_without_snapshot_date_uses_eastern_partition(
+        monkeypatch, sport_key, espn_id):
+    """Actual 2026-11-11 ESPN responses put local-evening games on Nov 12 UTC."""
+    event = _event(int(espn_id))
+    event["date"] = "2026-11-12T00:00:00Z"
+    event["competitions"][0]["odds"] = [{
+        "homeTeamOdds": {"moneyLine": -110},
+        "awayTeamOdds": {"moneyLine": -105},
+        "provider": {"name": "Research Example"},
+    }]
+    calls = []
+
+    def fake_http_json(url, params=None):
+        calls.append((url, params["dates"]))
+        return secondary.SecondaryResult(
+            True, {"events": [event] if params["dates"] == "20261111" else []}, 200
+        )
+
+    monkeypatch.setattr(secondary, "_http_json", fake_http_json)
+    secondary._SCOREBOARD_CACHE.clear()
+    request_id = f"espn-{espn_id}"
+    context = {request_id: {
+        "commence_time": "2026-11-12T00:00:00Z",
+        "home_team": f"Home {espn_id}",
+        "away_team": f"Away {espn_id}",
+    }}
+    found = secondary.secondary_for_request(
+        f"/odds-api/v4/sports/{sport_key}/events/{request_id}/odds",
+        {"markets": "h2h"}, context,
+    )
+    assert found.ok is True
+    assert [day for _url, day in calls] == ["20261111"]
+    assert found.data["id"] == request_id
+    assert found.data["_wow_secondary_source"]["prediction_authority"] is False
+    assert found.data["_wow_secondary_source"]["can_execute"] is False
+
+
+def test_explicit_espn_id_never_reassigns_to_same_matchup_different_event(monkeypatch):
+    event = _event(401892690)
+    event["date"] = "2026-11-12T00:00:00Z"
+    monkeypatch.setattr(
+        secondary, "_scoreboard",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            True, {"events": [event]}, 200
+        ),
+    )
+    found = secondary._find_event("icehockey_nhl", "espn-999999", {
+        "home_team": "Home 401892690",
+        "away_team": "Away 401892690",
+        "commence_time": "2026-11-12T00:00:00Z",
+    })
+    assert found.ok is False
+    assert found.code == "SECONDARY_SOURCE_EVENT_NOT_FOUND"
+
+
+def test_espn_lookup_validates_context_even_when_event_id_matches(monkeypatch):
+    event = _event(401892690)
+    event["date"] = "2026-11-12T00:00:00Z"
+    monkeypatch.setattr(
+        secondary, "_scoreboard",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            True, {"events": [event]}, 200
+        ),
+    )
+    for context in (
+        {"home_team": "Different Team", "away_team": "Away 401892690",
+         "commence_time": "2026-11-12T00:00:00Z"},
+        {"home_team": "Home 401892690", "away_team": "Away 401892690",
+         "commence_time": "2026-11-12T03:00:00Z"},
+    ):
+        found = secondary._find_event("icehockey_nhl", "espn-401892690", context)
+        assert found.ok is False
+        assert found.code == "SECONDARY_SOURCE_EVENT_NOT_FOUND"
+
+
+def test_non_espn_alias_requires_unique_same_teams_and_kickoff(monkeypatch):
+    a, b = _event(100), _event(101)
+    for e in (a, b):
+        e["date"] = "2026-11-12T00:00:00Z"
+        e["competitions"][0]["competitors"][0]["team"]["displayName"] = "Home"
+        e["competitions"][0]["competitors"][1]["team"]["displayName"] = "Away"
+    events = [a, b]
+    monkeypatch.setattr(
+        secondary, "_scoreboard",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            True, {"events": events}, 200
+        ),
+    )
+    context = {
+        "home_team": "Home", "away_team": "Away",
+        "commence_time": "2026-11-12T00:00:00Z",
+    }
+    duplicate = secondary._find_event("americanfootball_ncaaf", "other-source-1", context)
+    assert duplicate.ok is False
+    assert duplicate.status == 409
+    assert duplicate.code == "ESPN_EVENT_RELOOKUP_AMBIGUOUS"
+    events.pop()
+    distinct = secondary._find_event("americanfootball_ncaaf", "other-source-1", context)
+    assert distinct.ok is True and distinct.data["id"] == "100"
+    late = secondary._find_event(
+        "americanfootball_ncaaf", "other-source-1",
+        {**context, "commence_time": "2026-11-12T03:00:00Z"},
+    )
+    assert late.ok is False
+    assert late.code == "SECONDARY_SOURCE_EVENT_NOT_FOUND"
+
+
+def test_real_empty_scoreboard_is_valid_not_fabricated_model_unavailable(monkeypatch):
+    monkeypatch.setattr(secondary, "_http_json", lambda *_args, **_kwargs:
+                        secondary.SecondaryResult(True, {"events": []}, 200))
+    secondary._SCOREBOARD_CACHE.clear()
+    response = secondary.secondary_for_request(
+        "/odds-api/v4/sports/americanfootball_nfl/events",
+        {"commenceTimeFrom": "2026-11-11", "commenceTimeTo": "2026-11-11"}, {},
+    )
+    assert response.ok is True and response.data == []
+    assert response.code is None
