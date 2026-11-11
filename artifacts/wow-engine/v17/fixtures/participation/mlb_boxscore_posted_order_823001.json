@@ -1,0 +1,34 @@
+{
+  "copyright": "Copyright 2026 MLB Advanced Media, L.P.",
+  "gamePk": 823001,
+  "teams": {
+    "away": {
+      "team": {"id": 135, "name": "San Diego Padres", "abbreviation": "SD"},
+      "battingOrder": [605484, 605485, 605486],
+      "players": {
+        "ID605484": {
+          "person": {"id": 605484, "fullName": "Fernando Tatis Jr."},
+          "position": {"abbreviation": "RF"},
+          "battingOrder": "100"
+        }
+      }
+    },
+    "home": {
+      "team": {"id": 119, "name": "Los Angeles Dodgers", "abbreviation": "LAD"},
+      "battingOrder": [592450, 660271, 605483],
+      "players": {
+        "ID592450": {
+          "person": {"id": 592450, "fullName": "Mookie Betts"},
+          "position": {"abbreviation": "SS"},
+          "battingOrder": "100",
+          "stats": {"batting": {"plateAppearances": 0}}
+        },
+        "ID660271": {
+          "person": {"id": 660271, "fullName": "Shohei Ohtani"},
+          "position": {"abbreviation": "DH"},
+          "battingOrder": "200"
+        }
+      }
+    }
+  }
+}

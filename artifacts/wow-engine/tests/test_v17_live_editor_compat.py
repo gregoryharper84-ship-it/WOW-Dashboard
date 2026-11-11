@@ -86,7 +86,7 @@ def test_action_schema_preserves_v17_boundary():
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
 
 
-def test_live_editor_schema_is_single_domain_and_exposes_all_26_operations():
+def test_live_editor_schema_is_single_domain_and_exposes_all_27_operations():
     document = _schema()
     assert document["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
     operations = {
@@ -95,8 +95,9 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_26_operations():
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(operations) == 26
+    assert len(operations) == 29
     assert {
+        "scoreWowTeamEventRequest",
         "submitWowV17DailySnapshot",
         "getWowV17DailySnapshotRun",
         "getWowV17PickRequestRunState",
@@ -110,6 +111,11 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_26_operations():
     }.issubset(operations)
     assert "runWowV17NFLPickemBoard" not in operations
     assert "/v17/nfl-pickem-board" not in document["paths"]
+
+    batch = document["paths"]["/score-team-event-request"]["post"]
+    assert batch["operationId"] == "scoreWowTeamEventRequest"
+    assert batch["security"] == [{"actionBearer": []}]
+    assert batch["x-openai-isConsequential"] is False
 
     for path, operation_id in {
         "/v17/nfl-pickem-submit": "submitWowV17NFLPickemBoard",

@@ -118,6 +118,41 @@ def test_schedule_first_falls_back_once_when_espn_is_unavailable(monkeypatch):
     assert rows.fallback_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS
 
 
+def test_schedule_first_truncated_espn_is_typed_and_falls_back_to_actual_feed(monkeypatch):
+    calls = []
+
+    def truncated_scoreboard(*_args, **_kwargs):
+        return secondary.SecondaryResult(
+            True,
+            {"events": [{"id": "partial", "date": "2026-09-22T20:00:00Z"}],
+             "_wow_provider_truncated": True},
+            200,
+        )
+
+    monkeypatch.setattr(secondary, "_scoreboard", truncated_scoreboard)
+
+    def downstream(family, target=None):
+        calls.append(family)
+        return [{"id": "fallback-event", "home_team": "H", "away_team": "A"}]
+
+    fetch = resilience._schedule_first_fetch(
+        downstream,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+    result = fetch("NFL")
+
+    assert calls == ["NFL"]
+    assert len(result.rows) == 1
+    assert result.rows[0]["id"] == "fallback-event"
+    assert result.provider_status == discovery.PROVIDER_FAILED
+    assert result.fallback_status == discovery.FALLBACK_SUCCEEDED
+    assert result.primary_blocker_code == "ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
+    assert result.primary_path_id == discovery.PATH_ESPN_SCOREBOARD
+    assert result.exhaustion_status == discovery.PATHS_NOT_EXHAUSTED
+    assert all(row.get("probability_publishable") is not True for row in result.rows)
+
+
 def test_schedule_first_preserves_exhaustion_when_espn_and_downstream_fail(monkeypatch):
     calls = {"espn": 0, "fallback": 0}
 

@@ -1,8 +1,6 @@
 name: wow-v17-engineering-effectiveness-scorecard
 
 on:
-  schedule:
-    - cron: "11 6 * * *"
   workflow_dispatch:
 
 permissions:

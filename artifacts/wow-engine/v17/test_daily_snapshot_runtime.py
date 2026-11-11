@@ -30,8 +30,14 @@ class Query:
 
 
 class DB:
-    def __init__(self): self.acquisition_rows = []
+    def __init__(self):
+        self.acquisition_rows = []
+        # Real row-detail readback must see rows written by a prior Query.
+        # This test fake intentionally preserves the upsert across table() calls.
+        self.row_detail_rows = []
     def table(self, name):
+        if name == "wow_v17_daily_run_row_detail":
+            return Query(self.row_detail_rows)
         if name == "wow_prop_evidence_snapshots":
             return Query([{"source_snapshot_id":"snap-prop","event_id":"p1","event_start_time":FUTURE,"sport":"MLB","player":"P","stat_type":"strikeouts","line":4.5,"hydration_status":"PASS","blockers":[]}])
         if name == "wow_v17_daily_run_acquisition_detail":
@@ -77,6 +83,9 @@ def governed_team_result():
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
+    # The fixture is a canonical two-row test: an independently scheduled
+    # cross-sport provider scan is not a third synthetic candidate.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
@@ -166,7 +175,10 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     assert result["rows"][0]["row_status"]=="COMPLETED"
 
 
-def test_zero_row_query_failures_are_typed_as_data_unobtainable():
+def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
+    # A broken canonical database must be tested without separately acquired
+    # cross-sport rows masking the MONEYLINE zero-row classification.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
     class BrokenQuery(Query):
         def execute(self): raise ConnectionError("boom")
     class BrokenDB:
@@ -282,6 +294,238 @@ def test_prop_manifest_pages_through_1000_rows_without_truncation():
     assert manifest[-1]["source_snapshot_id"]=="snap-999"
 
 
+class _FilteringPropQuery:
+    """DB fake that actually applies hydration_status equality filters."""
+
+    def __init__(self, data):
+        self._all = list(data)
+        self._filters = []
+        self._start = 0
+        self._end = len(data) - 1
+        self.orders = []
+        self.selected = None
+
+    def select(self, columns, *_):
+        self.selected = columns
+        return self
+
+    def eq(self, name, value):
+        self._filters.append((name, value))
+        return self
+
+    def order(self, name, *_, **__):
+        self.orders.append(name)
+        return self
+
+    def range(self, start, end):
+        self._start = start
+        self._end = end
+        return self
+
+    def execute(self):
+        rows = [
+            row for row in self._all
+            if all(row.get(name) == value for name, value in self._filters)
+        ]
+        for name in reversed(self.orders):
+            rows.sort(key=lambda row, key=name: str(row.get(key) or ""))
+        return Result(rows[self._start:self._end + 1])
+
+
+class _FilteringPropDB:
+    def __init__(self, rows):
+        self.rows = rows
+        self.last_query = None
+
+    def table(self, name):
+        assert name == "wow_prop_evidence_snapshots"
+        self.last_query = _FilteringPropQuery(self.rows)
+        return self.last_query
+
+
+def _manifest_row(source, captured, *, hydration="PASS", blockers=None, player="P"):
+    return {
+        "source_snapshot_id": source,
+        "captured_at": captured,
+        "event_id": "MLB:1",
+        "event_start_time": FUTURE,
+        "sport": "MLB",
+        "player": player,
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": 5.5,
+        "hydration_status": hydration,
+        "blockers": list(blockers or []),
+    }
+
+
+def test_newer_failed_observation_is_not_hidden_by_older_pass_prefilter():
+    """DB PASS prefilter must not erase a newer FAILED observation before canonicalize."""
+    db = _FilteringPropDB([
+        _manifest_row("older-pass", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+""),
+        _manifest_row(
+            "newer-failed",
+            ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"",
+            hydration="FAILED",
+            blockers=["PLAYER_AVAILABILITY_UNVERIFIED"],
+        ),
+    ])
+    exclusions = []
+    stats = {}
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions, stats=stats
+    )
+    assert manifest == []
+    assert stats["excluded_by_reason"]["EVIDENCE_BLOCKED"] == 1
+    assert exclusions[0]["source_snapshot_id"] == "newer-failed"
+    assert exclusions[0]["blockers"] == ["PLAYER_AVAILABILITY_UNVERIFIED"]
+    assert db.last_query is not None
+    assert ("hydration_status", "PASS") not in db.last_query._filters
+
+
+def test_source_order_does_not_allow_older_pass_to_override_newer_failed():
+    """Source ID ordering is irrelevant to captured_at chronology."""
+    older = _manifest_row("z-older-pass", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+"")
+    newer = _manifest_row("a-newer-failed", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"", hydration="FAILED")
+    for rows in ((older, newer), (newer, older)):
+        excluded = []
+        manifest = _prop_manifest_rows(
+            _FilteringPropDB(rows), SLATE_DATE, "America/Chicago", exclusions=excluded
+        )
+        assert manifest == []
+        assert excluded[0]["source_snapshot_id"] == "a-newer-failed"
+
+
+def test_newer_verified_pass_can_recover_from_older_failed_observation():
+    """A historical failure alone never permanently blocks newer clear evidence."""
+    older = _manifest_row("z-older-failed", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+"", hydration="FAILED")
+    newer = _manifest_row("a-newer-pass", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"")
+    for rows in ((older, newer), (newer, older)):
+        manifest = _prop_manifest_rows(
+            _FilteringPropDB(rows), SLATE_DATE, "America/Chicago"
+        )
+        assert len(manifest) == 1
+        assert manifest[0]["source_snapshot_id"] == "a-newer-pass"
+
+
+def test_unknown_time_blocked_observation_cannot_be_overridden_by_clean_pass():
+    """Invalid or infinite timestamp means chronology is not authoritative."""
+    blocked = _manifest_row("unknown-blocked", "infinity", hydration="FAILED")
+    clean = _manifest_row(
+        "finite-pass", (FUTURE_DT - timedelta(hours=1)).isoformat()
+    )
+    for rows in ((blocked, clean), (clean, blocked)):
+        exclusions = []
+        manifest = _prop_manifest_rows(
+            _FilteringPropDB(rows), SLATE_DATE, "America/Chicago",
+            exclusions=exclusions,
+        )
+        assert manifest == []
+        assert exclusions[0]["source_snapshot_id"] == "unknown-blocked"
+        assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+
+
+def test_same_time_conflicting_observations_fail_closed_to_blocked():
+    db = _FilteringPropDB([
+        _manifest_row("pass-a", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+""),
+        _manifest_row(
+            "failed-b",
+            ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"",
+            hydration="FAILED",
+            blockers=["PLAYER_RULED_OUT"],
+        ),
+    ])
+    exclusions = []
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions
+    )
+    assert manifest == []
+    assert exclusions[0]["source_snapshot_id"] == "failed-b"
+    assert exclusions[0]["blockers"] == ["PLAYER_RULED_OUT"]
+
+
+def test_prop_manifest_pagination_remains_deterministic_with_mixed_hydration():
+    rows = []
+    for index in range(40):
+        hydration = "FAILED" if index % 5 == 0 else "PASS"
+        blockers = ["PLAYER_AVAILABILITY_UNVERIFIED"] if hydration == "FAILED" else []
+        rows.append(
+            {
+                "source_snapshot_id": f"snap-{index:03d}",
+                "captured_at": (FUTURE_DT - timedelta(minutes=5) + timedelta(seconds=index)).isoformat(),
+                "event_id": f"MLB:{index}",
+                "event_start_time": FUTURE,
+                "sport": "MLB",
+                "player": f"P{index}",
+                "stat_type": "PITCHER_STRIKEOUTS",
+                "line": 5.5,
+                "hydration_status": hydration,
+                "blockers": blockers,
+            }
+        )
+    db = _FilteringPropDB(list(reversed(rows)))
+    exclusions = []
+    stats = {}
+    manifest = _prop_manifest_rows(
+        db,
+        SLATE_DATE,
+        "America/Chicago",
+        page_size=7,
+        exclusions=exclusions,
+        stats=stats,
+    )
+    assert stats["read_complete"] is True
+    assert stats["raw_rows_read"] == 40
+    assert len(manifest) == 32
+    assert all(row["hydration_status"] == "PASS" for row in manifest)
+    assert stats["excluded_by_reason"]["EVIDENCE_BLOCKED"] == 8
+    assert db.last_query.orders == ["event_start_time", "source_snapshot_id"]
+
+
+def test_stale_pass_cannot_clear_newer_failed_without_blockers_list():
+    """Non-PASS hydration alone is enough to block even when blockers is empty."""
+    db = _FilteringPropDB([
+        _manifest_row("older-pass", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+""),
+        _manifest_row("newer-failed", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"", hydration="FAILED"),
+    ])
+    exclusions = []
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions
+    )
+    assert manifest == []
+    assert exclusions[0]["source_snapshot_id"] == "newer-failed"
+    assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+
+
+def test_pass_row_with_empty_blockers_is_held_when_role_status_rules_player_out():
+    """Daily must re-evaluate role_status on read; writer-trust on blockers alone is unsafe."""
+    row = _manifest_row("ruled-out-pass", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"")
+    row["role_status"] = {
+        "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+        "availability": {
+            "status": "OUT",
+            "designation": "OUT",
+            "source": "TEST_OFFICIAL_INJURY_REPORT",
+            "captured_at": ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"",
+            "evidence_status": "RETRIEVED",
+            "fresh": True,
+            "athlete_id": "1",
+            "event_id": "MLB:1",
+            "team": "TEST",
+        },
+    }
+    db = _FilteringPropDB([row])
+    exclusions = []
+    manifest = _prop_manifest_rows(
+        db, SLATE_DATE, "America/Chicago", exclusions=exclusions
+    )
+    assert manifest == []
+    assert exclusions[0]["source_snapshot_id"] == "ruled-out-pass"
+    assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+    assert exclusions[0]["blockers"] == ["PLAYER_RULED_OUT"]
+    assert db.last_query is not None
+    assert "role_status" in str(db.last_query.selected)
+
+
 # ---------------------------------------------------------------------------
 # Cross-sport MONEYLINE discovery
 #
@@ -325,6 +569,29 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     )
     monkeypatch.setattr(feed, "odds_proxy_feed", lambda **kwargs: slate)
     monkeypatch.setattr(feed, "rundown_board_feed", lambda **kwargs: slate)
+    # The full-suite runner can otherwise inherit a short provider time budget;
+    # this deterministic in-memory feed must walk every configured target.
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 600.0)
+
+    # Any earlier test that imports an API module boots the app and installs the
+    # production discovery overlays, which canonicalize NHL aliases against the
+    # live first-party NHL schedule. That schedule is an upstream source too, so
+    # stub it deterministically; otherwise this test depends on suite order.
+    from v17 import nhl_event_identity
+
+    def _nhl_schedule_match(*, event_start_time, home_team, away_team, **_kwargs):
+        return {
+            "event_id": "nhl-1",
+            "event_start_time": event_start_time,
+            "home_team": home_team,
+            "away_team": away_team,
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_verified_at": FUTURE,
+            "market_features_used": False,
+        }
+
+    monkeypatch.setattr(nhl_event_identity, "resolve_nhl_current_event_identity", _nhl_schedule_match)
+
 
     # No non-MLB bridge is registered, so every discovered non-MLB row must be
     # retained as MODEL_UNAVAILABLE rather than disappear from the board.
@@ -351,7 +618,10 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     reconciliation = audit["reconciliation"]
     assert reconciliation["row_reconciliation"] == "PASS"
     assert reconciliation["events_accounted"] == reconciliation["events_discovered"]
-    assert reconciliation["retained_unsupported_rows"] >= 3
+    assert reconciliation["retained_unsupported_rows"] >= 3, (
+        "Missing-model candidates were silently altered: "
+        + repr([(r["identity"].get("sport"), r["result"].get("bucket"), r["result"].get("model_status")) for r in moneyline_rows])
+    )
     # Every supported sport was *queried*, not just the ones with a model.
     assert audit["discovery"]["sports_queried"] == list(discovery.SUPPORTED_DISCOVERY_SPORTS)
     assert audit["discovery"]["discovery_independent_of_model_registry"] is True

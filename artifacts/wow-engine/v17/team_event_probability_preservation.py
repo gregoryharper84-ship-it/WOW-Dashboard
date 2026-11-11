@@ -346,13 +346,13 @@ def _market_favorite_identity(req: Any) -> tuple[str | None, bool, str]:
     return (req.home_team if home > away else req.away_team), True, "MARKET_FAVORITE_VERIFIED"
 
 
-def _unavailable_upset_alert(result: dict[str, Any], reason: str) -> dict[str, Any]:
+def _unavailable_upset_alert(result: dict[str, Any], reason: str, *, sport: str) -> dict[str, Any]:
     out = dict(result)
     payload = {
         "status": "UPSET_ALERT_UNAVAILABLE",
         "alert": False,
         "severity": "UNAVAILABLE",
-        "sport": str(out.get("sport") or "MLB").upper(),
+        "sport": str(sport or "").strip().upper() or "UNKNOWN",
         "market_favorite": None,
         "upset_candidate": None,
         "reason_codes": [reason],
@@ -373,20 +373,23 @@ def _unavailable_upset_alert(result: dict[str, Any], reason: str) -> dict[str, A
 def _attach_upset_alert(req: Any, result: dict[str, Any]) -> dict[str, Any]:
     """Attach an informational favorite-vulnerability flag without changing scoring."""
     out = dict(result)
+    # The validated model response need not repeat the original sport. Never
+    # mislabel an NFL/NHL/no-market explanatory hold as MLB by default.
+    sport = str(getattr(req, "sport", "") or "").strip().upper() or "UNKNOWN"
     market_favorite, favorite_verified, market_reason = _market_favorite_identity(req)
     if not favorite_verified or market_favorite is None:
-        return _unavailable_upset_alert(out, market_reason)
+        return _unavailable_upset_alert(out, market_reason, sport=sport)
 
     if out.get("probability_fields_withheld") is True:
-        return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_WITHHELD")
+        return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_WITHHELD", sport=sport)
     if out.get("calibration_health_status") != "PASS":
-        return _unavailable_upset_alert(out, "GOVERNED_CALIBRATION_NOT_PASS")
+        return _unavailable_upset_alert(out, "GOVERNED_CALIBRATION_NOT_PASS", sport=sport)
     if any(out.get(field) is None for field in _UPSET_ALERT_NUMERIC_FIELDS):
-        return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_UNAVAILABLE")
+        return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_UNAVAILABLE", sport=sport)
 
     try:
         alert = evaluate_favorite_upset_alert(
-            sport=str(getattr(req, "sport", "MLB") or "MLB"),
+            sport=sport,
             market_favorite=market_favorite,
             market_favorite_verified=True,
             governed_outcomes=(
@@ -411,7 +414,7 @@ def _attach_upset_alert(req: Any, result: dict[str, Any]) -> dict[str, Any]:
             underdog_upset_path=out.get("underdog_upset_path_json", out.get("underdog_upset_path")),
         )
     except (KeyError, TypeError, ValueError):
-        return _unavailable_upset_alert(out, "GOVERNED_UPSET_ALERT_PACKAGE_INVALID")
+        return _unavailable_upset_alert(out, "GOVERNED_UPSET_ALERT_PACKAGE_INVALID", sport=sport)
 
     payload = alert.to_dict()
     out["upset_alert"] = payload

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 import os
 from typing import Any
@@ -144,6 +144,63 @@ def _walk_forward_raw(rows, *, burn_in: int = 150, folds: int = 6):
     return raw_probs, outcomes, fold_ids, timestamps
 
 
+def disjoint_calibration_and_holdout(rows, artifact):
+    """Keep every Platt-fitting label strictly before the untouched holdout.
+
+    The former pipeline passed all pregame-feature rows into its calibrator
+    while the fitted candidate's 80/20 holdout scores were also reported.
+    Out-of-time raw predictions do NOT make those same labels independent
+    of a full-sample Platt fit. Preserve full date groups and fail closed.
+    """
+    ordered = sorted(rows, key=lambda row: (row.game_date, row.game_id))
+    cutoff = date.fromisoformat(artifact.train_end_date)
+    calib_train = [row for row in ordered if row.game_date <= cutoff]
+    holdout = [row for row in ordered if row.game_date > cutoff]
+    if (
+        not calib_train or not holdout
+        or len(calib_train) != artifact.training_row_count
+        or len(holdout) != artifact.holdout_row_count
+        or max(row.game_date for row in calib_train) >= min(row.game_date for row in holdout)
+        or len({row.game_id for row in ordered}) != len(ordered)
+    ):
+        raise ValueError("BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP")
+    return calib_train, holdout
+
+
+def evaluate_untouched_calibrated_holdout(artifact, holdout, coefficients):
+    """Score the reserved holdout after the calibrator has been fitted.
+
+    Never use these labels in _walk_forward_raw or phase_b_platt. This is
+    validation evidence, not a calibrated lower-bound or publication grant.
+    """
+    raw = np.asarray([artifact.raw_probability(row.values) for row in holdout], dtype=float)
+    outcomes = np.asarray([int(row.outcome) for row in holdout], dtype=float)
+    if (
+        not len(raw) or not np.all(np.isfinite(raw))
+        or not np.all(np.isfinite(outcomes))
+        or np.any((raw <= 0) | (raw >= 1))
+        or np.any((outcomes != 0) & (outcomes != 1))
+    ):
+        raise ValueError("BASKETBALL_CALIBRATED_HOLDOUT_INVALID")
+    raw_logit = np.log(np.clip(raw, 1e-12, 1 - 1e-12) / (1 - np.clip(raw, 1e-12, 1 - 1e-12)))
+    preds = np.asarray(_sigmoid(float(coefficients.a) + float(coefficients.b) * raw_logit), dtype=float)
+    if not np.all(np.isfinite(preds)) or np.any((preds <= 0) | (preds >= 1)):
+        raise ValueError("BASKETBALL_CALIBRATED_HOLDOUT_INVALID")
+    safe = np.clip(preds, 1e-9, 1 - 1e-9)
+    return {
+        "holdout_rows": int(len(safe)),
+        "holdout_start_date": min(row.game_date for row in holdout).isoformat(),
+        "holdout_end_date": max(row.game_date for row in holdout).isoformat(),
+        "calibrated_brier": float(np.mean((safe - outcomes) ** 2)),
+        "calibrated_log_loss": float(-np.mean(outcomes * np.log(safe) + (1 - outcomes) * np.log(1 - safe))),
+        "mean_calibrated_probability": float(np.mean(safe)),
+        "observed_home_win_rate": float(np.mean(outcomes)),
+        "calibration_bias": float(np.mean(safe - outcomes)),
+        "publication_authorized": False,
+        "can_execute": False,
+    }
+
+
 def fit_and_persist(
     sport: str,
     client=None,
@@ -166,9 +223,13 @@ def fit_and_persist(
     model_version = f"{sport}_TEAM_EVENT_LOGISTIC_V1_{version_stamp}"
     artifact = train_specialist(features, sport, model_artifact_version=model_version)
 
-    raw, outcomes, folds, timestamps = _walk_forward_raw(features)
+    calibration_train, untouched_holdout = disjoint_calibration_and_holdout(features, artifact)
+    raw, outcomes, folds, timestamps = _walk_forward_raw(calibration_train)
     calibration = phase_b_platt(raw, outcomes, folds, timestamps)
     calibration_status = calibration.result.calibration_status if calibration.result is not None else None
+    holdout_evidence = evaluate_untouched_calibrated_holdout(
+        artifact, untouched_holdout, calibration.coefficients,
+    )
     decision = certification_decision(
         artifact,
         sport=sport,
@@ -220,6 +281,10 @@ def fit_and_persist(
         "certification_notes": {
             "fit_decision": asdict(decision),
             "calibration_status": calibration_status,
+            "calibration_training_cutoff": artifact.train_end_date,
+            "calibration_training_rows": len(calibration_train),
+            "calibration_holdout_overlap_rows": 0,
+            "untouched_holdout_evidence": holdout_evidence,
             "provenance_complete": bool(provenance_complete),
             "promotion_attempted": False, "can_execute": False,
         },
@@ -232,6 +297,10 @@ def fit_and_persist(
         "holdout_brier": artifact.holdout_brier, "holdout_log_loss": artifact.holdout_log_loss,
         "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
         "calibration_status": calibration_status, "fit_decision": asdict(decision),
+        "calibration_training_cutoff": artifact.train_end_date,
+        "calibration_training_rows": len(calibration_train),
+        "calibration_holdout_overlap_rows": 0,
+        "untouched_holdout_evidence": holdout_evidence,
         "persisted_status": persisted_status,
         "provenance_complete": bool(provenance_complete),
         "promotion_attempted": False,

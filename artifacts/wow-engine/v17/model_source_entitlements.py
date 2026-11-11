@@ -61,6 +61,16 @@ SOURCES: dict[str, SourceEntitlement] = {
         license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
         attribution_required=True,
     ),
+    "SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS": SourceEntitlement(
+        "SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS",
+        ("NCAAF",),
+        "TRAINING_OPEN_LICENSED",
+        fitted_training_allowed_when_ready=True,
+        certification_source_review_required=True,
+        license_id="CC-BY-4.0",
+        license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
+        attribution_required=True,
+    ),
     "SPORTSDATAVERSE_WNBA_STATS": SourceEntitlement(
         "SPORTSDATAVERSE_WNBA_STATS",
         ("WNBA",),
@@ -162,6 +172,16 @@ SOURCES: dict[str, SourceEntitlement] = {
         ("MMA",),
         "CANDIDATE_FIRST_PARTY_UNDOCUMENTED",
         fitted_training_allowed_when_ready=True,
+        certification_source_review_required=True,
+    ),
+    # No verified training license/corpus has been certified for T20 cricket.
+    # Preserve an explicit source ownership gap rather than silently treating
+    # bookmaker schedules or publicly reachable scores as fitted-model inputs.
+    "CRICKET_HISTORICAL_MATCHES_UNAPPROVED": SourceEntitlement(
+        "CRICKET_HISTORICAL_MATCHES_UNAPPROVED",
+        ("CRICKET",),
+        "NO_APPROVED_SOURCE",
+        fitted_training_allowed_when_ready=False,
         certification_source_review_required=True,
     ),
     "NCAAB_APPROVED_STATS": SourceEntitlement(

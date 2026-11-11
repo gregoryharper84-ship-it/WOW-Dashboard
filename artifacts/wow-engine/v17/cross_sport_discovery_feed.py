@@ -276,13 +276,14 @@ def odds_proxy_feed(
     def fetch(family: str, target: Any = None) -> discovery.AcquisitionFeedResult:
         keys = _offered_keys().get(str(family).upper(), ())
         rows: list[Mapping[str, Any]] = []
+        window_start, window_end = discovery.slate_bounded_window(started, end)
         for sport_key in keys:
             result = proxy_get(
                 f"/odds-api/v4/sports/{sport_key}/events",
                 {
                     "dateFormat": "iso",
-                    "commenceTimeFrom": _iso(started),
-                    "commenceTimeTo": _iso(end),
+                    "commenceTimeFrom": _iso(window_start),
+                    "commenceTimeTo": _iso(window_end),
                 },
             )
             if not getattr(result, "ok", False):

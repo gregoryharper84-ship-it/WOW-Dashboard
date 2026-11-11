@@ -26,6 +26,15 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/ncaaf_cfbd_player_outcome_normalization_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_player_outcome_normalization_contract.py"
+      - "artifacts/wow-engine/ncaaf_cfbd_daily_outcome_research_cron_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_daily_research_cron_contract.py"
+      - "artifacts/wow-engine/ncaaf_retrospective_prior5_research_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_retrospective_prior5_research_contract.py"
+      - "artifacts/wow-engine/ncaaf_pregame_schedule_research_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_pregame_schedule_research_contract.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_snapshot_write_size.py"
       - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
@@ -54,6 +63,15 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/ncaaf_cfbd_player_outcome_normalization_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_player_outcome_normalization_contract.py"
+      - "artifacts/wow-engine/ncaaf_cfbd_daily_outcome_research_cron_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_daily_research_cron_contract.py"
+      - "artifacts/wow-engine/ncaaf_retrospective_prior5_research_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_retrospective_prior5_research_contract.py"
+      - "artifacts/wow-engine/ncaaf_pregame_schedule_research_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_pregame_schedule_research_contract.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_snapshot_write_size.py"
       - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
@@ -66,9 +84,10 @@ on:
 permissions:
   contents: read
 
+# PR verification gets its own group so it never queues behind (or cancels) live runs.
 concurrency:
-  group: wow-v17-ncaaf-model-maintenance
-  cancel-in-progress: false
+  group: wow-v17-ncaaf-model-maintenance-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'live' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -91,6 +110,11 @@ jobs:
           python -m pytest -q
           test_ncaaf_cfbd_client.py
           test_ncaaf_cfbd_hydrator.py
+          test_ncaaf_cfbd_player_outcome_normalization_contract.py
+          test_ncaaf_cfbd_daily_research_cron_contract.py
+          test_ncaaf_retrospective_prior5_research_contract.py
+          test_ncaaf_pregame_schedule_research_contract.py
+          test_ncaaf_cfbd_snapshot_write_size.py
           test_ncaaf_prop_historical_adapter.py
           test_v17_ncaaf_prop_history_maintenance.py
           test_ncaaf_feature_compiler.py
@@ -225,9 +249,38 @@ jobs:
               assert candidate.get("lifecycle_state") == "CANDIDATE"
               assert candidate.get("probability_publishable") is False
               assert candidate.get("can_execute") is False
+          # The compiler already reports typed, event-specific blockers.
+          # Surface its exact counts without logging raw provider payloads.
+          raw_samples = feature.get("blocker_samples")
+          raw_samples = raw_samples if isinstance(raw_samples, list) else []
+          safe_samples = []
+          for sample in raw_samples[:3]:
+              if not isinstance(sample, dict):
+                  continue
+              raw_blockers = sample.get("blockers")
+              safe_samples.append({
+                  "official_event_id": str(sample.get("official_event_id") or "")[:40],
+                  "code": str(sample.get("code") or "")[:100],
+                  "blockers": [
+                      str(value)[:80]
+                      for value in (raw_blockers[:8] if isinstance(raw_blockers, list) else [])
+                  ],
+              })
           print(json.dumps({
               "status": payload.get("status"),
+              "fresh_acquisition_complete": payload.get("fresh_acquisition_complete"),
+              "maintenance_degraded": payload.get("maintenance_degraded"),
+              "source_snapshot_n": payload.get("source_snapshot_n"),
+              "source_snapshot_persisted_n": payload.get("source_snapshot_persisted_n"),
+              "feature_status": feature.get("status"),
+              "games_seen": feature.get("games_seen"),
+              "evidence_rows_seen": feature.get("evidence_rows_seen"),
+              "blocked_games": feature.get("blocked_games"),
+              "features_persisted": feature.get("features_persisted"),
+              "features_existing": feature.get("features_existing"),
               "complete_feature_rows": feature.get("complete_feature_rows"),
+              "feature_blocker_counts": feature.get("blocker_counts"),
+              "feature_blocker_samples": safe_samples,
               "training_blocker": (payload.get("training_blocker") or {}).get("code"),
               "blockers": payload.get("blockers"),
               "can_execute": False,
@@ -238,4 +291,120 @@ jobs:
                   "training_blocker": (payload.get("training_blocker") or {}).get("code"),
                   "blockers": payload.get("blockers"),
               }, sort_keys=True))
+          PY
+
+  exact-candidate-replay-once:
+    name: Real-data NCAAF exact candidate replay (read-only)
+    # Intentional one-shot. This workflow is already an allowed protected-main
+    # GitHub OIDC identity; it does not add a new trusted workflow or bearer key.
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'NCAAF-ONE-SHOT-REPLAY-20261022')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      CANDIDATE_ID: 44d3dec0-e775-483f-b948-930214b69034
+    steps:
+      - name: Bind the protected main OIDC context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Replay exact 3691-row fitted candidate without persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          assert os.environ["WOW_CAN_EXECUTE"] == "false"
+          assert os.environ["WOW_DRY_RUN_ONLY"] == "true"
+          assert os.environ["GITHUB_REF"] == "refs/heads/main"
+          expected_candidate = "44d3dec0-e775-483f-b948-930214b69034"
+          assert os.environ["CANDIDATE_ID"] == expected_candidate
+
+          oidc_base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in oidc_base else "?"
+          oidc_url = oidc_base + separator + urllib.parse.urlencode(
+              {"audience": "wow-v17-multiscout"}
+          )
+          request = urllib.request.Request(
+              oidc_url,
+              headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              oidc_token = json.load(response)["value"]
+
+          endpoint = (
+              os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+              + "/internal/v17/ncaaf-result-form-candidate-replay/"
+              + expected_candidate
+          )
+          request = urllib.request.Request(
+              endpoint, data=b"", method="POST",
+              headers={
+                  "Authorization": "Bearer " + oidc_token,
+                  "Content-Type": "application/json",
+              },
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=1180) as response:
+                  payload = json.load(response)
+          except urllib.error.HTTPError as exc:
+              # No token, request headers or response body in logs.
+              raise RuntimeError(f"NCAAF_EXACT_REPLAY_HTTP_ERROR:{exc.code}") from None
+
+          expected_status = "NCAAF_RESULT_FORM_DETERMINISTIC_REPLAY_PASS_SOURCE_HOLD"
+          result = {
+              "status": payload.get("status"),
+              "code": payload.get("code"),
+              "candidate_id": payload.get("candidate_id"),
+              "model_artifact_version": payload.get("model_artifact_version"),
+              "artifact_checksum": payload.get("artifact_checksum"),
+              "dataset_hash": payload.get("dataset_hash"),
+              "training_rows_replayed": payload.get("training_rows_replayed"),
+              "deterministic_replay_status": payload.get("deterministic_replay_status"),
+              "source_attestation_status": payload.get("source_attestation_status"),
+              "source_hold_code": payload.get("source_hold_code"),
+              "calibration_status": payload.get("calibration_status"),
+              "certification_granted": payload.get("certification_granted"),
+              "probability_publishable": payload.get("probability_publishable"),
+              "can_execute": payload.get("can_execute"),
+              "head_sha": os.environ["GITHUB_SHA"],
+          }
+          assert payload.get("candidate_id") == expected_candidate
+          assert payload.get("certification_granted") is False
+          assert payload.get("probability_publishable") is False
+          assert payload.get("can_execute") is False
+          assert payload.get("model_probability") is None
+          assert payload.get("calibrated_lower_bound") is None
+          assert payload.get("source_attestation_status") == "HOLD"
+          print(json.dumps(result, sort_keys=True, indent=2))
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("## NCAAF exact fitted candidate replay — read-only\n")
+              f.write("Commit: `" + os.environ["GITHUB_SHA"] + "`\n\n")
+              f.write("Status: `" + str(result["status"]) + "`\n\n")
+              f.write("Source attestation: **HOLD**. Publication/execution: **disabled**.\n")
+
+          if payload.get("status") != expected_status or payload.get("training_rows_replayed") != 3691:
+              raise RuntimeError(
+                  "NCAAF_EXACT_REAL_CORPUS_REPLAY_NOT_VERIFIED:"
+                  + str(payload.get("code") or payload.get("status"))
+              )
           PY

@@ -272,15 +272,26 @@ def _exec(tmp_path, name_line, env_overrides):
     ],
 )
 def test_persist_step_builds_receipt_json_and_heartbeat(tmp_path, env, delivery, code, disposition):
-    result, heartbeat = _exec(tmp_path, PERSIST, env)
+    result, heartbeat = _exec(tmp_path, PERSIST, {"WORKER_ID": "claude-777", **env})
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "wow-dual-stream-receipt.json").read_text())
     assert receipt["restoration_delivery"] == delivery
     assert receipt["restoration_delivery_code"] == code
     assert receipt["restoration_disposition"] == disposition
+    assert receipt["worker_id"] == "claude-777"
     assert receipt["can_execute"] is False
     assert f"- restoration_delivery_code: {code}" in heartbeat
     assert f"- restoration_disposition: {disposition}" in heartbeat
+
+
+@pytest.mark.parametrize("env", [{}, {"WORKER_ID": ""}])
+def test_persist_step_without_worker_does_not_write_receipt_or_heartbeat(tmp_path, monkeypatch, env):
+    monkeypatch.delenv("WORKER_ID", raising=False)
+    result, heartbeat = _exec(tmp_path, PERSIST, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (tmp_path / "wow-dual-stream-receipt.json").exists()
+    assert not (tmp_path / "gh_calls.txt").exists()
+    assert heartbeat == ""
 
 
 def test_jq_args_declared_in_the_step_that_uses_them():

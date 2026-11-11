@@ -16,10 +16,12 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 ESPN_BASE = os.environ.get("WOW_SCOUT_ESPN_BASE_URL", "https://site.api.espn.com/apis/site/v2/sports").rstrip("/")
 SECONDARY_ENABLED = os.environ.get("WOW_SCOUT_SECONDARY_SOURCE_ENABLED", "true").strip().lower() == "true"
@@ -38,7 +40,8 @@ ESPN_SPORT_MAP: dict[str, tuple[str, str, str]] = {
 _SPORTS_RE = re.compile(r"^/odds-api/v4/sports$")
 _EVENTS_RE = re.compile(r"^/odds-api/v4/sports/([^/]+)/events$")
 _EVENT_DATA_RE = re.compile(r"^/odds-api/v4/sports/([^/]+)/events/([^/]+)/(markets|odds)$")
-_SCOREBOARD_CACHE: dict[tuple[str, str, int], dict[str, Any]] = {}
+_SCOREBOARD_CACHE_TTL_SECONDS = 300.0
+_SCOREBOARD_CACHE: dict[tuple[str, str, int], tuple[float, dict[str, Any]]] = {}
 
 
 @dataclass
@@ -72,10 +75,30 @@ def _date_key(value: str | None) -> str:
     return (dt or datetime.now(timezone.utc)).strftime("%Y%m%d")
 
 
+def _scoreboard_date_key(value: str | None) -> str:
+    """Map timestamp windows to ESPN's Eastern-date scoreboard partitions.
+
+    Date-only lookups are already explicit provider partition keys and must not
+    be shifted. Only timestamp endpoints need conversion from UTC to Eastern.
+    The caller's exact UTC start/end are enforced separately after acquisition.
+    """
+    if not value or re.fullmatch(r"\d{8}|\d{4}-\d{2}-\d{2}", value):
+        return _date_key(value)
+    instant = _parse_utc(value)
+    if instant is None:
+        return _date_key(value)
+    return instant.astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+
+
 def _date_keys(params: dict[str, Any] | None) -> list[str]:
     params = params or {}
-    start = _date_key(str(params.get("commenceTimeFrom") or ""))
-    end = _date_key(str(params.get("commenceTimeTo") or ""))
+    start_value = str(params.get("commenceTimeFrom") or "")
+    end_value = str(params.get("commenceTimeTo") or "")
+    # Keep every original UTC date partition; add the Eastern previous-day
+    # partition when the query crosses midnight UTC before midnight Eastern.
+    # This prevents regressions in multi-day acquisition and date-only lookups.
+    start = min(_date_key(start_value), _scoreboard_date_key(start_value))
+    end = max(_date_key(end_value), _scoreboard_date_key(end_value))
     start_date = datetime.strptime(start, "%Y%m%d").date()
     end_date = datetime.strptime(end, "%Y%m%d").date()
     if end_date < start_date:
@@ -153,7 +176,10 @@ def _scoreboard(
     cache_key = (sport_key, dates, bounded_limit)
     cached = _SCOREBOARD_CACHE.get(cache_key)
     if cached is not None:
-        return SecondaryResult(True, cached, 200)
+        fetched_at, response = cached
+        if 0 <= monotonic() - fetched_at < _SCOREBOARD_CACHE_TTL_SECONDS:
+            return SecondaryResult(True, response, 200)
+        _SCOREBOARD_CACHE.pop(cache_key, None)
 
     merged_data: dict[str, Any] = {}
     merged_events: dict[str, dict[str, Any]] = {}
@@ -179,9 +205,29 @@ def _scoreboard(
             )
         response_status = result.status or response_status
         daily_data = dict(result.data)
+        # A 200 response without an events array is not a verified empty slate.
+        # Refuse schema drift instead of silently recording NO_EVENTS_RETURNED.
+        daily_events = daily_data.get("events")
+        if not isinstance(daily_events, list) or any(
+            not isinstance(event, dict) for event in daily_events
+        ):
+            return SecondaryResult(
+                False, status=result.status, code="ESPN_SCOREBOARD_EVENTS_SCHEMA_UNRECOGNISED"
+            )
+        # Missing event IDs or non-UTC-parseable start times used to be quietly
+        # dropped by the converter/window filter, falsely reconciling a partial
+        # scoreboard as a complete zero-/low-event slate.
+        if any(
+            not str(event.get("id") or "").strip()
+            or not isinstance(event.get("date"), str)
+            or _parse_utc(event.get("date")) is None
+            for event in daily_events
+        ):
+            return SecondaryResult(
+                False, status=result.status, code="ESPN_SCOREBOARD_EVENT_IDENTITY_SCHEMA_UNRECOGNISED"
+            )
         if not merged_data:
             merged_data = daily_data
-        daily_events = daily_data.get("events") if isinstance(daily_data.get("events"), list) else []
         total_hint = daily_data.get("total") if daily_data.get("total") is not None else daily_data.get("count")
         try:
             total_hint_int = int(total_hint) if total_hint is not None else None
@@ -216,7 +262,9 @@ def _scoreboard(
     merged_data["_wow_provider_truncated"] = provider_truncated
     merged_data["_wow_provider_request_dates"] = date_keys
     merged_data["_wow_provider_daily_request_count"] = len(date_keys)
-    _SCOREBOARD_CACHE[cache_key] = merged_data
+    # A process may live across many Daily scans. Never freeze a live slate
+    # at its first successful scoreboard snapshot indefinitely.
+    _SCOREBOARD_CACHE[cache_key] = (monotonic(), merged_data)
     return SecondaryResult(True, merged_data, response_status)
 
 
@@ -435,8 +483,22 @@ def secondary_for_request(
         board = _scoreboard(sport_key, params)
         if not board.ok:
             return board
-        events = board.data.get("events") if isinstance(board.data, dict) else []
-        in_window = [event for event in (events or []) if isinstance(event, dict) and _within_exact_window(event, params)]
+        # Full-slate consumers must not convert a provider-limited sample into
+        # a successful canonical discovery receipt. The resilient union may
+        # attempt a different source while preserving this typed blocker.
+        if not isinstance(board.data, dict) or not isinstance(board.data.get("events"), list):
+            return SecondaryResult(
+                False, status=board.status, code="ESPN_SCOREBOARD_EVENTS_SCHEMA_UNRECOGNISED"
+            )
+        if board.data.get("_wow_provider_truncated") is not False:
+            return SecondaryResult(
+                False, status=board.status,
+                code=("ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
+                      if board.data.get("_wow_provider_truncated") is True
+                      else "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"),
+            )
+        events = board.data["events"]
+        in_window = [event for event in events if isinstance(event, dict) and _within_exact_window(event, params)]
         converted = [espn_event_to_primary_shape(event, sport_key) for event in in_window]
         return SecondaryResult(True, [event for event in converted if event], 200)
 

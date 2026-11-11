@@ -104,6 +104,26 @@ LIVE_ACCEPTANCE_PROBES: dict[str, str] = {
 
 ALLOWED_DISPOSITIONS = frozenset({"BLOCKED_WITH_EXACT_REASON"})
 TRUST_ROOT_SOURCE = ".github/workflows/wow-v17-existing-pr-governance-review.yml"
+# Governance-workflow seed previously embedded in the existing-PR shell deny list.
+# The receipt classifier treats every .github/, .agents/, and .claude/ path as a trust root.
+# This seed is what governance_trust_roots() scans for files those workflows execute.
+DECLARED_TRUST_ROOT_PATHS = (
+    ".github/workflows/wow-verify.yml",
+    ".github/workflows/wow-engine-verify.yml",
+    ".github/workflows/wow-v17-rapid-repair.yml",
+    ".github/workflows/wow-v17-change-impact-gate.yml",
+    ".github/workflows/wow-v17-trusted-governance-gate.yml",
+    ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+    ".github/workflows/wow-v17-morning-green-continuation.yml",
+    ".github/workflows/wow-v17-release-production-verification-agent.yml",
+    ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+    ".github/workflows/wow-v17-claude-engineering-worker.yml",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+    ".github/scripts/verify_engineering_governance_receipt.py",
+    ".github/scripts/verify_existing_pr_governance_receipt.py",
+    ".github/actions/wow-chatgpt-agent/*",
+    ".github/actions/wow-claude-agent/*",
+)
 CODEOWNERS_LOCATIONS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub search order
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Autonomy model: ordinary PRs need no human review; they merge only when the
@@ -115,12 +135,85 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # ----------------------------------------------------------------------------- utils
 
 def trust_root_paths(repo_root: Path) -> list[str]:
-    """Trust-root paths exactly as the protected existing-PR review enforces them."""
-    text = (repo_root / TRUST_ROOT_SOURCE).read_text()
-    match = re.search(r'case "\$changed_path" in\s*\n\s*([^\n]+)\)\n', text)
-    if not match:
-        raise ValueError("TRUST_ROOT_LIST_UNPARSEABLE")
-    return [p.strip() for p in match.group(1).split("|") if p.strip()]
+    """Governance-workflow seed paths. Prefixes cover .github, .agents and .claude."""
+    source = repo_root / TRUST_ROOT_SOURCE
+    if not source.is_file():
+        raise ValueError("TRUST_ROOT_SOURCE_MISSING")
+    text = source.read_text()
+    if 'case "$changed_path" in' in text:
+        raise ValueError("TRUST_ROOT_SHELL_DENY_LIST_MUST_NOT_RETURN")
+    if "--bootstrap" not in text or "TRUST_ROOT_BOOTSTRAP" not in text:
+        raise ValueError("TRUST_ROOT_BOOTSTRAP_PATH_MISSING")
+    return list(DECLARED_TRUST_ROOT_PATHS)
+
+
+# Workflows that make governance decisions or hold control-plane credentials.
+GOVERNANCE_WORKFLOWS_EXTRA = (
+    ".github/workflows/wow-v17-independent-qa-check.yml",
+    ".github/workflows/wow-v17-release-authority-check.yml",
+    ".github/workflows/wow-v17-governance-dispatcher.yml",
+    ".github/workflows/wow-v17-engineering-auto-repair.yml",
+)
+TRUST_ROOT_PREFIXES = (".github/", ".agents/", ".claude/")
+_REF_RE = re.compile(r"((?:artifacts|scripts|\.agents|\.github/scripts)/[A-Za-z0-9_./-]+\.(?:py|json|md|sh|ya?ml|txt))")
+_V17_IMPORT_RE = re.compile(r"\b(?:from|import)\s+v17\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _local_imports(repo_root: Path, path: Path) -> set[Path]:
+    import ast
+
+    try:
+        tree = ast.parse(path.read_text())
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.append(node.module)
+    found: set[Path] = set()
+    bases = (path.parent, repo_root / "artifacts/wow-engine", repo_root / "artifacts/wow-engine/v17")
+    for name in names:
+        for base in bases:
+            cand = base / (name.replace(".", "/") + ".py")
+            if cand.is_file():
+                found.add(cand.resolve())
+    return found
+
+
+def governance_trust_roots(repo_root: Path) -> list[str]:
+    """Every file a governance workflow executes or reads, plus its local imports.
+
+    A change to any of these can alter how the gates themselves decide, so it must
+    never pass autonomously. Tests are excluded: they gate nothing at decision time.
+    """
+    repo_root = repo_root.resolve()
+    workflows = [p for p in trust_root_paths(repo_root) if p.startswith(".github/workflows/")]
+    workflows += [w for w in GOVERNANCE_WORKFLOWS_EXTRA if (repo_root / w).is_file()]
+    found: set[Path] = set()
+    for wf in workflows:
+        text = (repo_root / wf).read_text()
+        for ref in _REF_RE.findall(text):
+            found.add((repo_root / ref).resolve())
+        for mod in _V17_IMPORT_RE.findall(text):
+            found.add((repo_root / "artifacts/wow-engine/v17" / f"{mod}.py").resolve())
+    found = {f for f in found if f.is_file()}
+    frontier = [f for f in found if f.suffix == ".py"]
+    while frontier:
+        nxt = []
+        for f in frontier:
+            for dep in _local_imports(repo_root, f):
+                if dep not in found:
+                    found.add(dep)
+                    nxt.append(dep)
+        frontier = nxt
+    rel = {str(f.relative_to(repo_root)) for f in found}
+    return sorted(r for r in rel if "/test" not in r and not Path(r).name.startswith("test_"))
+
+
+def is_trust_root(path: str, governance_files: set[str] | frozenset[str]) -> bool:
+    return path.startswith(TRUST_ROOT_PREFIXES) or path in governance_files
 
 
 def _codeowners_regex(pattern: str) -> re.Pattern[str]:
@@ -317,7 +410,11 @@ def evaluate(owner: dict[str, Any], *, principals: list[dict] | None = None,
         # Named trust roots plus probes for NEW files: a newly added privileged workflow
         # or action is a trust root even though no list names it yet.
         probes = [".github/CODEOWNERS", ".github/workflows/__new_workflow__.yml",
-                  ".github/actions/__new_action__/action.yml", ".github/scripts/__new_script__.py"]
+                  ".github/actions/__new_action__/action.yml", ".github/scripts/__new_script__.py",
+                  ".agents/skills/__new_skill__/SKILL.md",
+                  ".claude/skills/__new_skill__/SKILL.md",
+                  ".claude/agents/__new_agent__.md",
+                  ".claude/settings.json"]
         for path in trust_roots + probes:
             if f"@{owner_login}" not in _codeowners_owners(codeowners, path):
                 findings.append(f"PROTECTION_CODEOWNERS_UNCOVERED:{path}")
@@ -556,8 +653,9 @@ def main(argv: list[str] | None = None) -> int:
     owner = json.loads(Path(args.owner).read_text())
     principals = [json.loads(Path(f).read_text()) for f in args.principal]
     live = json.loads(Path(args.live_acceptance).read_text()) if args.live_acceptance else []
+    repo_root = Path(args.repo_root)
     result = evaluate(owner, principals=principals, live_acceptance=live,
-                      trust_roots=trust_root_paths(Path(args.repo_root)))
+                      trust_roots=sorted(set(trust_root_paths(repo_root)) | set(governance_trust_roots(repo_root))))
     print(json.dumps(result, indent=2))
     return 0 if result["status"] == "PASS" else 2
 

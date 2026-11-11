@@ -457,7 +457,9 @@ def candidate_record(candidate: BinaryCandidate, *, training_code_sha: str) -> d
         "artifact_payload": payload,
         "calibrator_payload": calibrator,
         "validation_metrics": metrics,
-        "training_rows": candidate.metrics.train_n + candidate.metrics.calibration_n + candidate.metrics.test_n,
+        # These are disjoint chronological partitions; total is their sum.
+        # Never encode the total as training_rows or replay double-counts splits.
+        "training_rows": candidate.metrics.train_n,
         "calibration_rows": candidate.metrics.calibration_n,
         "test_rows": candidate.metrics.test_n,
         "research_screen_pass": candidate.research_screen_pass,

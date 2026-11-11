@@ -1,0 +1,399 @@
+{
+  "provenance": "NHL official public gamecenter landing; minimal score-reconciliation projection, retrieved 2026-10-26, no archived pregame snapshot",
+  "records": [
+    {
+      "source_url": "https://api-web.nhle.com/v1/gamecenter/2024020001/landing",
+      "retrospective": true,
+      "scoring": {
+        "id": 2024020001,
+        "season": 20242025,
+        "gameType": 2,
+        "gameState": "OFF",
+        "periodDescriptor": {
+          "periodType": "REG",
+          "number": 3
+        },
+        "homeTeam": {
+          "abbrev": "BUF",
+          "score": 1
+        },
+        "awayTeam": {
+          "abbrev": "NJD",
+          "score": 4
+        },
+        "summary": {
+          "scoring": [
+            {
+              "periodDescriptor": {
+                "number": 1,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "NJD"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "NJD"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 2,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "NJD"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 3,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "BUF"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "NJD"
+                  },
+                  "goalModifier": "empty-net"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "source_url": "https://api-web.nhle.com/v1/gamecenter/2024020009/landing",
+      "retrospective": true,
+      "scoring": {
+        "id": 2024020009,
+        "season": 20242025,
+        "gameType": 2,
+        "gameState": "OFF",
+        "periodDescriptor": {
+          "periodType": "OT",
+          "number": 4
+        },
+        "homeTeam": {
+          "abbrev": "VAN",
+          "score": 5
+        },
+        "awayTeam": {
+          "abbrev": "CGY",
+          "score": 6
+        },
+        "summary": {
+          "scoring": [
+            {
+              "periodDescriptor": {
+                "number": 1,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "CGY"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 2,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "CGY"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 3,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "CGY"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "CGY"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "CGY"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 4,
+                "periodType": "OT"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "CGY"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "source_url": "https://api-web.nhle.com/v1/gamecenter/2024020022/landing",
+      "retrospective": true,
+      "scoring": {
+        "id": 2024020022,
+        "season": 20242025,
+        "gameType": 2,
+        "gameState": "OFF",
+        "periodDescriptor": {
+          "periodType": "SO",
+          "number": 5
+        },
+        "homeTeam": {
+          "abbrev": "VAN",
+          "score": 2
+        },
+        "awayTeam": {
+          "abbrev": "PHI",
+          "score": 3
+        },
+        "summary": {
+          "scoring": [
+            {
+              "periodDescriptor": {
+                "number": 1,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                },
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "PHI"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 2,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": true,
+                  "teamAbbrev": {
+                    "default": "VAN"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 3,
+                "periodType": "REG"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "PHI"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            },
+            {
+              "periodDescriptor": {
+                "number": 4,
+                "periodType": "OT"
+              },
+              "goals": []
+            },
+            {
+              "periodDescriptor": {
+                "number": 5,
+                "periodType": "SO"
+              },
+              "goals": [
+                {
+                  "isHome": false,
+                  "teamAbbrev": {
+                    "default": "PHI"
+                  },
+                  "goalModifier": "none"
+                }
+              ]
+            }
+          ],
+          "shootout": {
+            "events": [
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "VAN"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "PHI"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "VAN"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "PHI"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "goal",
+                "teamAbbrev": {
+                  "default": "VAN"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "goal",
+                "teamAbbrev": {
+                  "default": "PHI"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "VAN"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "PHI"
+                }
+              },
+              {
+                "gameWinner": false,
+                "result": "save",
+                "teamAbbrev": {
+                  "default": "VAN"
+                }
+              },
+              {
+                "gameWinner": true,
+                "result": "goal",
+                "teamAbbrev": {
+                  "default": "PHI"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -146,6 +146,7 @@ def _compact_governance_payload(
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
         "compute_provider": base.get("compute_provider"),
         "database_provider": base.get("database_provider"),
+        "deployed_sha": base.get("deployed_sha"),
         "deployment_gates": _compact_deployment_gates(base.get("deployment_gates")),
         "calibration_health": _compact_calibration_health(base.get("calibration_health")),
         "lane_capabilities": _compact_lane_capabilities(base.get("lane_capabilities")),

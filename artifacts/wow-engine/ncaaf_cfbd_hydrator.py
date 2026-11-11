@@ -261,12 +261,20 @@ def persist_source_snapshots(supabase_client: Any, snapshots: Iterable[SourceSna
     This function returns inserted/upserted row count only; it has no scoring
     side effects.
     """
-    rows = [asdict(snapshot) for snapshot in snapshots]
-    if not rows:
-        return 0
-    result = supabase_client.table("wow_ncaaf_source_snapshots").upsert(
-        rows,
-        on_conflict="provider,endpoint,season,week,payload_sha256",
-    ).execute()
-    data = getattr(result, "data", None)
-    return len(data) if isinstance(data, list) else 0
+    # A 20-week CFBD /games/players season can contain many megabytes of
+    # nested JSON. The former single upsert(rows) produced Supabase HTTP 520
+    # for the season batch and lost ALL successful source acquisition.
+    # Keep the immutable per-week hash, store one bounded snapshot per call,
+    # and require an acknowledgement for each. Previous weeks survive a later
+    # transport failure and the caller can retry only uncached weeks.
+    persisted = 0
+    for snapshot in snapshots:
+        result = supabase_client.table("wow_ncaaf_source_snapshots").upsert(
+            asdict(snapshot),
+            on_conflict="provider,endpoint,season,week,payload_sha256",
+        ).execute()
+        data = getattr(result, "data", None)
+        if not isinstance(data, list) or len(data) != 1:
+            raise RuntimeError("NCAAF_SOURCE_SNAPSHOT_WRITE_ACK_INVALID")
+        persisted += 1
+    return persisted
