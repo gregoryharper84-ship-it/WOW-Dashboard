@@ -137,10 +137,13 @@ def classify_missing_pbp_presence(
     keys = stats.loc[:, keycols].copy()
     keys["game_id"] = keys["game_id"].astype(str).str.strip()
     keys["player_id"] = keys["player_id"].astype(str).str.strip()
-    missing = known.merge(
+    checked = known.merge(
         keys, on=keycols, how="left", validate="one_to_one", indicator=True,
     )
-    missing = missing.loc[missing["_merge"].eq("left_only")]
+    missing = checked.loc[checked["_merge"].eq("left_only")]
+    matched = checked.loc[checked["_merge"].eq("both")]
+    if len(matched) != canonical["player_games_matched"]:
+        raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
     if len(missing) != canonical["missing_player_games"]:
         raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
     counts = {"pbp_game_absent": 0, "pbp_actor_observed": 0, "pbp_actor_not_observed": 0}
@@ -159,12 +162,25 @@ def classify_missing_pbp_presence(
             examples.append({"game_id": game_id, "gsis_id": player_id, "classification": category})
     if sum(counts.values()) != canonical["missing_player_games"]:
         raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
+    control = {"pbp_actor_observed": 0, "pbp_actor_not_observed": 0, "pbp_game_absent": 0}
+    for row in matched.itertuples(index=False):
+        game_id, player_id = str(row.game_id), str(row.gsis_id)
+        if game_id not in games:
+            control["pbp_game_absent"] += 1
+        elif (game_id, player_id) in actors:
+            control["pbp_actor_observed"] += 1
+        else:
+            control["pbp_actor_not_observed"] += 1
+    if sum(control.values()) != canonical["player_games_matched"]:
+        raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
     return {
         "status": "HOLD_PBP_PRESENCE_ONLY",
         "scope": canonical["scope"],
         "mapped_missing_player_games": canonical["missing_player_games"],
         "unmapped_pfr_player_games": canonical["unmapped_pfr_player_games"],
         "pbp_presence_counts": counts,
+        "pbp_matched_positive_control": control,
+        "pbp_actor_id_alignment_observed": control["pbp_actor_observed"] > 0,
         "pbp_examples": examples,
         "missing_actor_means_zero": False,
         "fitted_specialist_certified": False,
