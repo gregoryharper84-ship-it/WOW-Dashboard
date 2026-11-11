@@ -7,13 +7,29 @@ certified model admission remain solely with the governed LLP/V17 pipeline.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 ALLOWED_PROVENANCE = frozenset({"QUALITATIVE_RESEARCH", "MARKET_NO_VIG", "EXTERNAL_PROJECTION"})
+# Source-label/settlement policy applies to research presentation only, never
+# sport probability certification. Do not infer a default settlement for
+# unknown sports, including tennis retirement or soccer advancement.
+SPORT_CONTRACTS: dict[str, tuple[str, frozenset[str], str]] = {
+    "NHL": ("FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT", frozenset({"HOME", "AWAY"}), "FULL_GAME_MONEYLINE"),
+    "NBA": ("FULL_GAME_INCLUDING_OVERTIME", frozenset({"HOME", "AWAY"}), "FULL_GAME_MONEYLINE"),
+    "NFL": ("FULL_GAME_INCLUDING_OVERTIME", frozenset({"HOME", "AWAY"}), "FULL_GAME_MONEYLINE"),
+    "NCAAF": ("FULL_GAME_INCLUDING_OVERTIME", frozenset({"HOME", "AWAY"}), "FULL_GAME_MONEYLINE"),
+    "NCAAB": ("FULL_GAME_INCLUDING_OVERTIME", frozenset({"HOME", "AWAY"}), "FULL_GAME_MONEYLINE"),
+    "SOCCER": ("REGULATION", frozenset({"HOME", "DRAW", "AWAY"}), "REGULATION_1X2"),
+}
+# Conservative evidence-display freshness. Not fitted model input thresholds.
+MAX_NUMERIC_EVIDENCE_AGE = {
+    "MARKET_NO_VIG": timedelta(minutes=60),
+    "EXTERNAL_PROJECTION": timedelta(hours=6),
+}
 FORBIDDEN_MODEL_FIELDS = frozenset({
     "model_probability", "calibrated_probability", "model_receipt_id",
     "model_lower_bound", "certification_status", "probability_publishable",
@@ -41,13 +57,20 @@ def _instant(value: Any, field: str) -> datetime:
 def _probability(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("WINNER_CARD_PROBABILITY_INVALID")
+    # Bound the original number before float conversion. Huge Python ints
+    # otherwise raise OverflowError before isfinite can reject them.
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("WINNER_CARD_PROBABILITY_INVALID")
     numeric = float(value)
-    if not isfinite(numeric) or not 0.0 <= numeric <= 1.0:
+    if not isfinite(numeric):
         raise ValueError("WINNER_CARD_PROBABILITY_INVALID")
     return numeric
 
 
-def _evidence(row: Mapping[str, Any], *, freeze: datetime, kickoff: datetime) -> dict[str, Any]:
+def _evidence(row: Mapping[str, Any], *, freeze: datetime, kickoff: datetime,
+              event_id: str, sport: str, settlement_basis: str,
+              selection: str) -> dict[str, Any]:
+    """Validate research provenance without authenticating a source or model."""
     if any(field in row for field in FORBIDDEN_MODEL_FIELDS):
         raise ValueError("WINNER_CARD_UNVERIFIED_MODEL_CLAIM")
     source = _required(row.get("probability_source"), "PROBABILITY_SOURCE")
@@ -58,21 +81,53 @@ def _evidence(row: Mapping[str, Any], *, freeze: datetime, kickoff: datetime) ->
     if observed > freeze or observed >= kickoff:
         raise ValueError("WINNER_CARD_POST_FREEZE_OR_KICKOFF_EVIDENCE")
     estimate = row.get("display_probability")
+    source_context_status = "NOT_APPLICABLE_QUALITATIVE"
+    source_snapshot_id = None
     if source == "QUALITATIVE_RESEARCH":
         if estimate is not None:
             raise ValueError("WINNER_CARD_UNSOURCED_NUMERIC_PROBABILITY")
-    elif estimate is None:
-        raise ValueError("WINNER_CARD_NUMERIC_PROBABILITY_REQUIRED")
     else:
+        if estimate is None:
+            raise ValueError("WINNER_CARD_NUMERIC_PROBABILITY_REQUIRED")
         estimate = _probability(estimate)
+        if freeze - observed > MAX_NUMERIC_EVIDENCE_AGE[source]:
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_STALE")
+        context = row.get("numeric_source_context")
+        if not isinstance(context, Mapping):
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_CONTEXT_REQUIRED")
+        # All source identities are caller-declared; mismatches fail closed.
+        expected_basis, expected_outcomes, expected_market = SPORT_CONTRACTS[sport]
+        if (context.get("event_id") != event_id
+                or context.get("source_kind") != source
+                or context.get("selection") != selection
+                or context.get("settlement_basis") != settlement_basis
+                or settlement_basis != expected_basis
+                or context.get("market_type") != expected_market):
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_MARKET_MISMATCH")
+        outcomes = context.get("market_outcomes")
+        if not isinstance(outcomes, (list, tuple, set, frozenset)):
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_MARKET_MISMATCH")
+        try:
+            observed_outcomes = frozenset(outcomes)
+        except TypeError as exc:
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_MARKET_MISMATCH") from exc
+        if observed_outcomes != expected_outcomes or len(outcomes) != len(expected_outcomes):
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_MARKET_MISMATCH")
+        if _instant(context.get("observed_at"), "SOURCE_OBSERVED_AT") != observed:
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_TIMESTAMP_MISMATCH")
+        if source == "MARKET_NO_VIG" and context.get("de_vig_method") != "POWER":
+            raise ValueError("WINNER_CARD_NUMERIC_SOURCE_METHOD_INVALID")
+        source_snapshot_id = _required(context.get("source_snapshot_id"), "SOURCE_SNAPSHOT_ID")
+        source_context_status = "CALLER_DECLARED_MATCH_NOT_INDEPENDENTLY_AUTHENTICATED"
     return {
         "probability_source": source,
         "display_probability": estimate,
         "display_probability_is_calibrated": False,
+        "numeric_source_context_status": source_context_status,
+        "source_snapshot_id": source_snapshot_id,
         "evidence_ref": reference,
         "observed_at": observed.isoformat(),
     }
-
 
 def assemble_provisional_winner_card(
     official_events: Sequence[Mapping[str, Any]],
@@ -113,13 +168,28 @@ def assemble_provisional_winner_card(
             raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID") from exc
         if len(eligible) != len(values) or not eligible or not eligible.issubset({"HOME", "AWAY", "DRAW"}):
             raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID")
-        # Canonical label agrees with the frozen #2547 NHL result/retro contract.
-        # A regulation-only outcome cannot masquerade as a full-game ML winner.
-        if sport == "NHL":
-            if basis != "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT":
+        if sport not in SPORT_CONTRACTS:
+            raise ValueError("WINNER_CARD_SPORT_SETTLEMENT_UNSUPPORTED")
+        canonical_basis, full_outcomes, _ = SPORT_CONTRACTS[sport]
+        if basis != canonical_basis:
+            if sport == "NHL":
                 raise ValueError("WINNER_CARD_NHL_SETTLEMENT_BASIS_INVALID")
-            if eligible != {"HOME", "AWAY"}:
+            raise ValueError("WINNER_CARD_SETTLEMENT_BASIS_INVALID")
+        if sport == "SOCCER":
+            # Participant-only contests award no point for an actual draw.
+            # They may omit DRAW as a *choice* but not as a market outcome.
+            allowed = (
+                eligible == full_outcomes and event.get("draw_pick_rule") == "DRAW_PICK_ALLOWED"
+            ) or (
+                eligible == {"HOME", "AWAY"}
+                and event.get("draw_pick_rule") == "DRAW_COUNTS_AS_INCORRECT"
+            )
+            if not allowed:
+                raise ValueError("WINNER_CARD_SOCCER_OUTCOME_RULES_INVALID")
+        elif eligible != full_outcomes:
+            if sport == "NHL":
                 raise ValueError("WINNER_CARD_NHL_SETTLEMENT_OUTCOMES_INVALID")
+            raise ValueError("WINNER_CARD_SETTLEMENT_OUTCOMES_INVALID")
         if freeze >= kickoff:
             raise ValueError("WINNER_CARD_NOT_PREGAME")
         if event_id in event_by_id:
@@ -138,7 +208,9 @@ def assemble_provisional_winner_card(
         selection = _required(pick.get("selection"), "SELECTION")
         if selection not in eligible:
             raise ValueError("WINNER_CARD_SELECTION_NOT_ELIGIBLE")
-        primaries[event_id] = {"selection": selection, **_evidence(pick, freeze=freeze, kickoff=kickoff)}
+        primaries[event_id] = {"selection": selection, **_evidence(pick, freeze=freeze, kickoff=kickoff,
+            event_id=event_id, sport=str(event["sport"]).upper(),
+            settlement_basis=str(event["settlement_basis"]), selection=selection)}
 
     if set(primaries) != set(event_by_id):
         raise ValueError("WINNER_CARD_INCOMPLETE_OFFICIAL_SLATE")
@@ -148,7 +220,7 @@ def assemble_provisional_winner_card(
         event_id = _required(watch.get("event_id"), "EVENT_ID")
         if event_id not in event_by_id:
             raise ValueError("WINNER_CARD_UNKNOWN_UPSET_EVENT")
-        _, kickoff, eligible = event_by_id[event_id]
+        event, kickoff, eligible = event_by_id[event_id]
         alternative = _required(watch.get("selection"), "SELECTION")
         if alternative not in eligible or alternative == primaries[event_id]["selection"]:
             raise ValueError("WINNER_CARD_UPSET_ALTERNATIVE_INVALID")
@@ -157,7 +229,9 @@ def assemble_provisional_winner_card(
         watches[event_id].append({
             "selection": alternative,
             "reason": _required(watch.get("reason"), "UPSET_REASON"),
-            **_evidence(watch, freeze=freeze, kickoff=kickoff),
+            **_evidence(watch, freeze=freeze, kickoff=kickoff,
+                event_id=event_id, sport=str(event["sport"]).upper(),
+                settlement_basis=str(event["settlement_basis"]), selection=alternative),
             "changes_primary_selection": False,
         })
 
