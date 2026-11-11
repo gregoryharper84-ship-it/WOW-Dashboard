@@ -84,3 +84,14 @@
 - **prevention_artifact:** tests/test_acquire_nfl_count_prop_sources.py — blocked 302 must never contact foreign host, allowed GitHub release 302 must complete, interrupted read must become typed HOLD and clean partial bytes. Isolated stdlib redirect simulations passed locally; targeted repo pytest remains unrun until hosted runner admission.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. Runner was queued with zero jobs at observed c7552f0a; no actual real-source hash verification, fitted model or model activation. Safety unchanged: can_execute=false.
+
+## Real frozen-source verification exposed participant-game selection gap (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PARTICIPATION_SOURCE_DIGEST_MISMATCH; NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT; NFL_PROP_PARTICIPATION_SNAP_EMPTY (preflight codes); HOLD_UNRESOLVED_PARTICIPATION (audited research status)
+- **mechanism:** Eleven authenticated source files can pass all digest and size checks while the player-count weekly source still fails population coverage against independently pinned positive offensive snap participants. Treating a missing count-stat record as a zero would introduce selection bias. Mac and hosted observations agree on 32,220 eligible participant-games, 28,178 matched, 3,994 mapped without player-stat rows, 48 without a PFR crosswalk identity. Whether a missing row represents zero opportunities or incomplete ingestion remains unproven.
+- **detection_point:** Immediately after offline source acquisition and before independent fitting, train/calibration split or untouched 2025 holdout.
+- **fix:** Keep the nonpublishable cohort HOLD; split diagnostic counts by season, position and observed snap band, independently separating mapped missing-stat records from unmapped identities. No zero imputation, fabricated GSIS identity, changed qualification threshold, registry wiring or execution permission.
+- **prevention_artifact:** `scripts/audit_nfl_count_prop_participation.py` participation_breakdown, `tests/test_nfl_count_prop_participation_audit.py` per-stratum sum/unknown preservation tests, and PR-only `test_pr2605_observe_official_source_reconciliation` hosted receipt. Hosted rapid run 43098818705 at preceding head 5c19c835: 656 PASS, 1 diagnostic SKIP including source receipt; new head requires fresh CI.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605 and https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2020#issuecomment-6807280418
+- **production_evidence:** None; verified source bytes are not fitted specialist or independent semantic approvals, can_execute=false, V17_TERMINAL_REDUCER.
