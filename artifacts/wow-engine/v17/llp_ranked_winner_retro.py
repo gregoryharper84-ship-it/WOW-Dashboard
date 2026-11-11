@@ -175,9 +175,14 @@ def audit_ranked_winner_retro(
         market = p.get("market")
         favorite, market_problems = _market(market, frozen)
         if isinstance(market, Mapping):
-            if (_text(market.get("sport")).upper() != sport or
-                market_receipts[_text(market.get("receipt_id"))] != 1):
+            market_visible = _utc(market.get("available_to_user_at_utc"))
+            if (not _identity(p, market)
+                or market_receipts[_text(market.get("receipt_id"))] != 1):
                 market_problems.append("MARKET_IDENTITY_OR_RECEIPT_REUSED")
+            if market_visible is None or frozen is None or market_visible > frozen:
+                market_problems.append("MARKET_NOT_VISIBLE_AT_FREEZE")
+        if market_problems:
+            favorite = None
         valid = not errors
         pick_grade = ("WIN" if chosen == outcome else "LOSS") if valid else "HELD"
         market_grade = ("WIN" if favorite == outcome else "LOSS") if valid and favorite else "UNAVAILABLE"
@@ -189,6 +194,9 @@ def audit_ranked_winner_retro(
             and _text(spread.get("receipt_id"))
             and (_utc(spread.get("as_of_utc")) is not None)
             and frozen is not None and _utc(spread.get("as_of_utc")) <= frozen
+            and _identity(p, spread)
+            and _utc(spread.get("available_to_user_at_utc")) is not None
+            and _utc(spread.get("available_to_user_at_utc")) <= frozen
             and spread.get("settlement_basis") == expected_basis
             and type(spread.get("home_line")) in (int, float)
             and isfinite(spread["home_line"])):
