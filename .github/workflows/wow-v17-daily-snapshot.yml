@@ -209,6 +209,16 @@ jobs:
               len(serving_sha_for_run) != 40
               or any(ch not in "0123456789abcdef" for ch in serving_sha_for_run)
           ):
+              # Failure-only diagnostic: older bridges may persist run_id without deployed_sha.
+              print(
+                  json.dumps(
+                      {
+                          "diagnostic": "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID",
+                          "run_id": run_id,
+                      },
+                      sort_keys=True,
+                  )
+              )
               raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID")
 
           reconciliation = result.get("reconciliation") or {}
