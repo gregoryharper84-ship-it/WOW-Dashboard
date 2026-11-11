@@ -133,6 +133,32 @@ def analyze_settled_pickem_week(
             }
         )
 
+    # A visible settled sheet is not an authenticated pre-lock opponent snapshot.
+    # This benchmark is a historical counterfactual over ONLY the visible rows,
+    # not a prospective strategy or estimate of actual opponent ownership.
+    strict_majority_games = [
+        row for row in per_event if row["strict_majority_side"] is not None
+    ]
+    visible_majority_benchmark = {
+        "status": "POST_SETTLEMENT_VISIBLE_SAMPLE_ONLY",
+        "eligible_game_count": len(strict_majority_games),
+        "correct": sum(
+            row["strict_majority_side"] == row["winner"]
+            for row in strict_majority_games
+        ),
+        "no_strict_majority_count": len(per_event) - len(strict_majority_games),
+        "user_correct_on_same_games": sum(
+            row["user_correct"] for row in strict_majority_games
+        ),
+        "prelock_visibility_verified": False,
+        "full_opponent_pool_verified": False,
+        "prospective_strategy_validated": False,
+    }
+    visible_majority_benchmark["difference_vs_user_on_same_games"] = (
+        visible_majority_benchmark["correct"]
+        - visible_majority_benchmark["user_correct_on_same_games"]
+    )
+
     user_wins = wins_by_participant[user_name]
     best_wins = max(wins_by_participant.values())
     weekly_winners = sorted(
@@ -268,6 +294,11 @@ def analyze_settled_pickem_week(
         "unanimous_shared_loss_count": unanimous_shared_loss_count,
         "majority_side_loss_count": majority_side_loss_count,
         "winner_comparisons": winner_comparisons,
+        "visible_majority_benchmark": visible_majority_benchmark,
+        "pool_sample_provenance": "POST_LOCK_OR_PRELOCK_VISIBILITY_UNVERIFIED",
+        "frozen_user_submission_verified": False,
+        "fitted_model_miss_attribution_verified": False,
+        "prelock_pool_equity_evidence_eligible": False,
         "events": per_event,
         "tiebreaker": tiebreaker,
         "pool_strategy_shadow_review_earned": pool_strategy_shadow_earned,
