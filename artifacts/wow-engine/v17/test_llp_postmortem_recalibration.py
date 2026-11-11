@@ -342,6 +342,7 @@ def test_research_card_retro_is_separate_from_fitted_calibration_and_not_automat
         "home_team": "Home", "away_team": "Away",
         "event_start_time_utc": "2026-11-08T22:00:00Z",
         "selected_side": "Home", "selection_role": "PREFERRED",
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
         "immutable_pregame": True, "pregame_receipt_verified": True,
         "pregame_receipt_id": "independent-research-only-receipt",
         "frozen_at_utc": "2026-11-08T15:00:00Z",
@@ -356,6 +357,7 @@ def test_research_card_retro_is_separate_from_fitted_calibration_and_not_automat
         "home_team": "Home", "away_team": "Away",
         "event_start_time_utc": "2026-11-08T22:00:00Z",
         "winning_side": "Away", "final_status": "FINAL",
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
         "independently_verified": True, "settlement_receipt_id": "official-final-fixture",
         "settlement_source": "OFFICIAL_LEAGUE", "settled_at_utc": "2026-11-09T02:00:00Z",
     }
