@@ -28,6 +28,26 @@ RELEASE_HOSTS = frozenset((
 ))
 
 
+class _OfficialReleaseRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject untrusted Location destinations before urllib sends a request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlparse(newurl)
+        if parsed.scheme != "https" or parsed.hostname not in RELEASE_HOSTS:
+            raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _trusted_release_urlopen(request, *, timeout):
+    """Preserve HTTPS and allowlisted hosts over the full redirect chain."""
+    url = urlparse(request.full_url)
+    if url.scheme != "https" or url.hostname not in RELEASE_HOSTS:
+        raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED")
+    return urllib.request.build_opener(_OfficialReleaseRedirectHandler()).open(
+        request, timeout=timeout,
+    )
+
+
 def frozen_assets() -> list[tuple[str, str, int]]:
     """Use reviewed hard-coded digests, never a caller-editable JSON manifest."""
     assets = []
@@ -57,7 +77,7 @@ def verify_file(path: Path, digest: str, size: int) -> None:
 
 
 def acquire_one(relative: str, digest: str, size: int, dest: Path, *,
-                verify_only: bool = False, open_url=urllib.request.urlopen) -> dict:
+                verify_only: bool = False, open_url=None, timeout: int = 120) -> dict:
     """Acquire official bytes without replacing existing or racing frozen targets."""
     parts = relative.split("/")
     if len(parts) != 2 or parts[0] not in OFFICIAL_SIZE_BYTES or "/" in parts[1] or ".." in relative:
@@ -79,7 +99,7 @@ def acquire_one(relative: str, digest: str, size: int, dest: Path, *,
             "User-Agent": "WOW-V17-public-source-research/1.0", "Accept": "application/octet-stream",
         })
         try:
-            response = open_url(req, timeout=120)
+            response = (open_url or _trusted_release_urlopen)(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             raise ValueError("NFL_PROP_ACQUIRE_HTTP_ERROR:" + name + ":" + str(exc.code)) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -90,7 +110,13 @@ def acquire_one(relative: str, digest: str, size: int, dest: Path, *,
                 raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED:" + name)
             hashed = hashlib.sha256()
             count = 0
-            for chunk in iter(lambda: response.read(1024 * 1024), b""):
+            while True:
+                try:
+                    chunk = response.read(1024 * 1024)
+                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    raise ValueError("NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE:" + name) from exc
+                if not chunk:
+                    break
                 count += len(chunk)
                 if count > size:
                     raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:" + name)
