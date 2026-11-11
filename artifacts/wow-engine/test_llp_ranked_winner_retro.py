@@ -15,6 +15,9 @@ def pick(sport="NCAAB", event="a", side="HOME", **overrides):
          "away_team": "Away", "event_start_time_utc": START,
          "frozen_at_utc": FREEZE, "available_to_user_at_utc": FREEZE,
          "selected_side": side, "immutable_pregame": True,
+         "settlement_basis": ("REGULATION" if sport == "UWCL" else
+                               "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT" if sport == "NHL" else
+                               "FULL_GAME_INCLUDING_OVERTIME"),
          "pregame_receipt_verified": True, "pregame_receipt_id": "pre-" + event,
          "market": {"sport": sport, "official_event_id": event,
                     "home_team": "Home", "away_team": "Away",
@@ -37,7 +40,9 @@ def final(sport="NCAAB", event="a", outcome="HOME", **overrides):
          "settlement_receipt_id": "official-" + event,
          "settlement_source": "OFFICIAL_LEAGUE", "settled_at_utc": SETTLED,
          "outcome": outcome, "home_score": hs, "away_score": aws,
-         "settlement_basis": "REGULATION" if sport == "UWCL" else "FULL_GAME"}
+         "settlement_basis": ("REGULATION" if sport == "UWCL" else
+                              "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT" if sport == "NHL" else
+                              "FULL_GAME_INCLUDING_OVERTIME") }
     v.update(overrides)
     return v
 
@@ -45,7 +50,8 @@ def final(sport="NCAAB", event="a", outcome="HOME", **overrides):
 def audit(picks, finals, **kw):
     return audit_ranked_winner_retro(
         picks, finals, ranked_cohort=[{k: p[k] for k in
-                    ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc")}
+                    ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc",
+                     "selected_side", "pregame_receipt_id", "frozen_at_utc")}
                     for p in picks],
         cohort_verified=True, cohort_receipt_id="independent-card-snapshot",
         cohort_kind="RANKED_SUBSET", **kw)
@@ -113,7 +119,7 @@ def test_boolean_attestation_is_literal_and_cohort_cannot_be_called_full_slate()
 
 
 def test_spread_cover_independent_of_outright_winner():
-    p = pick(spread={"home_line": -38.5, "settlement_basis": "FULL_GAME",
+    p = pick(spread={"home_line": -38.5, "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
                      "sport": "NCAAB", "official_event_id": "a",
                      "home_team": "Home", "away_team": "Away",
                      "event_start_time_utc": START,
@@ -147,7 +153,7 @@ def test_market_event_swap_is_not_a_valid_baseline():
 
 
 def test_market_and_spread_available_after_freeze_are_not_pregame():
-    p = pick(spread={"home_line": -1.5, "settlement_basis": "FULL_GAME",
+    p = pick(spread={"home_line": -1.5, "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
                      "sport": "NCAAB", "official_event_id": "a",
                      "home_team": "Home", "away_team": "Away",
                      "event_start_time_utc": START, "as_of_utc": FREEZE,
@@ -188,7 +194,7 @@ def test_oversized_prices_are_market_unavailable_not_runtime_failure():
 def test_oversized_spreads_do_not_crash_or_change_winner_grade():
     for bad in (10**1000, -(10**1000), float("inf"), float("nan")):
         p = pick(spread={
-            "home_line": bad, "settlement_basis": "FULL_GAME",
+            "home_line": bad, "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
             "sport": "NCAAB", "official_event_id": "a",
             "home_team": "Home", "away_team": "Away",
             "event_start_time_utc": START, "available_to_user_at_utc": FREEZE,
@@ -212,7 +218,8 @@ def test_full_slate_scope_is_explicitly_unsupported_even_if_attested_true():
 def test_verified_cohort_side_mismatch_is_held():
     p = pick(side="HOME")
     cohort = [{k: p[k] for k in
-               ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc")}]
+               ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc",
+                "pregame_receipt_id", "frozen_at_utc")}]
     cohort[0]["selected_side"] = "AWAY"
     r = audit_ranked_winner_retro(
         [p], [final()], ranked_cohort=cohort,
@@ -224,7 +231,7 @@ def test_verified_cohort_side_mismatch_is_held():
 
 def test_huge_official_score_holds_before_spread_arithmetic():
     p = pick(spread={
-        "home_line": -1.5, "settlement_basis": "FULL_GAME",
+        "home_line": -1.5, "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
         "sport": "NCAAB", "official_event_id": "a",
         "home_team": "Home", "away_team": "Away",
         "event_start_time_utc": START, "available_to_user_at_utc": FREEZE,
@@ -245,3 +252,64 @@ def test_incomplete_cohort_withholds_all_sport_totals():
     assert len(r["by_sport"]) == 2
     assert all(k["graded"] is None and k["correct"] is None
                and k["incomplete_cohort"] is True for k in r["by_sport"])
+
+
+def test_replacement_receipt_cannot_be_graded_as_original_frozen_card():
+    original = pick()
+    cohort = [{k: original[k] for k in (
+        "sport", "official_event_id", "home_team", "away_team",
+        "event_start_time_utc", "selected_side",
+        "pregame_receipt_id", "frozen_at_utc")}]
+    replacement = deepcopy(original)
+    replacement["pregame_receipt_id"] = "substituted-later-receipt"
+    replacement["frozen_at_utc"] = "2026-11-10T15:30:00Z"
+    replacement["available_to_user_at_utc"] = "2026-11-10T15:30:00Z"
+    replacement["market"]["as_of_utc"] = "2026-11-10T15:30:00Z"
+    replacement["market"]["available_to_user_at_utc"] = "2026-11-10T15:30:00Z"
+    r = audit_ranked_winner_retro(
+        [replacement], [final()], ranked_cohort=cohort,
+        cohort_verified=True, cohort_receipt_id="immutable-original")
+    assert r["cohort_complete"] is False
+    assert r["correct"] is None
+    assert r["market_baseline_complete"] is False
+    assert "RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED" in r["rows"][0]["selection_blockers"]
+
+
+@pytest.mark.parametrize("field,new_value", [
+    ("pregame_receipt_id", ""), ("frozen_at_utc", None),
+])
+def test_cohort_without_frozen_receipt_or_timestamp_cannot_attest_pick(field, new_value):
+    p = pick()
+    frozen = {k: p[k] for k in (
+        "sport", "official_event_id", "home_team", "away_team",
+        "event_start_time_utc", "selected_side", "pregame_receipt_id", "frozen_at_utc")}
+    frozen[field] = new_value
+    r = audit_ranked_winner_retro(
+        [p], [final()], ranked_cohort=[frozen],
+        cohort_verified=True, cohort_receipt_id="synthetic-verified")
+    assert r["cohort_complete"] is False
+    assert r["market_baseline_complete"] is False
+    assert r["rows"][0]["selection_grade"] == "HELD"
+
+
+def test_nhl_regulation_pick_cannot_be_graded_as_full_game_winner():
+    p = pick("NHL", "nhl-01", settlement_basis="REGULATION")
+    r = audit([p], [final("NHL", "nhl-01")])
+    assert r["subset_accuracy"] is None
+    assert r["market_favorite_correct"] is None
+    assert "PICK_SETTLEMENT_BASIS_INVALID" in r["rows"][0]["selection_blockers"]
+
+
+def test_nhl_ambiguous_full_game_label_is_not_overtime_shootout_receipt():
+    p = pick("NHL", "nhl-01", settlement_basis="FULL_GAME")
+    r = audit([p], [final("NHL", "nhl-01", settlement_basis="FULL_GAME")])
+    assert r["cohort_complete"] is False
+    assert "PICK_SETTLEMENT_BASIS_INVALID" in r["rows"][0]["selection_blockers"]
+    assert "OFFICIAL_OUTCOME_OR_BASIS_INVALID" in r["rows"][0]["selection_blockers"]
+
+
+def test_three_way_soccer_regulation_pick_with_draw_stays_a_loss():
+    r = audit([pick("UWCL", "soccer-1")], [final("UWCL", "soccer-1", "DRAW")])
+    assert r["cohort_complete"] is True
+    assert r["rows"][0]["selection_grade"] == "LOSS"
+    assert r["market_favorite_correct"] == 0
