@@ -178,7 +178,7 @@ def _projected_acceptance_failures(payload: dict[str, Any]) -> list[str]:
         "sporting_probability_publishable": payload.get("sporting_probability_publishable") is True,
         "probability_publishable": payload.get("probability_publishable") is True,
         "rank_eligible": payload.get("rank_eligible") is False,
-        "terminal_hold_expected": terminal_label == "MODEL_QUALIFIED_HOLD",
+        "terminal_fail_closed": terminal_label in {"MODEL_QUALIFIED_HOLD", "SLATE_PURGE"},
         "global_terminal_authority": payload.get("global_terminal_authority") == "V17_TERMINAL_REDUCER",
         "final_refresh_required": payload.get("final_refresh_required") is True,
         "lineup_confirmation_blocker": "LINEUP_CONFIRMATION_PENDING" in (payload.get("blockers") or []),
@@ -414,7 +414,7 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
             "official_date": projected_candidate.get("official_date"),
             "event_start_time": projected_candidate.get("event_start_time"),
         }
-        if projected_ok:
+        if projected_ok and str(projected_receipt.get("terminal_label") or "").upper() == "MODEL_QUALIFIED_HOLD":
             home_lb = projected_receipt.get("calibrated_home_lower_bound")
             away_lb = projected_receipt.get("calibrated_away_lower_bound")
             # No selected side exists in this diagnostic: never relabel the
@@ -436,7 +436,9 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         else:
             source_backed["status"] = "BLOCKED"
             source_backed["blocker"] = (
-                "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+                "SLATE_PURGE"
+                if projected_ok and str(projected_receipt.get("terminal_label") or "").upper() == "SLATE_PURGE"
+                else "SOURCE_BACKED_PREGAME_SCORING_FAILED"
                 if projected_response.status_code == 200
                 else str(
                     projected_blocker_code

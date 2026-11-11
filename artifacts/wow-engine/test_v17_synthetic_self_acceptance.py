@@ -307,3 +307,47 @@ async def test_projected_diagnostics_reject_wrong_identity_or_terminal(monkeypat
     assert result["source_backed_pregame_scoring"]["request_id"] is None
     assert result["scoring_acceptance_proven"] is False
     assert result["can_execute"] is False
+
+
+@pytest.mark.anyio
+async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monkeypatch):
+    """A reducer purge may prove model diagnostics without granting a HELD row."""
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
+    projected = {
+        "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "lineup_state": "PROJECTED_HIGH_CONFIDENCE",
+        "calibrated_home_probability": 0.55,
+        "calibrated_away_probability": 0.45,
+        "calibrated_home_lower_bound": 0.51,
+        "calibrated_away_lower_bound": 0.41,
+        "sporting_probability_publishable": True,
+        "probability_publishable": True,
+        "rank_eligible": False,
+        "terminal_label": "SLATE_PURGE",
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "final_refresh_required": True,
+        "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+        "can_execute": False,
+        "candidate_envelope": {
+            "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+            "official_event_id": "824226",
+            "source_snapshot_id": "snapshot-824226",
+        },
+    }
+    _patch_client(monkeypatch, [
+        _FakeResponse(200, {"rows": [{"row_key": "TEST-PROP-001", "terminal_status": "HELD",
+            "terminal_label": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, {"rows": [{"research_run_id": "TEST-EVENT-001-RUN", "terminal_status": "HELD",
+            "code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, projected),
+    ])
+    result = await mod.run_v17_synthetic_self_acceptance(
+        logging.getLogger("test-v17-synthetic-self-acceptance")
+    )
+    assert result["projected_lineup_ok"] is True
+    assert result["status_scope"] == "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY"
+    assert result["source_backed_pregame_scoring"]["status"] == "BLOCKED"
+    assert result["source_backed_pregame_scoring"]["blocker"] == "SLATE_PURGE"
+    assert result["scoring_acceptance_proven"] is False
+    assert result["can_execute"] is False
