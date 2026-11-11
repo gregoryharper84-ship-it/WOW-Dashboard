@@ -106,3 +106,14 @@
 - **prevention_artifact:** scripts/audit_nfl_count_prop_pbp_presence.py; 12 synthetic regression cases in tests/test_nfl_count_prop_pbp_presence.py; existing PR-branch-only rapid-runner source observation extended to attempt all five PBP archives and report a typed HOLD when unavailable. Hosted exact-head replay pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no fitted specialist, promoted probability, independent semantic review, trust-root release authorization, production deploy or trade permission. can_execute=false, V17_TERMINAL_REDUCER.
+
+## PBP positive-control follow-up (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_PBP_PRESENCE_ONLY; NFL_PROP_PBP_RECONCILIATION_DRIFT
+- **mechanism:** First hosted PBP receipt from 2021–2025 on PR #2605 head 95268d65 reported **3,994/3,994 mapped weekly-stat omissions without any actor appearance** across 1,359 PBP-covered games, with five gz digests / 95,753,616 bytes verified. This is plausible for sparse summary generation, but it could also arise if PBP actor IDs never match weekly-stat IDs. Prediction: source-aligned known weekly-stat participant-games will show many positive PBP actor matches.
+- **detection_point:** Immediately after the first real PBP source-pair comparison, before interpreting any actor absence.
+- **fix:** Add a positive-control population of canonical 28,178 known matched weekly-stat player-games; separately count PBP actor observed, not observed and game absent; emit `pbp_actor_id_alignment_observed`. A zero control cannot support a zero-stat hypothesis. No model/market inference.
+- **prevention_artifact:** `test_no_positive_control_keeps_identity_alignment_unproven`, `test_observed_pbp_actor_still_does_not_authorize_zero_or_model` and existing hosted PBP source observation. New exact-head test and real positive-control receipt pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; evidence remains read-only, `can_execute=false`, V17_TERMINAL_REDUCER.
