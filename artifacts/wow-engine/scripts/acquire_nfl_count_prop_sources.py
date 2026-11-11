@@ -84,6 +84,8 @@ def acquire_one(relative: str, digest: str, size: int, dest: Path, *,
     if len(parts) != 2 or parts[0] not in OFFICIAL_SIZE_BYTES or "/" in parts[1] or ".." in relative:
         raise ValueError("NFL_PROP_ACQUIRE_PATH_INVALID")
     dataset, name = parts
+    if dataset == "pbp" and name not in {f"play_by_play_{year}.csv.gz" for year in range(2021, 2026)}:
+        raise ValueError("NFL_PROP_ACQUIRE_PATH_INVALID")
     target = dest / relative
     if target.exists() or target.is_symlink():
         verify_file(target, digest, size)
