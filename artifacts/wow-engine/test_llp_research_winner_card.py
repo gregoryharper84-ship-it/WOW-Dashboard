@@ -81,8 +81,8 @@ def test_all_three_sports_get_one_independent_research_winner_despite_model_hold
     result=audit(events,picks)
     assert result['official_games']==result['winner_picks']==3
     assert result['board_complete'] is True
-    assert result['research_evidence_fully_reconciled'] is True
-    assert all(r['selection_class']=='RESEARCH_PROVISIONAL' and r['model_status']=='MODEL_UNAVAILABLE' for r in result['rows'])
+    assert result['research_evidence_fully_reconciled'] is False
+    assert all(r['selection_class']=='RESEARCH_PROVISIONAL' and r['model_status_declared']=='MODEL_UNAVAILABLE' and r['model_status']=='UNVERIFIED_CALLER_DECLARATION' for r in result['rows'])
     assert all(r['governed_probability'] is None for r in result['rows'])
     assert result['fitted_model_samples_added']==0
     assert result['governed_model_modified'] is False
@@ -153,7 +153,8 @@ def test_unverified_slate_must_not_claim_full_board():
 def test_market_prices_are_never_spoofed_as_certified_sporting_probabilities():
     p=pick(model_probability=.89,market_probability=.77,calibrated_lower_bound=.82)
     r=audit([event()],[p])
-    assert r['rows'][0]['model_status']=='MODEL_UNAVAILABLE'
+    assert r['rows'][0]['model_status_declared']=='MODEL_UNAVAILABLE'
+    assert r['rows'][0]['model_status']=='UNVERIFIED_CALLER_DECLARATION'
     assert r['rows'][0]['governed_probability'] is None
     assert '.89' not in str(r)
 
@@ -167,7 +168,7 @@ def test_game_scripts_are_pregame_evidence_and_do_not_change_winner():
     assert len(row['game_script_swing_factors']) == 2
     assert row['selected_side']=='Away'
     assert row['governed_probability'] is None
-    assert r['research_evidence_fully_reconciled'] is True
+    assert r['research_evidence_fully_reconciled'] is False
 
 
 def test_missing_or_incomplete_game_script_warns_without_discretionary_pass():
@@ -216,7 +217,7 @@ def test_game_script_robustness_is_unweighted_not_probability():
     assert s['basis']=='UNWEIGHTED_RESEARCH_SCENARIOS_ONLY'
     assert s['probability'] is None
     assert r['rows'][0]['selected_side']=='Away'
-    assert r['research_evidence_fully_reconciled'] is True
+    assert r['research_evidence_fully_reconciled'] is False
 
 
 def test_script_sensitive_even_when_research_winner_stays_selected():
@@ -405,3 +406,41 @@ def test_duplicate_official_event_identity_cannot_expose_media_or_scripts():
         assert row["media_storylines"] == []
         assert row["game_script_verified_pregame"] is False
         assert row["governed_probability"] is None
+
+
+def test_publishers_are_declared_not_independently_proven_by_this_helper():
+    r = audit([event()], [pick()])
+    row = r["rows"][0]
+    assert r["board_complete"] is True
+    assert r["research_evidence_fully_reconciled"] is False
+    assert row["source_publishers_declared"] == 2
+    assert row["source_publishers_verified"] == 0
+    assert "NONMARKET_PUBLISHER_PROVENANCE_NOT_INDEPENDENTLY_VERIFIED" in row["evidence_warnings"]
+
+
+def test_old_market_context_is_not_reconciled():
+    p = pick()
+    p["market_context"]["as_of_utc"] = "2026-10-01T12:00:00Z"
+    r = audit([event()], [p])
+    assert r["board_complete"] is True
+    assert r["research_evidence_fully_reconciled"] is False
+    assert "MARKET_CONTEXT_STALE_FOR_RECONCILIATION" in r["rows"][0]["evidence_warnings"]
+    assert r["rows"][0]["governed_probability"] is None
+
+
+def test_market_favorite_must_belong_to_the_current_game_even_if_disagreement_reviewed():
+    p = pick(market_disagreement_reviewed=True)
+    p["market_context"]["favorite"] = "Third Team"
+    r = audit([event()], [p])
+    assert "MARKET_FAVORITE_OUTSIDE_MATCHUP" in r["rows"][0]["evidence_warnings"]
+    assert r["research_evidence_fully_reconciled"] is False
+    assert r["rows"][0]["selected_side"] == "Away"
+
+
+def test_caller_claimed_certified_status_never_becomes_verified_model_status():
+    row = audit([event()], [pick(model_status="CERTIFIED")])["rows"][0]
+    assert row["model_status_declared"] == "CERTIFIED"
+    assert row["model_status"] == "UNVERIFIED_CALLER_DECLARATION"
+    assert row["model_status_provenance"] == "CALLER_DECLARED_UNVERIFIED"
+    assert row["governed_probability"] is None
+    assert row["governed_lower_bound"] is None
