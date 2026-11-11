@@ -184,6 +184,7 @@ def _scoreboard(
     merged_data: dict[str, Any] = {}
     merged_events: dict[str, dict[str, Any]] = {}
     provider_truncated = False
+    provider_completeness_unverified = False
     response_status = 200
     endpoint = f"{ESPN_BASE}/{sport}/{league}/scoreboard"
 
@@ -237,6 +238,13 @@ def _scoreboard(
             len(daily_events) >= bounded_limit
             or (total_hint_int is not None and total_hint_int > len(daily_events))
         )
+        # Live 2026-11-14 FBS checks returned exactly 25 rows with limit=1000,
+        # no total, and the same 25 IDs with offset=25/page=2. This does not
+        # PROVE truncation, but it cannot establish a complete NCAAF slate.
+        # Do not label this as provider-limit exhaustion without that proof.
+        if (sport_key == "americanfootball_ncaaf" and bounded_limit > 25
+                and len(daily_events) == 25 and total_hint_int is None):
+            provider_completeness_unverified = True
         for index, event in enumerate(daily_events):
             if not isinstance(event, dict):
                 continue
@@ -260,6 +268,7 @@ def _scoreboard(
     merged_data["_wow_provider_limit"] = bounded_limit
     merged_data["_wow_provider_result_count"] = len(events)
     merged_data["_wow_provider_truncated"] = provider_truncated
+    merged_data["_wow_provider_completeness_unverified"] = provider_completeness_unverified
     merged_data["_wow_provider_request_dates"] = date_keys
     merged_data["_wow_provider_daily_request_count"] = len(date_keys)
     # A process may live across many Daily scans. Never freeze a live slate
@@ -545,6 +554,10 @@ def secondary_for_request(
                 code=("ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
                       if board.data.get("_wow_provider_truncated") is True
                       else "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"),
+            )
+        if board.data.get("_wow_provider_completeness_unverified") is True:
+            return SecondaryResult(
+                False, status=board.status, code="ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
             )
         events = board.data["events"]
         in_window = [event for event in events if isinstance(event, dict) and _within_exact_window(event, params)]
