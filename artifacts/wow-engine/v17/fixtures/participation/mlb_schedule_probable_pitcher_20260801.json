@@ -1,0 +1,63 @@
+{
+  "copyright": "Copyright 2026 MLB Advanced Media, L.P.  Use of any content on this page acknowledges agreement to the terms posted here http://gdx.mlb.com/components/copyright.txt",
+  "totalItems": 1,
+  "dates": [
+    {
+      "date": "2026-08-01",
+      "totalItems": 1,
+      "totalGames": 1,
+      "games": [
+        {
+          "gamePk": 823001,
+          "link": "/api/v1.1/game/823001/feed/live",
+          "gameType": "R",
+          "season": "2026",
+          "gameDate": "2026-08-01T23:05:00Z",
+          "officialDate": "2026-08-01",
+          "status": {
+            "abstractGameState": "Preview",
+            "codedGameState": "S",
+            "detailedState": "Scheduled",
+            "statusCode": "S",
+            "startTimeTBD": false
+          },
+          "venue": {
+            "id": 22,
+            "name": "Dodger Stadium",
+            "link": "/api/v1/venues/22"
+          },
+          "teams": {
+            "away": {
+              "team": {
+                "id": 135,
+                "name": "San Diego Padres",
+                "abbreviation": "SD"
+              },
+              "probablePitcher": {
+                "id": 605483,
+                "fullName": "Yu Darvish",
+                "link": "/api/v1/people/605483"
+              },
+              "splitSquad": false,
+              "seriesGameNumber": 1
+            },
+            "home": {
+              "team": {
+                "id": 119,
+                "name": "Los Angeles Dodgers",
+                "abbreviation": "LAD"
+              },
+              "probablePitcher": {
+                "id": 660271,
+                "fullName": "Shohei Ohtani",
+                "link": "/api/v1/people/660271"
+              },
+              "splitSquad": false,
+              "seriesGameNumber": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

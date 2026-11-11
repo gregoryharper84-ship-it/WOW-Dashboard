@@ -1,6 +1,8 @@
+import sys
 from types import SimpleNamespace
 
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from fastapi.testclient import TestClient
 
 import v17
@@ -40,3 +42,32 @@ def test_deferred_mlb_repair_restores_authoritative_cross_sport_health(monkeypat
 
     assert calls == ["mlb_repair", "cross_sport_health"]
     assert app.state.v17_mlb_event_bridge_deferred is True
+
+
+def test_cross_sport_health_overlay_preserves_render_deployed_sha(monkeypatch):
+    """Preserve the base deployment identity through the final health overlay."""
+    app = FastAPI()
+
+    @app.get("/health")
+    def base_health():
+        return {"status": "ok", "deployed_sha": "a" * 40, "can_execute": False}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "api_prod_market_acceptance",
+        SimpleNamespace(app=app),
+    )
+    monkeypatch.setattr(
+        bridge_runtime,
+        "team_event_bridge_health",
+        lambda: {"MLB": {"registered": True}},
+    )
+
+    bridge_runtime._install_health_overlay()
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["deployed_sha"] == "a" * 40
+    assert response.json()["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert response.json()["can_execute"] is False

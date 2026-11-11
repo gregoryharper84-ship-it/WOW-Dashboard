@@ -28,6 +28,7 @@ _CACHE_LOCK = threading.RLock()
 class _CompactNFLRow(NamedTuple):
     player_name: str
     season: float
+    season_type: str
     week: float
     game_id: str
     team: str
@@ -64,6 +65,7 @@ def _compact_rows(content: bytes) -> tuple[_CompactNFLRow, ...]:
             _CompactNFLRow(
                 player_name=player_name,
                 season=nfl._num(row, "season"),
+                season_type=str(row.get("season_type") or ""),
                 week=nfl._num(row, "week"),
                 game_id=str(row.get("game_id") or ""),
                 team=str(row.get("team") or ""),

@@ -933,7 +933,7 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     assert "check-runs" not in script
     assert "classify-upstream-qa" in script
     decide_script = _step_script(REL_WF, "Decide at exact head (read-only)")
-    assert "policy_args+=(--neutral-if-superseded)" in decide_script
+    assert "policy_args+=(--neutral-if-superseded --neutral-if-draft-target)" in decide_script
     assert "RELEASE_NEUTRAL_AT_DECIDE" in decide_script
     assert decide_script.index("RELEASE_NEUTRAL_AT_DECIDE") < decide_script.index("gather_args=(gather")
     assert 'echo "count=0" >> "$GITHUB_OUTPUT"' in decide_script
@@ -2135,6 +2135,7 @@ def test_publish_failure_is_typed(fake_gh):
 
 
 def test_every_phase_c_code_is_registered():
+    # CI retrigger: Phase-C registry scrape stays RELEASE_QA_* only for policy_resolver.
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
     # Release's authenticated QA-policy resolver is a separate protected

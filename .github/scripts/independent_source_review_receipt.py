@@ -1159,6 +1159,7 @@ def resolve_qa_review_policy(
     get_json: Any = None,
     download_artifact: Any = None,
     allow_superseded_target: bool = False,
+    neutralize_draft_target: bool = False,
 ) -> dict[str, Any]:
     _require(repository == CANONICAL_REPOSITORY, "QA_POLICY_REPOSITORY_MISMATCH")
     _positive_int(run_id, "QA_POLICY_RUN_ID")
@@ -1191,6 +1192,31 @@ def resolve_qa_review_policy(
 
     expected_name = f"wow-v17-qa-policy-{run_id}-{run_attempt}"
     matching = [row for row in inventory if row.get("name") == expected_name]
+    # A QA producer that fails before uploading policy (for example
+    # TARGET_PR_IDENTITY_MISMATCH on a draft/retargeted PR) leaves zero
+    # matching artifacts. Strict callers still fail closed. The automatic
+    # main-scoped workflow_run admission opts into allow_superseded_target
+    # so it can exit neutral instead of publishing a failing check on the
+    # unrelated protected-main tip Render's checksPass trigger evaluates.
+    if len(matching) == 0 and allow_superseded_target:
+        # A missing artifact alone cannot authenticate its producer. Reject
+        # forged, incomplete or foreign QA runs before any neutral outcome.
+        _require(
+            _is_qa_workflow_run(run)
+            and run.get("event") in {"workflow_run", "workflow_dispatch"}
+            and run.get("head_branch") == "main"
+            and isinstance(run.get("head_sha"), str)
+            and SHA.fullmatch(run["head_sha"]) is not None
+            and (run.get("repository") or {}).get("full_name") == repository
+            and (run.get("head_repository") or {}).get("full_name") == repository
+            and run.get("status") == "completed"
+            and run.get("conclusion") in {"success", "failure"},
+            "QA_POLICY_RUN_PROVENANCE_MISMATCH",
+        )
+        return {
+            "disposition": "neutral",
+            "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
+        }
     _require(len(matching) == 1, "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING")
     metadata = matching[0]
     artifact_id = _positive_int(metadata.get("id"), "QA_POLICY_ARTIFACT_ID")
@@ -1247,8 +1273,8 @@ def resolve_qa_review_policy(
     # not poison the unrelated protected-main commit via workflow_run. Only
     # this *read-only* Release admission caller may classify a verified
     # superseded target as neutral. The default remains strict/fail-closed.
-    # A foreign PR/repository, bad head identity, draft conversion or invalid
-    # policy is never a neutral shortcut.
+    # A foreign PR/repository, bad head identity, a draft at the same head or
+    # an invalid policy is never a neutral shortcut.
     if allow_superseded_target and isinstance(pr, Mapping):
         head = pr.get("head") if isinstance(pr.get("head"), Mapping) else {}
         base = pr.get("base") if isinstance(pr.get("base"), Mapping) else {}
@@ -1263,16 +1289,39 @@ def resolve_qa_review_policy(
             and isinstance(live_sha, str)
             and SHA.fullmatch(live_sha) is not None
         )
+        # An open PR (draft or ready) whose live head has moved off the head
+        # the QA policy was issued for is no longer the reviewed source. A
+        # draft at the *same* head stays strict (QA_POLICY_TARGET_NO_LONGER_CURRENT)
+        # so draft conversion alone can never neutralize a current target.
         superseded = (
             pr.get("state") == "closed"
-            or (pr.get("state") == "open" and pr.get("draft") is False
+            or (pr.get("state") == "open" and isinstance(pr.get("draft"), bool)
                 and not pr.get("merged_at") and live_sha != head_sha)
+        )
+        # A draft source at the exact policy head is not "current live work"
+        # that a merge could release: GitHub cannot merge a draft. Without this
+        # branch every QA run on a draft PR publishes a failing admission check
+        # on the unrelated protected-main commit Render's checksPass trigger is
+        # evaluating. Opt-in only, so the strict default is unchanged and a
+        # draft can never become Release evidence.
+        draft_target = (
+            neutralize_draft_target
+            and pr.get("state") == "open"
+            and pr.get("draft") is True
+            and not pr.get("merged_at")
+            and live_sha == head_sha
         )
         if same_origin and superseded:
             return {
                 "artifact_id": artifact_id, "policy": policy, "run": run,
                 "disposition": "neutral",
                 "reason": "RELEASE_QA_SOURCE_PR_SUPERSEDED",
+            }
+        if same_origin and draft_target:
+            return {
+                "artifact_id": artifact_id, "policy": policy, "run": run,
+                "disposition": "neutral",
+                "reason": "RELEASE_QA_DRAFT_TARGET_NOT_RELEASABLE",
             }
     _require(
         isinstance(pr, Mapping)

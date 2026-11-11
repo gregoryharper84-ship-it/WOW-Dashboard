@@ -74,4 +74,5 @@ jobs:
         run: |
           echo "This is read-only observation, not production/model certification." >> "$GITHUB_STEP_SUMMARY"
           echo "Readback step outcome: ${{ steps.readback.outcome }} (not a release gate)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Postdeploy acceptance repeats authenticated current-main BOTH-service readback; workflow success alone is no deployment proof." >> "$GITHUB_STEP_SUMMARY"
           echo "Independent SIRT acceptance is mandatory; can_execute=false." >> "$GITHUB_STEP_SUMMARY"
