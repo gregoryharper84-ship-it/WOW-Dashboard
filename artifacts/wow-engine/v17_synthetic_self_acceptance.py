@@ -490,12 +490,16 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         "team_event_http_status=%s team_event_ok=%s team_event_code=%s team_event_attempts=%s projected_lineup_status=%s "
         "projected_lineup_http_status=%s projected_lineup_ok=%s projected_lineup_event_id=%s projected_lineup_code=%s "
         "projected_lineup_blocker_code=%s projected_lineup_failure_class=%s projected_lineup_missing_fields=%s "
-        "projected_lineup_failed_checks=%s projected_lineup_attempts=%s can_execute=false",
+        "projected_lineup_failed_checks=%s projected_lineup_attempts=%s "
+        "status_scope=%s scoring_acceptance_proven=%s synthetic_negative_status=%s "
+        "source_backed_status=%s source_backed_lane=%s source_backed_blocker=%s can_execute=false",
         status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"), prop_error_code, prop_attempts,
         team_event_response.status_code, team_ok, team_row.get("code"), team_event_attempts, projected_status,
         projected_http_status, projected_ok, projected_event_id, projected_code,
         projected_blocker_code, projected_failure_class,
         ",".join(projected_missing_fields) if projected_missing_fields else "NONE",
         ",".join(projected_failures) if projected_failures else "NONE", projected_attempts,
+        status_scope, scoring_acceptance_proven, synthetic_negative_probes["status"],
+        source_backed["status"], source_backed["lane"], source_backed["blocker"],
     )
     return result
