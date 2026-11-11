@@ -46,6 +46,7 @@ MATRIX_OPERATION_ID = "runWowV17FittedModelCertificationMatrix"
 
 
 class FittedReplayRequest(BaseModel):
+    """Request payload for a read-only fitted-model replay."""
     model_config = ConfigDict(extra="forbid")
     artifact: dict[str, Any]
     required_metrics: list[str] = Field(
@@ -54,6 +55,7 @@ class FittedReplayRequest(BaseModel):
 
 
 class FittedPromotionRequest(BaseModel):
+    """Request payload for a governance-signed promotion decision."""
     model_config = ConfigDict(extra="forbid")
     artifact: dict[str, Any]
     policy: dict[str, Any] | None = None
@@ -64,6 +66,7 @@ class FittedPromotionRequest(BaseModel):
 
 
 class FittedMatrixRequest(BaseModel):
+    """Request payload for the read-only cross-sport certification matrix."""
     model_config = ConfigDict(extra="forbid")
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     policies: list[dict[str, Any]] = Field(default_factory=list)
@@ -74,10 +77,12 @@ class FittedMatrixRequest(BaseModel):
 
 
 def _rows(result: Any) -> list[dict[str, Any]]:
+    """Extract copied rows from a Supabase response."""
     return [dict(row) for row in (getattr(result, "data", None) or [])]
 
 
 def _find_one(db: Any, table: str, filters: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read one exact receipt by equality filters."""
     query = db.table(table).select("*")
     for key, value in filters.items():
         query = query.eq(key, value)
@@ -120,11 +125,13 @@ def _insert_idempotent(
 
 
 def _receipt_id(row: Mapping[str, Any]) -> str | None:
+    """Read a receipt identifier from either supported column."""
     value = row.get("receipt_id") or row.get("id")
     return str(value) if value else None
 
 
 def _identity_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract persisted identity fields from a replay or promotion packet."""
     identity = receipt.get("identity")
     if not isinstance(identity, Mapping):
         identity = receipt.get("artifact_identity")
@@ -143,6 +150,7 @@ def _identity_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _replay_record(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the durable replay receipt row."""
     identity = _identity_fields(receipt)
     return {
         **identity,
@@ -164,6 +172,7 @@ def _replay_record(receipt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _replay_filters(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the exact idempotency filters for a replay receipt."""
     identity = _identity_fields(receipt)
     return {
         "artifact_id": identity["artifact_id"],
@@ -211,6 +220,7 @@ def persist_replay_receipt(db: Any, receipt: Mapping[str, Any]) -> dict[str, Any
 
 
 def _promotion_record(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the durable promotion receipt row."""
     identity = _identity_fields(packet)
     replay = packet.get("replay") or {}
     policy = packet.get("policy") or {}
@@ -233,6 +243,7 @@ def _promotion_record(packet: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _promotion_filters(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the exact idempotency filters for a promotion receipt."""
     record = _promotion_record(packet)
     return {
         "artifact_id": record["artifact_id"],
@@ -280,6 +291,7 @@ def persist_promotion_receipt(db: Any, packet: Mapping[str, Any]) -> dict[str, A
 
 
 def _contract_failure(code: str, detail: str) -> dict[str, Any]:
+    """Build a typed contract-failure response that cannot authorize execution."""
     return {
         "status": "FITTED_MODEL_CERTIFICATION_CONTRACT_FAILED",
         "code": code,
@@ -292,6 +304,7 @@ def _contract_failure(code: str, detail: str) -> dict[str, Any]:
 
 
 def _runtime_failure(exc: Exception) -> dict[str, Any]:
+    """Build a fail-closed runtime-failure response."""
     return {
         "status": "FITTED_MODEL_CERTIFICATION_RUNTIME_FAILED",
         "code": "FITTED_MODEL_CERTIFICATION_RUNTIME_FAILED",
@@ -304,6 +317,7 @@ def _runtime_failure(exc: Exception) -> dict[str, Any]:
 
 
 def run_fitted_model_replay(request: FittedReplayRequest, *, db: Any) -> dict[str, Any]:
+    """Run and persist a deterministic replay receipt."""
     receipt = replay_fitted_artifact(
         request.artifact,
         required_metrics=tuple(request.required_metrics),
@@ -394,6 +408,7 @@ def run_fitted_model_promotion(
 
 
 def run_fitted_model_matrix(request: FittedMatrixRequest) -> dict[str, Any]:
+    """Run the read-only cross-sport certification matrix."""
     try:
         policies = [parse_promotion_policy(payload) for payload in request.policies]
         authorizations = [
@@ -429,6 +444,7 @@ def install_fitted_model_certification_promotion_routes(
             operation_id=REPLAY_OPERATION_ID,
         )
         def replay_route(request: FittedReplayRequest) -> dict[str, Any]:
+            """Authenticated internal route for fitted-model replay."""
             try:
                 return run_fitted_model_replay(request, db=db_client_fn())
             except Exception as exc:  # noqa: BLE001 - typed, non-MODEL_UNAVAILABLE failure
@@ -441,6 +457,7 @@ def install_fitted_model_certification_promotion_routes(
             operation_id=PROMOTION_OPERATION_ID,
         )
         def promotion_route(request: FittedPromotionRequest) -> dict[str, Any]:
+            """Authenticated internal route for promotion evaluation."""
             try:
                 return run_fitted_model_promotion(request, db=db_client_fn())
             except Exception as exc:  # noqa: BLE001 - typed, non-MODEL_UNAVAILABLE failure
@@ -453,6 +470,7 @@ def install_fitted_model_certification_promotion_routes(
             operation_id=MATRIX_OPERATION_ID,
         )
         def matrix_route(request: FittedMatrixRequest) -> dict[str, Any]:
+            """Authenticated internal route for the certification matrix."""
             try:
                 return run_fitted_model_matrix(request)
             except Exception as exc:  # noqa: BLE001 - typed, non-MODEL_UNAVAILABLE failure

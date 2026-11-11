@@ -111,11 +111,13 @@ class FittedCertificationError(ValueError):
     """Typed contract rejection; never rewritten to MODEL_UNAVAILABLE."""
 
     def __init__(self, code: str, message: str | None = None):
+        """Initialize the typed contract error and preserve its failure code."""
         super().__init__(message or code)
         self.code = code
 
 
 def _canonical(value: Any) -> bytes:
+    """Return canonical JSON bytes used for deterministic hashing."""
     return json.dumps(
         value,
         sort_keys=True,
@@ -126,6 +128,7 @@ def _canonical(value: Any) -> bytes:
 
 
 def _sha(value: Any) -> str:
+    """Return the SHA-256 digest of a canonical JSON value."""
     return sha256(_canonical(value)).hexdigest()
 
 
@@ -135,6 +138,7 @@ def certification_sha256(value: Any) -> str:
 
 
 def _text(value: Any, code: str) -> str:
+    """Require a non-empty stripped string or raise the supplied failure code."""
     text = str(value or "").strip()
     if not text:
         raise FittedCertificationError(code)
@@ -142,6 +146,7 @@ def _text(value: Any, code: str) -> str:
 
 
 def _hash64(value: Any, code: str) -> str:
+    """Require a lowercase 64-character hexadecimal digest."""
     text = _text(value, code).lower()
     if len(text) != 64 or any(ch not in _HEX for ch in text):
         raise FittedCertificationError(code)
@@ -149,6 +154,7 @@ def _hash64(value: Any, code: str) -> str:
 
 
 def _code_sha(value: Any, code: str) -> str:
+    """Require a 7-64 character hexadecimal source revision."""
     text = _text(value, code).lower()
     if not 7 <= len(text) <= 64 or any(ch not in _HEX for ch in text):
         raise FittedCertificationError(code)
@@ -156,6 +162,7 @@ def _code_sha(value: Any, code: str) -> str:
 
 
 def _instant(value: Any, code: str) -> datetime:
+    """Parse an offset-aware ISO-8601 timestamp and normalize it to UTC."""
     text = _text(value, code)
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -167,10 +174,12 @@ def _instant(value: Any, code: str) -> datetime:
 
 
 def _iso(value: Any, code: str) -> str:
+    """Normalize an ISO-8601 timestamp to UTC."""
     return _instant(value, code).isoformat()
 
 
 def _number(value: Any, code: str) -> float:
+    """Require a finite numeric value, rejecting booleans and non-numbers."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise FittedCertificationError(code)
     result = float(value)
@@ -180,12 +189,14 @@ def _number(value: Any, code: str) -> float:
 
 
 def _positive_int(value: Any, code: str) -> int:
+    """Require a positive integer, rejecting booleans."""
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise FittedCertificationError(code)
     return value
 
 
 def _normalize_surface(value: Any) -> str:
+    """Normalize and validate a supported evidence surface."""
     surface = str(value or "").strip().upper()
     if surface not in SURFACES:
         raise FittedCertificationError("FITTED_CERTIFICATION_SURFACE_UNSUPPORTED")
@@ -193,6 +204,7 @@ def _normalize_surface(value: Any) -> str:
 
 
 def _normalize_sport(value: Any, surface: str) -> str:
+    """Normalize and validate a sport for the selected surface."""
     raw = str(value or "").strip().upper()
     sport = normalize_prop_sport(raw) if surface == "PROP" else normalize_team_event_sport(raw)
     if sport not in EXPECTED_TEAM_EVENT_SPORTS:
@@ -201,6 +213,7 @@ def _normalize_sport(value: Any, surface: str) -> str:
 
 
 def _normalize_partition(value: Any) -> str:
+    """Normalize and validate a chronological corpus partition."""
     partition = str(value or "").strip().upper()
     if partition not in PARTITIONS:
         raise FittedCertificationError("FITTED_CERTIFICATION_PARTITION_INVALID")
@@ -208,6 +221,7 @@ def _normalize_partition(value: Any) -> str:
 
 
 def _normalize_settlement(value: Any) -> str:
+    """Normalize and validate a terminal settlement state."""
     settlement = str(value or "").strip().upper()
     if settlement not in SETTLEMENT_STATES:
         raise FittedCertificationError("FITTED_CERTIFICATION_SETTLEMENT_STATE_INVALID")
@@ -216,6 +230,7 @@ def _normalize_settlement(value: Any) -> str:
 
 @dataclass(frozen=True)
 class FittedArtifactIdentity:
+    """Immutable artifact and calibrator identity for one fitted model lane."""
     artifact_id: str
     sport: str
     league: str
@@ -236,6 +251,7 @@ class FittedArtifactIdentity:
     can_execute: bool = CAN_EXECUTE
 
     def as_dict(self) -> dict[str, Any]:
+        """Serialize this value object for receipts, hashes, or signatures."""
         return {
             "artifact_id": self.artifact_id,
             "sport": self.sport,
@@ -259,12 +275,14 @@ class FittedArtifactIdentity:
 
     @property
     def lane_id(self) -> str:
+        """Return the canonical sport/surface lane identifier."""
         if self.surface == "PROP":
             return f"{self.sport}:PROP:{self.stat_type}"
         return f"{self.sport}:TEAM_EVENT:{self.league}:{self.model_family}"
 
 
 def parse_artifact_identity(payload: Mapping[str, Any]) -> FittedArtifactIdentity:
+    """Parse and validate immutable fitted-artifact identity."""
     if not isinstance(payload, Mapping):
         raise FittedCertificationError("FITTED_CERTIFICATION_IDENTITY_INVALID")
     surface = _normalize_surface(payload.get("surface"))
@@ -300,6 +318,7 @@ def parse_artifact_identity(payload: Mapping[str, Any]) -> FittedArtifactIdentit
 
 @dataclass(frozen=True)
 class FittedReplayRow:
+    """One frozen prediction row used by deterministic certification replay."""
     row_id: str
     official_event_id: str
     event_start_time: str
@@ -315,6 +334,7 @@ class FittedReplayRow:
     can_execute: bool = CAN_EXECUTE
 
     def as_dict(self) -> dict[str, Any]:
+        """Serialize this value object for receipts, hashes, or signatures."""
         return {
             "row_id": self.row_id,
             "official_event_id": self.official_event_id,
@@ -333,12 +353,14 @@ class FittedReplayRow:
 
 
 def _probability_tuple(value: Any, code: str) -> tuple[float, ...]:
+    """Require a non-empty numeric probability or outcome tuple."""
     if not isinstance(value, (list, tuple)) or not value:
         raise FittedCertificationError(code)
     return tuple(_number(item, code) for item in value)
 
 
 def parse_replay_row(payload: Mapping[str, Any]) -> FittedReplayRow:
+    """Parse one frozen replay row with governance flags fail-closed."""
     if not isinstance(payload, Mapping):
         raise FittedCertificationError("FITTED_CERTIFICATION_ROW_INVALID")
     if payload.get("market_features_used") is not False:
@@ -370,6 +392,7 @@ def parse_replay_row(payload: Mapping[str, Any]) -> FittedReplayRow:
 
 @dataclass(frozen=True)
 class FittedArtifactEvidence:
+    """Frozen artifact evidence required for replay and promotion."""
     identity: FittedArtifactIdentity
     rows: tuple[FittedReplayRow, ...]
     stored_metrics: Mapping[str, Any]
@@ -384,6 +407,7 @@ class FittedArtifactEvidence:
 
 
 def _split_count(payload: Mapping[str, Any], canonical: str, aliases: Sequence[str]) -> int:
+    """Read a required partition count, accepting declared aliases."""
     for key in (canonical, *aliases):
         if key in payload:
             return _positive_int(payload[key], "FITTED_CERTIFICATION_SPLIT_COUNT_INVALID")
@@ -391,6 +415,7 @@ def _split_count(payload: Mapping[str, Any], canonical: str, aliases: Sequence[s
 
 
 def parse_fitted_artifact(payload: Mapping[str, Any]) -> FittedArtifactEvidence:
+    """Parse a complete frozen fitted-artifact evidence packet."""
     if not isinstance(payload, Mapping):
         raise FittedCertificationError("FITTED_CERTIFICATION_ARTIFACT_INVALID")
     identity_payload = payload.get("identity")
@@ -449,6 +474,7 @@ def corpus_sha256(rows: Sequence[FittedReplayRow]) -> str:
 
 
 def _ece(confidences: Sequence[float], outcomes: Sequence[float], bins: int = 10) -> float:
+    """Compute expected calibration error for confidence/outcome pairs."""
     n = len(confidences)
     if n == 0:
         return 0.0
@@ -543,6 +569,7 @@ def compute_replay_metrics(
 
 
 def _canonical_metric(name: Any) -> str | None:
+    """Map a stored metric alias to its canonical metric name."""
     key = str(name or "").strip().lower()
     return _METRIC_ALIASES.get(key)
 
@@ -561,6 +588,7 @@ def _empty_receipt(
     unverified_metrics: Sequence[str] = (),
     already_promoted: bool = False,
 ) -> dict[str, Any]:
+    """Build a deterministic non-authorizing replay receipt for a failure."""
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "verifier_version": VERIFIER_VERSION,
@@ -779,6 +807,7 @@ def replay_fitted_artifact(
 
 
 def _already_promoted(artifact: FittedArtifactEvidence) -> bool:
+    """Return whether the artifact already claims a certified state."""
     return bool(
         artifact.promoted
         or artifact.active
@@ -788,6 +817,7 @@ def _already_promoted(artifact: FittedArtifactEvidence) -> bool:
 
 @dataclass(frozen=True)
 class PromotionPolicy:
+    """Ratified policy thresholds and evidence requirements for a lane scope."""
     policy_id: str
     status: str
     scope_sport: str
@@ -805,6 +835,7 @@ class PromotionPolicy:
     can_execute: bool = CAN_EXECUTE
 
     def __post_init__(self) -> None:
+        """Validate and normalize this value object."""
         object.__setattr__(self, "status", str(self.status or "").strip().upper())
         sport = str(self.scope_sport or "").strip().upper()
         normalized_sport = "ALL" if sport == "ALL" else normalize_team_event_sport(sport)
@@ -835,6 +866,7 @@ class PromotionPolicy:
             _instant(self.ratified_at, "PROMOTION_POLICY_RATIFIED_AT_INVALID")
 
     def as_dict(self) -> dict[str, Any]:
+        """Serialize this value object for receipts, hashes, or signatures."""
         return {
             "policy_id": self.policy_id,
             "status": self.status,
@@ -863,6 +895,7 @@ class PromotionPolicy:
         return _sha(self.signing_payload())
 
     def matches(self, sport: str, surface: str) -> bool:
+        """Return whether this policy scope covers the requested lane."""
         return (
             self.scope_sport in ("ALL", sport)
             and self.scope_surface in ("ALL", surface)
@@ -870,11 +903,13 @@ class PromotionPolicy:
 
     @property
     def specificity(self) -> int:
+        """Return the scope specificity used for deterministic policy selection."""
         return int(self.scope_sport != "ALL") + int(self.scope_surface != "ALL")
 
 
 @dataclass(frozen=True)
 class PromotionAuthorization:
+    """Independent reviewer decision bound to one replay receipt."""
     authorization_id: str
     policy_id: str
     evidence_sha256: str
@@ -887,6 +922,7 @@ class PromotionAuthorization:
     can_execute: bool = CAN_EXECUTE
 
     def __post_init__(self) -> None:
+        """Validate and normalize this value object."""
         for field, code in (
             ("authorization_id", "PROMOTION_AUTHORIZATION_ID_REQUIRED"),
             ("policy_id", "PROMOTION_AUTHORIZATION_POLICY_REQUIRED"),
@@ -915,6 +951,7 @@ class PromotionAuthorization:
             raise FittedCertificationError("PROMOTION_AUTHORIZATION_CAN_EXECUTE_FORBIDDEN")
 
     def as_dict(self) -> dict[str, Any]:
+        """Serialize this value object for receipts, hashes, or signatures."""
         return {
             "authorization_id": self.authorization_id,
             "policy_id": self.policy_id,
@@ -995,6 +1032,7 @@ def _authorization_blockers(
     policy: PromotionPolicy,
     replay_sha256: str,
 ) -> tuple[str, ...]:
+    """Return authorization binding, independence, role, and timing blockers."""
     blockers: list[str] = []
     if authorization.decision != "APPROVE":
         blockers.append("PROMOTION_AUTHORIZATION_DECISION_NOT_APPROVE")
@@ -1027,6 +1065,7 @@ def _policy_gate_blockers(
     artifact: FittedArtifactEvidence,
     policy: PromotionPolicy,
 ) -> tuple[str, ...]:
+    """Apply ratified policy thresholds to the replay receipt."""
     blockers: list[str] = []
     if not policy.matches(artifact.identity.sport, artifact.identity.surface):
         blockers.append("PROMOTION_POLICY_SCOPE_MISMATCH")
@@ -1073,6 +1112,7 @@ def _policy_gate_blockers(
 
 
 def _apply_packet(artifact: FittedArtifactEvidence, replay: Mapping[str, Any], policy: PromotionPolicy, authorization: PromotionAuthorization) -> dict[str, Any]:
+    """Build the dry-run governed-apply packet for an approved promotion."""
     target_lifecycle = (
         "PROSPECTIVE_CERTIFIED"
         if artifact.identity.surface == "PROP"
@@ -1118,6 +1158,7 @@ def _promotion_packet(
     blockers: Iterable[str],
     apply_packet: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Build a deterministic, non-authorizing promotion decision packet."""
     payload: dict[str, Any] = {
         "packet_version": PROMOTION_PACKET_VERSION,
         "status": status,
@@ -1342,6 +1383,7 @@ def add_promotion_blockers(
 
 
 def parse_promotion_policy(payload: Mapping[str, Any]) -> PromotionPolicy:
+    """Parse and validate a signed promotion policy payload."""
     fields = (
         "policy_id",
         "status",
@@ -1367,6 +1409,7 @@ def parse_promotion_policy(payload: Mapping[str, Any]) -> PromotionPolicy:
 
 
 def parse_promotion_authorization(payload: Mapping[str, Any]) -> PromotionAuthorization:
+    """Parse and validate a signed reviewer authorization payload."""
     fields = (
         "authorization_id",
         "policy_id",
@@ -1391,6 +1434,7 @@ def _select_policy(
     surface: str,
     policies: Sequence[PromotionPolicy],
 ) -> tuple[PromotionPolicy | None, tuple[str, ...]]:
+    """Select the unique most-specific matching policy for a lane."""
     matches = [policy for policy in policies if policy.matches(sport, surface)]
     if not matches:
         return None, ()
@@ -1416,10 +1460,12 @@ _STATUS_RANK = {
 
 
 def _best_result(results: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Choose the strongest decision across candidate artifacts or authorizations."""
     return min(results, key=lambda row: (_STATUS_RANK.get(str(row.get("status")), 99), str(row.get("promotion_sha256", ""))))
 
 
 def _compact_lane(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one decision into the matrix lane summary."""
     identity = result.get("artifact_identity") or {}
     return {
         "artifact_id": identity.get("artifact_id"),
@@ -1610,6 +1656,7 @@ def build_cross_sport_matrix(
 
 
 def _empty_lane_row(sport: str, surface: str) -> dict[str, Any]:
+    """Build an explicit missing-evidence lane row."""
     if surface == "TEAM_EVENT":
         lane = development_lane(sport)
         build_required = lane is not None and lane.status == "BUILD_REQUIRED"
