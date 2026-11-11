@@ -106,6 +106,20 @@ OPENAI_FAILOVER_ELIGIBLE = {
 # workflow error command, never on the step's own script text echoed into the log.
 DELIVERY_ERROR_RE = re.compile(r"(?:::error::|##\[error\])(ACTIONABLE_REPAIR_[A-Z_]+):")
 GOVERNANCE_BLOCKED_CODES = frozenset({"ACTIONABLE_REPAIR_POLICY_BOUNDARY"})
+# Actions --log-failed dumps unevaluated `echo "::error::..."` script lines.
+# Those script echoes are not provider evidence; only emitted error payloads are.
+_ACTIONS_MARKER_RE = re.compile(r"(?:##\[(?:group|endgroup|error|warning)\]|::(?:error|warning|notice)::)")
+_ACTIONS_CONTROL_RE = re.compile(r"##\[(?:group|endgroup|warning)\]")
+# Only executable shell commands followed by whitespace are script echoes.
+# Log/step prefixes such as "printf-check" are not shell commands.
+_SCRIPT_COMMAND_RE = re.compile(r"(?<![\w-])(?:echo|printf)[ \t]+", re.IGNORECASE)
+# gh run --log-failed often prepends a job/step name and an ISO timestamp.
+# Remove that display-only prefix before inspecting any shell command text.
+_LOG_TIMESTAMP_RE = re.compile(r"(?:^|[\t ])20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b")
+_LOG_STEP_LABEL_RE = re.compile(r"^\s*(?:\[[^\]\n]+\]\s*)+")
+_EMITTED_ERROR_RE = re.compile(r"(?:##\[error\]|::error::)(.+)$")
+_PROCESS_COMPLETED_RE = re.compile(r"^process completed with exit code\b", re.IGNORECASE)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 NON_PROVIDER_MARKERS = (
     "eacces:",
@@ -116,6 +130,67 @@ NON_PROVIDER_MARKERS = (
     "pytest",
     "yaml",
 )
+
+
+def _strip_actions_log_prefix(line: str) -> str:
+    """Drop gh --log-failed job/step/timestamp display prefixes."""
+    cleaned = _ANSI_RE.sub("", line)
+    timestamp = _LOG_TIMESTAMP_RE.search(cleaned)
+    if timestamp:
+        cleaned = cleaned[timestamp.end():]
+    return _LOG_STEP_LABEL_RE.sub("", cleaned).strip()
+
+
+def _provider_match_parts(log_text: str) -> tuple[str, str]:
+    """Split Actions log evidence into emitted-only and emitted+stderr text.
+
+    Returns ``(emitted_only, classification_text)``.
+
+    Plain non-Actions logs keep full-text matching for both values.
+
+    For GitHub Actions logs:
+    - ``emitted_only`` is vetted `::error::` / `##[error]` payloads only
+      (never unevaluated script echoes). Delivery outcomes use this lane when
+      deciding whether a provider_signal may arm failover.
+    - ``classification_text`` also keeps unannotated stderr/stdout so Codex
+      CLI quota/auth lines remain classifiable when no delivery code is
+      present. Control markers and script echoes stay excluded.
+    """
+    text = str(log_text or "")
+    if not _ACTIONS_MARKER_RE.search(text):
+        return text, text
+    emitted: list[str] = []
+    unannotated: list[str] = []
+    for line in text.splitlines():
+        body = _strip_actions_log_prefix(line)
+        if not body:
+            continue
+        match = _EMITTED_ERROR_RE.search(body)
+        if match:
+            # Ignore display-only job/step labels (which can be named "Echo receipt")
+            # but still reject actual unevaluated `echo "::error::..."` commands.
+            prefix = body[:match.start()]
+            if _SCRIPT_COMMAND_RE.search(prefix):
+                continue
+            payload = match.group(1).strip()
+            if not payload or _PROCESS_COMPLETED_RE.match(payload):
+                continue
+            emitted.append(payload)
+            continue
+        if _ACTIONS_CONTROL_RE.search(body):
+            continue
+        # Unevaluated workflow script that only prints a synthetic ::error::
+        # must not become provider evidence.
+        if _SCRIPT_COMMAND_RE.search(body):
+            continue
+        unannotated.append(body)
+    emitted_only = "\n".join(emitted)
+    return emitted_only, "\n".join(emitted + unannotated)
+
+
+def _provider_match_text(log_text: str) -> str:
+    """Return classification text (emitted + Codex stderr for Actions logs)."""
+    return _provider_match_parts(log_text)[1]
 
 
 @dataclass(frozen=True)
@@ -143,7 +218,10 @@ class ProviderFailure:
 
 def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
     provider_key = str(provider or "").strip().lower()
-    text = str(log_text or "").lower()
+    raw = str(log_text or "")
+    emitted_only, classification_text = _provider_match_parts(raw)
+    emitted_lower = emitted_only.lower()
+    text = classification_text.lower()
 
     patterns = (
         OPENAI_FAILURE_PATTERNS
@@ -152,16 +230,32 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         if provider_key in {"anthropic", "claude"}
         else ()
     )
-    provider_code = next(
-        (code for code, needles in patterns if any(needle in text for needle in needles)),
-        None,
+
+    def _match_provider(haystack: str) -> str | None:
+        return next(
+            (
+                code
+                for code, needles in patterns
+                if any(needle in haystack for needle in needles)
+            ),
+            None,
+        )
+
+    # For Actions logs, only vetted emitted payloads are trusted for delivery
+    # codes; the raw script echo can contain other ACTIONABLE_REPAIR_* strings.
+    delivery = (
+        re.search(r"(?m)^(ACTIONABLE_REPAIR_[A-Z_]+):", emitted_only)
+        if _ACTIONS_MARKER_RE.search(raw)
+        else DELIVERY_ERROR_RE.search(raw)
     )
-    delivery = DELIVERY_ERROR_RE.search(str(log_text or ""))
     if delivery:
         # A typed delivery outcome is never relabelled as a provider failure. A governance
         # policy boundary never fails over or retries, whatever else the log contains.
+        # Provider signal / failover may arm only from emitted error payloads — unmarked
+        # quota noise beside a delivery code must not claim provider failover.
         delivery_code = delivery.group(1)
         blocked = delivery_code in GOVERNANCE_BLOCKED_CODES
+        provider_code = _match_provider(emitted_lower)
         eligible = not blocked and provider_code in OPENAI_FAILOVER_ELIGIBLE
         return ProviderFailure(
             provider=provider_key or "unknown",

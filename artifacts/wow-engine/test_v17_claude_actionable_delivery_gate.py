@@ -419,10 +419,57 @@ def test_policy_boundary_never_fails_over_even_with_provider_noise():
 
 
 def test_genuine_provider_outage_behind_implementation_failure_keeps_failover():
-    log = "##[error]ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED: x\ninsufficient_quota\n"
+    # Actions mode trusts a provider signal only when it is an emitted error.
+    log = "##[error]ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED: x\n##[error]insufficient_quota\n"
     result = _classifier()("openai", log)
     assert result.code == "ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED"
     assert result.provider_signal == "OPENAI_API_QUOTA_EXCEEDED"
+    assert result.failover_eligible is True
+
+
+def test_unmarked_quota_text_does_not_claim_provider_failover_in_actions_log():
+    log = "##[error]ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED: x\ninsufficient_quota\n"
+    result = _classifier()("openai", log)
+    assert result.code == "ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED"
+    assert result.provider_signal is None
+    assert result.failover_eligible is False
+
+
+def test_echoed_delivery_code_cannot_override_real_emitted_outcome():
+    log = "\n".join([
+        "##[group]Run incident receipt",
+        'echo "::error::ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID: script text"',
+        "##[endgroup]",
+        "##[error]ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED: runtime error",
+    ])
+    result = _classifier()("anthropic", log)
+    assert result.code == "ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED"
+    assert result.failover_eligible is False
+
+
+def test_emitted_error_payload_may_mention_echo():
+    log = "##[error]ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED: echo in error message"
+    result = _classifier()("anthropic", log)
+    assert result.code == "ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED"
+
+
+def test_printf_named_step_does_not_hide_emitted_provider_error():
+    # A step named "printf-check" is not an executable printf command.
+    log = "\n".join([
+        '2026-11-10T15:00:01Z [printf-check] echo "::error::OPENAI_API_KEY is required"',
+        "2026-11-10T15:00:02Z [printf-check] ##[error]insufficient_quota",
+    ])
+    result = _classifier()("openai", log)
+    assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
+    assert result.failover_eligible is True
+
+def test_echo_receipt_step_label_does_not_hide_real_emitted_provider_error():
+    log = "\n".join([
+        '2026-11-10T15:00:01Z [Echo receipt] echo "::error::OPENAI_API_KEY is required"',
+        "2026-11-10T15:00:02Z [Echo receipt] ##[error]insufficient_quota",
+    ])
+    result = _classifier()("openai", log)
+    assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
     assert result.failover_eligible is True
 
 

@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,6 +30,10 @@ def _run_preflight(tmp_path, *, primary=None, support=None, logs=None, key="test
                    inventory_error=False):
     stub = tmp_path / "bin" / "gh"
     stub.parent.mkdir(parents=True)
+    # Workflow admission invokes bare `python`; local hosts may only expose python3.
+    python_shim = stub.parent / "python"
+    if not python_shim.exists():
+        python_shim.symlink_to(sys.executable)
     stub.write_text("""#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -123,3 +128,67 @@ def test_no_failure_or_missing_key_or_unverified_inventory(tmp_path):
     assert missing == {"admit": "false", "reason": "OPENAI_API_KEY_MISSING"}
     inventory = _run_preflight(tmp_path / "inventory", inventory_error=True)
     assert inventory == {"admit": "false", "reason": "PRIMARY_WORKER_INVENTORY_UNVERIFIED"}
+
+
+def test_actions_script_echo_of_key_required_does_not_trip_primary_breaker(tmp_path):
+    """GitHub Actions dumps step scripts into --log-failed output.
+
+    Live ChatGPT worker failures (e.g. PROVIDER_WORKER_INVENTORY_UNVERIFIED)
+    still contain the unevaluated line
+    `echo "::error::OPENAI_API_KEY is required..."`. Matching that script echo
+    as OPENAI_API_KEY_MISSING permanently blocked specialist support even when
+    the secret was present and the real failure was non-provider.
+    """
+    script_echo_log = "\n".join([
+        "##[group]Run Verify OpenAI authentication",
+        'echo "::error::OPENAI_API_KEY is required for the ChatGPT engineering worker."',
+        "##[endgroup]",
+        "##[error]Process completed with exit code 1.",
+    ])
+    result = _run_preflight(
+        tmp_path,
+        primary=[_record(601, "failure", 40)],
+        logs={"601": script_echo_log},
+        key="present-test-key",
+    )
+    assert result == {"admit": "true", "reason": "PROVIDER_ADMISSION_CLEAR"}
+
+
+def test_emitted_key_required_error_still_trips_breaker(tmp_path):
+    emitted = "\n".join([
+        "##[group]Run Verify OpenAI authentication",
+        'echo "::error::OPENAI_API_KEY is required for the ChatGPT engineering worker."',
+        "##[endgroup]",
+        "##[error]OPENAI_API_KEY is required for the ChatGPT engineering worker.",
+    ])
+    result = _run_preflight(
+        tmp_path,
+        primary=[_record(701, "failure", 40)],
+        logs={"701": emitted},
+        key="present-test-key",
+    )
+    assert result == {"admit": "false", "reason": "CIRCUIT_BREAKER:OPENAI_API_KEY_MISSING"}
+
+
+def test_specialist_hold_error_does_not_self_classify_as_quota(tmp_path):
+    """The Surface hold step always contains the word 'Quota exceeded' in its
+    script source. Only an emitted quota error may keep the breaker open.
+    """
+    hold_log = "\n".join([
+        "##[group]Run Surface quota-admission hold without invoking Codex",
+        'if [[ "$PROVIDER_REASON" == *OPENAI_API_QUOTA_EXCEEDED* ]]; then',
+        '  echo "::error::Quota exceeded: BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"',
+        "else",
+        '  echo "::error::BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"',
+        "fi",
+        "##[endgroup]",
+        "##[error]BLOCKED_WITH_EXACT_REASON:CIRCUIT_BREAKER:OPENAI_API_KEY_MISSING; Codex not invoked",
+    ])
+    result = _run_preflight(
+        tmp_path,
+        primary=[_record(801, "success", 90)],
+        support=[_record(802, "failure", 10)],
+        logs={"802": hold_log},
+        key="present-test-key",
+    )
+    assert result == {"admit": "true", "reason": "PROVIDER_ADMISSION_CLEAR"}
