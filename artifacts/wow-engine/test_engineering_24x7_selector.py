@@ -29,6 +29,47 @@ def pr(number, incident, **extra):
 
 
 class Test24x7(unittest.TestCase):
+    def test_lease_cli_script_mode_without_pythonpath(self):
+        """The protected dispatch must resolve leases as a standalone script."""
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        manifest = {
+            "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+            "restoration": [
+                {"issue_number": 9, "severity": "P0", "priority_rank": 1,
+                 "execution_lane": "RAPID", "rapid_stream": "AUTONOMY_RESTORE",
+                 "lease_group": "P0_AUTONOMY_RESTORE",
+                 "conflict_keys": ["ENGINEERING_AUTONOMY"]},
+                {"issue_number": 10, "severity": "P1", "priority_rank": 2,
+                 "execution_lane": "STANDARD", "conflict_keys": ["SPORT_MODEL"]},
+            ],
+            "acceleration": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            manifest_path = Path(temp) / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            env = dict(os.environ)
+            env.pop("PYTHONPATH", None)
+            for incident, expected in ((9, "P0_AUTONOMY_RESTORE"), (10, "GLOBAL"),
+                                       (11, None)):
+                with self.subTest(incident=incident):
+                    result = subprocess.run(
+                        [sys.executable, str(FILE), "--manifest", str(manifest_path),
+                         "--lease-for-incident", str(incident)],
+                        cwd=temp, env=env, capture_output=True, text=True,
+                        check=False, timeout=15,
+                    )
+                    if expected is None:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(result.stdout, "")
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout.strip(), expected)
+
     def test_manifest_domain_lease_is_bound_to_exact_approved_p0(self):
         manifest = {
             "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
