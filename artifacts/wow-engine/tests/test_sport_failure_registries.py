@@ -160,6 +160,49 @@ def test_every_scanned_code_is_classified_exactly_once():
         assert not (kinds[0] & kinds[1]) and not (kinds[0] & kinds[2]) and not (kinds[1] & kinds[2])
 
 
+# Pinned independently of `_bucket`: these names carry failure tokens as
+# trailing or embedded segments, so a classifier change that reclassified them
+# as dispositions would otherwise update both the document and the expectation.
+PINNED_FAILURE_CODES = (
+    "NBA_POINTS_CANONICAL_EVIDENCE_REJECTED",
+    "NCAAF_MODEL_REGISTRY_REJECTED",
+    "NCAAB_PREGAME_MARKET_INPUT_REJECTED",
+    "MLB_1IP_BF_HISTORY_EXCEEDS_CERTIFIED_WINDOW",
+    "WNBA_PROP_FROZEN_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY",
+)
+
+
+def test_pinned_failure_codes_classify_as_failure():
+    emitted = {code for sport in SPORTS for code in _scanned(sport)}
+    assert sorted(set(PINNED_FAILURE_CODES) - emitted) == [], "pinned code no longer emitted"
+    reclassified = sorted(code for code in PINNED_FAILURE_CODES if GEN.classify(code) != "failure")
+    assert reclassified == [], reclassified
+
+
+def test_failure_token_matching_is_segment_bounded():
+    assert GEN.is_failure_name("NFL_INPUTS_MISSING")
+    assert GEN.is_failure_name("NFL_NOT_READY")
+    assert GEN.is_failure_name("NFL_OUT_OF_WINDOW")
+    # A compound failure name still matches its token at a segment boundary.
+    assert GEN.is_failure_name("MLB_1IP_BF_HISTORY_EXCEEDS_CERTIFIED_WINDOW")
+    assert GEN.is_failure_name("NCAAF_MODEL_REGISTRY_REJECTED")
+    # `REQUIRED` inside `PREREQUISITE` is not the token; matching it would
+    # register a safe name as a failure.
+    assert not GEN.is_failure_name("NFL_PREREQUISITE_TABLE")
+    assert GEN.classify("NBA_TOTALS_REGISTERED") == "status"
+
+
+def test_no_status_or_label_carries_a_failure_token():
+    def carries_failure_token(code):
+        padded = f"_{code}_"
+        return any(f"_{token.strip('_')}_" in padded for token in GEN.FAILURE_TOKENS)
+
+    for sport in SPORTS:
+        for kind in ("status", "label"):
+            offenders = sorted(code for code in _bucket(sport, kind) if carries_failure_token(code))
+            assert offenders == [], (sport, kind, offenders)
+
+
 def test_registry_documents_match_the_generator():
     failure_text, status_text = GEN.render()
     assert failure_text == FAILURE_DOC.read_text(encoding="utf-8"), (

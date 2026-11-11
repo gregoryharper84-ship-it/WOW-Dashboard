@@ -247,6 +247,15 @@ def test_every_nhl_failure_table_has_an_emitting_module_column():
     assert tables >= 19, tables
 
 
+def _mentions(text: str, code: str) -> bool:
+    """True only when `code` appears as a whole literal, not inside a longer code.
+
+    A substring test lets a removed `NHL_FOO` hide behind `NHL_FOO_BAR`, so a
+    renamed code could stay "present" in a module that no longer raises it.
+    """
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(code)}(?![A-Za-z0-9_])", text) is not None
+
+
 def test_every_nhl_failure_row_names_its_emitting_module():
     rows = 0
     for line in REGISTRY.read_text().splitlines():
@@ -261,7 +270,7 @@ def test_every_nhl_failure_row_names_its_emitting_module():
         assert module.is_file(), (code, emitter)
         assert "tests" not in Path(emitter).parts, code
         needle = code.split(":", 1)[0].split("<", 1)[0]
-        assert needle in module.read_text(encoding="utf-8"), (code, emitter)
+        assert _mentions(module.read_text(encoding="utf-8"), needle), (code, emitter)
         rows += 1
     assert rows >= 270, rows
 
@@ -294,7 +303,7 @@ def test_shared_failure_codes_record_every_secondary_emitter():
         for module in modules:
             assert module != primary, (code, module)
             assert "tests" not in Path(module).parts, code
-            assert needle in (ROOT / module).read_text(encoding="utf-8"), (code, module)
+            assert _mentions((ROOT / module).read_text(encoding="utf-8"), needle), (code, module)
 
 
 def test_no_documented_nhl_failure_code_is_stale():
@@ -307,7 +316,7 @@ def test_no_documented_nhl_failure_code_is_stale():
         for path in ROOT.rglob("*.py")
         if "tests" not in path.parts and not path.name.startswith("test_")
     )
-    stale = sorted(code for code in codes if code not in sources)
+    stale = sorted(code for code in codes if not _mentions(sources, code))
     assert stale == [], stale
 
 

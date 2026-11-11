@@ -9,7 +9,8 @@ blocks in the two registry documents.
 Classification is deliberate and conservative:
 
 * a code that looks like a failure (invalid/missing/failed/unavailable/...)
-  is a failure code;
+  is a failure code; failure tokens match from a segment boundary, so
+  `REQUIRED` does not match `PREREQUISITE`;
 * otherwise a code whose name is a success disposition (persisted, complete,
   registered, ready, ...) is a status, and is never a failure;
 * otherwise a code that is a model/version label, a table or metric name, or a
@@ -93,11 +94,29 @@ LABEL_PREFIXES = (
 YEAR_RE = re.compile(r"(?:19|20)\d\d")
 
 
+def _matches_token(code: str, token: str) -> bool:
+    """Match a failure token at a segment boundary rather than mid-word.
+
+    `REQUIRED` must not match `PREREQUISITE`, and `BELOW` must not match a
+    word that merely contains it. Tokens that already carry a trailing
+    underscore (`NOT_`, `NO_`) are matched as written: they anchor to the
+    segment start they describe, and a compound segment such as
+    `CANNOT_GRANT_...` is a refusal, not a capability.
+
+    This stays conservative. A code that matches no token still defaults to
+    `failure` in `classify`, and compound failure names such as
+    `EXCEEDS_CERTIFIED_WINDOW` and `REJECTED` still match their token.
+    """
+    if token.endswith("_") or token.startswith("_"):
+        return token in code
+    return f"_{token}" in f"_{code}_"
+
+
 def is_failure_name(code: str) -> bool:
     # `_HOLD` is a failure suffix, but `_HOLDOUT` is a cohort label.
     if re.search(r"_HOLD(?:_|$)", code):
         return True
-    return any(token in code for token in FAILURE_TOKENS)
+    return any(_matches_token(code, token) for token in FAILURE_TOKENS)
 
 
 def is_status_name(code: str) -> bool:
