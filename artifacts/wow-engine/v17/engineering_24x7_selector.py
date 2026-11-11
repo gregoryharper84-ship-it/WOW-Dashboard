@@ -10,6 +10,12 @@ from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
+import sys
+
+# GitHub invokes this file directly, not with the engine root on PYTHONPATH.
+# Add only the canonical package parent for the existing v17 validator import.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Accept the canonical "#123" form AND the literal existing worker PR
 # template: echo "Incident: \`$INCIDENT\`" (which produces "Incident: \`123\`").
