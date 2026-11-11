@@ -15,6 +15,8 @@ def pick(sport='NFL', event_id='nfl-a', side='Home', role='PREFERRED', **updates
         'sport': sport, 'official_event_id': event_id,
         'home_team': 'Home', 'away_team': 'Away',
         'event_start_time_utc': START, 'selected_side': side,
+        'settlement_basis': ('FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT' if sport == 'NHL'
+                             else 'FULL_GAME_INCLUDING_OVERTIME'),
         'selection_role': role, 'immutable_pregame': True,
         'pregame_receipt_id': f'chat-prelock-{sport}-{event_id}-{role}',
         'pregame_receipt_verified': True,
@@ -33,6 +35,8 @@ def result(sport='NFL', event_id='nfl-a', winner='Home', **updates):
         'sport': sport, 'official_event_id': event_id,
         'home_team': 'Home', 'away_team': 'Away',
         'event_start_time_utc': START, 'winning_side': winner,
+        'settlement_basis': ('FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT' if sport == 'NHL'
+                             else 'FULL_GAME_INCLUDING_OVERTIME'),
         'final_status': 'FINAL', 'independently_verified': True,
         'settlement_receipt_id': f'official-final-{sport}-{event_id}',
         'settlement_source': 'OFFICIAL_LEAGUE', 'settled_at_utc': FINAL,
@@ -221,3 +225,40 @@ def test_reused_official_settlement_receipt_across_events_cannot_grade_two_games
     report = audit_research_card([pick(), pick('NHL', 'nhl-c')], [first, second])
     assert report['preferred']['graded'] == 0
     assert 'DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT_ID' in report['board_blockers']
+
+
+def test_research_final_rejects_period_or_regulation_only_settlement():
+    for sport in ("NFL", "NBA", "NHL"):
+        initial = pick(sport=sport)
+        for invalid in ("FIRST_HALF", "FIRST_PERIOD", "REGULATION", None):
+            bad = result(sport=sport, settlement_basis=invalid)
+            report = audit_research_card(
+                [initial], [bad],
+                official_slate=manifest((sport, "nfl-a")),
+                official_slate_verified=True, official_slate_receipt_id="official-slate")
+            assert report["rows"][0]["grade_status"] == "HELD"
+            assert "FULL_GAME_SETTLEMENT_BASIS_UNVERIFIED" in report["rows"][0]["blockers"]
+            assert report["headline_accuracy"] is None
+
+
+def test_research_pick_requires_same_full_game_basis_as_official_final():
+    forecast = pick(sport="NHL", settlement_basis="REGULATION")
+    report = audit_research_card([forecast], [result(sport="NHL")],
+        official_slate=manifest(("NHL", "nfl-a")),
+        official_slate_verified=True, official_slate_receipt_id="official-slate")
+    assert report["rows"][0]["grade_status"] == "HELD"
+    assert "FULL_GAME_SETTLEMENT_BASIS_UNVERIFIED" in report["rows"][0]["blockers"]
+
+
+def test_missing_manifest_game_is_a_visible_ungraded_held_row():
+    report = audit_research_card([pick()], [result()],
+        official_slate=manifest(("NFL", "nfl-a"), ("NFL", "nfl-b")),
+        official_slate_verified=True, official_slate_receipt_id="official-slate")
+    missing = [x for x in report["rows"] if x["official_event_id"] == "nfl-b"]
+    assert len(missing) == 1
+    assert missing[0]["selection_role"] == "PREFERRED"
+    assert missing[0]["grade_status"] == "HELD"
+    assert missing[0]["selected_side"] is None
+    assert "OFFICIAL_SLATE_PREFERRED_PICK_MISSING" in missing[0]["blockers"]
+    assert report["preferred"]["graded"] == 1
+    assert report["headline_accuracy"] is None
