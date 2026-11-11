@@ -40,3 +40,14 @@
 - **prevention artifact:** tests/test_nfl_missing_prop_candidates.py (new 18-row shape case, six negative identity/count/date variants, and caller-vs-authoritative digest flag check); new code remains unmerged and hosted review pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no published real-source training, no model certification, can_execute=false.
+
+## Missing offensive participant-game coverage — 2026-11-11
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PARTICIPATION_SOURCE_DIGEST_MISMATCH; NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT; NFL_PROP_PARTICIPATION_SNAP_EMPTY
+- **mechanism:** Weekly count-stat source contains recorded events, not necessarily every player who logged offensive snaps. Inner-only source history can omit participants who had zero recorded opportunities, biasing count targets and L5/L10 histories. An empty snap cohort can also produce a false 0/0 complete-diff success.
+- **detection_point:** Historical source completeness audit, before fitted count-prop candidate evaluation and model promotion.
+- **fix:** Offline research-only `audit_nfl_count_prop_participation.py` compares pinned 2021–2025 NFL summaries against pinned game-level snap records via PFR-to-GSIS player crosswalk. Never fill a missing stat with 0 or join by player name; report exact unmapped and missing game identities, and reject malformed/incomplete sources. Empty/offseason source is a typed HOLD.
+- **prevention_artifact:** `tests/test_nfl_count_prop_participation_audit.py` includes missing eight-snap player-game, wrong game ID, crosswalk conflict, source digest, duplicate row, missing mapping and empty-source regressions. Tests require hosted exact-head validation; tool source CSVs unavailable in this environment.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. Audit is offline, source rights separately reviewed; no certification or deployment authority, can_execute=false.
