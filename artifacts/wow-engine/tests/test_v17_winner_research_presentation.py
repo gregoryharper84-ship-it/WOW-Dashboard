@@ -83,6 +83,22 @@ class WinnerResearchPresentationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SELECTION_NOT_ELIGIBLE"):
             build(primaries=bad)
 
+    def test_malformed_rows_and_outcomes_fail_with_typed_error(self):
+        with self.assertRaisesRegex(ValueError, "ROW_NOT_OBJECT"):
+            build(events=[None])
+        with self.assertRaisesRegex(ValueError, "ROW_NOT_OBJECT"):
+            build(primaries=[None])
+        with self.assertRaisesRegex(ValueError, "ROW_NOT_OBJECT"):
+            build(watches=[None])
+        broken = slate()
+        broken[0]["eligible_outcomes"] = [["HOME"], "AWAY"]
+        with self.assertRaisesRegex(ValueError, "ELIGIBLE_OUTCOMES_INVALID"):
+            build(events=broken)
+        broken = slate()
+        broken[0]["eligible_outcomes"] = ["HOME", "HOME", "AWAY"]
+        with self.assertRaisesRegex(ValueError, "ELIGIBLE_OUTCOMES_INVALID"):
+            build(events=broken)
+
     def test_nhl_full_game_excludes_regulation_draw(self):
         events = slate()
         events[0]["eligible_outcomes"].append("DRAW")
