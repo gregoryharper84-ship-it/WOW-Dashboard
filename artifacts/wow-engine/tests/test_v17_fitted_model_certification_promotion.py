@@ -832,6 +832,42 @@ def test_promotion_service_persists_the_same_full_metric_replay_it_evaluates(
     assert set(stored["payload"]["verified_stored_metrics"]) == set(effective_metrics)
 
 
+@pytest.mark.parametrize("selected_metrics", (["row_n"], []))
+def test_promotion_service_blocks_missing_holdout_metrics(selected_metrics):
+    """Reject service-level promotion when only a diagnostic metric is stored."""
+    db = _FakeDB()
+    artifact = _artifact(stored_metrics={"row_n": 1})
+    policy = _signed_policy()
+    row_count_receipt = replay_fitted_artifact(artifact, required_metrics=["row_n"])
+    assert row_count_receipt["status"] == REPLAY_PASS
+    authorization = _signed_authorization(row_count_receipt, policy, artifact)
+
+    result = run_fitted_model_promotion(
+        FittedPromotionRequest(
+            artifact=artifact,
+            policy=policy.as_dict(),
+            authorization=authorization.as_dict(),
+            required_metrics=selected_metrics,
+        ),
+        db=db,
+        approval_key=TEST_APPROVAL_KEY,
+    )
+
+    assert result["status"] == PROMOTION_BLOCKED
+    assert result["apply_packet"] is None
+    assert result["replay_receipt_persisted"] is True
+    assert result["replay"]["status"] == REPLAY_FAILED
+    for metric in DEFAULT_REQUIRED_METRICS:
+        assert (
+            f"FITTED_CERTIFICATION_STORED_METRIC_MISSING:{metric}"
+            in result["blockers"]
+        )
+    stored_replays = db.tables["wow_fitted_model_certification_replay_receipts"]
+    assert len(stored_replays) == 1
+    assert stored_replays[0]["status"] == REPLAY_FAILED
+    assert stored_replays[0]["receipt_sha256"] == result["replay"]["receipt_sha256"]
+
+
 def test_service_rejects_unsigned_policy_and_authorization():
     db = _FakeDB()
     request = FittedPromotionRequest(
