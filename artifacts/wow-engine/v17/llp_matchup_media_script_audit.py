@@ -19,6 +19,19 @@ FORBIDDEN_WEIGHTS = frozenset({
 })
 
 
+def _has_uncertified_numeric_key(record: Mapping[str, Any]) -> bool:
+    """Flag scenario likelihood/odds aliases, not ordinary descriptive fields."""
+    for key in record:
+        if not isinstance(key, str):
+            return True
+        name = key.casefold().replace("-", "_")
+        if any(term in name for term in (
+            "prob", "odds", "weight", "likelihood", "chance", "win_pct",
+        )):
+            return True
+    return False
+
+
 def _txt(value: Any, *, max_length: int = 500) -> str:
     if not isinstance(value, str) or len(value) > max_length:
         return ""
@@ -106,7 +119,7 @@ def audit_script_robustness_and_media(
             if time is None or when is None or time > when:
                 warnings.append("SCENARIO_FUTURE_OR_TIME_UNVERIFIED")
                 continue
-            if FORBIDDEN_WEIGHTS.intersection(candidate):
+            if FORBIDDEN_WEIGHTS.intersection(candidate) or _has_uncertified_numeric_key(candidate):
                 warnings.append("SCENARIO_UNCERTIFIED_NUMERIC_WEIGHT")
                 continue
             ids.add(identity)
