@@ -41,7 +41,8 @@ def test_live_datadog_source_hold_is_separate_from_required_code_regression():
     wf = WF.read_text()
     assert "Log Reporter read-only security and regression tests" in wf
     assert "Redaction and failure-path tests" in wf
-    assert "intake_exit=$?" in wf
+    assert "intake_exit=0" in wf
+    assert "|| intake_exit=$?" in wf
     assert "WOW_LOG_INTAKE_SOURCE_UNAVAILABLE:" in wf
     assert "continue-on-error: true" not in wf
     assert "actions: write" not in wf
