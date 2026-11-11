@@ -517,7 +517,11 @@ def test_non_espn_alias_requires_unique_same_teams_and_kickoff(monkeypatch):
     monkeypatch.setattr(
         secondary, "_scoreboard",
         lambda *_args, **_kwargs: secondary.SecondaryResult(
-            True, {"events": events}, 200
+            True, {
+                "events": events,
+                "_wow_provider_truncated": False,
+                "_wow_provider_completeness_unverified": False,
+            }, 200
         ),
     )
     context = {
@@ -626,3 +630,112 @@ def test_ncaaf_small_or_explicit_total_board_not_marked_cap_25(monkeypatch):
         "/odds-api/v4/sports/americanfootball_ncaaf/events", params, {}
     )
     assert empty.ok is True and empty.data == []
+
+
+@pytest.mark.parametrize("requested_start,matched_start,match_partition", [
+    # 23:50 EST / 00:10 EST: same event with 20-minute kickoff correction.
+    ("2026-11-12T04:50:00Z", "2026-11-12T05:10:00Z", "20261112"),
+    # 00:10 EST / 23:50 EST: reverse direction across midnight.
+    ("2026-11-12T05:10:00Z", "2026-11-12T04:50:00Z", "20261111"),
+])
+def test_espn_relookup_checks_adjacent_eastern_midnight_partitions(
+        monkeypatch, requested_start, matched_start, match_partition):
+    event = _event(401892690)
+    event["date"] = matched_start
+    seen = []
+
+    def fake_http_json(_url, params=None):
+        seen.append(params["dates"])
+        if params["dates"] == match_partition:
+            return secondary.SecondaryResult(True, {"events": [event]}, 200)
+        return secondary.SecondaryResult(True, {"events": []}, 200)
+
+    monkeypatch.setattr(secondary, "_http_json", fake_http_json)
+    secondary._SCOREBOARD_CACHE.clear()
+    found = secondary._find_event("icehockey_nhl", "espn-401892690", {
+        "home_team": "Home 401892690",
+        "away_team": "Away 401892690",
+        "commence_time": requested_start,
+    })
+    assert found.ok is True
+    assert found.data["id"] == "401892690"
+    assert seen == ["20261111", "20261112"]
+
+
+@pytest.mark.parametrize("flag,value,expected_code", [
+    ("_wow_provider_completeness_unverified", True,
+     "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"),
+    ("_wow_provider_truncated", True,
+     "ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"),
+])
+def test_alias_lookup_holds_when_espn_slate_not_complete(
+        monkeypatch, flag, value, expected_code):
+    event = _event(401866461)
+    event["date"] = "2026-11-12T00:30:00Z"
+    payload = {
+        "events": [event],
+        "_wow_provider_truncated": False,
+        "_wow_provider_completeness_unverified": False,
+    }
+    payload[flag] = value
+    monkeypatch.setattr(
+        secondary, "_scoreboard",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(True, payload, 200),
+    )
+    context = {
+        "home_team": "Home 401866461",
+        "away_team": "Away 401866461",
+        "commence_time": "2026-11-12T00:30:00Z",
+    }
+    alias = secondary._find_event("americanfootball_ncaaf", "cfbd-123", context)
+    assert alias.ok is False
+    assert alias.status == 409
+    assert alias.code == expected_code
+
+    # A truly exact ESPN provider ID is not a whole-slate uniqueness inference.
+    exact = secondary._find_event("americanfootball_ncaaf", "espn-401866461", context)
+    assert exact.ok is True
+    assert exact.data["id"] == "401866461"
+
+
+def test_alias_lookup_rejects_unattested_espn_completeness(monkeypatch):
+    event = _event(401866461)
+    event["date"] = "2026-11-12T00:30:00Z"
+    monkeypatch.setattr(
+        secondary, "_scoreboard",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            True, {"events": [event]}, 200
+        ),
+    )
+    found = secondary._find_event("americanfootball_ncaaf", "cfbd-123", {
+        "home_team": "Home 401866461",
+        "away_team": "Away 401866461",
+        "commence_time": "2026-11-12T00:30:00Z",
+    })
+    assert found.ok is False
+    assert found.code == "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
+
+
+def test_cross_midnight_alias_holds_if_either_espn_partition_incomplete(monkeypatch):
+    event = _event(401866461)
+    event["date"] = "2026-11-12T05:10:00Z"
+    days = []
+
+    def fake_board(_sport, params):
+        day = params["commenceTimeFrom"]
+        days.append(day)
+        return secondary.SecondaryResult(True, {
+            "events": [event] if day == "20261112" else [],
+            "_wow_provider_truncated": False,
+            "_wow_provider_completeness_unverified": day == "20261111",
+        }, 200)
+
+    monkeypatch.setattr(secondary, "_scoreboard", fake_board)
+    found = secondary._find_event("americanfootball_ncaaf", "cfbd-123", {
+        "home_team": "Home 401866461",
+        "away_team": "Away 401866461",
+        "commence_time": "2026-11-12T04:50:00Z",
+    })
+    assert days == ["20261111", "20261112"]
+    assert found.ok is False
+    assert found.code == "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
