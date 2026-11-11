@@ -14,7 +14,10 @@ def pick(sport="NCAAB", event="a", side="HOME", **overrides):
          "frozen_at_utc": FREEZE, "available_to_user_at_utc": FREEZE,
          "selected_side": side, "immutable_pregame": True,
          "pregame_receipt_verified": True, "pregame_receipt_id": "pre-" + event,
-         "market": {"sport": sport,
+         "market": {"sport": sport, "official_event_id": event,
+                    "home_team": "Home", "away_team": "Away",
+                    "event_start_time_utc": START,
+                    "available_to_user_at_utc": FREEZE,
                     "market_type": "REGULATION_3WAY" if sport == "UWCL" else "FULL_GAME_2WAY",
                     "as_of_utc": FREEZE, "independently_verified": True,
                     "receipt_id": "market-" + event,
@@ -109,6 +112,10 @@ def test_boolean_attestation_is_literal_and_cohort_cannot_be_called_full_slate()
 
 def test_spread_cover_independent_of_outright_winner():
     p = pick(spread={"home_line": -38.5, "settlement_basis": "FULL_GAME",
+                     "sport": "NCAAB", "official_event_id": "a",
+                     "home_team": "Home", "away_team": "Away",
+                     "event_start_time_utc": START,
+                     "available_to_user_at_utc": FREEZE,
                      "as_of_utc": FREEZE, "receipt_id": "spread-a",
                      "independently_verified": True})
     r = audit([p], [final(home_score=95, away_score=61)])
@@ -125,3 +132,28 @@ def test_late_market_and_reused_receipts_do_not_claim_edge():
     assert r["cohort_complete"] is True
     assert r["market_baseline_complete"] is False
     assert all(x["market_favorite_grade"] == "UNAVAILABLE" for x in r["rows"])
+
+
+def test_market_event_swap_is_not_a_valid_baseline():
+    p = pick()
+    p["market"]["official_event_id"] = "different-game"
+    r = audit([p], [final()])
+    assert r["correct"] == 1
+    assert r["market_baseline_complete"] is False
+    assert r["rows"][0]["market_favorite"] is None
+    assert "MARKET_IDENTITY_OR_RECEIPT_REUSED" in r["rows"][0]["market_blockers"]
+
+
+def test_market_and_spread_available_after_freeze_are_not_pregame():
+    p = pick(spread={"home_line": -1.5, "settlement_basis": "FULL_GAME",
+                     "sport": "NCAAB", "official_event_id": "a",
+                     "home_team": "Home", "away_team": "Away",
+                     "event_start_time_utc": START, "as_of_utc": FREEZE,
+                     "available_to_user_at_utc": SETTLED,
+                     "receipt_id": "spread-a", "independently_verified": True})
+    p["market"]["available_to_user_at_utc"] = SETTLED
+    r = audit([p], [final()])
+    assert r["correct"] == 1
+    assert r["market_baseline_complete"] is False
+    assert "MARKET_NOT_VISIBLE_AT_FREEZE" in r["rows"][0]["market_blockers"]
+    assert r["rows"][0]["spread_outcome_diagnostic_only"] == "NOT_EVALUATED"
