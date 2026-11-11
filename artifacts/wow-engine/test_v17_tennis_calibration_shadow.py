@@ -188,3 +188,49 @@ def test_existing_tennis_maintenance_attaches_shadow_without_model_promotion(mon
         assert metrics["calibration_shadow"]["selection_used_untouched_test"] is False
         assert metrics["calibration_shadow"]["certification_eligible"] is False
         assert metrics["research_screen_pass"] == row["research_screen_pass"]
+
+
+def test_shadow_runtime_error_remains_held_without_changing_original_fit(monkeypatch):
+    from types import SimpleNamespace
+    from v17 import tennis_valuebet_candidate as tennis
+    from v17 import tennis_calibration_shadow as shadow
+
+    class FakeDb:
+        def __init__(self):
+            self.saved = []
+
+        def table(self, name):
+            self.name = name
+            return self
+
+        def upsert(self, payload, **kwargs):
+            self.saved.append((self.name, payload))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    def broken_shadow(*args, **kwargs):
+        raise RuntimeError("shadow experiment unavailable")
+
+    monkeypatch.setattr(tennis, "FEATURE_NAMES", NAMES)
+    monkeypatch.setattr(tennis, "fetch_matches", lambda: ([], []))
+    monkeypatch.setattr(
+        tennis, "build_training_rows",
+        lambda matches, *, tour: (_rows(1300, tour), []),
+    )
+    monkeypatch.setattr(tennis, "_persist_rows", lambda *a, **k: None)
+    monkeypatch.setattr(shadow, "replay_tennis_calibration_shadow", broken_shadow)
+    db = FakeDb()
+    result = tennis.train_all(db, training_code_sha="b" * 40)
+    assert result["ok"] is True
+    stored = [v for table, v in db.saved if table == "wow_d1_candidate_artifacts"]
+    assert len(stored) == 2
+    for row in stored:
+        metrics = row["validation_metrics"]
+        assert metrics["calibration_shadow_status"] == "HELD"
+        assert metrics["calibration_shadow"]["code"] == "TENNIS_CALIBRATION_SHADOW_RUNTIME_FAILED"
+        assert metrics["calibration_shadow"]["probability_publishable"] is False
+        assert metrics["research_screen_pass"] == row["research_screen_pass"]
+        assert row["active"] is False and row["promoted"] is False
+        assert row["can_execute"] is False
