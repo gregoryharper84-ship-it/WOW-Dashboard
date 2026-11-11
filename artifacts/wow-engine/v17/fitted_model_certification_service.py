@@ -340,7 +340,11 @@ def run_fitted_model_promotion(
     except FittedCertificationError as exc:
         return _contract_failure("PROMOTION_TRUST_ROOT_INVALID", exc.code)
 
-    required_metrics = tuple(request.required_metrics)
+    # Persist and evaluate the same mandatory metric set.  A caller may request
+    # additional diagnostics, but cannot narrow the replay used for promotion.
+    required_metrics = tuple(
+        dict.fromkeys((*DEFAULT_REQUIRED_METRICS, *request.required_metrics))
+    )
     replay = replay_fitted_artifact(request.artifact, required_metrics=required_metrics)
     replay_persisted = persist_replay_receipt(db, replay)
     packet = evaluate_fitted_model_promotion(
