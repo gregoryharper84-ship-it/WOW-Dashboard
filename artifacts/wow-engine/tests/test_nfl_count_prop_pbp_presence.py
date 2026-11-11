@@ -19,7 +19,8 @@ def source_cohort():
     """Two eligible snap participants; only QB has a weekly-stat source row."""
     game = "2024_01_BAL_KC"
     stats = pd.DataFrame([
-        {"game_id": game, "season": 2024, "week": 1, "player_id": "00-0032222"},
+        {"game_id": game, "season": 2024, "week": 1, "player_id": "00-0032222",
+         "attempts": 23, "targets": 0, "carries": 1},
     ])
     snaps = pd.DataFrame([
         {"game_id": game, "season": 2024, "week": 1, "game_type": "REG",
@@ -131,6 +132,7 @@ def test_observed_pbp_actor_still_does_not_authorize_zero_or_model(source_cohort
     )
     assert output["pbp_presence_counts"]["pbp_actor_observed"] == 1
     assert output["pbp_matched_positive_control"]["pbp_actor_observed"] == 1
+    assert output["pbp_positive_opportunity_control"]["pbp_actor_observed"] == 1
     assert output["pbp_actor_id_alignment_observed"] is True
     assert output["mapped_missing_player_games"] == 1
     assert output["status"] == "HOLD_PBP_PRESENCE_ONLY"
@@ -146,6 +148,7 @@ def test_no_positive_control_keeps_identity_alignment_unproven(source_cohort):
         *source_cohort, {game}, {(game, "GSIS_UNRELATED")},
     )
     assert output["pbp_matched_positive_control"]["pbp_actor_observed"] == 0
+    assert output["pbp_positive_opportunity_control"]["pbp_actor_not_observed"] == 1
     assert output["pbp_actor_id_alignment_observed"] is False
     assert output["pbp_presence_counts"]["pbp_actor_not_observed"] == 1
     assert output["missing_actor_means_zero"] is False
@@ -190,3 +193,14 @@ def test_active_crosswalk_conflict_remains_fail_closed(source_cohort):
     ], ignore_index=True)
     with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT"):
         mod.classify_missing_pbp_presence(stats, snaps, conflict, set(), set())
+
+
+def test_invalid_positive_opportunity_count_rejects_without_zero_imputation(source_cohort):
+    """A corrupt weekly opportunity cannot silently enter the PBP diagnostic."""
+    stats, snaps, players = source_cohort
+    stats = stats.copy()
+    stats.loc[0, "attempts"] = float("nan")
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_COUNT_INVALID:attempts"):
+        mod.classify_missing_pbp_presence(
+            stats, snaps, players, {"2024_01_BAL_KC"}, set(),
+        )

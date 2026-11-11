@@ -14,6 +14,7 @@ import io
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from acquire_nfl_count_prop_sources import OFFICIAL_SIZE_BYTES, acquire_one
@@ -173,6 +174,43 @@ def classify_missing_pbp_presence(
             control["pbp_actor_not_observed"] += 1
     if sum(control.values()) != canonical["player_games_matched"]:
         raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
+    # A PBP actor omission is informative only if rows with REAL positive
+    # modeled opportunities are actually represented by the actor fields.
+    # Matched weekly-stat rows may themselves contain all-zero opportunity
+    # statistics; never count those as proof that PBP omitted activity.
+    positive_control = None
+    opportunity_fields = ("attempts", "targets", "carries")
+    if set(opportunity_fields).issubset(stats.columns):
+        activity = stats.loc[:, keycols + list(opportunity_fields)].copy()
+        activity["game_id"] = activity["game_id"].astype(str).str.strip()
+        activity["player_id"] = activity["player_id"].astype(str).str.strip()
+        for field in opportunity_fields:
+            values = pd.to_numeric(activity[field], errors="coerce")
+            if (not np.isfinite(values.to_numpy(dtype=float)).all()
+                    or values.lt(0).any() or (values % 1 != 0).any()):
+                raise ValueError("NFL_PROP_SOURCE_COUNT_INVALID:" + field)
+            activity[field] = values
+        positive_keys = activity.loc[
+            activity.loc[:, list(opportunity_fields)].gt(0).any(axis=1),
+            keycols,
+        ]
+        positive = matched.merge(
+            positive_keys, on=keycols, how="inner", validate="one_to_one",
+        )
+        positive_control = {
+            "pbp_actor_observed": 0, "pbp_actor_not_observed": 0,
+            "pbp_game_absent": 0,
+        }
+        for row in positive.itertuples(index=False):
+            game_id, player_id = str(row.game_id), str(row.gsis_id)
+            if game_id not in games:
+                positive_control["pbp_game_absent"] += 1
+            elif (game_id, player_id) in actors:
+                positive_control["pbp_actor_observed"] += 1
+            else:
+                positive_control["pbp_actor_not_observed"] += 1
+        if sum(positive_control.values()) != len(positive):
+            raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
     return {
         "status": "HOLD_PBP_PRESENCE_ONLY",
         "scope": canonical["scope"],
@@ -180,6 +218,7 @@ def classify_missing_pbp_presence(
         "unmapped_pfr_player_games": canonical["unmapped_pfr_player_games"],
         "pbp_presence_counts": counts,
         "pbp_matched_positive_control": control,
+        "pbp_positive_opportunity_control": positive_control,
         "pbp_actor_id_alignment_observed": control["pbp_actor_observed"] > 0,
         "pbp_examples": examples,
         "missing_actor_means_zero": False,

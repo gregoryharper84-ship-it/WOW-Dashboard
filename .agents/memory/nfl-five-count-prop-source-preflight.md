@@ -117,3 +117,14 @@
 - **prevention_artifact:** `test_no_positive_control_keeps_identity_alignment_unproven`, `test_observed_pbp_actor_still_does_not_authorize_zero_or_model` and existing hosted PBP source observation. New exact-head test and real positive-control receipt pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; evidence remains read-only, `can_execute=false`, V17_TERMINAL_REDUCER.
+
+## Positive-opportunity-specific PBP identity sensitivity (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_PBP_PRESENCE_ONLY; NFL_PROP_SOURCE_COUNT_INVALID
+- **mechanism:** Head b7d49178 confirmed a positive-control match for 26,304 of 28,178 weekly-stat-present player-games, but 1,874 had no passer/receiver/rusher PBP actor. Some of those 1,874 may have zero modeled opportunities; comparing all stats rows alone cannot establish PBP sensitivity for genuinely positive modeled activity.
+- **detection_point:** After real PBP 5/5 verified receipt and matched-player identity control, before constructing any zero-outcome labels.
+- **fix:** Add a second positive-control stratum restricted to *source-verified positive attempts, targets or carries*; separately count actor observed/not observed/PBP game absent. Missing, nonfinite, fractional or negative opportunities remain a typed input failure, not a zero.
+- **prevention_artifact:** scripts/audit_nfl_count_prop_pbp_presence.py, tests/test_nfl_count_prop_pbp_presence.py negative/positive controls, existing PR-only source receipt, exact-head hosted replay pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no specialist certified, registry activated, or protected merge/deploy. can_execute=false and V17_TERMINAL_REDUCER.
