@@ -76,7 +76,7 @@ def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
            "FAKE_PRS_JSON": json.dumps([{
                "number": 2547, "headRefOid": SHA, "state": "OPEN",
                "isDraft": False, "body": (
-                   "Pre-PR agent gates: PASS\\nIncident: \`#2076\`")
+                   "Pre-PR agent gates: PASS\nIncident: `#2076`")
            }])}
     process = subprocess.run(["bash", "-e", "-c", _resolver()], env=env,
                              text=True, capture_output=True, timeout=20)
