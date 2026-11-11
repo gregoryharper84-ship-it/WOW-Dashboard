@@ -103,3 +103,14 @@ The source-asset digests are embedded in the script from upstream nflverse relea
 - [ ] Investigate Charlie Kolar 2024 Week 1 and all other missing snap-positive player-game events by exact GSIS/PFR/game IDs. Never turn missing events into scored 0 without independent event evidence.
 - [ ] Independently challenge coverage scope: this does not prove participation with zero offensive snaps, all eligible roles, or any market-level availability.
 - [ ] Review new script and negative-path tests at *current* head, obtain non-author SIRT and native App acceptance before governed protected merge.
+
+## No-cost official source fetch (2026-11-11)
+
+In the existing network-enabled engineering research runner only (no new workflow, deployment, purchase or self-approval):
+
+    cd artifacts/wow-engine
+    python scripts/acquire_nfl_count_prop_sources.py --dest ./frozen
+    python scripts/acquire_nfl_count_prop_sources.py --dest ./frozen --verify-only
+    python scripts/audit_nfl_count_prop_participation.py --stats-dir ./frozen/stats_player --snap-dir ./frozen/snap_counts --players-csv ./frozen/players/players.csv
+
+The standalone user kit is independently hardened against editable manifest hash/size injection. This repository downloader reads static reviewed SHA pins directly from the existing trainer and snap audit and enforces published byte sizes. Eleven frozen assets sum to 61,620,003 bytes. This conversation's real download failed DNS; no raw bytes or real candidate fit have been verified here. Candidate activation remains forbidden until source rights, missing player-games, holdout metrics, forward certification, independent SIRT and QA/Release checks pass. Never coerce unknown participation to zero.

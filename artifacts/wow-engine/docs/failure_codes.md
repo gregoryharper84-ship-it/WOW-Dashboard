@@ -696,3 +696,18 @@ These are **offline research-builder and source-coverage audit only** errors fro
 | `NFL_PROP_PARTICIPATION_STATS_DUPLICATE` | IDENTITY | Repeated player/week/game weekly stats identity; reject before gap reconciliation. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_SNAP_SEASON_MISMATCH` | INPUT | Named season snap file contains unexpected season identity; reject before cohort comparison. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_SNAP_EMPTY` | INPUT | Pinned season or combined REG eligible offensive-snap participant cohort is empty; reject rather than falsely report 100% matching. | No |
+
+## Offline NFL official-source acquisition failures (2026-11-11)
+
+Produced only by scripts/acquire_nfl_count_prop_sources.py; owned by WOW_PROP_LANE. Never rank-eligible, never model qualification, and never permission to bypass certified model or source-rights constraints.
+
+| Typed code | Class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_ACQUIRE_PINS_INVALID` | SECURITY | Official code-owned SHA pin map or source count is invalid | No |
+| `NFL_PROP_ACQUIRE_FILE_MISSING` | INPUT | Pinned local file is absent or a symlink; no verification receipt | No |
+| `NFL_PROP_ACQUIRE_DIGEST_MISMATCH` | SECURITY | Frozen source size or hash differs from authoritative release; never overwrite | No |
+| `NFL_PROP_ACQUIRE_PATH_INVALID` | SECURITY | Source filename or dataset family not approved | No |
+| `NFL_PROP_ACQUIRE_HTTP_ERROR` | SOURCE | Official release server rejected the request; no fallback source | No |
+| `NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE` | TRANSIENT | DNS, connection or timeout prevents official source acquisition | No |
+| `NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED` | SECURITY | GitHub release redirect used an untrusted host or non-HTTPS scheme | No |
+| `NFL_PROP_ACQUIRE_TARGET_RACE` | CONCURRENCY | Concurrent writer occupied frozen target before atomic install | No |

@@ -62,3 +62,14 @@
 - **prevention_artifact:** `test_invalid_or_missing_snap_counts_fail_closed`, `test_unrelated_historical_pfr_collision_does_not_block_a_valid_cohort`, `test_active_pfr_collision_remains_fail_closed`. First mechanism reproduced in hosted run 43086324528, second in a local pandas reproduction; fresh exact-head hosted CI verification pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; candidate trainer and audit remain offline and non-publishable; can_execute=false.
+
+## Official source acquisition editable-hash failure (2026-11-11)
+
+- date: 2026-11-11
+- typed_reason: NFL_PROP_ACQUIRE_DIGEST_MISMATCH; NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE
+- mechanism: A mutable caller manifest can replace the digest and byte size while still yielding a false verified label. The uploaded source kit reproduced this in 2 negative tests and raw DNS errors in a third.
+- detection_point: Before any source acquisition success receipt, fitting or 2025 holdout.
+- fix: Source digests are now pinned independently of caller input; repository acquisition tool uses reviewed static trainer and snap-audit pins with published byte sizes, and rejects tampered files, untrusted redirects and network failures.
+- prevention_artifact: tests/test_acquire_nfl_count_prop_sources.py; standalone acquisition kit V2 was 10/10 local PASS, while repo exact-head CI requires a fresh run.
+- link: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- production_evidence: None; raw data DNS unavailable in this runtime, no certified fit, can_execute=false.
