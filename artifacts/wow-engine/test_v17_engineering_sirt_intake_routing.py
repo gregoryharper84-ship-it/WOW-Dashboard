@@ -45,7 +45,7 @@ def _fake_pr(**over):
 
 
 def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
-         labels=None):
+         labels=None, worker_gate="PASS"):
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\nimport json,os,sys\n"
@@ -76,7 +76,7 @@ def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
            "FAKE_PRS_JSON": json.dumps([{
                "number": 2547, "headRefOid": SHA, "state": "OPEN",
                "isDraft": False, "body": (
-                   "Pre-PR agent gates: PASS\nIncident: `#2076`")
+                   f"Pre-PR agent gates: {worker_gate}\nIncident: `#2076`")
            }])}
     process = subprocess.run(["bash", "-e", "-c", _resolver()], env=env,
                              text=True, capture_output=True, timeout=20)
@@ -258,3 +258,17 @@ def test_rejected_resolver_never_reaches_issue_writer(tmp_path):
     bad, output = _run(tmp_path, requested_sha=OLD_SHA)
     assert bad.returncode != 0
     assert "found=true" not in output
+
+
+@pytest.mark.parametrize("gate,allowed", [("PASS", True), ("HOLD", False),
+                                         ("REJECT", False)])
+def test_worker_origin_preserves_real_pre_pr_gate_enforcement(tmp_path, gate, allowed):
+    """The original trusted worker lane may never admit HOLD or REJECT."""
+    process, output = _run(tmp_path, event="workflow_run", worker_gate=gate)
+    if allowed:
+        assert process.returncode == 0, process.stderr
+        assert "found=true" in output
+    else:
+        assert process.returncode != 0
+        assert "found=true" not in output
+        assert "SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS" in process.stderr
