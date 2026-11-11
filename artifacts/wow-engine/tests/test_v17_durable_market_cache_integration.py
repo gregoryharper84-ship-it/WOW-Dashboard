@@ -136,3 +136,48 @@ def test_provider_success_writes_durable_cache_best_effort(monkeypatch):
     assert stored[0][1]["provider"] == "RUNDOWN"
     assert stored[0][1]["sport_key"] == "baseball_mlb"
     assert observability.counters()["rundown_durable_cache_writes"] == 1
+
+
+def test_valid_cache_hit_never_calls_protected_paid_guard(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    memory_cache.reset()
+    monkeypatch.setattr(durable, "load_market_evidence", lambda *_a, **_k: _cached())
+    monkeypatch.setattr(
+        live, "_fetch_with_bounded_429_retry",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no provider call")),
+    )
+
+    def forbidden_guard():
+        raise AssertionError("paid call guard must not reject a valid cache hit")
+
+    for _ in range(2):  # durable then in-memory
+        result = live.get_sport_date_odds_snapshot(
+            "baseball_mlb", "2026-11-02", capability="events",
+            sport_id=3, before_provider_fetch=forbidden_guard,
+        )
+        assert result.ok is True
+        assert result.data[0]["id"] == "cached-event"
+
+
+def test_cache_miss_denied_guard_never_calls_provider(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    memory_cache.reset()
+    monkeypatch.setattr(durable, "load_market_evidence", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        live, "_fetch_with_bounded_429_retry",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no paid call")),
+    )
+    guarded = []
+
+    def guard():
+        guarded.append(True)
+        return False, "RUNDOWN_CIRCUIT_OPEN:RUNDOWN_QUOTA_EXHAUSTED"
+
+    result = live.get_sport_date_odds_snapshot(
+        "baseball_mlb", "2026-11-02", capability="events",
+        sport_id=3, before_provider_fetch=guard,
+    )
+    assert result.ok is False
+    assert result.code == "RUNDOWN_CIRCUIT_OPEN:RUNDOWN_QUOTA_EXHAUSTED"
+    assert guarded == [True]
+    assert result.can_execute is False

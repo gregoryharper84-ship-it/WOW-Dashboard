@@ -518,6 +518,11 @@ def test_ordered_attempts_preserve_full_installed_three_hop_and_circuit_origin(m
 
     def original_rundown_factory(*_args, **_kwargs):
         def fetch(_family, _target=None):
+            # Mirror the native adapter: caches are checked first and only an
+            # actual provider request invokes the paid call guard.
+            allowed, blocker = _kwargs["paid_call_guard"]()
+            if not allowed:
+                raise discovery.DiscoveryFeedError(blocker)
             calls["rundown"] += 1
             acquisition = _failed_attempt_result(
                 discovery.PATH_RUNDOWN, "RUNDOWN_HTTP_403"

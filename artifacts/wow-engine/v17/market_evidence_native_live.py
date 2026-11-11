@@ -548,6 +548,7 @@ def get_sport_date_odds_snapshot(
     sport_id: Any = None,
     paid_call_stage: str | None = None,
     model_preflight_passed: bool = False,
+    before_provider_fetch: Any = None,
 ) -> sources.MarketEvidenceResult:
     """One narrow sport/date **current odds snapshot**, normalised once and shared.
 
@@ -701,11 +702,18 @@ def get_sport_date_odds_snapshot(
         if cached is not None:
             observability.increment("rundown_durable_cache_hits")
             return cached
-        if paid_call_stage is not None:
-            budget, allowed, blocker = source_policy.check_paid_call(
-                paid_call_stage,
-                model_preflight_passed=model_preflight_passed,
-            )
+        if paid_call_stage is not None or before_provider_fetch is not None:
+            # Run the spend/circuit guard strictly after in-memory single-flight
+            # and durable-cache lookups. Cached evidence costs zero API calls.
+            budget = None
+            if before_provider_fetch is not None:
+                allowed, blocker = before_provider_fetch()
+            else:
+                budget = source_policy.current_paid_budget(create_if_missing=True)
+                allowed, blocker = budget.try_consume(
+                    paid_call_stage,
+                    model_preflight_passed=model_preflight_passed,
+                )
             if not allowed:
                 return sources.MarketEvidenceResult(
                     False,
@@ -718,7 +726,7 @@ def get_sport_date_odds_snapshot(
                         "cache_origin": "MISS",
                         "source_policy_blocked": True,
                         "source_policy_stage": str(paid_call_stage),
-                        "paid_call_budget": budget.receipt(),
+                        "paid_call_budget": budget.receipt() if budget is not None else None,
                         "can_execute": False,
                     },
                     prediction_authority=False,
@@ -726,7 +734,6 @@ def get_sport_date_odds_snapshot(
                     research_only=True,
                     can_execute=False,
                 )
-            source_policy.record_paid_call(paid_call_stage, budget)
 
         value = provider_produce()
         if value.ok:
