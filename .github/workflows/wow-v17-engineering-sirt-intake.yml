@@ -28,7 +28,9 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: sirt-intake-${{ github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number || github.run_id }}-${{ github.event.workflow_run.run_attempt || github.run_attempt }}
+  # All event sources use one writer lock; PR/worker event IDs differ, and
+  # a per-source lock permits duplicate issue creation for the same PR/SHA.
+  group: sirt-intake-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -113,11 +115,18 @@ jobs:
             echo "::error::UNSUPPORTED_SIRT_INTAKE_EVENT"; exit 1
           fi
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::INVALID_PR_HEAD_SHA"; exit 1; }
-          incident_count=$(grep -Ec '^Incident: #[1-9][0-9]*[[:space:]]*$' <<<"$body" || true)
-          [ "$incident_count" -eq 1 ] || {
-            echo "::error::SIRT_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1
-          }
-          incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\1/p' <<<"$body")
+          if [ "$SOURCE_EVENT" = "workflow_run" ]; then
+            # Preserve the worker's existing backtick-wrapped incident syntax.
+            incident=$(sed -nE 's/^Incident: .?#?([0-9]+).?$/\1/p' <<<"$body" | head -1)
+          else
+            # Manual and labeled existing-PR routing requires one canonical
+            # field; a PR description cannot weaken acceptance semantics.
+            incident_count=$(grep -Ec '^Incident: #[1-9][0-9]*[[:space:]]*$' <<<"$body" || true)
+            [ "$incident_count" -eq 1 ] || {
+              echo "::error::SIRT_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1
+            }
+            incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\1/p' <<<"$body")
+          fi
           [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::INCIDENT_ID_MISSING"; exit 1; }
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
