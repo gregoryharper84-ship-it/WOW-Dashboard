@@ -181,7 +181,8 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '--arg workflow_name "wow-v17-chatgpt-engineering-worker"' in worker
     assert '--arg workflow_name "wow-v17-claude-engineering-worker"' in claude_worker
 
-    assert "pull_request_target:" in gate
+    assert "on:\n  workflow_dispatch:" in gate
+    assert "on:\n  pull_request_target:" not in gate
     assert "ref: main" in gate
     artifact_step = gate.split("- name: Resolve trusted exact-head governance artifact", 1)[1].split(
         "- name: Verify trusted workflow identity and completion", 1
@@ -576,7 +577,7 @@ def test_trusted_gate_skips_failed_certifier_runs_and_gates_downstream_steps():
     workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     job = workflow["jobs"]["trusted-governance"]
 
-    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    assert job["if"] == "${{ false }}"
     for step in job["steps"][2:]:
         assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
 
@@ -690,6 +691,24 @@ def test_v4_postmerge_release_verifies_five_pinned_checks_and_exact_main_lineage
     assert "v4_exact_head_qa_release_checks: VERIFIED" in text
 
 
+def test_release_verifier_uses_deterministic_live_sha_and_agent_is_advisory():
+    """Paid ChatGPT observation must not own release status; retain App/SIRT gates."""
+    text = RELEASE.read_text(encoding="utf-8")
+    assert "Verify deterministic exact production state" in text
+    assert "DEPLOYED_SHA_DRIFT" in text
+    assert "deployed_sha" in text
+    assert '"status": "PRODUCTION_VERIFIED"' not in text
+    assert "RELEASE_WORKER_SHA_UNVERIFIED" in text
+    assert '"status": "PENDING"' in text
+    assert "steps.deterministic.outputs.result" in text
+    assert "Provider: Deterministic GitHub/Render exact-SHA receipt" in text
+    agent = text.split("- name: Release / Production Verification agent", 1)[1].split(
+        "- name: Publish release verification receipt", 1
+    )[0]
+    assert "continue-on-error: true" in agent
+    assert "wow-chatgpt-agent" in agent
+
+
 def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     """P1 regression: don't occupy 30min runners on obsolete exact-head SHAs.
 
@@ -712,3 +731,48 @@ def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     assert "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" in text
     assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in text
     assert "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" in text
+
+def test_release_verifier_executes_web_only_hold_and_security_negatives(tmp_path):
+    """An exact web SHA is not a worker deploy or independent acceptance receipt."""
+    release = RELEASE.read_text(encoding="utf-8")
+    step = release.split("      - name: Verify deterministic exact production state\n", 1)[1].split(
+        "      - name: Release / Production Verification agent\n", 1
+    )[0]
+    lines = step.splitlines()
+    begin = next(i for i, line in enumerate(lines) if line.strip() == "python - <<'PY'")
+    end = next(i for i in range(begin + 1, len(lines)) if lines[i].strip() == "PY")
+    script = textwrap.dedent("\n".join(lines[begin + 1:end]))
+
+    main_sha, stale_sha = "a" * 40, "b" * 40
+    cases = (
+        ("web_match", main_sha, False, False, "RELEASE_WORKER_SHA_UNVERIFIED", 0),
+        ("web_drift", stale_sha, False, False, "DEPLOYED_SHA_DRIFT", 0),
+        ("missing_sha", "", False, False, "DEPLOYED_SHA_MISSING", 0),
+        ("health_exec", main_sha, True, False, None, 1),
+        ("gov_publishable", main_sha, False, True, None, 1),
+    )
+    for label, deployed, health_exec, publishable, blocker, expected_exit in cases:
+        working = tmp_path / label
+        evidence = working / "artifacts/wow-engine/v17/.release-evidence"
+        evidence.mkdir(parents=True)
+        (evidence / "health-live.json").write_text(json.dumps({
+            "status": "ok", "can_execute": health_exec,
+        }))
+        (evidence / "governance.json").write_text(json.dumps({
+            "can_execute": False, "probability_publishable": publishable,
+            "deployed_sha": deployed,
+        }))
+        (evidence / "main-sha.txt").write_text(main_sha)
+        receipt = working / "result.json"
+        completed = subprocess.run(
+            [sys.executable, "-c", script], cwd=working,
+            env={**os.environ, "MERGE_SHA": "c" * 40, "RESULT_PATH": str(receipt)},
+            text=True, capture_output=True, check=False,
+        )
+        assert (completed.returncode != 0) == bool(expected_exit), label
+        if not expected_exit:
+            payload = json.loads(receipt.read_text())
+            assert payload["status"] == "PENDING", label
+            assert payload["blocker"] == blocker, label
+            assert payload["can_execute"] is False, label
+

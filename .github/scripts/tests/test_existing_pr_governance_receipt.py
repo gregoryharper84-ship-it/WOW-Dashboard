@@ -49,7 +49,7 @@ def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permi
     assert "ANTHROPIC_API_KEY" not in workflow
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
-    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "workflows: [wow-v17-independent-qa-check]" not in workflow.split("\npermissions:", 1)[0]
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
     assert "wow-v17-independent-source-review" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
@@ -65,8 +65,8 @@ def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permi
 def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "workflow_run:" in workflow
-    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "workflow_run:" not in workflow.split("\npermissions:", 1)[0]
+    assert "workflows: [wow-v17-independent-qa-check]" not in workflow.split("\npermissions:", 1)[0]
     assert "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
     assert "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" in workflow
@@ -1903,7 +1903,7 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
 def test_trusted_gate_revalidates_authenticated_automated_review_source():
     workflow = TRUSTED_GATE.read_text(encoding="utf-8")
 
-    assert "workflows: [wow-v17-existing-pr-governance-review]" in workflow
+    assert "workflows: [wow-v17-existing-pr-governance-review]" not in workflow.split("\npermissions:", 1)[0]
     assert "GOVERNANCE_SOURCE_REVIEW_RUN_UNTRUSTED" in workflow
     assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_UNTRUSTED" in workflow
     assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_CONTENT_MISMATCH" in workflow
@@ -1916,8 +1916,8 @@ def test_trusted_gate_revalidates_authenticated_automated_review_source():
 def test_trusted_gate_accepts_only_authenticated_release_check_run_certifications():
     workflow = TRUSTED_GATE.read_text(encoding="utf-8")
 
-    assert "github.event.workflow_run.event == 'check_run'" in workflow
-    assert '(.event == "workflow_run" or .event == "check_run")' in workflow
+    assert "if: ${{ false }}" in workflow
+    assert "\n  workflow_run:" not in workflow.split("\npermissions:", 1)[0]
     assert "Release check-run certification must run from protected main" in workflow
 
 
