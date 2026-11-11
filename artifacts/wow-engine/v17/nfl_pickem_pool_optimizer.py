@@ -177,21 +177,23 @@ def _pregame_material_update_gate(
     if kickoff is None or model_time is None:
         return "INVALID_CHRONOLOGY", ["PICKEM_MATERIAL_UPDATE_KICKOFF_REQUIRED"]
 
-    linked = row.get("model_material_context_receipt_ids")
-    if not isinstance(linked, (list, tuple, set, frozenset)):
-        return "MODEL_CONTEXT_UNPROVEN", ["PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED"]
-    linked_ids = {str(value).strip() for value in linked if isinstance(value, str)}
+    # Validate the entire receipt set before deciding whether evidence is stale,
+    # so malformed or post-kickoff records never masquerade as valid pregame changes.
     seen: set[str] = set()
+    stale_update = False
     for update in updates:
         if not isinstance(update, Mapping):
             return "INVALID_MATERIAL_UPDATE_RECEIPTS", ["PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID"]
-        receipt_id = _text(update.get("evidence_receipt_id"))
+        raw_id = update.get("evidence_receipt_id")
+        raw_type = update.get("change_type")
+        receipt_id = raw_id.strip() if isinstance(raw_id, str) else ""
+        change_type = raw_type.strip() if isinstance(raw_type, str) else ""
         timestamp = _aware_timestamp(update.get("observed_at_utc"))
-        event_id = _text(update.get("official_event_id"))
-        change_type = _text(update.get("change_type"))
+        event_id = update.get("official_event_id")
         if (
-            not receipt_id or not change_type or not timestamp
-            or event_id != identity.get("official_event_id")
+            not receipt_id or not change_type or timestamp is None
+            or not isinstance(event_id, str)
+            or event_id.strip() != identity.get("official_event_id")
             or receipt_id in seen
         ):
             return "INVALID_MATERIAL_UPDATE_RECEIPTS", ["PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID"]
@@ -199,9 +201,18 @@ def _pregame_material_update_gate(
         if timestamp >= kickoff:
             return "POST_KICKOFF_UPDATE", ["PICKEM_POST_KICKOFF_UPDATE_NOT_PREGAME"]
         if timestamp > model_time:
-            return "MODEL_RERUN_REQUIRED", ["PICKEM_MATERIAL_UPDATE_AFTER_MODEL_RERUN_REQUIRED"]
-        if receipt_id not in linked_ids:
-            return "MODEL_CONTEXT_UNPROVEN", ["PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPT_UNLINKED"]
+            stale_update = True
+
+    # A valid newer-than-model update is stale even if the old model has no
+    # lineage list; the correct next action is a governed rerun, not a flip.
+    if stale_update:
+        return "MODEL_RERUN_REQUIRED", ["PICKEM_MATERIAL_UPDATE_AFTER_MODEL_RERUN_REQUIRED"]
+    linked = row.get("model_material_context_receipt_ids")
+    if not isinstance(linked, (list, tuple, set, frozenset)):
+        return "MODEL_CONTEXT_UNPROVEN", ["PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED"]
+    linked_ids = {value.strip() for value in linked if isinstance(value, str) and value.strip()}
+    if not seen.issubset(linked_ids):
+        return "MODEL_CONTEXT_UNPROVEN", ["PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPT_UNLINKED"]
     return "MODEL_CONTEXT_RECEIPTS_MATCHED", []
 
 
