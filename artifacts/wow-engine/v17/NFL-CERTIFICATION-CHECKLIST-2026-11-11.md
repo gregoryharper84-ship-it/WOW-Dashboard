@@ -51,6 +51,31 @@ slate size from a preflight run on the same gameday. A count whose timestamp is
 unknown is unverified, and neither figure in this document should be quoted as
 current state.
 
+### 2026-11-11 read-only validation receipt — not production acceptance
+
+A read of the **validation project** (`wow-engine-validation`, Supabase project
+`iczfhsmjrrafhvcpmqhr`) found the latest
+`wow_nfl_forward_calibration_health` row generated at
+`2026-11-10T19:54:14.238636+00:00` with `graded_n=95`,
+`minimum_forward_required=100`, `INSUFFICIENT_FORWARD_EVIDENCE`,
+`DO_NOT_CERTIFY_YET`, and `can_execute=false`. A separate read-only
+canonical-prediction/current-settlement reconciliation found 95 currently
+qualifying distinct grades and 95 persisted distinct grade IDs, with no
+identity drift at that read.
+
+The 2026-11-15 US/Eastern prediction window contained 48 immutable prediction
+records for 12 distinct official-event identifiers; all 12 had at least one
+eligible pregame prediction under the inspected publication-flag and
+probability-bound conditions. This is a **conditional projection**, not a
+settled-game grade or proof that the official expected slate is complete.
+The independently accepted `expected_slate_games` input and the production
+database identity are not established by these validation-project reads.
+
+If and only if all 12 events settle with qualifying non-tie outcomes and
+authenticated expected-slate coverage matches, the maximum projected count
+from this snapshot is 107. Certification and publication remain on HOLD;
+do not treat this observation as a live production receipt.
+
 ---
 
 ## 2. Gates in order
