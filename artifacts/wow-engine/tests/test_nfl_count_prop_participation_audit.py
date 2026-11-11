@@ -46,6 +46,38 @@ def test_fully_matched_participant_cohort_stays_noncertifying(sample_cohort):
     assert receipt["can_execute"] is False
 
 
+def test_stratified_participation_gaps_do_not_become_zero_stats(sample_cohort):
+    """Diagnose missing source rows by season/role/snap band without imputation."""
+    stats, snaps, players = sample_cohort
+    # TE: 8 snaps, valid crosswalk, deliberately absent weekly stats row.
+    stats = stats.loc[stats.player_id == "00-0032222"].copy()
+    receipt = reconcile_player_games(stats, snaps, players)
+    strata = receipt["participation_breakdown"]
+    assert strata["season"]["mapped_missing_stats"]["2024"] == 1
+    assert strata["position"]["mapped_missing_stats"]["TE"] == 1
+    assert strata["position"]["matched_stats"]["QB"] == 1
+    assert strata["snap_band"]["mapped_missing_stats"]["1-9"] == 1
+    assert strata["snap_band"]["matched_stats"]["50+"] == 1
+    for dimension, categories in strata.items():
+        assert sum(categories["matched_stats"].values()) == receipt["player_games_matched"]
+        assert sum(categories["mapped_missing_stats"].values()) == receipt["missing_player_games"]
+        assert sum(categories["unmapped_identity"].values()) == receipt["unmapped_pfr_player_games"]
+    assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+    assert receipt["can_execute"] is False
+
+
+def test_unmapped_identity_is_stratified_without_guessing_gsis_id(sample_cohort):
+    """The 48-class missing crosswalk failure remains distinct from stats gaps."""
+    stats, snaps, players = sample_cohort
+    players = players.loc[players.pfr_id != "PlayerA01"]
+    receipt = reconcile_player_games(stats, snaps, players)
+    assert receipt["participation_breakdown"]["position"]["unmapped_identity"]["TE"] == 1
+    assert receipt["participation_breakdown"]["snap_band"]["unmapped_identity"]["1-9"] == 1
+    assert receipt["missing_player_games"] == 0
+    assert receipt["unmapped_pfr_player_games"] == 1
+    assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+
+
 def test_missing_eight_snap_participant_game_stays_unknown(sample_cohort):
     """A player who logged eight offensive snaps cannot disappear as a zero."""
     stats, snaps, players = sample_cohort
