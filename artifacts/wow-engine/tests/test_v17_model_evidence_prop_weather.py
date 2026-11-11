@@ -64,6 +64,7 @@ class _EmptyDb:
 def _prop_payload(**overrides):
     payload = {
         "prediction_id": "pred-prop-1",
+        "player_id": "player-1", "period": "FULL_GAME",
         "event_id": "WNBA:TEST-1",
         "event_start_time": EVENT_START,
         "model_timestamp": MODEL_AT,
@@ -192,6 +193,7 @@ def test_a_declared_prop_lane_is_read_rather_than_reported_unconfigured():
         model_kind="PLAYER_PROP",
         sport="WNBA",
         market_family="POINTS",
+        player_id="player-1", stat_type="POINTS", period="FULL_GAME", line="7+", direction="MORE",
         official_event_id="WNBA:TEST-1",
         event_start_time=EVENT_START,
         prediction_timestamp=MODEL_AT,
@@ -230,3 +232,15 @@ def test_weather_withheld_result_keeps_the_probability_and_hold_ceiling():
     assert "MODEL_EVIDENCE_TRIAD_LANE_NOT_CONFIGURED" in result["probability_blockers"]
     assert result["can_execute"] is False
     assert HOLD  # hold ceiling vocabulary remains available to the reducer
+
+
+def test_prop_scope_retains_literal_offer(monkeypatch):
+    seen = []
+    from v17 import model_evidence_boundary as boundary
+    monkeypatch.setattr(boundary, "EVIDENCE_ASSESSOR", lambda db, scope: seen.append(scope) or {"bundle_complete": False, "blockers": []})
+    payload = _prop_payload(line="7+")
+    boundary.gate_prop_probability_payload(payload, db=_EmptyDb())
+    assert seen[0].line == "7+"
+    assert seen[0].player_id == payload["player_id"]
+    assert seen[0].period == payload["period"]
+    assert seen[0].direction == payload["direction"]

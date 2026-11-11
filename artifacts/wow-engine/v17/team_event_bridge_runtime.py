@@ -417,6 +417,9 @@ def score_registered_team_event_request(
             db=evidence_db_client(event_api),
         ),
     )
+    if result.pop("_official_publication_guard_required", False):
+        from v17.multisport_team_event_bridges import finalize_official_publication
+        result = finalize_official_publication(result)
     return _attach_feature_consumption_receipt(req, registration, result)
 
 

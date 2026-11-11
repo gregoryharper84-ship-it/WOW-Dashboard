@@ -108,6 +108,7 @@ def _artifact_row(**overrides):
         "artifact_checksum": ARTIFACT_SHA,
         "training_dataset_hash": DATASET_SHA,
         "training_code_sha": CODE_SHA,
+        "training_cutoff_at": "2026-01-01T00:00:00+00:00",
         "training_rows": 9900,
         "calibrator_id": "cal-mlb-1",
         "created_at": "2026-11-01T00:00:00+00:00",

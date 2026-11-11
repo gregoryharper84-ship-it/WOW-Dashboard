@@ -8,6 +8,13 @@ or verification flag.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from datetime import datetime
+import pytest
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch):
+    monkeypatch.setattr(ingest, "_utc_now", lambda: datetime.fromisoformat(NOW))
+
 
 from v17 import mlb_pregame_evidence_ingest as ingest
 
@@ -339,3 +346,48 @@ def test_an_unreadable_store_is_a_typed_refusal_not_an_insert():
         "MLB_PREGAME_EVIDENCE_READ_FAILED" in blocker
         for blocker in receipt["blockers"]
     )
+
+@pytest.mark.parametrize("feature_at,valid", [(NOW, True), ("2026-11-12T18:16:00+00:00", False)])
+def test_features_must_exist_at_decision(feature_at, valid):
+    receipt = _ingest(_Db(), feature_snapshot_timestamp=feature_at)
+    assert (receipt["status"] == ingest.PERSISTED) is valid
+    if not valid:
+        assert "MLB_PREGAME_EVIDENCE_PRELOCK_ORDER_INVALID" in receipt["blockers"]
+
+
+def test_non_json_payload_refused():
+    result = _ingest(_Db(), source_payload={"value": object()})
+    assert result["blockers"] == ["MLB_PREGAME_EVIDENCE_PAYLOAD_NON_CANONICAL"]
+
+
+def test_real_clock_refuses_backdated_write(monkeypatch):
+    monkeypatch.setattr(ingest, "_utc_now", lambda: datetime.fromisoformat(EVENT_START))
+    db = _Db()
+    assert _ingest(db)["status"] == ingest.REFUSED
+    assert not db.calls
+
+
+def test_retained_payloads_match_derived_digests():
+    db = _Db()
+    assert _ingest(db)["status"] == ingest.PERSISTED
+    row = db.tables[ingest.TABLE][0]
+    assert ingest.canonical_sha256(row["source_payload"]) == row["source_payload_sha256"]
+    assert ingest.canonical_sha256(row["feature_payload"]) == row["feature_snapshot_sha256"]
+
+@pytest.mark.parametrize("field,value", [
+    ("model_artifact_checksum", "f" * 64),
+    ("event_start_time", "2026-11-12T20:00:00+00:00"),
+    ("source_snapshot_timestamp", "2026-11-12T15:00:00+00:00"),
+    ("feature_snapshot_timestamp", "2026-11-12T17:00:00+00:00"),
+])
+def test_changed_evidence_is_superseded(field, value):
+    db = _Db()
+    assert _ingest(db)["status"] == ingest.PERSISTED
+    db.tables[ingest.TABLE][0].update(id=1, **{field: value})
+    assert _ingest(db)["status"] == ingest.PERSISTED
+    assert db.tables[ingest.TABLE][0]["is_current"] is False
+
+
+def test_clock_skew_refuses_write(monkeypatch):
+    monkeypatch.setattr(ingest, "_utc_now", lambda: datetime.fromisoformat("2026-11-12T18:13:59+00:00"))
+    assert _ingest(_Db())["blockers"] == ["MLB_PREGAME_EVIDENCE_CLOCK_SKEW"]

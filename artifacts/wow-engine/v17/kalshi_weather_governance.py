@@ -263,7 +263,17 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
     # triad. No weather lane declares those readers yet, so publication is
     # withheld with a typed blocker instead of being assumed.
     triad = seal_report(
-        evaluate_market_evidence_triad(model_kind="WEATHER", sport="WEATHER", db=client)
+        evaluate_market_evidence_triad(
+            model_kind="WEATHER_CONTRACT", sport="WEATHER", db=client,
+            station_id=prediction.get("station_id"), contract_id=prediction.get("contract_id"),
+            market_family=prediction.get("market_family"),
+            official_event_id=prediction.get("official_event_id"),
+            event_start_time=prediction.get("event_start_time"),
+            prediction_timestamp=prediction.get("model_timestamp"),
+            model_family=prediction.get("model_family"),
+            model_artifact_version=prediction.get("model_artifact_version"),
+            feature_schema_version=prediction.get("feature_schema_version"),
+        )
     )
     result["model_evidence_triad"] = triad
     result["evidence_triad_required"] = True

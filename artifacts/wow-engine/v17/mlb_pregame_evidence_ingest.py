@@ -9,7 +9,8 @@ Governed properties:
 * both payload hashes are **derived from the payloads being persisted**, so a
   caller cannot supply a digest that does not describe the row it writes;
 * the prelock window is enforced on write: a snapshot whose features freeze at
-  or after the official start, or that is written after first pitch, is refused;
+  or after the official start is refused; UTC is checked before persistence and
+  the database trigger checks insertion time, not transaction commit time;
 * a non-``SCHEDULED`` event is refused, so a postponed or completed game cannot
   acquire pregame evidence after the fact;
 * the previous current row is superseded (``is_current=false``) rather than
@@ -60,6 +61,8 @@ _ROW_FIELDS = frozenset(
         "source_snapshot_id",
         "source_snapshot_timestamp",
         "source_payload_sha256",
+        "source_payload",
+        "feature_payload",
         "feature_snapshot_id",
         "feature_snapshot_timestamp",
         "feature_snapshot_sha256",
@@ -68,13 +71,16 @@ _ROW_FIELDS = frozenset(
 )
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def canonical_sha256(payload: Any) -> str:
     """Deterministic digest of a payload, independent of key order."""
     encoded = json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
-        default=str,
         allow_nan=False,
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -175,7 +181,7 @@ def build_pregame_snapshot(
     assert start_at is not None and source_at is not None
     assert feature_at is not None and decision_at is not None
 
-    if not (source_at <= feature_at < start_at):
+    if not (source_at <= feature_at <= decision_at < start_at):
         blockers.append("MLB_PREGAME_EVIDENCE_PRELOCK_ORDER_INVALID")
     if decision_at >= start_at:
         blockers.append("MLB_PREGAME_EVIDENCE_WINDOW_CLOSED")
@@ -200,6 +206,8 @@ def build_pregame_snapshot(
         "source_snapshot_id": _text(source_snapshot_id),
         "source_snapshot_timestamp": source_at.isoformat(),
         "source_payload_sha256": source_digest,
+        "source_payload": json.loads(json.dumps(source_payload, allow_nan=False)),
+        "feature_payload": json.loads(json.dumps(features, allow_nan=False)),
         "feature_snapshot_id": _text(feature_snapshot_id),
         "feature_snapshot_timestamp": feature_at.isoformat(),
         "feature_snapshot_sha256": feature_digest,
@@ -269,6 +277,10 @@ def persist_pregame_snapshot(
             and _text(current.get("feature_snapshot_sha256")) == row["feature_snapshot_sha256"]
             and _text(current.get("source_snapshot_id")) == row["source_snapshot_id"]
             and _text(current.get("feature_snapshot_id")) == row["feature_snapshot_id"]
+            and current.get("model_artifact_checksum") == row["model_artifact_checksum"]
+            and all(_when(current.get(key)) == _when(row[key]) for key in (
+                "event_start_time", "source_snapshot_timestamp", "feature_snapshot_timestamp"))
+            and all(current.get(key) == row[key] for key in ("source_payload", "feature_payload"))
         )
         if same_snapshot:
             return _receipt(ALREADY_CURRENT, row=row)
@@ -339,6 +351,11 @@ def ingest_pregame_snapshot(
             },
             blockers=blockers,
         )
+    real_now = _utc_now()
+    if real_now >= _when(row["event_start_time"]):
+        return _receipt(REFUSED, row=row, blockers=("MLB_PREGAME_EVIDENCE_WINDOW_CLOSED",))
+    if abs((real_now - _when(now)).total_seconds()) > 60:
+        return _receipt(REFUSED, row=row, blockers=("MLB_PREGAME_EVIDENCE_CLOCK_SKEW",))
     return persist_pregame_snapshot(db, row)
 
 

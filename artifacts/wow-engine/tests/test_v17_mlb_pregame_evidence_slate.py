@@ -347,3 +347,11 @@ def test_only_hydrated_events_are_read():
 
     assert receipt["written"] == 1
     assert [row["official_event_id"] for row in db.tables[PREGAME_TABLE]] == ["MLB:1"]
+
+
+import pytest
+from datetime import datetime
+
+@pytest.fixture(autouse=True)
+def real_clock(monkeypatch):
+    monkeypatch.setattr(ingest, "_utc_now", lambda: datetime.fromisoformat(NOW))

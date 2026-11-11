@@ -125,6 +125,7 @@ _NFL_ARTIFACT = TableSpec(
         "feature_schema_version": "feature_schema_version",
         "artifact_checksum": "artifact_checksum",
         "training_dataset_hash": "training_dataset_hash",
+        "training_cutoff_at": "training_cutoff_at",
         "training_code_sha": "training_code_sha",
         "training_rows": "training_rows",
         # Read only to bind the calibrator foreign key; it is not evidence.
@@ -212,6 +213,7 @@ _PROP_ARTIFACT = TableSpec(
         "feature_schema_version": "feature_schema_version",
         "artifact_checksum": "artifact_checksum",
         "training_dataset_hash": "training_dataset_hash",
+        "training_cutoff_at": "training_cutoff_at",
         "training_code_sha": "training_code_sha",
         "training_rows": "training_rows",
     },
@@ -467,8 +469,6 @@ def _read_verification(
             .eq("model_version", _text(scope.model_artifact_version))
             .eq("artifact_sha256", checksum)
             .eq("feature_schema_version", _text(scope.feature_schema_version))
-            .eq("certification_status", "CERTIFIED")
-            .eq("independent_verification_status", "PASS")
             .order("created_at", desc=True)
             .limit(1)
             .execute()
@@ -479,6 +479,9 @@ def _read_verification(
     if not rows:
         return {}, "MODEL_BUNDLE_VERIFICATION_RECEIPT_MISSING"
     receipt_row = rows[0]
+    if (receipt_row.get("certification_status") != "CERTIFIED"
+            or receipt_row.get("independent_verification_status") != "PASS"):
+        return {}, "MODEL_BUNDLE_VERIFICATION_RECEIPT_MISSING"
     payload = receipt_row.get("verification_receipt")
     if not isinstance(payload, Mapping):
         payload = {}

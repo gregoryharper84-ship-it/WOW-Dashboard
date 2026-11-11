@@ -53,6 +53,8 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         station_id="station-1" if kind == "WEATHER_CONTRACT" else None,
     )
     identity = {
+        "stat_type": scope.stat_type, "period": scope.period,
+        "station_id": scope.station_id, "contract_id": scope.contract_id,
         "model_kind": kind,
         "sport": sport,
         "market_family": market_family,
@@ -68,6 +70,7 @@ def _valid(kind="TEAM_EVENT", sport="NBA", market_family=None):
         "training_code_sha": "f" * 40,
         "payload_checksum_verified": True,
         "training_provenance_verified": True,
+        "training_cutoff_at": "2026-01-01T00:00:00+00:00",
         "training_rows": 5000,
     }
     calibrator = {
@@ -358,3 +361,20 @@ def test_null_sport_is_not_a_valid_artifact_identity():
     assert "MODEL_BUNDLE_ROUTE_UNSUPPORTED" in result["blockers"]
     assert result["bundle_complete"] is False
     assert result["probability_publishable"] is False
+
+@pytest.mark.parametrize("cutoff", [None, "2026-11-08T00:00:00Z"])
+def test_calibration_requires_explicit_prior_training_cutoff(cutoff):
+    scope, artifact, calibrator, pregame = _valid()
+    artifact["training_cutoff_at"] = cutoff
+    result = _assess(scope, artifact, calibrator, pregame)
+    assert "MODEL_BUNDLE_CALIBRATOR_INVALID_OR_UNVERIFIED" in result["blockers"]
+
+@pytest.mark.parametrize("kind,sport,field", [
+    ("PLAYER_PROP", "NBA", "stat_type"), ("PLAYER_PROP", "NBA", "period"),
+    ("WEATHER_CONTRACT", "WEATHER", "station_id"), ("WEATHER_CONTRACT", "WEATHER", "contract_id")])
+@pytest.mark.parametrize("component", ["artifact", "calibrator"])
+def test_component_market_identity_is_bound(kind, sport, field, component):
+    scope, artifact, calibrator, pregame = _valid(kind, sport)
+    rows = {"artifact": artifact, "calibrator": calibrator, "pregame_corpus": pregame}
+    rows[component][field] = "foreign"
+    assert not assess_model_bundle(scope, **rows).bundle_complete

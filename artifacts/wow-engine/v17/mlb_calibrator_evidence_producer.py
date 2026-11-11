@@ -225,6 +225,8 @@ def _artifact_identity(
         "feature_schema_version": _text(artifact.get("feature_schema_version")),
         "model_artifact_checksum": _text(artifact.get("artifact_checksum")).lower(),
     }
+    if not _text(artifact.get("artifact_id")):
+        blockers.append("MLB_CALIBRATOR_EVIDENCE_ARTIFACT_INCOMPLETE:artifact_id")
     for field, value in identity.items():
         if not value:
             blockers.append(f"MLB_CALIBRATOR_EVIDENCE_ARTIFACT_INCOMPLETE:{field}")
@@ -300,13 +302,7 @@ def governed_receipt_resolver(
                 .limit(1)
                 .execute()
             )
-            grade = _rows(
-                db.table(SETTLEMENT_RECEIPT_TABLE)
-                .select("*")
-                .eq("grade_id", settlement_id)
-                .limit(1)
-                .execute()
-            )
+
         except Exception as exc:  # noqa: BLE001 - an unreadable receipt is unproven
             return None, (
                 f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_READ_FAILED:{type(exc).__name__}",
@@ -319,6 +315,15 @@ def governed_receipt_resolver(
             return None, (
                 f"MLB_CALIBRATOR_EVIDENCE_PREDICTION_RECEIPT_NOT_FOUND:{event_id}",
             )
+        try:
+            committed_receipt = db.rpc(
+                "mlb_grade_committed_receipt", {"p_grade_id": settlement_id}
+            ).execute().data
+            if not isinstance(committed_receipt, Mapping) or not _when(committed_receipt.get("committed_at")):
+                return None, (f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_AVAILABILITY_UNVERIFIED:{event_id}",)
+            grade = [committed_receipt["grade"]]
+        except Exception as exc:
+            return None, (f"MLB_CALIBRATOR_EVIDENCE_RECEIPT_READ_FAILED:{type(exc).__name__}",)
         if not grade:
             return None, (
                 f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECEIPT_NOT_FOUND:{event_id}",
@@ -387,7 +392,7 @@ def governed_receipt_resolver(
                 "event_start_time": prelock_row.get("event_start_time"),
                 "prelock_recorded_at": prelock_row.get("created_at"),
                 "settled_at": grade_row.get("outcome_timestamp"),
-                "settlement_recorded_at": grade_row.get("grade_timestamp"),
+                "settlement_recorded_at": committed_receipt["committed_at"],
                 "outcome": 1 if winner == "HOME" else 0,
                 "model_artifact_checksum": prelock_row.get("model_artifact_checksum"),
             },
@@ -567,7 +572,10 @@ def normalize_settled_rows(
                 f"MLB_CALIBRATOR_EVIDENCE_SETTLEMENT_RECORD_POSTDATES_DECISION:{event_id}"
             )
             continue
-        if prelock_recorded is not None and prelock_recorded >= event_start:
+        if prelock_recorded is None:
+            blockers.append(f"MLB_CALIBRATOR_EVIDENCE_PRELOCK_RECORD_TIMESTAMP_MISSING:{event_id}")
+            continue
+        if prelock_recorded >= event_start:
             blockers.append(
                 f"MLB_CALIBRATOR_EVIDENCE_PRELOCK_RECORD_POSTDATES_START:{event_id}"
             )

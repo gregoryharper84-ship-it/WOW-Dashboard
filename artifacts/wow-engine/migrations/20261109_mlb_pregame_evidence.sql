@@ -124,3 +124,36 @@ comment on column public.wow_mlb_event_pregame_feature_rows.is_current is
     'Exactly one current snapshot per event/version; superseded rows are retained for audit, never deleted.';
 comment on table public.wow_mlb_event_calibrator_evidence is
     'Exact-version MLB calibrator evidence bound to the artifact checksum; a PLATT/ISOTONIC label alone is not calibrated-lower-bound proof.';
+
+-- Existing rows retain unknown payload custody; only new writes require payloads.
+alter table public.wow_mlb_event_pregame_feature_rows
+    add column if not exists source_payload jsonb,
+    add column if not exists feature_payload jsonb;
+
+create or replace function public.guard_mlb_pregame_evidence()
+returns trigger language plpgsql set search_path = pg_catalog, public as $$
+begin
+    if TG_OP = 'DELETE' then
+        raise exception 'MLB pregame evidence is immutable';
+    elsif TG_OP = 'UPDATE' then
+        if (to_jsonb(NEW) - 'is_current') is distinct from (to_jsonb(OLD) - 'is_current') then
+            raise exception 'Only is_current may change';
+        end if;
+    else
+        NEW.created_at := clock_timestamp();
+        if NEW.created_at >= NEW.event_start_time
+           or NEW.feature_snapshot_timestamp > NEW.created_at then
+            raise exception 'MLB pregame evidence window closed or future features';
+        end if;
+        if NEW.source_payload is null or NEW.feature_payload is null
+           or jsonb_typeof(NEW.source_payload) <> 'object'
+           or jsonb_typeof(NEW.feature_payload) <> 'object' then
+            raise exception 'Frozen source and feature payloads required';
+        end if;
+    end if;
+    return NEW;
+end $$;
+drop trigger if exists guard_mlb_pregame_evidence on public.wow_mlb_event_pregame_feature_rows;
+create trigger guard_mlb_pregame_evidence before insert or update or delete
+on public.wow_mlb_event_pregame_feature_rows for each row
+execute function public.guard_mlb_pregame_evidence();

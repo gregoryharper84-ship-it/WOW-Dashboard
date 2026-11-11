@@ -32,6 +32,7 @@ COMPONENT_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
         "artifact_id",
         "artifact_checksum",
         "training_dataset_hash",
+        "training_cutoff_at",
         "training_code_sha",
         "training_rows",
         "payload_checksum_verified",
@@ -192,6 +193,9 @@ def _matches_identity(row: Mapping[str, Any], scope: ModelBundleScope) -> bool:
         and _text(row.get("model_artifact_version")) == scope.model_artifact_version
         and _text(row.get("feature_schema_version")) == scope.feature_schema_version
         and _text(row.get("market_family")) == _text(scope.market_family)
+        and all(_text(row.get(field)) == _text(getattr(scope, field))
+                for field in (("stat_type", "period") if scope.model_kind == "PLAYER_PROP"
+                              else ("station_id", "contract_id") if scope.model_kind == "WEATHER_CONTRACT" else ()))
     )
 
 
@@ -202,6 +206,7 @@ def _artifact_valid(artifact: Mapping[str, Any], scope: ModelBundleScope) -> boo
         and _sha256(artifact.get("artifact_checksum"))
         and _sha256(artifact.get("training_dataset_hash"))
         and _full_code_sha(artifact.get("training_code_sha"))
+        and _when(artifact.get("training_cutoff_at")) is not None
         and artifact.get("payload_checksum_verified") is True
         and artifact.get("training_provenance_verified") is True
         and type(artifact.get("training_rows")) is int
@@ -216,6 +221,7 @@ def _calibrator_valid(
     prediction_at: datetime | None,
 ) -> bool:
     fit_end = _when(calibrator.get("calibration_fit_end"))
+    training_cutoff = _when(artifact.get("training_cutoff_at"))
     return (
         _matches_identity(calibrator, scope)
         and _sha256(calibrator.get("model_artifact_checksum"))
@@ -245,7 +251,8 @@ def _calibrator_valid(
         and _finite_metric(calibrator, "calibration_bias", -1.0, 1.0)
         and fit_end is not None
         and prediction_at is not None
-        and fit_end <= prediction_at
+        and training_cutoff is not None
+        and training_cutoff <= fit_end <= prediction_at
     )
 
 

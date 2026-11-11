@@ -74,6 +74,7 @@ class _Db:
 
 def _artifact(**overrides):
     row = {
+        "artifact_id": "artifact-test",
         "sport": "MLB",
         "model_family": "MLB_EVENT_WIN_PROBABILITY",
         "model_artifact_version": "MLB_EVENT_V1",
@@ -119,6 +120,7 @@ def _fixture(*, days=30, per_day=40, seed=11):
                 "raw_home_probability": raw,
                 "model_timestamp": frozen,
                 "created_at": frozen,
+                "prelock_recorded_at": frozen,
                 "event_start_time": start.isoformat(),
                 "model_artifact_checksum": ARTIFACT_SHA,
             }
@@ -611,3 +613,15 @@ def test_a_missing_database_is_a_typed_refusal():
     assert receipt["status"] == producer.REFUSED
     assert receipt["blockers"] == ["MLB_CALIBRATOR_EVIDENCE_DB_UNAVAILABLE"]
     assert receipt["can_execute"] is False
+
+
+def test_missing_prelock_custody_is_refused():
+    observations, predictions, settlements = _fixture()
+    predictions[observations[0]["prediction_receipt_id"]].pop("prelock_recorded_at")
+    receipt = _produce(_Db(), (observations, predictions, settlements))
+    assert any("PRELOCK_RECORD_TIMESTAMP_MISSING" in b for b in receipt["blockers"])
+
+
+def test_missing_artifact_id_is_refused():
+    receipt = _produce(_Db(), _fixture(), artifact=_artifact(artifact_id=""))
+    assert "MLB_CALIBRATOR_EVIDENCE_ARTIFACT_INCOMPLETE:artifact_id" in receipt["blockers"]

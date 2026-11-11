@@ -517,3 +517,20 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_daily_rejects_unsealed_or_foreign_triad(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    for triad in (
+        {"bundle_complete": True, "status": "COMPLETE"},
+        _sealed_team_event_triad(monkeypatch, official_event_id="other"),
+        _sealed_team_event_triad(monkeypatch, model_artifact_version="other"),
+    ):
+        monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",
+                            lambda *args, **kwargs: governed_team_result(triad=triad))
+        result = run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago", lanes=["MONEYLINE"], response_mode="FULL"),
+            db=DB(), market_api=Market(), event_api=Event())
+        row = result["rows"][0]
+        assert row["row_status"] == "HELD"
+        assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in row["result"]["official_publication_guard"]["blockers"]

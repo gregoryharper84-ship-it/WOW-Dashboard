@@ -123,6 +123,7 @@ def _nfl_artifact(**overrides) -> dict:
         "artifact_checksum": ARTIFACT_SHA,
         "training_dataset_hash": DATASET_SHA,
         "training_code_sha": CODE_SHA,
+        "training_cutoff_at": "2026-01-01T00:00:00+00:00",
         "training_rows": 5000,
         # The artifact's own foreign key is the only calibrator link used.
         "calibrator_id": "calibrator-1",
@@ -349,7 +350,8 @@ def test_prop_lane_uses_shared_registry_and_exact_stat():
                 "artifact_checksum": ARTIFACT_SHA,
                 "training_dataset_hash": DATASET_SHA,
                 "training_code_sha": CODE_SHA,
-                "training_rows": 4800,
+                "training_cutoff_at": "2026-01-01T00:00:00+00:00",
+        "training_rows": 4800,
                 "created_at": "2026-11-07T00:00:00+00:00",
             },
             {
@@ -362,7 +364,8 @@ def test_prop_lane_uses_shared_registry_and_exact_stat():
                 "artifact_checksum": "f" * 64,
                 "training_dataset_hash": DATASET_SHA,
                 "training_code_sha": CODE_SHA,
-                "training_rows": 4800,
+                "training_cutoff_at": "2026-01-01T00:00:00+00:00",
+        "training_rows": 4800,
                 "created_at": "2026-11-07T00:00:00+00:00",
             },
         ],
@@ -469,3 +472,13 @@ def test_exact_component_receipt_binding_cannot_be_replayed_for_adjacent_event()
     wrong_calibrator, _ = _read_verification(db, _scope(), artifact, calibrator, pregame)
     assert not any(wrong_calibrator["calibrator"].values())
     assert all(wrong_calibrator["pregame_corpus"].values())
+
+@pytest.mark.parametrize("field,status", [("certification_status", "REVOKED"), ("independent_verification_status", "FAIL")])
+def test_latest_receipt_revocation_cannot_fall_back(field, status):
+    old = _receipt({"artifact_payload_checksum_verified": True, "training_provenance_verified": True})
+    old["created_at"] = "2026-11-01T00:00:00Z"
+    latest = {**old, field: status, "created_at": "2026-11-02T00:00:00Z"}
+    db = _FakeDb({"wow_team_event_specialist_certifications": [old, latest]})
+    flags, blocker = _read_verification(db, _scope(), _nfl_artifact(), None, None)
+    assert not flags
+    assert blocker == "MODEL_BUNDLE_VERIFICATION_RECEIPT_MISSING"

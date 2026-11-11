@@ -46,6 +46,8 @@ _APPROVED_TERMINALS = frozenset({
     "APPROVED",
     "PUBLISHABLE",
     "QUALIFIED",
+    "MONEY_QUALIFIED",
+    "MARKET_VERIFIED_HOLD",
     "PASS",
     "COMPLETE",
 })
@@ -365,6 +367,9 @@ def evaluate_market_evidence_triad(
     model_artifact_version: Any = None,
     feature_schema_version: Any = None,
     assessor: AssessmentCallable | None = None,
+    player_id: Any = None, stat_type: Any = None, period: Any = None,
+    line: Any = None, direction: Any = None,
+    station_id: Any = None, contract_id: Any = None,
 ) -> dict[str, Any]:
     """Read the triad for a prop/weather serving path.
 
@@ -395,6 +400,8 @@ def evaluate_market_evidence_triad(
         event_start_time=_text(event_start_time),
         prediction_timestamp=_text(prediction_timestamp),
         latest_material_update_timestamp=None,
+        player_id=player_id, stat_type=stat_type, period=period,
+        line=line, direction=direction, station_id=station_id, contract_id=contract_id,
     )
     missing = tuple(
         name
@@ -405,6 +412,10 @@ def evaluate_market_evidence_triad(
             ("official_event_id", scope.official_event_id),
             ("event_start_time_utc", scope.event_start_time),
             ("prediction_timestamp", scope.prediction_timestamp),
+            *((name, getattr(scope, name)) for name in (
+                ("player_id", "stat_type", "period", "line", "direction")
+                if model_kind == "PLAYER_PROP" else
+                ("station_id", "contract_id") if model_kind == "WEATHER_CONTRACT" else ())),
         )
         if not value
     )
@@ -430,6 +441,8 @@ def gate_prop_probability_payload(payload: dict[str, Any], *, db: Any) -> dict[s
         model_kind="PLAYER_PROP",
         sport=_text(payload.get("sport")),
         market_family=_text(payload.get("stat_type")) or None,
+        player_id=payload.get("player_id"), stat_type=payload.get("stat_type"),
+        period=payload.get("period"), line=payload.get("line"), direction=payload.get("direction"),
         official_event_id=payload.get("event_id"),
         event_start_time=payload.get("event_start_time"),
         prediction_timestamp=payload.get("model_timestamp"),

@@ -530,3 +530,9 @@ def test_complete_seal_covers_blockers_and_source_audit_fields():
         )
         assert decision["official_publication_allowed"] is False
         assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in decision["blockers"]
+
+@pytest.mark.parametrize("label", ["MONEY_QUALIFIED", "MARKET_VERIFIED_HOLD"])
+def test_incomplete_triad_replaces_money_terminal(label):
+    from v17.model_evidence_boundary import _strictest_terminal
+    assert _strictest_terminal(label, "MODEL_QUALIFIED_HOLD") == "MODEL_QUALIFIED_HOLD"
+    assert _strictest_terminal("UNKNOWN_STRICT_HOLD", "MODEL_QUALIFIED_HOLD") == "UNKNOWN_STRICT_HOLD"

@@ -27,15 +27,11 @@ begin
 
     execute $ddl$
         alter table public.wow_mlb_event_calibrator_evidence
-            add column if not exists calibration_coefficients jsonb not null
-                default '{}'::jsonb,
-            add column if not exists calibration_coefficients_sha256 text not null
-                default repeat('0', 64),
-            add column if not exists calibration_receipt_manifest jsonb not null
-                default '{}'::jsonb,
-            add column if not exists calibration_receipt_manifest_sha256 text not null
-                default repeat('0', 64),
-            add column if not exists holdout_n bigint not null default 0,
+            add column if not exists calibration_coefficients jsonb,
+            add column if not exists calibration_coefficients_sha256 text,
+            add column if not exists calibration_receipt_manifest jsonb,
+            add column if not exists calibration_receipt_manifest_sha256 text,
+            add column if not exists holdout_n bigint,
             add column if not exists holdout_incumbent_brier double precision,
             add column if not exists holdout_incumbent_log_loss double precision,
             add column if not exists holdout_brier_delta double precision,
@@ -46,6 +42,27 @@ begin
             add column if not exists holdout_lower_bound_reliability_margin
                 double precision
     $ddl$;
+
+    -- Also repair an installation of the earlier placeholder-default version.
+    alter table public.wow_mlb_event_calibrator_evidence
+        alter column calibration_coefficients drop not null,
+        alter column calibration_coefficients drop default,
+        alter column calibration_coefficients_sha256 drop not null,
+        alter column calibration_coefficients_sha256 drop default,
+        alter column calibration_receipt_manifest drop not null,
+        alter column calibration_receipt_manifest drop default,
+        alter column calibration_receipt_manifest_sha256 drop not null,
+        alter column calibration_receipt_manifest_sha256 drop default,
+        alter column holdout_n drop not null,
+        alter column holdout_n drop default;
+    update public.wow_mlb_event_calibrator_evidence set
+        calibration_coefficients = nullif(calibration_coefficients, '{}'::jsonb),
+        calibration_coefficients_sha256 = nullif(calibration_coefficients_sha256, repeat('0',64)),
+        calibration_receipt_manifest = nullif(calibration_receipt_manifest, '{}'::jsonb),
+        calibration_receipt_manifest_sha256 = nullif(calibration_receipt_manifest_sha256, repeat('0',64)),
+        holdout_n = nullif(holdout_n, 0);
+    alter table public.wow_mlb_event_calibrator_evidence
+        drop constraint if exists chk_mlb_calibrator_coefficients_present;
 
     begin
         execute $ddl$
@@ -81,7 +98,8 @@ begin
         execute $ddl$
             alter table public.wow_mlb_event_calibrator_evidence
                 add constraint chk_mlb_calibrator_coefficients_present
-                check (jsonb_typeof(calibration_coefficients) = 'object')
+                check (jsonb_typeof(calibration_coefficients) = 'object'
+                    and calibration_coefficients ? 'a' and calibration_coefficients ? 'b')
         $ddl$;
     exception
         when duplicate_object then null;
@@ -157,17 +175,43 @@ begin
         raise exception 'calibrator provenance migration incomplete: missing columns %', v_missing;
     end if;
 
-    if not exists (
-        select 1
+    if (
+        select count(*)
           from pg_constraint
-         where conname in (
+         where conrelid = 'public.wow_mlb_event_calibrator_evidence'::regclass
+           and conname in (
                 'chk_mlb_calibrator_coefficients_sha',
                 'chk_mlb_calibrator_manifest_sha',
                 'chk_mlb_calibrator_holdout_n',
                 'chk_mlb_calibrator_coefficients_present',
                 'chk_mlb_calibrator_manifest_present'
                )
-    ) then
+    ) <> 5 then
         raise exception 'calibrator provenance migration incomplete: constraints missing';
     end if;
 end $$;
+
+create or replace function public.require_mlb_calibrator_provenance()
+returns trigger language plpgsql set search_path = pg_catalog, public as $$
+begin
+    if NEW.calibration_coefficients is null
+       or NEW.calibration_coefficients_sha256 is null
+       or NEW.calibration_receipt_manifest is null
+       or NEW.calibration_receipt_manifest_sha256 is null
+       or NEW.holdout_n is null or NEW.holdout_n <= 0
+       or NEW.holdout_incumbent_brier is null
+       or NEW.holdout_incumbent_log_loss is null
+       or NEW.holdout_brier_delta is null
+       or NEW.holdout_log_loss_delta is null
+       or NEW.holdout_calibrated_worse_n is null
+       or NEW.holdout_bounds_lower_mean is null
+       or NEW.holdout_bounds_upper_mean is null
+       or NEW.holdout_lower_bound_reliability_margin is null then
+        raise exception 'Complete calibrator provenance required for new writes';
+    end if;
+    return NEW;
+end $$;
+drop trigger if exists require_mlb_calibrator_provenance on public.wow_mlb_event_calibrator_evidence;
+create trigger require_mlb_calibrator_provenance before insert
+on public.wow_mlb_event_calibrator_evidence for each row
+execute function public.require_mlb_calibrator_provenance();
