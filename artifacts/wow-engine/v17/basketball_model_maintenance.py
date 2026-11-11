@@ -439,15 +439,31 @@ def _verify_replayed_fit(sport: str, db: Any, replay: Any) -> dict[str, Any]:
             error_type=type(exc).__name__,
             model_artifact_version=version,
         )
-    passed = bool(result.get("gate_open"))
+    gate_open = result.get("gate_open") is True
+    receipt_status = str(result.get("verification_status") or "").strip().upper()
+    hard_blockers = list(result.get("hard_blockers") or [])
+    deferred_blockers = list(result.get("deferred_blockers") or [])
+    # A FAIL receipt with only explicitly deferred governance checks can
+    # update SHADOW evidence, but must never be relabelled as a PASS receipt.
+    verified_pass = gate_open and receipt_status == "PASS" and not hard_blockers and not deferred_blockers
+    governance_deferred = (
+        gate_open and receipt_status == "FAIL"
+        and not hard_blockers and bool(deferred_blockers)
+        and set(deferred_blockers).issubset(DEFERRED_GOVERNANCE_BLOCKERS)
+    )
+    status = "PASS" if verified_pass else "GOVERNANCE_DEFERRED" if governance_deferred else "FAIL"
     return _verification_outcome(
-        "PASS" if passed else "FAIL",
-        blocked_code=None if passed else "NBA_INDEPENDENT_VERIFICATION_FAILED",
+        status,
+        blocked_code=(
+            None if verified_pass or governance_deferred
+            else "NBA_INDEPENDENT_VERIFICATION_FAILED"
+        ),
         model_artifact_version=version,
         verification_id=(result.get("receipt") or {}).get("verification_id"),
         receipt_digest=result.get("receipt_digest"),
-        hard_blockers=list(result.get("hard_blockers") or []),
-        deferred_blockers=list(result.get("deferred_blockers") or []),
+        verification_receipt_status=receipt_status or "MISSING",
+        hard_blockers=hard_blockers,
+        deferred_blockers=deferred_blockers,
     )
 
 
