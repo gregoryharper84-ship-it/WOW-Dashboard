@@ -157,3 +157,43 @@ def test_market_and_spread_available_after_freeze_are_not_pregame():
     assert r["market_baseline_complete"] is False
     assert "MARKET_NOT_VISIBLE_AT_FREEZE" in r["rows"][0]["market_blockers"]
     assert r["rows"][0]["spread_outcome_diagnostic_only"] == "NOT_EVALUATED"
+
+def test_market_snapshot_age_needs_same_time_within_sixty_minutes():
+    p = pick()
+    p["market"]["as_of_utc"] = "2026-11-10T13:59:59Z"
+    too_old = audit([p], [final()])
+    assert too_old["correct"] == 1
+    assert too_old["market_baseline_complete"] is False
+    assert too_old["rows"][0]["market_favorite"] is None
+    assert "MARKET_SNAPSHOT_TOO_OLD_FOR_SAME_TIME_BASELINE" in too_old["rows"][0]["market_blockers"]
+
+    p["market"]["as_of_utc"] = "2026-11-10T14:00:00Z"
+    at_boundary = audit([p], [final()])
+    assert at_boundary["market_baseline_complete"] is True
+    assert at_boundary["market_favorite_correct"] == 1
+
+
+def test_oversized_prices_are_market_unavailable_not_runtime_failure():
+    for bad in (10**1000, -(10**1000), float("inf"), float("nan")):
+        p = pick()
+        p["market"]["decimal_odds"]["HOME"] = bad
+        r = audit([p], [final()])
+        assert r["correct"] == 1
+        assert r["market_baseline_complete"] is False
+        assert "MARKET_PRICE_INVALID" in r["rows"][0]["market_blockers"]
+
+
+def test_oversized_spreads_do_not_crash_or_change_winner_grade():
+    for bad in (10**1000, -(10**1000), float("inf"), float("nan")):
+        p = pick(spread={
+            "home_line": bad, "settlement_basis": "FULL_GAME",
+            "sport": "NCAAB", "official_event_id": "a",
+            "home_team": "Home", "away_team": "Away",
+            "event_start_time_utc": START, "available_to_user_at_utc": FREEZE,
+            "as_of_utc": FREEZE, "receipt_id": "spread-a",
+            "independently_verified": True,
+        })
+        r = audit([p], [final()])
+        assert r["correct"] == 1
+        assert r["rows"][0]["spread_outcome_diagnostic_only"] == "NOT_EVALUATED"
+        assert r["rows"][0]["selection_grade"] == "WIN"
