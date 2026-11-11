@@ -284,10 +284,12 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "serving_sha_preflight" in text
     assert "serving_sha_at_request" in text
     assert "DAILY_SNAPSHOT_SERVING_SHA_MISSING" in text
-    assert "DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING" in text
+    assert "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID" in text
+    assert "DAILY_SNAPSHOT_RUN_ID_MISSING" in text
     assert 'daily_snapshot_response_deployed_sha' in text
-    assert 'serving_sha_for_run = str(result.get("deployed_sha") or "").strip()' in text
+    assert "serving_sha_for_run = str(result.get(\"deployed_sha\") or \"\").strip().lower()" in text
     assert '"serving_sha_at_request": serving_sha_for_run' in text
+    assert "serving_sha_preflight_matches_post" in text
     assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
     # Governance preflight must retry cold-start / gateway failures like the Daily POST.
     assert "def read_serving_sha_at_request" in text
@@ -297,13 +299,21 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
 
 def _attribute_daily_serving_sha(*, preflight_sha: str, result: dict) -> dict:
     """Mirror the unpaid Daily summary attribution contract from the workflow."""
-    serving_sha_for_run = str(result.get("deployed_sha") or "").strip()
-    if not serving_sha_for_run:
-        raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING")
+    run_id = str(result.get("run_id") or "").strip()
+    if not run_id:
+        raise AssertionError("DAILY_SNAPSHOT_RUN_ID_MISSING")
+    serving_sha_for_run = str(result.get("deployed_sha") or "").strip().lower()
+    if (
+        len(serving_sha_for_run) != 40
+        or any(ch not in "0123456789abcdef" for ch in serving_sha_for_run)
+    ):
+        raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID")
     return {
+        "run_id": run_id,
         "serving_sha_preflight": preflight_sha,
         "serving_sha_at_request": serving_sha_for_run,
         "serving_sha_source": "daily_snapshot_response_deployed_sha",
+        "serving_sha_preflight_matches_post": preflight_sha == serving_sha_for_run,
     }
 
 
@@ -317,13 +327,30 @@ def test_daily_serving_sha_attribution_prefers_post_over_distinct_preflight():
     assert attributed["serving_sha_preflight"] == preflight
     assert attributed["serving_sha_at_request"] == post
     assert attributed["serving_sha_source"] == "daily_snapshot_response_deployed_sha"
+    assert attributed["serving_sha_preflight_matches_post"] is False
 
 
 def test_daily_serving_sha_attribution_fails_closed_when_post_sha_missing():
-    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING"):
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID"):
         _attribute_daily_serving_sha(
             preflight_sha="a" * 40,
             result={"deployed_sha": None, "run_id": "v17-daily-x"},
+        )
+
+
+def test_daily_serving_sha_attribution_fails_closed_on_nonhex_post_sha():
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID"):
+        _attribute_daily_serving_sha(
+            preflight_sha="a" * 40,
+            result={"deployed_sha": "g" * 40, "run_id": "v17-daily-x"},
+        )
+
+
+def test_daily_serving_sha_attribution_fails_closed_on_missing_run_id():
+    with pytest.raises(AssertionError, match="DAILY_SNAPSHOT_RUN_ID_MISSING"):
+        _attribute_daily_serving_sha(
+            preflight_sha="a" * 40,
+            result={"deployed_sha": "b" * 40, "run_id": ""},
         )
 
 

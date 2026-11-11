@@ -200,9 +200,16 @@ jobs:
               raise AssertionError("DAILY_SNAPSHOT_OIDC_AUTH_NOT_PROVEN")
 
           # Attribute run_id to the server-owned deployed_sha from the successful POST.
-          serving_sha_for_run = str(result.get("deployed_sha") or "").strip()
-          if not serving_sha_for_run:
-              raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_MISSING")
+          # Never trust request-supplied identity; reject omitted/nonhex POST SHA.
+          run_id = str(result.get("run_id") or "").strip()
+          if not run_id:
+              raise AssertionError("DAILY_SNAPSHOT_RUN_ID_MISSING")
+          serving_sha_for_run = str(result.get("deployed_sha") or "").strip().lower()
+          if (
+              len(serving_sha_for_run) != 40
+              or any(ch not in "0123456789abcdef" for ch in serving_sha_for_run)
+          ):
+              raise AssertionError("DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID")
 
           reconciliation = result.get("reconciliation") or {}
           if reconciliation.get("balanced") is not True:
@@ -221,7 +228,7 @@ jobs:
 
           rows = result.get("rows") or []
           summary = {
-              "run_id": result.get("run_id"),
+              "run_id": run_id,
               "run_status": result.get("run_status"),
               "requested_slate_date": result.get("requested_slate_date"),
               "moneyline_rows": len([row for row in rows if row.get("lane") == "MONEYLINE"]),
@@ -235,9 +242,12 @@ jobs:
               "global_terminal_authority": "V17_TERMINAL_REDUCER",
               "can_execute": False,
               # Preflight GET is observational only; run attribution uses POST deployed_sha.
+              # GET/POST disagreement during rollout is expected; POST wins for attribution.
               **serving_preflight,
               "serving_sha_at_request": serving_sha_for_run,
               "serving_sha_source": "daily_snapshot_response_deployed_sha",
+              "serving_sha_preflight_matches_post": serving_preflight.get("serving_sha_preflight")
+              == serving_sha_for_run,
           }
           print(json.dumps(summary, sort_keys=True))
           PY
