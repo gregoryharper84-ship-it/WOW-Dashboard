@@ -47,6 +47,10 @@ from v17.daily_terminal_reduction import (
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
+from v17.player_availability_gate import (
+    PLAYER_AVAILABILITY_RECHECK_REQUIRED,
+    evaluate_player_availability,
+)
 from v17.prop_canonical_identity import canonical_event_start_time, canonical_source_snapshot_ids, canonical_sporting_key, canonicalize_prop_manifest
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
@@ -176,6 +180,84 @@ def _matching_slate(row: dict[str, Any], requested_date: str, requested_timezone
         return False
 
 
+def _snapshot_captured_at(row: dict[str, Any]) -> datetime:
+    raw = str(row.get("captured_at") or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.utcoffset() is not None:
+            return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        pass
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _read_side_availability_blocker(row: dict[str, Any]) -> str | None:
+    """Re-evaluate persisted role_status so Daily does not trust blockers alone.
+
+    When ``role_status`` is absent (older rows / unread column), fall back to
+    persisted blockers. When it is present, official availability is authoritative
+    even if ``blockers`` was left empty by a writer-trust gap.
+    """
+    role_status = row.get("role_status")
+    if role_status is None:
+        return None
+    decision = evaluate_player_availability(role_status)
+    if decision.blocker:
+        return str(decision.blocker)
+    if decision.requires_revalidation:
+        return PLAYER_AVAILABILITY_RECHECK_REQUIRED
+    return None
+
+
+def _effective_evidence_blockers(row: dict[str, Any]) -> list[str]:
+    blockers = [str(code) for code in (row.get("blockers") or []) if str(code).strip()]
+    availability_blocker = _read_side_availability_blocker(row)
+    if availability_blocker and availability_blocker not in blockers:
+        blockers.append(availability_blocker)
+    return blockers
+
+
+def _evidence_not_ready(row: dict[str, Any]) -> bool:
+    hydration = str(row.get("hydration_status") or "").strip().upper()
+    return hydration != "PASS" or bool(_effective_evidence_blockers(row))
+
+
+def _merge_prop_evidence_authority(
+    previous: dict[str, Any] | None, row: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Newest snapshot wins; same-time conflicts fail closed to non-ready evidence.
+
+    Do not prefilter PASS in SQL: a newer FAILED/blocked observation must remain
+    visible to canonicalization so an older clean PASS cannot clear it.
+    """
+    peers = [item for item in (previous, row) if item is not None]
+    candidates = canonicalize_prop_manifest(peers)
+    if not candidates:
+        return None
+    chosen = candidates[0]
+    capture_times = [(peer, _snapshot_captured_at(peer)) for peer in peers]
+    # An unorderable blocked observation (e.g. PostgreSQL infinity) must
+    # never be silently discarded in favor of a finite-time PASS.
+    unknown_blocked = next(
+        (peer for peer, stamp in capture_times
+         if stamp == datetime.min.replace(tzinfo=timezone.utc) and _evidence_not_ready(peer)),
+        None,
+    )
+    newest_ts = max(stamp for _, stamp in capture_times)
+    newest_peers = [peer for peer, stamp in capture_times if stamp == newest_ts]
+    blocked_newest = (
+        unknown_blocked if unknown_blocked is not None
+        else next((peer for peer in newest_peers if _evidence_not_ready(peer)), None)
+    )
+    if blocked_newest is None:
+        return chosen
+    merged = dict(blocked_newest)
+    merged["source_snapshot_ids"] = list(chosen.get("source_snapshot_ids") or [])
+    merged["source_instance_count"] = chosen.get("source_instance_count")
+    merged["canonical_sporting_key"] = chosen.get("canonical_sporting_key")
+    return merged
+
+
 def _prop_manifest_rows(
     db: Any,
     requested_date: str,
@@ -190,10 +272,14 @@ def _prop_manifest_rows(
 
     Sporting identity includes event start time, so rows from a finished ordered
     group cannot supersede later groups. Newest selection still precedes blocker
-    filtering. Historical exclusions are counted rather than retained in full;
+    filtering, and the SQL read must not hide non-PASS hydration before that
+    selection. Historical exclusions are counted rather than retained in full;
     keep bounded display detail plus rows needed for current write receipts.
     """
-    selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
+    selected = (
+        "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
+        "stat_type,line,hydration_status,blockers,role_status"
+    )
     manifest: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     excluded_count = 0
@@ -212,11 +298,12 @@ def _prop_manifest_rows(
 
     def account(row: dict[str, Any]) -> None:
         nonlocal excluded_count
+        effective_blockers = _effective_evidence_blockers(row)
         if not _future(row.get("event_start_time")):
             reason = "EVENT_NOT_PREGAME"
         elif not _matching_slate(row, requested_date, requested_timezone):
             reason = "NOT_REQUESTED_SLATE"
-        elif row.get("blockers"):
+        elif _evidence_not_ready(row):
             reason = "EVIDENCE_BLOCKED"
         else:
             manifest.append(row)
@@ -232,12 +319,19 @@ def _prop_manifest_rows(
                 )},
                 "source_snapshot_ids": sorted(ids & retain_ids),
                 "reason": reason,
-                "blockers": [str(code) for code in (row.get("blockers") or [])][:4],
+                "blockers": effective_blockers[:4],
                 "can_execute": False,
             })
 
     while True:
-        query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time").order("source_snapshot_id")
+        # Intentionally no hydration_status=PASS SQL prefilter: newer FAILED or
+        # blocked evidence must participate in canonical newest-wins selection.
+        query = (
+            db.table("wow_prop_evidence_snapshots")
+            .select(selected)
+            .order("event_start_time")
+            .order("source_snapshot_id")
+        )
         ranged = getattr(query, "range", None)
         if callable(ranged):
             batch = ranged(offset, offset + page_size - 1).execute().data or []
@@ -263,9 +357,9 @@ def _prop_manifest_rows(
                 merged += 1
             seen_keys.add(key)
             previous = active.get(key)
-            candidates = canonicalize_prop_manifest([previous, row] if previous is not None else [row])
-            if candidates:
-                active[key] = candidates[0]
+            selected_row = _merge_prop_evidence_authority(previous, row)
+            if selected_row is not None:
+                active[key] = selected_row
             else:
                 active.pop(key, None)
         if stats is not None:

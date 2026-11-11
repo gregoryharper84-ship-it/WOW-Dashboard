@@ -187,8 +187,8 @@ def classify(events: Iterable[Mapping[str, Any]], *, begin: datetime, end: datet
         findings.append({
             "source": "DATADOG", "subsystem": ("ENGINEERING_AUTONOMY" if service == WORKER_SERVICE else "BACKEND_RUNTIME"), "service": service,
             "failure_boundary": route, "typed_failure": code, "severity": severity,
-            "fingerprint": fingerprint, "count": count, "first_seen_utc": min(stamps),
-            "last_seen_utc": max(stamps), "release_shas": shas,
+            "fingerprint": fingerprint, "count": count, "first_seen_utc": min(stamps, key=utc_time),
+            "last_seen_utc": max(stamps, key=utc_time), "release_shas": shas,
             "next_owner": "REPORTER_AGENT", "state": "CANDIDATE_UNVERIFIED",
             "can_execute": False,
         })
