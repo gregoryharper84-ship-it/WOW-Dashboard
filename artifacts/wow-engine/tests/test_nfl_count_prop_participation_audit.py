@@ -132,3 +132,19 @@ def test_pinned_source_checksum_mismatch_is_rejected_before_parsing(tmp_path):
         _verified_csv(path, PLAYERS_SHA256)
     assert len(SNAP_SHA256) == 5
     assert set(SNAP_SHA256) == set(str(year) for year in range(2021, 2026))
+
+
+def test_empty_offensive_snap_cohort_cannot_pass_coverage(sample_cohort):
+    """An empty participant source must never turn an empty diff into a green receipt."""
+    stats, snaps, players = sample_cohort
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_EMPTY"):
+        reconcile_player_games(stats, snaps.iloc[0:0], players)
+
+
+def test_all_zero_offensive_snaps_cannot_pass_coverage(sample_cohort):
+    """Zero tracked offensive participation is unknown source coverage, not success."""
+    stats, snaps, players = sample_cohort
+    snaps = snaps.copy()
+    snaps["offense_snaps"] = 0
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_EMPTY"):
+        reconcile_player_games(stats, snaps, players)
