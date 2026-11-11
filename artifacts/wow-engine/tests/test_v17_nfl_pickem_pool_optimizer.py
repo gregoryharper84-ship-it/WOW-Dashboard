@@ -389,3 +389,49 @@ def test_schedule_refresh_alone_never_poses_as_new_qb_injury():
     board = build_pickem_board([row], expected_game_count=1)
     assert board["material_update_evidence_missing_count"] == 1
     assert board["can_execute"] is False
+
+
+def test_newer_valid_qb_update_without_model_lineage_still_requires_rerun():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update("2026-09-30T13:00:00+00:00")]
+    row.pop("model_material_context_receipt_ids", None)
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert out["source_model_status"] == "STALE_MODEL_OUTPUT"
+    assert "PICKEM_MATERIAL_UPDATE_AFTER_MODEL_RERUN_REQUIRED" in out["blockers"]
+    assert "PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED" not in out["blockers"]
+
+
+def test_older_valid_qb_update_without_lineage_stays_unproven():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update()]
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED" in out["blockers"]
+    assert out["source_model_status"] != "STALE_MODEL_OUTPUT"
+
+
+def test_boolean_receipt_id_or_change_type_cannot_pass_lineage_gate():
+    for field in ("evidence_receipt_id", "change_type"):
+        row = _row_with_kickoff()
+        update = _qb_update()
+        update[field] = True
+        row["material_pregame_updates"] = [update]
+        row["model_material_context_receipt_ids"] = ["True", "official-qb-source-001"]
+        out = select_pickem_game(row)
+        assert out["status"] == PICKEM_BLOCKED
+        assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in out["blockers"]
+        assert out["can_execute"] is False
+
+
+def test_invalid_receipt_cannot_be_ignored_because_another_receipt_is_stale():
+    row = _row_with_kickoff()
+    invalid = _qb_update()
+    invalid["evidence_receipt_id"] = False
+    row["material_pregame_updates"] = [
+        _qb_update("2026-09-30T13:00:00+00:00"),
+        invalid,
+    ]
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in out["blockers"]
