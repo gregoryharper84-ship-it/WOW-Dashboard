@@ -127,14 +127,29 @@ def test_pbp_missing_actor_column_is_fail_closed(tmp_path, monkeypatch):
 def test_observed_pbp_actor_still_does_not_authorize_zero_or_model(source_cohort):
     game = "2024_01_BAL_KC"
     output = mod.classify_missing_pbp_presence(
-        *source_cohort, {game}, {(game, "00-0031111")},
+        *source_cohort, {game}, {(game, "00-0031111"), (game, "00-0032222")},
     )
     assert output["pbp_presence_counts"]["pbp_actor_observed"] == 1
+    assert output["pbp_matched_positive_control"]["pbp_actor_observed"] == 1
+    assert output["pbp_actor_id_alignment_observed"] is True
     assert output["mapped_missing_player_games"] == 1
     assert output["status"] == "HOLD_PBP_PRESENCE_ONLY"
     assert output["missing_actor_means_zero"] is False
     assert output["fitted_specialist_certified"] is False
     assert output["can_execute"] is False
+
+
+def test_no_positive_control_keeps_identity_alignment_unproven(source_cohort):
+    """A wrong actor ID domain cannot masquerade as evidence for zeros."""
+    game = "2024_01_BAL_KC"
+    output = mod.classify_missing_pbp_presence(
+        *source_cohort, {game}, {(game, "GSIS_UNRELATED")},
+    )
+    assert output["pbp_matched_positive_control"]["pbp_actor_observed"] == 0
+    assert output["pbp_actor_id_alignment_observed"] is False
+    assert output["pbp_presence_counts"]["pbp_actor_not_observed"] == 1
+    assert output["missing_actor_means_zero"] is False
+    assert output["status"] == "HOLD_PBP_PRESENCE_ONLY"
 
 
 def test_absent_pbp_actor_never_becomes_zero(source_cohort):
