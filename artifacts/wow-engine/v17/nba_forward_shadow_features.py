@@ -1,7 +1,8 @@
 """Research-only NBA current-pregame feature hydration for forward-shadow evidence.
 
 Builds the exact ``BASKETBALL_TEAM_EVENT_FEATURES_V2`` vector for one upcoming NBA game
-from settled history strictly earlier than the game's calendar date, using the same
+from settled NBA history strictly earlier than the game's calendar date AND already
+settled at ``source_snapshot_timestamp`` (verifiable settlement instants required), using the same
 definitions as training (``basketball_team_event_specialist.build_pregame_features``).
 
 This module is deliberately NOT publication-grade evidence:
@@ -13,12 +14,14 @@ This module is deliberately NOT publication-grade evidence:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
 import json
 from typing import Any, Iterable, Mapping
 
 from basketball_team_event_specialist import (
+    BasketballSpecialistError,
     FEATURE_NAMES,
     FEATURE_SCHEMA_VERSION,
     MIN_PRIOR_GAMES,
@@ -29,6 +32,19 @@ CAN_EXECUTE = False
 SOURCE_REPLAY_STATUS = "DERIVED_FROM_SETTLED_ROWS_RESEARCH_ONLY"
 TIMESTAMP_ATTESTATION = "NOT_VERIFIED"
 MAX_REST_DAYS = 7
+
+
+@dataclass(frozen=True)
+class SettledGame:
+    """A settled result plus the verifiable UTC instant it became available.
+
+    ``TrainingGame`` carries only a calendar date, which cannot prove a result was known
+    at the source snapshot. Callers must supply the settlement instant; without it the
+    row cannot be used and the hydrator returns a typed HOLD.
+    """
+
+    game: TrainingGame
+    settled_at_utc: datetime | None
 
 
 def _hold(code: str, **extra: Any) -> dict[str, Any]:
@@ -58,6 +74,8 @@ def _as_date(value: Any) -> date | None:
 def _team_history(games: Iterable[TrainingGame], team_id: str, before: date):
     rows = []
     for g in games:
+        if g.sport != "NBA":
+            continue  # never mix other leagues into NBA history
         if g.game_date >= before:
             continue  # same-day and future finals can never enter pregame features
         if g.home_team_id == team_id:
@@ -90,11 +108,13 @@ def current_feature_values(
     )
 
 
-def _dataset_id(games: Iterable[TrainingGame], teams: tuple[str, str], before: date) -> str:
+def _dataset_id(included: Iterable[SettledGame]) -> str:
     used = sorted(
-        (g.game_id, g.game_date.isoformat(), g.home_team_id, g.away_team_id, g.home_score, g.away_score)
-        for g in games
-        if g.game_date < before and (set(teams) & {g.home_team_id, g.away_team_id})
+        (
+            r.game.game_id, r.game.game_date.isoformat(), r.game.home_team_id, r.game.away_team_id,
+            r.game.home_score, r.game.away_score, r.settled_at_utc.astimezone(timezone.utc).isoformat(),
+        )
+        for r in included
     )
     return hashlib.sha256(json.dumps(used, separators=(",", ":")).encode()).hexdigest()
 
@@ -105,7 +125,7 @@ def hydrate_nba_current_pregame_features(
     home_team_id: str,
     away_team_id: str,
     event_start_time_utc: str,
-    settled_games: Iterable[TrainingGame],
+    settled_games: Iterable[SettledGame],
     feature_timestamp: str,
     source_snapshot_id: str,
     source_snapshot_timestamp: str,
@@ -128,8 +148,27 @@ def hydrate_nba_current_pregame_features(
     if source_at > feature_at:
         return _hold("NBA_FORWARD_SHADOW_SOURCE_AFTER_FEATURE")
     game_date = start.astimezone(timezone.utc).date()
-    games = list(settled_games)
-    values = current_feature_values(games, home_team_id, away_team_id, game_date)
+    teams = {home_team_id, away_team_id}
+    relevant = [
+        r for r in settled_games
+        if r.game.sport == "NBA"
+        and r.game.game_date < game_date
+        and teams & {r.game.home_team_id, r.game.away_team_id}
+    ]
+    ids = [r.game.game_id for r in relevant]
+    if len(ids) != len(set(ids)):
+        return _hold("NBA_FORWARD_SHADOW_DUPLICATE_GAME_ID", official_event_id=official_event_id)
+    for r in relevant:
+        t = r.settled_at_utc
+        if not isinstance(t, datetime) or t.utcoffset() is None:
+            return _hold("NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE", official_event_id=official_event_id)
+    # Only results already settled at the source snapshot were knowable then.
+    included = [r for r in relevant if r.settled_at_utc <= source_at]
+    games = [r.game for r in included]
+    try:
+        values = current_feature_values(games, home_team_id, away_team_id, game_date)
+    except BasketballSpecialistError:  # tied settled score; unrelated errors propagate
+        return _hold("NBA_FORWARD_SHADOW_TIED_SETTLED_SCORE", official_event_id=official_event_id)
     if values is None:
         return _hold("NBA_FORWARD_SHADOW_PRIOR_GAMES_INSUFFICIENT", official_event_id=official_event_id)
     features = {name: float(value) for name, value in zip(FEATURE_NAMES, values)}
@@ -151,7 +190,7 @@ def hydrate_nba_current_pregame_features(
         "feature_audit": {
             "feature_timestamp": feature_timestamp,
             "feature_as_of": game_date.isoformat(),
-            "dataset_id": _dataset_id(games, (home_team_id, away_team_id), game_date),
+            "dataset_id": _dataset_id(included),
             "feature_payload_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
             "source_replay_status": SOURCE_REPLAY_STATUS,
             "timestamp_attestation": TIMESTAMP_ATTESTATION,
