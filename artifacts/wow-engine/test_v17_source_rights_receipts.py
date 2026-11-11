@@ -183,6 +183,21 @@ def test_matrix_rechecks_receipts_passed_directly_bypassing_the_loader():
         sca.build_source_matrix(ROOT, rights_receipts={"NFLVERSE": ["x"]}, now=NOW)
 
 
+def test_direct_mapping_cannot_relabel_another_source_receipt():
+    # Bypass the JSON loader deliberately: source identity must bind the
+    # dictionary key to every embedded receipt, even if its digest is valid.
+    valid_nflverse = _receipt()
+    with pytest.raises(ValueError, match="SOURCE_RIGHTS_RECEIPT_MAPPING_INVALID"):
+        sca.build_source_matrix(ROOT, rights_receipts={"CFBD": [valid_nflverse]}, now=NOW)
+    with pytest.raises(ValueError, match="SOURCE_RIGHTS_RECEIPT_MAPPING_INVALID"):
+        sca.build_source_matrix(ROOT, rights_receipts={"NFLVERSE": [valid_nflverse,
+            _receipt(source_id="CFBD")]}, now=NOW)
+    # A legitimate same-source mapping still produces no publishable training.
+    blockers, row = _blockers(valid_nflverse)
+    assert row["legal_reproducible_fitted_training"] is False
+    assert sca.B_NO_LIVE_RECEIPT in blockers
+
+
 def test_blank_receipt_ids_do_not_clear_live_or_license_blockers():
     rows = {(r["sport"], r["source_id"]): r for r in sca.build_source_matrix(
         ROOT, live_receipts={"NFLVERSE": ""}, license_receipts={"NFLVERSE": "  ", "CFBD": None}, now=NOW)}
