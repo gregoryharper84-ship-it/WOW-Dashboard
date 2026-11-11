@@ -10,6 +10,7 @@ relax publication gates, or authorize wager execution.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException
@@ -25,6 +26,16 @@ from v17 import memory_admission
 
 INTERNAL_DAILY_SNAPSHOT_ROUTE = "/internal/v17/daily-snapshot"
 INTERNAL_MAX_TEAM_EVENTS = 32
+
+
+def _render_deployed_sha() -> str | None:
+    """Return the process Render tip SHA; malformed values stay explicitly null."""
+    value = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        return None
+    return value
 
 
 class InternalDailySnapshotRequest(BaseModel):
@@ -99,11 +110,14 @@ def install_daily_snapshot_oidc_bridge(*, app: FastAPI, market_api: Any) -> bool
                 },
             )
 
+        # Bind serving tip to this response so unpaid Actions attribution uses the
+        # SHA of the process that produced run_id, not an earlier preflight GET.
         return {
             **result,
             "automation_auth": auth_mode,
             "global_terminal_authority": "V17_TERMINAL_REDUCER",
             "can_execute": False,
+            "deployed_sha": _render_deployed_sha(),
         }
 
     app.state.v17_daily_snapshot_oidc_bridge_installed = True
