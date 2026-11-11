@@ -1,0 +1,72 @@
+name: wow-v17-restoration-loop
+
+# Manual observer only. wow-engineering-24x7 remains the single controller.
+# Planner decisions are diagnostics, never dispatch/merge/close authority.
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-restoration-observation
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: artifacts/wow-engine
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      GH_TOKEN: ${{ github.token }}
+      PRODUCTION_URL: ${{ vars.WOW_PRODUCTION_URL || 'https://wow-governed-probability-engine.onrender.com' }}
+      RENDER_SERVICE_ID: ${{ vars.WOW_RENDER_SERVICE_ID }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      LEDGER_ISSUE: ${{ vars.WOW_RESTORATION_LEDGER_ISSUE }}
+    steps:
+      - name: Checkout exact protected source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Collect read-only restoration evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m v17.restoration_loop collect \
+            --repo "$GITHUB_REPOSITORY" \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --output "$RUNNER_TEMP/observation.json" \
+            --production-url "$PRODUCTION_URL" \
+            --render-service-id "${RENDER_SERVICE_ID:-}" \
+            --ledger-issue "${LEDGER_ISSUE:-0}"
+      - name: Publish diagnostic decision without dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m v17.restoration_loop plan \
+            --observation "$RUNNER_TEMP/observation.json" > "$RUNNER_TEMP/decision.json"
+          jq -e '.can_execute == false and .terminal_authority == "V17_TERMINAL_REDUCER"' \
+            "$RUNNER_TEMP/decision.json" > /dev/null
+          python -m v17.restoration_loop plan \
+            --observation "$RUNNER_TEMP/observation.json" --format comment >> "$GITHUB_STEP_SUMMARY"
+          echo 'Diagnostic only: existing 24x7 controller owns execution. No dispatch, release or issue close occurred.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish observation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restoration-loop-decision
+          path: |
+            ${{ runner.temp }}/observation.json
+            ${{ runner.temp }}/decision.json
+          if-no-files-found: warn
