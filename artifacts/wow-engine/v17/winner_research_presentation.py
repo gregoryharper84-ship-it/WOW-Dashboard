@@ -129,6 +129,38 @@ def _evidence(row: Mapping[str, Any], *, freeze: datetime, kickoff: datetime,
         "observed_at": observed.isoformat(),
     }
 
+def _check_shared_numeric_snapshots(
+    primary: Mapping[str, Any],
+    watches: Sequence[Mapping[str, Any]],
+    full_outcomes: frozenset[str],
+) -> None:
+    """Refuse contradictory selections claimed from one numeric snapshot.
+
+    A caller-declared snapshot is NOT authenticated here. This check prevents
+    self-contradictory display probabilities, not proof that the source quote
+    or the no-vig computation is genuine.
+    """
+    snapshots: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in (primary, *watches):
+        if item["display_probability"] is None:
+            continue
+        snapshot_key = (item["probability_source"], item["source_snapshot_id"])
+        prior = snapshots.setdefault(
+            snapshot_key,
+            {"observed_at": item["observed_at"], "selections": {}},
+        )
+        if item["observed_at"] != prior["observed_at"]:
+            raise ValueError("WINNER_CARD_NUMERIC_SNAPSHOT_TIME_CONFLICT")
+        prior["selections"][item["selection"]] = item["display_probability"]
+    for snapshot in snapshots.values():
+        numbers = snapshot["selections"]
+        total = sum(numbers.values())
+        if total > 1.0 + 1e-8:
+            raise ValueError("WINNER_CARD_NUMERIC_SNAPSHOT_DISTRIBUTION_CONFLICT")
+        if set(numbers) == full_outcomes and abs(total - 1.0) > 1e-6:
+            raise ValueError("WINNER_CARD_NUMERIC_SNAPSHOT_DISTRIBUTION_CONFLICT")
+
+
 def assemble_provisional_winner_card(
     official_events: Sequence[Mapping[str, Any]],
     primary_picks: Sequence[Mapping[str, Any]],
@@ -155,8 +187,10 @@ def assemble_provisional_winner_card(
     for event in official_events:
         event_id = _required(event.get("event_id"), "EVENT_ID")
         sport = _required(event.get("sport"), "SPORT").upper()
-        _required(event.get("home"), "HOME")
-        _required(event.get("away"), "AWAY")
+        home = _required(event.get("home"), "HOME")
+        away = _required(event.get("away"), "AWAY")
+        if home.casefold() == away.casefold():
+            raise ValueError("WINNER_CARD_EVENT_TEAMS_INVALID")
         basis = _required(event.get("settlement_basis"), "SETTLEMENT_BASIS")
         kickoff = _instant(event.get("starts_at"), "STARTS_AT")
         values = event.get("eligible_outcomes")
@@ -195,7 +229,12 @@ def assemble_provisional_winner_card(
         if event_id in event_by_id:
             raise ValueError("WINNER_CARD_DUPLICATE_OFFICIAL_EVENT")
         event_order.append(event_id)
-        event_by_id[event_id] = (event, kickoff, eligible)
+        # Use the same canonical identity checked above, not raw caller strings.
+        # Never mutate the supplied official-source object.
+        normalized = dict(event)
+        normalized.update(event_id=event_id, sport=sport, home=home, away=away,
+                          settlement_basis=basis)
+        event_by_id[event_id] = (normalized, kickoff, eligible)
 
     primaries: dict[str, dict[str, Any]] = {}
     for pick in primary_picks:
@@ -238,6 +277,9 @@ def assemble_provisional_winner_card(
     rows = []
     for event_id in event_order:
         event, _, _ = event_by_id[event_id]
+        _check_shared_numeric_snapshots(
+            primaries[event_id], watches[event_id], SPORT_CONTRACTS[event["sport"]][1],
+        )
         rows.append({
             "event_id": event_id,
             "sport": event["sport"],
