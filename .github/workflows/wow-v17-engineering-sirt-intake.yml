@@ -32,6 +32,7 @@ concurrency:
   # a per-source lock permits duplicate issue creation for the same PR/SHA.
   group: sirt-intake-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   independent-intake:
