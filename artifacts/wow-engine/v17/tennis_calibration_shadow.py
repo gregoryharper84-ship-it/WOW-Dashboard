@@ -16,6 +16,7 @@ from typing import Sequence
 import numpy as np
 from v17.binary_candidate_lifecycle import (
     BinaryCandidate,
+    BinaryCandidateError,
     BinaryTrainingRow,
     _calibration_metrics,
     _dataset_hash,
@@ -91,7 +92,7 @@ def replay_tennis_calibration_shadow(
     try:
         features, targets = _matrix(rows, names)
         digest = _dataset_hash(rows, names, family)
-    except (ValueError, TypeError, KeyError) as exc:
+    except (ValueError, TypeError, KeyError, BinaryCandidateError) as exc:
         raise TennisCalibrationShadowError("TENNIS_FROZEN_CORPUS_INVALID") from exc
     if digest != candidate.dataset_hash:
         raise TennisCalibrationShadowError("TENNIS_FROZEN_DATASET_HASH_MISMATCH")
