@@ -159,3 +159,4 @@ def test_all_intake_entrypoints_serialize_one_issue_writer_group():
     assert "inputs.pr_number" not in group
     assert group == "sirt-intake-${{ github.repository }}"
     assert wf["concurrency"]["cancel-in-progress"] is False
+    assert wf["concurrency"]["queue"] == "max"
