@@ -49,20 +49,29 @@ def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
     db = _PrerequisiteDb()
     result = maintenance.run_basketball_model_maintenance(db, seasons=(2025, 2026))
 
-    assert result["status"] == "COMPLETE"
-    assert result["rows_updated"] == 2
+    # Synthetic NBA replay lacks a versioned fitted artifact. It must be
+    # HELD even when hydration succeeded; WNBA remains separately updated.
+    assert result["status"] == "PARTIAL"
+    assert result["rows_updated"] == 1
+    assert result["rows_blocked"] == 1
     assert result["rows_fresh_acquisition_degraded"] == 0
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
-    assert all(row["status"] == "SHADOW_EVIDENCE_UPDATED" for row in result["rows"])
-    assert all(row["hydration_status"] == "FRESH_ACQUISITION_UPDATED" for row in result["rows"])
+    nba, wnba = result["rows"]
+    assert nba["sport"] == "NBA"
+    assert nba["status"] == "BLOCKED"
+    assert nba["code"] == "NBA_VERIFICATION_EVIDENCE_INCOMPLETE"
+    assert nba["independent_verification"]["status"] == "INCOMPLETE"
+    assert nba["hydration_status"] == "FRESH_ACQUISITION_UPDATED"
+    assert wnba["status"] == "SHADOW_EVIDENCE_UPDATED"
+    assert wnba["hydration_status"] == "FRESH_ACQUISITION_UPDATED"
     assert all(row["promotion_attempted"] is False for row in result["rows"])
     assert seen[0][:3] == ("hydrate", "NBA", (2025, 2026))
 
 
-def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
+def test_missing_provider_credential_replays_persisted_corpus_but_holds_artifactless_nba(monkeypatch):
     def fail_hydration(*_args, **_kwargs):
         raise maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
 
@@ -85,10 +94,13 @@ def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
     result = maintenance.run_basketball_model_maintenance(db, sports=("NBA",), seasons=(2026,))
     row = result["rows"][0]
 
-    assert result["status"] == "COMPLETE"
-    assert result["rows_updated"] == 1
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    assert result["rows_blocked"] == 1
     assert result["rows_fresh_acquisition_degraded"] == 1
-    assert row["status"] == "SHADOW_EVIDENCE_UPDATED"
+    assert row["status"] == "BLOCKED"
+    assert row["code"] == "NBA_VERIFICATION_EVIDENCE_INCOMPLETE"
+    assert row["independent_verification"]["status"] == "INCOMPLETE"
     assert row["hydration_status"] == "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS"
     assert row["hydration_blocker"]["code"] == "BALLDONTLIE_API_KEY unavailable"
     assert row["hydration_blocker"]["stage"] == "FRESH_SOURCE_HYDRATION"
