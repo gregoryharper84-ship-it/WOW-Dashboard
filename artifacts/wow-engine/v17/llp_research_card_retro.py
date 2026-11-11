@@ -13,6 +13,13 @@ from typing import Any, Mapping, Sequence
 
 SPORTS = frozenset({"NFL", "NBA", "NHL"})
 ROLES = frozenset({"PREFERRED", "UPSET_WATCH"})
+# Settlement must include every playable period; NBA and NFL overtime and
+# NHL overtime/shootouts cannot be silently replaced by regulation outcomes.
+FULL_GAME_BASIS = {
+    "NFL": "FULL_GAME_INCLUDING_OVERTIME",
+    "NBA": "FULL_GAME_INCLUDING_OVERTIME",
+    "NHL": "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT",
+}
 HYPOTHESES = {
     "NFL": ("QB_EFFICIENCY_TURNOVER_SENSITIVITY", "PASS_PROTECTION_MATCHUP"),
     "NBA": ("AVAILABILITY_REPLACEMENT", "OPPONENT_OFFENSIVE_VOLATILITY"),
@@ -85,6 +92,9 @@ def _verify_final(pick: Mapping[str, Any], final: Mapping[str, Any] | None) -> l
     issues: list[str] = []
     if not _same_event(pick, final):
         issues.append("OFFICIAL_EVENT_IDENTITY_CONFLICT")
+    expected_basis = FULL_GAME_BASIS.get(_key(pick)[0])
+    if not expected_basis or pick.get("settlement_basis") != expected_basis or final.get("settlement_basis") != expected_basis:
+        issues.append("FULL_GAME_SETTLEMENT_BASIS_UNVERIFIED")
     if final.get("final_status") != "FINAL":
         issues.append("OFFICIAL_FINAL_NOT_FINAL")
     if final.get("independently_verified") is not True or not _name(final.get("settlement_receipt_id")) or not _name(final.get("settlement_source")):
@@ -203,6 +213,24 @@ def audit_research_card(
             "automatic_model_mutation": False,
             "can_execute": False,
         })
+    # Preserve every missing manifest game in the returned diagnostic
+    # instead of hiding it in an aggregate board blocker.
+    for (sport, event_id), manifest in manifest_lookup.items():
+        if (sport, event_id) not in primary_keys:
+            rows.append({
+                "sport": sport,
+                "official_event_id": event_id,
+                "selection_role": "PREFERRED",
+                "selected_side": None,
+                "grade_status": "HELD",
+                "blockers": ["OFFICIAL_SLATE_PREFERRED_PICK_MISSING"],
+                "pregame_receipt_id": None,
+                "settlement_receipt_id": None,
+                "source_class": "EXTERNAL_RESEARCH_ONLY",
+                "fitted_model_grade": False,
+                "automatic_model_mutation": False,
+                "can_execute": False,
+            })
     primary = _grade_counts(rows, "PREFERRED")
     watch = _grade_counts(rows, "UPSET_WATCH")
     preferred_grades = {(r["sport"], r["official_event_id"]): r["grade_status"] for r in rows if r["selection_role"] == "PREFERRED" and r["grade_status"] in {"WIN", "LOSS"}}
