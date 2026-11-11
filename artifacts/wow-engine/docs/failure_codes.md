@@ -646,3 +646,88 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 | `RESEARCH_TRACKING_OVERLAPS_OUTPUT` | V17 research telemetry / local receipt preflight | Local tracking and report trees nest recursively. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
 | `RESEARCH_OUTPUT_ROOT_NOT_EMPTY` | V17 research telemetry / local receipt preflight | Report destination contains previous or unrelated files. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
 | `RESEARCH_MLFLOW_OR_EVIDENTLY_NOT_INSTALLED` | V17 research telemetry / local receipt preflight | Optional reporting dependency unavailable; no receipt generated. Recovery: `PROVIDER_CONFIGURATION`; investigate the exact files/environment, then use a new distinct output directory. | No |
+
+## Authorized third-party player-prop acquisition and handoff (2026-11-06, #2499)
+
+These exact native codes belong to the **source/discovery, official identity,
+exact-offer refresh and Action-input proposal** stages. None is a fitted-model
+result or an authorization to publish. They cannot be relabeled
+`MODEL_UNAVAILABLE`; a blocked source does not mean an absent sport specialist.
+No source data may become a probability, and `can_execute=false` always.
+The third-party feed is a separate independent API, not official PrizePicks.
+
+| Code | Owning stage | Exact failure condition | Required recovery |
+| --- | --- | --- | --- |
+| `PROP_FEED_ACCOUNT_USE_NOT_AUTHORIZED` | SOURCE_ADAPTER | account use not authorized | Restore authorized entitlement/credential through trusted operator; no bypass |
+| `PROP_FEED_AUTH_OR_ENTITLEMENT_BLOCKED` | SOURCE_ADAPTER | Provider returned 401/403 and acquisition stopped without bypass | Restore authorized entitlement/credential through trusted operator; no bypass |
+| `PROP_FEED_CLOCK_SKEW` | SOURCE_ADAPTER | Source observation timestamp is more than two minutes in the future | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_FEED_CREDENTIAL_MISSING` | SOURCE_ADAPTER | credential missing | Restore authorized entitlement/credential through trusted operator; no bypass |
+| `PROP_FEED_CREDIT_BUDGET_EXHAUSTED` | SOURCE_ADAPTER | Next source page exceeds the caller-approved per-run credit reservation | Stop before next request; retain incomplete-scan hold. A second 6-credit page requires at least 12 credits reserved for that run; only an authorized operator may approve a higher supported reservation within available free quota. Otherwise do not fetch another page or claim full coverage; never rotate credentials or incur paid usage |
+| `PROP_FEED_CREDIT_BUDGET_INVALID` | SOURCE_ADAPTER | Per-run credit limit is outside the supported 6–100 range | Correct the caller's request to the approved 6–100 bound; do not send any provider request |
+| `PROP_FEED_CURSOR_CYCLE` | SOURCE_ADAPTER | cursor cycle | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_CURSOR_INVALID` | SOURCE_ADAPTER | cursor invalid | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_DEMO_OR_PROVENANCE_UNVERIFIED` | SOURCE_ADAPTER | Row is a demo or its demo provenance is missing | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_DIRECTION_UNRESOLVED` | SOURCE_ADAPTER | direction unresolved | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_EXACT_LINE_INVALID` | SOURCE_ADAPTER | exact line invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_HTTP_UNAVAILABLE` | SOURCE_ADAPTER | http unavailable | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_JSON_INVALID` | SOURCE_ADAPTER | json invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_LEAGUE_CONFLICT` | SOURCE_ADAPTER | league conflict | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_NOW_UNAWARE` | SOURCE_ADAPTER | now unaware | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_NO_AVAILABLE_DIRECTIONS` | SOURCE_ADAPTER | no available directions | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_OFFER_NOT_ACTIVE` | SOURCE_ADAPTER | offer not active | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_OFFER_TYPE_UNRESOLVED` | SOURCE_ADAPTER | offer type unresolved | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_PAGE_BUDGET_EXHAUSTED` | SOURCE_ADAPTER | Requested maximum number of cursor pages was reached | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_PAGE_BUDGET_INVALID` | SOURCE_ADAPTER | page budget invalid | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_PAGE_SCHEMA_INVALID` | SOURCE_ADAPTER | page schema invalid | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_PAGE_SIZE_EXCEEDED` | SOURCE_ADAPTER | page size exceeded | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_PAGINATION_DUPLICATE` | SOURCE_ADAPTER | A projection identifier repeated across cursor pages | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_PAYLOAD_SIZE_INVALID` | SOURCE_ADAPTER | payload size invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_PROVIDER_CALL_FAILED` | SOURCE_ADAPTER | provider call failed | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_QUOTA_BLOCKED` | SOURCE_ADAPTER | Provider returned 429; no key/account rotation permitted | Stop before next request; wait for quota or reduce budget; never rotate credentials |
+| `PROP_FEED_RECONCILIATION_FAILED` | SOURCE_ADAPTER | Source rows do not balance accepted, blocked and duplicate records | Audit source pages and counts; never declare complete board |
+| `PROP_FEED_REDIRECT_DISALLOWED` | SOURCE_ADAPTER | Provider request redirects away from the exact allowlisted endpoint | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_ROW_IDENTITY_INCOMPLETE` | SOURCE_ADAPTER | row identity incomplete | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_FEED_ROW_SCHEMA_INVALID` | SOURCE_ADAPTER | row schema invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_ROW_STALE` | SOURCE_ADAPTER | Source observation age exceeds twenty minutes | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_FEED_SOURCE_MODE_UNVERIFIED` | SOURCE_ADAPTER | source mode unverified | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_SOURCE_PROVENANCE_CONFLICT` | SOURCE_ADAPTER | Row does not declare the expected independent-provider PrizePicks source | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_SOURCE_STALE_OR_UNHEALTHY` | SOURCE_ADAPTER | Page-level source status is not fresh | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_FEED_SPORT_NOT_SUPPORTED` | SOURCE_ADAPTER | sport not supported | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_TIMESTAMP_UNRESOLVED` | SOURCE_ADAPTER | timestamp unresolved | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_FEED_TRANSPORT_FAILED` | SOURCE_ADAPTER | transport failed | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_FEED_ZERO_ROWS_NOT_NO_SLATE_PROOF` | SOURCE_ADAPTER | Vendor returned no rows; insufficient to prove no pregame markets | Audit source pages and counts; never declare complete board |
+| `PROP_HANDOFF_CANDIDATES_INVALID` | PROP_HANDOFF | candidates invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_DISCOVERY_BLOCKERS_INVALID` | PROP_HANDOFF | Discovery blockers are not a bounded list of typed strings | Reject malformed upstream receipt; restore valid discovery evidence, not credentials |
+| `PROP_HANDOFF_DISCOVERY_SCHEMA_INVALID` | PROP_HANDOFF | discovery schema invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED` | PROP_HANDOFF | Partial-game period, tiered offer, invalid line or missing canonical stat cannot be represented by the full-game standard Action | Hold until the exact period and offer semantics are supported by the governed scorer; no silent market conversion |
+| `PROP_HANDOFF_SCORER_COMPATIBILITY_UNVERIFIED` | PROP_HANDOFF | Trusted server-side scorer registry is missing, unavailable or does not explicitly support the exact sport/stat route | Hold until the trusted backend verifies exact sport/stat support; never infer it from third-party discovery |
+| `PROP_HANDOFF_NOW_UNAWARE` | PROP_HANDOFF | now unaware | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_RESEARCH_AUTHORITY_CONFLICT` | PROP_HANDOFF | Research row tries to claim scoring or execution authority | Reject the source row; require a research-only/non-executable receipt from the trusted adapter |
+| `PROP_HANDOFF_ROW_SCHEMA_INVALID` | PROP_HANDOFF | row schema invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_ROW_SOURCE_CONFLICT` | PROP_HANDOFF | row source conflict | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_SOURCE_INVALID` | PROP_HANDOFF | source invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_HANDOFF_SOURCE_USE_NOT_PERMITTED` | PROP_HANDOFF | Trusted caller has not established permitted API data use | Require independently verified permitted-use/rights evidence from the trusted source authority; credentials alone do not establish rights. Keep handoff blocked if evidence is absent; no bypass or provider request |
+| `PROP_IDENTITY_AUTHORITY_INVALID` | OFFICIAL_IDENTITY | Research/third-party source was misrepresented as official identity evidence | Reject third-party authority claim; require canonical official event/player source evidence |
+| `PROP_IDENTITY_EVENT_START_CONFLICT` | OFFICIAL_IDENTITY | Provider game start differs from independently verified official start | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_OPPONENT_CONFLICT` | OFFICIAL_IDENTITY | Third-party opponent does not match the official opponent or trusted official aliases | Hold until the canonical official opponent identity or verified aliases reconcile; never infer a game |
+| `PROP_IDENTITY_OFFICIAL_EVIDENCE_STALE` | OFFICIAL_IDENTITY | Official identity lookup is stale or future-dated | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_IDENTITY_OFFICIAL_RESOLUTION_INCOMPLETE` | OFFICIAL_IDENTITY | Official event, player, source, period or stat proof field is missing | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_OFFICIAL_RESOLUTION_MISSING` | OFFICIAL_IDENTITY | No official identity match returned by trusted resolver | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_OFFICIAL_RESOLVER_FAILED` | OFFICIAL_IDENTITY | Trusted official resolver raised an exception | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_OFFICIAL_RESOLVER_UNAVAILABLE` | OFFICIAL_IDENTITY | No server-side official identity resolver supplied | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_PERIOD_CONFLICT` | OFFICIAL_IDENTITY | period conflict | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_PLAYER_CONFLICT` | OFFICIAL_IDENTITY | player conflict | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_SPORT_CONFLICT` | OFFICIAL_IDENTITY | sport conflict | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_STAT_CONFLICT` | OFFICIAL_IDENTITY | stat conflict | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_IDENTITY_TEAM_CONFLICT` | OFFICIAL_IDENTITY | team conflict | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_OFFER_DIRECTION_CHANGED` | EXACT_OFFER_REFRESH | Fresh offer side differs from candidate's exact direction | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_OFFER_IDENTITY_CONFLICT` | EXACT_OFFER_REFRESH | identity conflict | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
+| `PROP_OFFER_LINE_CHANGED` | EXACT_OFFER_REFRESH | Fresh offer line differs from candidate's exact original line | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_OFFER_NOT_AVAILABLE` | EXACT_OFFER_REFRESH | Source no longer offers the exact directional market | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_OFFER_REFRESH_FAILED` | EXACT_OFFER_REFRESH | Current-offer refresh callback failed | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_OFFER_REFRESH_INVALID` | EXACT_OFFER_REFRESH | Current-offer timestamp is invalid, future-dated or older than source candidate | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_OFFER_REFRESH_MISSING` | EXACT_OFFER_REFRESH | Current-offer callback returned no valid record | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_OFFER_REFRESH_STALE` | EXACT_OFFER_REFRESH | Current-offer observation is older than twenty minutes | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_OFFER_REFRESH_UNAVAILABLE` | EXACT_OFFER_REFRESH | No server-side current-offer callback supplied | Require a trusted server-side exact_offer_refresh callback and independently verified exact current-offer evidence; a timestamp check alone cannot resolve this. Keep row blocked until supplied; never reuse stale row |
+| `PROP_OFFER_SOURCE_CONFLICT` | EXACT_OFFER_REFRESH | Fresh offer came from an unexpected source | Preserve native typed hold; repair source/contract and rerun affected row only |
+| `PROP_OFFER_TYPE_CHANGED` | EXACT_OFFER_REFRESH | Offer tier changed between source observation and final refresh | Preserve native typed hold; repair source/contract and rerun affected row only |
