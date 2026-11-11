@@ -95,7 +95,10 @@ def _market(row: Mapping[str, Any], frozen: datetime | None) -> tuple[str | None
         problems.append("MARKET_SNAPSHOT_TOO_OLD_FOR_SAME_TIME_BASELINE")
     sport = _text(row.get("sport")).upper()
     expected = {"HOME", "AWAY", "DRAW"} if sport in THREE_WAY else {"HOME", "AWAY"}
-    if row.get("market_type") != ("REGULATION_3WAY" if sport in THREE_WAY else "FULL_GAME_2WAY"):
+    if (row.get("market_type") != ("REGULATION_3WAY" if sport in THREE_WAY else "FULL_GAME_2WAY")
+        or row.get("settlement_basis") != SETTLEMENT_BASIS.get(sport)):
+        # A regulation-only NHL quote is not comparable to a final that
+        # includes overtime and shootouts, even when both say moneyline.
         problems.append("MARKET_SETTLEMENT_BASIS_INVALID")
     quotes = row.get("decimal_odds")
     if not isinstance(quotes, Mapping) or set(quotes) != expected:
