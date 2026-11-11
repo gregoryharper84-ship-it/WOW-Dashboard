@@ -246,6 +246,17 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
                 "probability_publishable": False, "can_execute": False,
             }
             calibration_shadow_status = "HELD"
+        except Exception as exc:
+            # An auxiliary research calculation may not destroy a valid
+            # original fit. Keep the original research-screen verdict and
+            # persist a typed, non-publishable failure for investigation.
+            calibration_shadow = {
+                "status": "HELD", "code": "TENNIS_CALIBRATION_SHADOW_RUNTIME_FAILED",
+                "error_type": type(exc).__name__,
+                "automatic_certification": False,
+                "probability_publishable": False, "can_execute": False,
+            }
+            calibration_shadow_status = "HELD"
         metrics = asdict(candidate.metrics) | {
             "calibration_shadow_status": calibration_shadow_status,
             "calibration_shadow": calibration_shadow,
