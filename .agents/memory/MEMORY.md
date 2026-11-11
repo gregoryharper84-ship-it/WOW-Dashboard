@@ -123,3 +123,5 @@
 - [Runtime provenance governance](runtime-provenance-governance.md) — never trust a record's verified boolean; HMAC-attested records + server-side capability probes; downgrade-only at FMCG/CC/v16/daily-scan.
 - [wow-verify-patch protected files](wow-verify-patch-protected-files.md) — labels.py / llp_governance.py / data_contract.py / failure_path.py are hard-protected; any patch diff touching them fails; add new per-patch label strings as module-level constants in the originating module instead.
 - [WOW Daily lifecycle boundary](wow-daily-lifecycle-boundary.md) — canonical manifest is the sole immutable run contract; startup-ready schema, bounded acknowledgement, and terminal recovery protect duplicate daily scans.
+
+- [V17 Daily active-sport discovery and ID scope](daily-active-sport-discovery-identity-2026-11-06.md) — whole-board 8s discovery favored MLB by catalog order; bare MLB ID matching could hide NBA/NFL/NHL/NCAAF rows. Prioritize active sports while retaining all 13, and key identity by (sport, official_event_id); regressions in test_daily_snapshot_runtime.py. PR #2498 (protected, not production proven).
