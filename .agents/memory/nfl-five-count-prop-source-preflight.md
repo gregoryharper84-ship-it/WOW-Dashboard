@@ -51,3 +51,14 @@
 - **prevention_artifact:** `tests/test_nfl_count_prop_participation_audit.py` includes missing eight-snap player-game, wrong game ID, crosswalk conflict, source digest, duplicate row, missing mapping and empty-source regressions. Tests require hosted exact-head validation; tool source CSVs unavailable in this environment.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. Audit is offline, source rights separately reviewed; no certification or deployment authority, can_execute=false.
+
+## Snap-field typed validation and cohort-scoped ID ambiguity — 2026-11-11
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PARTICIPATION_SNAP_INVALID; NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT
+- **mechanism:** A negative offensive snap count was rejected only under generic :scope despite a field-specific fail-closed test; GitHub rapid affected run 43086324528 showed 636 passed / 1 failed. The players release also contains historical PFR namesake aliases outside the actual 2021–2025 offensive participant keyset; global crosswalk uniqueness can incorrectly reject an otherwise unambiguous cohort.
+- **detection_point:** During exact-head rapid regression and before joining the pinned source crosswalk to eligible offensive snap participants.
+- **fix:** Validate negative `offense_snaps` under the field's exact typed failure, and restrict duplicate PFR/GSIS crosswalk validation to IDs observed in the relevant vetted snap-participant cohort, retaining strict HOLD on any active conflict.
+- **prevention_artifact:** `test_invalid_or_missing_snap_counts_fail_closed`, `test_unrelated_historical_pfr_collision_does_not_block_a_valid_cohort`, `test_active_pfr_collision_remains_fail_closed`. First mechanism reproduced in hosted run 43086324528, second in a local pandas reproduction; fresh exact-head hosted CI verification pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; candidate trainer and audit remain offline and non-publishable; can_execute=false.
