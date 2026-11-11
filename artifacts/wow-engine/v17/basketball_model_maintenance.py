@@ -404,10 +404,12 @@ def _verify_replayed_fit(sport: str, db: Any, replay: Any) -> dict[str, Any]:
     if isinstance(replay, dict):
         version = str(replay.get("model_artifact_version") or "").strip()
     if not version:
-        # No artifact identity means this was not a fitting run: there is
-        # nothing to verify and therefore nothing to claim.
+        # NBA maintenance cannot claim an updated fitted artifact without an
+        # exact version bound to a stored independent verification receipt.
+        # NOT_APPLICABLE is reserved for genuinely unsupported WNBA harnesses.
         return _verification_outcome(
-            VERIFICATION_NOT_APPLICABLE,
+            "INCOMPLETE",
+            blocked_code="NBA_VERIFICATION_EVIDENCE_INCOMPLETE",
             reason="REPLAY_DID_NOT_RETURN_ARTIFACT_VERSION",
         )
     try:
