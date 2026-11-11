@@ -102,6 +102,29 @@ def test_registration_and_evidence_without_certification_stays_blocked():
     assert "TEAM_EVENT_FITTED_MODEL_CERTIFICATION_NOT_ACTIVE" in row["blockers"]
 
 
+def test_runtime_pass_without_named_artifact_version_cannot_certify():
+    for version, calibration in (("", "NFL_PLATT_TIME_SPLIT_V1_TEST"), (None, None), ("   ", "")):
+        health = {
+            "NFL": {
+                "registered": True,
+                "scorer_resolvable": True,
+                "model_artifact_present": True,
+                "certification_status": "CANDIDATE_REGISTERED_UNCERTIFIED",
+                "runtime_artifact_certification_status": "PASS",
+                "runtime_model_artifact_version": version,
+                "runtime_calibration_version": calibration,
+            }
+        }
+        row = assess_sport("NFL", health=health, observations={"NFL": dict(ALL_OBSERVATIONS)})
+
+        assert row["production_model_ready"] is False
+        assert row["readiness_state"] == BLOCKED
+        assert row["certification_identity"] is None
+        assert "TEAM_EVENT_FITTED_MODEL_CERTIFICATION_NOT_ACTIVE" in row["blockers"]
+        assert "SERVER_CALIBRATION_ARTIFACT_NOT_BOUND" in row["blockers"]
+        assert "BACKEND_SPORT_EVIDENCE_HYDRATOR_NOT_BOUND" in row["blockers"]
+
+
 def test_full_authoritative_evidence_and_receipts_only_then_read_ready():
     health = {
         "NFL": {
@@ -123,6 +146,7 @@ def test_full_authoritative_evidence_and_receipts_only_then_read_ready():
     assert row["readiness_state"] == PRODUCTION_READY
     assert row["blockers"] == []
     assert row["certification_identity"] == "NFL_EVENT_LOGREG_PLATT_V1_TEST"
+    assert row["certification_identity"] != "RUNTIME_CHAMPION"
     assert row["probability_publishable"] is False
     assert row["can_execute"] is False
 

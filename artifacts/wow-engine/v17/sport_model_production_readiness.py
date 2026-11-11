@@ -230,6 +230,27 @@ def _health_row(health: Mapping[str, Any] | None, sport: str) -> dict[str, Any]:
     return dict(row) if isinstance(row, Mapping) else {}
 
 
+def _runtime_promoted(readiness: Mapping[str, Any]) -> bool:
+    return readiness.get("runtime_artifact_certification_status") == "PASS"
+
+
+def _runtime_proof_complete(readiness: Mapping[str, Any]) -> bool:
+    """A runtime PASS is only proof when it names the exact promoted versions.
+
+    The NFL champion loader can report PASS while returning an empty artifact
+    version. An unnamed champion is not a certification identity, so it must not
+    satisfy certification or its calibration/hydration dependencies.
+    """
+    version = readiness.get("runtime_model_artifact_version")
+    calibration = readiness.get("runtime_calibration_version")
+    return (
+        isinstance(version, str)
+        and bool(version.strip())
+        and isinstance(calibration, str)
+        and bool(calibration.strip())
+    )
+
+
 def _authoritative_satisfied(
     gate: Gate, health: Mapping[str, Any], readiness: Mapping[str, Any]
 ) -> bool:
@@ -238,14 +259,17 @@ def _authoritative_satisfied(
     if gate.gate_id == "SCORER_RESOLVABLE":
         return bool(health.get("scorer_resolvable"))
     if gate.gate_id == "FITTED_MODEL_CERTIFIED":
-        return bool(
-            readiness.get("certification_identity_status") == "CERTIFIED"
-            or readiness.get("runtime_artifact_certification_status") == "PASS"
-        )
+        if readiness.get("certification_identity_status") == "CERTIFIED":
+            return True
+        return _runtime_promoted(readiness) and _runtime_proof_complete(readiness)
     if gate.gate_id == "CALIBRATION_BOUND":
-        return readiness.get("calibration_dependency_satisfied") is True
+        if readiness.get("calibration_dependency_satisfied") is not True:
+            return False
+        return not _runtime_promoted(readiness) or _runtime_proof_complete(readiness)
     if gate.gate_id == "EVIDENCE_HYDRATOR_BOUND":
-        return readiness.get("hydration_dependency_satisfied") is True
+        if readiness.get("hydration_dependency_satisfied") is not True:
+            return False
+        return not _runtime_promoted(readiness) or _runtime_proof_complete(readiness)
     return False
 
 
@@ -276,8 +300,13 @@ def _gate_status(
 
 
 def _certification_identity(sport: str, readiness: Mapping[str, Any]) -> str | None:
-    if readiness.get("runtime_artifact_certification_status") == "PASS":
-        return str(readiness.get("runtime_model_artifact_version") or "RUNTIME_CHAMPION")
+    version = readiness.get("runtime_model_artifact_version")
+    if (
+        _runtime_promoted(readiness)
+        and _runtime_proof_complete(readiness)
+        and isinstance(version, str)
+    ):
+        return version.strip()
     return CERTIFIED_TEAM_EVENT_SPORTS.get(sport)
 
 
