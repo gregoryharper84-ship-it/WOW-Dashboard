@@ -156,3 +156,62 @@ def test_rejected_datadog_receipt_cannot_leak_into_summary_or_artifact():
     assert 'python - "$RUNNER_TEMP/wow-v17-log-intake-validated.json"' in summary
     assert 'python - "$RUNNER_TEMP/wow-v17-log-intake.json" >> "$GITHUB_STEP_SUMMARY"' not in summary
     assert 'path: ${{ runner.temp }}/wow-v17-log-intake.json' not in wf
+
+
+
+def test_actions_bash_errexit_preserves_typed_source_outage(tmp_path):
+    """Reproduce the actual Actions bash -e wrapper, not merely its Python gate."""
+    import json
+    import os
+    import subprocess
+    import textwrap
+
+    source = WF.read_text()
+    block = source.split("- name: Query Datadog bounded error window", 1)[1]
+    script = textwrap.dedent(
+        block.split("        run: |\n", 1)[1].split(
+            "\n      - name: Record strictly redacted Reporter candidate summary", 1
+        )[0]
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python_stub = bin_dir / "python"
+    python_stub.write_text("""#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1].endswith("/log_incident_intake.py"):
+    output = pathlib.Path(sys.argv[sys.argv.index("--out") + 1])
+    if os.environ.get("FAKE_RECEIPT") != "MISSING":
+        output.write_text(os.environ["FAKE_RECEIPT"], encoding="utf-8")
+    sys.exit(int(os.environ["FAKE_EXIT"]))
+os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+""", encoding="utf-8")
+    python_stub.chmod(0o755)
+    held = {"status": "SOURCE_UNAVAILABLE", "reason": "DATADOG_HTTP_FAILED",
+            "source": "DATADOG", "can_execute": False}
+
+    for label, exit_code, payload, valid in (
+        ("outage", 2, json.dumps(held), True),
+        ("unexpected", 1, json.dumps(held), False),
+        ("missing", 2, "MISSING", False),
+    ):
+        runner = tmp_path / label
+        runner.mkdir()
+        env = {**os.environ,
+               "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+               "RUNNER_TEMP": str(runner),
+               "FAKE_EXIT": str(exit_code),
+               "FAKE_RECEIPT": payload,
+               "DD_SITE": "datadoghq.com"}
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            cwd=ROOT, env=env, text=True, capture_output=True, check=False,
+        )
+        validated = runner / "wow-v17-log-intake-validated.json"
+        assert (result.returncode == 0) is valid, (label, result.returncode, result.stderr)
+        assert validated.exists() is valid, label
+        if valid:
+            assert json.loads(validated.read_text(encoding="utf-8")) == held
+            assert "WOW_LOG_INTAKE_SOURCE_UNAVAILABLE:DATADOG_HTTP_FAILED" in result.stdout
