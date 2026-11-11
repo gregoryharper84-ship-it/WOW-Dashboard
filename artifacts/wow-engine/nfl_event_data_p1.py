@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import csv
 import hashlib
+import time
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
@@ -200,12 +201,19 @@ def download_asset(
     *,
     client: httpx.Client | None = None,
     timeout_seconds: float = 120.0,
+    max_total_seconds: float | None = None,
+    max_bytes: int | None = None,
     chunk_size: int = 1024 * 1024,
 ) -> CapturedAsset:
     """Download, hash, schema-check, and atomically retain one CSV asset.
 
     The returned file name is content-addressed. Re-running the same source
     therefore cannot silently overwrite bytes already used by a training run.
+
+    ``timeout_seconds`` is the HTTPX network inactivity timeout. Callers that
+    must bound wall-clock duration (for example a scoring-path recheck) should
+    also set ``max_total_seconds`` and optionally ``max_bytes`` so a slow or
+    oversized stream fails closed instead of retaining a worker indefinitely.
     """
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -218,6 +226,7 @@ def download_asset(
     digest = hashlib.sha256()
     byte_count = 0
     response = None
+    started = time.monotonic()
     try:
         with http.stream("GET", asset.source_url) as response:
             response.raise_for_status()
@@ -227,6 +236,17 @@ def download_asset(
                 for chunk in response.iter_bytes(chunk_size=chunk_size):
                     if not chunk:
                         continue
+                    if (
+                        max_total_seconds is not None
+                        and time.monotonic() - started > max_total_seconds
+                    ):
+                        raise SourceAcquisitionError(
+                            f"{asset.dataset_name}: total download deadline exceeded"
+                        )
+                    if max_bytes is not None and byte_count + len(chunk) > max_bytes:
+                        raise SourceAcquisitionError(
+                            f"{asset.dataset_name}: response exceeded max_bytes={max_bytes}"
+                        )
                     digest.update(chunk)
                     byte_count += len(chunk)
                     handle.write(chunk)

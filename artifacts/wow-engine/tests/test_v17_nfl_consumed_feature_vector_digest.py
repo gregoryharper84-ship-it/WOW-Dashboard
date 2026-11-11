@@ -41,6 +41,7 @@ def _model():
 
 
 def _row(vector=None):
+    """Build a minimal feature-vector digest test row."""
     return {
         "feature_schema_version": "NFL_SYNTHETIC_TWO_FEATURES_V1",
         "feature_order": ["home_recent", "away_recent"],
@@ -72,12 +73,37 @@ def test_vector_digest_changes_when_a_consumed_number_changes():
 
 
 def test_nonfinite_numeric_vector_cannot_get_a_valid_digest():
+    """Non-finite numeric features fail closed before digest issuance."""
     with pytest.raises(NFLModelInputsInsufficient, match="NFL_FEATURE_VECTOR_NONFINITE"):
         score_feature_row(_model(), _row([float("nan"), 0.7]))
 
 
 def test_schema_order_mismatch_still_fails_closed_before_inference():
+    """Schema order mismatch fails closed before model inference."""
     row = _row()
     row["feature_order"] = ["away_recent", "home_recent"]
     with pytest.raises(NFLModelInputsInsufficient, match="NFL_FEATURE_ORDER_INPUT_MISMATCH"):
         score_feature_row(_model(), row)
+
+
+def test_fitted_nfl_probability_math_unchanged_by_artifact_publication_hold():
+    """Publication hold must not change fitted probability math."""
+    from dataclasses import replace
+
+    model = _model()
+    held = score_feature_row(replace(model, probability_publishable=False), _row())
+    published = score_feature_row(replace(model, probability_publishable=True), _row())
+    assert held["probability_publishable"] is False
+    assert published["probability_publishable"] is True
+    for k in (
+        "raw_home_probability",
+        "calibrated_home_probability",
+        "calibrated_away_probability",
+        "calibrated_home_lower_bound",
+        "calibrated_home_upper_bound",
+        "calibrated_away_lower_bound",
+        "calibrated_away_upper_bound",
+    ):
+        assert held[k] == published[k]
+    assert held["can_execute"] is False
+    assert published["can_execute"] is False
