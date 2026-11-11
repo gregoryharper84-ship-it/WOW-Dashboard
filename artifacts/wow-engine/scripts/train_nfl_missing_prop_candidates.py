@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -46,10 +47,12 @@ REQUIRED_COLUMNS = (
 
 
 def _sha256(payload: bytes) -> str:
+    """Return SHA-256 for the exact source bytes."""
     return hashlib.sha256(payload).hexdigest()
 
 
 def _json_digest(value: Any) -> str:
+    """Canonical SHA-256 of a JSON object."""
     return _sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
 
 
@@ -63,9 +66,14 @@ def load_source_files(directory: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
         if not path.is_file():
             raise ValueError(f"NFL_PROP_SOURCE_FILE_MISSING:{season}")
         blob = path.read_bytes()
-        frame = pd.read_csv(path, low_memory=False)
+        frame = pd.read_csv(io.BytesIO(blob), low_memory=False)
+        # A filename does not establish season coverage. Validate *each* snapshot
+        # before combining seasons so an empty/mislabelled file cannot be masked.
+        checked = validate_frame(frame)
+        if not checked["season"].eq(season).all():
+            raise ValueError(f"NFL_PROP_SOURCE_SEASON_MISMATCH:{season}")
         assets[str(season)] = {"file": path.name, "sha256": _sha256(blob), "rows": len(frame)}
-        frames.append(frame)
+        frames.append(checked)
     provenance = {
         "provider": "NFLVERSE_STATS_PLAYER", "license_claim": "CC-BY-4.0",
         "source_rights_independently_approved": False,
@@ -95,14 +103,15 @@ def validate_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if not np.isfinite(count.to_numpy(dtype=float)).all() or count.ne(np.floor(count)).any():
             raise ValueError(f"NFL_PROP_SOURCE_DATE_INVALID:{field}")
         result[field] = count.astype(int)
-    if not result["season"].isin(SEASONS).all() or not result["week"].between(1, 22).all():
+    if not result["season"].isin(SEASONS).all() or not result["week"].between(1, 18).all():
         raise ValueError("NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE")
     for field in ("player_id", "game_id", "position", "player_display_name"):
         if result[field].isna().any() or (result[field].astype(str).str.strip() == "").any():
             raise ValueError(f"NFL_PROP_SOURCE_IDENTITY_INVALID:{field}")
         result[field] = result[field].astype(str).str.strip()
     result["position"] = result["position"].str.upper()
-    if result.duplicated(["player_id", "game_id"]).any():
+    if (result.duplicated(["player_id", "game_id"]).any()
+            or result.duplicated(["player_id", "season", "week"]).any()):
         raise ValueError("NFL_PROP_SOURCE_DUPLICATE_PLAYER_EVENT")
     for target, opportunity in (("completions", "attempts"), ("receptions", "targets"), ("passing_tds", "attempts")):
         if result[target].gt(result[opportunity]).any():
@@ -125,8 +134,6 @@ def build_feature_rows(frame: pd.DataFrame, stat_type: str) -> pd.DataFrame:
         for row in group.itertuples(index=False):
             current = int(getattr(row, target))
             op = int(getattr(row, opportunity))
-            if op <= 0:
-                continue
             if len(history) >= MIN_PRIOR_GAMES:
                 recent10 = history[-10:]
                 recent5 = recent10[-5:]
@@ -240,10 +247,19 @@ def build_candidate(
 
 
 def main() -> int:
+    """Fit five held candidates only after validating input/output path separation."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, required=True, help="Local frozen nflverse stats_player CSVs 2021-2025")
     parser.add_argument("--out", type=Path, required=True, help="Candidate artifact JSON output path")
     args = parser.parse_args()
+    # Resolve symbolic links, relative aliases and hard links before any output
+    # write. An output collision otherwise destroys the training evidence.
+    resolved_output = args.out.resolve()
+    for season in SEASONS:
+        source = args.input_dir / f"stats_player_week_{season}.csv"
+        if resolved_output == source.resolve() or (args.out.exists() and source.exists()
+                                                    and os.path.samefile(args.out, source)):
+            raise ValueError(f"NFL_PROP_SOURCE_OUTPUT_COLLISION:{season}")
     frame, provenance = load_source_files(args.input_dir)
     candidates = [build_candidate(build_feature_rows(frame, stat), stat, provenance) for stat in ROUTES]
     output = {
