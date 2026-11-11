@@ -6,7 +6,7 @@ import os
 from typing import Any, Literal, Optional
 
 from fastapi import Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from github_actions_oidc import scout_route_auth_dependency
 from nfl_event_hydration_runtime import install_nfl_hydration_startup
@@ -475,6 +475,22 @@ class NflForwardCohortPreflightRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slate_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     expected_slate_games: int | None = Field(default=None, gt=0)
+
+    @field_validator("slate_date")
+    @classmethod
+    def _reject_impossible_calendar_date(cls, value: str | None) -> str | None:
+        """Reject format-valid dates that do not exist, e.g. 2026-02-31.
+
+        Left to ``slate_window``, an impossible date surfaces as a 503 route
+        failure that reads like a service fault instead of bad input.
+        """
+        if value is None:
+            return None
+        try:
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("slate_date must be a real calendar date") from exc
+        return value
 
 
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:

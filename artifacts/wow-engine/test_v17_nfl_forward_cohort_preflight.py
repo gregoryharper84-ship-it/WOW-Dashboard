@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from v17.nfl_forward_cohort_preflight import (
     assess_slate_event,
@@ -143,7 +144,8 @@ def test_twelve_game_slate_closes_the_gap_but_still_never_certifies():
     assert report["graded_n"] == 95
     assert report["current_gap_to_minimum"] == 5
     assert report["observed_slate_games"] == 12
-    assert report["will_grade_n"] == 12
+    assert report["slate_coverage_verified"] is True
+    assert report["eligible_pregame_n"] == 12
     assert report["cannot_grade_n"] == 0
     assert report["projected_graded_n"] == 107
     assert report["projected_gap_to_minimum"] == 0
@@ -154,7 +156,12 @@ def test_twelve_game_slate_closes_the_gap_but_still_never_certifies():
     assert report["automatic_certification"] is False
     assert report["automatic_promotion"] is False
     assert report["can_execute"] is False
-    assert {event["status"] for event in report["slate_events"]} == {"WILL_GRADE"}
+    assert {event["status"] for event in report["slate_events"]} == {"ELIGIBLE_PREGAME"}
+    assert report["pregame_eligibility_is_not_a_grade"] is True
+    assert report["settlement_requirements"] == [
+        "SETTLED_NON_TIE_OUTCOME",
+        "HOME_WIN_PRESENT",
+    ]
 
 
 def test_short_slate_is_projected_short_and_never_lowers_the_gate():
@@ -193,9 +200,19 @@ def test_each_unrecoverable_prediction_defect_is_named_before_kickoff():
         "unsafe": "CAN_EXECUTE_NOT_FALSE",
         "valid": None,
     }
-    assert report["will_grade_n"] == 1
+    assert report["eligible_pregame_n"] == 1
     assert report["cannot_grade_n"] == 4
     assert "NFL_FORWARD_SLATE_EVENTS_CANNOT_GRADE:4" in report["blockers"]
+    # Invalid bounds and `can_execute=True` both make the grader raise for the
+    # whole run, not just this event, so the projection holds instead of
+    # reporting the slate as ready.
+    assert report["ledger_violation_n"] == 2
+    assert {violation["code"] for violation in report["ledger_violations"]} == {
+        "CALIBRATED_PROBABILITY_BOUNDS_INVALID",
+        "CAN_EXECUTE_MUST_BE_FALSE",
+    }
+    assert "PREDICTION_LEDGER_WOULD_FAIL_GRADER:2" in report["blockers"]
+    assert report["status"] == "HOLD_PREDICTION_LEDGER_INVALID"
     assert report["can_execute"] is False
 
 
@@ -203,7 +220,16 @@ def test_latest_valid_pregame_row_wins_and_graded_events_are_not_double_counted(
     rows = [
         _prediction("repeat", prediction_id="a", p=0.60),
         _prediction("repeat", prediction_id="b", p=0.64, created="2026-11-15T17:00:00+00:00"),
-        _prediction("repeat", prediction_id="c", p=0.99, created="2026-11-15T18:30:00+00:00"),
+        # Written after kickoff and therefore dropped, but internally consistent:
+        # the grader validates bounds before it drops late rows.
+        _prediction(
+            "repeat",
+            prediction_id="c",
+            p=0.99,
+            lower=0.95,
+            upper=0.999,
+            created="2026-11-15T18:30:00+00:00",
+        ),
         _prediction("already"),
     ]
     # 99 prior grades plus the slate's own already-graded game: the cohort is
@@ -216,14 +242,17 @@ def test_latest_valid_pregame_row_wins_and_graded_events_are_not_double_counted(
     report = project_forward_cohort(db, slate_date=SLATE, min_forward=100)
 
     statuses = {event["official_event_id"]: event for event in report["slate_events"]}
-    assert statuses["repeat"]["status"] == "WILL_GRADE"
+    assert statuses["repeat"]["status"] == "ELIGIBLE_PREGAME"
     assert statuses["repeat"]["event_prediction_id"] == "b"
     assert statuses["already"]["status"] == "ALREADY_GRADED"
     assert report["graded_n"] == 100
     assert report["slate_already_graded_n"] == 1
-    assert report["will_grade_n"] == 1
+    assert report["eligible_pregame_n"] == 1
     assert report["projected_graded_n"] == 101
-    assert report["blockers"] == []
+    # No slate size was supplied, so coverage is unknown rather than passing.
+    assert report["slate_coverage_verified"] is False
+    assert report["blockers"] == ["NFL_FORWARD_SLATE_COVERAGE_UNVERIFIED"]
+    assert report["status"] == "PROJECTED_TO_REACH_MINIMUM_COVERAGE_UNVERIFIED"
 
 
 def test_expected_slate_larger_than_ledger_events_is_flagged_fail_closed():
@@ -239,6 +268,109 @@ def test_expected_slate_larger_than_ledger_events_is_flagged_fail_closed():
     assert report["projected_graded_n"] == 105
     # A projection never certifies even when the count is projected to pass.
     assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+
+
+def test_unverified_slate_coverage_cannot_claim_the_minimum_is_reached():
+    # Two predictions for a twelve-game slate: without an expected slate size the
+    # projection must not read as ready just because two rows are enough.
+    db = _ReadOnlyDB(graded=99, predictions=[_prediction("slate-1")])
+
+    report = project_forward_cohort(db, slate_date=SLATE, min_forward=100)
+
+    assert report["observed_slate_games"] == 1
+    assert report["slate_coverage_verified"] is False
+    assert report["unobserved_slate_games"] == 0
+    assert "NFL_FORWARD_SLATE_COVERAGE_UNVERIFIED" in report["blockers"]
+    assert report["status"] == "PROJECTED_TO_REACH_MINIMUM_COVERAGE_UNVERIFIED"
+    assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+
+
+def test_invalid_row_outside_the_slate_holds_the_projection():
+    # The grader validates every loaded prediction row, so an off-slate defect
+    # still blocks the whole run even though this slate looks clean.
+    off_slate = _prediction("off-slate", kickoff="2026-11-08T18:00:00+00:00")
+    off_slate["calibrated_selection_probability"] = 1.0
+    db = _ReadOnlyDB(
+        predictions=[_prediction("slate-1"), off_slate]
+    )
+
+    report = project_forward_cohort(db, slate_date=SLATE, expected_slate_games=1)
+
+    assert report["observed_slate_games"] == 1
+    assert report["eligible_pregame_n"] == 1
+    assert report["ledger_violation_n"] == 1
+    assert report["ledger_violations"] == [{
+        "official_event_id": "off-slate",
+        "event_prediction_id": "pred-off-slate",
+        "code": "MODEL_OUTPUT_INVALID:calibrated_selection_probability",
+    }]
+    assert report["status"] == "HOLD_PREDICTION_LEDGER_INVALID"
+    assert "PREDICTION_LEDGER_WOULD_FAIL_GRADER:1" in report["blockers"]
+
+
+def test_impossible_calendar_date_is_rejected_before_any_read(monkeypatch):
+    request_runtime, _app = _installed_runtime(monkeypatch, _ReadOnlyDB())
+
+    with pytest.raises(ValidationError):
+        request_runtime.NflForwardCohortPreflightRequest(slate_date="2026-02-31")
+
+    assert request_runtime.NflForwardCohortPreflightRequest(slate_date=SLATE).slate_date == SLATE
+    assert request_runtime.NflForwardCohortPreflightRequest().slate_date is None
+
+
+def _real_fastapi_app(monkeypatch, db, *, authorized):
+    """Register the real route on a real FastAPI app with a real auth seam."""
+    from fastapi import FastAPI
+
+    import team_event_request_runtime as request_runtime
+
+    def deny() -> None:
+        raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED"})
+
+    def allow() -> None:
+        return None
+
+    monkeypatch.setattr(request_runtime, "install_nfl_hydration_startup", lambda app, *, db_client_fn: None)
+    monkeypatch.setattr(request_runtime, "install_nfl_model_startup", lambda app, *, db_client_fn: None)
+    monkeypatch.setattr(request_runtime, "install_nfl_team_event_publication", lambda module: True)
+    monkeypatch.setenv("WOW_V17_ACTIVE", "1")
+    app = FastAPI()
+    request_runtime.install_team_event_request_routes(
+        app,
+        auth_dependency=allow if authorized else deny,
+        db_client_fn=lambda: db,
+        event_api=object(),
+    )
+    return app
+
+
+def test_registered_route_rejects_a_caller_that_fails_authentication(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    app = _real_fastapi_app(monkeypatch, _ReadOnlyDB(), authorized=False)
+
+    response = TestClient(app).post(PREFLIGHT_PATH, json={"slate_date": SLATE})
+
+    assert response.status_code == 401
+
+
+def test_registered_route_serves_readiness_when_authentication_passes(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    db = _ReadOnlyDB(predictions=[_prediction("slate-1")])
+    app = _real_fastapi_app(monkeypatch, db, authorized=True)
+
+    response = TestClient(app).post(
+        PREFLIGHT_PATH, json={"slate_date": SLATE, "expected_slate_games": 1}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["graded_n"] == 95
+    assert body["eligible_pregame_n"] == 1
+    assert body["projection_is_certification_evidence"] is False
+    assert body["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert body["can_execute"] is False
 
 
 def test_assess_event_without_any_valid_pregame_row_states_the_reason():
@@ -357,3 +489,7 @@ def test_daily_workflow_reports_slate_readiness_before_kickoff():
     assert "DO_NOT_CERTIFY_YET" in workflow
     assert "GITHUB_STEP_SUMMARY" in workflow
     assert "WOW_ACTION_ORIGIN" in workflow
+    # Reporting readiness must degrade to a warning, not fail completed grading.
+    assert "HOLD_COHORT_READINESS_UNOBSERVED" in workflow
+    assert "except (urllib.error.URLError, TimeoutError, ValueError, KeyError)" in workflow
+    assert "slate_coverage_verified" in workflow

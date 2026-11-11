@@ -11,6 +11,10 @@ This module reads the exact sources the grader reads, classifies every event in
 one slate window, and projects whether the minimum will be reached. It never
 grades, never writes, never changes a threshold, never certifies and never
 authorizes execution.
+
+``ELIGIBLE_PREGAME`` means only that the immutable pregame prediction is present
+and publishable before kickoff. It is not a grade: the game still has to settle
+with a non-tie outcome and a home-win field before the grader can count it.
 """
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ _CANNOT_GRADE_PRIORITY = (
 
 
 def _parse_utc(value: Any) -> datetime | None:
+    """Parse a timezone-aware timestamp, or return None when it is unusable."""
     if isinstance(value, datetime):
         parsed = value
     else:
@@ -68,6 +73,7 @@ def _parse_utc(value: Any) -> datetime | None:
 
 
 def _probability(value: Any) -> float | None:
+    """Parse a probability strictly inside (0, 1), matching the grader."""
     if isinstance(value, bool):
         return None
     try:
@@ -96,6 +102,7 @@ def slate_window(slate_date: date | str) -> tuple[datetime, datetime]:
 
 
 def _row_blockers(row: Mapping[str, Any]) -> list[str]:
+    """Return the defects that keep one row out of the canonical cohort."""
     blockers: list[str] = []
     if row.get("can_execute") is not False:
         blockers.append("CAN_EXECUTE_NOT_FALSE")
@@ -117,7 +124,45 @@ def _row_blockers(row: Mapping[str, Any]) -> list[str]:
     return blockers
 
 
+def _grader_rejection(row: Mapping[str, Any]) -> str | None:
+    """Return the code the forward grader would abort on, or None.
+
+    ``select_canonical_forward_predictions`` validates every loaded row, not
+    only the rows inside one slate window, and raises instead of skipping. One
+    such row therefore stops the whole nightly grading run, so the projection
+    has to surface it rather than report readiness it cannot deliver.
+    """
+    event_prediction_id = str(row.get("event_prediction_id") or "").strip()
+    official_event_id = str(row.get("official_event_id") or "").strip()
+    if not event_prediction_id or not official_event_id:
+        return "PREDICTION_IDENTITY_MISSING"
+    if row.get("can_execute") is True:
+        return "CAN_EXECUTE_MUST_BE_FALSE"
+    home = str(row.get("home_team") or "").strip()
+    away = str(row.get("away_team") or "").strip()
+    selected = str(row.get("selected_participant") or "").strip()
+    if not home or not away or selected not in {home, away}:
+        return "PREDICTION_SELECTION_IDENTITY_INVALID"
+    point = _probability(row.get("calibrated_selection_probability"))
+    lower = _probability(row.get("calibrated_selection_lower_bound"))
+    upper = _probability(row.get("calibrated_selection_upper_bound"))
+    # A probability that rounds to exactly 1.0 is rejected by the grader too.
+    if point is None:
+        return "MODEL_OUTPUT_INVALID:calibrated_selection_probability"
+    if lower is None:
+        return "MODEL_OUTPUT_INVALID:calibrated_selection_lower_bound"
+    if upper is None:
+        return "MODEL_OUTPUT_INVALID:calibrated_selection_upper_bound"
+    if not lower <= point <= upper:
+        return "CALIBRATED_PROBABILITY_BOUNDS_INVALID"
+    for field in ("event_start_time_utc", "created_at"):
+        if _parse_utc(row.get(field)) is None:
+            return f"TIMESTAMP_MUST_BE_TIMEZONE_AWARE:{field}"
+    return None
+
+
 def _cannot_grade_reason(blockers: Sequence[str]) -> str:
+    """Name the most specific unrecoverable reason for one event."""
     for code in _CANNOT_GRADE_PRIORITY:
         if code in blockers:
             return code
@@ -172,7 +217,7 @@ def assess_slate_event(
         created, prediction_id, row = max(eligible, key=lambda item: (item[0], item[1]))
         return {
             **record,
-            "status": "WILL_GRADE",
+            "status": "ELIGIBLE_PREGAME",
             "cannot_grade_reason": None,
             "event_prediction_id": prediction_id,
             "prediction_created_at": created.isoformat(),
@@ -210,8 +255,21 @@ def project_forward_cohort(
     graded_ids.discard("")
     graded_n = len(graded_ids)
 
+    prediction_rows = load_prediction_rows(db)
+    # The grader validates the whole ledger, so an invalid row outside this
+    # slate still prevents every slate game from being graded.
+    ledger_violations: list[dict[str, str]] = []
+    for row in prediction_rows:
+        violation = _grader_rejection(row)
+        if violation is not None:
+            ledger_violations.append({
+                "official_event_id": str(row.get("official_event_id") or ""),
+                "event_prediction_id": str(row.get("event_prediction_id") or ""),
+                "code": violation,
+            })
+
     by_event: dict[str, list[Mapping[str, Any]]] = {}
-    for row in load_prediction_rows(db):
+    for row in prediction_rows:
         kickoff = _parse_utc(row.get("event_start_time_utc"))
         if kickoff is None or not start <= kickoff < end:
             continue
@@ -224,20 +282,37 @@ def project_forward_cohort(
         assess_slate_event(event_id, rows, already_graded=event_id in graded_ids)
         for event_id, rows in sorted(by_event.items())
     ]
-    will_grade_n = sum(1 for event in events if event["status"] == "WILL_GRADE")
+    eligible_pregame_n = sum(1 for event in events if event["status"] == "ELIGIBLE_PREGAME")
     already_graded_n = sum(1 for event in events if event["status"] == "ALREADY_GRADED")
     cannot_grade = [event for event in events if event["status"] == "CANNOT_GRADE"]
-    projected_n = graded_n + will_grade_n
+    projected_n = graded_n + eligible_pregame_n
 
     blockers: list[str] = []
     if projected_n < min_forward:
         blockers.append(f"FORWARD_GRADED_PROJECTED_{projected_n}_LT_{min_forward}")
     if cannot_grade:
         blockers.append(f"NFL_FORWARD_SLATE_EVENTS_CANNOT_GRADE:{len(cannot_grade)}")
+    # Without a caller-supplied slate size the ledger cannot prove that every
+    # game on the slate has a prediction row, so readiness is unverified rather
+    # than passing by default.
+    coverage_verified = expected_slate_games is not None
     unobserved = 0
-    if expected_slate_games is not None and len(events) < expected_slate_games:
+    if not coverage_verified:
+        blockers.append("NFL_FORWARD_SLATE_COVERAGE_UNVERIFIED")
+    elif len(events) < expected_slate_games:
         unobserved = expected_slate_games - len(events)
         blockers.append(f"NFL_FORWARD_SLATE_GAMES_UNOBSERVED:{unobserved}")
+    if ledger_violations:
+        blockers.append(f"PREDICTION_LEDGER_WOULD_FAIL_GRADER:{len(ledger_violations)}")
+
+    if ledger_violations:
+        status = "HOLD_PREDICTION_LEDGER_INVALID"
+    elif projected_n < min_forward:
+        status = "PROJECTED_SHORT_OF_MINIMUM"
+    elif not coverage_verified:
+        status = "PROJECTED_TO_REACH_MINIMUM_COVERAGE_UNVERIFIED"
+    else:
+        status = "PROJECTED_TO_REACH_MINIMUM"
 
     return {
         "schema_version": "NFL_FORWARD_COHORT_PREFLIGHT_V1",
@@ -252,15 +327,19 @@ def project_forward_cohort(
         "expected_slate_games": expected_slate_games,
         "observed_slate_games": len(events),
         "unobserved_slate_games": unobserved,
+        "slate_coverage_verified": coverage_verified,
         "slate_already_graded_n": already_graded_n,
-        "will_grade_n": will_grade_n,
+        "eligible_pregame_n": eligible_pregame_n,
         "cannot_grade_n": len(cannot_grade),
         "projected_graded_n": projected_n,
         "projected_gap_to_minimum": max(min_forward - projected_n, 0),
-        "status": (
-            "PROJECTED_TO_REACH_MINIMUM" if projected_n >= min_forward
-            else "PROJECTED_SHORT_OF_MINIMUM"
-        ),
+        "status": status,
+        # Pregame eligibility is not a grade: ties are excluded and the outcome
+        # must expose home_win before the grader counts a game.
+        "settlement_requirements": ["SETTLED_NON_TIE_OUTCOME", "HOME_WIN_PRESENT"],
+        "pregame_eligibility_is_not_a_grade": True,
+        "ledger_violation_n": len(ledger_violations),
+        "ledger_violations": ledger_violations[:50],
         "projection_is_certification_evidence": False,
         "certification_recommendation": "DO_NOT_CERTIFY_YET",
         "blockers": blockers,
