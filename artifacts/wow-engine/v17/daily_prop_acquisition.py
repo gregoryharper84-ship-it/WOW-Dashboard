@@ -131,7 +131,7 @@ def _base_receipt(candidate: dict[str, Any], stat_type: str = STAT_TYPE) -> dict
     }
 
 
-def acquire_daily_prop_snapshots(
+def acquire_daily_mlb_prop_snapshots(
     *,
     db: Any,
     requested_date: str,
@@ -156,14 +156,19 @@ def acquire_daily_prop_snapshots(
         "snapshot_write_succeeded": 0,
         "snapshot_write_failed": 0,
         "explicit_prewrite_exclusions": 0,
+        "discovered_candidates": None,
+        "unattempted_due_to_row_ceiling": None,
         "receipts": [],
         "blockers": [],
         "candidate_source": "MLB_OFFICIAL_PROBABLE_PITCHERS",
         "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
         "stat_types": list(STAT_TYPES),
+        "probability_publishable": False,
         "can_execute": False,
     }
     if max_candidates <= 0:
+        result["status"] = "NOT_ATTEMPTED_ROW_CEILING"
+        result["blockers"] = ["MLB_PROP_ROW_CEILING_EXHAUSTED"]
         return result
     try:
         schedule = _request_schedule(requested_date, http_get=http_get)
@@ -173,6 +178,8 @@ def acquire_daily_prop_snapshots(
         return result
 
     candidates = _schedule_pitchers(schedule, requested_date=requested_date, requested_timezone=requested_timezone, now=now)
+    result["discovered_candidates"] = len(candidates) * len(STAT_TYPES)
+    result["unattempted_due_to_row_ceiling"] = max(result["discovered_candidates"] - max_candidates, 0)
     stop = False
     for candidate in candidates:
         for stat_type in STAT_TYPES:
@@ -257,3 +264,90 @@ def acquire_daily_prop_snapshots(
     elif result["held"] > 0:
         result["status"] = "COMPLETED_WITH_ROW_BLOCKERS"
     return result
+
+
+_SUM_KEYS = (
+    "attempted", "hydrated", "persisted", "held", "snapshot_write_succeeded",
+    "snapshot_write_failed", "explicit_prewrite_exclusions",
+)
+_DEFAULT_SPORTS = ("MLB", "NFL")
+
+
+def _sport_leg(sport: str, leg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sport": sport,
+        "status": leg.get("status"),
+        "candidate_source": leg.get("candidate_source"),
+        "attempted": int(leg.get("attempted") or 0),
+        "persisted": int(leg.get("persisted") or 0),
+        "held": int(leg.get("held") or 0),
+        "discovered_candidates": leg.get("discovered_candidates"),
+        "already_captured_candidates": int(leg.get("already_captured_candidates") or 0),
+        "unattempted_due_to_row_ceiling": leg.get("unattempted_due_to_row_ceiling"),
+        "blockers": list(leg.get("blockers") or []),
+    }
+
+
+def acquire_daily_prop_snapshots(
+    *,
+    db: Any,
+    requested_date: str,
+    requested_timezone: str,
+    max_candidates: int,
+    now: datetime | None = None,
+    http_get: Any = httpx.get,
+    sports: tuple[str, ...] = _DEFAULT_SPORTS,
+) -> dict[str, Any]:
+    """Run every autonomous Daily prop producer under one shared row ceiling.
+
+    MLB keeps its historical budget priority; NFL receives the remainder. A
+    sport whose budget was exhausted is reported with its unattempted count, so
+    a ceiling can never look like an empty slate. Sports without an autonomous
+    producer (NBA/NHL/...) are listed in ``sports_without_autonomous_discovery``
+    and remain fail-closed; no fallback candidates are fabricated for them.
+    """
+    from v17.daily_nfl_prop_acquisition import acquire_daily_nfl_prop_snapshots
+    from v17.prop_sport_parity import prop_sport_parity_summary
+
+    kwargs = {"db": db, "requested_date": requested_date, "requested_timezone": requested_timezone, "now": now, "http_get": http_get}
+    legs: list[tuple[str, dict[str, Any]]] = []
+    remaining = max(int(max_candidates), 0)
+    producers = (("MLB", acquire_daily_mlb_prop_snapshots), ("NFL", acquire_daily_nfl_prop_snapshots))
+    for sport, producer in producers:
+        if sport not in sports:
+            continue
+        leg = producer(max_candidates=remaining, **kwargs)
+
+        legs.append((sport, leg))
+        remaining = max(remaining - int(leg.get("attempted") or 0), 0)
+    if len(legs) == 1 and legs[0][0] == "MLB":
+        legs[0][1]["sport_coverage"] = [_sport_leg("MLB", legs[0][1])]
+        return legs[0][1]
+
+    combined: dict[str, Any] = {key: sum(int(leg.get(key) or 0) for _s, leg in legs) for key in _SUM_KEYS}
+    combined["receipts"] = [r for _s, leg in legs for r in leg.get("receipts") or []]
+    combined["blockers"] = list(dict.fromkeys(b for _s, leg in legs for b in leg.get("blockers") or []))
+    statuses = [leg.get("status") for _s, leg in legs]
+    if all(s == "DATA_UNOBTAINABLE" for s in statuses):
+        combined["status"] = "DATA_UNOBTAINABLE"
+    elif any(s == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" for s in statuses) or (
+        combined["snapshot_write_failed"] > 0 and combined["snapshot_write_succeeded"] == 0
+    ):
+        # A healthy sport cannot mask another sport's wholly failed snapshot writes.
+        combined["status"] = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    elif combined["held"] > 0 or any(s not in ("COMPLETED",) for s in statuses):
+        combined["status"] = "COMPLETED_WITH_ROW_BLOCKERS"
+    else:
+        combined["status"] = "COMPLETED"
+    combined["candidate_source"] = "+".join(str(leg.get("candidate_source")) for _s, leg in legs)
+    # All current producers use prior-ten half-point discovery lines; never market lines.
+    sources = {leg.get("line_source") for _s, leg in legs if leg.get("line_source")}
+    combined["line_source"] = next(iter(sources)) if len(sources) == 1 else None
+    combined["probability_publishable"] = False
+    combined["stat_types"] = list(dict.fromkeys(
+        st for _s, leg in legs if leg.get("status") != "DATA_UNOBTAINABLE" for st in leg.get("stat_types") or []
+    ))
+    combined["sport_coverage"] = [_sport_leg(sport, leg) for sport, leg in legs]
+    combined["sports_without_autonomous_discovery"] = prop_sport_parity_summary()["sports_without_daily_autonomous_discovery"]
+    combined["can_execute"] = False
+    return combined
