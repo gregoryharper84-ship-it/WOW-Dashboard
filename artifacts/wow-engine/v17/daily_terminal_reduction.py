@@ -38,9 +38,11 @@ TERMINAL_RANK: dict[str, int] = {
 
 DEFAULT_ROW_STATUS = "HELD"
 
-# Only an explicit slate purge downgrades past REJECTED. Every other rejection
+# Only an explicit purge downgrades past REJECTED. Every other rejection
 # terminal reduces to REJECTED so the hard/soft distinction is never lost.
-_PURGE_TERMINAL_LABELS = {"SLATE_PURGE"}
+# A ruled-out participant is purged: no late evidence can make the row
+# eligible again, so it must not be counted as an unresolved hold.
+_PURGE_TERMINAL_LABELS = {"SLATE_PURGE", "PLAYER_RULED_OUT"}
 
 
 def _label(payload: dict[str, Any], *keys: str) -> str:

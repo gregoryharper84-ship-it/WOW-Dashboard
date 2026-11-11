@@ -116,6 +116,52 @@ def test_existing_mandatory_evidence_checks_survive_min3(snapshot_db, overrides)
     assert result["can_execute"] is False
 
 
+def test_availability_hold_survives_the_snapshot_round_trip(snapshot_db):
+    """A persisted availability blocker makes the stored row unready on re-read.
+
+    This is the durability half of the 2026-11-09 repair: the SQL reader must
+    see the gate verdict, not a PASS row with no blockers.
+    """
+    result = _read(
+        snapshot_db,
+        overrides={
+            "role_status": {
+                "status": "ACTIVE",
+                "availability": {
+                    "status": "UNAVAILABLE",
+                    "designation": "OUT",
+                    "source": "ESPN_NFL_ATHLETE_INJURY_REPORT",
+                },
+            },
+            "blockers": ["PLAYER_RULED_OUT"],
+        },
+    )
+    assert result["ok"] is False
+    assert result["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["blockers"] == ["PLAYER_RULED_OUT"]
+
+    conn, schema = snapshot_db
+    stored = conn.execute(
+        sql.SQL("select role_status, blockers from {}.wow_prop_evidence_snapshots").format(
+            sql.Identifier(schema)
+        )
+    ).fetchone()
+    assert stored[0]["availability"]["designation"] == "OUT"
+    assert stored[1] == ["PLAYER_RULED_OUT"]
+
+
+def test_provisional_recheck_blocker_keeps_snapshot_unready(snapshot_db):
+    result = _read(
+        snapshot_db,
+        overrides={"blockers": ["PLAYER_AVAILABILITY_RECHECK_REQUIRED"]},
+    )
+    assert result["ok"] is False
+    assert result["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["blockers"] == ["PLAYER_AVAILABILITY_RECHECK_REQUIRED"]
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
 def test_snapshot_identity_and_backend_only_grants_survive(snapshot_db):
     result = _read(snapshot_db, request_stat="PITCHING_OUTS")
     assert result["code"] == "PROP_EVIDENCE_IDENTITY_MISMATCH"

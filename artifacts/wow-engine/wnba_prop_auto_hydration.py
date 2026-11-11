@@ -25,6 +25,9 @@ from zoneinfo import ZoneInfo
 import httpx
 from pypdf import PdfReader
 
+from v17.player_availability_gate import participation_evidence
+from wnba_injury_status import WNBAInjuryStatusError, availability_from_report
+
 
 WNBA_SCHEDULE_URL = "https://cdn.wnba.com/static/json/staticData/scheduleLeagueV2.json"
 WNBA_STATS_BASE = "https://stats.wnba.com/stats"
@@ -456,60 +459,22 @@ def _availability_from_report(
     *,
     player_name: str,
     team_name: str,
+    opponent_name: str,
     matchup: str,
     game_date: str,
 ) -> dict[str, Any]:
-    compact = " ".join(str(text).replace("\u00a0", " ").split())
-    normalized = _name_key(compact)
-    matchup_key = _name_key(matchup)
-    team_key = _name_key(team_name)
-    if matchup_key not in normalized or team_key not in normalized:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_EVENT_UNRESOLVED",
-            "fresh official injury report did not contain the target matchup/team",
-            detail={"matchup": matchup, "team": team_name, "game_date": game_date},
+    """Use the shared, immediate-status parser without requiring router setup."""
+    try:
+        return availability_from_report(
+            text,
+            player_name=player_name,
+            team_name=team_name,
+            opponent_name=opponent_name,
+            matchup=matchup,
+            game_date=game_date,
         )
-
-    team_pos = normalized.find(team_key)
-    section = normalized[team_pos : team_pos + 1800]
-    if "not yet submitted" in section[:250]:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_NOT_SUBMITTED",
-            "target team has not submitted its official WNBA injury report",
-            detail={"team": team_name, "game_date": game_date},
-        )
-
-    name_parts = _name_key(player_name).split()
-    forward = " ".join(name_parts)
-    reverse = " ".join(reversed(name_parts)) if len(name_parts) >= 2 else forward
-    positions = [p for p in (section.find(forward), section.find(reverse)) if p >= 0]
-    if not positions:
-        return {
-            "availability": "NOT_LISTED_ON_FRESH_OFFICIAL_INJURY_REPORT",
-            "designation": None,
-            "injury_reason": None,
-        }
-
-    pos = min(positions)
-    after = section[pos + len(forward) : pos + len(forward) + 180]
-    designation = None
-    for label in ("out", "doubtful", "questionable", "probable", "available"):
-        if re.search(rf"\b{label}\b", after):
-            designation = label.upper()
-            break
-    if designation is None:
-        raise WNBAPropHydrationError(
-            "WNBA_INJURY_REPORT_PLAYER_STATUS_UNRESOLVED",
-            "player appeared on the official injury report but the designation was not parsed",
-            detail={"player": player_name, "team": team_name},
-        )
-    if designation != "AVAILABLE":
-        raise WNBAPropHydrationError(
-            "WNBA_PLAYER_AVAILABILITY_NOT_CLEAR",
-            "player has an explicit current official injury/availability designation; unconditional model adjustment is not certified",
-            detail={"player": player_name, "team": team_name, "designation": designation},
-        )
-    return {"availability": "AVAILABLE", "designation": designation, "injury_reason": None}
+    except WNBAInjuryStatusError as exc:
+        raise WNBAPropHydrationError(exc.code, str(exc), detail=exc.detail) from exc
 
 
 def hydrate_wnba_prop_evidence(
@@ -583,6 +548,7 @@ def hydrate_wnba_prop_evidence(
         injury_text,
         player_name=official_name,
         team_name=team_name,
+        opponent_name=opponent_name,
         matchup=matchup,
         game_date=game_date,
     )
@@ -603,7 +569,11 @@ def hydrate_wnba_prop_evidence(
         "game_log": game_log,
         "box_score_log": box_score_log,
         "role_status": {
-            "status": "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION",
+            "status": (
+                "RULED_OUT_OFFICIAL_INJURY_REPORT"
+                if availability["availability"] == "UNAVAILABLE"
+                else "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION"
+            ),
             "role": str(roster.get("POSITION") or "WNBA_ROTATION_PLAYER"),
             "confirmation_strength": "OFFICIAL_ROSTER_PLUS_FRESH_OFFICIAL_INJURY_REPORT",
             "player_id": player_id,
@@ -615,7 +585,24 @@ def hydrate_wnba_prop_evidence(
             "official_game_id": str(game.get("gameId") or ""),
             "official_game_start_utc": str(game.get("gameDateTimeUTC") or ""),
             "schedule_status": str(game.get("gameStatusText") or "Scheduled"),
-            "availability": availability["availability"],
+            # A fresh official report that does not list the player is positive
+            # clearance (no designation), not missing evidence.
+            "availability": participation_evidence(
+                designation=availability["designation"],
+                basis=(
+                    "FRESH_OFFICIAL_REPORT_UNLISTED"
+                    if availability["availability"] == "NOT_LISTED_ON_FRESH_OFFICIAL_INJURY_REPORT"
+                    else ("FRESH_OFFICIAL_REPORT_CLEARED" if availability["designation"] else None)
+                ),
+                source="WNBA_OFFICIAL_INJURY_REPORT",
+                captured_at=injury_ts.astimezone(timezone.utc).isoformat(),
+                fresh=True,
+                report_complete=True,
+                athlete_id=player_id,
+                event_id=str(game.get("gameId") or "") or None,
+                team=team_name,
+            ),
+            "availability_report_state": availability["availability"],
             "injury_designation": availability["designation"],
             "injury_report_url": injury_url,
             "source": "WNBA official CDN schedule + WNBA Stats roster + official WNBA injury report",
@@ -630,7 +617,11 @@ def hydrate_wnba_prop_evidence(
             "l10_minutes_mean": sum(l10_minutes) / len(l10_minutes),
             "l5_minutes_mean": sum(l10_minutes[:5]) / 5.0,
             "current_roster_confirmation": "PASS",
-            "availability_gate": "PASS",
+            "availability_gate": (
+                "BLOCKED_PLAYER_RULED_OUT"
+                if availability["availability"] == "UNAVAILABLE"
+                else "PASS"
+            ),
             "availability_policy": "BLOCK_ANY_EXPLICIT_INJURY_REPORT_DESIGNATION_UNLESS_AVAILABLE",
         },
         "source_timestamps": source_timestamps,
