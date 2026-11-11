@@ -239,6 +239,10 @@ def test_existing_tennis_maintenance_attaches_shadow_without_model_promotion(mon
 def test_shadow_runtime_error_remains_held_without_changing_original_fit(monkeypatch):
     tennis = tennis_module
     shadow = shadow_module
+
+    def broken_shadow(*args, **kwargs):
+        raise RuntimeError("shadow experiment unavailable")
+
     monkeypatch.setattr(tennis, "FEATURE_NAMES", NAMES)
     monkeypatch.setattr(tennis, "fetch_matches", lambda: ([], []))
     monkeypatch.setattr(
