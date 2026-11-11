@@ -54,7 +54,8 @@ def audit(picks, finals, **kw):
     return audit_ranked_winner_retro(
         picks, finals, ranked_cohort=[{k: p[k] for k in
                     ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc",
-                     "selected_side", "pregame_receipt_id", "frozen_at_utc")}
+                     "selected_side", "pregame_receipt_id", "frozen_at_utc",
+                     "settlement_basis", "available_to_user_at_utc")}
                     for p in picks],
         cohort_verified=True, cohort_receipt_id="independent-card-snapshot",
         cohort_kind="RANKED_SUBSET", **kw)
@@ -222,7 +223,8 @@ def test_verified_cohort_side_mismatch_is_held():
     p = pick(side="HOME")
     cohort = [{k: p[k] for k in
                ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc",
-                "pregame_receipt_id", "frozen_at_utc")}]
+                "pregame_receipt_id", "frozen_at_utc",
+        "settlement_basis", "available_to_user_at_utc")}]
     cohort[0]["selected_side"] = "AWAY"
     r = audit_ranked_winner_retro(
         [p], [final()], ranked_cohort=cohort,
@@ -262,7 +264,8 @@ def test_replacement_receipt_cannot_be_graded_as_original_frozen_card():
     cohort = [{k: original[k] for k in (
         "sport", "official_event_id", "home_team", "away_team",
         "event_start_time_utc", "selected_side",
-        "pregame_receipt_id", "frozen_at_utc")}]
+        "pregame_receipt_id", "frozen_at_utc",
+        "settlement_basis", "available_to_user_at_utc")}]
     replacement = deepcopy(original)
     replacement["pregame_receipt_id"] = "substituted-later-receipt"
     replacement["frozen_at_utc"] = "2026-11-10T15:30:00Z"
@@ -285,7 +288,8 @@ def test_cohort_without_frozen_receipt_or_timestamp_cannot_attest_pick(field, ne
     p = pick()
     frozen = {k: p[k] for k in (
         "sport", "official_event_id", "home_team", "away_team",
-        "event_start_time_utc", "selected_side", "pregame_receipt_id", "frozen_at_utc")}
+        "event_start_time_utc", "selected_side", "pregame_receipt_id", "frozen_at_utc",
+        "settlement_basis", "available_to_user_at_utc")}
     frozen[field] = new_value
     r = audit_ranked_winner_retro(
         [p], [final()], ranked_cohort=[frozen],
@@ -336,3 +340,33 @@ def test_missing_market_settlement_basis_is_unavailable_not_inferred():
     assert r["correct"] == 1
     assert r["market_baseline_complete"] is False
     assert r["rows"][0]["market_favorite"] is None
+
+
+def test_frozen_cohort_regulation_basis_cannot_be_regraded_as_nhl_full_game():
+    p = pick("NHL", "nhl-cohort")
+    cohort = [{k: p[k] for k in (
+        "sport", "official_event_id", "home_team", "away_team",
+        "event_start_time_utc", "selected_side", "pregame_receipt_id",
+        "frozen_at_utc", "settlement_basis", "available_to_user_at_utc")}]
+    cohort[0]["settlement_basis"] = "REGULATION"
+    r = audit_ranked_winner_retro(
+        [p], [final("NHL", "nhl-cohort")], ranked_cohort=cohort,
+        cohort_verified=True, cohort_receipt_id="frozen-original-nhl")
+    assert r["cohort_complete"] is False
+    assert r["subset_accuracy"] is None
+    assert r["market_baseline_complete"] is False
+    assert "RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED" in r["rows"][0]["selection_blockers"]
+
+
+def test_original_user_visibility_must_match_frozen_cohort():
+    p = pick("NBA", "vis")
+    cohort = [{k: p[k] for k in (
+        "sport", "official_event_id", "home_team", "away_team",
+        "event_start_time_utc", "selected_side", "pregame_receipt_id",
+        "frozen_at_utc", "settlement_basis", "available_to_user_at_utc")}]
+    cohort[0]["available_to_user_at_utc"] = "2026-11-10T14:30:00Z"
+    r = audit_ranked_winner_retro(
+        [p], [final("NBA", "vis")], ranked_cohort=cohort,
+        cohort_verified=True, cohort_receipt_id="original-visibility")
+    assert r["cohort_complete"] is False
+    assert r["rows"][0]["selection_grade"] == "HELD"
