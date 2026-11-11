@@ -1,0 +1,51 @@
+{
+  "schema": "WOW_NFL_PROP_LINEAGE_EVIDENCE_V1",
+  "gathered_at_utc": "2026-11-11T07:00:00Z",
+  "note": "External evidence captured by read-only lookups on 2026-11-11. Re-verify before relying on it; nothing here grants capability.",
+  "training_code": {
+    "commit_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+    "commit_message": "chore(v17): retrigger NFL prop fit after evidence-floor calibration",
+    "commit_author_date_utc": "2026-09-20T13:45:50Z",
+    "parent_sha": "03c71779745b9c2fc43124aa91f4640c54106383",
+    "parent_message": "fix(v17): set evidence-sized NFL prop fit floor",
+    "branch_at_run": "fix/v17-nfl-prop-governed-lane-20260920-active",
+    "resolvable_via_github_api": true,
+    "reachable_from_repository_refs_in_clone": false,
+    "trainer_path": "artifacts/wow-engine/scripts/train_nfl_props.py",
+    "trainer_sha256_at_commit": "b0b4db8a59077e72199a17fc3c8b271f534a10b7d8fcdf0b3e2dd4d3e41da4d9",
+    "commit_changed_files": [".github/workflows/tmp-nfl-prop-train-20260920.yml"]
+  },
+  "original_fit_run": {
+    "workflow_run_id": 35514457169,
+    "workflow": "tmp-nfl-prop-train-20260920",
+    "event": "push",
+    "created_at_utc": "2026-09-20T13:45:52Z",
+    "conclusion": "success",
+    "runner_image": "ubuntu-24.04 20260907.300",
+    "python": "3.11 (actions/setup-python@v5)",
+    "packages": {"numpy": "2.4.6", "pandas": "3.0.6", "scikit-learn": "1.9.1", "scipy": "1.17.1", "requests": "2.34.2", "threadpoolctl": "3.7.0", "joblib": "1.6.0"}
+  },
+  "refit": {
+    "performed_at_utc": "2026-11-11T07:05:00Z",
+    "python": "3.11.18",
+    "packages": {"numpy": "2.4.6", "pandas": "3.0.6", "scikit-learn": "1.9.1", "scipy": "1.17.1", "requests": "2.34.2", "threadpoolctl": "3.7.0", "joblib": "1.6.0"},
+    "env_GITHUB_SHA": "baa23d502be843c5ba3ee44525be277b237bc37c",
+    "variant_unpinned_pandas_3_1_1_numpy_2_4_6_threadpoolctl_3_8_0_also_identical": true,
+    "output_artifacts_sha256": "ed3cc55fa3a46edc63b929e89ab32eb60bbbba590aca8598a4ef1e3eececf9d5",
+    "output_report_sha256": "d45b9bb62b05a7a04c9e03c4168176dd8638f9e3c932913592ae40a1117d9ae5",
+    "datasets_redownloaded_sha256_matched_report": true
+  },
+  "registry_snapshot": {
+    "project": "iczfhsmjrrafhvcpmqhr (validation project; production identity not asserted)",
+    "queried_at_utc": "2026-11-11T07:00:00Z",
+    "created_at_utc": "2026-09-20T14:23:51Z",
+    "calibrator_version": "NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1",
+    "rows": {
+      "ANYTIME_TD": {"artifact_checksum": "b193c279c8f3ccd4b365bafa95a19dcd21c0035e8ef5391f2af61463dbc8516d", "training_dataset_hash": "74b9ef6e8fa84ebbce3d7216c8181ee01d2ecf87a2ca53171670a6d7528f06be", "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c", "training_rows": 9109, "lifecycle_state": "PROSPECTIVE_CERTIFIED", "active": true, "promoted": true, "probability_publishable": false, "certification_id": "NFL-ATTD-OFFLINE-2026-09-20"},
+      "PASSING_YARDS": {"artifact_checksum": "b0178abe250d52bbdd6923056a524121d10b91ab744d7e60a351a7223eebdc2c", "training_dataset_hash": "852fda61d88b6b37646e58d8714ed1b7239d023511b57c55ac93f053eaf97c47", "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c", "training_rows": 1082, "lifecycle_state": "PROSPECTIVE_CERTIFIED", "active": true, "promoted": true, "probability_publishable": false, "certification_id": "NFL-PASSYDS-OFFLINE-2026-09-20"},
+      "RECEIVING_YARDS": {"artifact_checksum": "e27831a0d89cf61df882ea27f5efad1983883d2868a3fc914197b070cc2e0178", "training_dataset_hash": "45ba792d18344395203aec8f5415ddb20ac08651700b5ea82e77f3f4a535e752", "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c", "training_rows": 7398, "lifecycle_state": "PROSPECTIVE_CERTIFIED", "active": true, "promoted": true, "probability_publishable": false, "certification_id": "NFL-RECYDS-OFFLINE-2026-09-20"},
+      "RUSHING_YARDS": {"artifact_checksum": "e6e93c84f6de079c01922ba3e0fddbadac355d959975f712855965aa7e6331fb", "training_dataset_hash": "8185574be5467f43b1cd5683029e00b1ec8c44a785a116774c6eb64e2e201db4", "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c", "training_rows": 3331, "lifecycle_state": "PROSPECTIVE_CERTIFIED", "active": true, "promoted": true, "probability_publishable": false, "certification_id": "NFL-RUSHYDS-OFFLINE-2026-09-20"}
+    }
+  },
+  "activation_record": "artifacts/wow-engine/migrations/20260920_nfl_direct_prop_governed_activation.sql"
+}
