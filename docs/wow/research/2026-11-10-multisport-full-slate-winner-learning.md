@@ -67,8 +67,22 @@ Source research PR #2547, governing incident #2076. Three reviewer findings patc
 - The ranked-card same-time market favorite baseline accepts only independently attested event-identical market snapshots at or before the frozen pick, **no older than 60 minutes**. A stale market snapshot suppresses only baseline comparison, not a separately verified winner grade.
 - Decimal odds must be real finite numbers strictly greater than 1 and at most 100,000; signed home-spread inputs must be real finite numbers within +/-500. These are defensive sanity caps, not market-price or fitted-probability estimates. Huge Python integers, NaN and infinity fail safely instead of crashing the entire retrospective.
 
-The existing 10 synthetic ranked-card tests received three additional boundary/overflow tests (13 ranked tests total), and the existing full-slate research-card suite gained one conflicting-identity evidence-isolation test. These are test cases added to source; exact-head hosted execution must be evidenced by matching CI run logs, not inferred from test-file presence.
+The initial 10 synthetic ranked-card tests received seven additional boundary/provenance/scope tests (17 ranked tests total), and the existing full-slate research-card suite gained five new evidence-isolation, source-provenance, market-freshness, favorite-identity and caller-declared-model test cases. These are tests added to source, not a statement of independently passed exact-head CI. These are test cases added to source; exact-head hosted execution must be evidenced by matching CI run logs, not inferred from test-file presence.
 
 Branch reconciliation used a two-parent, non-force commit preserving current main code and both independently added skill sections; no protected merge performed at that point. PR description now begins with canonical `Incident: #2076` after QA reported `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS`. Fresh exact-head independent QA and Release Authority verdicts must evaluate that corrected metadata. The earlier QA failure and downstream `RELEASE_QA_FAILED` cannot be relabeled passing.
 
 No SIRT verdict, protected merge, production rollout, Custom GPT sync, market edge certification or fitted-model improvement is implied by this documentation; `can_execute=false`, and `V17_TERMINAL_REDUCER` remains sole terminal authority.
+
+## 2026-11-11 follow-up CodeRabbit provenance hardening
+
+Eight additional review findings required follow-up before an authorized merge:
+- Reject `VERIFIED_FULL_SLATE` from the ranked-subset helper outright; it has no official manifest reconciliation and cannot ever claim complete-slate authority.
+- Require the frozen cohort's `selected_side` to match the pick when the cohort contains that field.
+- Bound official integer scores to 0..10,000 so extreme or malformed inputs cannot abort signed-spread diagnostics; invalid score receipts are HELD.
+- Withhold sport-level graded/correct counts for an incomplete overall ranked cohort rather than presenting partial results as complete.
+- Non-market publisher names and timestamps are **caller-declared only**; this research helper does not independently authenticate publishers. Accordingly `source_publishers_verified=0` until independent source-ledger intake exists, `source_publishers_declared` remains descriptive, and positive declarations emit `NONMARKET_PUBLISHER_PROVENANCE_NOT_INDEPENDENTLY_VERIFIED`, suppressing a fully reconciled evidence claim.
+- Market context on a winner card is stale if its observation is more than 60 minutes before selection; a market favorite outside the official two participants is invalid even if disagreement was marked reviewed.
+- Research `model_status` can never surface a caller's `CERTIFIED` claim as audited status. Preserve it only in `model_status_declared`; the public audit field reads `UNVERIFIED_CALLER_DECLARATION` when a pregame pick is admissible.
+- This work preserves one provisional researched winner for each playable event; evidence warnings do not manufacture a Full Model fit or silently flip the winner.
+
+New tests are synthetic assertions of fail-closed behavior. Fresh trusted exact-head CI, non-author SIRT semantics, Independent QA App and Release Authority App remain mandatory before protected merge; previous-head CI does not satisfy the new head.
