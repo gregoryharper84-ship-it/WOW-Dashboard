@@ -179,6 +179,13 @@ def compile_authorized_prop_handoff(
         if source_use_permitted is not True:
             blocked.append(_hold(row, "PROP_HANDOFF_SOURCE_USE_NOT_PERMITTED"))
             continue
+        # The canonical score Action does not yet express partial-game
+        # periods or tier-specific payouts. Never project those markets onto
+        # a standard full-game stat merely because the stat name matches.
+        if (_text(row.get("period_display")).casefold() != "full game"
+                or _text(row.get("offer_type")).casefold() != "standard"):
+            blocked.append(_hold(row, "PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED"))
+            continue
         if official_resolver is None:
             blocked.append(_hold(row, "PROP_IDENTITY_OFFICIAL_RESOLVER_UNAVAILABLE"))
             continue
@@ -202,13 +209,6 @@ def compile_authorized_prop_handoff(
         reason = _validate_offer(row, latest, current)
         if reason:
             blocked.append(_hold(row, reason))
-            continue
-        # The canonical score Action does not yet express partial-game
-        # periods or tier-specific payouts. Never project those markets onto
-        # a standard full-game stat merely because the stat name matches.
-        if (_text(row.get("period_display")).casefold() != "full game"
-                or _text(row.get("offer_type")).casefold() != "standard"):
-            blocked.append(_hold(row, "PROP_HANDOFF_EXACT_ROUTE_UNRESOLVED"))
             continue
         stat = _text(official["stat_type"]).upper()
         if not stat or not _line(row.get("exact_display_line")):
