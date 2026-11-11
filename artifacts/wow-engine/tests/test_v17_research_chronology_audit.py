@@ -193,7 +193,6 @@ def test_calibration_holdout_event_overlap_blocks(tmp_path):
     assert "CALIBRATION_HOLDOUT_EVENT_CHRONOLOGY_OVERLAP" in report["blockers"]
 
 
-
 def test_reused_snapshot_id_cannot_change_bytes_or_sport(tmp_path):
     rows = _example(tmp_path)
     # Two distinct, genuine source blobs may not claim one immutable ID.
@@ -204,6 +203,16 @@ def test_reused_snapshot_id_cannot_change_bytes_or_sport(tmp_path):
     assert report["row_results"][1]["status"] == "ROW_HOLD"
     assert report["source_bytes_digest_verified"] is True  # both files hash correctly
     assert report["probability_publishable"] is False
+
+    # Source ID aliases may not cross sports even when bytes and times agree.
+    rows = _example(tmp_path)
+    rows[1]["source_snapshot_id"] = rows[0]["source_snapshot_id"]
+    for field in ("source_file", "source_payload_sha256",
+                  "source_published_at", "source_captured_at"):
+        rows[1][field] = rows[0][field]
+    rows[1]["sport"] = "NBA"
+    report = audit_chronological_corpus(rows, source_root=tmp_path)
+    assert "SOURCE_SNAPSHOT_ID_CONFLICT" in report["blockers"]
 
 
 def test_reused_snapshot_id_cannot_rewrite_published_or_capture_time(tmp_path):
