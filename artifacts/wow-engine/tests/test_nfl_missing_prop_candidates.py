@@ -259,3 +259,25 @@ def test_default_minimum_rejects_too_small_calibration_cohort(weekly_frame):
     with pytest.raises(ValueError, match="NFL_PROP_CAL_ROWS_BELOW_MINIMUM"):
         build_candidate(candidates, "PASS_ATTEMPTS", {"bundle_sha256": "a" * 64})
 
+
+def test_cli_output_hardlink_collision_preserves_frozen_source(tmp_path, weekly_frame, monkeypatch):
+    """Hard links must not bypass the frozen-input overwrite guard."""
+    import os
+    import sys
+    from train_nfl_missing_prop_candidates import main
+
+    for season in range(2021, 2026):
+        season_rows = weekly_frame.loc[weekly_frame.season == season]
+        season_rows.to_csv(tmp_path / f"stats_player_week_{season}.csv", index=False)
+    source = tmp_path / "stats_player_week_2024.csv"
+    initial = source.read_bytes()
+    alias = tmp_path / "candidate_output.json"
+    os.link(source, alias)
+    assert os.stat(alias).st_ino == os.stat(source).st_ino
+    assert alias.resolve() != source.resolve()
+
+    monkeypatch.setattr(sys, "argv", ["trainer", "--input-dir", str(tmp_path), "--out", str(alias)])
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_OUTPUT_COLLISION:2024"):
+        main()
+    assert source.read_bytes() == initial
+
