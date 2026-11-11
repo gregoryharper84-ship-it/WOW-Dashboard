@@ -168,7 +168,7 @@ def _writer():
                 if step.get("name") == "Write SIRT independent-intake issue and cross-link")["run"]
 
 
-def _matching_issue(number, author, incident="2076", generated=True):
+def _matching_issue(number, author, incident="2076", generated=True, edited_at=None):
     """A matching marker must also have incident-specific intake evidence."""
     header = "## Independent SIRT intake — NOT verification approval" if generated else "Unverified hand-edited body"
     return {"number": number,
@@ -177,7 +177,7 @@ def _matching_issue(number, author, incident="2076", generated=True):
                 header + "\n" + "- Engineering incident: #" + incident + "\n" +
                 "- Engineering PR: #2547\n- Exact PR head: " + SHA + "\n" +
                 "- Intake status: SIRT_REVIEW_REQUIRED\n"),
-            "author": {"login": author}}
+            "author": {"login": author}, "lastEditedAt": edited_at}
 
 
 def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
@@ -207,13 +207,20 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  data=json.loads(issues.read_text())\n"
         "  ix=args.index('--body-file')\n"
         "  content=Path(args[ix+1]).read_text()\n"
-        "  data.append({'number':9000,'body':content,'author':{'login':'app/github-actions'}})\n"
+        "  data.append({'number':9000,'body':content,'author':{'login':'app/github-actions'},'lastEditedAt':None})\n"
         "  issues.write_text(json.dumps(data))\n"
         "  calls.open('a').write('issue:create\\n')\n"
         "  print('https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/issues/9000')\n"
-        "elif args[0]=='api' and 'issues/2547/comments' in args[1]:\n"
+        "elif args[:2]==['api','graphql']:\n"
+        "  number=int(args[args.index('-F')+1].split('=')[1])\n"
+        "  issue=next(i for i in json.loads(issues.read_text()) if i['number']==number)\n"
+        "  issue=dict(issue,author={'login':issue['author']['login'].replace('app/github-actions','github-actions[bot]')})\n"
+        "  print(json.dumps({'data':{'repository':{'issue':issue}}}))\n"
+        "elif args[0]=='api' and any('issues/2547/comments' in a for a in args):\n"
         "  calls.open('a').write('api:comments\\n')\n"
-        "  print(comments.read_text())\n"
+        "  data=json.loads(comments.read_text())\n"
+        "  pages=[data[i:i+100] for i in range(0,len(data),100)] or [[]]\n"
+        "  print(json.dumps(pages if '--paginate' in args and '--slurp' in args else pages[0]))\n"
         "elif args[:2]==['pr','comment']:\n"
         "  body=args[args.index('--body')+1]\n"
         "  data=json.loads(comments.read_text())\n"
@@ -252,7 +259,7 @@ def test_forged_marker_from_untrusted_creator_cannot_suppress_sirt_intake(tmp_pa
     assert issues[-1]["author"]["login"] == "app/github-actions"
 
 
-@pytest.mark.parametrize("creator", ["github-actions[bot]", "app/github-actions", "gregoryharper84-ship-it"])
+@pytest.mark.parametrize("creator", ["github-actions[bot]", "app/github-actions"])
 def test_marker_reuse_requires_authentic_existing_intake_creator(tmp_path, creator):
     trusted = _matching_issue(75, creator)
     run, calls, issues, summary = _run_writer(tmp_path, initial_issues=[trusted])
@@ -333,3 +340,33 @@ def test_retry_does_not_duplicate_authenticated_existing_crosslink(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert calls == ["api:comments"]
     assert len(issues) == 1
+
+
+@pytest.mark.parametrize("creator,edited_at", [
+    ("app/github-actions", "2026-11-11T00:00:00Z"),
+    ("gregoryharper84-ship-it", None),
+])
+def test_marker_without_workflow_creation_provenance_cannot_suppress_intake(
+        tmp_path, creator, edited_at):
+    existing = _matching_issue(75, creator, edited_at=edited_at)
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[existing])
+    assert proc.returncode == 0, proc.stderr
+    assert "issue:create" in calls
+    assert len(issues) == 2
+
+
+def test_retry_finds_authenticated_crosslink_after_first_page(tmp_path):
+    existing = _matching_issue(75, "app/github-actions")
+    comments = [{"body": "unrelated", "user": {"login": "someone"}}
+                for _ in range(100)]
+    comments.append({
+        "body": f"Independent SIRT intake created: https://github.com/{REPO}/issues/75. Exact head: {SHA}",
+        "user": {"login": "github-actions[bot]"},
+    })
+    first, _, _, _ = _run_writer(tmp_path, initial_issues=[existing],
+                                  initial_comments=comments)
+    retry, calls, issues, _ = _run_writer(tmp_path)
+    assert first.returncode == retry.returncode == 0
+    assert calls == ["api:comments", "api:comments"]
+    assert len(issues) == 1
+    assert len(json.loads((tmp_path / "comments.json").read_text())) == 101
