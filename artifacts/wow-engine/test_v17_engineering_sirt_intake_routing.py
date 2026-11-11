@@ -55,10 +55,12 @@ def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
         "  print('unexpected gh call',sys.argv,file=sys.stderr);sys.exit(41)\n"
     )
     fake_gh.chmod(0o755)
+    # Each GitHub Actions invocation starts with fresh runner output files.
+    # Reused pytest tmp_path across scenarios must not preserve prior status.
     output = tmp_path / "out.txt"
-    output.touch()
+    output.write_text("")
     summary = tmp_path / "summary.txt"
-    summary.touch()
+    summary.write_text("")
     env = {**os.environ, "PATH": str(tmp_path)+os.pathsep+os.environ.get("PATH", ""),
            "GITHUB_REPOSITORY": REPO, "GITHUB_OUTPUT": str(output),
            "GITHUB_STEP_SUMMARY": str(summary), "GH_TOKEN": "test-only",
