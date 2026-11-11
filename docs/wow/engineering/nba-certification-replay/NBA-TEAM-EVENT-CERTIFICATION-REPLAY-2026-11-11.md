@@ -21,7 +21,9 @@ Latest Daily run `v17-daily-3f1172cb-...` (serving SHA `a1494317`) held all 10 N
 
 ## Method
 Read-only SQL (`replay_holdout.sql`) re-scores the holdout from the **stored** artifact JSON, stored calibrator
-and stored pregame features, independent of the training pipeline's own output.
+and stored pregame features, independent of the training pipeline's own output. Artifact lookup is pinned to `sport='NBA'`
+plus the documented checksum; calibrator lookup to `sport='NBA'` plus the documented calibrator **and** `model_artifact_version`.
+One query emits every number below (summary, full-precision losses, bias, per-bin counts, ECE, per-season, timing); rerun it to reproduce.
 
 ## Results
 | Check | Replay | Persisted | Match |
@@ -29,11 +31,11 @@ and stored pregame features, independent of the training pipeline's own output.
 | Raw Brier | 0.227159 | 0.227159 | exact |
 | Raw log loss | 0.645385 | 0.645385 | exact |
 | Calibrated Brier | 0.227394 | 0.227394 | exact |
-| Calibrated log loss | 0.645979 | 0.645980 | exact |
+| Calibrated log loss | 0.645979455 | 0.645980 (persisted at 6 dp) | agrees to 6 dp; difference 5e-7 (display rounding, not exact) |
 | Calibrated bias | -0.0051 | -0.0051 | exact |
 
-- **Skill vs. constant home-win-rate baseline (train rate):** Brier 0.2274 vs 0.2476 (-8.2%); log loss 0.6460 vs 0.6884; accuracy 61.5% vs 54.9%.
-- **Leakage:** 0 of 1,784 holdout games have a feature snapshot `as_of` after the game day.
+- **Skill vs. constant home-win-rate baseline (train rate):** Brier 0.2274 vs 0.2476 (-8.2%); log loss 0.6460 vs 0.6884; accuracy 61.5% calibrated / 61.7% raw vs 54.9% baseline (the artifact's persisted `holdout_accuracy` 0.616592 is the raw model's; replay raw 0.616592 matches exactly).
+- **Look-ahead (date-only, NOT proof of pregame safety):** 0 of 1,784 holdout rows have `as_of` on a calendar date after the game date, but `wow_nba_training_games` has no tip-off time and every `as_of` equals the game date 00:00 UTC exactly (a date-granularity stamp, not an observed snapshot time). So this table cannot show features were frozen before tip-off. Pregame safety rests on the feature builder using only strictly earlier calendar dates (covered by unit tests, including a training/serving parity test in #2595). A reviewer should treat tip-off-time leakage as **unverified** until an authoritative pregame cutoff is recorded.
 - **Reliability (holdout, calibrated, 10 bins):** ECE 0.0236 (calibrator-fit ECE was 0.0458). Bins with n>=185 are within about 0.03 of observed. Tails are sparse: bin 0.1-0.2 n=3, bin 0.2-0.3 n=44 (predicted 0.269, observed 0.114), bin 0.8-0.9 n=27 (0.835 vs 0.889).
 - **Stability by season label (season = ending year):** model beats baseline Brier in every slice: 2025 0.2142 vs 0.2490 (n=308); 2026 0.2309 vs 0.2470 (n=1,322); 2027, the in-progress season, 0.2235 vs 0.2507 (n=154, bias +0.027, small sample).
 
