@@ -40,6 +40,14 @@ def _key(row: Mapping[str, Any]) -> tuple[str, str]:
     return _text(row.get("sport")).upper(), _text(row.get("official_event_id"))
 
 
+def _unsupported_script_numeric_key(key: Any) -> bool:
+    """Reject numeric-likelihood aliases, not ordinary research metadata."""
+    if not isinstance(key, str):
+        return True
+    token = key.casefold().replace("-", "_")
+    return any(word in token for word in ("prob", "odds", "weight", "likelihood", "chance", "win_pct"))
+
+
 def audit_research_winner_card(
     official_slate: Sequence[Mapping[str, Any]],
     selections: Sequence[Mapping[str, Any]],
@@ -62,7 +70,7 @@ def audit_research_winner_card(
     pick_lookup = {_key(row): row for row in picks}
     manifest_keys = set(source_counts)
     problems: list[str] = []
-    if not official_slate_verified or not _text(official_slate_receipt_id):
+    if official_slate_verified is not True or not _text(official_slate_receipt_id):
         problems.append("OFFICIAL_SLATE_UNVERIFIED")
     if not manifest:
         problems.append("EMPTY_OFFICIAL_SLATE")
@@ -92,9 +100,12 @@ def audit_research_winner_card(
             issues.append("INVALID_OR_PASS_WINNER")
         if when is None or kickoff is None or when >= kickoff:
             issues.append("RESEARCH_PICK_NOT_PREGAME")
-        if not _text(chosen.get("reasoning")):
+        # Any invalid/late/duplicate selection has NO admissible pregame evidence.
+        # Do not expose post-kickoff press or script material as pregame context.
+        admissible = chosen if not issues else {}
+        if not _text(admissible.get("reasoning")):
             warnings.append("REASONING_MISSING")
-        checks = chosen.get("pregame_checks")
+        checks = admissible.get("pregame_checks")
         checks = checks if isinstance(checks, Mapping) else {}
         for name in CHECKS.get(sport, ()):
             state = _text(checks.get(name)).upper()
@@ -102,9 +113,9 @@ def audit_research_winner_card(
                 warnings.append("CHECK_NOT_RECONCILED:" + name)
             elif state != "KNOWN":
                 warnings.append("CHECK_" + state + ":" + name)
-        if any("UNKNOWN:" in w or "CONTRADICTORY:" in w for w in warnings) and chosen.get("scenario_reviewed") is not True:
+        if any("UNKNOWN:" in w or "CONTRADICTORY:" in w for w in warnings) and admissible.get("scenario_reviewed") is not True:
             warnings.append("SCENARIO_REVIEW_REQUIRED")
-        evidence = chosen.get("research_sources")
+        evidence = admissible.get("research_sources")
         evidence = evidence if isinstance(evidence, (list, tuple)) else []
         publishers: set[str] = set()
         for source in evidence:
@@ -119,15 +130,15 @@ def audit_research_winner_card(
                 publishers.add(publisher)
         if len(publishers) < 2:
             warnings.append("TWO_INDEPENDENT_NONMARKET_SOURCES_NOT_MET")
-        market = chosen.get("market_context")
+        market = admissible.get("market_context")
         if market is not None:
             if not isinstance(market, Mapping) or _utc(market.get("as_of_utc")) is None or when is None or _utc(market.get("as_of_utc")) > when:
                 warnings.append("MARKET_CONTEXT_UNVERIFIED_OR_FUTURE")
-            elif _text(market.get("favorite")).casefold() not in {"", side.casefold()} and chosen.get("market_disagreement_reviewed") is not True:
+            elif _text(market.get("favorite")).casefold() not in {"", side.casefold()} and admissible.get("market_disagreement_reviewed") is not True:
                 warnings.append("MARKET_CONFLICT_NOT_RECONCILED")
         # Research game scripts are narrative scenarios, not fitted distributions.
         # Never accept post-selection scripts as original pregame evidence.
-        game_script = chosen.get("game_script")
+        game_script = admissible.get("game_script")
         script_primary = None
         script_adverse = None
         script_swings = None
@@ -141,14 +152,19 @@ def audit_research_winner_card(
             script_time = _utc(game_script.get("as_of_utc"))
             if not primary or not adverse or primary.casefold() == adverse.casefold():
                 warnings.append("GAME_SCRIPT_SCENARIOS_INCOMPLETE")
+            expected_favored = _text(game_script.get("primary_favored_side")).casefold()
+            opposing_favored = _text(game_script.get("opponent_favored_side")).casefold()
+            other_sides = {home.casefold(), away.casefold()} - {side.casefold()}
+            if (expected_favored != side.casefold() or len(other_sides) != 1
+                or opposing_favored not in other_sides):
+                warnings.append("GAME_SCRIPT_OPPOSING_WIN_PATH_UNVERIFIED")
+            if game_script.get("contradictions_reviewed") is not True:
+                warnings.append("GAME_SCRIPT_CONTRADICTIONS_REVIEW_REQUIRED")
             if not isinstance(swings, (list, tuple)) or not swings or any(not _text(v) for v in swings):
                 warnings.append("GAME_SCRIPT_SWING_FACTORS_MISSING")
             if script_time is None or when is None or script_time > when:
                 warnings.append("GAME_SCRIPT_TIME_UNVERIFIED_OR_FUTURE")
-            if any(field in game_script for field in (
-                "probability", "scenario_probability", "win_probability",
-                "primary_probability", "opponent_probability", "scenario_weights",
-            )):
+            if any(_unsupported_script_numeric_key(field) for field in game_script):
                 warnings.append("UNVERIFIED_GAME_SCRIPT_PROBABILITY")
             script_verified = not any(w.startswith(("GAME_SCRIPT_", "UNVERIFIED_GAME_SCRIPT_")) for w in warnings)
             if script_verified:
@@ -156,14 +172,16 @@ def audit_research_winner_card(
                 script_adverse = adverse
                 script_swings = list(swings)
         media_script_audit = audit_script_robustness_and_media(
-            chosen,
+            admissible,
             selected_side=side,
             home_team=home,
             away_team=away,
-            selected_at_utc=_text(chosen.get("selected_at_utc")),
+            selected_at_utc=_text(admissible.get("selected_at_utc")),
         )
+        if issues:
+            media_script_audit["media_evidence_status"] = "NOT_ADMISSIBLE_INVALID_SELECTION"
         warnings.extend(media_script_audit["research_warnings"])
-        if _text(chosen.get("research_confidence")).upper() == "HIGH" and warnings:
+        if _text(admissible.get("research_confidence")).upper() == "HIGH" and warnings:
             warnings.append("HIGH_CONFIDENCE_UNSUPPORTED")
         rows.append({
             "sport": sport,
@@ -172,8 +190,8 @@ def audit_research_winner_card(
             "away_team": away,
             "selected_side": side if not issues else None,
             "selection_class": "RESEARCH_PROVISIONAL" if not issues else "RESEARCH_INVALID",
-            "model_status": _text(chosen.get("model_status")) or "UNKNOWN",
-            "research_confidence": _text(chosen.get("research_confidence")) or "UNSPECIFIED",
+            "model_status": _text(admissible.get("model_status")) or "UNKNOWN",
+            "research_confidence": _text(admissible.get("research_confidence")) or "UNSPECIFIED",
             "selection_blockers": list(dict.fromkeys(issues)),
             "evidence_warnings": list(dict.fromkeys(warnings)),
             "source_publishers_verified": len(publishers),
