@@ -266,3 +266,43 @@ def test_shadow_board_never_changes_production_strategy_or_probability():
     assert board["production_probability_changed"] is False
     assert board["automatic_promotion"] is False
     assert board["can_execute"] is False
+
+
+def test_visible_majority_postmortem_is_not_mislabeled_as_prelock_strategy():
+    report = analyze_settled_pickem_week(PICKS, WINNERS, user_name="GH")
+    benchmark = report["visible_majority_benchmark"]
+    assert benchmark["status"] == "POST_SETTLEMENT_VISIBLE_SAMPLE_ONLY"
+    assert benchmark["eligible_game_count"] + benchmark["no_strict_majority_count"] == len(EVENTS)
+    assert benchmark["correct"] <= benchmark["eligible_game_count"]
+    assert benchmark["difference_vs_user_on_same_games"] == (
+        benchmark["correct"] - benchmark["user_correct_on_same_games"]
+    )
+    assert benchmark["prelock_visibility_verified"] is False
+    assert benchmark["full_opponent_pool_verified"] is False
+    assert benchmark["prospective_strategy_validated"] is False
+    assert report["pool_sample_provenance"] == "POST_LOCK_OR_PRELOCK_VISIBILITY_UNVERIFIED"
+    assert report["frozen_user_submission_verified"] is False
+    assert report["fitted_model_miss_attribution_verified"] is False
+    assert report["prelock_pool_equity_evidence_eligible"] is False
+    assert report["production_probability_mutation_allowed"] is False
+
+
+def test_split_majority_benchmark_excludes_tied_vote_event():
+    participants = {
+        "GH": {"game-a": "A", "game-b": "C"},
+        "Jo": {"game-a": "A", "game-b": "D"},
+        "Tre": {"game-a": "B", "game-b": "C"},
+        "El": {"game-a": "A", "game-b": "D"},
+    }
+    out = analyze_settled_pickem_week(
+        participants,
+        {"game-a": "A", "game-b": "D"},
+        user_name="GH",
+    )
+    benchmark = out["visible_majority_benchmark"]
+    assert benchmark["eligible_game_count"] == 1
+    assert benchmark["no_strict_majority_count"] == 1
+    assert benchmark["correct"] == 1
+    assert benchmark["user_correct_on_same_games"] == 1
+    assert benchmark["difference_vs_user_on_same_games"] == 0
+    assert out["can_execute"] is False
