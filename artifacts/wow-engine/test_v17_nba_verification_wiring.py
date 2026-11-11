@@ -744,12 +744,14 @@ def test_maintenance_reports_no_verification_without_an_artifact_identity(monkey
     )
     row = result["rows"][0]
 
-    assert row["status"] == "SHADOW_EVIDENCE_UPDATED"
-    assert row["independent_verification"]["status"] == "NOT_APPLICABLE"
-    assert (
-        row["independent_verification"]["reason"]
-        == "REPLAY_DID_NOT_RETURN_ARTIFACT_VERSION"
-    )
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    assert row["status"] == "BLOCKED"
+    assert row["code"] == "NBA_VERIFICATION_EVIDENCE_INCOMPLETE"
+    assert row["independent_verification"]["status"] == "INCOMPLETE"
+    assert row["independent_verification"]["reason"] == "REPLAY_DID_NOT_RETURN_ARTIFACT_VERSION"
+    assert row["independent_verification"]["probability_publishable"] is False
+    assert row["can_execute"] is False
 
 
 def test_maintenance_blocks_before_fitting_when_verification_storage_is_missing(
