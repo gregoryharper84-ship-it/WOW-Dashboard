@@ -271,4 +271,4 @@ def test_worker_origin_preserves_real_pre_pr_gate_enforcement(tmp_path, gate, al
     else:
         assert process.returncode != 0
         assert "found=true" not in output
-        assert "SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS" in process.stderr
+        assert "SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS" in process.stdout
