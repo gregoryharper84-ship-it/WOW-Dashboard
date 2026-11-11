@@ -65,6 +65,54 @@ def _json_digest(value: Any) -> str:
     return _sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
 
 
+def _is_missing_identity(value: Any) -> bool:
+    """Classify only genuinely absent identity tokens; never synthesize a player."""
+    return bool(pd.isna(value) or str(value).strip().upper() in {"", "NA", "NAN", "NONE", "NULL"})
+
+
+def _quarantine_unattributed_zero_stat_rows(
+    frame: pd.DataFrame, season: int
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Preserve an audit ledger for non-route, all-zero records with absent IDs.
+
+    Never quarantine a QB/RB/WR/TE, named person, malformed event, or a row
+    with nonzero/missing count-prop fields. Unknown participation and source
+    row meaning remain explicitly UNREVIEWED even after this research filter.
+    """
+    missing = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
+    if missing:
+        raise ValueError("NFL_PROP_SOURCE_COLUMNS_MISSING:" + ",".join(missing))
+    regular = frame["season_type"].astype(str).str.upper().isin(("REG", "REGULAR"))
+    absent = frame["player_id"].map(_is_missing_identity)
+    quarantine: list[dict[str, Any]] = []
+    for row_index, row in frame.loc[regular & absent].iterrows():
+        position = str(row["position"]).strip().upper() if not _is_missing_identity(row["position"]) else ""
+        if (not _is_missing_identity(row["player_display_name"])
+                or position in {"QB", "RB", "WR", "TE"}
+                or _is_missing_identity(row["game_id"])):
+            raise ValueError("NFL_PROP_SOURCE_IDENTITY_INVALID:player_id")
+        try:
+            parsed_season = float(row["season"])
+            week = float(row["week"])
+        except (TypeError, ValueError):
+            raise ValueError("NFL_PROP_SOURCE_DATE_INVALID:unattributed") from None
+        if (not math.isfinite(parsed_season) or parsed_season != season
+                or not math.isfinite(week) or not week.is_integer() or not 1 <= week <= 18):
+            raise ValueError("NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE")
+        counts = pd.to_numeric(pd.Series({field: row[field] for field in COUNT_COLUMNS}), errors="coerce")
+        if not np.isfinite(counts.to_numpy(dtype=float)).all() or counts.ne(0).any():
+            raise ValueError("NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING")
+        record = {
+            "source_line": int(row_index) + 2, "source_season": season,
+            "game_id": str(row["game_id"]).strip(), "week": int(week),
+            "position_token": position, "count_fields_all_zero": True,
+            "source_identity_unresolved": True,
+        }
+        record["audit_sha256"] = _json_digest(record)
+        quarantine.append(record)
+    return frame.drop(index=[entry["source_line"] - 2 for entry in quarantine]), quarantine
+
+
 def load_source_files(
     directory: Path, *, expected_sha256: dict[str, str] | None = None
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -72,6 +120,7 @@ def load_source_files(
     directory = Path(directory)
     frames = []
     assets = {}
+    identity_quarantine: list[dict[str, Any]] = []
     for season in SEASONS:
         path = directory / f"stats_player_week_{season}.csv"
         if not path.is_file():
@@ -83,15 +132,21 @@ def load_source_files(
         frame = pd.read_csv(io.BytesIO(blob), low_memory=False)
         # A filename does not establish season coverage. Validate *each* snapshot
         # before combining seasons so an empty/mislabelled file cannot be masked.
-        checked = validate_frame(frame)
+        eligible, unattributed = _quarantine_unattributed_zero_stat_rows(frame, season)
+        checked = validate_frame(eligible)
+        identity_quarantine.extend(unattributed)
         if not checked["season"].eq(season).all():
             raise ValueError(f"NFL_PROP_SOURCE_SEASON_MISMATCH:{season}")
-        assets[str(season)] = {"file": path.name, "sha256": actual_sha256, "rows": len(frame)}
+        assets[str(season)] = {"file": path.name, "sha256": actual_sha256, "rows": len(frame), "model_rows": len(checked), "unattributed_identity_rows": len(unattributed)}
         frames.append(checked)
     provenance = {
         "provider": "NFLVERSE_STATS_PLAYER", "license_claim": "CC-BY-4.0",
         "source_rights_independently_approved": False,
-        "release_hashes_verified": expected_sha256 is not None,
+        "caller_expected_hashes_matched": expected_sha256 is not None,
+        "release_hashes_verified": (expected_sha256 is not None
+                                    and expected_sha256 == EXPECTED_RELEASE_SHA256),
+        "unattributed_identity_quarantine": identity_quarantine,
+        "source_identity_quarantine_independently_reviewed": False,
         "assets": assets, "bundle_sha256": _json_digest(assets),
         "can_execute": False,
     }
