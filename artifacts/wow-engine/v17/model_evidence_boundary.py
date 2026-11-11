@@ -210,7 +210,10 @@ def build_evidence_scope(
     contract declares) are used. A missing family/version stays unresolved; it is
     never inferred from a sport, a feature name or another model.
     """
-    fallback = _mlb_identity() if _text(sport).upper() == "MLB" else _nfl_identity()
+    sport_key = _text(sport).upper()
+    # Only use repository contracts belonging to this exact sport. Another
+    # sport must provide its own served schema, never inherit NFL metadata.
+    fallback = _mlb_identity() if sport_key == "MLB" else _nfl_identity() if sport_key == "NFL" else {}
     model_family = _text(result.get("model_family")) or fallback.get("model_family", "")
     artifact_version = (
         _text(result.get("model_artifact_version"))
