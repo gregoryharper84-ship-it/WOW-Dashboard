@@ -105,9 +105,10 @@ live SHA `e7384b9d…` with `verdict_class=MODEL_REJECTED`,
 `model_evaluated=true`, `infrastructure_blocked=false`, and non-empty
 `concurrent_infrastructure_blockers` on the same rejected decision — sanitized
 receipt from `v17-daily-a2b7f50e-…` at `2026-11-09T15:35:34Z`).
-Items 4–5 (`REQUESTED_ROW_LIMIT_ZERO`, Action vs specialist scoring split)
-remain deployed but not independently observed. Ledger status stays
-`DEPLOYED_PENDING_VERIFY` until those two residual observations land. Evidence:
+Item 4 (`REQUESTED_ROW_LIMIT_ZERO`) was independently observed on the #2585
+production canary. Item 5's backend pair was observed, but its host three-field
+receipt remains pending. Ledger status stays `DEPLOYED_PENDING_VERIFY` until
+that receipt is independently observed. Evidence:
 `engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 
 ## Closure Evidence (2026-11-10)
