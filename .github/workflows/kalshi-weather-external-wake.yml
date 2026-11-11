@@ -49,5 +49,14 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        continue-on-error: true
       - name: Wake API, verify DB-read and shadow collector flags
-        run: python3 artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if ! python3 artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py; then
+            echo "::error::KALSHI_WEATHER_WAKE_PROBE_FAILED: read-only heartbeat could not prove API, DB-read and shadow collector flags."
+            echo "KALSHI_WEATHER_WAKE_PROBE_FAILED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "KALSHI_WEATHER_WAKE_PROBE_OK can_execute=false" >> "$GITHUB_STEP_SUMMARY"

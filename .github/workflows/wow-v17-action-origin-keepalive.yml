@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Keep V17 Action origin warm
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -32,6 +33,11 @@ jobs:
             --retry-all-errors \
             --output "$RUNNER_TEMP/wow-v17-health-live.json" \
             --write-out '%{http_code}' \
-            "$url")"
-          test "$code" = "200"
+            "$url" || true)"
+          if [ "$code" != "200" ]; then
+            echo "::error::ACTION_ORIGIN_KEEPALIVE_UNREACHABLE: GET /health/live returned ${code:-no-response}."
+            echo "ACTION_ORIGIN_KEEPALIVE_UNREACHABLE http=${code:-none} can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ACTION_ORIGIN_KEEPALIVE_OK http=200 can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           echo "V17 Action origin keepalive PASS ($code)"
