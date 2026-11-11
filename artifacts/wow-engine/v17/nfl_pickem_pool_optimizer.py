@@ -14,6 +14,7 @@ malformed probability packages still fail closed.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from math import isclose, isfinite
 from typing import Any, Iterable, Mapping
 
@@ -125,6 +126,83 @@ def _typed_failure(row: Mapping[str, Any]) -> str | None:
         if token in _TYPED_MODEL_FAILURES or token.startswith("STALE_MODEL_OUTPUT"):
             return STALE_MODEL_OUTPUT if token.startswith("STALE_MODEL_OUTPUT") else token
     return None
+
+
+
+def _aware_timestamp(value: Any) -> datetime | None:
+    """Reject offset-naive or malformed source timestamps; never assume UTC."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        stamp = value if isinstance(value, datetime) else datetime.fromisoformat(
+            str(value).strip().replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return stamp if stamp.tzinfo is not None and stamp.utcoffset() is not None else None
+
+
+def _pregame_material_update_gate(
+    row: Mapping[str, Any],
+    identity: Mapping[str, str | None],
+) -> tuple[str, list[str]]:
+    """Verify time/order and model-lineage receipt links for supplied updates.
+
+    A schedule's fetched_at is NOT a material QB/lineup update. This gate acts
+    only on event-specific material_pregame_updates supplied by the owning
+    scorer/source; it never invents availability or changes a model pick.
+    """
+    envelope = row.get("candidate_envelope")
+    envelope = envelope if isinstance(envelope, Mapping) else {}
+    kickoff_raw = envelope.get("event_start_time_utc") or row.get("event_start_time_utc")
+    model_raw = _model_timestamp(row)
+    if kickoff_raw is not None:
+        kickoff = _aware_timestamp(kickoff_raw)
+        model_time = _aware_timestamp(model_raw)
+        if kickoff is None or model_time is None:
+            return "INVALID_CHRONOLOGY", ["PICKEM_PREGAME_CHRONOLOGY_INVALID"]
+        if model_time >= kickoff:
+            return "POST_KICKOFF_MODEL", ["PICKEM_MODEL_RECEIPT_NOT_BEFORE_KICKOFF"]
+    else:
+        kickoff = None
+        model_time = None
+
+    updates = row.get("material_pregame_updates")
+    if updates is None:
+        return "NO_MATERIAL_UPDATE_RECEIPTS_SUPPLIED", []
+    if not isinstance(updates, (list, tuple)) or len(updates) > 64:
+        return "INVALID_MATERIAL_UPDATE_RECEIPTS", ["PICKEM_MATERIAL_UPDATE_RECEIPTS_INVALID"]
+    if not updates:
+        return "NO_MATERIAL_UPDATE_RECEIPTS_SUPPLIED", []
+    if kickoff is None or model_time is None:
+        return "INVALID_CHRONOLOGY", ["PICKEM_MATERIAL_UPDATE_KICKOFF_REQUIRED"]
+
+    linked = row.get("model_material_context_receipt_ids")
+    if not isinstance(linked, (list, tuple, set, frozenset)):
+        return "MODEL_CONTEXT_UNPROVEN", ["PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED"]
+    linked_ids = {str(value).strip() for value in linked if isinstance(value, str)}
+    seen: set[str] = set()
+    for update in updates:
+        if not isinstance(update, Mapping):
+            return "INVALID_MATERIAL_UPDATE_RECEIPTS", ["PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID"]
+        receipt_id = _text(update.get("evidence_receipt_id"))
+        timestamp = _aware_timestamp(update.get("observed_at_utc"))
+        event_id = _text(update.get("official_event_id"))
+        change_type = _text(update.get("change_type"))
+        if (
+            not receipt_id or not change_type or not timestamp
+            or event_id != identity.get("official_event_id")
+            or receipt_id in seen
+        ):
+            return "INVALID_MATERIAL_UPDATE_RECEIPTS", ["PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID"]
+        seen.add(receipt_id)
+        if timestamp >= kickoff:
+            return "POST_KICKOFF_UPDATE", ["PICKEM_POST_KICKOFF_UPDATE_NOT_PREGAME"]
+        if timestamp > model_time:
+            return "MODEL_RERUN_REQUIRED", ["PICKEM_MATERIAL_UPDATE_AFTER_MODEL_RERUN_REQUIRED"]
+        if receipt_id not in linked_ids:
+            return "MODEL_CONTEXT_UNPROVEN", ["PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPT_UNLINKED"]
+    return "MODEL_CONTEXT_RECEIPTS_MATCHED", []
 
 
 def _selection_bounds(
@@ -432,6 +510,15 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
             identity=identity,
         )
 
+    material_status, material_blockers = _pregame_material_update_gate(row, identity)
+    if material_blockers:
+        return _blocked(
+            row,
+            source_status=STALE_MODEL_OUTPUT if material_status == "MODEL_RERUN_REQUIRED" else MODEL_INPUTS_INSUFFICIENT,
+            blockers=material_blockers,
+            identity=identity,
+        )
+
     gap = abs(home_p - away_p)
     review_profile = pickem_review_profile(
         selected_probability=selected_p,
@@ -459,6 +546,8 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
         "source_prediction_id": _text(row.get("prediction_id") or row.get("event_prediction_id")),
         "immutable_model_timestamp": _model_timestamp(row),
         "source_snapshot_id": _source_snapshot_id(row),
+        "pregame_material_update_status": material_status,
+        "starting_qb_availability_independently_verified": False,
         "source_model_status": _text(row.get("code") or row.get("terminal_status")),
         "source_terminal_label": row.get("terminal_label"),
         "source_probability_publishable": row.get("probability_publishable") is True,
@@ -503,6 +592,7 @@ def build_pickem_board(
             "high_confidence_hold_count": 0,
             "model_side_fragility_review_count": 0,
             "toss_up_review_count": 0,
+            "material_update_evidence_missing_count": 0,
             "picks": [],
             "blocked": [],
             "can_execute": False,
@@ -568,6 +658,10 @@ def build_pickem_board(
         "model_side_fragility_review_count": sum(
             1 for pick in picks
             if pick.get("pickem_review_class") == PICKEM_REVIEW_MODEL_SIDE_FRAGILITY
+        ),
+        "material_update_evidence_missing_count": sum(
+            1 for pick in picks
+            if pick.get("pregame_material_update_status") == "NO_MATERIAL_UPDATE_RECEIPTS_SUPPLIED"
         ),
         "toss_up_review_count": sum(
             1 for pick in picks
