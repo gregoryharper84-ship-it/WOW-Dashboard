@@ -77,12 +77,13 @@ def reconcile_player_games(
     ].copy()
     for field in ("season", "week", "offense_snaps"):
         values = pd.to_numeric(snap[field], errors="coerce")
-        if not np.isfinite(values.to_numpy(dtype=float)).all():
+        if (not np.isfinite(values.to_numpy(dtype=float)).all()
+                or (field == "offense_snaps" and values.lt(0).any())):
             raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:" + field)
         snap[field] = values
     if (snap["season"].isin(SEASONS) == False).any() or (
         (snap["week"] < 1) | (snap["week"] > 18) | (snap["week"] % 1 != 0)
-    ).any() or (snap["offense_snaps"] < 0).any():
+    ).any():
         raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:scope")
     snap = snap.loc[snap.offense_snaps.gt(0)].copy()
     if snap.empty:
