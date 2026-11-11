@@ -290,6 +290,26 @@ def test_expected_slate_larger_than_ledger_events_is_flagged_fail_closed():
     assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
 
 
+def test_projected_minimum_cannot_hide_an_ungradeable_slate_game():
+    # Reproduction: 99 current grades + one good + one irrevocably late
+    # prediction satisfies the numeric minimum but not full-slate readiness.
+    db = _ReadOnlyDB(
+        graded=99,
+        predictions=[
+            _prediction("slate-good"),
+            _prediction("slate-late", created="2026-11-15T19:00:00+00:00"),
+        ],
+    )
+    report = project_forward_cohort(db, slate_date=SLATE, expected_slate_games=2)
+    assert report["projected_graded_n"] == 100
+    assert report["slate_coverage_verified"] is True
+    assert report["cannot_grade_n"] == 1
+    assert report["status"] == "HOLD_SLATE_EVENTS_CANNOT_GRADE"
+    assert "NFL_FORWARD_SLATE_EVENTS_CANNOT_GRADE:1" in report["blockers"]
+    assert report["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert report["can_execute"] is False
+
+
 def test_observed_slate_exceeds_expected_is_a_coverage_hold():
     db = _ReadOnlyDB(graded=99, predictions=[_prediction("slate-1"), _prediction("slate-2")])
     report = project_forward_cohort(db, slate_date=SLATE, expected_slate_games=1)
