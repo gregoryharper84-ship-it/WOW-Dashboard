@@ -1171,7 +1171,12 @@ def evaluate_fitted_model_promotion(
     # Always replay the parsed artifact.  A caller-supplied receipt is never
     # trusted, even when its identity/corpus fields happen to match: its
     # metrics, blockers or status may be stale or tampered.
-    replay = replay_fitted_artifact(parsed, required_metrics=required_metrics)
+    # Publication/promotion cannot weaken the holdout-scoring contract by
+    # requesting only row_n (or an empty custom metric subset). Read-only
+    # research replay may narrow metrics, but the promotion decision must
+    # always reproduce the complete Brier, log-loss, and ECE evidence triad.
+    promotion_metrics = tuple(dict.fromkeys((*DEFAULT_REQUIRED_METRICS, *required_metrics)))
+    replay = replay_fitted_artifact(parsed, required_metrics=promotion_metrics)
     if replay["status"] != REPLAY_PASS:
         return _promotion_packet(
             status=PROMOTION_BLOCKED,
