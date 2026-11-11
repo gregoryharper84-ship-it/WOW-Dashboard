@@ -132,19 +132,27 @@ an exact immutable readback:
   calibration bias, lower-bound gap) are one **global** snapshot. The code
   proves the exact-version *count* and requires that global row to say `PASS`;
   it does not recompute those metrics for a single model version. G4 stays on
-  hold until version-scoped health evidence exists, because a mixed-version
-  global `PASS` would otherwise satisfy the count check on its own.
+  **HOLD** until independently verified, exact-version health evidence shows
+  that this same version passes **every G2 metric**. Merely producing the
+  version-scoped evidence is insufficient; a mixed-version global `PASS` cannot
+  substitute for passing version-specific metrics.
 - **Blocker today:** `NFL_FORWARD_CERTIFICATION_UNPROVEN`.
-- **Note:** a global PASS earned by another fitted model version cannot be
-  borrowed. Mixed-version cohorts do not count.
+- **Note:** A mixed-version global `PASS`, even with enough exact-version
+  grades, does not prove that this version passes the G2 metrics.
 
-**Ordering note.** G1–G4 are pre-promotion evidence; G5 is the promotion
-*decision*. The full `_forward_certification_proven()` predicate additionally
-requires the artifact row to be `active`, `promoted` and
-`probability_publishable`, and those flags only exist after G5, so that
-predicate is a receipt-time check evaluated on scored rows. It is not a
-precondition for making the G5 decision, and G4 does not require promotion to
-have happened already.
+**Evidence-production and ordering HOLD.** The existing NFL scorer needs an
+active, promoted champion and calibrator before it produces publishable rows.
+No independently authorized pre-G5 producer of exact-version prospective grades
+is verified here. Existing immutable pregame rows may supply G4 evidence only
+when their production authority, model version and current settlement are
+independently verified; the scorer cannot be assumed to bootstrap G4 before G5.
+G5 is a separate governed promotion decision, not permission for an agent to
+activate an artifact to produce missing evidence. The full
+`_forward_certification_proven()` receipt-time predicate also requires the
+artifact to be active, promoted and publishable, so G4/G5 are not proven as a
+working pre-promotion sequence. Keep G4 and promotion/publication on HOLD until
+an authorized, independently reviewed evidence-collection path and passing
+exact-version G2 health are demonstrated.
 
 ### G5 — Artifact and calibrator promotion (governance decision)
 
@@ -276,8 +284,13 @@ calibration-health row. Only the reporting step inside that job is read-only.
 POST /internal/v17/nfl-forward-cohort-preflight   (OIDC-authenticated)
   {"slate_date": "<US/Eastern gameday>", "expected_slate_games": <n>}
 
-or, against a read-only database client:
-python -m v17.nfl_forward_cohort_preflight --slate-date <date> --expected-slate-games <n>
+or, from the repository root in an approved isolated environment:
+PYTHONPATH=artifacts/wow-engine python -m v17.nfl_forward_cohort_preflight --slate-date <date> --expected-slate-games <n>
+
+The CLI's current `_client()` obtains a Supabase service credential; its
+code path is read-only, but that credential is **not** a read-only role.
+Do not use the CLI as proof of least-privilege production access. Use a
+separately restricted client when performing an authorized production read.
 ```
 
 Omitting `expected_slate_games` leaves slate coverage unverified, so the
