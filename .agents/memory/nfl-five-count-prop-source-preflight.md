@@ -95,3 +95,14 @@
 - **prevention_artifact:** `scripts/audit_nfl_count_prop_participation.py` participation_breakdown, `tests/test_nfl_count_prop_participation_audit.py` per-stratum sum/unknown preservation tests, and PR-only `test_pr2605_observe_official_source_reconciliation` hosted receipt. Hosted rapid run 43098818705 at preceding head 5c19c835: 656 PASS, 1 diagnostic SKIP including source receipt; new head requires fresh CI.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605 and https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2020#issuecomment-6807280418
 - **production_evidence:** None; verified source bytes are not fitted specialist or independent semantic approvals, can_execute=false, V17_TERMINAL_REDUCER.
+
+## Pinned PBP event-presence classification — 2026-11-11
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PBP_SOURCE_DIGEST_MISMATCH; NFL_PROP_PBP_EVENT_SCHEMA_INVALID; NFL_PROP_PBP_RECONCILIATION_DRIFT; HOLD_PBP_PRESENCE_ONLY
+- **mechanism:** Frozen official weekly count-stat tables omit 3,994 mapped offensive-snap participant-games and 48 unmatched PFR identities. Season- and position-stratified evidence predicts a sparse weekly summary, but neither missing weekly rows nor missing play-by-play actor mentions establish verified count-zero outcomes. Blindly zero-filling risks label-selection bias and bad fitting.
+- **detection_point:** Real-data source acquisition and canonical positive-offense-snap participation audit, before any candidate training/calibration/2025 untouched holdout.
+- **fix:** Reuse the trusted approved-host downloader for the five released 2021–2025 PBP .csv.gz assets, SHA-256 + byte-size pin each exact archive, parse the verified same bytes in chunks, and distinguish present actor, absent actor, and absent game with explicit non-serving HOLD. Normalize known PFR-to-GSIS IDs using canonical rules and reject identity reconciliation drift. Never infer an absent event as zero.
+- **prevention_artifact:** scripts/audit_nfl_count_prop_pbp_presence.py; 12 synthetic regression cases in tests/test_nfl_count_prop_pbp_presence.py; existing PR-branch-only rapid-runner source observation extended to attempt all five PBP archives and report a typed HOLD when unavailable. Hosted exact-head replay pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no fitted specialist, promoted probability, independent semantic review, trust-root release authorization, production deploy or trade permission. can_execute=false, V17_TERMINAL_REDUCER.
