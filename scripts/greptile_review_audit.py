@@ -225,6 +225,17 @@ def audit(client: GitHubReadOnly, repository: str, max_prs: int = 0) -> dict[str
             # Stop on rate-limit/auth error; no free-provider retry storms.
             if "GITHUB_HTTP_403" in str(exc) or "GITHUB_HTTP_429" in str(exc):
                 break
+    # An open PR or its exact head can change while GitHub pagination runs.
+    # A second inventory prevents a moving target from appearing fully audited.
+    if not any("GITHUB_HTTP_403" in e["error"] or "GITHUB_HTTP_429" in e["error"] for e in errors):
+        try:
+            refreshed = client.pulls(repository)
+            old_ids = {(p["number"], p["head_sha"]) for p in source}
+            new_ids = {(p["number"], p["head_sha"]) for p in refreshed}
+            if len(old_ids) != len(source) or len(new_ids) != len(refreshed) or old_ids != new_ids:
+                errors.append({"pr": None, "error": "GITHUB_OPEN_PR_INVENTORY_DRIFT"})
+        except (AuditUnavailable, KeyError, TypeError) as exc:
+            errors.append({"pr": None, "error": str(exc)[:120]})
     outstanding = [p for p in rows if p["unresolved_threads"]]
     not_exact = [p for p in rows if p["exact_head_greptile_reviews"] == 0]
     if errors or partial or len(rows) != len(source):
