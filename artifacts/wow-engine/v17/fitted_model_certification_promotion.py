@@ -34,9 +34,10 @@ privileged, separately reviewed registry mutation -- not a mutation.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
+import hmac
 import json
 import math
 from typing import Any, Iterable, Mapping, Sequence
@@ -95,6 +96,15 @@ _METRIC_ALIASES = {
 }
 
 _HEX = frozenset("0123456789abcdef")
+
+# Only this role may sign a promotion authorization.  The approval key is held by
+# the independent governance boundary; callers of the internal route never hold
+# it, so a request cannot invent a reviewer identity or role.
+AUTHORIZED_REVIEWER_ROLES = frozenset({"INDEPENDENT_MODEL_REVIEWER"})
+APPROVAL_KEY_ENV = "WOW_FITTED_PROMOTION_APPROVAL_KEY"
+APPROVAL_SIGNATURE_PREFIX = "hmac-sha256:"
+POLICY_SIGNATURE_VERSION = "V17_FITTED_MODEL_POLICY_SIGNATURE_V1"
+AUTHORIZATION_SIGNATURE_VERSION = "V17_FITTED_MODEL_AUTHORIZATION_SIGNATURE_V1"
 
 
 class FittedCertificationError(ValueError):
@@ -458,12 +468,32 @@ def _ece(confidences: Sequence[float], outcomes: Sequence[float], bins: int = 10
     return total
 
 
-def compute_replay_metrics(rows: Sequence[FittedReplayRow]) -> dict[str, Any]:
-    """Deterministically recompute settled-row metrics from frozen predictions."""
-    settled = [row for row in rows if row.settlement_state == "SETTLED"]
+def compute_replay_metrics(
+    rows: Sequence[FittedReplayRow],
+    *,
+    partition: str = "TEST",
+) -> dict[str, Any]:
+    """Recompute held-out metrics from frozen predictions in one partition.
+
+    Certification and promotion gates use TEST only.  TRAIN and CALIBRATION
+    rows remain part of corpus identity and chronological validation, but they
+    are never allowed to improve or dilute the holdout score.
+    """
+    if partition not in PARTITIONS:
+        raise FittedCertificationError("FITTED_CERTIFICATION_PARTITION_INVALID")
+    settled = [
+        row
+        for row in rows
+        if row.partition == partition and row.settlement_state == "SETTLED"
+    ]
     if not settled:
         raise FittedCertificationError("FITTED_CERTIFICATION_NO_SETTLED_ROWS")
-    binary = len(settled[0].probabilities) == 1
+    arities = {len(row.probabilities) for row in settled}
+    if len(arities) != 1:
+        raise FittedCertificationError(
+            "FITTED_CERTIFICATION_PROBABILITY_ARITY_INCONSISTENT"
+        )
+    binary = next(iter(arities)) == 1
     brier: list[float] = []
     log_loss: list[float] = []
     confidence: list[float] = []
@@ -587,6 +617,8 @@ def replay_fitted_artifact(
     event_partition: dict[str, str] = {}
     event_bounds: dict[str, tuple[str, datetime]] = {}
     settled_valid = True
+    arity_consistent = True
+    probability_arity: int | None = None
 
     for row in parsed.rows:
         partition_counts[row.partition] += 1
@@ -616,6 +648,11 @@ def replay_fitted_artifact(
             blockers.append("FITTED_CERTIFICATION_CONTROLLING_SPECIALIST_MISMATCH")
 
         probabilities = row.probabilities
+        if probability_arity is None:
+            probability_arity = len(probabilities)
+        elif len(probabilities) != probability_arity:
+            blockers.append("FITTED_CERTIFICATION_PROBABILITY_ARITY_INCONSISTENT")
+            arity_consistent = False
         if any(not 0.0 < value < 1.0 for value in probabilities):
             blockers.append("FITTED_CERTIFICATION_PROBABILITY_DOMAIN_INVALID")
         # Binary lanes carry one class-positive probability p; only an explicit
@@ -673,7 +710,7 @@ def replay_fitted_artifact(
         blockers.append("FITTED_CERTIFICATION_CORPUS_SHA256_MISMATCH")
 
     metrics: dict[str, Any] = {}
-    if settled_valid and partition_settled_counts["TEST"] > 0:
+    if settled_valid and arity_consistent and partition_settled_counts["TEST"] > 0:
         try:
             metrics = compute_replay_metrics(parsed.rows)
         except FittedCertificationError as exc:
@@ -764,6 +801,7 @@ class PromotionPolicy:
     ratified_by: str
     ratified_at: str
     notes: str = ""
+    signature: str = ""
     can_execute: bool = CAN_EXECUTE
 
     def __post_init__(self) -> None:
@@ -811,12 +849,18 @@ class PromotionPolicy:
             "ratified_by": self.ratified_by,
             "ratified_at": self.ratified_at,
             "notes": self.notes,
+            "signature": self.signature,
             "can_execute": False,
         }
 
+    def signing_payload(self) -> dict[str, Any]:
+        """Return the policy content covered by the governance signature."""
+        return {key: value for key, value in self.as_dict().items() if key != "signature"}
+
     @property
     def policy_sha256(self) -> str:
-        return _sha(self.as_dict())
+        """Content-addressed policy identity, independent of signature encoding."""
+        return _sha(self.signing_payload())
 
     def matches(self, sport: str, surface: str) -> bool:
         return (
@@ -839,6 +883,7 @@ class PromotionAuthorization:
     reviewer_role: str
     decision: str
     decided_at: str
+    signature: str = ""
     can_execute: bool = CAN_EXECUTE
 
     def __post_init__(self) -> None:
@@ -861,6 +906,10 @@ class PromotionAuthorization:
             "artifact_checksum",
             _hash64(self.artifact_checksum, "PROMOTION_AUTHORIZATION_ARTIFACT_CHECKSUM_INVALID"),
         )
+        role = str(self.reviewer_role or "").strip().upper()
+        if role not in AUTHORIZED_REVIEWER_ROLES:
+            raise FittedCertificationError("PROMOTION_AUTHORIZATION_REVIEWER_ROLE_NOT_AUTHORIZED")
+        object.__setattr__(self, "reviewer_role", role)
         _instant(self.decided_at, "PROMOTION_AUTHORIZATION_DECIDED_AT_INVALID")
         if self.can_execute is not False:
             raise FittedCertificationError("PROMOTION_AUTHORIZATION_CAN_EXECUTE_FORBIDDEN")
@@ -875,12 +924,68 @@ class PromotionAuthorization:
             "reviewer_role": self.reviewer_role,
             "decision": self.decision,
             "decided_at": self.decided_at,
+            "signature": self.signature,
             "can_execute": False,
         }
 
+    def signing_payload(self) -> dict[str, Any]:
+        """Return the authorization content covered by the approval signature."""
+        return {key: value for key, value in self.as_dict().items() if key != "signature"}
+
     @property
     def authorization_sha256(self) -> str:
-        return _sha(self.as_dict())
+        """Content-addressed authorization identity, independent of signature encoding."""
+        return _sha(self.signing_payload())
+
+
+def _approval_signature(payload: Mapping[str, Any], key: str | None) -> str:
+    """Return the keyed approval digest for an exact policy/auth payload."""
+    if not isinstance(key, str) or not key:
+        raise FittedCertificationError("PROMOTION_APPROVAL_KEY_UNAVAILABLE")
+    digest = hmac.new(
+        key.encode("utf-8"),
+        _canonical(payload),
+        sha256,
+    ).hexdigest()
+    return f"{APPROVAL_SIGNATURE_PREFIX}{digest}"
+
+
+def sign_policy(policy: PromotionPolicy, key: str) -> PromotionPolicy:
+    """Return a copy signed by the independent governance approval boundary."""
+    return replace(policy, signature=_approval_signature(policy.signing_payload(), key))
+
+
+def sign_authorization(
+    authorization: PromotionAuthorization,
+    key: str,
+) -> PromotionAuthorization:
+    """Return a copy signed by the independent governance approval boundary."""
+    return replace(
+        authorization,
+        signature=_approval_signature(authorization.signing_payload(), key),
+    )
+
+
+def verify_policy_signature(
+    policy: PromotionPolicy,
+    key: str | None,
+) -> PromotionPolicy:
+    """Fail closed unless the policy carries the exact governance signature."""
+    expected = _approval_signature(policy.signing_payload(), key)
+    if not hmac.compare_digest(str(policy.signature or ""), expected):
+        raise FittedCertificationError("PROMOTION_POLICY_SIGNATURE_INVALID")
+    return policy
+
+
+def verify_authorization_signature(
+    authorization: PromotionAuthorization,
+    key: str | None,
+) -> PromotionAuthorization:
+    """Fail closed unless the authorization carries the exact approval signature."""
+    expected = _approval_signature(authorization.signing_payload(), key)
+    if not hmac.compare_digest(str(authorization.signature or ""), expected):
+        raise FittedCertificationError("PROMOTION_AUTHORIZATION_SIGNATURE_INVALID")
+    return authorization
 
 
 def _authorization_blockers(
@@ -929,15 +1034,28 @@ def _policy_gate_blockers(
         blockers.append("PROMOTION_POLICY_NOT_RATIFIED")
 
     metrics = replay.get("metrics") or {}
-    settled_n = metrics.get("row_n")
-    if not isinstance(settled_n, int) or isinstance(settled_n, bool):
+    partition_settled = replay.get("partition_settled_counts")
+    if not isinstance(partition_settled, Mapping):
         blockers.append("PROMOTION_POLICY_SETTLED_ROW_COUNT_UNAVAILABLE")
-    elif settled_n < policy.min_settled_rows:
+        settled_n = None
+        test_settled = 0
+    else:
+        settled_values = list(partition_settled.values())
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in settled_values):
+            blockers.append("PROMOTION_POLICY_SETTLED_ROW_COUNT_UNAVAILABLE")
+            settled_n = None
+        else:
+            settled_n = sum(settled_values)
+        test_value = partition_settled.get("TEST", 0)
+        test_settled = test_value if isinstance(test_value, int) and not isinstance(test_value, bool) else 0
+
+    if settled_n is not None and settled_n < policy.min_settled_rows:
         blockers.append("PROMOTION_POLICY_GATE_FAILED:min_settled_rows")
 
-    test_settled = (replay.get("partition_settled_counts") or {}).get("TEST", 0)
-    if not isinstance(test_settled, int) or test_settled < policy.min_test_rows:
+    if test_settled < policy.min_test_rows:
         blockers.append("PROMOTION_POLICY_GATE_FAILED:min_test_rows")
+    if isinstance(metrics.get("row_n"), int) and metrics.get("row_n") != test_settled:
+        blockers.append("PROMOTION_POLICY_TEST_ROW_COUNT_MISMATCH")
     if policy.require_test_holdout and test_settled <= 0:
         blockers.append("PROMOTION_POLICY_GATE_FAILED:test_holdout_required")
 
@@ -1035,7 +1153,6 @@ def evaluate_fitted_model_promotion(
     policy: PromotionPolicy | None = None,
     authorization: PromotionAuthorization | None = None,
     required_metrics: Sequence[str] = DEFAULT_REQUIRED_METRICS,
-    replay_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fail-closed promotion decision. Never mutates a registry or approves itself."""
     try:
@@ -1051,21 +1168,10 @@ def evaluate_fitted_model_promotion(
             blockers=(exc.code,),
         )
 
-    replay: Mapping[str, Any] | None = None
-    if replay_receipt is not None:
-        supplied_identity = replay_receipt.get("identity")
-        if (
-            isinstance(supplied_identity, Mapping)
-            and supplied_identity.get("artifact_checksum") == parsed.identity.artifact_checksum
-            and replay_receipt.get("received_corpus_sha256")
-            == parsed.identity.expected_corpus_sha256
-            and replay_receipt.get("status") in {REPLAY_PASS, REPLAY_FAILED}
-        ):
-            # Reuse the exact receipt that the caller already persisted. A
-            # mismatched/unrelated receipt is ignored and recomputed.
-            replay = dict(replay_receipt)
-    if replay is None:
-        replay = replay_fitted_artifact(parsed, required_metrics=required_metrics)
+    # Always replay the parsed artifact.  A caller-supplied receipt is never
+    # trusted, even when its identity/corpus fields happen to match: its
+    # metrics, blockers or status may be stale or tampered.
+    replay = replay_fitted_artifact(parsed, required_metrics=required_metrics)
     if replay["status"] != REPLAY_PASS:
         return _promotion_packet(
             status=PROMOTION_BLOCKED,
@@ -1241,11 +1347,12 @@ def parse_promotion_policy(payload: Mapping[str, Any]) -> PromotionPolicy:
         "max_brier",
         "max_log_loss",
         "max_ece",
-        "require_test_holdout",
-        "ratified_by",
-        "ratified_at",
-        "notes",
-    )
+        "require_test_holdout",		"ratified_by",
+		"ratified_at",
+		"notes",
+        "signature",
+	)
+
     if not isinstance(payload, Mapping):
         raise FittedCertificationError("PROMOTION_POLICY_INVALID")
     missing = [name for name in fields if name != "notes" and name not in payload]
@@ -1260,11 +1367,12 @@ def parse_promotion_authorization(payload: Mapping[str, Any]) -> PromotionAuthor
         "policy_id",
         "evidence_sha256",
         "artifact_checksum",
-        "reviewer_id",
-        "reviewer_role",
-        "decision",
-        "decided_at",
-    )
+        "reviewer_id",		"reviewer_role",
+		"decision",
+		"decided_at",
+        "signature",
+	)
+
     if not isinstance(payload, Mapping):
         raise FittedCertificationError("PROMOTION_AUTHORIZATION_INVALID")
     missing = [name for name in fields if name not in payload]
@@ -1395,7 +1503,10 @@ def build_cross_sport_matrix(
                         )
                         for authorization in sorted(matching, key=lambda item: item.authorization_id)
                     ]
-                    base = _best_result([base, *with_auth])
+                    # When a matching authorization exists, it must determine the
+                    # lane result.  Falling back to the no-authorization READY
+                    # packet would hide a rejection from the matrix.
+                    base = _best_result(with_auth)
                 results.append(base)
             best = _best_result(results)
             blockers = sorted(
@@ -1526,6 +1637,10 @@ def _empty_lane_row(sport: str, surface: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "APPROVAL_KEY_ENV",
+    "APPROVAL_SIGNATURE_PREFIX",
+    "AUTHORIZATION_SIGNATURE_VERSION",
+    "AUTHORIZED_REVIEWER_ROLES",
     "AUTOMATIC_CERTIFICATION",
     "AUTOMATIC_PROMOTION",
     "CAN_EXECUTE",
@@ -1544,6 +1659,7 @@ __all__ = [
     "PROMOTION_PACKET_VERSION",
     "PROMOTION_POLICY_REVIEW_REQUIRED",
     "PROMOTION_READY",
+    "POLICY_SIGNATURE_VERSION",
     "PROBABILITY_PUBLISHABLE",
     "REMAIN_SHADOW",
     "PromotionAuthorization",
@@ -1566,4 +1682,8 @@ __all__ = [
     "parse_promotion_policy",
     "parse_replay_row",
     "replay_fitted_artifact",
+    "sign_authorization",
+    "sign_policy",
+    "verify_authorization_signature",
+    "verify_policy_signature",
 ]

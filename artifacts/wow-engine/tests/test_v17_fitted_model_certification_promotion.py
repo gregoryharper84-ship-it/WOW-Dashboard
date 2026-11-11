@@ -30,6 +30,8 @@ from v17.fitted_model_certification_promotion import (
     parse_fitted_artifact,
     parse_replay_row,
     replay_fitted_artifact,
+    sign_authorization,
+    sign_policy,
 )
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.fitted_model_certification_service import (
@@ -49,6 +51,7 @@ CALIBRATOR_SHA = sha256(b"calibrator-checksum").hexdigest()
 CODE_SHA = sha256(b"training-code").hexdigest()[:40]
 POLICY_RATIFIED_AT = "2026-11-01T00:00:00+00:00"
 DECISION_AT = "2026-11-02T00:00:00+00:00"
+TEST_APPROVAL_KEY = "test-fitted-promotion-approval-key"
 
 
 def _row(
@@ -124,11 +127,11 @@ def _identity(rows, **overrides):
 
 def _artifact(rows=None, *, identity_overrides=None, stored_metrics=None, **overrides):
     rows = rows or _binary_rows()
+    # Stored metrics are the TEST-only holdout metrics, not an all-partition
+    # average. Computing them here keeps fixtures aligned with the contract.
+    computed = compute_replay_metrics([parse_replay_row(row) for row in rows])
     metrics = stored_metrics or {
-        # Independently hand-computed for the four-row binary corpus.
-        "brier": 0.1725,
-        "log_loss": 0.5139312537656299,
-        "ece": 0.375,
+        name: computed[name] for name in ("brier", "log_loss", "ece")
     }
     payload = {
         "identity": _identity(rows, **(identity_overrides or {})),
@@ -143,7 +146,10 @@ def _artifact(rows=None, *, identity_overrides=None, stored_metrics=None, **over
 def _rebind(artifact):
     rows = [parse_replay_row(row) for row in artifact["rows"]]
     artifact["identity"]["expected_corpus_sha256"] = corpus_sha256(rows)
-    artifact["stored_metrics"] = compute_replay_metrics(rows)
+    computed = compute_replay_metrics(rows)
+    artifact["stored_metrics"] = {
+        name: computed[name] for name in ("brier", "log_loss", "ece")
+    }
     return artifact
 
 
@@ -165,6 +171,19 @@ def _policy(**overrides):
     }
     payload.update(overrides)
     return PromotionPolicy(**payload)
+
+
+def _signed_policy(**overrides):
+    """Build a policy signed by the test governance key."""
+    return sign_policy(_policy(**overrides), TEST_APPROVAL_KEY)
+
+
+def _signed_authorization(receipt, policy, artifact, **overrides):
+    """Build an authorization signed by the test governance key."""
+    return sign_authorization(
+        _authorization(receipt, policy, artifact, **overrides),
+        TEST_APPROVAL_KEY,
+    )
 
 
 def _authorization(receipt, policy, artifact, **overrides):
@@ -192,10 +211,10 @@ def test_known_binary_replay_reproduces_metrics_and_never_authorizes():
     receipt = replay_fitted_artifact(_artifact())
     assert receipt["status"] == REPLAY_PASS
     assert receipt["blockers"] == []
-    assert receipt["metrics"]["row_n"] == 4
-    assert receipt["metrics"]["brier"] == pytest.approx(0.1725, abs=1e-12)
-    assert receipt["metrics"]["log_loss"] == pytest.approx(0.5139312537656299, abs=1e-12)
-    assert receipt["metrics"]["ece"] == pytest.approx(0.375, abs=1e-12)
+    assert receipt["metrics"]["row_n"] == 1
+    assert receipt["metrics"]["brier"] == pytest.approx(0.04, abs=1e-12)
+    assert receipt["metrics"]["log_loss"] == pytest.approx(0.22314355131420976, abs=1e-12)
+    assert receipt["metrics"]["ece"] == pytest.approx(0.2, abs=1e-12)
     assert set(receipt["verified_stored_metrics"]) == {"brier", "log_loss", "ece"}
     assert receipt["unverified_stored_metrics"] == []
     assert len(receipt["receipt_sha256"]) == 64
@@ -215,7 +234,7 @@ def test_replay_is_deterministic_and_tamper_evident():
     assert first["receipt_sha256"] == second["receipt_sha256"]
 
     tampered = copy.deepcopy(_artifact())
-    tampered["rows"][0]["probabilities"] = [0.7]
+    tampered["rows"][3]["probabilities"] = [0.7]
     result = replay_fitted_artifact(tampered)
     assert result["status"] == REPLAY_FAILED
     assert "FITTED_CERTIFICATION_CORPUS_SHA256_MISMATCH" in result["blockers"]
@@ -250,6 +269,15 @@ def test_temporal_leakage_partition_overlap_and_split_mismatch_fail_closed():
     split_mismatch = copy.deepcopy(_artifact())
     split_mismatch["split_counts"]["train_n"] = 3
     assert "FITTED_CERTIFICATION_SPLIT_COUNT_MISMATCH:TRAIN" in replay_fitted_artifact(split_mismatch)["blockers"]
+
+
+def test_mixed_probability_arity_fails_closed():
+    rows = _binary_rows()
+    rows[0]["probabilities"] = [0.3, 0.3, 0.4]
+    rows[0]["outcome"] = [0, 1, 0]
+    result = replay_fitted_artifact(_artifact(rows))
+    assert result["status"] == REPLAY_FAILED
+    assert "FITTED_CERTIFICATION_PROBABILITY_ARITY_INCONSISTENT" in result["blockers"]
 
 
 def test_multiclass_soccer_replay_and_probability_normalisation():
@@ -351,7 +379,7 @@ def test_promotion_requires_an_explicit_ratified_policy():
 
 def test_policy_metric_gate_failure_remains_shadow():
     artifact = _artifact()
-    tight = _policy(max_brier=0.10)
+    tight = _policy(max_brier=0.01)
     result = evaluate_fitted_model_promotion(artifact, policy=tight)
     assert result["status"] == REMAIN_SHADOW
     assert "PROMOTION_POLICY_GATE_FAILED:brier" in result["blockers"]
@@ -535,6 +563,24 @@ def test_matrix_covers_every_required_sport_and_surface_without_authority():
     )["matrix_sha256"] == matrix["matrix_sha256"]
 
 
+def test_matrix_keeps_matching_authorization_rejection():
+    artifact = _artifact()
+    policy = _policy()
+    receipt = replay_fitted_artifact(artifact)
+    rejection = _authorization(receipt, policy, artifact, decision="REJECT")
+    matrix = build_cross_sport_matrix(
+        [artifact],
+        policies=[policy],
+        authorizations=[rejection],
+    )
+    lane = next(
+        row for row in matrix["lanes"]
+        if row["sport"] == "NBA" and row["surface"] == "TEAM_EVENT"
+    )
+    assert lane["status"] == PROMOTION_AUTHORIZATION_INVALID
+    assert "PROMOTION_AUTHORIZATION_DECISION_NOT_APPROVE" in lane["blockers"]
+
+
 def test_matrix_policy_ambiguity_is_explicit():
     policy_a = _policy(policy_id="AMBIGUOUS_A")
     policy_b = _policy(policy_id="AMBIGUOUS_B")
@@ -581,9 +627,48 @@ class _FakeQuery:
         self.record = dict(record)
         return self
 
+    def upsert(self, record, on_conflict=None, ignore_duplicates=False):
+        self.mode = "upsert"
+        self.record = dict(record)
+        self.on_conflict = on_conflict
+        self.ignore_duplicates = ignore_duplicates
+        return self
+
+    @staticmethod
+    def _hash(value):
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+
+    def _validate_schema(self, row):
+        if row.get("surface") not in {"TEAM_EVENT", "PROP", "__UNIDENTIFIED__"}:
+            raise ValueError("wow_fitted_replay_surface")
+        if self.table_name == "wow_fitted_model_certification_replay_receipts":
+            corpus = row.get("received_corpus_sha256")
+            if corpus != "__UNIDENTIFIED__" and not self._hash(corpus):
+                raise ValueError("wow_fitted_replay_corpus_hash_shape")
+            if not self._hash(row.get("receipt_sha256")):
+                raise ValueError("wow_fitted_replay_receipt_hash_shape")
+        if self.table_name == "wow_fitted_model_promotion_receipts":
+            replay_hash = row.get("replay_receipt_sha256")
+            if replay_hash != "__UNIDENTIFIED__" and not self._hash(replay_hash):
+                raise ValueError("wow_fitted_promotion_replay_hash_shape")
+            if not self._hash(row.get("promotion_sha256")):
+                raise ValueError("wow_fitted_promotion_packet_hash_shape")
+
     def execute(self):
         rows = self.db.tables.setdefault(self.table_name, [])
-        if self.mode == "insert":
+        if self.mode in {"insert", "upsert"}:
+            self._validate_schema(self.record)
+            if self.mode == "upsert" and self.ignore_duplicates:
+                keys = [key for key in (self.on_conflict or "").split(",") if key]
+                if keys and any(
+                    all(row.get(key) == self.record.get(key) for key in keys)
+                    for row in rows
+                ):
+                    return SimpleNamespace(data=[])
             row = dict(self.record)
             row.setdefault("receipt_id", f"receipt-{len(rows) + 1}")
             rows.append(row)
@@ -635,25 +720,37 @@ def test_replay_receipt_is_idempotent_and_audit_is_explicit():
 def test_promotion_receipt_is_idempotent_and_broken_store_blocks_apply():
     db = _FakeDB()
     artifact = _artifact()
-    policy = _policy()
+    policy = _signed_policy()
     receipt = replay_fitted_artifact(artifact)
-    authorization = _authorization(receipt, policy, artifact)
+    authorization = _signed_authorization(receipt, policy, artifact)
     request = FittedPromotionRequest(
         artifact=artifact,
         policy=policy.as_dict(),
         authorization=authorization.as_dict(),
     )
-    first = run_fitted_model_promotion(request, db=db)
+    first = run_fitted_model_promotion(
+        request,
+        db=db,
+        approval_key=TEST_APPROVAL_KEY,
+    )
     assert first["status"] == PROMOTION_APPROVED
     assert first["replay_receipt_persisted"] is True
     assert first["promotion_receipt_persisted"] is True
     assert first["audit_complete"] is True
 
-    second = run_fitted_model_promotion(request, db=db)
+    second = run_fitted_model_promotion(
+        request,
+        db=db,
+        approval_key=TEST_APPROVAL_KEY,
+    )
     assert second["promotion_receipt_id"] == first["promotion_receipt_id"]
     assert second["promotion_receipt_idempotent"] is True
 
-    broken = run_fitted_model_promotion(request, db=_BrokenDB())
+    broken = run_fitted_model_promotion(
+        request,
+        db=_BrokenDB(),
+        approval_key=TEST_APPROVAL_KEY,
+    )
     assert broken["status"] == PROMOTION_BLOCKED
     assert broken["apply_packet"] is None
     assert "PROMOTION_REPLAY_RECEIPT_NOT_PERSISTED" in broken["blockers"]
@@ -667,6 +764,23 @@ def test_promotion_receipt_is_idempotent_and_broken_store_blocks_apply():
     assert replay_broken["receipt_persisted"] is False
     assert replay_broken["audit_complete"] is False
     assert replay_broken["receipt_store_error"] == "RuntimeError"
+
+
+def test_service_rejects_unsigned_policy_and_authorization():
+    db = _FakeDB()
+    request = FittedPromotionRequest(
+        artifact=_artifact(),
+        policy=_policy().as_dict(),
+    )
+    result = run_fitted_model_promotion(
+        request,
+        db=db,
+        approval_key=TEST_APPROVAL_KEY,
+    )
+    assert result["status"] == "FITTED_MODEL_CERTIFICATION_CONTRACT_FAILED"
+    assert result["code"] == "PROMOTION_TRUST_ROOT_INVALID"
+    assert "PROMOTION_POLICY_SIGNATURE_INVALID" in result["blockers"]
+    assert result["can_execute"] is False
 
 
 def test_invalid_policy_payload_is_a_typed_contract_failure():

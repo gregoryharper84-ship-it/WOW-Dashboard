@@ -63,12 +63,16 @@ can_execute=false
    governed lower-bound ordering;
 8. preserved `PUSH` / `VOID` states (never silently dropped and never used as
    binary targets);
-9. deterministic reproduction of stored Brier, log-loss, and ECE metrics;
+9. deterministic reproduction of stored **TEST-only** Brier, log-loss, and ECE
+   metrics; TRAIN and CALIBRATION rows are never used to dilute the holdout
+   score;
 10. explicit reporting of stored metrics that were not reproduced
     (`unverified_stored_metrics`).
 
 Binary lanes carry one class-positive probability and are not required to sum to
-1. Multi-outcome lanes must normalise to 1 within `1e-9`.
+1. Multi-outcome lanes must normalise to 1 within `1e-9`. A corpus may not mix
+binary and multi-outcome rows: every row must share one probability arity, and a
+mixed corpus fails with `FITTED_CERTIFICATION_PROBABILITY_ARITY_INCONSISTENT`.
 
 A receipt is content-addressed by `receipt_sha256`. Replays are deterministic:
 the same artifact and corpus produce the same digest.
@@ -76,20 +80,28 @@ the same artifact and corpus produce the same digest.
 ## Promotion decision
 
 A promotion policy is never invented. The caller must supply a `RATIFIED`
-policy with explicit thresholds:
+policy with explicit thresholds, and the service accepts it only when its
+`signature` verifies against the governance-held approval key:
 
 ```text
-min_settled_rows
-min_test_rows
-max_brier
-max_log_loss
-max_ece
+min_settled_rows   # total settled rows across all partitions
+min_test_rows      # settled TEST rows required for the holdout
+max_brier          # TEST-only gate
+max_log_loss       # TEST-only gate
+max_ece            # TEST-only gate
 require_test_holdout
 ratified_by
 ratified_at
 scope_sport (ALL or exact sport)
 scope_surface (ALL, TEAM_EVENT, or PROP)
+signature
 ```
+
+The signed policy and authorization are verified at the service boundary with
+HMAC-SHA-256 using `WOW_FITTED_PROMOTION_APPROVAL_KEY`. The key belongs to the
+independent governance approval boundary; it is never supplied by an internal
+route caller. Missing or invalid signatures fail closed as
+`PROMOTION_TRUST_ROOT_INVALID`.
 
 Statuses, in fail-closed order:
 
@@ -110,7 +122,8 @@ An authorization must bind:
 - the policy ID;
 - an `APPROVE` decision at or after policy ratification;
 - a reviewer distinct from the artifact author;
-- an independent reviewer role.
+- the authorized `INDEPENDENT_MODEL_REVIEWER` role;
+- a valid `signature` over the authorization fields.
 
 The approved packet is a proposal only:
 
@@ -166,6 +179,9 @@ Migration:
 Both tables:
 
 - enforce `probability_publishable=false` and `can_execute=false`;
+- explicitly permit `__UNIDENTIFIED__` only for the identity/sentinel fields when
+  a malformed packet cannot be named, while still requiring a content-addressed
+  `receipt_sha256` and `promotion_sha256`;
 - enforce content-addressed unique identities;
 - reject update and delete through an append-only trigger;
 - enable RLS;

@@ -7,6 +7,7 @@ replay evidence and governed-apply packets for independent review.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping
 
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17.fitted_model_certification_promotion import (
+    APPROVAL_KEY_ENV,
     CAN_EXECUTE,
     DEFAULT_REQUIRED_METRICS,
     PROMOTION_APPROVED,
@@ -26,10 +28,18 @@ from v17.fitted_model_certification_promotion import (
     parse_promotion_authorization,
     parse_promotion_policy,
     replay_fitted_artifact,
+    verify_authorization_signature,
+    verify_policy_signature,
 )
 
 REPLAY_TABLE = "wow_fitted_model_certification_replay_receipts"
 PROMOTION_TABLE = "wow_fitted_model_promotion_receipts"
+REPLAY_CONFLICT_COLUMNS = (
+    "artifact_id,artifact_checksum,received_corpus_sha256,verifier_version,receipt_sha256"
+)
+PROMOTION_CONFLICT_COLUMNS = (
+    "artifact_id,artifact_checksum,policy_sha256,authorization_sha256,promotion_sha256"
+)
 REPLAY_OPERATION_ID = "runWowV17FittedModelCertificationReplay"
 PROMOTION_OPERATION_ID = "runWowV17FittedModelPromotionDecision"
 MATRIX_OPERATION_ID = "runWowV17FittedModelCertificationMatrix"
@@ -75,9 +85,38 @@ def _find_one(db: Any, table: str, filters: Mapping[str, Any]) -> dict[str, Any]
     return rows[0] if rows else None
 
 
-def _insert(db: Any, table: str, record: Mapping[str, Any]) -> dict[str, Any]:
-    rows = _rows(db.table(table).insert(dict(record)).execute())
-    return rows[0] if rows else dict(record)
+def _insert_idempotent(
+    db: Any,
+    table: str,
+    record: Mapping[str, Any],
+    filters: Mapping[str, Any],
+    conflict_columns: str,
+) -> tuple[dict[str, Any], bool]:
+    """Insert once and resolve a concurrent duplicate to the existing row."""
+    query = db.table(table)
+    rows: list[dict[str, Any]] = []
+    insert_error: Exception | None = None
+    if hasattr(query, "upsert"):
+        rows = _rows(
+            query.upsert(
+                dict(record),
+                on_conflict=conflict_columns,
+                ignore_duplicates=True,
+            ).execute()
+        )
+    else:
+        try:
+            rows = _rows(query.insert(dict(record)).execute())
+        except Exception as exc:  # duplicate race or real store failure
+            insert_error = exc
+    if rows:
+        return rows[0], False
+    existing = _find_one(db, table, filters)
+    if existing is not None:
+        return existing, True
+    if insert_error is not None:
+        raise insert_error
+    raise RuntimeError("RECEIPT_INSERT_NOT_VISIBLE")
 
 
 def _receipt_id(row: Mapping[str, Any]) -> str | None:
@@ -87,6 +126,8 @@ def _receipt_id(row: Mapping[str, Any]) -> str | None:
 
 def _identity_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
     identity = receipt.get("identity")
+    if not isinstance(identity, Mapping):
+        identity = receipt.get("artifact_identity")
     if not isinstance(identity, Mapping):
         identity = {}
     return {
@@ -145,20 +186,17 @@ def persist_replay_receipt(db: Any, receipt: Mapping[str, Any]) -> dict[str, Any
         }
     filters = _replay_filters(receipt)
     try:
-        existing = _find_one(db, REPLAY_TABLE, filters)
-        if existing is not None:
-            return {
-                "receipt_id": _receipt_id(existing),
-                "receipt_persisted": True,
-                "receipt_idempotent": True,
-                "audit_complete": True,
-                "receipt_store_error": None,
-            }
-        stored = _insert(db, REPLAY_TABLE, _replay_record(receipt))
+        stored, idempotent = _insert_idempotent(
+            db,
+            REPLAY_TABLE,
+            _replay_record(receipt),
+            filters,
+            REPLAY_CONFLICT_COLUMNS,
+        )
         return {
             "receipt_id": _receipt_id(stored),
             "receipt_persisted": True,
-            "receipt_idempotent": False,
+            "receipt_idempotent": idempotent,
             "audit_complete": True,
             "receipt_store_error": None,
         }
@@ -217,20 +255,17 @@ def persist_promotion_receipt(db: Any, packet: Mapping[str, Any]) -> dict[str, A
         }
     filters = _promotion_filters(packet)
     try:
-        existing = _find_one(db, PROMOTION_TABLE, filters)
-        if existing is not None:
-            return {
-                "promotion_receipt_id": _receipt_id(existing),
-                "promotion_receipt_persisted": True,
-                "promotion_receipt_idempotent": True,
-                "audit_complete": True,
-                "promotion_store_error": None,
-            }
-        stored = _insert(db, PROMOTION_TABLE, _promotion_record(packet))
+        stored, idempotent = _insert_idempotent(
+            db,
+            PROMOTION_TABLE,
+            _promotion_record(packet),
+            filters,
+            PROMOTION_CONFLICT_COLUMNS,
+        )
         return {
             "promotion_receipt_id": _receipt_id(stored),
             "promotion_receipt_persisted": True,
-            "promotion_receipt_idempotent": False,
+            "promotion_receipt_idempotent": idempotent,
             "audit_complete": True,
             "promotion_store_error": None,
         }
@@ -276,7 +311,13 @@ def run_fitted_model_replay(request: FittedReplayRequest, *, db: Any) -> dict[st
     return {**receipt, **persist_replay_receipt(db, receipt)}
 
 
-def run_fitted_model_promotion(request: FittedPromotionRequest, *, db: Any) -> dict[str, Any]:
+def run_fitted_model_promotion(
+    request: FittedPromotionRequest,
+    *,
+    db: Any,
+    approval_key: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate a promotion only with governance-signed policy and approval."""
     try:
         policy = parse_promotion_policy(request.policy) if request.policy else None
     except FittedCertificationError as exc:
@@ -290,6 +331,15 @@ def run_fitted_model_promotion(request: FittedPromotionRequest, *, db: Any) -> d
     except FittedCertificationError as exc:
         return _contract_failure("PROMOTION_AUTHORIZATION_INVALID", exc.code)
 
+    trust_key = approval_key if approval_key is not None else os.environ.get(APPROVAL_KEY_ENV)
+    try:
+        if policy is not None:
+            verify_policy_signature(policy, trust_key)
+        if authorization is not None:
+            verify_authorization_signature(authorization, trust_key)
+    except FittedCertificationError as exc:
+        return _contract_failure("PROMOTION_TRUST_ROOT_INVALID", exc.code)
+
     required_metrics = tuple(request.required_metrics)
     replay = replay_fitted_artifact(request.artifact, required_metrics=required_metrics)
     replay_persisted = persist_replay_receipt(db, replay)
@@ -298,7 +348,6 @@ def run_fitted_model_promotion(request: FittedPromotionRequest, *, db: Any) -> d
         policy=policy,
         authorization=authorization,
         required_metrics=required_metrics,
-        replay_receipt=replay,
     )
 
     # A promotion decision is not auditable unless its exact replay receipt is
