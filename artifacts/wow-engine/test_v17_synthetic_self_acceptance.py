@@ -223,6 +223,11 @@ async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_cl
                 "blockers": ["LINEUP_CONFIRMATION_PENDING"],
                 "can_execute": False,
                 "request_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+                "candidate_envelope": {
+                    "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+                    "official_event_id": "824226",
+                    "source_snapshot_id": "snapshot-824226",
+                },
                 "prediction_id": prediction_id,
             }),
         ],
@@ -241,8 +246,64 @@ async def test_source_backed_projected_pass_emits_trace_receipt_not_synthetic_cl
     assert scoring["official_event_id"] == "824226"
     assert scoring["source_snapshot_id"] == "snapshot-824226"
     assert scoring["fitted_route"] == "score-team-event"
-    assert scoring["calibrated_lower_bound"] == 0.51
+    assert scoring["calibrated_lower_bound"] == 0.41
+    assert scoring["calibrated_lower_bound_scope"] == "CONSERVATIVE_TWO_SIDE_MIN"
     assert scoring["reducer_authority"] == "V17_TERMINAL_REDUCER"
     assert scoring["immutable_prediction_id"] == prediction_id
     assert scoring["blocker"] == "LINEUP_CONFIRMATION_PENDING"
+    assert result["can_execute"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("corruption", [
+    "research_run_id", "official_event_id", "source_snapshot_id",
+    "missing_envelope", "rejected_terminal",
+])
+async def test_projected_diagnostics_reject_wrong_identity_or_terminal(monkeypatch, corruption):
+    """A 200 projected response cannot attest a different event or a rejection."""
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
+    projected = {
+        "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "lineup_state": "PROJECTED_HIGH_CONFIDENCE",
+        "calibrated_home_probability": 0.55,
+        "calibrated_away_probability": 0.45,
+        "calibrated_home_lower_bound": 0.51,
+        "calibrated_away_lower_bound": 0.41,
+        "sporting_probability_publishable": True,
+        "probability_publishable": True,
+        "rank_eligible": False,
+        "terminal_label": "MODEL_QUALIFIED_HOLD",
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "final_refresh_required": True,
+        "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+        "can_execute": False,
+        "candidate_envelope": {
+            "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+            "official_event_id": "824226",
+            "source_snapshot_id": "snapshot-824226",
+        },
+    }
+    if corruption == "missing_envelope":
+        del projected["candidate_envelope"]
+    elif corruption == "rejected_terminal":
+        projected["terminal_label"] = "REJECTED"
+    else:
+        projected["candidate_envelope"][corruption] = "OTHER-REQUEST"
+    _patch_client(monkeypatch, [
+        _FakeResponse(200, {"rows": [{"row_key": "TEST-PROP-001", "terminal_status": "HELD",
+            "terminal_label": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, {"rows": [{"research_run_id": "TEST-EVENT-001-RUN", "terminal_status": "HELD",
+            "code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False}]}),
+        _FakeResponse(200, projected),
+    ])
+    result = await mod.run_v17_synthetic_self_acceptance(
+        logging.getLogger("test-v17-synthetic-self-acceptance")
+    )
+    assert result["status"] == "FAIL"
+    assert result["projected_lineup_ok"] is False
+    assert result["source_backed_pregame_scoring"]["status"] == "BLOCKED"
+    assert result["source_backed_pregame_scoring"]["blocker"] == "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+    assert result["source_backed_pregame_scoring"]["request_id"] is None
+    assert result["scoring_acceptance_proven"] is False
     assert result["can_execute"] is False

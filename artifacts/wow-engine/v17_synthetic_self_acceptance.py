@@ -178,7 +178,7 @@ def _projected_acceptance_failures(payload: dict[str, Any]) -> list[str]:
         "sporting_probability_publishable": payload.get("sporting_probability_publishable") is True,
         "probability_publishable": payload.get("probability_publishable") is True,
         "rank_eligible": payload.get("rank_eligible") is False,
-        "terminal_fail_closed": bool(terminal_label) and terminal_label != "FINAL_APPROVED",
+        "terminal_hold_expected": terminal_label == "MODEL_QUALIFIED_HOLD",
         "global_terminal_authority": payload.get("global_terminal_authority") == "V17_TERMINAL_REDUCER",
         "final_refresh_required": payload.get("final_refresh_required") is True,
         "lineup_confirmation_blocker": "LINEUP_CONFIRMATION_PENDING" in (payload.get("blockers") or []),
@@ -258,6 +258,10 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
     event_date = (now + timedelta(days=1)).date().isoformat()
     headers = {"Authorization": f"Bearer {api_key}"}
     projected_candidate = _real_projected_mlb_candidate(now)
+    projected_request = (
+        _projected_team_event_payload(projected_candidate)
+        if projected_candidate is not None else None
+    )
 
     prop_attempts = team_event_attempts = projected_attempts = 0
     try:
@@ -280,7 +284,7 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
                     client,
                     f"{base_url}/score-team-event",
                     headers=headers,
-                    json=_projected_team_event_payload(projected_candidate),
+                    json=projected_request,
                 )
     except Exception as exc:
         result = {"status": "FAILED", "code": "HTTP_ACCEPTANCE_REQUEST_FAILED", "error_type": type(exc).__name__, "can_execute": False}
@@ -347,6 +351,14 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
             if projected_response.status_code == 200
             else ["http_status"]
         )
+        if projected_response.status_code == 200 and projected_request is not None:
+            envelope = projected_payload.get("candidate_envelope")
+            if not isinstance(envelope, dict):
+                projected_failures.append("candidate_envelope")
+            else:
+                for identity_field in ("research_run_id", "official_event_id", "source_snapshot_id"):
+                    if str(envelope.get(identity_field) or "").strip() != str(projected_request[identity_field]).strip():
+                        projected_failures.append(f"{identity_field}_identity")
         projected_ok = bool(projected_response.status_code == 200 and not projected_failures)
         projected_status = "PASS" if projected_ok else "FAIL"
 
@@ -392,14 +404,9 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
             raw_projected_for_receipt if isinstance(raw_projected_for_receipt, dict) else {}
         )
         projected_detail = _typed_response_detail(projected_receipt)
+        # Only attribute an ID after the response envelope binds to the POST.
         source_backed["request_id"] = (
-            str(
-                projected_receipt.get("request_id")
-                or projected_receipt.get("research_run_id")
-                or projected_detail.get("request_id")
-                or ""
-            ).strip()
-            or None
+            str(projected_request["research_run_id"]) if projected_ok and projected_request else None
         )
         source_backed["exact_offer"] = {
             "home_team": projected_candidate.get("home_team"),
@@ -410,18 +417,15 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         if projected_ok:
             home_lb = projected_receipt.get("calibrated_home_lower_bound")
             away_lb = projected_receipt.get("calibrated_away_lower_bound")
-            try:
-                calibrated_lower_bound = float(home_lb)
-            except (TypeError, ValueError):
-                try:
-                    calibrated_lower_bound = float(away_lb)
-                except (TypeError, ValueError):
-                    calibrated_lower_bound = None
+            # No selected side exists in this diagnostic: never relabel the
+            # home bound as a bound on the away side (or vice versa).
+            calibrated_lower_bound = min(float(home_lb), float(away_lb))
             source_backed.update(
                 {
                     "status": "HELD",
                     "lane": "SOURCE_BACKED_PROJECTED_TEAM_EVENT",
                     "calibrated_lower_bound": calibrated_lower_bound,
+                    "calibrated_lower_bound_scope": "CONSERVATIVE_TWO_SIDE_MIN",
                     "calibrated_home_lower_bound": home_lb,
                     "calibrated_away_lower_bound": away_lb,
                     "reducer_authority": projected_receipt.get("global_terminal_authority"),
@@ -431,11 +435,15 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
             )
         else:
             source_backed["status"] = "BLOCKED"
-            source_backed["blocker"] = str(
-                projected_blocker_code
-                or projected_code
-                or projected_detail.get("blocker_code")
-                or "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+            source_backed["blocker"] = (
+                "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+                if projected_response.status_code == 200
+                else str(
+                    projected_blocker_code
+                    or projected_code
+                    or projected_detail.get("blocker_code")
+                    or "SOURCE_BACKED_PREGAME_SCORING_FAILED"
+                )
             )
             source_backed["reducer_authority"] = (
                 projected_receipt.get("global_terminal_authority")

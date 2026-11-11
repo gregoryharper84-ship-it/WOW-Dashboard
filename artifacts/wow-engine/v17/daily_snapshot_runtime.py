@@ -235,9 +235,20 @@ def _merge_prop_evidence_authority(
     if not candidates:
         return None
     chosen = candidates[0]
-    newest_ts = max(_snapshot_captured_at(peer) for peer in peers)
-    newest_peers = [peer for peer in peers if _snapshot_captured_at(peer) == newest_ts]
-    blocked_newest = next((peer for peer in newest_peers if _evidence_not_ready(peer)), None)
+    capture_times = [(peer, _snapshot_captured_at(peer)) for peer in peers]
+    # An unorderable blocked observation (e.g. PostgreSQL infinity) must
+    # never be silently discarded in favor of a finite-time PASS.
+    unknown_blocked = next(
+        (peer for peer, stamp in capture_times
+         if stamp == datetime.min.replace(tzinfo=timezone.utc) and _evidence_not_ready(peer)),
+        None,
+    )
+    newest_ts = max(stamp for _, stamp in capture_times)
+    newest_peers = [peer for peer, stamp in capture_times if stamp == newest_ts]
+    blocked_newest = (
+        unknown_blocked if unknown_blocked is not None
+        else next((peer for peer in newest_peers if _evidence_not_ready(peer)), None)
+    )
     if blocked_newest is None:
         return chosen
     merged = dict(blocked_newest)

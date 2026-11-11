@@ -361,10 +361,10 @@ def _manifest_row(source, captured, *, hydration="PASS", blockers=None, player="
 def test_newer_failed_observation_is_not_hidden_by_older_pass_prefilter():
     """DB PASS prefilter must not erase a newer FAILED observation before canonicalize."""
     db = _FilteringPropDB([
-        _manifest_row("older-pass", "2026-11-18T00:00:00+00:00"),
+        _manifest_row("older-pass", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+""),
         _manifest_row(
             "newer-failed",
-            "2026-11-19T00:00:00+00:00",
+            ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"",
             hydration="FAILED",
             blockers=["PLAYER_AVAILABILITY_UNVERIFIED"],
         ),
@@ -384,8 +384,8 @@ def test_newer_failed_observation_is_not_hidden_by_older_pass_prefilter():
 
 def test_source_order_does_not_allow_older_pass_to_override_newer_failed():
     """Source ID ordering is irrelevant to captured_at chronology."""
-    older = _manifest_row("z-older-pass", "2026-11-18T00:00:00+00:00")
-    newer = _manifest_row("a-newer-failed", "2026-11-19T00:00:00+00:00", hydration="FAILED")
+    older = _manifest_row("z-older-pass", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+"")
+    newer = _manifest_row("a-newer-failed", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"", hydration="FAILED")
     for rows in ((older, newer), (newer, older)):
         excluded = []
         manifest = _prop_manifest_rows(
@@ -397,8 +397,8 @@ def test_source_order_does_not_allow_older_pass_to_override_newer_failed():
 
 def test_newer_verified_pass_can_recover_from_older_failed_observation():
     """A historical failure alone never permanently blocks newer clear evidence."""
-    older = _manifest_row("z-older-failed", "2026-11-18T00:00:00+00:00", hydration="FAILED")
-    newer = _manifest_row("a-newer-pass", "2026-11-19T00:00:00+00:00")
+    older = _manifest_row("z-older-failed", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+"", hydration="FAILED")
+    newer = _manifest_row("a-newer-pass", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"")
     for rows in ((older, newer), (newer, older)):
         manifest = _prop_manifest_rows(
             _FilteringPropDB(rows), SLATE_DATE, "America/Chicago"
@@ -407,12 +407,29 @@ def test_newer_verified_pass_can_recover_from_older_failed_observation():
         assert manifest[0]["source_snapshot_id"] == "a-newer-pass"
 
 
+def test_unknown_time_blocked_observation_cannot_be_overridden_by_clean_pass():
+    """Invalid or infinite timestamp means chronology is not authoritative."""
+    blocked = _manifest_row("unknown-blocked", "infinity", hydration="FAILED")
+    clean = _manifest_row(
+        "finite-pass", (FUTURE_DT - timedelta(hours=1)).isoformat()
+    )
+    for rows in ((blocked, clean), (clean, blocked)):
+        exclusions = []
+        manifest = _prop_manifest_rows(
+            _FilteringPropDB(rows), SLATE_DATE, "America/Chicago",
+            exclusions=exclusions,
+        )
+        assert manifest == []
+        assert exclusions[0]["source_snapshot_id"] == "unknown-blocked"
+        assert exclusions[0]["reason"] == "EVIDENCE_BLOCKED"
+
+
 def test_same_time_conflicting_observations_fail_closed_to_blocked():
     db = _FilteringPropDB([
-        _manifest_row("pass-a", "2026-11-19T00:00:00+00:00"),
+        _manifest_row("pass-a", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+""),
         _manifest_row(
             "failed-b",
-            "2026-11-19T00:00:00+00:00",
+            ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"",
             hydration="FAILED",
             blockers=["PLAYER_RULED_OUT"],
         ),
@@ -434,7 +451,7 @@ def test_prop_manifest_pagination_remains_deterministic_with_mixed_hydration():
         rows.append(
             {
                 "source_snapshot_id": f"snap-{index:03d}",
-                "captured_at": f"2026-11-19T00:00:{index:02d}+00:00",
+                "captured_at": (FUTURE_DT - timedelta(minutes=5) + timedelta(seconds=index)).isoformat(),
                 "event_id": f"MLB:{index}",
                 "event_start_time": FUTURE,
                 "sport": "MLB",
@@ -467,8 +484,8 @@ def test_prop_manifest_pagination_remains_deterministic_with_mixed_hydration():
 def test_stale_pass_cannot_clear_newer_failed_without_blockers_list():
     """Non-PASS hydration alone is enough to block even when blockers is empty."""
     db = _FilteringPropDB([
-        _manifest_row("older-pass", "2026-11-18T00:00:00+00:00"),
-        _manifest_row("newer-failed", "2026-11-19T00:00:00+00:00", hydration="FAILED"),
+        _manifest_row("older-pass", ""+(FUTURE_DT - timedelta(hours=3)).isoformat()+""),
+        _manifest_row("newer-failed", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"", hydration="FAILED"),
     ])
     exclusions = []
     manifest = _prop_manifest_rows(
@@ -481,14 +498,14 @@ def test_stale_pass_cannot_clear_newer_failed_without_blockers_list():
 
 def test_pass_row_with_empty_blockers_is_held_when_role_status_rules_player_out():
     """Daily must re-evaluate role_status on read; writer-trust on blockers alone is unsafe."""
-    row = _manifest_row("ruled-out-pass", "2026-11-19T00:00:00+00:00")
+    row = _manifest_row("ruled-out-pass", ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"")
     row["role_status"] = {
         "status": "ACTIVE_CURRENT_ESPN_ROSTER",
         "availability": {
             "status": "OUT",
             "designation": "OUT",
             "source": "TEST_OFFICIAL_INJURY_REPORT",
-            "captured_at": "2026-11-19T00:00:00+00:00",
+            "captured_at": ""+(FUTURE_DT - timedelta(hours=2)).isoformat()+"",
             "evidence_status": "RETRIEVED",
             "fresh": True,
             "athlete_id": "1",
