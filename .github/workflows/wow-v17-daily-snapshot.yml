@@ -129,8 +129,11 @@ jobs:
                       time.sleep(retry_delay_seconds)
               if not isinstance(governance, dict):
                   raise RuntimeError("DAILY_SNAPSHOT_GOVERNANCE_RESPONSE_MISSING")
-              serving_sha = str(governance.get("deployed_sha") or "").strip()
-              if not serving_sha:
+              serving_sha = str(governance.get("deployed_sha") or "").strip().lower()
+              if (
+                  len(serving_sha) != 40
+                  or any(ch not in "0123456789abcdef" for ch in serving_sha)
+              ):
                   raise AssertionError("DAILY_SNAPSHOT_SERVING_SHA_MISSING")
               if governance.get("can_execute") is not False:
                   raise AssertionError("DAILY_SNAPSHOT_GOVERNANCE_CAN_EXECUTE_INVARIANT_FAILED")

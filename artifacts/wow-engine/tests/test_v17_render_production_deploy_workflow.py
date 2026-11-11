@@ -298,6 +298,9 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert '"serving_sha_at_request": serving_sha_for_run' in text
     assert "serving_sha_preflight_matches_post" in text
     assert 'origin + "/governance"' in text or 'rstrip("/") + "/governance"' in text
+    # Preflight GET uses the same 40-hex gate as POST attribution (provenance only).
+    assert 'serving_sha = str(governance.get("deployed_sha") or "").strip().lower()' in text
+    assert "len(serving_sha) != 40" in text
     # Governance preflight must retry cold-start / gateway failures like the Daily POST.
     assert "def read_serving_sha_at_request" in text
     assert text.count("except (urllib.error.URLError, TimeoutError):") >= 2
@@ -415,6 +418,44 @@ def _mock_urlopen_factory(*, governance: dict, daily: dict | Exception):
     return _urlopen
 
 
+def _valid_governance(**overrides) -> dict:
+    payload = {
+        "deployed_sha": "a" * 40,
+        "can_execute": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _valid_daily(**overrides) -> dict:
+    payload = {
+        "run_id": "v17-daily-exec-1",
+        "run_status": "COMPLETED",
+        "requested_slate_date": "2026-11-10",
+        "can_execute": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "automation_auth": "GITHUB_ACTIONS_OIDC",
+        "deployed_sha": "b" * 40,
+        "rows": [{"lane": "MONEYLINE"}] * 24,
+        "reconciliation": {
+            "balanced": True,
+            "rows_completed": 0,
+            "rows_held": 24,
+            "rows_rejected": 0,
+        },
+        "lane_reconciliation": {
+            "MONEYLINE": {"requested_row_limit": 24, "canonicalized_count": 24}
+        },
+        "cross_sport_discovery_audit": {
+            "reconciliation": {"row_reconciliation": "PASS"}
+        },
+        "blockers": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _run_daily_snapshot_workflow_python(*, governance: dict, daily: dict | Exception) -> str:
     code = _daily_snapshot_workflow_python()
     env = {
@@ -435,34 +476,8 @@ def test_daily_workflow_python_attributes_distinct_post_sha():
     preflight = "a" * 40
     post = "b" * 40
     out = _run_daily_snapshot_workflow_python(
-        governance={
-            "deployed_sha": preflight,
-            "can_execute": False,
-            "global_terminal_authority": "V17_TERMINAL_REDUCER",
-        },
-        daily={
-            "run_id": "v17-daily-exec-1",
-            "run_status": "COMPLETED",
-            "requested_slate_date": "2026-11-10",
-            "can_execute": False,
-            "global_terminal_authority": "V17_TERMINAL_REDUCER",
-            "automation_auth": "GITHUB_ACTIONS_OIDC",
-            "deployed_sha": post,
-            "rows": [{"lane": "MONEYLINE"}] * 24,
-            "reconciliation": {
-                "balanced": True,
-                "rows_completed": 0,
-                "rows_held": 24,
-                "rows_rejected": 0,
-            },
-            "lane_reconciliation": {
-                "MONEYLINE": {"requested_row_limit": 24, "canonicalized_count": 24}
-            },
-            "cross_sport_discovery_audit": {
-                "reconciliation": {"row_reconciliation": "PASS"}
-            },
-            "blockers": [],
-        },
+        governance=_valid_governance(deployed_sha=preflight),
+        daily=_valid_daily(deployed_sha=post, run_id="v17-daily-exec-1"),
     )
     summary = json.loads(out.strip().splitlines()[-1])
     assert summary["serving_sha_preflight"] == preflight
@@ -473,7 +488,6 @@ def test_daily_workflow_python_attributes_distinct_post_sha():
 
 
 def test_daily_workflow_python_rejects_missing_post_sha_and_logs_run_id():
-    preflight = "a" * 40
     code = _daily_snapshot_workflow_python()
     env = {
         "WOW_ACTION_ORIGIN": "https://wow-governed-probability-engine.onrender.com",
@@ -487,37 +501,8 @@ def test_daily_workflow_python_rejects_missing_post_sha_and_logs_run_id():
             with patch(
                 "urllib.request.urlopen",
                 side_effect=_mock_urlopen_factory(
-                    governance={
-                        "deployed_sha": preflight,
-                        "can_execute": False,
-                        "global_terminal_authority": "V17_TERMINAL_REDUCER",
-                    },
-                    daily={
-                        "run_id": "v17-daily-legacy",
-                        "run_status": "COMPLETED",
-                        "requested_slate_date": "2026-11-10",
-                        "can_execute": False,
-                        "global_terminal_authority": "V17_TERMINAL_REDUCER",
-                        "automation_auth": "GITHUB_ACTIONS_OIDC",
-                        "deployed_sha": None,
-                        "rows": [{"lane": "MONEYLINE"}] * 24,
-                        "reconciliation": {
-                            "balanced": True,
-                            "rows_completed": 0,
-                            "rows_held": 24,
-                            "rows_rejected": 0,
-                        },
-                        "lane_reconciliation": {
-                            "MONEYLINE": {
-                                "requested_row_limit": 24,
-                                "canonicalized_count": 24,
-                            }
-                        },
-                        "cross_sport_discovery_audit": {
-                            "reconciliation": {"row_reconciliation": "PASS"}
-                        },
-                        "blockers": [],
-                    },
+                    governance=_valid_governance(),
+                    daily=_valid_daily(deployed_sha=None, run_id="v17-daily-legacy"),
                 ),
             ):
                 with redirect_stdout(stdout):
@@ -527,6 +512,46 @@ def test_daily_workflow_python_rejects_missing_post_sha_and_logs_run_id():
         "diagnostic": "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID",
         "run_id": "v17-daily-legacy",
     }
+
+
+@pytest.mark.parametrize(
+    ("governance", "daily", "match"),
+    [
+        (
+            _valid_governance(),
+            _valid_daily(deployed_sha="g" * 40),
+            "DAILY_SNAPSHOT_RUN_SERVING_SHA_INVALID",
+        ),
+        (
+            _valid_governance(),
+            _valid_daily(run_id=""),
+            "DAILY_SNAPSHOT_RUN_ID_MISSING",
+        ),
+        (
+            _valid_governance(deployed_sha=""),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_SERVING_SHA_MISSING",
+        ),
+        (
+            _valid_governance(deployed_sha="unknown"),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_SERVING_SHA_MISSING",
+        ),
+        (
+            _valid_governance(can_execute=True),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_GOVERNANCE_CAN_EXECUTE_INVARIANT_FAILED",
+        ),
+        (
+            _valid_governance(global_terminal_authority="OTHER"),
+            _valid_daily(),
+            "DAILY_SNAPSHOT_GOVERNANCE_TERMINAL_AUTHORITY_MISMATCH",
+        ),
+    ],
+)
+def test_daily_workflow_python_guard_rejects(governance, daily, match):
+    with pytest.raises(AssertionError, match=match):
+        _run_daily_snapshot_workflow_python(governance=governance, daily=daily)
 
 
 def test_post_deploy_canary_classifier_accepts_observation_timeout_as_hold():
