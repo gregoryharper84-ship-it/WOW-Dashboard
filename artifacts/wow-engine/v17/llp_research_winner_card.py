@@ -212,9 +212,13 @@ def audit_research_winner_card(
             "away_team": away,
             "selected_side": side if not issues else None,
             "selection_class": "RESEARCH_PROVISIONAL" if not issues else "RESEARCH_INVALID",
-            "model_status": "UNVERIFIED_CALLER_DECLARATION" if not issues else "UNKNOWN",
+            "model_status": ("UNVERIFIED_CALLER_DECLARATION"
+                             if not issues and _text(admissible.get("model_status"))
+                             else "UNKNOWN"),
             "model_status_declared": _text(admissible.get("model_status")) or "UNKNOWN",
-            "model_status_provenance": "CALLER_DECLARED_UNVERIFIED",
+            "model_status_provenance": ("CALLER_DECLARED_UNVERIFIED"
+                                        if _text(admissible.get("model_status"))
+                                        else "NOT_PROVIDED"),
             "research_confidence": _text(admissible.get("research_confidence")) or "UNSPECIFIED",
             "selection_blockers": list(dict.fromkeys(issues)),
             "evidence_warnings": list(dict.fromkeys(warnings)),
