@@ -45,6 +45,7 @@ MIGRATIONS = Path(__file__).resolve().parent / "migrations"
 GUARD_MIGRATION = MIGRATIONS / "20260915_harden_immutable_mutation_trigger_search_path.sql"
 BASE_MIGRATION = MIGRATIONS / "20260913_basketball_team_event_specialists.sql"
 LEDGER_MIGRATION = MIGRATIONS / "20261110_v17_independent_verification_receipts.sql"
+PREDEPLOY_MIGRATION = MIGRATIONS / "20261110_nba_team_event_verification_receipts.sql"
 
 _OK_STATUSES = (pq.ExecStatus.COMMAND_OK, pq.ExecStatus.TUPLES_OK)
 
@@ -407,3 +408,108 @@ def test_archive_payload_matches_the_migration_columns():
 
     assert set(recorder.rows[0]) <= declared
     assert {"recorded_at", "receipt", "can_execute"} <= declared
+
+
+# --------------------------------------------------------------------------- #
+# Render predeploy RPC contract: read-only attestation must fail on drift
+# --------------------------------------------------------------------------- #
+def _predeploy_compatible(conn: Any) -> bool:
+    """Read the actual compatible Boolean from the SQL readiness RPC."""
+    row = conn.execute(
+        "select (public.wow_nba_team_event_verification_receipt_schema_ready()"
+        "->>'compatible')::boolean"
+    ).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def test_predeploy_schema_rpc_attests_nonexecution_checks():
+    """Constraint names without the restrictive expressions are not proof."""
+    with _database(apply_ledger=True) as conn:
+        _apply(conn, PREDEPLOY_MIGRATION.read_text(encoding="utf-8"))
+        assert _predeploy_compatible(conn) is True
+        for name, expression in (
+            ("wow_independent_verification_receipts_can_execute_check",
+             "can_execute = false"),
+            ("wow_independent_verification_receipts_publishable_scope_check",
+             "publishable_scope = 'NONE'"),
+        ):
+            table = "public.wow_independent_verification_receipts"
+            _apply(conn, f"alter table {table} drop constraint {name}")
+            assert _predeploy_compatible(conn) is False
+            # Reusing the expected name with an unconditional check must also
+            # fail; existence of a named constraint is not sufficient.
+            _apply(conn, f"alter table {table} add constraint {name} check (true)")
+            assert _predeploy_compatible(conn) is False
+            _apply(conn, f"alter table {table} drop constraint {name}")
+            _apply(conn, f"alter table {table} add constraint {name} check ({expression})")
+            assert _predeploy_compatible(conn) is True
+
+
+def test_predeploy_schema_rpc_attests_truncate_guard_and_privileges():
+    """A named trigger on the wrong event cannot attest append-only status."""
+    with _database(apply_ledger=True) as conn:
+        _apply(conn, PREDEPLOY_MIGRATION.read_text(encoding="utf-8"))
+        assert _predeploy_compatible(conn) is True
+        table = "public.wow_independent_verification_receipts"
+        _apply(conn, f"grant truncate on {table} to service_role")
+        assert _predeploy_compatible(conn) is False
+        _apply(conn, f"revoke truncate on {table} from service_role")
+        assert _predeploy_compatible(conn) is True
+
+        _apply(conn, f"drop trigger wow_independent_verification_receipts_no_truncate on {table}")
+        _apply(
+            conn,
+            "create trigger wow_independent_verification_receipts_no_truncate "
+            f"before insert on {table} for each row "
+            "execute function public.wow_independent_verification_receipts_no_truncate()",
+        )
+        assert _predeploy_compatible(conn) is False
+
+
+def test_predeploy_schema_rpc_rejects_ledger_calibrator_guard_and_grant_drift():
+    """Exercise fail-closed verdicts against mutated real PostgreSQL schemas."""
+    table = "public.wow_independent_verification_receipts"
+    with _database(apply_ledger=False) as conn:
+        _apply(conn, PREDEPLOY_MIGRATION.read_text(encoding="utf-8"))
+        assert _predeploy_compatible(conn) is False
+
+    with _database(apply_ledger=True) as conn:
+        _apply(conn, PREDEPLOY_MIGRATION.read_text(encoding="utf-8"))
+        assert _predeploy_compatible(conn) is True
+        mutations = (
+            (
+                "alter table public.wow_basketball_team_event_calibrators "
+                "drop column calibration_sha256",
+                "alter table public.wow_basketball_team_event_calibrators "
+                "add column calibration_sha256 text",
+            ),
+            (
+                f"alter table {table} drop constraint wow_ivr_owner_independence",
+                f"alter table {table} add constraint wow_ivr_owner_independence "
+                "check (implementation_owner <> verification_owner)",
+            ),
+            (
+                f"alter table {table} disable trigger "
+                "wow_independent_verification_receipts_immutable",
+                f"alter table {table} enable trigger "
+                "wow_independent_verification_receipts_immutable",
+            ),
+            (
+                f"grant select on {table} to anon",
+                f"revoke select on {table} from anon",
+            ),
+            (
+                f"grant select (receipt_id) on {table} to authenticated",
+                f"revoke select (receipt_id) on {table} from authenticated",
+            ),
+            (
+                f"grant update (receipt_id) on {table} to service_role",
+                f"revoke update (receipt_id) on {table} from service_role",
+            ),
+        )
+        for corrupt, restore in mutations:
+            _apply(conn, corrupt)
+            assert _predeploy_compatible(conn) is False, corrupt
+            _apply(conn, restore)
+            assert _predeploy_compatible(conn) is True, restore

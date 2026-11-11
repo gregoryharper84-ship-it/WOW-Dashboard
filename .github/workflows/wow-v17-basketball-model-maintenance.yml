@@ -22,6 +22,9 @@ on:
       - "artifacts/wow-engine/test_v17_nba_verification_prerequisites_postgrest.py"
       - "artifacts/wow-engine/tests/test_v17_nba_team_event_verification.py"
       - "artifacts/wow-engine/migrations/20261110_v17_independent_verification_receipts.sql"
+      - "artifacts/wow-engine/migrations/20261110_nba_team_event_verification_receipts.sql"
+      - "artifacts/wow-engine/v17/nba_verification_schema_predeploy.py"
+      - "artifacts/wow-engine/tests/test_nba_verification_schema_predeploy.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
@@ -47,6 +50,9 @@ on:
       - "artifacts/wow-engine/test_v17_nba_verification_prerequisites_postgrest.py"
       - "artifacts/wow-engine/tests/test_v17_nba_team_event_verification.py"
       - "artifacts/wow-engine/migrations/20261110_v17_independent_verification_receipts.sql"
+      - "artifacts/wow-engine/migrations/20261110_nba_team_event_verification_receipts.sql"
+      - "artifacts/wow-engine/v17/nba_verification_schema_predeploy.py"
+      - "artifacts/wow-engine/tests/test_nba_verification_schema_predeploy.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
@@ -184,24 +190,48 @@ jobs:
           # A skipped integration check is not a passing one: the proof must
           # actually run, so a skip fails the job.
           run_checks() {
+            local min_cases="$1"
+            shift
             local output
-            if ! output=$(python -m pytest -q "$@" 2>&1); then
+            local junit="$RUNNER_TEMP/nba-verification-prerequisites.xml"
+            # A green pytest exit alone can hide reduced or skipped coverage.
+            # Reject malformed/missing XML and require the real-server counts
+            # independently (PostgreSQL >=6, PostgREST >=1, zero skips).
+            if ! output=$(python -m pytest -q --junitxml="$junit" "$@" 2>&1); then
               echo "$output"
               return 1
             fi
             echo "$output"
             if grep -Eq '[0-9]+ skipped' <<<"$output"; then
-              echo "::error::prerequisite checks were skipped; they must run here"
+              echo "::error::NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED: skipped tests"
               return 1
             fi
+            python - "$junit" "$min_cases" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse(sys.argv[1]).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+              if not suites:
+                  raise ValueError("missing JUnit test suite")
+              executed = sum(int(s.attrib.get("tests", "0")) for s in suites)
+              skipped = sum(int(s.attrib.get("skipped", "0")) for s in suites)
+              failed = sum(int(s.attrib.get("failures", "0")) for s in suites)
+              errored = sum(int(s.attrib.get("errors", "0")) for s in suites)
+              assert executed >= int(sys.argv[2]) and not (skipped or failed or errored)
+          except (AssertionError, OSError, ValueError, ET.ParseError) as exc:
+              print("::error::NBA_VERIFICATION_INTEGRATION_NOT_EXECUTED: " + type(exc).__name__)
+              sys.exit(1)
+          print(f"NBA_VERIFICATION_INTEGRATION_EXECUTED={executed};skipped=0")
+          PY
           }
 
-          run_checks test_v17_nba_verification_wiring.py
+          run_checks 1 test_v17_nba_verification_wiring.py
           WOW_TEST_POSTGRES_DSN=postgresql://wow_verification_ci:wow_verification_ci@127.0.0.1:5432/wow_verification_pg \
-            run_checks test_v17_nba_verification_prerequisites_postgres.py
+            run_checks 6 test_v17_nba_verification_prerequisites_postgres.py
           WOW_TEST_POSTGRES_DSN=postgresql://wow_verification_ci:wow_verification_ci@127.0.0.1:5432/wow_verification_rest \
           WOW_TEST_POSTGREST_URL=http://127.0.0.1:3000 \
-            run_checks test_v17_nba_verification_prerequisites_postgrest.py
+            run_checks 1 test_v17_nba_verification_prerequisites_postgrest.py
           echo "can_execute=false"
           echo "independent_verification_prerequisites=PROVEN"
 
