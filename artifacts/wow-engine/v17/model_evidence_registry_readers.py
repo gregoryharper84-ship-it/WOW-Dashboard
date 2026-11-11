@@ -144,32 +144,6 @@ _MLB_ARTIFACT = TableSpec(
     order_by="created_at",
 )
 
-_EVENT_CALIBRATOR = TableSpec(
-    table="wow_calibrators",
-    field_columns={
-        "calibrator_id": "calibrator_id",
-        "calibration_method": "calibration_method",
-        "calibration_training_n": "training_n",
-        "bounds_method_version": "bounds_method_version",
-        "brier": "fit_metrics_json.brier",
-        "log_loss": "fit_metrics_json.log_loss",
-        "calibration_bias": "fit_metrics_json.calibration_bias",
-        "calibration_fit_end": "fit_end",
-    },
-    order_by="created_at",
-)
-
-_NFL_PREGAME = TableSpec(
-    table="wow_nfl_pregame_feature_rows",
-    field_columns={
-        "official_event_id": "game_id",
-        "feature_schema_version": "feature_schema_version",
-        "feature_snapshot_sha256": "row_inputs_hash",
-        "feature_snapshot_timestamp": "locked_at",
-    },
-    filters=(("game_id", "official_event_id"),),
-)
-
 _BASKETBALL_ARTIFACT_COLUMNS = {
     "artifact_id": "artifact_id",
     "sport": "sport",
@@ -298,13 +272,68 @@ _MLB_PREGAME = TableSpec(
     static_filters=(("is_current", "true"),),
 )
 
+_NFL_CALIBRATOR_EVIDENCE = TableSpec(
+    table="wow_nfl_event_calibrator_evidence",
+    field_columns={
+        "calibrator_id": "calibrator_id",
+        "model_family": "model_family",
+        "model_artifact_version": "model_artifact_version",
+        "feature_schema_version": "feature_schema_version",
+        "model_artifact_checksum": "model_artifact_checksum",
+        "calibrator_checksum": "calibrator_checksum",
+        "calibration_method": "calibration_method",
+        "bounds_method_version": "bounds_method_version",
+        "calibration_cohort_sha256": "calibration_cohort_sha256",
+        "holdout_evidence_sha256": "holdout_evidence_sha256",
+        "calibration_training_n": "calibration_training_n",
+        "holdout_overlap_rows": "holdout_overlap_rows",
+        "brier": "brier",
+        "log_loss": "log_loss",
+        "calibration_bias": "calibration_bias",
+        "calibration_fit_end": "calibration_fit_end",
+    },
+    filters=(
+        ("model_artifact_version", "model_artifact_version"),
+        ("feature_schema_version", "feature_schema_version"),
+    ),
+    order_by="created_at",
+)
+
+_NFL_PREGAME_EVIDENCE = TableSpec(
+    table="wow_nfl_event_pregame_feature_rows",
+    field_columns={
+        "model_family": "model_family",
+        "model_artifact_version": "model_artifact_version",
+        "feature_schema_version": "feature_schema_version",
+        "model_artifact_checksum": "model_artifact_checksum",
+        "official_event_id": "official_event_id",
+        "event_start_time": "event_start_time",
+        "event_status": "event_status",
+        "source_snapshot_id": "source_snapshot_id",
+        "source_snapshot_timestamp": "source_snapshot_timestamp",
+        "source_payload_sha256": "source_payload_sha256",
+        "feature_snapshot_id": "feature_snapshot_id",
+        "feature_snapshot_timestamp": "feature_snapshot_timestamp",
+        "feature_snapshot_sha256": "feature_snapshot_sha256",
+    },
+    filters=(
+        ("official_event_id", "official_event_id"),
+        ("model_artifact_version", "model_artifact_version"),
+        ("feature_schema_version", "feature_schema_version"),
+    ),
+    order_by="created_at",
+    # Only the single current snapshot is servable evidence; superseded rows are
+    # retained for audit. Two current rows remain AMBIGUOUS and fail closed.
+    static_filters=(("is_current", "true"),),
+)
+
 # Only lanes whose artifact, calibrator and pregame tables can be named with
 # confidence are configured. Every other declared sport reports an explicit
 # unconfigured blocker: the D1 candidate registry is research evidence, not a
 # dedicated per-event pregame corpus and not a verification receipt source.
 _LANES: dict[tuple[str, str], LaneReader] = {
     ("TEAM_EVENT", "NFL"): LaneReader(
-        "TEAM_EVENT", "NFL", _NFL_ARTIFACT, _EVENT_CALIBRATOR, _NFL_PREGAME,
+        "TEAM_EVENT", "NFL", _NFL_ARTIFACT, _NFL_CALIBRATOR_EVIDENCE, _NFL_PREGAME_EVIDENCE,
         calibrator_link=("calibrator_id", "calibrator_id"),
     ),
     ("TEAM_EVENT", "MLB"): LaneReader(

@@ -135,11 +135,21 @@ def _nfl_artifact(**overrides) -> dict:
 def _nfl_calibrator(**overrides) -> dict:
     row = {
         "calibrator_id": "calibrator-1",
+        "model_family": "TEST_FITTED_LOGISTIC_V1",
+        "model_artifact_version": "TEST_FITTED_LOGISTIC_V1_20261108",
+        "feature_schema_version": "TEST_FEATURES_V1",
+        "model_artifact_checksum": ARTIFACT_SHA,
+        "calibrator_checksum": "c" * 64,
         "calibration_method": "PLATT_TIME_SPLIT_V1",
-        "training_n": 2500,
         "bounds_method_version": "PREDICTIVE_BOUNDS_V1",
-        "fit_end": "2026-11-06T00:00:00+00:00",
-        "fit_metrics_json": {"brier": 0.22, "log_loss": 0.65, "calibration_bias": -0.01},
+        "calibration_cohort_sha256": "e" * 64,
+        "holdout_evidence_sha256": "f" * 64,
+        "calibration_training_n": 2500,
+        "holdout_overlap_rows": 0,
+        "brier": 0.22,
+        "log_loss": 0.65,
+        "calibration_bias": -0.01,
+        "calibration_fit_end": "2026-11-06T00:00:00+00:00",
         "created_at": "2026-11-06T00:00:00+00:00",
     }
     row.update(overrides)
@@ -148,10 +158,21 @@ def _nfl_calibrator(**overrides) -> dict:
 
 def _nfl_pregame(event_id="other-event", **overrides) -> dict:
     row = {
-        "game_id": event_id,
+        "model_family": "TEST_FITTED_LOGISTIC_V1",
+        "model_artifact_version": "TEST_FITTED_LOGISTIC_V1_20261108",
         "feature_schema_version": "TEST_FEATURES_V1",
-        "row_inputs_hash": PREGAME_SHA,
-        "locked_at": "2026-11-12T18:20:00+00:00",
+        "model_artifact_checksum": ARTIFACT_SHA,
+        "official_event_id": event_id,
+        "event_start_time": "2026-11-12T19:00:00+00:00",
+        "event_status": "SCHEDULED",
+        "source_snapshot_id": "src-snap-1",
+        "source_snapshot_timestamp": "2026-11-12T17:00:00+00:00",
+        "source_payload_sha256": "1" * 64,
+        "feature_snapshot_id": "feat-snap-1",
+        "feature_snapshot_timestamp": "2026-11-12T18:20:00+00:00",
+        "feature_snapshot_sha256": PREGAME_SHA,
+        "is_current": True,
+        "created_at": "2026-11-12T18:20:00+00:00",
     }
     row.update(overrides)
     return row
@@ -179,9 +200,9 @@ def _assess(db, scope) -> dict:
 def test_nfl_lane_reads_components_but_never_grants_publication():
     db = _FakeDb({
         "wow_nfl_event_fitted_model_artifacts": [_nfl_artifact()],
-        "wow_calibrators": [_nfl_calibrator()],
+        "wow_nfl_event_calibrator_evidence": [_nfl_calibrator()],
         # The frozen row belongs to a different event: nothing substitutes it.
-        "wow_nfl_pregame_feature_rows": [_nfl_pregame("other-event")],
+        "wow_nfl_event_pregame_feature_rows": [_nfl_pregame("other-event")],
     })
     result = _assess(db, _scope())
 
@@ -206,8 +227,8 @@ def test_registry_verification_columns_are_not_trusted():
                 training_provenance_verified=True,
             )
         ],
-        "wow_calibrators": [_nfl_calibrator()],
-        "wow_nfl_pregame_feature_rows": [_nfl_pregame("official-event-1")],
+        "wow_nfl_event_calibrator_evidence": [_nfl_calibrator()],
+        "wow_nfl_event_pregame_feature_rows": [_nfl_pregame("official-event-1")],
     })
     result = _assess(db, _scope())
 
@@ -226,19 +247,20 @@ def test_explicit_receipt_flags_can_validate_an_artifact():
     })
     db = _FakeDb({
         "wow_nfl_event_fitted_model_artifacts": [_nfl_artifact()],
-        "wow_calibrators": [_nfl_calibrator()],
-        "wow_nfl_pregame_feature_rows": [_nfl_pregame("official-event-1")],
+        "wow_nfl_event_calibrator_evidence": [_nfl_calibrator()],
+        "wow_nfl_event_pregame_feature_rows": [_nfl_pregame("official-event-1")],
         "wow_team_event_specialist_certifications": [receipt],
     })
     result = _assess(db, _scope())
 
     assert "MODEL_BUNDLE_VERIFICATION_RECEIPT_MISSING" not in result["blockers"]
     assert result["artifact_valid"] is True
-    # The calibrator table cannot supply an artifact checksum binding, immutable
-    # calibrator checksum or holdout separation, so it stays invalid.
+    # The exact-version evidence row now supplies the artifact checksum binding
+    # and calibrator checksum, but the receipt does not verify the calibrator
+    # hash or its lower bound, so the calibrator stays invalid and unpublishable.
     assert result["calibrator_valid"] is False
-    assert "calibrator_checksum" in result["missing_component_fields"]["calibrator"]
-    assert "model_artifact_checksum" in result["missing_component_fields"]["calibrator"]
+    assert result["missing_component_fields"]["calibrator"] == []
+    assert "MODEL_BUNDLE_CALIBRATOR_INVALID_OR_UNVERIFIED" in result["blockers"]
     assert result["probability_publishable"] is False
 
 
@@ -469,3 +491,47 @@ def test_exact_component_receipt_binding_cannot_be_replayed_for_adjacent_event()
     wrong_calibrator, _ = _read_verification(db, _scope(), artifact, calibrator, pregame)
     assert not any(wrong_calibrator["calibrator"].values())
     assert all(wrong_calibrator["pregame_corpus"].values())
+
+
+def test_legacy_nfl_calibrator_and_gameday_matrix_cannot_satisfy_the_lane():
+    """The generic calibrator table has no artifact checksum binding and the
+    gameday matrix has no kickoff/source identity; neither may stand in."""
+    db = _FakeDb({
+        "wow_nfl_event_fitted_model_artifacts": [_nfl_artifact()],
+        "wow_calibrators": [{
+            "calibrator_id": "calibrator-1",
+            "calibration_method": "PLATT_TIME_SPLIT_V1",
+            "training_n": 2500,
+            "bounds_method_version": "PREDICTIVE_BOUNDS_V1",
+            "fit_end": "2026-11-06T00:00:00+00:00",
+            "fit_metrics_json": {"brier": 0.22, "log_loss": 0.65, "calibration_bias": -0.01},
+            "created_at": "2026-11-06T00:00:00+00:00",
+        }],
+        "wow_nfl_pregame_feature_rows": [{
+            "game_id": "official-event-1",
+            "feature_schema_version": "TEST_FEATURES_V1",
+            "row_inputs_hash": PREGAME_SHA,
+            "locked_at": "2026-11-12T18:20:00+00:00",
+        }],
+    })
+    result = _assess(db, _scope())
+
+    assert result["component_sources"]["calibrator"]["status"] == MISSING
+    assert result["component_sources"]["pregame_corpus"]["status"] == MISSING
+    assert result["bundle_complete"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_nfl_calibrator_bound_to_a_different_artifact_checksum_is_rejected():
+    db = _FakeDb({
+        "wow_nfl_event_fitted_model_artifacts": [_nfl_artifact()],
+        "wow_nfl_event_calibrator_evidence": [
+            _nfl_calibrator(model_artifact_checksum="9" * 64)
+        ],
+        "wow_nfl_event_pregame_feature_rows": [_nfl_pregame("official-event-1")],
+    })
+    result = _assess(db, _scope())
+
+    assert result["bundle_complete"] is False
+    assert any("CALIBRATOR" in b for b in result["blockers"])
