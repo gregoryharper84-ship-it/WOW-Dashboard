@@ -662,7 +662,7 @@ The third-party feed is a separate independent API, not official PrizePicks.
 | `PROP_FEED_AUTH_OR_ENTITLEMENT_BLOCKED` | SOURCE_ADAPTER | Provider returned 401/403 and acquisition stopped without bypass | Restore authorized entitlement/credential through trusted operator; no bypass |
 | `PROP_FEED_CLOCK_SKEW` | SOURCE_ADAPTER | Source observation timestamp is more than two minutes in the future | Recheck source timestamp, refresh bounded observation, never reuse stale row |
 | `PROP_FEED_CREDENTIAL_MISSING` | SOURCE_ADAPTER | credential missing | Restore authorized entitlement/credential through trusted operator; no bypass |
-| `PROP_FEED_CREDIT_BUDGET_EXHAUSTED` | SOURCE_ADAPTER | Next source page exceeds the caller-approved per-run credit reservation | Stop before next request; wait for quota or reduce budget; never rotate credentials |
+| `PROP_FEED_CREDIT_BUDGET_EXHAUSTED` | SOURCE_ADAPTER | Next source page exceeds the caller-approved per-run credit reservation | Stop before next request; retain incomplete-scan hold. A second 6-credit page requires at least 12 credits reserved for that run; only an authorized operator may approve a higher supported reservation within available free quota. Otherwise do not fetch another page or claim full coverage; never rotate credentials or incur paid usage |
 | `PROP_FEED_CREDIT_BUDGET_INVALID` | SOURCE_ADAPTER | Per-run credit limit is outside the supported 6–100 range | Correct the caller's request to the approved 6–100 bound; do not send any provider request |
 | `PROP_FEED_CURSOR_CYCLE` | SOURCE_ADAPTER | cursor cycle | Audit source pages and counts; never declare complete board |
 | `PROP_FEED_CURSOR_INVALID` | SOURCE_ADAPTER | cursor invalid | Audit source pages and counts; never declare complete board |
@@ -706,7 +706,7 @@ The third-party feed is a separate independent API, not official PrizePicks.
 | `PROP_HANDOFF_ROW_SCHEMA_INVALID` | PROP_HANDOFF | row schema invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_HANDOFF_ROW_SOURCE_CONFLICT` | PROP_HANDOFF | row source conflict | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_HANDOFF_SOURCE_INVALID` | PROP_HANDOFF | source invalid | Preserve native typed hold; repair source/contract and rerun affected row only |
-| `PROP_HANDOFF_SOURCE_USE_NOT_PERMITTED` | PROP_HANDOFF | Trusted caller has not established permitted API data use | Restore authorized entitlement/credential through trusted operator; no bypass |
+| `PROP_HANDOFF_SOURCE_USE_NOT_PERMITTED` | PROP_HANDOFF | Trusted caller has not established permitted API data use | Require independently verified permitted-use/rights evidence from the trusted source authority; credentials alone do not establish rights. Keep handoff blocked if evidence is absent; no bypass or provider request |
 | `PROP_IDENTITY_AUTHORITY_INVALID` | OFFICIAL_IDENTITY | Research/third-party source was misrepresented as official identity evidence | Reject third-party authority claim; require canonical official event/player source evidence |
 | `PROP_IDENTITY_EVENT_START_CONFLICT` | OFFICIAL_IDENTITY | Provider game start differs from independently verified official start | Resolve using official identity and exact pregame sources; otherwise keep row blocked |
 | `PROP_IDENTITY_OPPONENT_CONFLICT` | OFFICIAL_IDENTITY | Third-party opponent does not match the official opponent or trusted official aliases | Hold until the canonical official opponent identity or verified aliases reconcile; never infer a game |
@@ -728,6 +728,6 @@ The third-party feed is a separate independent API, not official PrizePicks.
 | `PROP_OFFER_REFRESH_INVALID` | EXACT_OFFER_REFRESH | Current-offer timestamp is invalid, future-dated or older than source candidate | Recheck source timestamp, refresh bounded observation, never reuse stale row |
 | `PROP_OFFER_REFRESH_MISSING` | EXACT_OFFER_REFRESH | Current-offer callback returned no valid record | Recheck source timestamp, refresh bounded observation, never reuse stale row |
 | `PROP_OFFER_REFRESH_STALE` | EXACT_OFFER_REFRESH | Current-offer observation is older than twenty minutes | Recheck source timestamp, refresh bounded observation, never reuse stale row |
-| `PROP_OFFER_REFRESH_UNAVAILABLE` | EXACT_OFFER_REFRESH | No server-side current-offer callback supplied | Recheck source timestamp, refresh bounded observation, never reuse stale row |
+| `PROP_OFFER_REFRESH_UNAVAILABLE` | EXACT_OFFER_REFRESH | No server-side current-offer callback supplied | Require a trusted server-side exact_offer_refresh callback and independently verified exact current-offer evidence; a timestamp check alone cannot resolve this. Keep row blocked until supplied; never reuse stale row |
 | `PROP_OFFER_SOURCE_CONFLICT` | EXACT_OFFER_REFRESH | Fresh offer came from an unexpected source | Preserve native typed hold; repair source/contract and rerun affected row only |
 | `PROP_OFFER_TYPE_CHANGED` | EXACT_OFFER_REFRESH | Offer tier changed between source observation and final refresh | Preserve native typed hold; repair source/contract and rerun affected row only |
