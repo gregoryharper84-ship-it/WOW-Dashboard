@@ -58,7 +58,8 @@ class Test24x7(unittest.TestCase):
     def test_protected_24x7_dispatch_must_not_send_global_for_p0(self):
         source = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
                   "wow-engineering-24x7.yml").read_text(encoding="utf-8")
-        self.assertIn("manifest_target_lease_group", source)
+        self.assertIn("--lease-for-incident", source)
+        self.assertIn("approved-issues.json", source)
         self.assertIn('-f lease_group="$lease_group"', source)
         self.assertNotIn("-f lease_group=GLOBAL", source)
 
