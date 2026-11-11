@@ -465,3 +465,18 @@ def test_frozen_selection_identity_must_match_official_manifest_before_admission
         assert row["source_publishers_declared"] == 0
         assert row["game_script_verified_pregame"] is False
         assert row["governed_probability"] is None
+
+
+def test_missing_model_status_is_not_attributed_to_a_caller():
+    for missing in (None, "", "  "):
+        p = pick()
+        if missing is None:
+            p.pop("model_status")
+        else:
+            p["model_status"] = missing
+        row = audit([event()], [p])["rows"][0]
+        assert row["selection_class"] == "RESEARCH_PROVISIONAL"
+        assert row["model_status"] == "UNKNOWN"
+        assert row["model_status_declared"] == "UNKNOWN"
+        assert row["model_status_provenance"] == "NOT_PROVIDED"
+        assert row["governed_probability"] is None
