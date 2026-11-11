@@ -216,3 +216,18 @@ os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
         if valid:
             assert json.loads(validated.read_text(encoding="utf-8")) == held
             assert "WOW_LOG_INTAKE_SOURCE_UNAVAILABLE:DATADOG_HTTP_FAILED" in result.stdout
+
+
+def test_validated_artifact_retains_reporter_member_name():
+    """Check the ZIP member path against the existing Reporter exact contract."""
+    import re
+
+    reporter = (ROOT / "artifacts/wow-engine/v17/engineering_log_reporter.py").read_text()
+    m = re.search(r'^ARTIFACT_FILE = "([^"]+)"$', reporter, re.MULTILINE)
+    assert m, "Reporter artifact member contract is missing"
+    expected = m.group(1)
+    wf = WF.read_text()
+    upload = wf.split("- name: Preserve bounded redacted intake artifact", 1)[1]
+    assert "path: " + "$" + "{{ runner.temp }}" + "/wow-v17-validated/" + expected in upload
+    assert f'cp "$RUNNER_TEMP/wow-v17-log-intake-validated.json" "$RUNNER_TEMP/wow-v17-validated/{expected}"' in wf
+    assert "if: steps.intake.outcome == 'success'" in upload
