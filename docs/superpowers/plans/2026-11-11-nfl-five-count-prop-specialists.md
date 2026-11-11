@@ -83,3 +83,23 @@ CodeRabbit independently reports **18 REG 2021 rows lacking player identities** 
 - [ ] Run local focused suite at latest commit and hosted exact-head CI, inspect new CodeRabbit/TestDriver findings.
 - [ ] Require independent C-class semantic SIRT acceptance on final head and governed model evaluation/registration path; retain can_execute=false.
 - [ ] Observe main and Render live SHA parity only after actual authorized merges; never count this research PR as deploy/certification.
+
+## Offensive participation completeness audit (added 2026-11-11)
+
+**Causal reproduction:** A valid snap-count player can appear with 8 offensive snaps and be absent from the player-week stats rows. An inner-only training cohort then excludes an observed participant, silently altering historical opportunities and fitted probabilities. A second false-green would arise from comparing against an empty snap cohort. See CodeRabbit PR #2605 review and `test_nfl_count_prop_participation_audit.py`.
+
+**Implemented as a research preflight, not a new release gate:** `artifacts/wow-engine/scripts/audit_nfl_count_prop_participation.py` consumes five locally frozen **official-digest-verified** snap-count CSVs, the pinned `players.csv` PFR↔GSIS crosswalk and the original five pinned player-week CSVs. It validates exact season/week/game identity, one-to-one crosswalk, nonnegative finite snap counts, no duplicate participant keys and an actual positive-snap cohort for each season. It emits a bounded JSON report and exits nonzero on missing or unmapped offensive participant games. It never backfills zero counts, creates a fitted probability, registers a specialist, approves rights, or enables execution.
+
+**Runner invocation:** From `artifacts/wow-engine`, with sanctioned frozen sources already present locally:
+```bash
+python scripts/audit_nfl_count_prop_participation.py \
+  --stats-dir /path/to/frozen/player_week \
+  --snap-dir /path/to/frozen/snap_counts \
+  --players-csv /path/to/frozen/players.csv
+```
+The source-asset digests are embedded in the script from upstream nflverse release metadata. It performs **no network fetching** and should run in the existing network-enabled engineering runner after approved no-cost source acquisition. Exit code 2 means coverage gaps; other nonzero means typed invalid inputs. A zero exit means only the narrowly defined REG QB/RB/WR/TE positive-offensive-snap participant-game keyset reconciled; it is **not** independent semantic review or model certification.
+
+- [ ] Run the audit with verified real 2021–2025 official CSV bytes and attach audited counts, missing examples, full SHA manifest and source-rights conclusion to existing #2020.
+- [ ] Investigate Charlie Kolar 2024 Week 1 and all other missing snap-positive player-game events by exact GSIS/PFR/game IDs. Never turn missing events into scored 0 without independent event evidence.
+- [ ] Independently challenge coverage scope: this does not prove participation with zero offensive snaps, all eligible roles, or any market-level availability.
+- [ ] Review new script and negative-path tests at *current* head, obtain non-author SIRT and native App acceptance before governed protected merge.
