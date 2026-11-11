@@ -640,7 +640,21 @@ async def schedule_v17_synthetic_self_acceptance():
                 delay_seconds,
             )
             await asyncio.sleep(float(delay_seconds))
-        await run_v17_synthetic_self_acceptance(_v17_logger)
+        result = await run_v17_synthetic_self_acceptance(_v17_logger)
+        # The in-runner PASS proves only synthetic fail-closed diagnostics.
+        # Always report the distinct source-backed scoring gate on startup.
+        source_backed = result.get("source_backed_pregame_scoring") or {}
+        _v17_logger.warning(
+            "WOW_V17_SYNTHETIC_STARTUP_READBACK status=%s status_scope=%s "
+            "scoring_acceptance_proven=%s source_backed_status=%s "
+            "source_backed_lane=%s source_backed_blocker=%s can_execute=false",
+            result.get("status", "FAILED"),
+            result.get("status_scope") or "DIAGNOSTIC_NOT_COMPLETED",
+            result.get("scoring_acceptance_proven") is True,
+            source_backed.get("status") or "NOT_ATTEMPTED",
+            source_backed.get("lane") or "SOURCE_BACKED_PREGAME_SCORING",
+            source_backed.get("blocker") or "NO_SOURCE_BACKED_SCORING_PROOF",
+        )
 
     task = asyncio.create_task(_run_after_startup())
     _background_tasks.add(task)
