@@ -274,15 +274,58 @@ def plan(issues: list, prs: list, *, target: int | None = None,
     }
 
 
+
+def manifest_target_lease_group(manifest: dict, incident: int) -> str:
+    """Bind a selected incident to the worker's existing approved lease policy.
+
+    Only the protected source manifest may name a P0 lease; a GitHub issue
+    label, event payload, or ChatGPT instruction cannot grant one.
+    """
+    from v17.engineering_dispatch_queue import _validate_manifest
+
+    if type(incident) is not int or incident <= 0:
+        raise ValueError("ENGINEERING_INCIDENT_INVALID")
+    _validate_manifest(manifest)
+    matches = [
+        entry for stream in ("restoration", "acceleration")
+        for entry in manifest[stream]
+        if type(entry.get("issue_number")) is int and entry["issue_number"] == incident
+    ]
+    if len(matches) != 1:
+        raise ValueError("INCIDENT_NOT_IN_DISPATCH_MANIFEST")
+    entry = matches[0]
+    severity = str(entry["severity"]).upper()
+    lane = str(entry.get("execution_lane", "STANDARD")).upper()
+    lease = str(entry.get("lease_group") or "").upper()
+    if severity == "P0" and lane == "RAPID":
+        if not re.fullmatch(r"P0_[A-Z0-9_]+", lease):
+            raise ValueError("P0_DOMAIN_LEASE_INVALID")
+        return lease
+    if severity == "P1" and lane == "STANDARD" and lease in ("", "GLOBAL"):
+        return "GLOBAL"
+    raise ValueError("ENGINEERING_INCIDENT_LANE_UNSUPPORTED")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--issues", type=Path, required=True)
-    parser.add_argument("--prs", type=Path, required=True)
+    parser.add_argument("--issues", type=Path)
+    parser.add_argument("--prs", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--lease-for-incident", type=int)
     parser.add_argument("--runs", type=Path)
     parser.add_argument("--target", type=int)
     parser.add_argument("--retry-after-run-id", type=int)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.lease_for_incident is not None:
+        if args.manifest is None or any((args.issues, args.prs, args.runs, args.output)):
+            parser.error("exact lease lookup requires --manifest only")
+        print(manifest_target_lease_group(
+            json.loads(args.manifest.read_text(encoding="utf-8")), args.lease_for_incident
+        ))
+        return
+    if not all((args.issues, args.prs, args.output)):
+        parser.error("selection requires --issues --prs --output")
     result = plan(
         json.loads(args.issues.read_text(encoding="utf-8")),
         json.loads(args.prs.read_text(encoding="utf-8")),
