@@ -70,7 +70,7 @@ def _projected_candidate():
 
 
 @pytest.mark.anyio
-async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
+async def test_both_scenarios_failing_closed_reports_pass(monkeypatch, caplog):
     monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
     _patch_client(
         monkeypatch,
@@ -104,6 +104,19 @@ async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
     assert result["source_backed_pregame_scoring"]["blocker"] == (
         "NO_ELIGIBLE_SOURCE_BACKED_PREGAME_CANDIDATE"
     )
+    # Production log must not confuse synthetic negative-probe PASS with a
+    # certified fitted numerical scoring receipt.
+    diagnostic_lines = [
+        record.getMessage() for record in caplog.records
+        if "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=PASS" in record.getMessage()
+    ]
+    assert len(diagnostic_lines) == 1
+    assert "status_scope=SELF_ACCEPTANCE_DIAGNOSTICS_ONLY" in diagnostic_lines[0]
+    assert "scoring_acceptance_proven=False" in diagnostic_lines[0]
+    assert "synthetic_negative_status=PASS" in diagnostic_lines[0]
+    assert "source_backed_status=BLOCKED" in diagnostic_lines[0]
+    assert "source_backed_lane=SOURCE_BACKED_PREGAME_SCORING" in diagnostic_lines[0]
+    assert "source_backed_blocker=NO_ELIGIBLE_SOURCE_BACKED_PREGAME_CANDIDATE" in diagnostic_lines[0]
 
 
 @pytest.mark.anyio
@@ -310,7 +323,7 @@ async def test_projected_diagnostics_reject_wrong_identity_or_terminal(monkeypat
 
 
 @pytest.mark.anyio
-async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monkeypatch):
+async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monkeypatch, caplog):
     """A reducer purge may prove model diagnostics without granting a HELD row."""
     monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
     monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
@@ -351,3 +364,9 @@ async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monk
     assert result["source_backed_pregame_scoring"]["blocker"] == "SLATE_PURGE"
     assert result["scoring_acceptance_proven"] is False
     assert result["can_execute"] is False
+    assert any(
+        "source_backed_status=BLOCKED" in record.getMessage()
+        and "source_backed_blocker=SLATE_PURGE" in record.getMessage()
+        and "scoring_acceptance_proven=False" in record.getMessage()
+        for record in caplog.records
+    )
