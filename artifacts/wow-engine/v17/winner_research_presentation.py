@@ -113,8 +113,13 @@ def assemble_provisional_winner_card(
             raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID") from exc
         if len(eligible) != len(values) or not eligible or not eligible.issubset({"HOME", "AWAY", "DRAW"}):
             raise ValueError("WINNER_CARD_ELIGIBLE_OUTCOMES_INVALID")
-        if sport == "NHL" and basis == "FULL_GAME_INCLUDING_OT_SO" and eligible != {"HOME", "AWAY"}:
-            raise ValueError("WINNER_CARD_NHL_SETTLEMENT_OUTCOMES_INVALID")
+        # Canonical label agrees with the frozen #2547 NHL result/retro contract.
+        # A regulation-only outcome cannot masquerade as a full-game ML winner.
+        if sport == "NHL":
+            if basis != "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT":
+                raise ValueError("WINNER_CARD_NHL_SETTLEMENT_BASIS_INVALID")
+            if eligible != {"HOME", "AWAY"}:
+                raise ValueError("WINNER_CARD_NHL_SETTLEMENT_OUTCOMES_INVALID")
         if freeze >= kickoff:
             raise ValueError("WINNER_CARD_NOT_PREGAME")
         if event_id in event_by_id:
