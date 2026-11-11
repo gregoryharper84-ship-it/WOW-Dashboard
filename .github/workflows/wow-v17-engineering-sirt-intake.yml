@@ -6,6 +6,20 @@ on:
       - wow-v17-chatgpt-engineering-worker
       - wow-v17-claude-engineering-worker
     types: [completed]
+  # Trusted-main entry for existing PRs that do not use worker branch names.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing PR to send for independent SIRT intake (not approval).
+        required: true
+        type: string
+      head_sha:
+        description: Exact current PR head; stale values fail closed.
+        required: true
+        type: string
+  # Maintainer-controlled label; PR source is never checked out or executed.
+  pull_request_target:
+    types: [labeled, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -14,15 +28,21 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: sirt-intake-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  group: sirt-intake-${{ github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number || github.run_id }}-${{ github.event.workflow_run.run_attempt || github.run_attempt }}
   cancel-in-progress: false
 
 jobs:
   independent-intake:
     # Only trusted main worker events; never check out or execute PR code.
     if: >-
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.base.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -30,36 +50,75 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_EVENT: ${{ github.event_name }}
           SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
-          SOURCE_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_ID: ${{ github.event.workflow_run.id || github.run_id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt || github.run_attempt }}
+          INPUT_PR: ${{ github.event.pull_request.number || inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels) }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$SOURCE_WORKFLOW" in
-            wow-v17-chatgpt-engineering-worker) prefix=chatgpt ;;
-            wow-v17-claude-engineering-worker) prefix=claude ;;
-            *) echo "::error::UNRECOGNIZED_WORKER"; exit 1 ;;
-          esac
-          branch="$prefix/engineering/$SOURCE_ID-$SOURCE_ATTEMPT"
-          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all \
-            --head "$branch" --json number,title,body,headRefOid,isDraft,state)
-          count=$(jq 'length' <<<"$prs")
-          if [ "$count" -eq 0 ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No engineering PR produced by this worker run." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          [ "$count" -eq 1 ] || { echo "::error::AMBIGUOUS_WORKER_PR"; exit 1; }
-          pr=$(jq -r '.[0].number' <<<"$prs")
-          sha=$(jq -r '.[0].headRefOid' <<<"$prs")
-          body=$(jq -r '.[0].body // ""' <<<"$prs")
-          if ! grep -Eq '^Pre-PR agent gates: .?PASS.?\s*$' <<<"$body"; then
-            echo "::error::SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS for PR $pr"; exit 1
+          if [ "$SOURCE_EVENT" = "workflow_run" ]; then
+            # Keep existing trusted worker-origin route and pre-PR guard.
+            case "$SOURCE_WORKFLOW" in
+              wow-v17-chatgpt-engineering-worker) prefix=chatgpt ;;
+              wow-v17-claude-engineering-worker) prefix=claude ;;
+              *) echo "::error::UNRECOGNIZED_WORKER"; exit 1 ;;
+            esac
+            branch="$prefix/engineering/$SOURCE_ID-$SOURCE_ATTEMPT"
+            prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all \
+              --head "$branch" --json number,title,body,headRefOid,isDraft,state)
+            count=$(jq 'length' <<<"$prs")
+            if [ "$count" -eq 0 ]; then
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              echo "No engineering PR produced by this worker run." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            [ "$count" -eq 1 ] || { echo "::error::AMBIGUOUS_WORKER_PR"; exit 1; }
+            pr=$(jq -r '.[0].number' <<<"$prs")
+            sha=$(jq -r '.[0].headRefOid' <<<"$prs")
+            body=$(jq -r '.[0].body // ""' <<<"$prs")
+            if ! grep -Eq '^Pre-PR agent gates: .?PASS.?\\s*$' <<<"$body"; then
+              echo "::error::SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS for PR $pr"; exit 1
+            fi
+          elif [ "$SOURCE_EVENT" = "workflow_dispatch" ] || [ "$SOURCE_EVENT" = "pull_request_target" ]; then
+            if [ "$SOURCE_EVENT" = "pull_request_target" ]; then
+              if ! jq -e 'type=="array" and any(.[]; .name=="sirt-review-required")' \
+                <<<"${LABELS_JSON:-null}" >/dev/null; then
+                echo "found=false" >> "$GITHUB_OUTPUT"
+                echo "Missing maintainer SIRT label; not an intake target." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            fi
+            [[ "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "${INPUT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::SIRT_INPUT_PR_OR_EXACT_HEAD_INVALID"; exit 1
+            }
+            pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${INPUT_PR}")
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$INPUT_HEAD_SHA" \
+              --argjson pr "$INPUT_PR" '
+                .number == $pr and .state == "open" and .draft == false and
+                .head.sha == $sha and
+                .head.repo.full_name == $repo and
+                .base.repo.full_name == $repo and .base.ref == "main"
+              ' <<<"$pr_json" >/dev/null || {
+              echo "::error::SIRT_INPUT_HEAD_STALE_OR_PR_NOT_ADMISSIBLE"; exit 1
+            }
+            pr=$INPUT_PR
+            sha=$INPUT_HEAD_SHA
+            body=$(jq -r '.body // ""' <<<"$pr_json")
+          else
+            echo "::error::UNSUPPORTED_SIRT_INTAKE_EVENT"; exit 1
           fi
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::INVALID_PR_HEAD_SHA"; exit 1; }
-          incident=$(sed -nE 's/^Incident: .?#?([0-9]+).?$/\1/p' <<<"$body" | head -1)
-          [[ "$incident" =~ ^[0-9]+$ ]] || { echo "::error::INCIDENT_ID_MISSING"; exit 1; }
+          incident_count=$(grep -Ec '^Incident: #[1-9][0-9]*[[:space:]]*$' <<<"$body" || true)
+          [ "$incident_count" -eq 1 ] || {
+            echo "::error::SIRT_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1
+          }
+          incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\\1/p' <<<"$body")
+          [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::INCIDENT_ID_MISSING"; exit 1; }
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -72,9 +131,9 @@ jobs:
           PR: ${{ steps.resolve.outputs.pr }}
           SHA: ${{ steps.resolve.outputs.sha }}
           INCIDENT: ${{ steps.resolve.outputs.incident }}
-          SOURCE_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_ID: ${{ github.event.workflow_run.id || github.run_id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt || github.run_attempt }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || 'INTAKE_ONLY_NOT_A_REVIEW_VERDICT' }}
         shell: bash
         run: |
           set -euo pipefail
