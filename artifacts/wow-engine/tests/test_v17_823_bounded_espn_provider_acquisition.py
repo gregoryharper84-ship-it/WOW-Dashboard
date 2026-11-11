@@ -555,3 +555,74 @@ def test_real_empty_scoreboard_is_valid_not_fabricated_model_unavailable(monkeyp
     )
     assert response.ok is True and response.data == []
     assert response.code is None
+
+
+
+def test_ncaaf_twenty_five_without_total_cannot_certify_complete_slate(monkeypatch):
+    # Live 2026-11-14 ESPN date query and FBS group query both returned the
+    # same 25 rows despite limit=1000; page/offset gave no new IDs.
+    rows = [_event(i) for i in range(25)]
+    for event in rows:
+        event["date"] = "2026-11-14T17:00:00Z"
+
+    monkeypatch.setattr(
+        secondary, "_http_json",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            True, {"events": rows}, 200
+        ),
+    )
+    secondary._SCOREBOARD_CACHE.clear()
+    params = {
+        "commenceTimeFrom": "2026-11-14",
+        "commenceTimeTo": "2026-11-14",
+    }
+    raw = secondary._scoreboard("americanfootball_ncaaf", params, provider_limit=1000)
+    assert raw.ok is True
+    assert raw.data["_wow_provider_result_count"] == 25
+    assert raw.data["_wow_provider_truncated"] is False
+    assert raw.data["_wow_provider_completeness_unverified"] is True
+
+    discovery = secondary.secondary_for_request(
+        "/odds-api/v4/sports/americanfootball_ncaaf/events", params, {}
+    )
+    assert discovery.ok is False
+    assert discovery.code == "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
+
+    diagnostic = runtime.compact_espn_scoreboard(
+        sport_key="americanfootball_ncaaf", date="2026-11-14",
+    )
+    assert diagnostic["status"] == "DISCOVERY_COMPLETENESS_UNVERIFIED"
+    assert diagnostic["provider_code"] == "ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
+    assert diagnostic["provider_truncated"] is False
+    assert diagnostic["provider_completeness_unverified"] is True
+    assert diagnostic["coverage_complete"] is False
+    assert diagnostic["total_events"] == 25
+    assert len(diagnostic["events"]) == 25
+    assert all(e["official_event_id"] is None for e in diagnostic["events"])
+    assert diagnostic["prediction_authority"] is False
+    assert diagnostic["can_execute"] is False
+
+
+def test_ncaaf_small_or_explicit_total_board_not_marked_cap_25(monkeypatch):
+    rows = [_event(i) for i in range(25)]
+    for event in rows:
+        event["date"] = "2026-11-14T17:00:00Z"
+    source = {"events": rows, "total": 25}
+    monkeypatch.setattr(
+        secondary, "_http_json",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(True, source, 200),
+    )
+    secondary._SCOREBOARD_CACHE.clear()
+    params = {"commenceTimeFrom": "2026-11-14", "commenceTimeTo": "2026-11-14"}
+    verified = secondary._scoreboard("americanfootball_ncaaf", params)
+    assert verified.data["_wow_provider_truncated"] is False
+    assert verified.data["_wow_provider_completeness_unverified"] is False
+
+    # An ordinary verified empty weekday slate remains a success.
+    source["total"] = 0
+    source["events"] = []
+    secondary._SCOREBOARD_CACHE.clear()
+    empty = secondary.secondary_for_request(
+        "/odds-api/v4/sports/americanfootball_ncaaf/events", params, {}
+    )
+    assert empty.ok is True and empty.data == []
