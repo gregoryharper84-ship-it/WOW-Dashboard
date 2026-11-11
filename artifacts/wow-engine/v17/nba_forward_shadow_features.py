@@ -162,6 +162,11 @@ def hydrate_nba_current_pregame_features(
         t = r.settled_at_utc
         if not isinstance(t, datetime) or t.utcoffset() is None:
             return _hold("NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE", official_event_id=official_event_id)
+        game_day_start = datetime(
+            r.game.game_date.year, r.game.game_date.month, r.game.game_date.day, tzinfo=timezone.utc
+        )
+        if t < game_day_start:  # a result cannot settle before its own game day began
+            return _hold("NBA_FORWARD_SHADOW_SETTLEMENT_TIME_PREDATES_GAME", official_event_id=official_event_id)
     # Only results already settled at the source snapshot were knowable then.
     included = [r for r in relevant if r.settled_at_utc <= source_at]
     games = [r.game for r in included]
@@ -189,7 +194,7 @@ def hydrate_nba_current_pregame_features(
         "source_snapshot_timestamp": source_snapshot_timestamp,
         "feature_audit": {
             "feature_timestamp": feature_timestamp,
-            "feature_as_of": game_date.isoformat(),
+            "feature_as_of": source_snapshot_timestamp,  # knowledge cutoff; never after snapshot/feature/event
             "dataset_id": _dataset_id(included),
             "feature_payload_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
             "source_replay_status": SOURCE_REPLAY_STATUS,

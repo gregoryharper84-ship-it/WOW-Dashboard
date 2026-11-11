@@ -102,10 +102,11 @@ def test_dataset_id_is_deterministic_and_history_sensitive():
     a = fs.hydrate_nba_current_pregame_features(settled_games=_settled(games), **EVENT)
     b = fs.hydrate_nba_current_pregame_features(settled_games=list(reversed(_settled(games))), **EVENT)
     assert a["feature_audit"]["dataset_id"] == b["feature_audit"]["dataset_id"]
-    changed = [games[0].__class__(**{**games[0].__dict__, "home_score": games[0].home_score + 7})] + games[1:]
+    k = next(i for i, g in enumerate(games) if "1" in (g.home_team_id, g.away_team_id))
+    changed = list(games)
+    changed[k] = games[k].__class__(**{**games[k].__dict__, "home_score": games[k].home_score + 7})
     c = fs.hydrate_nba_current_pregame_features(settled_games=_settled(changed), **EVENT)
-    if {games[0].home_team_id, games[0].away_team_id} & {"1", "2"}:
-        assert c["feature_audit"]["dataset_id"] != a["feature_audit"]["dataset_id"]
+    assert c["feature_audit"]["dataset_id"] != a["feature_audit"]["dataset_id"]
 
 
 # ---- review-finding regressions (CodeRabbit on #2595) ----------------------
@@ -144,17 +145,37 @@ def test_result_settled_after_source_snapshot_is_not_used():
 
 def test_missing_or_naive_settlement_time_holds():
     games = _corpus()
-    s = _settled(games)
-    s[0] = fs.SettledGame(game=s[0].game, settled_at_utc=None)
     team = {"1", "2"}
-    relevant = bool(team & {s[0].game.home_team_id, s[0].game.away_team_id})
+    idx = [i for i, g in enumerate(games) if team & {g.home_team_id, g.away_team_id}]
+    assert len(idx) >= 2  # guard: the mutated rows must involve the event teams
+    s = _settled(games)
+    s[idx[0]] = fs.SettledGame(game=s[idx[0]].game, settled_at_utc=None)
     pkg = _hydrate(s)
-    if relevant:
-        assert pkg["status"] == "HOLD" and pkg["reason_code"] == "NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE"
+    assert pkg["status"] == "HOLD" and pkg["reason_code"] == "NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE"
     naive = _settled(games)
-    naive[1] = fs.SettledGame(game=naive[1].game, settled_at_utc=datetime(2026, 10, 3, 1, 0))
-    if {naive[1].game.home_team_id, naive[1].game.away_team_id} & team:
-        assert _hydrate(naive)["reason_code"] == "NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE"
+    naive[idx[1]] = fs.SettledGame(game=naive[idx[1]].game, settled_at_utc=datetime(2026, 10, 3, 1, 0))
+    assert _hydrate(naive)["reason_code"] == "NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE"
+
+
+def test_settlement_predating_its_game_day_holds_even_with_ample_history():
+    games = _corpus()
+    s = _settled(games)
+    i = next(i for i, g in enumerate(games) if "1" in (g.home_team_id, g.away_team_id))
+    g = games[i]
+    s[i] = fs.SettledGame(game=g, settled_at_utc=datetime(g.game_date.year, g.game_date.month, g.game_date.day, tzinfo=timezone.utc) - timedelta(hours=1))
+    pkg = _hydrate(s)
+    assert pkg["status"] == "HOLD" and pkg["reason_code"] == "NBA_FORWARD_SHADOW_SETTLEMENT_TIME_PREDATES_GAME"
+
+
+def test_feature_as_of_never_exceeds_snapshot_feature_or_event_cutoff():
+    pkg = _hydrate(_settled(_corpus()))
+    as_of = datetime.fromisoformat(pkg["feature_audit"]["feature_as_of"].replace("Z", "+00:00"))
+    cutoff = min(
+        datetime.fromisoformat(EVENT["source_snapshot_timestamp"].replace("Z", "+00:00")),
+        datetime.fromisoformat(EVENT["feature_timestamp"].replace("Z", "+00:00")),
+        datetime.fromisoformat(EVENT["event_start_time_utc"].replace("Z", "+00:00")),
+    )
+    assert as_of.utcoffset() is not None and as_of <= cutoff
 
 
 def test_non_nba_rows_are_ignored_everywhere():
