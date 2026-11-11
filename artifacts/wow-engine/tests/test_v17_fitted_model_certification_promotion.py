@@ -64,6 +64,7 @@ def _row(
     outcome: float | list[float],
     **overrides,
 ):
+    """Build one replay-row fixture with canonical governance defaults."""
     payload = {
         "row_id": row_id,
         "official_event_id": event_id,
@@ -84,6 +85,7 @@ def _row(
 
 
 def _binary_rows():
+    """Return the canonical four-row binary replay corpus."""
     return [
         _row("r1", "e1", "2026-04-01T18:00:00+00:00", "TRAIN", 0.8, 1),
         _row("r2", "e2", "2026-04-02T18:00:00+00:00", "TRAIN", 0.6, 0),
@@ -93,6 +95,7 @@ def _binary_rows():
 
 
 def _multiclass_rows():
+    """Return the canonical four-row three-outcome replay corpus."""
     return [
         _row("m1", "s1", "2026-05-01T18:00:00+00:00", "TRAIN", [0.6, 0.3, 0.1], [1, 0, 0]),
         _row("m2", "s2", "2026-05-02T18:00:00+00:00", "TRAIN", [0.2, 0.5, 0.3], [0, 1, 0]),
@@ -102,6 +105,7 @@ def _multiclass_rows():
 
 
 def _identity(rows, **overrides):
+    """Build a valid artifact identity for the supplied rows."""
     payload = {
         "artifact_id": "artifact-binary-1",
         "sport": "NBA",
@@ -127,6 +131,7 @@ def _identity(rows, **overrides):
 
 
 def _artifact(rows=None, *, identity_overrides=None, stored_metrics=None, **overrides):
+    """Build a valid fitted-artifact fixture with optional overrides."""
     rows = rows or _binary_rows()
     # Stored metrics are the TEST-only holdout metrics, not an all-partition
     # average. Computing them here keeps fixtures aligned with the contract.
@@ -145,6 +150,7 @@ def _artifact(rows=None, *, identity_overrides=None, stored_metrics=None, **over
 
 
 def _rebind(artifact):
+    """Recompute corpus digest and TEST metrics after mutating rows."""
     rows = [parse_replay_row(row) for row in artifact["rows"]]
     artifact["identity"]["expected_corpus_sha256"] = corpus_sha256(rows)
     computed = compute_replay_metrics(rows)
@@ -155,6 +161,7 @@ def _rebind(artifact):
 
 
 def _policy(**overrides):
+    """Build a ratified policy fixture with optional overrides."""
     payload = {
         "policy_id": "TEST_POLICY_V1",
         "status": "RATIFIED",
@@ -188,6 +195,7 @@ def _signed_authorization(receipt, policy, artifact, **overrides):
 
 
 def _authorization(receipt, policy, artifact, **overrides):
+    """Build an independent reviewer authorization fixture."""
     identity = artifact["identity"] if isinstance(artifact, dict) else artifact.identity.as_dict()
     payload = {
         "authorization_id": "AUTH-1",
@@ -209,6 +217,7 @@ def _authorization(receipt, policy, artifact, **overrides):
 
 
 def test_known_binary_replay_reproduces_metrics_and_never_authorizes():
+    """Verify binary replay reproduces metrics and never authorizes."""
     receipt = replay_fitted_artifact(_artifact())
     assert receipt["status"] == REPLAY_PASS
     assert receipt["blockers"] == []
@@ -230,6 +239,7 @@ def test_known_binary_replay_reproduces_metrics_and_never_authorizes():
 
 
 def test_replay_is_deterministic_and_tamper_evident():
+    """Verify replay receipts are deterministic and detect tampering."""
     first = replay_fitted_artifact(_artifact())
     second = replay_fitted_artifact(_artifact())
     assert first["receipt_sha256"] == second["receipt_sha256"]
@@ -245,6 +255,7 @@ def test_replay_is_deterministic_and_tamper_evident():
 
 
 def test_malformed_packet_is_typed_and_never_model_unavailable():
+    """Verify malformed packets fail with a typed contract error, never MODEL_UNAVAILABLE."""
     result = replay_fitted_artifact({"identity": {}})
     assert result["status"] == REPLAY_FAILED
     assert result["identity"] is None
@@ -253,6 +264,7 @@ def test_malformed_packet_is_typed_and_never_model_unavailable():
 
 
 def test_temporal_leakage_partition_overlap_and_split_mismatch_fail_closed():
+    """Verify temporal leakage, partition overlap, and split mismatches fail closed."""
     leak = copy.deepcopy(_artifact())
     leak["rows"][0]["feature_as_of"] = leak["rows"][0]["event_start_time"]
     leaked = replay_fitted_artifact(leak)
@@ -273,6 +285,7 @@ def test_temporal_leakage_partition_overlap_and_split_mismatch_fail_closed():
 
 
 def test_mixed_probability_arity_fails_closed():
+    """Verify mixed probability arity fails closed."""
     rows = _binary_rows()
     rows[0]["probabilities"] = [0.3, 0.3, 0.4]
     rows[0]["outcome"] = [0, 1, 0]
@@ -282,6 +295,7 @@ def test_mixed_probability_arity_fails_closed():
 
 
 def test_multiclass_soccer_replay_and_probability_normalisation():
+    """Verify three-outcome replay and probability normalization."""
     rows = _multiclass_rows()
     metrics = compute_replay_metrics([parse_replay_row(row) for row in rows])
     artifact = _artifact(
@@ -305,6 +319,7 @@ def test_multiclass_soccer_replay_and_probability_normalisation():
 
 
 def test_probability_domain_lower_bound_and_push_states_are_preserved():
+    """Verify probability domains, lower bounds, and push states are preserved."""
     domain = copy.deepcopy(_artifact())
     domain["rows"][0]["probabilities"] = [1.0]
     _rebind(domain)
@@ -325,6 +340,7 @@ def test_probability_domain_lower_bound_and_push_states_are_preserved():
 
 
 def test_identity_source_and_market_feature_governance_are_mandatory():
+    """Verify identity, source, and market-feature governance are mandatory."""
     missing_source = _artifact()
     del missing_source["rows"][0]["source_manifest_sha256"]
     result = replay_fitted_artifact(missing_source)
@@ -342,6 +358,7 @@ def test_identity_source_and_market_feature_governance_are_mandatory():
 
 
 def test_unverified_stored_metrics_are_reported_not_silently_trusted():
+    """Verify unverified stored metrics are reported, not trusted."""
     artifact = _artifact()
     artifact["stored_metrics"]["auc"] = 0.71
     receipt = replay_fitted_artifact(artifact)
@@ -361,6 +378,7 @@ def test_unverified_stored_metrics_are_reported_not_silently_trusted():
 
 
 def test_promotion_requires_an_explicit_ratified_policy():
+    """Verify promotion requires an explicit ratified policy."""
     artifact = _artifact()
     no_policy = evaluate_fitted_model_promotion(artifact)
     assert no_policy["status"] == PROMOTION_POLICY_REVIEW_REQUIRED
@@ -380,6 +398,7 @@ def test_promotion_requires_an_explicit_ratified_policy():
 
 def test_promotion_requires_all_holdout_metrics_even_if_caller_requests_row_count_only():
     # Research replay may use a narrow diagnostic. Promotion never may.
+    """Verify promotion always requires the full holdout metric triad."""
     artifact = _artifact(stored_metrics={"row_n": 1})
     research = replay_fitted_artifact(artifact, required_metrics=["row_n"])
     assert research["status"] == REPLAY_PASS
@@ -408,6 +427,7 @@ def test_promotion_requires_all_holdout_metrics_even_if_caller_requests_row_coun
 
 
 def test_policy_metric_gate_failure_remains_shadow():
+    """Verify policy gate failures remain in shadow."""
     artifact = _artifact()
     tight = _policy(max_brier=0.01)
     result = evaluate_fitted_model_promotion(artifact, policy=tight)
@@ -422,6 +442,7 @@ def test_policy_metric_gate_failure_remains_shadow():
 
 
 def test_promotion_requires_independent_authorization_bound_to_exact_receipt():
+    """Verify promotion authorization binds to the exact receipt."""
     artifact = _artifact()
     policy = _policy()
     receipt = replay_fitted_artifact(artifact)
@@ -456,6 +477,7 @@ def test_promotion_requires_independent_authorization_bound_to_exact_receipt():
 
 
 def test_approved_promotion_is_a_dry_run_packet_not_a_registry_mutation():
+    """Verify approved promotion is a dry-run packet, not a registry mutation."""
     artifact = _artifact()
     policy = _policy()
     receipt = replay_fitted_artifact(artifact)
@@ -489,6 +511,7 @@ def test_approved_promotion_is_a_dry_run_packet_not_a_registry_mutation():
 
 
 def test_already_promoted_state_requires_matching_authorization():
+    """Verify an already-promoted state requires matching authorization."""
     promoted = copy.deepcopy(_artifact())
     promoted.update(
         {"promoted": True, "active": True, "lifecycle_state": "PROSPECTIVE_CERTIFIED"}
@@ -513,6 +536,7 @@ def test_already_promoted_state_requires_matching_authorization():
 
 
 def test_matrix_covers_every_required_sport_and_surface_without_authority():
+    """Verify the matrix covers every declared sport and surface without authority."""
     mlb = _artifact(
         identity_overrides={
             "artifact_id": "artifact-mlb-1",
@@ -594,6 +618,7 @@ def test_matrix_covers_every_required_sport_and_surface_without_authority():
 
 
 def test_matrix_keeps_matching_authorization_rejection():
+    """Verify the matrix preserves a matching authorization rejection."""
     artifact = _artifact()
     policy = _policy()
     receipt = replay_fitted_artifact(artifact)
@@ -612,6 +637,7 @@ def test_matrix_keeps_matching_authorization_rejection():
 
 
 def test_matrix_policy_ambiguity_is_explicit():
+    """Verify ambiguous policy scope is explicit."""
     policy_a = _policy(policy_id="AMBIGUOUS_A")
     policy_b = _policy(policy_id="AMBIGUOUS_B")
     matrix = build_cross_sport_matrix(
@@ -632,7 +658,9 @@ def test_matrix_policy_ambiguity_is_explicit():
 
 
 class _FakeQuery:
+    """In-memory Supabase query builder with migrated receipt checks."""
     def __init__(self, db, table):
+        """Initialize a minimal in-memory Supabase query builder."""
         self.db = db
         self.table_name = table
         self.filters = {}
@@ -641,23 +669,28 @@ class _FakeQuery:
         self.record = None
 
     def select(self, *_args, **_kwargs):
+        """Select rows from the in-memory table."""
         self.mode = "select"
         return self
 
     def eq(self, key, value):
+        """Add an equality filter to the current query."""
         self.filters[key] = value
         return self
 
     def limit(self, value):
+        """Limit the number of returned rows."""
         self.limit_n = value
         return self
 
     def insert(self, record):
+        """Configure an insert of one receipt row."""
         self.mode = "insert"
         self.record = dict(record)
         return self
 
     def upsert(self, record, on_conflict=None, ignore_duplicates=False):
+        """Configure an idempotent upsert of one receipt row."""
         self.mode = "upsert"
         self.record = dict(record)
         self.on_conflict = on_conflict
@@ -666,6 +699,7 @@ class _FakeQuery:
 
     @staticmethod
     def _hash(value):
+        """Return whether a value is a lowercase 64-character digest."""
         return (
             isinstance(value, str)
             and len(value) == 64
@@ -673,6 +707,7 @@ class _FakeQuery:
         )
 
     def _validate_schema(self, row):
+        """Enforce migrated replay and promotion receipt constraints."""
         if row.get("surface") not in {"TEAM_EVENT", "PROP", "__UNIDENTIFIED__"}:
             raise ValueError("wow_fitted_replay_surface")
         if self.table_name == "wow_fitted_model_certification_replay_receipts":
@@ -689,6 +724,7 @@ class _FakeQuery:
                 raise ValueError("wow_fitted_promotion_packet_hash_shape")
 
     def execute(self):
+        """Execute the configured in-memory query."""
         rows = self.db.tables.setdefault(self.table_name, [])
         if self.mode in {"insert", "upsert"}:
             self._validate_schema(self.record)
@@ -713,19 +749,25 @@ class _FakeQuery:
 
 
 class _FakeDB:
+    """In-memory table store for receipt persistence tests."""
     def __init__(self):
+        """Initialize a minimal in-memory Supabase query builder."""
         self.tables = {}
 
     def table(self, name):
+        """Return a query builder for the named in-memory table."""
         return _FakeQuery(self, name)
 
 
 class _BrokenDB:
+    """Receipt store that always fails for fail-closed tests."""
     def table(self, _name):
+        """Return a query builder for the named in-memory table."""
         raise RuntimeError("receipt store unavailable")
 
 
 def test_replay_receipt_is_idempotent_and_audit_is_explicit():
+    """Verify replay receipt persistence is idempotent and audit is explicit."""
     db = _FakeDB()
     request = FittedReplayRequest(artifact=_artifact())
     first = run_fitted_model_replay(request, db=db)
@@ -748,6 +790,7 @@ def test_replay_receipt_is_idempotent_and_audit_is_explicit():
 
 
 def test_promotion_receipt_is_idempotent_and_broken_store_blocks_apply():
+    """Verify promotion receipt persistence is idempotent and store failures block apply."""
     db = _FakeDB()
     artifact = _artifact()
     policy = _signed_policy()
@@ -869,6 +912,7 @@ def test_promotion_service_blocks_missing_holdout_metrics(selected_metrics):
 
 
 def test_service_rejects_unsigned_policy_and_authorization():
+    """Verify unsigned policy and authorization requests are rejected."""
     db = _FakeDB()
     request = FittedPromotionRequest(
         artifact=_artifact(),
@@ -886,6 +930,7 @@ def test_service_rejects_unsigned_policy_and_authorization():
 
 
 def test_invalid_policy_payload_is_a_typed_contract_failure():
+    """Verify invalid policy payloads produce typed contract failures."""
     result = run_fitted_model_promotion(
         FittedPromotionRequest(artifact=_artifact(), policy={"policy_id": "INCOMPLETE"}),
         db=None,
@@ -896,6 +941,7 @@ def test_invalid_policy_payload_is_a_typed_contract_failure():
 
 
 def test_matrix_service_and_route_installation_are_idempotent():
+    """Verify matrix service and route installation are idempotent."""
     policy = _policy()
     matrix = run_fitted_model_matrix(
         FittedMatrixRequest(
@@ -928,6 +974,7 @@ def test_matrix_service_and_route_installation_are_idempotent():
 
 
 def test_migration_is_append_only_rls_protected_and_never_authorizing():
+    """Verify the migration is append-only, RLS-protected, and never authorizing."""
     sql = (
         Path(__file__).resolve().parents[1]
         / "migrations"
