@@ -160,3 +160,101 @@ def test_all_intake_entrypoints_serialize_one_issue_writer_group():
     assert group == "sirt-intake-${{ github.repository }}"
     assert wf["concurrency"]["cancel-in-progress"] is False
     assert wf["concurrency"]["queue"] == "max"
+
+
+def _writer():
+    """Use the real workflow writer, not a test-only implementation."""
+    return next(step for step in _wf()["jobs"]["independent-intake"]["steps"]
+                if step.get("name") == "Write SIRT independent-intake issue and cross-link")["run"]
+
+
+def _matching_issue(number, author):
+    """Construct an intake with a real marker but independently controlled creator."""
+    return {"number": number,
+            "body": "<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_" + SHA + " -->",
+            "author": {"login": author}}
+
+
+def _run_writer(tmp_path, *, initial_issues=None, source_id="dispatch-1"):
+    """Exercise the workflow writer with a stateful fake GitHub issue API."""
+    issues_file = tmp_path / "issues.json"
+    if initial_issues is not None:
+        issues_file.write_text(json.dumps(initial_issues))
+    elif not issues_file.exists():
+        issues_file.write_text("[]")
+    calls_file = tmp_path / "calls.log"
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n"
+        "issues=Path(os.environ['FAKE_ISSUES_FILE'])\n"
+        "calls=Path(os.environ['FAKE_CALLS_FILE'])\n"
+        "args=sys.argv[1:]\n"
+        "if args[:2]==['issue','list']:\n"
+        "  print(issues.read_text())\n"
+        "elif args[:2]==['issue','create']:\n"
+        "  data=json.loads(issues.read_text())\n"
+        "  data.append({'number':9000,'body':'<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_'+os.environ['SHA']+' -->','author':{'login':'github-actions[bot]'}})\n"
+        "  issues.write_text(json.dumps(data))\n"
+        "  calls.open('a').write('issue:create\\n')\n"
+        "  print('https://github.com/example/repo/issues/9000')\n"
+        "elif args[:2]==['pr','comment']:\n"
+        "  calls.open('a').write('pr:comment\\n')\n"
+        "else:\n"
+        "  print('unexpected GitHub operation',args,file=sys.stderr);sys.exit(51)\n"
+    )
+    fake_gh.chmod(0o755)
+    summary = tmp_path / "writer-summary.txt"
+    summary.write_text("")
+    env = {**os.environ,
+           "PATH": str(tmp_path) + os.pathsep + os.environ.get("PATH", ""),
+           "GITHUB_REPOSITORY": REPO,
+           "GITHUB_STEP_SUMMARY": str(summary), "GH_TOKEN": "test-only",
+           "RUNNER_TEMP": str(tmp_path), "PR": "2547", "SHA": SHA,
+           "INCIDENT": "2076", "SOURCE_ID": source_id,
+           "SOURCE_ATTEMPT": "1", "SOURCE_CONCLUSION": "INTAKE_ONLY_NOT_A_REVIEW_VERDICT",
+           "FAKE_ISSUES_FILE": str(issues_file),
+           "FAKE_CALLS_FILE": str(calls_file)}
+    process = subprocess.run(["bash", "-e", "-c", _writer()],
+                             env=env, capture_output=True, text=True, timeout=20)
+    calls = calls_file.read_text().splitlines() if calls_file.exists() else []
+    return process, calls, json.loads(issues_file.read_text()), summary.read_text()
+
+
+def test_forged_marker_from_untrusted_creator_cannot_suppress_sirt_intake(tmp_path):
+    """The prior writer incorrectly trusted a public issue containing the marker."""
+    forged = _matching_issue(77, "untrusted-issue-writer")
+    run, calls, issues, _ = _run_writer(tmp_path, initial_issues=[forged])
+    assert run.returncode == 0, run.stderr
+    assert calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 2
+    assert issues[-1]["author"]["login"] == "github-actions[bot]"
+
+
+@pytest.mark.parametrize("creator", ["github-actions[bot]", "gregoryharper84-ship-it"])
+def test_marker_reuse_requires_authentic_existing_intake_creator(tmp_path, creator):
+    trusted = _matching_issue(75, creator)
+    run, calls, issues, summary = _run_writer(tmp_path, initial_issues=[trusted])
+    assert run.returncode == 0, run.stderr
+    assert calls == []
+    assert len(issues) == 1
+    assert "Existing SIRT intake #75" in summary
+
+
+def test_two_admitted_routes_same_head_create_exactly_one_intake_and_crosslink(tmp_path):
+    first, first_calls, _, _ = _run_writer(tmp_path, initial_issues=[],
+                                             source_id="workflow-run-1")
+    second, second_calls, issues, _ = _run_writer(tmp_path,
+                                                   source_id="labeled-pr-2")
+    assert first.returncode == second.returncode == 0
+    assert first_calls == second_calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 1
+
+
+def test_rejected_resolver_never_reaches_issue_writer(tmp_path):
+    """The actual workflow step guard must exclude any rejected resolver."""
+    writer_step = next(step for step in _wf()["jobs"]["independent-intake"]["steps"]
+                       if step.get("name") == "Write SIRT independent-intake issue and cross-link")
+    assert writer_step["if"] == "steps.resolve.outputs.found == 'true'"
+    bad, output = _run(tmp_path, requested_sha=OLD_SHA)
+    assert bad.returncode != 0
+    assert "found=true" not in output
