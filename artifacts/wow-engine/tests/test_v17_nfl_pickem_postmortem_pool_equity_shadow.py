@@ -106,7 +106,9 @@ def test_final_week4_sheet_regression_reconstructs_gh_outcome_and_consensus_conc
     assert report["minority_pick_count"] == 0
     assert report["all_consensus_or_split_top"] is True
     assert report["unanimous_shared_loss_count"] == 1
-    assert report["pool_strategy_shadow_review_earned"] is True
+    assert report["pool_strategy_shadow_research_candidate"] is True
+    assert report["pool_strategy_shadow_review_earned"] is False
+    assert any(action["action"] == "REQUIRE_AUTHENTIC_PRELOCK_OPPONENT_RECEIPTS_BEFORE_EQUITY_SHADOW" for action in report["learning_actions"])
     assert report["production_probability_patch_earned"] is False
     assert report["production_probability_mutation_allowed"] is False
     assert report["can_execute"] is False
