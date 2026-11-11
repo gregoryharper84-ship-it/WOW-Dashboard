@@ -151,7 +151,8 @@ def test_rejected_datadog_receipt_cannot_leak_into_summary_or_artifact():
     wf = WF.read_text()
     assert 'id: intake' in wf
     assert "if: steps.intake.outcome == 'success'" in wf
-    assert 'path: ${{ runner.temp }}/wow-v17-log-intake-validated.json' in wf
+    assert 'path: ${{ runner.temp }}/wow-v17-validated/wow-v17-log-intake.json' in wf
+        assert 'if: steps.intake.outcome == \'success\'' in wf
     summary = wf.split("- name: Record strictly redacted Reporter candidate summary", 1)[1]
     assert 'if [ -s "$RUNNER_TEMP/wow-v17-log-intake-validated.json" ]; then' in summary
     assert 'python - "$RUNNER_TEMP/wow-v17-log-intake-validated.json"' in summary
