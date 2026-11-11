@@ -1,8 +1,8 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useState } from "react";
 import { Upload, Play, AlertTriangle, CheckCircle2, RefreshCw, Database } from "lucide-react";
 
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
-const API  = BASE.replace("/final-lock", "/api");
+const API = API_ROOT;
 
 interface WowProp {
   player: string;
@@ -76,7 +76,7 @@ export default function PropsIntakePage() {
 
   async function checkProviders() {
     try {
-      const r = await fetch(`${API}/props/providers`);
+      const r = await apiFetch(`${API}/props/providers`);
       const d = await r.json() as { providers: Record<string, ProviderStatus> };
       setProviderStatus(d.providers);
     } catch { /* ignore */ }
@@ -96,7 +96,7 @@ export default function PropsIntakePage() {
           delete body.providers;
         } catch { setError("Invalid JSON in paste area"); setFetching(false); return; }
       }
-      const r = await fetch(`${API}/props/normalize`, {
+      const r = await apiFetch(`${API}/props/normalize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -115,13 +115,16 @@ export default function PropsIntakePage() {
     setScoring(true);
     setError(null);
     try {
-      const r = await fetch(`${API}/props/score-batch`, {
+      const r = await apiFetch(`${API}/props/score-batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ props: result.props }),
       });
-      const data = await r.json() as { results: ScoredResult[] };
+      const data = await r.json() as { ok?: boolean; results?: ScoredResult[]; error?: string; message?: string; code?: string };
+      if (!Array.isArray(data.results)) throw new Error(data.error ?? data.message ?? data.code ?? `Legacy batch request failed (HTTP ${r.status})`);
       setScored(data.results);
+      const failed = data.results.filter(row => !row.ok).length;
+      if (failed) setError(`${failed} of ${data.results.length} legacy rows failed. Native blockers are shown below.`);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -305,7 +308,7 @@ export default function PropsIntakePage() {
                 <div className="space-y-1.5 max-h-96 overflow-y-auto">
                   {result.props.map((p, i) => {
                     const sr = scored?.find(s => s.prop.player === p.player && s.prop.prop_type === p.prop_type && s.prop.side === p.side);
-                    const label = (sr?.result?.["terminal_label"] as string) ?? null;
+                    const label = sr ? String(sr.result.terminal_label ?? sr.result.classification ?? sr.result.code ?? (sr.ok ? "Response received" : "FAILED")) : null;
                     return (
                       <div key={i} className="flex items-center gap-3 bg-background/50 rounded-md px-3 py-2 text-xs">
                         <span className="font-medium w-36 shrink-0 truncate">{p.player}</span>
@@ -334,21 +337,24 @@ export default function PropsIntakePage() {
             {/* Scored summary */}
             {scored && (
               <div className="bg-card border border-border rounded-lg p-4">
-                <h3 className="text-sm font-medium mb-3">WOW Gate Results</h3>
+                <h3 className="text-sm font-medium mb-3">Legacy V16 results</h3>
                 <div className="space-y-2">
                   {scored.map((s, i) => {
-                    const label = String(s.result?.["terminal_label"] ?? "—");
-                    const blockers = (s.result?.["blockers"] as string[] | undefined) ?? [];
+                    const label = String(s.result?.["terminal_label"] ?? s.result?.["classification"] ?? (s.ok ? "Response received" : "FAILED"));
+                    const blockers = [
+                      ...(Array.isArray(s.result.blockers) ? s.result.blockers : []),
+                      s.result.blocker_code, s.result.blocker_detail, s.result.blocker, s.result.code, s.result.error,
+                    ].filter(value => value != null).map(String);
                     return (
                       <div key={i} className="flex items-start gap-3 bg-background/50 rounded-md px-3 py-2.5 text-xs">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-medium">{s.prop.player}</span>
+                            <span className="font-medium">{s.prop.player} · {s.ok ? "completed" : "failed"}</span>
                             <span className="text-muted-foreground">{s.prop.prop_type} {s.prop.side} {s.prop.line}</span>
                           </div>
                           {blockers.length > 0 && (
-                            <div className="text-red-300 mt-0.5 truncate">
-                              {blockers.slice(0, 2).join(" · ")}{blockers.length > 2 ? ` +${blockers.length - 2} more` : ""}
+                            <div className="text-red-300 mt-0.5 break-words">
+                              {blockers.join(" · ")}
                             </div>
                           )}
                         </div>
