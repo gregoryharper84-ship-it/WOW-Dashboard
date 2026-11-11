@@ -58,3 +58,18 @@
 ## Acceptance and current disposition
 
 **CANDIDATE_BUILDER_IMPLEMENTED; PRODUCTION_NOT_FIXED.** 0 of 5 new lanes certified by this branch, no runtime registry change, no deploy. No numeric fitted probability from this candidate builder is currently authorized for publication.
+
+
+## Authoritative nflverse source-release metadata receipt (2026-11-11)
+
+**Read-only metadata**, not CSV bytes or training proof. From the upstream `nflverse/nflverse-data` `stats_player` release metadata at https://api.github.com/repos/nflverse/nflverse-data/releases/tags/stats_player . Repository license is CC-BY-4.0 (primary license text https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md); independent source-rights approval is NOT established by this receipt.
+
+| Source asset | Published size (bytes) | Published SHA-256 |
+|---|---:|---|
+| stats_player_week_2021.csv | 8477784 | 41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48 |
+| stats_player_week_2022.csv | 8408729 | ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be |
+| stats_player_week_2023.csv | 8332874 | f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17 |
+| stats_player_week_2024.csv | 8470040 | 3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759 |
+| stats_player_week_2025.csv | 8656387 | e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2 |
+
+**Required next execution (same task, not a new queue):** Fetch the five assets using the already authorized free public GitHub release-download path in a network-enabled engineering workspace; independently recompute SHA-256 from the *same bytes used for parsing* and compare against the table; explicitly reject any hash mismatch or changed release version before fitting. Report exact role/player-week/column coverage, licensing attribution, and observed source hashes. The current chat's GitHub reader returned 404 for the release-asset binary download despite access to release JSON metadata; no source CSV was transferred or fitted here. This is a source-access limitation, not a model scoreability improvement.
