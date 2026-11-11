@@ -51,7 +51,7 @@ def test_live_datadog_source_hold_is_separate_from_required_code_regression():
 def _receipt_gate_script():
     import textwrap
     wf = WF.read_text()
-    marker = """          python - "$RUNNER_TEMP/wow-v17-log-intake.json" "$intake_exit" <<'PY'\n"""
+    marker = """          python - "$RUNNER_TEMP/wow-v17-log-intake.json" "$intake_exit" "$RUNNER_TEMP/wow-v17-log-intake-validated.json" <<'PY'\n"""
     assert wf.count(marker) == 1
     script = wf.split(marker, 1)[1].split("\n          PY", 1)[0]
     return textwrap.dedent(script)
@@ -68,8 +68,30 @@ def test_datadog_receipt_gate_executes_against_valid_and_adversarial_cases(tmp_p
         "needs_durable_reporter_dedupe": True,
         "terminal_authority": "V17_TERMINAL_REDUCER", "can_execute": False,
     }
-    candidates = {**success, "status": "CANDIDATES",
-                  "findings": [{"typed_failure": "MODEL_SCORER_FAILED"}]}
+    import hashlib
+    from datetime import datetime, timezone
+    def fingerprint(service, route, code):
+        return hashlib.sha256(json.dumps(
+            [service, route, code], separators=(",", ":")
+        ).encode()).hexdigest()
+    finding = {
+        "source": "DATADOG", "subsystem": "BACKEND_RUNTIME",
+        "service": "wow-governed-probability-engine", "failure_boundary": "FITTED_MODEL",
+        "typed_failure": "MODEL_SCORER_FAILED", "severity": "P1",
+        "fingerprint": fingerprint("wow-governed-probability-engine", "FITTED_MODEL", "MODEL_SCORER_FAILED"),
+        "count": 1, "first_seen_utc": "2026-11-10T01:15:00Z",
+        "last_seen_utc": "2026-11-10T01:16:00Z", "release_shas": [],
+        "next_owner": "REPORTER_AGENT", "state": "CANDIDATE_UNVERIFIED",
+        "can_execute": False,
+    }
+    success.update({
+        "services": ["wow-agent-worker", "wow-governed-probability-engine"],
+        "window_start_utc": "2026-11-10T01:00:00Z",
+        "window_end_utc": "2026-11-10T03:00:00Z",
+        "events_inspected": 1,
+        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": True,
+    })
+    candidates = {**success, "status": "CANDIDATES", "findings": [finding]}
     held = {"status": "SOURCE_UNAVAILABLE", "reason": "DATADOG_HTTP_FAILED",
             "source": "DATADOG", "can_execute": False}
     cases = [
@@ -87,17 +109,50 @@ def test_datadog_receipt_gate_executes_against_valid_and_adversarial_cases(tmp_p
         ("empty_candidate_claim", 0, {**success, "status": "CANDIDATES"}, False),
         ("wrong_no_action_claim", 0, {**success, "findings": [{"x": 1}]}, False),
         ("invalid_success_receipt", 0, {**success, "terminal_authority": "UNKNOWN"}, False),
+        ("success_raw_top_level", 0, {**success, "raw": "secret"}, False),
+        ("candidate_raw_key", 0, {**candidates, "findings": [{**finding, "raw": "secret"}]}, False),
+        ("candidate_nested_secret", 0, {**candidates, "findings": [
+            {**finding, "release_shas": [{"secret": "value"}]}
+        ]}, False),
+        ("candidate_bad_failure_code", 0, {**candidates, "findings": [
+            {**finding, "typed_failure": "SECRET"}
+        ]}, False),
+        ("candidate_bad_fingerprint", 0, {**candidates, "findings": [
+            {**finding, "fingerprint": "0" * 64}
+        ]}, False),
+        ("candidate_bad_timestamp", 0, {**candidates, "findings": [
+            {**finding, "first_seen_utc": "nope"}
+        ]}, False),
+        ("success_extra_fields", 0, {**success, "header": "Authorization Bearer secret"}, False),
+        ("hold_nested_secret", 2, {**held, "reason": {"raw": "secret"}}, False),
     ]
     script = _receipt_gate_script()
     for label, exit_code, body, expected_ok in cases:
         receipt = tmp_path / (label + ".json")
         if body is not None:
             receipt.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
+        validated = tmp_path / (label + "-validated.json")
         result = subprocess.run(
-            [sys.executable, "-c", script, str(receipt), str(exit_code)],
+            [sys.executable, "-c", script, str(receipt), str(exit_code), str(validated)],
             capture_output=True, text=True, check=False,
         )
         assert (result.returncode == 0) is expected_ok, (label, result.stderr)
+        assert validated.exists() is expected_ok, label
+        if expected_ok:
+            assert json.loads(validated.read_text()) == body
         if label == "typed_outage":
             assert "::warning::WOW_LOG_INTAKE_SOURCE_UNAVAILABLE:DATADOG_HTTP_FAILED" in result.stdout
             assert "NO_ACTION" not in result.stdout
+
+
+def test_rejected_datadog_receipt_cannot_leak_into_summary_or_artifact():
+    """Workflow may preserve ONLY the independently validated receipt."""
+    wf = WF.read_text()
+    assert 'id: intake' in wf
+    assert "if: steps.intake.outcome == 'success'" in wf
+    assert 'path: ${{ runner.temp }}/wow-v17-log-intake-validated.json' in wf
+    summary = wf.split("- name: Record strictly redacted Reporter candidate summary", 1)[1]
+    assert 'if [ -s "$RUNNER_TEMP/wow-v17-log-intake-validated.json" ]; then' in summary
+    assert 'python - "$RUNNER_TEMP/wow-v17-log-intake-validated.json"' in summary
+    assert 'python - "$RUNNER_TEMP/wow-v17-log-intake.json" >> "$GITHUB_STEP_SUMMARY"' not in summary
+    assert 'path: ${{ runner.temp }}/wow-v17-log-intake.json' not in wf
