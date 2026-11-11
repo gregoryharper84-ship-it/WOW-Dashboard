@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from hashlib import sha256
 from json import dumps
+from scipy.special import expit
+from sklearn.metrics import brier_score_loss, log_loss
 from math import isclose
 from typing import Sequence
 
@@ -64,7 +66,10 @@ def _raw_predictions(features: np.ndarray, artifact: dict, names: tuple[str, ...
     logits = intercept + ((features - means) / scales) @ coefficients
     if not np.all(np.isfinite(logits)):
         raise TennisCalibrationShadowError("TENNIS_FROZEN_ARTIFACT_INVALID")
-    return np.clip(1.0 / (1.0 + np.exp(-np.clip(logits, -80.0, 80.0))), 1e-12, 1 - 1e-12)
+    # sklearn LogisticRegression.predict_proba uses scipy.special.expit on
+    # unmodified logits. Do not clamp here: raw metric replay must match its
+    # original brier_score_loss/log_loss convention, including near-zero odds.
+    return expit(logits)
 
 
 def replay_tennis_calibration_shadow(
@@ -98,6 +103,12 @@ def replay_tennis_calibration_shadow(
         raise TennisCalibrationShadowError("TENNIS_FROZEN_DATASET_HASH_MISMATCH")
 
     artifact = dict(candidate.artifact_payload)
+    if artifact.get("model_family") != family:
+        raise TennisCalibrationShadowError("TENNIS_ARTIFACT_MODEL_FAMILY_MISMATCH")
+    if artifact.get("artifact_format") != "STANDARDIZED_LOGISTIC_JSON_V1":
+        raise TennisCalibrationShadowError("TENNIS_ARTIFACT_FORMAT_UNSUPPORTED")
+    if artifact.get("split_policy") != "CHRONOLOGICAL_60_20_20":
+        raise TennisCalibrationShadowError("TENNIS_ARTIFACT_SPLIT_POLICY_INVALID")
     a = artifact.get("train_end_index")
     b = artifact.get("calibration_end_index")
     if (not isinstance(a, int) or isinstance(a, bool)
@@ -110,7 +121,11 @@ def replay_tennis_calibration_shadow(
     cal_p = _raw_predictions(features[a:b], artifact, names)
     test_p = _raw_predictions(features[b:], artifact, names)
     cal_y, test_y = targets[a:b], targets[b:]
-    test_raw_brier, test_raw_ll = _calibration_metrics(test_p, test_y)
+    # Compare the frozen artifact with exactly the original training scorer;
+    # _calibration_metrics clips to 1e-6 and is valid only for the challenger
+    # selection paths below, not for original raw predict_proba identity.
+    test_raw_brier = float(brier_score_loss(test_y, test_p))
+    test_raw_ll = float(log_loss(test_y, test_p, labels=[0, 1]))
     if (not isclose(test_raw_brier, candidate.metrics.raw_brier, abs_tol=1e-9, rel_tol=0)
             or not isclose(test_raw_ll, candidate.metrics.raw_log_loss, abs_tol=1e-9, rel_tol=0)):
         raise TennisCalibrationShadowError("TENNIS_FROZEN_RAW_REPLAY_MISMATCH")
