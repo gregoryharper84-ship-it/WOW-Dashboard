@@ -123,6 +123,43 @@ def test_untrusted_302_not_requested_even_once(tmp_path, monkeypatch):
     assert not (tmp_path / "players/players.csv").exists()
 
 
+def test_allowed_release_asset_redirect_still_downloads(tmp_path, monkeypatch):
+    """A reviewed GitHub release asset redirect must continue to work."""
+    blob = b"verified research bytes"
+    requested = []
+
+    class RedirectingHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            requested.append(req.full_url)
+            headers = Message()
+            if req.full_url.startswith("https://github.com/"):
+                headers["Location"] = "https://release-assets.githubusercontent.com/asset.csv"
+                response = urllib.response.addinfourl(
+                    io.BytesIO(b""), headers, req.full_url, 302,
+                )
+                response.msg = "Found"
+                return response
+            assert req.full_url == "https://release-assets.githubusercontent.com/asset.csv"
+            response = urllib.response.addinfourl(
+                io.BytesIO(blob), headers, req.full_url, 200,
+            )
+            response.msg = "OK"
+            return response
+
+    original_build = urllib.request.build_opener
+    monkeypatch.setattr(
+        urllib.request, "build_opener",
+        lambda *handlers: original_build(*handlers, RedirectingHTTPSHandler()),
+    )
+    result = acquire_one("players/players.csv", hashlib.sha256(blob).hexdigest(),
+                         len(blob), tmp_path)
+    assert result["action"] == "downloaded_verified"
+    assert requested == [
+        "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv",
+        "https://release-assets.githubusercontent.com/asset.csv",
+    ]
+
+
 def test_verify_only_missing_is_fail_closed(tmp_path):
     with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_FILE_MISSING"):
         acquire_one("players/players.csv", "a"*64, 9, tmp_path, verify_only=True)
