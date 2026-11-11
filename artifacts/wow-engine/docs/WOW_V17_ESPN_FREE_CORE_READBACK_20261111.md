@@ -4,7 +4,7 @@
 
 ## Live source reachability observed externally (not from Render)
 
-Exactly four public ESPN scoreboard URLs were fetched using a live external page-fetch capability on 2026-11-11, with `maxAge=0` on the first fresh calls. Each returned HTTP 200, JSON content type, valid `events` array and ESPN-owned provider-local event IDs. No authenticated endpoints or credentials were used. This is source reachability only; endpoint behavior and full-slate completeness are not service-level guarantees.
+Exactly four public ESPN scoreboard URLs were fetched using a live external page-fetch capability on 2026-11-11, with `maxAge=0` on the first fresh calls. Each returned HTTP 200, JSON content type and a valid `events` array. Only the **three nonempty** NBA, NHL and NCAAF responses included observed ESPN provider-local event IDs; the NFL response had zero events and therefore no observed event IDs. No authenticated endpoints or credentials were used. This is source reachability only; endpoint behavior and full-slate completeness are not service-level guarantees.
 
 | Sport | URL date parameter | HTTP | events | Example observed event (provider-local) | Scheduled UTC |
 | --- | --- | ---: | ---: | --- | --- |
@@ -70,3 +70,13 @@ The following endpoints were probed externally with fresh requests and returned 
 These are provider-local ESPN IDs; preserve exact sport/player/event mapping and source timestamps. Reuse existing `nfl_prop_auto_hydration`, `basketball_event_hydration_runtime`, `nhl_event_identity`, `ncaaf_event_identity`, and sport-specific pregame model gates. A follow-up live backend canary must prove an ESPN observation actually reaches a given accepted hydration field without importing unavailable or future information. This PR does not add alternate collectors or bind ESPN `goalies` to a confirmed lineup automatically.
 
 The Render public `/v17/discovery/espn-compact` endpoint returned HTTP 401 with `Missing or malformed Authorization header` when probed without credentials. This **preserves** an authenticated boundary, but no authorized production readback was available from that request; do not bypass authentication. Last observed Render `live` deployment at audit: `6a6c4b1f105dea14fc6d08bb31a247ca74e94491`, predating this PR.
+
+
+## Independent CodeRabbit challenge — corrections on 2026-11-11
+
+Three independently surfaced issues on PR #2612 are addressed:
+1. **Receipt precision:** the NFL empty-slate response did not supply an observed event ID; the four-response statement above now distinguishes all valid arrays from the three with observed IDs.
+2. **Eastern midnight cross-partition match:** when original ESPN lookup dates are absent, a timezone-aware kickoff's permitted ±30-minute identity tolerance is converted into both Eastern-date partitions, if the range crosses midnight. Saved provider dates are never guessed or broadened; a single Eastern date remains one request.
+3. **No uniqueness from partial boards:** the external-ID alias path can infer a unique team/time match only if *every* searched scoreboard has explicit non-truncation and no completeness-unverified flag. Source truncation returns `ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED`; any missing or unverified completeness returns `ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED`. Exact ESPN-prefixed provider IDs remain exact-ID lookups, not cross-provider uniqueness proofs.
+
+Regression tests cover both ±20-minute Eastern-midnight directions, explicit ESPN ID on an incomplete board, external alias hold on truncated, 25-row/no-total and unknown-completeness boards, and mixed-completeness adjacent partitions. These changes neither certify canonical official event IDs nor change live fitted model, quotation freshness rights, or terminal authority. Exact-head hosted CI and non-author acceptance are required again.
