@@ -234,6 +234,7 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             "offensive_participant_games": result["offensive_participant_games"],
             "missing_player_games": result["missing_player_games"],
             "unmapped_pfr_player_games": result["unmapped_pfr_player_games"],
+            "participation_breakdown": result["participation_breakdown"],
             "missing_examples": result["missing_examples"][:2],
         }
     except (ValueError, KeyError, TypeError) as exc:
