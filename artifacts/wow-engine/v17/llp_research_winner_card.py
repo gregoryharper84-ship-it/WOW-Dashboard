@@ -94,6 +94,10 @@ def audit_research_winner_card(
         warnings: list[str] = []
         if sport not in SPORTS or not event_id or not home or not away or home.casefold() == away.casefold() or kickoff is None:
             issues.append("OFFICIAL_EVENT_IDENTITY_INVALID")
+        if source_counts[(sport, event_id)] != 1:
+            # A conflicting duplicate official-event record is not a valid
+            # source for ANY pregame pick, media or scenario attribution.
+            issues.append("OFFICIAL_EVENT_IDENTITY_CONFLICT")
         if pick_counts[(sport, event_id)] != 1:
             issues.append("MISSING_OR_DUPLICATE_WINNER")
         if side.casefold() not in {home.casefold(), away.casefold()} or side.upper() in NO_WINNER_TOKENS:
