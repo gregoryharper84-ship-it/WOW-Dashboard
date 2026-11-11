@@ -1,6 +1,9 @@
 """Offline negative and prioritization tests for 24x7 engineering intake."""
 import importlib.util
 import json
+import os
+
+import yaml
 import subprocess
 import sys
 import tempfile
@@ -66,6 +69,7 @@ class Test24x7(unittest.TestCase):
         ):
             with self.subTest(title=title):
                 engineering = issue(1527, "P1", title=title)
+                self.assertEqual(mod.eligible(engineering), (1, 1527))
                 result = mod.plan([engineering], [])
                 self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
 
@@ -305,7 +309,7 @@ class Test24x7(unittest.TestCase):
         wf = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
               "wow-engineering-24x7.yml").read_text(encoding="utf-8")
         self.assertEqual(wf.count("WORKER_RUN_HISTORY_TRUNCATED"), 5)
-        self.assertEqual(wf.count("gh api --paginate"), 15)
+        self.assertEqual(wf.count("gh api --paginate"), 16)
         self.assertEqual(wf.count("/actions/workflows/$inventory_workflow/runs?per_page=100"), 4)
         self.assertEqual(wf.count('run_parts+=("$part")'), 3)
         self.assertEqual(wf.count('fresh_parts+=("$part")'), 1)
@@ -330,12 +334,130 @@ class Test24x7(unittest.TestCase):
         for legacy in (
             "wow-v17-engineering-provider-dispatcher.yml",
             "wow-v17-engineering-specialist-support.yml",
-            "wow-v17-24h-engineering-closure-loop.yml",
         ):
             legacy_workflow = (root / ".github" / "workflows" / legacy).read_text(encoding="utf-8")
-            self.assertIn("vars.WOW_24X7_ACTIVE != 'true'", legacy_workflow)
             self.assertIn("vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'", legacy_workflow)
         self.assertIn("DUPLICATE_DISPATCH_OBSERVED", wf)
+
+    def test_parsed_workflow_lease_binding_and_recheck_dispatch(self):
+        root = Path(__file__).resolve().parents[2]
+        jobs = yaml.safe_load((root / '.github/workflows/wow-engineering-24x7.yml').read_text())['jobs']
+        self.assertEqual(jobs['select']['outputs']['lease_group'], '${{ steps.plan.outputs.lease_group }}')
+        step = next(s for s in jobs['dispatch']['steps'] if s.get('name', '').startswith('Recheck exact'))
+        self.assertEqual(step['env']['LEASE_GROUP'], '${{ needs.select.outputs.lease_group }}')
+        self.assertIn('-f lease_group="$LEASE_GROUP"', step['run'])
+        # Execute the entire production shell, real jq and real selector. All
+        # other guards pass, including observation of a newly dispatched run.
+        for lease, pending, dispatches in [('P0_LLP_RESTORE', None, True), ('P0_OTHER', None, False),
+                                            ('P0_LLP_RESTORE', 'pending', False), ('P0_LLP_RESTORE', 'in_progress', False),
+                                            ('P0_LLP_RESTORE', 'waiting', False), ('P0_LLP_RESTORE', 'queued', False)]:
+            with self.subTest(lease=lease, pending=pending), tempfile.TemporaryDirectory() as directory:
+                temp = Path(directory)
+                gh = temp / 'gh'
+                gh.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = ' '.join(sys.argv[1:])
+marker = Path(os.environ['RUNNER_TEMP']) / 'dispatched'
+if args.startswith('workflow run'):
+    marker.write_text(args)
+elif 'git/ref/heads/main' in args:
+    print(os.environ['GITHUB_SHA'])
+elif '/issues/823' in args:
+    print(json.dumps({'state': 'open'}))
+elif '/issues?' in args:
+    print(json.dumps({'number': 823, 'state': 'open', 'labels': [{'name': 'P0'}]}))
+elif '/pulls?' in args:
+    pass
+elif '/actions/workflows/' in args:
+    if 'provider-dispatcher' in args and os.environ.get('LEGACY_PENDING'):
+        print(json.dumps([{'status': os.environ['LEGACY_PENDING']}]))
+    elif marker.exists() and 'chatgpt' in args:
+        print(json.dumps([{'id': 999, 'display_title': 'worker incident=823', 'status': 'queued'}]))
+    else:
+        print('[]')
+else:
+    sys.exit('Unexpected gh call: ' + args)
+''')
+                gh.chmod(0o755)
+                (temp / 'sleep').write_text('#!/bin/sh\nexit 0\n')
+                (temp / 'sleep').chmod(0o755)
+                env = dict(os.environ, PATH=f'{temp}:{os.environ["PATH"]}',
+                           RUNNER_TEMP=directory, GITHUB_OUTPUT=str(temp / 'output'),
+                           GITHUB_STEP_SUMMARY=str(temp / 'summary'), GITHUB_SHA=SHA,
+                           GITHUB_REPOSITORY=REPO, GITHUB_EVENT_NAME='schedule',
+                           INCIDENT='823', LEASE_GROUP=lease, PROVIDER='openai',
+                           RETRY_AFTER_RUN_ID='', LEGACY_PENDING=pending or '')
+                env.pop('BASH_ENV', None)
+                env = {k: v for k, v in env.items() if not k.startswith('BASH_FUNC_')}
+                result = subprocess.run(['bash', '--noprofile', '--norc', '-c', step['run']], cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((temp / 'dispatched').exists(), dispatches, result.stdout)
+                if dispatches:
+                    self.assertIn('lease_group=P0_LLP_RESTORE', (temp / 'dispatched').read_text())
+
+    def test_cutover_retires_admission_before_activation_and_keeps_maintenance(self):
+        root = Path(__file__).resolve().parents[2] / '.github/workflows'
+        provider = yaml.safe_load((root / 'wow-v17-engineering-provider-dispatcher.yml').read_text())['jobs']
+        for job in ('provider-control', 'independent-provider'):
+            self.assertIn("vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'", provider[job]['if'])
+            self.assertNotIn('WOW_24X7_ACTIVE', provider[job]['if'])
+        loop = yaml.safe_load((root / 'wow-v17-24h-engineering-closure-loop.yml').read_text())['jobs']['advance-one-stage']
+        self.assertNotIn('if', loop)
+        steps = {s.get('name'): s for s in loop['steps']}
+        decision = steps['Resolve next concrete action']
+        self.assertEqual(decision['env']['LEGACY_ROUTES_OFF'], '${{ vars.WOW_24X7_LEGACY_ROUTES_OFF }}')
+        self.assertNotIn('LEGACY_ROUTES_OFF', steps['Resume autonomous repair PR']['if'])
+        self.assertNotIn('LEGACY_ROUTES_OFF', steps['Run deterministic detection / acceptance pulse']['if'])
+
+    def test_cutover_closure_detection_and_exact_head_refresh(self):
+        root = Path(__file__).resolve().parents[2]
+        job = yaml.safe_load((root / '.github/workflows/wow-v17-24h-engineering-closure-loop.yml').read_text())['jobs']['advance-one-stage']
+        steps = {s.get('name'): s for s in job['steps']}
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            scripts = {
+                'gh': '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = ' '.join(sys.argv[1:])
+with (Path(os.environ['RUNNER_TEMP']) / 'calls').open('a') as f:
+    f.write(args + '\\n')
+if '/pulls/42' in args and 'update-branch' not in args:
+    print(json.dumps({'head': {'sha': 'a' * 40, 'ref': 'repair-branch', 'repo': {'full_name': os.environ['GITHUB_REPOSITORY']}}, 'mergeable_state': 'behind'}))
+elif 'run list' in args:
+    print(0)
+elif '/pulls?' in args:
+    pass
+''',
+                'python': '''#!/bin/sh
+case "$*" in
+  *engineering_agent_team*) echo '{"state":"NONE","frontier_allowed":false}' ;;
+  *engineering_effectiveness*) echo '{"user_journey_status":"PASS"}' ;;
+  *) exit 1 ;;
+esac
+''',
+            }
+            for name, script in scripts.items():
+                (temp / name).write_text(script)
+                (temp / name).chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if k != 'BASH_ENV' and not k.startswith('BASH_FUNC_')}
+            env.update(PATH=f'{temp}:{os.environ["PATH"]}', RUNNER_TEMP=directory,
+                       GITHUB_OUTPUT=str(temp / 'output'), GITHUB_STEP_SUMMARY=str(temp / 'summary'),
+                       GITHUB_REPOSITORY=REPO, LEGACY_ROUTES_OFF='true', PR_NUMBER='42')
+            for name in ('Resolve next concrete action', 'Run deterministic detection / acceptance pulse', 'Resume autonomous repair PR'):
+                result = subprocess.run(['bash', '--noprofile', '--norc', '-c', steps[name]['run']],
+                                        cwd=root, env=env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                if name == 'Resolve next concrete action':
+                    self.assertIn('action=DETECT\n', (temp / 'output').read_text())
+            calls = (temp / 'calls').read_text()
+            self.assertIn('workflow run wow-v17-nightly-engineering-scan.yml', calls)
+            self.assertIn('/pulls/42/update-branch -f expected_head_sha=' + SHA, calls)
+            for workflow in ('wow-verify.yml', 'wow-engine-verify.yml'):
+                self.assertIn(f'workflow run {workflow} --repo {REPO} --ref repair-branch', calls)
+            self.assertNotIn('workflow run wow-v17-morning-green-continuation.yml', calls)
 
     def test_run_for_different_issue_does_not_block(self):
         runs = [{"displayTitle": "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=10",

@@ -20,7 +20,6 @@ concurrency:
 jobs:
   advance-one-stage:
     name: Advance highest-priority WOW work
-    if: vars.WOW_24X7_ACTIVE != 'true' || vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -42,6 +41,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          LEGACY_ROUTES_OFF: ${{ vars.WOW_24X7_LEGACY_ROUTES_OFF }}
         run: |
           set -euo pipefail
 
@@ -85,6 +85,18 @@ jobs:
           elif [ "$frontier_allowed" = "true" ] && [ $((utc_hour % 6)) -eq 0 ]; then
             action="IMPROVE_MODEL"
             reason="Reliability queue and golden user journey are green; execute one governed non-serving model-improvement experiment."
+          fi
+
+          # Keep same-PR refresh and the deterministic detection pulse alive.
+          # Retire only legacy producers, before the replacement is activated.
+          if [ "${LEGACY_ROUTES_OFF:-false}" = "true" ]; then
+            case "$action" in
+              REPAIR|IMPROVE_MODEL|RESUME_EXPERIMENT_PR)
+                action="DETECT"
+                target=""
+                reason="Legacy writers retired; retain deterministic detection."
+                ;;
+            esac
           fi
 
           lifecycle_owner="LIFECYCLE_CONTROLLER_AGENT"
@@ -151,7 +163,17 @@ jobs:
               --method PUT \
               "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/update-branch" \
               -f expected_head_sha="$head_sha" >/dev/null
-            echo "Same PR preserved. The synchronize event will rerun exact-head CI and trusted governance; stale certification is not dispatched." >> "$GITHUB_STEP_SUMMARY"
+            # GITHUB_TOKEN updates do not emit a workflow-triggering synchronize
+            # event. Explicitly request regression runs on the refreshed branch;
+            # continuation still requires every protected check on its exact SHA.
+            refreshed=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+            refreshed_ref=$(jq -r '.head.ref // ""' <<<"$refreshed")
+            refreshed_repo=$(jq -r '.head.repo.full_name // ""' <<<"$refreshed")
+            [ "$refreshed_repo" = "$GITHUB_REPOSITORY" ] && [ -n "$refreshed_ref" ] || exit 1
+            for workflow in wow-verify.yml wow-engine-verify.yml; do
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$refreshed_ref"
+            done
+            echo "Same PR preserved. Exact-head CI requested; trusted governance remains required; stale certification is not dispatched." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 

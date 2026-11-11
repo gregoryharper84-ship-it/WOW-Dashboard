@@ -66,6 +66,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install workflow parser
+        run: python -m pip install PyYAML==6.0.3
       - name: Verify deterministic 24x7 admission tests
         run: |
           python artifacts/wow-engine/test_engineering_24x7_selector.py -v
@@ -357,6 +362,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Retire legacy admission first, then drain the ENTIRE workflow,
+          # including independent-provider jobs queued behind the writer mutex.
+          # A job-level flag cannot revoke runs admitted before cutover.
+          for legacy_workflow in wow-v17-engineering-provider-dispatcher.yml wow-v17-engineering-specialist-support.yml; do
+            legacy_pending=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$legacy_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' | jq -s -e '
+                if length > 0 and all(.[]; type == "array") and ([.[][]] | length < 1000)
+                then [.[][] | select(.status != "completed")] | length
+                else error("LEGACY_RUN_HISTORY_INCOMPLETE") end')
+            if [ "$legacy_pending" -gt 0 ]; then
+              echo "::notice::LEGACY_PROVIDER_DRAIN_PENDING; dispatch held"
+              exit 0
+            fi
+          done
           [[ "$INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
           case "$PROVIDER" in
             openai) worker=wow-v17-chatgpt-engineering-worker.yml ;;
