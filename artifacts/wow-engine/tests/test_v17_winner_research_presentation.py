@@ -13,7 +13,7 @@ def slate():
         {
             "event_id": "NHL-101", "sport": "NHL", "home": "Buffalo",
             "away": "Tampa Bay", "starts_at": "2026-11-11T23:00:00Z",
-            "settlement_basis": "FULL_GAME_INCLUDING_OT_SO",
+            "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT",
             "eligible_outcomes": ["HOME", "AWAY"],
         },
         {
@@ -104,6 +104,19 @@ class WinnerResearchPresentationTests(unittest.TestCase):
         events[0]["eligible_outcomes"].append("DRAW")
         with self.assertRaisesRegex(ValueError, "NHL_SETTLEMENT_OUTCOMES_INVALID"):
             build(events=events)
+
+    def test_nhl_regulation_or_alias_is_rejected_not_fully_settled(self):
+        for basis in ("REGULATION", "FULL_GAME", "FULL_GAME_INCLUDING_OT_SO", "", "NHL_3_WAY"):
+            invalid = slate()
+            invalid[0]["settlement_basis"] = basis
+            with self.subTest(basis=basis), self.assertRaisesRegex(
+                ValueError, "WINNER_CARD_NHL_SETTLEMENT_BASIS_INVALID|WINNER_CARD_SETTLEMENT_BASIS_REQUIRED"
+            ):
+                build(events=invalid)
+        self.assertEqual(
+            build()["rows"][0]["settlement_basis"],
+            "FULL_GAME_INCLUDING_OVERTIME_SHOOTOUT",
+        )
 
     def test_no_silent_model_probability_claim(self):
         for claim in (
