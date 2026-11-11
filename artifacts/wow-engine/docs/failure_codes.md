@@ -659,3 +659,27 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 | `NHL_STARTING_GOALIE_NOT_CONFIRMED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A provider reports the goalie as projected, expected, participating, or otherwise not a confirmed starter. Gamecenter participation is not starting confirmation. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
 | `NHL_STARTER_SOURCE_NOT_TRUSTED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt's provider is absent from the server-owned trusted-provider registry, is not registered as OFFICIAL, or the receipt's declared provider family disagrees with the registry. Authority is never read from receipt fields. Recovery: `WAIT_FOR_EVIDENCE` / source-rights decision. Not a fitted-model capability error. | No |
 | `NHL_STARTER_ATTESTATION_INVALID` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt lacks a valid server attestation (HMAC-SHA256 under the server-held key), was edited after signing, or the attestation key is unavailable. Recovery: `WAIT_FOR_EVIDENCE` through the server-owned acquisition path. Not a fitted-model capability error. | No |
+
+## Offline NFL count-prop candidate fit codes (2026-11-11)
+
+These are **offline research-builder only** errors from `scripts/train_nfl_missing_prop_candidates.py`, owned by `WOW_PROP_LANE`. Recovery class is indicated per row; they are not runtime scorer failures, do not grant rank eligibility, and must never be collapsed into `MODEL_UNAVAILABLE`. These source diagnostics never authorize model registration, calibration promotion, publication, or wagers.
+
+| Typed code | Recovery class | Detection and required recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_SOURCE_FILE_MISSING` | INPUT | Missing one of five frozen 2021–2025 weekly CSVs; acquire and checksum the actual source file. | No |
+| `NFL_PROP_SOURCE_COLUMNS_MISSING` | INPUT | Frozen source lacks required stat or identity columns; repair legal/complete acquisition. | No |
+| `NFL_PROP_SOURCE_REGULAR_SEASON_EMPTY` | INPUT | Regular-season cohort is empty; inspect source season_type and coverage. | No |
+| `NFL_PROP_SOURCE_COUNT_INVALID` | INPUT | Missing, negative, nonfinite, or fractional count; do not coerce to zero. | No |
+| `NFL_PROP_SOURCE_DATE_INVALID` | INPUT | Invalid year/week numeric identity; reject snapshot. | No |
+| `NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE` | INPUT | Season/week outside frozen training scope; reject snapshot. | No |
+| `NFL_PROP_SOURCE_IDENTITY_INVALID` | IDENTITY | Null or empty player/event/role identity; reconcile source. | No |
+| `NFL_PROP_SOURCE_DUPLICATE_PLAYER_EVENT` | IDENTITY | Repeated player/game key; deduplicate at authoritative source, not by overwriting fitted outcomes. | No |
+| `NFL_PROP_SOURCE_COUNT_EXCEEDS_OPPORTUNITY` | INPUT | Completes/receptions/touchdowns exceed corresponding game opportunities; repair raw data. | No |
+| `NFL_PROP_STAT_NOT_DECLARED` | MODEL | Unsupported stat candidate request; fail closed, no shared generic fallback. | No |
+| `NFL_PROP_FEATURE_ROWS_EMPTY` | INPUT | Stat/role history insufficient for leakage-safe pregame features; acquire real qualifying history. | No |
+| `NFL_PROP_TRAIN_ROWS_BELOW_MINIMUM` | MODEL | Train cohort below 1,000 qualifying rows; no fit. | No |
+| `NFL_PROP_CAL_ROWS_BELOW_MINIMUM` | MODEL | Separate 2024 calibration cohort below 300 rows; no calibration. | No |
+| `NFL_PROP_HOLDOUT_ROWS_BELOW_MINIMUM` | MODEL | Independent 2025 holdout below 300 rows; no valid research evaluation. | No |
+| `NFL_PROP_TRAINING_CHRONOLOGY_INVALID` | MODEL | Train, calibration, and test chronology overlaps; restore immutable temporal split. | No |
+| `NFL_PROP_TRAINING_NONFINITE` | MODEL | Feature or target matrix nonfinite; validate source and feature computation. | No |
+| `NFL_PROP_CALIBRATION_FACTOR_UNSUPPORTED` | MODEL | Poisson calibration offset nonfinite/extreme; reject research candidate fit. | No |
