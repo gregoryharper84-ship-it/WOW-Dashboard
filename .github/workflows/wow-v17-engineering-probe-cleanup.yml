@@ -1,0 +1,77 @@
+name: wow-v17-engineering-probe-cleanup
+
+# Closes any open PR labelled or titled `probe:` older than 24h and deletes its branch
+# (#1550/#1663 item 5). Selection logic lives in
+# artifacts/wow-engine/v17/engineering_probe_cleanup.py (see its tests); this workflow
+# only gathers the PR list and applies the plan. can_execute=false; never merges.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: wow-v17-engineering-probe-cleanup
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.WOW_ENGINEERING_APP_ID != ''
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Close stale probe PRs and delete their branches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+            > "$RUNNER_TEMP/wow-open-prs.json"
+
+          plan=$(python artifacts/wow-engine/v17/engineering_probe_cleanup.py \
+            --prs-json "$RUNNER_TEMP/wow-open-prs.json")
+          echo "Stale probe PRs: $plan" >> "$GITHUB_STEP_SUMMARY"
+
+          for row in $(jq -c '.[]' <<<"$plan"); do
+            number=$(jq -r '.number' <<<"$row")
+            branch=$(jq -r '.branch // empty' <<<"$row")
+            gh pr close "$number" --repo "$GITHUB_REPOSITORY" \
+              --comment "Closing stale probe PR (older than 24h). can_execute=false."
+            if [ -n "$branch" ]; then
+              gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}" || true
+            fi
+            echo "Closed probe PR #$number and deleted branch ${branch:-UNKNOWN}." >> "$GITHUB_STEP_SUMMARY"
+          done

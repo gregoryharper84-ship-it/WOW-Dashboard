@@ -1,0 +1,92 @@
+name: WOW NCAAF 44 Forward Pregame Evidence Freeze (One Shot)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/wow-ncaaf-44-prospective-freeze-once.yml
+      - artifacts/wow-engine/scripts/ncaaf_frozen_result_form_audit.py
+      - artifacts/wow-engine/scripts/ncaaf_forward_pregame_freeze.py
+      - artifacts/wow-engine/tests/test_ncaaf_frozen_result_form_20261022.py
+      - artifacts/wow-engine/tests/test_ncaaf_forward_pregame_freeze.py
+      - artifacts/wow-engine/data/research/ncaaf_result_form_forward_features_20261022.json
+      - artifacts/wow-engine/data/research/frozen_20261022_ncaaf_nhl_identities.json
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wow-ncaaf-44-prospective-freeze-once.yml
+
+permissions:
+  contents: read
+
+# Cancel superseded PR checks without canceling any protected-main capture.
+concurrency:
+  group: wow-ncaaf-44-forward-freeze-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify-frozen-forward-contract:
+    name: Verify 44 research-only forward inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact tested SHA without stored credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Compile and adversarially test frozen pregame inputs
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/ncaaf_frozen_result_form_audit.py scripts/ncaaf_forward_pregame_freeze.py
+          PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_ncaaf_frozen_result_form_20261022.py' -v
+          PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_ncaaf_forward_pregame_freeze.py' -v
+
+      - name: Verify frozen identities and nine feature fields
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          python3 scripts/ncaaf_frozen_result_form_audit.py \
+            --features data/research/ncaaf_result_form_forward_features_20261022.json \
+            --espn-fixture data/research/frozen_20261022_ncaaf_nhl_identities.json
+
+  freeze-prospective-44-once:
+    name: Freeze GitHub-timestamped forward evidence before kickoff
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'NCAAF-44-PREGAME-FREEZE-20261022') }}
+    needs: verify-frozen-forward-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact main commit without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Freeze exact 44 input records with independent GitHub capture time
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_EVENT_NAME" = "push"
+          python3 scripts/ncaaf_forward_pregame_freeze.py \
+            --features data/research/ncaaf_result_form_forward_features_20261022.json \
+            --identities data/research/frozen_20261022_ncaaf_nhl_identities.json \
+            --out "$RUNNER_TEMP/ncaaf-44-prospective/receipt.json"
+          cp data/research/ncaaf_result_form_forward_features_20261022.json "$RUNNER_TEMP/ncaaf-44-prospective/forward-features.json"
+          cp data/research/frozen_20261022_ncaaf_nhl_identities.json "$RUNNER_TEMP/ncaaf-44-prospective/espn-identity-fixture.json"
+          sha256sum "$RUNNER_TEMP/ncaaf-44-prospective/"*.json \
+            > "$RUNNER_TEMP/ncaaf-44-prospective/artifact-sha256.txt"
+
+      - name: Upload immutable capture artifact without any secrets
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ncaaf-44-prospective-forward-freeze-${{ github.run_id }}
+          path: ${{ runner.temp }}/ncaaf-44-prospective/
+          retention-days: 90
+          if-no-files-found: error

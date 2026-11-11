@@ -166,3 +166,64 @@ def test_market_history_is_never_probability_authority():
     assert history.CAN_EXECUTE is False
     assert "NOT_PROVIDER_OFFICIAL_OPEN" in history.OPEN_SEMANTICS
     assert "NOT_PROVIDER_OFFICIAL_CLOSE" in history.CLOSE_SEMANTICS
+
+
+def test_history_budget_counts_every_regime_variant_provider_call(monkeypatch):
+    monkeypatch.setattr(history, "_read_budget", lambda *_a, **_k: {"calls": 0, "datapoints": 0})
+    monkeypatch.setattr(
+        history,
+        "resolve_collection_scope",
+        lambda *_a, **_k: {"status": "READY", "market_ids": ("1",), "affiliate_ids": ("19",), "book_names": ["Pinnacle"]},
+    )
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb",))
+    monkeypatch.setattr(
+        history.ingestor,
+        "collect_snapshot",
+        lambda *_a, **_k: {"status": "COMPLETE", "provider_calls": 3, "datapoints": 12, "rows_written": 0},
+    )
+    monkeypatch.setattr(history, "materialize_captured_references", lambda *_a, **_k: 0)
+    written = []
+    monkeypatch.setattr(history, "_write_budget", lambda *_a, **kwargs: written.append(kwargs))
+    result = history.collect_history_once(object(), now=datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc))
+    assert result["provider_calls"] == 3
+    assert result["can_execute"] is False
+
+
+def test_paid_provider_history_default_footprint_stays_mlb_only(monkeypatch):
+    monkeypatch.delenv("WOW_RUNDOWN_MARKET_HISTORY_SPORT_KEYS", raising=False)
+    assert history.configured_sports() == ("baseball_mlb",)
+
+
+def test_close_references_materialize_even_when_call_budget_is_exhausted(monkeypatch):
+    monkeypatch.setattr(history, "_read_budget", lambda *_a, **_k: {"calls": 48, "datapoints": 0})
+    monkeypatch.setattr(history, "max_calls_per_day", lambda: 48)
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb", "americanfootball_nfl"))
+    monkeypatch.setattr(
+        history.ingestor, "collect_snapshot",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("provider called")),
+    )
+    seen = []
+    monkeypatch.setattr(
+        history, "materialize_captured_references",
+        lambda _c, *, sport_key, slate_date, now: seen.append((sport_key, slate_date)) or 2,
+    )
+    result = history.collect_history_once(object(), now=datetime(2026, 10, 10, 4, 30, tzinfo=timezone.utc))
+    assert result["status"] == "BUDGET_EXHAUSTED"
+    assert result["reference_rows_written"] == 8
+    # 23:30 CDT on 10-09 local: yesterday (10-08) and today (10-09) for each sport.
+    assert seen == [
+        ("baseball_mlb", "2026-10-08"), ("baseball_mlb", "2026-10-09"),
+        ("americanfootball_nfl", "2026-10-08"), ("americanfootball_nfl", "2026-10-09"),
+    ]
+
+
+def test_reference_backlog_failure_for_one_sport_does_not_block_others(monkeypatch):
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb", "americanfootball_nfl"))
+
+    def flaky(_c, *, sport_key, slate_date, now):
+        if sport_key == "baseball_mlb":
+            raise RuntimeError("db down")
+        return 1
+
+    monkeypatch.setattr(history, "materialize_captured_references", flaky)
+    assert history.materialize_reference_backlog(object(), now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc)) == 2

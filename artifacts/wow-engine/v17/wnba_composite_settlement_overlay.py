@@ -124,7 +124,13 @@ def _settle_composite(
 
 def install() -> None:
     settlement.WNBA_SUPPORTED = frozenset(set(settlement.WNBA_SUPPORTED) | set(COMPOSITE_ROUTES))
-    settlement.SUPPORTED_SETTLEMENT_ROUTES = settlement.MLB_SUPPORTED | settlement.WNBA_SUPPORTED
+    # Other sport overlays may already have registered certified settlement
+    # adapters. Installation is additive and must not erase their exact routes.
+    settlement.SUPPORTED_SETTLEMENT_ROUTES = frozenset(
+        set(settlement.SUPPORTED_SETTLEMENT_ROUTES)
+        | set(settlement.MLB_SUPPORTED)
+        | set(settlement.WNBA_SUPPORTED)
+    )
     settlement.settle_wnba_scalar = _settle_composite
 
 

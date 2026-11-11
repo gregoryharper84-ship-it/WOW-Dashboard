@@ -57,6 +57,27 @@ HARD_BLOCKERS = {
     "MODEL_CALIBRATION_UNAVAILABLE",
 }
 
+# Participation evidence is upstream of model judgment and of probability
+# qualification. A reliable fitted probability for a player the club has ruled
+# out describes an event that will not be settled as modelled, so no calibration
+# state or threshold may promote it back to rank eligibility.
+PARTICIPATION_BLOCKERS = {
+    "PLAYER_RULED_OUT",
+    "PLAYER_PARTICIPATION_UNAVAILABLE",
+    "PLAYER_AVAILABILITY_NOT_ELIGIBLE",
+}
+
+# Availability that was never verified is not a rule-out and not a model
+# failure. It is a ranking blocker: a probability computed without official
+# participation evidence may be reported for research but may never enter the
+# Verified Pool, regardless of how strong the numbers are.
+PARTICIPATION_UNVERIFIED_BLOCKERS = {
+    "PLAYER_AVAILABILITY_UNVERIFIED",
+    # Provisional participation (for example an MLB probable starter) is
+    # official but unconfirmed until the final pregame recheck succeeds.
+    "PLAYER_AVAILABILITY_RECHECK_REQUIRED",
+}
+
 UNHEALTHY_CALIBRATION_STATES = {
     "UNKNOWN",
     "UNKNOWN_OR_BLOCKED",
@@ -112,6 +133,19 @@ def classify_prop_probability(
     input_complete: bool = True,
 ) -> PropQualificationDecision:
     blocker_tuple = _normalized(blockers)
+    if any(b in PARTICIPATION_BLOCKERS for b in blocker_tuple):
+        return _decision(
+            terminal_label="PLAYER_RULED_OUT",
+            confidence_tier="PARTICIPATION_BLOCKED",
+            rank_eligible=False,
+            model_supported=False,
+            model_qualified=False,
+            model_qualification_status="NOT_QUALIFIED",
+            uncertainty_width=None,
+            downstream_money_evaluation_allowed=False,
+            blockers=blocker_tuple,
+            reasons=("OFFICIAL_AVAILABILITY_NOT_ELIGIBLE",),
+        )
     if not input_complete:
         return _decision(
             terminal_label="MODEL_INPUTS_INSUFFICIENT",
@@ -226,6 +260,28 @@ def classify_prop_probability(
             downstream_money_evaluation_allowed=False,
             blockers=blocker_tuple + ("MODEL_QUALITY_NOT_PASS",),
             reasons=("MODEL_SUPPORT_OR_COVERAGE_NOT_PASS",),
+        )
+
+    # Applied after every genuine model/input failure so those typed terminals
+    # are preserved, and before any threshold so no probability, however high,
+    # can promote an unverified participant into rank eligibility.
+    if any(b in PARTICIPATION_UNVERIFIED_BLOCKERS for b in blocker_tuple):
+        return _decision(
+            terminal_label="PLAYER_AVAILABILITY_UNVERIFIED",
+            confidence_tier="PARTICIPATION_UNVERIFIED",
+            rank_eligible=False,
+            model_supported=True,
+            model_qualified=False,
+            model_qualification_status="NOT_QUALIFIED",
+            uncertainty_width=width,
+            downstream_money_evaluation_allowed=False,
+            blockers=blocker_tuple,
+            reasons=(
+                f"CALIBRATED_P={p:.6f}",
+                f"LOWER_BOUND={lb:.6f}",
+                "OFFICIAL_AVAILABILITY_EVIDENCE_NOT_VERIFIED",
+                "VERIFIED_POOL_ADMISSION_BLOCKED",
+            ),
         )
 
     reasons = [

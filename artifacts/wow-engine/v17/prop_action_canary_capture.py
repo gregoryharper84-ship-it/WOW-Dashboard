@@ -42,11 +42,19 @@ def _hash(payload: Mapping[str, Any]) -> str:
 
 
 def _finite_probability(value: Any) -> float | None:
+    # Python bool is int-like: float(True)==1.0 and float(False)==0.0.
+    # Neither is valid numerical probability evidence or durable readback.
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
+
+
+class _PredictionStoreUnavailable(RuntimeError):
+    """wow_predictions read failed; distinct from an authentically missing row."""
 
 
 def _persisted_prediction(db: Any, prediction_id: str) -> dict[str, Any] | None:
@@ -63,8 +71,9 @@ def _persisted_prediction(db: Any, prediction_id: str) -> dict[str, Any] | None:
             .limit(1)
             .execute().data or []
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        # Never collapse a store outage into "prediction not found".
+        raise _PredictionStoreUnavailable(type(exc).__name__) from exc
     return dict(rows[0]) if rows else None
 
 
@@ -134,7 +143,11 @@ def capture_action_canary_receipts(
         if not prediction_id:
             blockers.append("CANARY_PREDICTION_ID_NOT_RETURNED")
             continue
-        prediction = _persisted_prediction(db, prediction_id)
+        try:
+            prediction = _persisted_prediction(db, prediction_id)
+        except _PredictionStoreUnavailable as exc:
+            blockers.append(f"CANARY_PREDICTION_STORE_UNAVAILABLE:{exc}")
+            continue
         if prediction is None:
             blockers.append("CANARY_PERSISTED_PREDICTION_NOT_FOUND")
             continue
@@ -184,12 +197,46 @@ def capture_action_canary_receipts(
                 receipt,
                 on_conflict="immutable_receipt_hash",
             ).execute()
-            persisted += 1
         except Exception as exc:
             blockers.append(f"CANARY_RECEIPT_PERSISTENCE_UNAVAILABLE:{type(exc).__name__}")
+            continue
+
+        # A successful upsert response alone is not proof that the exact receipt
+        # can be fetched durably. Never count a receipt without an exact readback.
+        try:
+            stored_rows = (
+                db.table(CANARY_TABLE)
+                .select("*")
+                .eq("immutable_receipt_hash", receipt["immutable_receipt_hash"])
+                .limit(1)
+                .execute().data or []
+            )
+        except Exception as exc:
+            blockers.append(f"CANARY_RECEIPT_READBACK_UNAVAILABLE:{type(exc).__name__}")
+            continue
+        if not stored_rows:
+            blockers.append("CANARY_RECEIPT_READBACK_MISSING")
+            continue
+        stored = stored_rows[0]
+        if not isinstance(stored, Mapping) or any(
+            stored.get(field) != value
+            for field, value in receipt.items()
+            if field not in ("raw_model_probability", "calibrated_probability", "calibrated_lower_bound")
+        ) or any(
+            _finite_probability(stored.get(field)) != receipt[field]
+            for field in ("raw_model_probability", "calibrated_probability", "calibrated_lower_bound")
+        ):
+            blockers.append("CANARY_RECEIPT_READBACK_MISMATCH")
+            continue
+        persisted += 1
 
     return {
-        "status": "PASS" if not blockers else "COMPLETED_WITH_BLOCKERS",
+        # Empty eligible cohorts are NOT successful Action-canary acceptance.
+        "status": (
+            "COMPLETED_WITH_BLOCKERS" if blockers
+            else "NO_ELIGIBLE_CANARY_ROWS" if eligible == 0
+            else "PASS"
+        ),
         "eligible_rows": eligible,
         "persisted_rows": persisted,
         "blockers": list(dict.fromkeys(blockers)),
@@ -240,11 +287,24 @@ def install_prop_action_canary_capture(
     ):
         result = original_endpoint(batch, x_wow_model_identity=x_wow_model_identity)
         if isinstance(result, dict):
-            audit = capture_action_canary_receipts(
-                db=db_client_fn(),
-                batch=batch,
-                result=result,
-            )
+            # Advisory capture must never turn a canonical scoring response into
+            # an unrelated HTTP 500. Failure remains explicit, never a canary PASS.
+            try:
+                audit = capture_action_canary_receipts(
+                    db=db_client_fn(),
+                    batch=batch,
+                    result=result,
+                )
+            except Exception as exc:
+                audit = {
+                    "status": "BLOCKED_CAPTURE_UNAVAILABLE",
+                    "eligible_rows": 0,
+                    "persisted_rows": 0,
+                    "blockers": [f"CANARY_CAPTURE_UNAVAILABLE:{type(exc).__name__}"],
+                    "automatic_certification": False,
+                    "automatic_promotion": False,
+                    "can_execute": False,
+                }
             result["production_action_canary_capture"] = audit
             result["can_execute"] = False
         return result

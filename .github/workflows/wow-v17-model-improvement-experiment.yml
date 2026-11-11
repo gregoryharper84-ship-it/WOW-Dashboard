@@ -23,6 +23,7 @@ jobs:
     name: Build and validate one non-serving model challenger experiment
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    environment: wow-engineering
 
     steps:
       - name: Checkout protected main
@@ -31,6 +32,24 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity for PR authoring
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured; this worker never authors PRs under an owner-scoped credential."
+            exit 1
+          fi
 
       - name: Resolve experiment mode
         id: mode
@@ -197,7 +216,7 @@ jobs:
         if: steps.scope.outputs.changed == 'true'
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}
           RESULT: ${{ steps.experiment_agent.outputs.structured_output }}
           MODE: ${{ steps.mode.outputs.mode }}
           EXISTING_BRANCH: ${{ steps.mode.outputs.branch }}
@@ -223,7 +242,7 @@ jobs:
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'new'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           BRANCH: ${{ steps.commit.outputs.branch }}
           EXPERIMENT_ID: ${{ steps.commit.outputs.experiment_id }}
           RESULT: ${{ steps.experiment_agent.outputs.structured_output }}
@@ -257,7 +276,7 @@ jobs:
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'repair'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           PR_NUMBER: ${{ steps.mode.outputs.pr_number }}
         run: |
           set -euo pipefail

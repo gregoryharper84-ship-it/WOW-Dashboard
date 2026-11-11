@@ -304,6 +304,55 @@ def build_lifecycle_dashboard(
                 "can_execute": False,
             })
 
+    # Registry artifacts may exist for routes that have not been declared as
+    # production capabilities. Certification enumerates these artifacts, but a
+    # declared-route-only dashboard previously dropped them entirely. Preserve
+    # health coverage while explicitly denying capability or certification.
+    for token in sorted(set(cert_by_route) - set(requested_tokens)):
+        sport, stat_type = token.split(":", 1)
+        route_rows.append({
+            "row_kind": "ROUTE_STATUS",
+            "sport": sport,
+            "stat_type": stat_type,
+            "forward_status": "UNDECLARED_ARTIFACT_ROUTE",
+            "settlement_adapter_status": "NOT_DECLARED",
+            "certification_artifact_n": len(cert_by_route[token]),
+            "lifecycle_status": "NO_CURRENT_PROP_CATEGORY_DECLARED",
+            "production_numerical_authority": False,
+            "action_canary_verified": False,
+            "blockers": ["PROP_ROUTE_NOT_DECLARED"],
+            "captured_at": captured_at,
+            "can_execute": False,
+        })
+        for cert in cert_by_route[token]:
+            metrics = _metrics(cert)
+            artifact_rows.append({
+                "row_kind": "ARTIFACT_COHORT",
+                "sport": sport,
+                "stat_type": stat_type,
+                "feature_schema_version": cert.get("feature_schema_version"),
+                "model_family": cert.get("model_family"),
+                "model_artifact_version": cert.get("model_artifact_version"),
+                "artifact_checksum": cert.get("artifact_checksum"),
+                "calibrator_version": cert.get("calibrator_version"),
+                "forward_prediction_n": cert.get("forward_prediction_n"),
+                "forward_settled_n": cert.get("forward_settled_n"),
+                "eligible_n": cert.get("forward_eligible_n") or metrics.get("n"),
+                "calibration_status": cert.get("status"),
+                "policy_id": cert.get("policy_id"),
+                "policy_review_status": cert.get("policy_review_status"),
+                "registry_lifecycle_state": cert.get("artifact_registry_lifecycle_state"),
+                "registry_promoted": bool(cert.get("artifact_registry_promoted")),
+                "registry_active": bool(cert.get("artifact_registry_active")),
+                "promotion_package_ready": False,
+                "selected_for_registration_audit": False,
+                "lifecycle_status": "UNDECLARED_ARTIFACT_COHORT",
+                "action_canary_verified": False,
+                "blockers": _unique_blockers(cert.get("blockers"), ["PROP_ROUTE_NOT_DECLARED"]),
+                "captured_at": captured_at,
+                "can_execute": False,
+            })
+
     # Required all-sports completeness: sports with no declared prop category remain
     # visible as typed placeholders rather than disappearing from the dashboard.
     requested_sports = {token.split(":", 1)[0] for token in requested_tokens}

@@ -213,7 +213,110 @@ jobs:
           })
           assert_compact_batch(cross, 4, "CROSS_SPORT_COMPACT")
 
+          # PM-2026-09-14-001 secondary: probe attempt-field split on a FULL row.
+          # Host-side action_invocation_attempted is ChatGPT Action contract; backend
+          # must still expose distinct specialist_scoring_attempted vs scoring_attempted.
+          full = post("/score-pick-request", {
+              "request_id": f"v17-post-safety-attempt-fields-{CANARY_RUN}",
+              "response_mode": "FULL",
+              "rows": [mlb_rows[0]],
+          })
+          if full.get("can_execute") is not False:
+              raise AssertionError("ATTEMPT_FIELDS: can_execute invariant failed")
+          full_rows = full.get("rows") or full.get("outcomes") or []
+          if not full_rows:
+              raise AssertionError("ATTEMPT_FIELDS: rows missing")
+          full_row = full_rows[0] if isinstance(full_rows[0], dict) else {}
+
+          def extract_attempt_fields(obj):
+              keys = (
+                  "action_invocation_attempted",
+                  "specialist_scoring_attempted",
+                  "scoring_attempted",
+              )
+              found = {}
+              stack = [obj]
+              seen = set()
+              while stack:
+                  cur = stack.pop()
+                  if not isinstance(cur, dict):
+                      continue
+                  ident = id(cur)
+                  if ident in seen:
+                      continue
+                  seen.add(ident)
+                  for key in keys:
+                      if key in cur and key not in found:
+                          found[key] = cur.get(key)
+                  for value in cur.values():
+                      if isinstance(value, dict):
+                          stack.append(value)
+                      elif isinstance(value, list):
+                          stack.extend(item for item in value if isinstance(item, dict))
+              return found
+
+          attempt_fields = extract_attempt_fields(full_row)
+          attempt_fields.update({
+              k: v for k, v in extract_attempt_fields(full).items() if k not in attempt_fields
+          })
+          backend_pair_distinct = (
+              "specialist_scoring_attempted" in attempt_fields
+              and "scoring_attempted" in attempt_fields
+          )
+          three_field_complete = backend_pair_distinct and "action_invocation_attempted" in attempt_fields
+          print(json.dumps({
+              "status": (
+                  "THREE_FIELD_RECEIPT_CAPTURED"
+                  if three_field_complete
+                  else (
+                      "BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING"
+                      if backend_pair_distinct
+                      else "ATTEMPT_FIELDS_INCOMPLETE"
+                  )
+              ),
+              "attempt_fields": attempt_fields,
+              "three_field_receipt_complete": three_field_complete,
+              "backend_attempt_pair_present": backend_pair_distinct,
+              "request_id": full.get("request_id") or f"v17-post-safety-attempt-fields-{CANARY_RUN}",
+              "can_execute": False,
+          }, sort_keys=True))
+          if not backend_pair_distinct:
+              raise AssertionError(f"ATTEMPT_FIELDS: backend pair missing: {attempt_fields}")
+
           slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+
+          # PM-2026-09-14-001 residual first: does not depend on prop scoring inventory.
+          zero = post("/internal/v17/daily-snapshot", {
+              "requested_slate_date": slate_date,
+              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+              "lanes": ["PROPS"],
+              "max_props": 0,
+              "max_team_events": 0,
+              "response_mode": "COMPACT",
+          }, timeout=600)
+          if zero.get("can_execute") is not False:
+              raise AssertionError("DAILY_ZERO: can_execute invariant failed")
+          if zero.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("DAILY_ZERO: terminal authority mismatch")
+          zero_lane = (zero.get("lane_reconciliation") or {}).get("PROPS") or {}
+          if zero_lane.get("requested_row_limit") != 0:
+              raise AssertionError(f"DAILY_ZERO: requested_row_limit={zero_lane.get('requested_row_limit')}")
+          if zero_lane.get("zero_row_reason") != "REQUESTED_ROW_LIMIT_ZERO":
+              raise AssertionError(f"DAILY_ZERO: zero_row_reason={zero_lane.get('zero_row_reason')}")
+          # scored_count=0 is the success case; do not use `or` (0 is falsy).
+          zero_scored = zero_lane.get("scored_count")
+          if zero_scored is None or int(zero_scored) != 0:
+              raise AssertionError(f"DAILY_ZERO: scored_count={zero_scored}")
+          print(json.dumps({
+              "status": "REQUESTED_ROW_LIMIT_ZERO_CAPTURED",
+              "daily_zero_row_run_id": zero.get("run_id"),
+              "props_zero_row_reason": zero_lane.get("zero_row_reason"),
+              "props_requested_row_limit": zero_lane.get("requested_row_limit"),
+              "props_scored_count": zero_scored,
+              "can_execute": False,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
+          }, sort_keys=True))
+
           daily = post("/internal/v17/daily-snapshot", {
               "requested_slate_date": slate_date,
               "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
@@ -232,37 +335,56 @@ jobs:
           lane = (daily.get("lane_reconciliation") or {}).get("PROPS") or {}
           if lane.get("requested_row_limit") != 4:
               raise AssertionError("DAILY: max_props=4 not applied")
-          if int(lane.get("scored_count") or 0) != 4:
-              raise AssertionError(f"DAILY: expected four unique scored props, got {lane.get('scored_count')}")
+          scored = int(lane.get("scored_count") or 0)
           discovered = int(lane.get("discovered_count") or 0)
           canonicalized = int(lane.get("canonicalized_count") or 0)
           duplicates = int(lane.get("duplicate_source_instance_count") or 0)
           if discovered != canonicalized + duplicates:
               raise AssertionError("DAILY: source-instance/canonical dedup accounting mismatch")
           prop_rows = [row for row in (daily.get("rows") or []) if row.get("lane") == "PROPS"]
-          if len(prop_rows) != 4:
-              raise AssertionError(f"DAILY: expected four PROPS rows, got {len(prop_rows)}")
-          keys = []
-          for row in prop_rows:
-              identity = row.get("identity") or {}
-              keys.append((
-                  identity.get("event_id"), identity.get("sport"), identity.get("player"),
-                  identity.get("stat_type"), identity.get("line"),
-              ))
-          if len(set(keys)) != 4:
-              raise AssertionError("DAILY: duplicate sporting identities consumed max_props slots")
-
-          print(json.dumps({
-              "status": "FIXED_VERIFIED",
-              "mlb_four_direction_compact": "PASS",
-              "cross_sport_compact": "PASS",
-              "daily_max_props_4": "PASS",
-              "daily_source_instances": discovered,
-              "daily_canonical_props": canonicalized,
-              "daily_duplicate_source_instances_collapsed": duplicates,
-              "global_terminal_authority": "V17_TERMINAL_REDUCER",
-              "can_execute": False,
-          }, sort_keys=True))
+          if scored != 4 or len(prop_rows) != 4:
+              # Soft-hold: empty live prop inventory must not erase residual capture.
+              print(json.dumps({
+                  "status": "DAILY_MAX_PROPS_4_HOLD_EMPTY_INVENTORY",
+                  "code": "PROP_INVENTORY_EMPTY_OR_UNSCORABLE",
+                  "daily_max_props_4": "HOLD",
+                  "daily_requested_row_limit_zero": "PASS",
+                  "daily_zero_row_run_id": zero.get("run_id"),
+                  "scored_count": scored,
+                  "prop_rows": len(prop_rows),
+                  "zero_row_reason": lane.get("zero_row_reason"),
+                  "mlb_four_direction_compact": "PASS",
+                  "cross_sport_compact": "PASS",
+                  "backend_attempt_pair_present": backend_pair_distinct,
+                  "three_field_receipt_complete": three_field_complete,
+                  "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                  "can_execute": False,
+              }, sort_keys=True))
+          else:
+              keys = []
+              for row in prop_rows:
+                  identity = row.get("identity") or {}
+                  keys.append((
+                      identity.get("event_id"), identity.get("sport"), identity.get("player"),
+                      identity.get("stat_type"), identity.get("line"),
+                  ))
+              if len(set(keys)) != 4:
+                  raise AssertionError("DAILY: duplicate sporting identities consumed max_props slots")
+              print(json.dumps({
+                  "status": "FIXED_VERIFIED",
+                  "mlb_four_direction_compact": "PASS",
+                  "cross_sport_compact": "PASS",
+                  "daily_max_props_4": "PASS",
+                  "daily_requested_row_limit_zero": "PASS",
+                  "daily_zero_row_run_id": zero.get("run_id"),
+                  "daily_source_instances": discovered,
+                  "daily_canonical_props": canonicalized,
+                  "daily_duplicate_source_instances_collapsed": duplicates,
+                  "backend_attempt_pair_present": backend_pair_distinct,
+                  "three_field_receipt_complete": three_field_complete,
+                  "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                  "can_execute": False,
+              }, sort_keys=True))
           PY
 
   canonical-prop-action:

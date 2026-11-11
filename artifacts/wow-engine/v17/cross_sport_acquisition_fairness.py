@@ -29,6 +29,28 @@ def fair_discover_winner_slate(
     *,
     requested_slate_date: str,
     requested_timezone: str,
+    **kwargs: Any,
+):
+    """Production discovery owner; runs the fair pass inside the slate window context.
+
+    The fair pass below replaces ``discover_winner_slate`` entirely, so it must
+    publish the requested slate itself or feed adapters fall back to the rolling
+    now+36h horizon (the 2026-10-22 ``EVENT_WRONG_DATE`` over-fetch).
+    """
+    from v17 import cross_sport_winner_discovery as discovery
+
+    with discovery.slate_window_context(requested_slate_date, requested_timezone):
+        return _fair_discover_winner_slate(
+            requested_slate_date=requested_slate_date,
+            requested_timezone=requested_timezone,
+            **kwargs,
+        )
+
+
+def _fair_discover_winner_slate(
+    *,
+    requested_slate_date: str,
+    requested_timezone: str,
     fetch_sport_events: Callable[..., Iterable[Mapping[str, Any]]],
     supported_sports: Iterable[str] | None = None,
     discovery_targets: Mapping[str, tuple[Any, ...]] | None = None,

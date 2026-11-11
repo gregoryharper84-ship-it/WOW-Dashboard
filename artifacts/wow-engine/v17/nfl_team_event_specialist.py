@@ -6,6 +6,7 @@ import hashlib
 from datetime import date, datetime
 import gzip
 import io
+import json
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -62,6 +63,7 @@ NFL_CANONICAL_TEAM_CODES = frozenset(NFL_TEAM_NAME_TO_ABBREVIATION.values())
 
 
 def _paginate(query: Any, page_size: int = 500) -> list[dict[str, Any]]:
+    """Yield successive PostgREST pages until the result set ends."""
     rows: list[dict[str, Any]] = []
     start = 0
     while True:
@@ -75,6 +77,7 @@ def _paginate(query: Any, page_size: int = 500) -> list[dict[str, Any]]:
 
 
 def _raw_object_path(uri: str) -> str:
+    """Build the storage object path for a raw schedule snapshot."""
     prefix = f"supabase://{RAW_BUCKET}/"
     if not str(uri or "").startswith(prefix):
         raise NFLModelInputsInsufficient("NFL_SCHEDULE_RAW_OBJECT_URI_INVALID")
@@ -85,6 +88,7 @@ def _raw_object_path(uri: str) -> str:
 
 
 def _load_latest_schedule_snapshot(db: Any) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Load the newest verified NFL schedule snapshot for evidence."""
     result = (
         db.table("wow_nfl_source_snapshots")
         .select("snapshot_id,dataset_name,content_sha256,fetched_at,raw_object_uri,source_status")
@@ -110,10 +114,12 @@ def _load_latest_schedule_snapshot(db: Any) -> tuple[dict[str, Any], list[dict[s
 
 
 def _has_score(row: dict[str, Any]) -> bool:
+    """Return True when both team scores are present and numeric."""
     return str(row.get("home_score") or "").strip() != "" or str(row.get("away_score") or "").strip() != ""
 
 
 def _canonical_team(value: Any) -> str | None:
+    """Normalize a team token into the canonical publication identity."""
     raw = " ".join(str(value or "").strip().split())
     if not raw:
         return None
@@ -124,6 +130,7 @@ def _canonical_team(value: Any) -> str | None:
 
 
 def _aware_datetime(value: Any) -> datetime | None:
+    """Parse a timestamp into a timezone-aware UTC datetime."""
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -134,6 +141,7 @@ def _aware_datetime(value: Any) -> datetime | None:
 
 
 def _prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, team: str, target_date: date) -> int:
+    """Count completed prior games for the requested event evidence."""
     n = 0
     for row in schedule_rows:
         try:
@@ -149,6 +157,7 @@ def _prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, 
 
 
 def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
+    """Resolve fail-closed NFL team/event evidence for scoring."""
     snapshot, schedule_rows = _load_latest_schedule_snapshot(db)
     provider_event_id = str(req.official_event_id or "").strip()
     requested_home = _canonical_team(req.home_team)
@@ -318,6 +327,7 @@ def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
 
 
 def _load_history(db: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load prior completed-game history for the current-season specialist."""
     games = _paginate(db.table("wow_nfl_training_games").select("*").order("season").order("week").order("gameday").order("game_id"))
     summaries = _paginate(db.table("wow_nfl_game_team_summaries").select("*").order("game_id").order("team"))
     if not games or not summaries:
@@ -376,6 +386,7 @@ def _prediction_identity_key(
 
 
 def _load_existing_prediction(db: Any, prediction_identity_key: str) -> dict[str, Any] | None:
+    """Load an immutable stored prediction row when present."""
     result = (
         db.table("wow_nfl_event_predictions")
         .select("*")
@@ -394,10 +405,20 @@ def _reused_prediction_result(
     *,
     feature_row: dict[str, Any],
     evidence: dict[str, Any],
+    model_probability_publishable: bool,
 ) -> dict[str, Any]:
+    """Rebuild a reused prediction while preserving stored publication holds."""
     snapshot = row.get("model_output_snapshot")
     if not isinstance(snapshot, dict):
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_REUSE_SNAPSHOT_MISSING")
+    # Never retroactively attest an immutable row using a newer champion.
+    # Incomplete or conflicting persisted publication evidence fails closed.
+    stored_publishable = (
+        row.get("model_probability_publishable") is True
+        and snapshot.get("model_probability_publishable") is True
+        and snapshot.get("probability_publishable") is True
+        and model_probability_publishable is True
+    )
     return {
         "code": "NFL_FITTED_MODEL_PATH_PROVEN",
         **snapshot,
@@ -420,13 +441,15 @@ def _reused_prediction_result(
         "failure_code": None,
         "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
         "blend_publishable": False,
-        "probability_publishable": True,
+        "model_probability_publishable": stored_publishable,
+        "probability_publishable": stored_publishable,
         "prediction_reused": True,
         "can_execute": False,
     }
 
 
 def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
+    """Score an NFL team/event request through the fitted specialist path."""
     evidence = dict(req.sport_specific_evidence or {})
     required = (
         "season",
@@ -504,6 +527,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     except Exception as exc:
         raise NFLModelScorerFailed("NFL_FITTED_SCORER_FAILED") from exc
 
+    model_publishable = getattr(model, "probability_publishable", False) is True
+
     prediction_identity_key = _prediction_identity_key(
         research_run_id=str(req.research_run_id),
         canonical_game_id=canonical_game_id,
@@ -522,6 +547,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
             existing_prediction,
             feature_row=feature_row,
             evidence=evidence,
+            model_probability_publishable=model_publishable,
         )
 
     try:
@@ -530,6 +556,27 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise NFLModelScorerFailed("NFL_FITTED_SCORER_FAILED") from exc
+
+
+    # Bind the *already executed* calibration operation to this exact request.
+    # An idempotent reused prediction only ever returns its stored snapshot:
+    # older snapshots without evidence cannot be backfilled or attested here.
+    produced = model_result.get("calibration_operation_receipt")
+    if isinstance(produced, dict) and produced.get("status") == "COMPLETED":
+        bound = {
+            **produced,
+            "research_run_id": str(req.research_run_id),
+            "prediction_identity_key": prediction_identity_key,
+            "official_event_id": canonical_game_id,
+            "event_key": str(req.event_key),
+            "requested_slate_date": str(req.requested_slate_date),
+            "event_start_time_utc": str(req.event_start_time_utc),
+            "source_snapshot_id": str(req.source_snapshot_id),
+            "source_snapshot_timestamp": str(req.latest_material_update_timestamp),
+        }
+        encoded = json.dumps(bound, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        bound["evidence_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        model_result["calibration_operation_receipt"] = bound
 
     home_probability = float(model_result["calibrated_home_probability"])
     if home_probability >= 0.5:
@@ -546,6 +593,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     model_output_snapshot = {
         **model_result,
         "feature_row_hash": feature_row["row_inputs_hash"],
+        "model_probability_publishable": model_publishable,
+        "probability_publishable": model_publishable,
         "feature_max_prior_gameday": feature_row.get("max_prior_gameday"),
         "selected_participant": selected,
         "ranked_probability": selection_lower,
@@ -598,7 +647,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "ranked_probability": selection_lower,
         "model_package_valid": True,
         "provenance_complete": True,
-        "model_probability_publishable": True,
+        "model_probability_publishable": model_publishable,
         "blend_publishable": False,
         "can_execute": False,
         "model_output_snapshot": model_output_snapshot,
@@ -616,6 +665,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
                 existing_prediction,
                 feature_row=feature_row,
                 evidence=evidence,
+                model_probability_publishable=model_publishable,
             )
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_PERSISTENCE_FAILED") from exc
     if len(persisted) != 1:
@@ -644,7 +694,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "failure_code": None,
         "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
         "blend_publishable": False,
-        "probability_publishable": True,
+        "model_probability_publishable": model_publishable,
+        "probability_publishable": model_publishable,
         "prediction_reused": False,
         "can_execute": False,
     }

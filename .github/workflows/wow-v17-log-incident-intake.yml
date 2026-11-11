@@ -1,0 +1,256 @@
+name: wow-v17-log-incident-intake
+
+# Read-only telemetry producer for the EXISTING WOW Engineering Reporter and
+# single-writer supervisor. It is NOT an independent controller or repair bot.
+# Enable only when GitHub Datadog read credentials have been provisioned.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-log-incident-intake.yml"
+      - "artifacts/wow-engine/v17/log_incident_intake.py"
+      - "artifacts/wow-engine/v17/log_reporter_handoff.py"
+      - "artifacts/wow-engine/v17/engineering_log_reporter.py"
+      - "artifacts/wow-engine/v17/engineering_resident_supervisor.py"
+      - "artifacts/wow-engine/test_v17_log*.py"
+      - "artifacts/wow-engine/test_v17_engineering_log_reporter.py"
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-log-incident-intake
+  cancel-in-progress: false
+
+jobs:
+  verify-source:
+    name: Log Reporter read-only security and regression tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact PR head without credential persistence
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Run focused, negative, and integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          # These tests import only stdlib + v17 source, and use no global
+          # Celery/Redis fixture. Do not load unrelated repository conftest.
+          python -m pytest --noconftest -q artifacts/wow-engine/test_v17_log_incident_intake.py artifacts/wow-engine/test_v17_log_intake_workflow.py artifacts/wow-engine/test_v17_log_reporter_handoff.py artifacts/wow-engine/test_v17_engineering_log_reporter.py artifacts/wow-engine/test_v17_log_reporter_integration.py artifacts/wow-engine/test_v17_log_reporter_artifact_security.py
+  intake:
+    if: github.event_name != 'pull_request' && vars.WOW_V17_LOG_INTAKE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Redaction and failure-path tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          # These tests import only stdlib + v17 source, and use no global
+          # Celery/Redis fixture. Do not load unrelated repository conftest.
+          python -m pytest --noconftest -q artifacts/wow-engine/test_v17_log_incident_intake.py artifacts/wow-engine/test_v17_log_intake_workflow.py artifacts/wow-engine/test_v17_log_reporter_handoff.py artifacts/wow-engine/test_v17_engineering_log_reporter.py artifacts/wow-engine/test_v17_log_reporter_integration.py artifacts/wow-engine/test_v17_log_reporter_artifact_security.py
+      - name: Query Datadog bounded error window
+        id: intake
+        shell: bash
+        env:
+          DD_API_KEY: ${{ secrets.WOW_DATADOG_LOG_READ_API_KEY }}
+          DD_APPLICATION_KEY: ${{ secrets.WOW_DATADOG_LOG_READ_APP_KEY }}
+          DD_SITE: ${{ vars.WOW_DATADOG_SITE }}
+        run: |
+          set -uo pipefail
+          if [ -z "${DD_SITE:-}" ]; then export DD_SITE=datadoghq.com; fi
+          # Preserve the source CLI's typed exit 2 as a non-actionable provider
+          # HOLD, not a failing protected-main code-validation check. Unexpected
+          # exits and missing/malformed receipts remain hard failures.
+          # GitHub Actions starts bash with -e. Capture the expected typed
+          # source exit inside a conditional list; never disable fail-fast
+          # globally or let an unexpected result bypass receipt validation.
+          intake_exit=0
+          python artifacts/wow-engine/v17/log_incident_intake.py \
+            --hours 2 --out "$RUNNER_TEMP/wow-v17-log-intake.json" || intake_exit=$?
+          python - "$RUNNER_TEMP/wow-v17-log-intake.json" "$intake_exit" "$RUNNER_TEMP/wow-v17-log-intake-validated.json" <<'PY'
+          import hashlib
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import re
+          import sys
+          
+          allowed_holds = frozenset({
+              "SOURCE_INCOMPLETE", "SOURCE_EVENT_LIMIT_EXCEEDED",
+              "DATADOG_CREDENTIAL_MISSING", "DATADOG_SITE_NOT_ALLOWED",
+              "DATADOG_RATE_LIMITED", "DATADOG_HTTP_FAILED",
+              "DATADOG_TRANSPORT_FAILED", "DATADOG_PAGE_OVERSIZE",
+              "DATADOG_RESPONSE_INVALID", "DATADOG_PAGINATION_STALLED",
+              "DATADOG_RESULT_TRUNCATED",
+          })
+          allowed_codes = frozenset({
+              "HTTP_401", "HTTP_422", "HTTP_5XX",
+              "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED", "WOW_PROP_MODEL_SELF_ACCEPTANCE",
+              "MODEL_SCORER_FAILED", "MODEL_INPUTS_INSUFFICIENT", "MODEL_OUTPUT_INVALID",
+              "MODEL_UNAVAILABLE", "MODEL_RECONCILIATION_FAILED",
+              "WOW_V17_PRODUCTION_PERSISTENCE_FAILED",
+              "REMOTE_WRITER_RECONCILIATION_REQUIRED",
+              "DISPATCH_RECONCILIATION_REQUIRED", "PROVIDER_STATUS_UNVERIFIED",
+              "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE",
+          })
+          routes = frozenset({
+              "ROOT_PROBE", "HEALTH_PROBE", "SCOUT_HANDOFF", "INTERACTIVE_SCORE",
+              "OTHER_ROUTE", "ENGINEERING_RESIDENT_SUPERVISOR", "PICKEM_QUEUE_CLAIM",
+              "PROP_SELF_ACCEPTANCE", "FITTED_MODEL", "PERSISTENCE",
+          })
+          services = ["wow-agent-worker", "wow-governed-probability-engine"]
+          top_keys = {
+              "status", "source", "services", "window_start_utc", "window_end_utc",
+              "events_inspected", "findings", "needs_durable_reporter_dedupe",
+              "terminal_authority", "can_execute",
+              "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+          }
+          finding_keys = {
+              "source", "subsystem", "service", "failure_boundary", "typed_failure",
+              "severity", "fingerprint", "count", "first_seen_utc", "last_seen_utc",
+              "release_shas", "next_owner", "state", "can_execute",
+          }
+          
+          def checked_utc(value):
+              if not isinstance(value, str) or len(value) > 36:
+                  raise ValueError("invalid timestamp")
+              parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+              if parsed.utcoffset() != timezone.utc.utcoffset(None):
+                  raise ValueError("not UTC")
+              return parsed.astimezone(timezone.utc)
+          
+          validated = Path(sys.argv[3])
+          validated.unlink(missing_ok=True)
+          try:
+              source = Path(sys.argv[1])
+              if source.stat().st_size > 262144:
+                  raise ValueError("receipt oversized")
+              receipt = json.loads(source.read_text(encoding="utf-8"))
+              exit_code = int(sys.argv[2])
+          except (OSError, ValueError, TypeError, IndexError):
+              raise SystemExit(1)
+          if not isinstance(receipt, dict):
+              raise SystemExit(1)
+          if receipt.get("source") != "DATADOG" or receipt.get("can_execute") is not False:
+              raise SystemExit(1)
+          if exit_code == 0:
+              status = receipt.get("status")
+              findings = receipt.get("findings")
+              if (set(receipt) != top_keys
+                      or status not in {"NO_ACTION", "CANDIDATES"}
+                      or not isinstance(findings, list) or len(findings) > 128
+                      or bool(findings) != (status == "CANDIDATES")
+                      or receipt.get("services") != services
+                      or receipt.get("needs_durable_reporter_dedupe") is not True
+                      or receipt.get("terminal_authority") != "V17_TERMINAL_REDUCER"
+                      or receipt.get("DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS") is not True
+                      or type(receipt.get("events_inspected")) is not int
+                      or not 0 <= receipt["events_inspected"] <= 1000):
+                  raise SystemExit(1)
+              try:
+                  begin = checked_utc(receipt.get("window_start_utc"))
+                  end = checked_utc(receipt.get("window_end_utc"))
+                  if end <= begin:
+                      raise ValueError("invalid time window")
+                  for finding in findings:
+                      if not isinstance(finding, dict) or set(finding) != finding_keys:
+                          raise ValueError("unrecognized candidate field")
+                      service = finding.get("service")
+                      route = finding.get("failure_boundary")
+                      code = finding.get("typed_failure")
+                      if (service not in services or route not in routes or code not in allowed_codes
+                              or finding.get("source") != "DATADOG"
+                              or finding.get("subsystem") != (
+                                  "ENGINEERING_AUTONOMY" if service == services[0] else "BACKEND_RUNTIME"
+                              ) or finding.get("severity") not in {"P1", "P2"}
+                              or finding.get("next_owner") != "REPORTER_AGENT"
+                              or finding.get("state") != "CANDIDATE_UNVERIFIED"
+                              or finding.get("can_execute") is not False
+                              or type(finding.get("count")) is not int
+                              or not 1 <= finding["count"] <= 1000):
+                          raise ValueError("invalid candidate contract")
+                      fingerprint = hashlib.sha256(
+                          json.dumps([service, route, code], separators=(",", ":")).encode()
+                      ).hexdigest()
+                      if finding.get("fingerprint") != fingerprint:
+                          raise ValueError("candidate fingerprint mismatch")
+                      first = checked_utc(finding.get("first_seen_utc"))
+                      last = checked_utc(finding.get("last_seen_utc"))
+                      if not begin <= first <= last <= end:
+                          raise ValueError("candidate chronology invalid")
+                      shas = finding.get("release_shas")
+                      if (not isinstance(shas, list) or len(shas) > 50
+                              or any(not isinstance(v, str) or not re.fullmatch(r"[a-f0-9]{40}", v) for v in shas)
+                              or shas != sorted(set(shas))):
+                          raise ValueError("candidate SHAs invalid")
+              except (TypeError, ValueError, KeyError):
+                  raise SystemExit(1)
+          elif exit_code == 2:
+              reason = receipt.get("reason")
+              if (set(receipt) != {"status", "reason", "source", "can_execute"}
+                      or receipt.get("status") != "SOURCE_UNAVAILABLE"
+                      or reason not in allowed_holds):
+                  raise SystemExit(1)
+              print(f"::warning::WOW_LOG_INTAKE_SOURCE_UNAVAILABLE:{reason}")
+          else:
+              raise SystemExit(1)
+          
+          # Only a strictly validated, bounded schema leaves this step; never copy the
+          # original Datadog producer file to a published artifact or step summary.
+          validated.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - name: Record strictly redacted Reporter candidate summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '### WOW V17 log intake — read-only' >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/wow-v17-log-intake-validated.json" ]; then
+            python - "$RUNNER_TEMP/wow-v17-log-intake-validated.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          obj=json.load(open(sys.argv[1], encoding='utf-8'))
+          print('status:', obj.get('status', 'UNKNOWN'))
+          print('typed reason:', obj.get('reason', 'NONE'))
+          print('candidate fingerprints:', len(obj.get('findings', [])))
+          print('This is evidence for canonical Reporter intake, not an authorized repair or a production fix.')
+          PY
+          else
+            echo 'status: SOURCE_NOT_READ_OR_VALIDATED' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Stage validated Reporter artifact
+        if: steps.intake.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/wow-v17-validated"
+          cp "$RUNNER_TEMP/wow-v17-log-intake-validated.json" "$RUNNER_TEMP/wow-v17-validated/wow-v17-log-intake.json"
+      - name: Preserve bounded redacted intake artifact
+        if: steps.intake.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-log-incident-candidates
+          path: ${{ runner.temp }}/wow-v17-validated/wow-v17-log-intake.json
+          if-no-files-found: warn
+          retention-days: 7

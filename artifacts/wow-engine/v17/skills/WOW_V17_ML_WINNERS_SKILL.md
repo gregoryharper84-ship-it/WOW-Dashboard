@@ -26,6 +26,57 @@ This skill remains probability-only. A high ranking here is **not** permission t
 11. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
 12. Keep unsupported sports/events fail-closed with exact typed status.
 
+## Upset Integrity V2 — optional research diagnostics (non-authoritative)
+
+When source-visible exact-line market snapshots are available, the analyst may
+run `v17.upset_market_diagnostics.analyze_upset_market_snapshot` alongside the
+existing governed `team_event_upset_alert` interpretation layer. Require matching
+event/outcome space, exact market type/settlement basis, source snapshot IDs,
+timely pregame book quotes, pinned power primary no-vig method (multiplicative sensitivity-only) and
+complete governed outcome probabilities and bounds. Treat cross-book dispersion
+and reference-class favorite–longshot bias as uncertainty, not model evidence.
+A reference-class decomposition requires a separate time-safe receipt.
+Never label `market_disagreement` as proven upset edge. Display descriptive
+`MODEL_MARKET_DISAGREEMENT_UNVALIDATED` until the independently evaluated
+reference-class and forward evidence justify a distinct `UPSET_EDGE_VS_MARKET`
+claim. The pre-existing alert's `probability_gap` is **model favorite minus
+strongest model alternative**, not model-versus-market edge.
+
+All outputs from that helper are `RESEARCH_ONLY` (or explicitly single-book):
+not certified, not rank eligible, not allowed to update sporting probabilities,
+not permission for pick promotion or a cash/profitability decision. A positive
+market disagreement is not proof of information advantage. No stale,
+after-kickoff or different-settlement quote may contribute to an edge claim.
+The existing alert governs favorite vulnerability from a complete model package.
+The diagnostic measures *separate* market disagreement.
+
+Do not confuse **within-event winner selection** with **cross-event confidence
+ranking**. If the objective is maximum expected correct selections, the
+mathematical within-event decision is the highest calibrated probability among
+the contest's explicitly scoring-eligible outcomes, subject to the controlling
+Event Decision Governor and all stricter model/terminal gates. The existing
+cross-event leaderboard can rank accepted winner selections by calibrated
+lower bound as a separate reliability ordering. For a three-way soccer game,
+choose HOME/DRAW/AWAY only when the contest allows a draw selection. If it
+requires a participant, with a draw scoring as incorrect for either team,
+choose the higher of **unconditional** P(HOME), P(AWAY); conditional-on-no-draw
+normalization does not change the ranking and must never be misreported as
+unconditional winner probability. If picking who qualifies after extra time,
+use a separately fitted advancement market rather than 90-minute outcomes. Never override a stricter
+governed decision with research-only argmax or a market-derived probability.
+
+For requested tennis winner research, include ATP/WTA scheduled matches in the
+research slate when identity and source coverage permit, but route through a
+fitted certified tennis specialist only when genuinely available. Never
+manufacture FULL_MODEL support from rankings, Elo alone, or market prices.
+Challenger tennis is independently source/capability-qualified.
+
+The proposed universal winner posterior-predictive ensemble, variance/tail
+modeling, reference-class learning, sequential market snapshots, CLV,
+calibration and prospective testing are **research designs, not implemented
+fitted capabilities**. See:
+`docs/wow/contracts/canonical/WOW-PATCH-2026-11-10-UPSET-INTEGRITY-AND-UNIVERSAL-WINNERS.md`.
+
 ## Cash/profitability handoff — P0 invariant
 When the user asks to use a PrizePicks Game Winner as a cash single, in a profitability plan, or in any paid-card/value context, this skill stops at the sporting-probability package and hands the row downstream.
 

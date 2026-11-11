@@ -1,6 +1,8 @@
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 import basketball_event_hydration_runtime as hydration
 
 
@@ -9,6 +11,7 @@ def _espn_event(*, event_id="401", game_date="2026-09-20", home_score="88", away
         "id": event_id,
         "date": f"{game_date}T23:00Z",
         "status": {"type": {"completed": True, "description": "Final"}},
+        "season": {"type": 2, "slug": "regular-season"},
         "competitions": [{
             "competitors": [
                 {"homeAway": "home", "score": home_score, "team": {"id": "10"}},
@@ -22,6 +25,8 @@ def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="
     return {
         "game_id": event_id,
         "game_date": game_date,
+        "game_date_time": f"{game_date}T19:00:00-04:00",
+        "_wow_source_observed_at": "2026-09-22T18:00:00+00:00",
         "home_id": "10",
         "away_id": "20",
         "home_score": home_score,
@@ -31,6 +36,7 @@ def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="
         "status_type_state": "post",
         "status_type_description": "Final",
         "season": game_date[:4],
+        "season_type": "2",
     }
 
 
@@ -132,7 +138,7 @@ def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_
     latest_calls = iter([date(2022, 9, 18), date(2026, 9, 20)])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: next(latest_calls))
     persisted = []
-    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: (persisted.extend(rows), len(rows))[1])
 
     result = hydration.hydrate("WNBA", [2026], client=object())
 
@@ -145,7 +151,7 @@ def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_
     assert result["can_execute"] is False
 
 
-def test_hydrate_uses_raw_espn_when_sportsdataverse_is_unavailable(monkeypatch):
+def test_hydrate_rejects_unentitled_raw_espn_when_sportsdataverse_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         hydration,
         "fetch_games",
@@ -163,17 +169,16 @@ def test_hydrate_uses_raw_espn_when_sportsdataverse_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         hydration,
         "fetch_espn_games",
-        lambda sport, season: [_espn_event(event_id="new", game_date="2026-09-20")],
+        lambda *_args, **_kwargs: pytest.fail("Unentitled ESPN training fetch must not run"),
     )
 
-    latest_calls = iter([date(2022, 9, 18), date(2026, 9, 20)])
-    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: next(latest_calls))
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: date(2022, 9, 18))
     persisted = []
     monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
 
-    result = hydration.hydrate("WNBA", [2026], client=object())
-    assert result["source_by_season"][2026] == "ESPN_SCOREBOARD"
-    assert [row["game_id"] for row in persisted] == ["espn-new"]
+    with pytest.raises(hydration.BasketballHydrationError, match="ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED"):
+        hydration.hydrate("WNBA", [2026], client=object())
+    assert persisted == []
 
 
 def test_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
@@ -201,11 +206,11 @@ def test_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: None)
 
     try:
-        hydration.hydrate("NBA", [2026], client=object())
+        hydration.hydrate("WNBA", [2026], client=object())
         raise AssertionError("expected BasketballHydrationError")
     except hydration.BasketballHydrationError as exc:
         text = str(exc)
         assert "BASKETBALL_FRESH_SOURCE_UNAVAILABLE" in text
         assert "BALLDONTLIE_AUTH_FAILED" in text
         assert "SPORTSDATAVERSE_ESPN_HTTP_503" in text
-        assert "ESPN_SCOREBOARD_HTTP_503" in text
+        assert "ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED" in text

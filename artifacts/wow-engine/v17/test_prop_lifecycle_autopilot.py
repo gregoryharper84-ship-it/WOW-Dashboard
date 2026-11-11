@@ -276,3 +276,34 @@ def test_calibrator_candidate_observation_does_not_require_prediction_can_execut
     assert rows[0].prediction_id == "pred-1"
     assert rows[0].can_execute is False
     assert counts["excluded_invalid_row_n"] == 0
+
+
+def test_undeclared_artifact_is_visible_but_never_promoted_in_health_dashboard(monkeypatch):
+    monkeypatch.setattr(base, "build_forward_evidence_inventory", lambda: [])
+    monkeypatch.setattr(base, "build_settlement_inventory", lambda: [])
+    candidate = {
+        "sport": "MLB", "stat_type": "PLAYER_DOUBLES",
+        "feature_schema_version": "PROP_FEATURES_V1",
+        "model_family": "DOUBLES_FITTED", "model_artifact_version": "DOUBLES_V1",
+        "artifact_checksum": "sha256:doubles", "calibrator_version": "DOUBLES_CAL_V1",
+        "status": "CALIBRATION_EVIDENCE_REQUIRED",
+        "artifact_registry_lifecycle_state": "CANDIDATE",
+        "artifact_registry_promoted": False, "artifact_registry_active": False,
+        "blockers": ["FORWARD_CALIBRATION_CERTIFICATION_REQUIRED"],
+    }
+    dashboard = base.build_lifecycle_dashboard(
+        forward=_forward_result(), settlement=_settlement_result(),
+        certification={"artifact_rows": [*_cert_result()["artifact_rows"], candidate]},
+        registration=_registration_result(), requested_tokens=[TOKEN],
+        captured_at=NOW.isoformat(),
+    )
+    row = next(r for r in dashboard["artifact_cohort_rows"] if r["stat_type"] == "PLAYER_DOUBLES")
+    assert row["lifecycle_status"] == "UNDECLARED_ARTIFACT_COHORT"
+    assert row["model_artifact_version"] == "DOUBLES_V1"
+    assert "PROP_ROUTE_NOT_DECLARED" in row["blockers"]
+    assert row["promotion_package_ready"] is False
+    assert row["can_execute"] is False
+    route = next(r for r in dashboard["route_rows"] if r["stat_type"] == "PLAYER_DOUBLES")
+    assert route["production_numerical_authority"] is False
+    assert route["lifecycle_status"] == "NO_CURRENT_PROP_CATEGORY_DECLARED"
+    assert dashboard["kpi"]["production_registered_n"] == 0

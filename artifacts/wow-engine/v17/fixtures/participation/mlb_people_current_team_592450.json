@@ -1,0 +1,18 @@
+{
+  "copyright": "Copyright 2026 MLB Advanced Media, L.P.",
+  "people": [
+    {
+      "id": 592450,
+      "fullName": "Mookie Betts",
+      "link": "/api/v1/people/592450",
+      "active": true,
+      "currentTeam": {
+        "id": 119,
+        "name": "Los Angeles Dodgers",
+        "abbreviation": "LAD",
+        "link": "/api/v1/teams/119"
+      },
+      "primaryPosition": {"code": "6", "abbreviation": "SS"}
+    }
+  ]
+}

@@ -32,6 +32,8 @@ def test_non_advancing_deploy_receipts_fail_controller_after_pointer_reconcile()
         "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
         "STALE_SHA_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+        "PRODUCTION_RELEASE_HOLD",
+        "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
     ):
         assert status in text[final_gate:]
     assert '"POST_DEPLOY_CANARIES_BLOCKED"' in text[final_gate:]
@@ -55,7 +57,7 @@ def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification
     priority = PRIORITY_WORKFLOW.read_text(encoding="utf-8")
     spread = CANARY_WORKFLOW.read_text(encoding="utf-8")
 
-    assert 'workflows: ["wow-v17-render-production-deploy"]' in orchestrator
+    assert 'workflows: ["wow-v17-lean-production-readback"]' in orchestrator
     assert "types: [completed]" in orchestrator
     assert "branches: [main]" in orchestrator
     assert "github.event.workflow_run.conclusion == 'success'" in orchestrator
@@ -80,10 +82,10 @@ def test_post_deploy_orchestrator_verifies_spread_before_heavy_smoke():
     priority_section = text[priority:golden]
     golden_section = text[golden:]
 
-    assert "needs:" not in spread_section
-    assert "needs: spread-forward" in cert_section
-    assert "needs: [spread-forward, spread-certification]" in priority_section
-    assert "needs: priority-props" in golden_section
+    assert "needs: deployment-readback" in spread_section
+    assert "needs: [deployment-readback, spread-forward]" in cert_section
+    assert "needs: [deployment-readback, spread-forward, spread-certification]" in priority_section
+    assert "needs: [deployment-readback, priority-props]" in golden_section
     assert "always() &&" in cert_section
     assert "always() &&" in priority_section
     assert "always() &&" in golden_section
@@ -107,13 +109,11 @@ def test_golden_full_slate_runs_only_as_post_deploy_reusable_acceptance():
     priority = orchestrator.index("  priority-props:")
     assert priority < golden
     section = orchestrator[golden:]
-    assert "needs: priority-props" in section
+    assert "needs: [deployment-readback, priority-props]" in section
     assert "uses: ./.github/workflows/wow-v17-daily-snapshot.yml" in section
     assert "post_deploy_acceptance: true" in section
-    assert "github.event_name == 'workflow_run'" in section
-    assert "github.event.workflow_run.conclusion == 'success'" in section
-    assert "github.event.workflow_run.head_branch == 'main'" in section
-    assert "github.event_name == 'workflow_dispatch'" not in section
+    # Both admitted observer events and manual acceptance share the preflight.
+    assert "needs.deployment-readback.result == 'success'" in section
 
 
 def test_priority_prop_deploy_smoke_skips_next_day_without_weakening_hourly_default():

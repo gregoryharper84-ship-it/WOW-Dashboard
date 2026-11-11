@@ -272,9 +272,11 @@ _CROSS_SPORT_BUILD_TARGETS: dict[str, tuple[str, ...]] = {
     "NHL": ("GOALS", "ASSISTS", "POINTS", "SHOTS_ON_GOAL", "SAVES"),
     "SOCCER": ("SHOTS", "SHOTS_ON_TARGET", "GOALS", "ASSISTS", "SAVES"),
     "TENNIS": ("ACES", "DOUBLE_FAULTS", "GAMES_WON", "SETS_WON"),
-    "GOLF": ("BIRDIES", "ROUND_SCORE", "GREENS_IN_REGULATION"),
+    "PGA": ("BIRDIES", "ROUND_SCORE", "GREENS_IN_REGULATION"),
     "MMA": ("SIGNIFICANT_STRIKES", "TAKEDOWNS", "FIGHT_TIME"),
     "BOXING": ("PUNCHES_LANDED", "FIGHT_TIME"),
+    # Cricket T20 is an unbuilt, explicitly held sport—not a missing route.
+    "CRICKET": ("BATTER_RUNS", "BOWLER_WICKETS"),
 }
 
 for _sport, _stats in _CROSS_SPORT_BUILD_TARGETS.items():
@@ -302,6 +304,7 @@ SPORT_ALIASES = {
     "WOMENS_NBA": "WNBA", "WOMEN'S NBA": "WNBA", "WOMEN'S BASKETBALL": "WNBA",
     "COLLEGE FOOTBALL": "NCAAF", "CFB": "NCAAF", "COLLEGE BASKETBALL": "NCAAB", "CBB": "NCAAB",
     "ATP": "TENNIS", "WTA": "TENNIS", "UFC": "MMA", "MLS": "SOCCER", "EPL": "SOCCER",
+    "GOLF": "PGA", "PGA_TOUR": "PGA", "T20": "CRICKET", "T20_CRICKET": "CRICKET",
 }
 
 STAT_ALIASES: dict[tuple[str, str], str] = {

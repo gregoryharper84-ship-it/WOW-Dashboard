@@ -1,42 +1,37 @@
 ---
-name: LLP governance module must be reused, not duplicated
-description: gate_engine/llp_governance.py is the canonical LLP compliance engine (labels + full validator pipeline) — any new LLP escalation/classification feature must route through run_llp_governance, not reinvent label/compliance logic.
+name: LLP V16.1 governance reuse is legacy-compatibility only
+description: Reuse gate_engine/llp_governance.py for explicitly V16-compatible market/edge classification; never use LLPLabel/effective_label as V17 sporting probability, rank eligibility, terminal disposition or wager approval.
 ---
 
-# LLP governance module must be reused, not duplicated
+# LLP governance reuse — compatibility boundary
 
-`gate_engine/llp_governance.py` ("LLP-PATCH-2026-06-27 Execution Governance
-v16.1") already defines the `LLPLabel` enum (APPROVED/PLAYABLE/WATCH/SCOUT/
-REJECT/CUT) and a full validator pipeline (`run_llp_governance`) covering
-price/edge fields, edge threshold by market type, probability cap, timing
-freshness, steam protocol, contradiction hard-kills, session exposure,
-reapproval rules, and calibration ledger completeness. It is exposed live at
-`POST /gate-engine/llp-governance/validate` in `app.py`.
+## Controlling generation and authority
 
-**Why:** a new LLP feature spec independently asked for the same 5 labels and
-a "full compliance pass" — building a hand-rolled classifier for this would
-have created a second, subtly different compliance system running in
-parallel with the tested one, risking divergent accept/reject decisions for
-the same bet. Always grep for `llp_governance`/`LLPLabel`/`run_llp_governance`
-before adding new LLP label/compliance logic anywhere in `app.py`.
+The original `gate_engine/llp_governance.py` implements **LLP-PATCH-2026-06-27 Execution Governance v16.1**. Its `LLPLabel` enum (APPROVED, PLAYABLE, WATCH, SCOUT, REJECT, CUT) and `run_llp_governance()` validator are preserved for compatible historical/legacy routes. This is a compatibility fact, **not** V17 authority.
 
-**How to apply:** new LLP flows should build a `candidate` dict in the shape
-`run_llp_governance` expects (see `PRICE_EDGE_REQUIRED_FIELDS` /
-`CALIBRATION_LEDGER_FIELDS` in `llp_governance.py`) via a pure field-mapping
-function, call `run_llp_governance(candidate, session)`, and use
-`effective_label` as the terminal label — governance can only cap a
-requested label down, never up (`cap_label`). Do not invent a new label
-enum or duplicate validator logic.
+The current generation is V17 per `docs/wow/GENERATION_STATUS.md` and `docs/wow/LLP-V17-AUTHORITY-OVERLAY-2026-09-10.md`.
 
-## `app.py` is unsafe to `import` directly in a test process
+- `V17_TERMINAL_REDUCER` is the **sole global terminal authority**.
+- `LLP_TEAM_BETTING_ENGINE` routes exact team/event winners and upsets to one registered fitted sport-specific specialist. `WOW_PROP_LANE` routes player/scalar props to one exact specialist.
+- No `LLPLabel`, legacy `effective_label`, historic edge floor, market prior, sportsbook odds, or recent-form estimate is a V17 model probability, calibrated lower bound, rank eligibility flag, publication approval, or execution authorization.
+- For V17, `can_execute=false` and dry-run-only/no live wagers or market orders remain invariant.
+- Missing market/edge data cannot erase an otherwise valid sporting probability when the active V17 model contract preserves it. V17 typed model and Action failures remain distinct; a legacy validator may not relabel them.
+- V17 release, model activation and live Custom GPT editor parity require their *own* exact-head and live receipts; this memory entry cannot attest them.
 
-Importing `app.py` at module scope (e.g. from a pytest file) hung
-indefinitely during this session — it starts background cron threads / DB
-connections at import time, not guarded behind `if __name__ == "__main__"`.
-To unit-test a specific function's *actual* source without duplicating it,
-extract it by AST line range from `app.py` and `exec()` it into an isolated
-namespace with only the real dependencies it needs (e.g. `gate_engine`
-imports) — this binds the test to the real code while avoiding the import
-hang. Prefer this over live-curl-only verification when the logic is pure
-(no I/O), and prefer live curl against the running workflow for anything
-that touches the odds fetch / DB / cron side of `app.py`.
+## Reuse without authority escalation
+
+For **explicitly legacy V16-compatible** LLP market/edge validation or Kalshi sports bridge logic, reuse the existing `gate_engine/llp_governance.py` module rather than duplicating `LLPLabel`, `cap_label`, or its tested classification rules. In those legacy responses `effective_label` is a **legacy local market/classification outcome only**. Do not pass it to a V17 global terminal reducer as an override and do not present `LLP_PLAYABLE` or `LLP_APPROVED` as betting permission.
+
+V17 code may import a **specific nonterminal validation primitive** from the old module if its controlling V17 contract explicitly requires it (for example, `gate_engine/moneyline/routing_policy.py` uses persisted calibration-ledger read/validation checks). Such import never implicitly imports V16 label authority, universal market-first gating, execution rights, or legacy probability thresholds.
+
+Before changing a route, inspect actual call sites, V17 specialist registry, current Action/receipt schema and relevant regression tests. A legacy Flask/Kalshi endpoint still running in the repository is **not evidence** that its older terminal labels govern V17. Do not remove existing legacy validators or weaken their own fail-closed behavior merely to silence the naming conflict.
+
+## Historical unit-test note (preserved)
+
+Importing `artifacts/flask-scoring-api/app.py` at module scope was reported to hang in an older session because of cron/DB startup side effects. For legacy pure-function tests, consider extracting the actual function source by AST line range with only necessary dependencies, rather than importing the whole server. Live environment behavior must still be checked through authenticated runtime evidence when affected.
+
+## Acceptance
+
+A change affecting this guidance must prove: (1) V16-compatible classification still works in its own route, (2) V17 exact specialist probability and typed failure semantics remain untouched, (3) no legacy `effective_label` can replace V17 terminal output, (4) current protected repository checks and independent App attestations pass, and (5) `can_execute=false`. Merely editing these instructions does not prove a live model/runtime repair.
+
+**Tracking:** GOV-2026-11-04-002 / issue #2440. Documentation-only compatibility clarification, not a production feature activation.

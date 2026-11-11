@@ -114,3 +114,51 @@ def test_market_tie_does_not_invent_a_favorite():
     annotated = _attach_upset_alert(_req(home_market=0.50, away_market=0.50), _result())
     assert annotated["upset_alert_status"] == "UPSET_ALERT_UNAVAILABLE"
     assert annotated["upset_alert"]["reason_codes"] == ["MARKET_FAVORITE_TIE_UNRESOLVED"]
+
+
+def test_unavailable_alert_uses_request_sport_without_model_echo():
+    """No-market paths must not silently label a valid NFL/NHL score as MLB."""
+    for sport in ("NFL", "NHL", "NBA", "WNBA", "NCAAF", "NCAAB", "SOCCER", "TENNIS"):
+        req = _req()
+        req.sport = sport
+        req.market_prior = None
+        result = _result()
+        result.pop("sport")  # The current fitted NFL scorer omits this key.
+        before = deepcopy(result)
+        annotated = _attach_upset_alert(req, result)
+        assert annotated["upset_alert"]["sport"] == sport
+        assert annotated["upset_alert_status"] == "UPSET_ALERT_UNAVAILABLE"
+        assert annotated["upset_alert"]["reason_codes"] == ["MARKET_FAVORITE_CLASSIFICATION_UNVERIFIED"]
+        assert annotated["can_execute"] is False
+        for key in ("calibrated_home_probability", "calibrated_away_probability",
+                    "probability_publishable", "rank_eligible", "terminal_label"):
+            assert annotated[key] == before[key]
+        assert result == before
+
+
+def test_unavailable_alert_does_not_promote_from_response_sport():
+    req = _req()
+    req.sport = "NFL"
+    req.market_prior = None
+    result = _result()
+    result["sport"] = "MLB"  # A mismatched downstream echo has no authority.
+    result["probability_publishable"] = False
+    result["rank_eligible"] = False
+    annotated = _attach_upset_alert(req, result)
+    assert annotated["upset_alert"]["sport"] == "NFL"
+    assert annotated["sport"] == "MLB"  # Do not mutate the original model package.
+    assert annotated["probability_publishable"] is False
+    assert annotated["rank_eligible"] is False
+    assert annotated["can_execute"] is False
+
+
+def test_unavailable_alert_with_missing_sport_does_not_guess_mlb():
+    req = _req()
+    req.sport = None
+    req.market_prior = None
+    result = _result()
+    result.pop("sport")
+    annotated = _attach_upset_alert(req, result)
+    assert annotated["upset_alert"]["sport"] == "UNKNOWN"
+    assert annotated["upset_alert_status"] == "UPSET_ALERT_UNAVAILABLE"
+    assert annotated["can_execute"] is False

@@ -25,6 +25,7 @@ from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_training_materializer import materialize_training_games
 from ncaaf_feature_compiler import materialize_complete_training_features
 from v17.candidate_certification_evidence import install_candidate_certification_evidence_route
+from v17.ncaaf_result_form_replay_audit import install_ncaaf_result_form_replay_route
 from v17.experiments.ncaaf_publication_bound_route import install_ncaaf_publication_bound_challenger_route
 from v17.first_six_open_data_maintenance import install_first_six_open_data_maintenance_routes
 from v17.ncaaf_prop_history_maintenance import install_ncaaf_prop_history_maintenance_route
@@ -290,6 +291,10 @@ def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any,
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     install_candidate_certification_evidence_route(
+        app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
+    )
+    # Diagnostic only: candidate-bound refit replay cannot grant source certification.
+    install_ncaaf_result_form_replay_route(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     install_team_event_certification_replay_route(

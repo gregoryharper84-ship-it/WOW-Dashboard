@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 import threading
 import time
 
@@ -378,3 +379,285 @@ def test_atomic_receipt_migration_preserves_security_and_immutability():
     assert "to service_role" in sql
     assert "from public, anon, authenticated" in sql
     assert "can_execute', false" in sql
+
+
+# Typed receipt written by install_action_invocation_middleware. duration_ms is
+# a timing measurement. It is not a payload field, so a value such as 0.774
+# must not be treated as the sensitive probability 0.77.
+_REDACTED_RECEIPT_FIELDS = {
+    "invocation_id": (str,),
+    "route": (str,),
+    "action_operation_id": (str,),
+    "http_method": (str,),
+    "http_status": (int,),
+    "validation_code": (str, type(None)),
+    "auth_scheme": (str,),
+    "caller_class": (str,),
+    "caller_user_agent": (str, type(None)),
+    "request_id": (str, type(None)),
+    "rows_in": (int, type(None)),
+    "duration_ms": (int, float),
+    "can_execute": (bool,),
+}
+_TIMING_FIELDS = frozenset({"duration_ms"})
+_NUMBER_TOKEN = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)(?!\d)")
+_SENSITIVE_STRINGS = ("PRIVATE_PLAYER", "PRIVATE_CREDENTIAL")
+_SENSITIVE_NUMBER = 0.77
+
+
+def _value_matches(value, expected_types):
+    if isinstance(value, bool):
+        return bool in expected_types
+    return isinstance(value, expected_types)
+
+
+def _string_discloses(text, *, sensitive_strings, sensitive_number):
+    disclosed = [token for token in sensitive_strings if token in text]
+    for match in _NUMBER_TOKEN.finditer(text):
+        try:
+            numeric = float(match.group(1))
+        except ValueError:
+            continue
+        if numeric == sensitive_number:
+            disclosed.append(format(sensitive_number, "g"))
+            break
+    return disclosed
+
+
+def _collect_disclosures(value, path, violations, *, sensitive_strings, sensitive_number):
+    if isinstance(value, str):
+        for token in _string_discloses(
+            value,
+            sensitive_strings=sensitive_strings,
+            sensitive_number=sensitive_number,
+        ):
+            violations.append(f"{path} discloses sensitive value {token!r}")
+        return
+    if isinstance(value, bool):
+        return
+    if isinstance(value, (int, float)) and value == sensitive_number:
+        violations.append(
+            f"{path} discloses sensitive value {format(sensitive_number, 'g')!r}"
+        )
+        return
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _collect_disclosures(
+                child,
+                f"{path}.{key}",
+                violations,
+                sensitive_strings=sensitive_strings,
+                sensitive_number=sensitive_number,
+            )
+        return
+    if isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _collect_disclosures(
+                child,
+                f"{path}[{index}]",
+                violations,
+                sensitive_strings=sensitive_strings,
+                sensitive_number=sensitive_number,
+            )
+
+
+def redaction_violations(
+    receipts,
+    *,
+    sensitive_strings=_SENSITIVE_STRINGS,
+    sensitive_number=_SENSITIVE_NUMBER,
+):
+    """Return structural disclosures of sensitive 422 payload values.
+
+    String secrets match as substrings. The sensitive number matches an exact
+    numeric field or a numeric token, so duration_ms 0.774 does not match 0.77.
+    Timing fields are excluded only when they have the typed timing shape.
+    """
+    violations = []
+    for index, receipt in enumerate(receipts):
+        path = f"receipt[{index}]"
+        if not isinstance(receipt, dict):
+            violations.append(f"{path} is not an object")
+            _collect_disclosures(
+                receipt,
+                path,
+                violations,
+                sensitive_strings=sensitive_strings,
+                sensitive_number=sensitive_number,
+            )
+            continue
+        for key in sorted(set(receipt) - set(_REDACTED_RECEIPT_FIELDS)):
+            violations.append(f"{path}.{key} is outside the redacted receipt schema")
+            _collect_disclosures(
+                receipt[key],
+                f"{path}.{key}",
+                violations,
+                sensitive_strings=sensitive_strings,
+                sensitive_number=sensitive_number,
+            )
+        for key, expected_types in _REDACTED_RECEIPT_FIELDS.items():
+            if key not in receipt:
+                violations.append(f"{path} missing {key}")
+                continue
+            value = receipt[key]
+            field_path = f"{path}.{key}"
+            if not _value_matches(value, expected_types):
+                violations.append(f"{field_path} has type {type(value).__name__}")
+                _collect_disclosures(
+                    value,
+                    field_path,
+                    violations,
+                    sensitive_strings=sensitive_strings,
+                    sensitive_number=sensitive_number,
+                )
+                continue
+            if key in _TIMING_FIELDS:
+                continue
+            _collect_disclosures(
+                value,
+                field_path,
+                violations,
+                sensitive_strings=sensitive_strings,
+                sensitive_number=sensitive_number,
+            )
+    return violations
+
+
+def _redacted_receipt(**overrides):
+    receipt = {
+        "invocation_id": "d66d28e4-3e19-42af-aaf5-57cb9cdf35f1",
+        "route": "/score-prop",
+        "action_operation_id": "scoreWowProp",
+        "http_method": "POST",
+        "http_status": 422,
+        "validation_code": "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND",
+        "auth_scheme": "NONE",
+        "caller_class": "UNKNOWN",
+        "caller_user_agent": None,
+        "request_id": "chat-correlation-1",
+        "rows_in": None,
+        "duration_ms": 0.774,
+        "can_execute": False,
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def test_validation_code_capture_preserves_422_response_and_redacts_details():
+    receipts = []
+    app = FastAPI()
+    install_action_invocation_middleware(app, db_client_fn=lambda: _DB(receipts))
+
+    @app.post("/score-prop")
+    def rejected():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND",
+                "player": "PRIVATE_PLAYER",
+                "probability": 0.77,
+                "can_execute": False,
+            },
+        )
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/score-prop",
+            headers={"X-WOW-Request-ID": "chat-correlation-1"},
+            json={"token": "PRIVATE_CREDENTIAL"},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["player"] == "PRIVATE_PLAYER"
+        deadline = time.monotonic() + 2.0
+        while app.state.wow_action_invocation_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert len(receipts) == 1
+    assert receipts[0]["validation_code"] == "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"
+    assert receipts[0]["request_id"] == "chat-correlation-1"
+    assert receipts[0]["can_execute"] is False
+    assert redaction_violations(
+        receipts,
+        sensitive_strings=_SENSITIVE_STRINGS,
+        sensitive_number=_SENSITIVE_NUMBER,
+    ) == []
+
+
+def test_redaction_check_accepts_duration_ms_0_774_and_rejects_sensitive_0_77():
+    """Substring search of repr false-positives on the CI timing value.
+
+    Run 39181449192 reported ``tion_ms': 0.774, 'can_execute': False``.
+    That timing measurement must pass. An actual 0.77 payload disclosure,
+    and the private player/credential strings, must still fail.
+    """
+    timing = _redacted_receipt(duration_ms=0.774)
+    rendered = repr([timing])
+    assert "duration_ms': 0.774, 'can_execute': False" in rendered
+    assert "0.77" in rendered
+    assert redaction_violations([timing]) == []
+
+    exact_timing = _redacted_receipt(duration_ms=0.77)
+    assert redaction_violations([exact_timing]) == []
+
+    longer_token = _redacted_receipt(request_id="elapsed-0.774")
+    assert redaction_violations([longer_token]) == []
+
+    leaked_probability = _redacted_receipt()
+    leaked_probability["probability"] = 0.77
+    probability_violations = redaction_violations([leaked_probability])
+    assert any(
+        "probability" in item and "0.77" in item for item in probability_violations
+    )
+
+    leaked_request = _redacted_receipt(request_id="0.77")
+    assert any("0.77" in item for item in redaction_violations([leaked_request]))
+
+    leaked_prose = _redacted_receipt(caller_user_agent="probability 0.77")
+    assert any("0.77" in item for item in redaction_violations([leaked_prose]))
+
+    leaked_same_number = _redacted_receipt(request_id="0.770")
+    assert any("0.77" in item for item in redaction_violations([leaked_same_number]))
+
+    leaked_player = _redacted_receipt(caller_user_agent="PRIVATE_PLAYER")
+    assert any("PRIVATE_PLAYER" in item for item in redaction_violations([leaked_player]))
+
+    leaked_credential = _redacted_receipt(request_id="PRIVATE_CREDENTIAL")
+    assert any(
+        "PRIVATE_CREDENTIAL" in item
+        for item in redaction_violations([leaked_credential])
+    )
+
+    nested = _redacted_receipt()
+    nested["detail"] = {"player": "PRIVATE_PLAYER", "probability": 0.77}
+    nested_violations = redaction_violations([nested])
+    assert any("PRIVATE_PLAYER" in item for item in nested_violations)
+    assert any("0.77" in item for item in nested_violations)
+
+    string_timing = _redacted_receipt(duration_ms="0.77")
+    assert any(
+        "duration_ms" in item and "0.77" in item
+        for item in redaction_violations([string_timing])
+    )
+
+
+def test_validation_code_capture_does_not_record_unsafe_or_unstructured_details():
+    from v17.action_invocation_telemetry import _safe_validation_code
+    assert _safe_validation_code(b'{"detail":{"code":"VALID_CODE"}}') == "VALID_CODE"
+    assert _safe_validation_code(b'{"detail":{"code":"a secret"}}') is None
+    assert _safe_validation_code(b'{"detail":[{"loc":["body"],"msg":"secret"}]}') is None
+    assert _safe_validation_code(b'{"detail":{"code":"TOKEN_123\\nSECRET"}}') is None
+    assert _safe_validation_code(b'not json') is None
+    # Pydantic/FastAPI 422 includes field locations and possibly rejected input:
+    # no such values may be copied to the invocation ledger.
+    schema_failure = json.dumps({
+        "detail": [{
+            "type": "missing",
+            "loc": ["body", "PRIVATE_PLAYER"],
+            "msg": "PRIVATE_REASON",
+            "input": "PRIVATE_CREDENTIAL",
+        }]
+    }).encode()
+    assert _safe_validation_code(schema_failure) == "REQUEST_SCHEMA_VALIDATION_FAILED"
+    assert _safe_validation_code(b'{"detail":[{"msg":"no type or loc"}]}') is None
+    assert _safe_validation_code(b'{"detail":[]}') is None
+
