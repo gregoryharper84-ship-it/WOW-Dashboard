@@ -193,7 +193,7 @@ def _run_writer(tmp_path, *, initial_issues=None, source_id="dispatch-1"):
         "  print(issues.read_text())\n"
         "elif args[:2]==['issue','create']:\n"
         "  data=json.loads(issues.read_text())\n"
-        "  data.append({'number':9000,'body':'<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_'+os.environ['SHA']+' -->','author':{'login':'github-actions[bot]'}})\n"
+        "  data.append({'number':9000,'body':'<!-- WOW_SIRT_INTAKE_PR_2547_HEAD_'+os.environ['SHA']+' -->','author':{'login':'app/github-actions'}})\n"
         "  issues.write_text(json.dumps(data))\n"
         "  calls.open('a').write('issue:create\\n')\n"
         "  print('https://github.com/example/repo/issues/9000')\n"
@@ -227,10 +227,10 @@ def test_forged_marker_from_untrusted_creator_cannot_suppress_sirt_intake(tmp_pa
     assert run.returncode == 0, run.stderr
     assert calls == ["issue:create", "pr:comment"]
     assert len(issues) == 2
-    assert issues[-1]["author"]["login"] == "github-actions[bot]"
+    assert issues[-1]["author"]["login"] == "app/github-actions"
 
 
-@pytest.mark.parametrize("creator", ["github-actions[bot]", "gregoryharper84-ship-it"])
+@pytest.mark.parametrize("creator", ["github-actions[bot]", "app/github-actions", "gregoryharper84-ship-it"])
 def test_marker_reuse_requires_authentic_existing_intake_creator(tmp_path, creator):
     trusted = _matching_issue(75, creator)
     run, calls, issues, summary = _run_writer(tmp_path, initial_issues=[trusted])
