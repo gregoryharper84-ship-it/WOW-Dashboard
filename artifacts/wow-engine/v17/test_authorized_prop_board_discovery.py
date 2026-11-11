@@ -1,0 +1,265 @@
+"""Contract tests for optional third-party board discovery (no network or secrets)."""
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import datetime, timezone, timedelta
+import unittest
+
+from v17.authorized_prop_board_discovery import (
+    PropFeedHold, discover_authorized_prop_board, normalize_page, normalize_projection,
+)
+
+NOW = datetime(2026, 11, 6, 19, 0, tzinfo=timezone.utc)
+
+
+def sample(**overrides):
+    row = {
+        "id": "pp_1", "source": "prizepicks", "is_demo": False,
+        "league": "NBA", "player": {"id": "p_1", "name": "Example Player", "team": "BOS"},
+        "event": {"id": "source_game_1", "opponent": "NYK", "starts_at": "2026-11-06T23:00:00Z"},
+        "market": {"stat": "Points", "period": "Full game"},
+        "line": 22.5,
+        "selections": [
+            {"side": "more", "available": True, "tier": "standard"},
+            {"side": "less", "available": True, "tier": "standard"},
+        ],
+        "status": "active", "observed_at": "2026-11-06T18:59:00Z",
+    }
+    row.update(overrides)
+    return row
+
+
+def page(rows, cursor=None, health="fresh"):
+    return {
+        "data": rows,
+        "meta": {
+            "mode": "live", "source_status": health,
+            "next_cursor": cursor,
+        },
+    }
+
+
+class AuthorizedPropBoardDiscoveryTests(unittest.TestCase):
+    def test_exact_more_and_less_are_distinct_research_leads(self):
+        result = normalize_page(page([sample()]), league="NBA", now=NOW)
+        self.assertEqual(result["source_rows"], 1)
+        self.assertEqual([r["direction"] for r in result["directional_candidates"]], ["MORE", "LESS"])
+        for row in result["directional_candidates"]:
+            self.assertEqual(row["exact_display_line"], "22.5")
+            self.assertEqual(row["controlling_route"], "WOW_PROP_LANE")
+            self.assertIsNone(row["official_event_id"])
+            self.assertIsNone(row["model_probability"])
+            self.assertFalse(row["probability_publishable"])
+            self.assertFalse(row["can_execute"])
+
+    def test_demon_more_only_does_not_invent_less_or_payout(self):
+        row = sample(selections=[
+            {"side": "more", "available": True, "tier": "demon"},
+            {"side": "less", "available": False, "tier": "unknown"},
+        ])
+        results = normalize_projection(row, league="NBA", now=NOW)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["offer_type"], "demon")
+        self.assertEqual(results[0]["direction"], "MORE")
+        self.assertFalse(results[0]["pricing_independently_verified"])
+
+    def test_demo_and_started_and_stale_are_blocked(self):
+        for value, code in [
+            ({"is_demo": True}, "PROP_FEED_DEMO_OR_PROVENANCE_UNVERIFIED"),
+            ({"event": {"starts_at": "2026-11-06T18:00:00Z"}}, "EVENT_ALREADY_STARTED"),
+            ({"observed_at": "2026-11-06T18:00:00Z"}, "PROP_FEED_ROW_STALE"),
+            ({"line": "NaN"}, "PROP_FEED_EXACT_LINE_INVALID"),
+            ({"selections": []}, "PROP_FEED_NO_AVAILABLE_DIRECTIONS"),
+        ]:
+            with self.subTest(value=value), self.assertRaises(PropFeedHold) as cm:
+                normalize_projection(sample(**value), league="NBA", now=NOW)
+            self.assertEqual(cm.exception.code, code)
+
+    def test_source_provenance_conflict_is_typed_not_silent(self):
+        receipt = normalize_page(
+            page([sample(source="unknown-source")]), league="NBA", now=NOW
+        )
+        self.assertEqual(receipt["directional_candidates"], [])
+        self.assertEqual(receipt["blocked_source_rows"][0]["typed_blocker"],
+                         "PROP_FEED_SOURCE_PROVENANCE_CONFLICT")
+
+    def test_zero_provider_rows_is_not_mistaken_for_an_empty_slate(self):
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=lambda **kw: page([]),
+        )
+        self.assertEqual(receipt["source_rows_received"], 0)
+        self.assertFalse(receipt["source_coverage_complete_for_requested_sport"])
+        self.assertFalse(receipt["zero_provider_rows_proves_no_pregame_slate"])
+        self.assertFalse(receipt["full_prizepicks_board_coverage_verified"])
+        self.assertEqual(receipt["blockers"], ["PROP_FEED_ZERO_ROWS_NOT_NO_SLATE_PROOF"])
+
+    def test_unhealthy_page_not_trusted(self):
+        with self.assertRaises(PropFeedHold) as cm:
+            normalize_page(page([sample()], health="stale"), league="NBA", now=NOW)
+        self.assertEqual(cm.exception.code, "PROP_FEED_SOURCE_STALE_OR_UNHEALTHY")
+
+    def test_requires_operator_authorization_and_key(self):
+        with self.assertRaises(PropFeedHold) as cm:
+            discover_authorized_prop_board(sport="NBA", authorized=False, api_key="test", now=NOW)
+        self.assertEqual(cm.exception.code, "PROP_FEED_ACCOUNT_USE_NOT_AUTHORIZED")
+        with self.assertRaises(PropFeedHold) as cm:
+            discover_authorized_prop_board(sport="NBA", authorized=True, api_key="", now=NOW)
+        self.assertEqual(cm.exception.code, "PROP_FEED_CREDENTIAL_MISSING")
+
+    def test_vendor_undocumented_sports_do_not_claim_live_feed_coverage(self):
+        for sport in ("MLB", "NCAAB"):
+            with self.subTest(sport=sport), self.assertRaises(PropFeedHold) as cm:
+                discover_authorized_prop_board(
+                    sport=sport, authorized=True, api_key="test", now=NOW,
+                )
+            self.assertEqual(cm.exception.code, "PROP_FEED_SPORT_NOT_SUPPORTED")
+
+    def test_complete_pagination_with_exact_once_reconciliation(self):
+        calls = []
+        def fetch(*, key, league, cursor):
+            calls.append((league, cursor))
+            if cursor is None:
+                return page([sample()], cursor="next")
+            return page([sample(id="pp_2", line=23.5, selections=[
+                {"side": "more", "available": True, "tier": "goblin"}
+            ])])
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="secret",
+            fetch_page=fetch, now=NOW, max_pages=2, max_credits=12,
+        )
+        self.assertEqual(calls, [("NBA", None), ("NBA", "next")])
+        self.assertEqual(receipt["source_rows_received"], 2)
+        self.assertEqual(receipt["per_run_requested_credit_reservation"], 12)
+        self.assertEqual(receipt["unique_base_props"], 2)
+        self.assertEqual(receipt["directional_candidates_count"], 3)
+        self.assertTrue(receipt["source_coverage_complete_for_requested_sport"])
+        self.assertEqual(receipt["automated_score_attempts"], 0)
+
+    def test_page_budget_exhaustion_is_not_complete(self):
+        def fetch(*, key, league, cursor):
+            return page([sample()], cursor="next")
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="secret",
+            fetch_page=fetch, now=NOW, max_pages=1,
+        )
+        self.assertEqual(receipt["blockers"], ["PROP_FEED_PAGE_BUDGET_EXHAUSTED"])
+        self.assertFalse(receipt["source_coverage_complete_for_requested_sport"])
+
+    def test_blocked_rows_accounted_without_dropping_other_sides(self):
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="secret",
+            fetch_page=lambda **kwargs: page([
+                sample(), sample(id="pp_2", is_demo=True)
+            ]), now=NOW,
+        )
+        self.assertEqual(receipt["source_rows_received"], 2)
+        self.assertEqual(receipt["unique_base_props"], 1)
+        self.assertEqual(receipt["source_rows_blocked"], 1)
+        self.assertEqual(receipt["directional_candidates_count"], 2)
+        self.assertTrue(receipt["source_coverage_complete_for_requested_sport"])
+
+    def test_no_provenance_promotion_from_cross_sport_alias(self):
+        row = sample(league="CFB")
+        receipt = discover_authorized_prop_board(
+            sport="NCAAF", authorized=True, api_key="secret",
+            fetch_page=lambda **kwargs: page([row]), now=NOW,
+        )
+        self.assertEqual(receipt["directional_candidates"][0]["sport"], "NCAAF")
+        self.assertIsNone(receipt["directional_candidates"][0]["official_player_id"])
+        self.assertFalse(receipt["source_license_independently_verified"])
+
+    def test_budget_fails_closed_before_second_paid_page(self):
+        calls = []
+        def fetch(*, key, league, cursor):
+            calls.append(cursor)
+            return page([sample()], cursor="next")
+        receipt = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="secret",
+            fetch_page=fetch, now=NOW, max_pages=4, max_credits=6,
+        )
+        self.assertEqual(calls, [None])
+        self.assertEqual(receipt["blockers"], ["PROP_FEED_CREDIT_BUDGET_EXHAUSTED"])
+        self.assertFalse(receipt["source_coverage_complete_for_requested_sport"])
+        self.assertEqual(receipt["monthly_provider_credits_remaining"], None)
+
+    def test_invalid_direction_cannot_default_to_more(self):
+        row = sample(selections=[{"side": "over", "available": True, "tier": "standard"}])
+        p = normalize_page(page([row]), league="NBA", now=NOW)
+        self.assertEqual(p["directional_candidates"], [])
+        self.assertEqual(p["blocked_source_rows"][0]["typed_blocker"], "PROP_FEED_DIRECTION_UNRESOLVED")
+
+
+    def test_readonly_route_idempotent_and_blocked_without_authorization(self):
+        from unittest.mock import patch
+        from fastapi import Depends, FastAPI
+        from v17.authorized_prop_board_route import install_authorized_prop_board_route
+
+        app = FastAPI()
+        dependency = Depends(lambda: None)
+        install_authorized_prop_board_route(app, auth_dependency=dependency)
+        install_authorized_prop_board_route(app, auth_dependency=dependency)
+        matches = [route for route in app.router.routes
+                   if getattr(route, "path", "") == "/v17/prop-board/authorized-discovery"]
+        self.assertEqual(len(matches), 1)
+        with patch.dict("os.environ", {"WOW_V17_PROP_FEED_ACCOUNT_USE_AUTHORIZED": "0"}):
+            blocked = matches[0].endpoint(sport="NBA", max_pages=1, max_credits=6)
+        self.assertEqual(blocked["typed_blocker"], "PROP_FEED_ACCOUNT_USE_NOT_AUTHORIZED")
+        self.assertFalse(blocked["probability_publishable"])
+        self.assertFalse(blocked["can_execute"])
+
+
+    def test_failed_request_reserves_the_attempt_and_never_reports_a_clean_scan(self):
+        def fail(**kwargs):
+            raise RuntimeError("upstream refused a request")
+        result = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=fail, max_pages=4, max_credits=6,
+        )
+        self.assertEqual(result["source_pages_attempted"], 1)
+        self.assertEqual(result["source_pages_read"], 0)
+        self.assertEqual(result["per_run_requested_credit_reservation"], 6)
+        self.assertEqual(result["blockers"], ["PROP_FEED_PROVIDER_CALL_FAILED"])
+        self.assertFalse(result["source_coverage_complete_for_requested_sport"])
+
+    def test_normalization_failure_reserves_the_sent_page(self):
+        result = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=lambda **kwargs: page([sample()], health="stale"),
+        )
+        self.assertEqual(result["source_pages_attempted"], 1)
+        self.assertEqual(result["source_pages_read"], 0)
+        self.assertEqual(result["per_run_requested_credit_reservation"], 6)
+        self.assertEqual(result["blockers"], ["PROP_FEED_SOURCE_STALE_OR_UNHEALTHY"])
+
+    def test_whitespace_variant_projection_id_is_duplicate_across_pages(self):
+        calls = []
+        def fetch(*, key, league, cursor):
+            calls.append(cursor)
+            return page([sample(id=" pp_1 ")]) if cursor else page([sample()], cursor="next")
+        result = discover_authorized_prop_board(
+            sport="NBA", authorized=True, api_key="test", now=NOW,
+            fetch_page=fetch, max_pages=2, max_credits=12,
+        )
+        self.assertEqual(calls, [None, "next"])
+        self.assertIn("PROP_FEED_PAGINATION_DUPLICATE", result["blockers"])
+        self.assertFalse(result["source_coverage_complete_for_requested_sport"])
+        self.assertEqual(result["source_pages_attempted"], 2)
+        self.assertEqual(result["per_run_requested_credit_reservation"], 12)
+
+    def test_unhashable_projection_id_is_a_typed_partial_receipt(self):
+        for bad in (["pp_1"], {"key": "pp_1"}):
+            with self.subTest(bad=bad):
+                result = discover_authorized_prop_board(
+                    sport="NBA", authorized=True, api_key="test", now=NOW,
+                    fetch_page=lambda **kwargs: page([sample(), sample(id=bad)]),
+                )
+                self.assertEqual(result["source_rows_received"], 2)
+                self.assertEqual(result["source_rows_blocked"], 1)
+                self.assertIn("PROP_FEED_ROW_SCHEMA_INVALID", result["blockers"])
+                self.assertFalse(result["source_coverage_complete_for_requested_sport"])
+                self.assertEqual(result["directional_candidates_count"], 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
