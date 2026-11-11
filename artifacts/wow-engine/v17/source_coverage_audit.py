@@ -154,7 +154,13 @@ def build_source_matrix(
     lic = {k: v for k, v in dict(license_receipts or {}).items() if isinstance(v, str) and v.strip()}
     findings = dict(rights_receipts or {})
     for _sid, _items in findings.items():
-        if not isinstance(_items, list) or not all(isinstance(f, dict) for f in _items):
+        # Loader output is keyed by each embedded source_id. Direct callers
+        # must satisfy the same boundary: no receipt may be relabeled under
+        # another source's key to alter its license or rights blockers.
+        if (not isinstance(_sid, str) or not _sid.strip()
+                or not isinstance(_items, list)
+                or not all(isinstance(f, dict) and f.get("source_id") == _sid
+                           for f in _items)):
             raise ValueError("SOURCE_RIGHTS_RECEIPT_MAPPING_INVALID")
     rows: list[dict] = []
     catalog_by_reg = {s.registry_source_id: s for s in CATALOG if s.registry_source_id}
