@@ -462,7 +462,8 @@ def test_startup_ddl_failure_stays_failed_and_never_claims_commit(monkeypatch):
 
 
 
-def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch):
+@pytest.mark.parametrize("ipv4_only", [False, True])
+def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch, ipv4_only):
     """Resolve and connect through a real local PostgreSQL multi-host DSN in CI."""
     if os.environ.get("WOW_CI") != "1":
         pytest.skip("real multi-host DNS/DB test is CI-local only")
@@ -473,6 +474,16 @@ def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch):
         import psycopg2
     except ImportError:
         pytest.fail("psycopg2 is required for the CI PostgreSQL DNS test")
+    if ipv4_only:
+        # Exercise the single-address case where host/port overrides are absent.
+        import socket
+
+        getaddrinfo = socket.getaddrinfo
+
+        def resolve_ipv4(host, port, **kwargs):
+            return getaddrinfo(host, port, family=socket.AF_INET, **kwargs)
+
+        monkeypatch.setattr(pg_session_ledger.socket, "getaddrinfo", resolve_ipv4)
     parsed = psycopg2.extensions.parse_dsn(url)
     local_host = parsed.get("host")
     if local_host not in ("localhost", "127.0.0.1"):
@@ -489,14 +500,16 @@ def test_actual_ci_postgres_multi_host_dns_failover_connects(monkeypatch):
     )
     overrides = pg_session_ledger._resolve_hostaddr(failover_dsn, psycopg2)
     assert overrides is not None
-    resolved_hosts = overrides["host"].split(",")
+    failover_parsed = psycopg2.extensions.parse_dsn(failover_dsn)
+    resolved_hosts = overrides.get("host", failover_parsed["host"]).split(",")
     resolved_addrs = overrides["hostaddr"].split(",")
-    resolved_ports = overrides["port"].split(",")
+    resolved_ports = overrides.get("port", failover_parsed["port"]).split(",")
     assert resolved_hosts[0] == "127.0.0.2"
     assert resolved_hosts[1:] == ["localhost"] * (len(resolved_hosts) - 1)
     assert resolved_addrs[0] == "127.0.0.2"
     assert "127.0.0.1" in resolved_addrs
     assert len(resolved_hosts) == len(resolved_addrs) == len(resolved_ports)
+    assert all(value == port for value in resolved_ports)
     with psycopg2.connect(failover_dsn, connect_timeout=2, **overrides) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
