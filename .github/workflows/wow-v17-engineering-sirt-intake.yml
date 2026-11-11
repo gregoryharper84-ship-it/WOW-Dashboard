@@ -80,7 +80,7 @@ jobs:
             pr=$(jq -r '.[0].number' <<<"$prs")
             sha=$(jq -r '.[0].headRefOid' <<<"$prs")
             body=$(jq -r '.[0].body // ""' <<<"$prs")
-            if ! grep -Eq '^Pre-PR agent gates: .?PASS.?\\s*$' <<<"$body"; then
+            if ! grep -Eq '^Pre-PR agent gates: .?PASS.?\s*$' <<<"$body"; then
               echo "::error::SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS for PR $pr"; exit 1
             fi
           elif [ "$SOURCE_EVENT" = "workflow_dispatch" ] || [ "$SOURCE_EVENT" = "pull_request_target" ]; then
@@ -117,7 +117,7 @@ jobs:
           [ "$incident_count" -eq 1 ] || {
             echo "::error::SIRT_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1
           }
-          incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\\1/p' <<<"$body")
+          incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\1/p' <<<"$body")
           [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::INCIDENT_ID_MISSING"; exit 1; }
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
