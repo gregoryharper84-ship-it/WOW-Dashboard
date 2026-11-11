@@ -7,7 +7,7 @@ creates a winner, changes a governed model/terminal, or confers certification.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from v17.llp_matchup_media_script_audit import audit_script_robustness_and_media
@@ -134,11 +134,21 @@ def audit_research_winner_card(
                 publishers.add(publisher)
         if len(publishers) < 2:
             warnings.append("TWO_INDEPENDENT_NONMARKET_SOURCES_NOT_MET")
+        if publishers:
+            # This helper checks caller-supplied structure and time, not the
+            # publisher's site or an independent source-receipt ledger.
+            warnings.append("NONMARKET_PUBLISHER_PROVENANCE_NOT_INDEPENDENTLY_VERIFIED")
         market = admissible.get("market_context")
         if market is not None:
-            if not isinstance(market, Mapping) or _utc(market.get("as_of_utc")) is None or when is None or _utc(market.get("as_of_utc")) > when:
+            market_as_of = _utc(market.get("as_of_utc")) if isinstance(market, Mapping) else None
+            favorite = _text(market.get("favorite")).casefold() if isinstance(market, Mapping) else ""
+            if market_as_of is None or when is None or market_as_of > when:
                 warnings.append("MARKET_CONTEXT_UNVERIFIED_OR_FUTURE")
-            elif _text(market.get("favorite")).casefold() not in {"", side.casefold()} and admissible.get("market_disagreement_reviewed") is not True:
+            elif when - market_as_of > timedelta(minutes=60):
+                warnings.append("MARKET_CONTEXT_STALE_FOR_RECONCILIATION")
+            elif favorite and favorite not in {home.casefold(), away.casefold()}:
+                warnings.append("MARKET_FAVORITE_OUTSIDE_MATCHUP")
+            elif favorite and favorite != side.casefold() and admissible.get("market_disagreement_reviewed") is not True:
                 warnings.append("MARKET_CONFLICT_NOT_RECONCILED")
         # Research game scripts are narrative scenarios, not fitted distributions.
         # Never accept post-selection scripts as original pregame evidence.
@@ -194,11 +204,14 @@ def audit_research_winner_card(
             "away_team": away,
             "selected_side": side if not issues else None,
             "selection_class": "RESEARCH_PROVISIONAL" if not issues else "RESEARCH_INVALID",
-            "model_status": _text(admissible.get("model_status")) or "UNKNOWN",
+            "model_status": "UNVERIFIED_CALLER_DECLARATION" if not issues else "UNKNOWN",
+            "model_status_declared": _text(admissible.get("model_status")) or "UNKNOWN",
+            "model_status_provenance": "CALLER_DECLARED_UNVERIFIED",
             "research_confidence": _text(admissible.get("research_confidence")) or "UNSPECIFIED",
             "selection_blockers": list(dict.fromkeys(issues)),
             "evidence_warnings": list(dict.fromkeys(warnings)),
-            "source_publishers_verified": len(publishers),
+            "source_publishers_verified": 0,
+            "source_publishers_declared": len(publishers),
             "game_script_verified_pregame": script_verified,
             "game_script_primary_win_path": script_primary,
             "game_script_opponent_win_path": script_adverse,
