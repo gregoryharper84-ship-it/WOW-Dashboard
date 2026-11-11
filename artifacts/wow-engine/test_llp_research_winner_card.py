@@ -19,6 +19,7 @@ def pick(sport='NFL', identity='game-1', **changes):
         'NHL':('starting_goalie','key_injuries','rest_travel','special_teams','ot_shootout'),
     }
     value = {'sport':sport,'official_event_id':identity,'selected_side':'Away',
+             'home_team':'Home','away_team':'Away','event_start_time_utc':START,
              'selected_at_utc':ASOF,'reasoning':'Balanced pregame matchup research',
              'pregame_checks':{c:'KNOWN' for c in checks[sport]},
              'research_confidence':'MEDIUM',
@@ -444,3 +445,23 @@ def test_caller_claimed_certified_status_never_becomes_verified_model_status():
     assert row["model_status_provenance"] == "CALLER_DECLARED_UNVERIFIED"
     assert row["governed_probability"] is None
     assert row["governed_lower_bound"] is None
+
+
+def test_frozen_selection_identity_must_match_official_manifest_before_admission():
+    for mutation in (
+        {"home_team": "WrongHome"},
+        {"away_team": "WrongAway"},
+        {"event_start_time_utc": "2026-11-10T20:00:00Z"},
+        {"event_start_time_utc": None},
+    ):
+        p = pick("NBA")
+        p.update(mutation)
+        row = audit([event("NBA")], [p])["rows"][0]
+        assert "RESEARCH_SELECTION_EVENT_IDENTITY_CONFLICT" in row["selection_blockers"]
+        assert row["selected_side"] is None
+        assert row["selection_class"] == "RESEARCH_INVALID"
+        assert row["media_headlines"] == []
+        assert row["source_publishers_verified"] == 0
+        assert row["source_publishers_declared"] == 0
+        assert row["game_script_verified_pregame"] is False
+        assert row["governed_probability"] is None
