@@ -122,7 +122,11 @@ def classify_missing_pbp_presence(
     ].copy()
     snap["season"] = pd.to_numeric(snap["season"]).astype(int)
     snap["week"] = pd.to_numeric(snap["week"]).astype(int)
-    cross = players.loc[:, ["pfr_id", "gsis_id"]].dropna().drop_duplicates()
+    cross = players.loc[:, ["pfr_id", "gsis_id"]].dropna().copy()
+    for field in ("pfr_id", "gsis_id"):
+        cross[field] = cross[field].astype(str).str.strip()
+    cross = cross[(cross["pfr_id"] != "") & (cross["gsis_id"] != "")].drop_duplicates()
+    snap["pfr_player_id"] = snap["pfr_player_id"].astype(str).str.strip()
     cross = cross.loc[cross["pfr_id"].isin(snap["pfr_player_id"])]
     known = snap.merge(
         cross, how="left", left_on="pfr_player_id", right_on="pfr_id",
