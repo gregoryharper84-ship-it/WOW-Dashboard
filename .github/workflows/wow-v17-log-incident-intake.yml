@@ -201,7 +201,7 @@ jobs:
                       if not begin <= first <= last <= end:
                           raise ValueError("candidate chronology invalid")
                       shas = finding.get("release_shas")
-                      if (not isinstance(shas, list) or len(shas) > 1000
+                      if (not isinstance(shas, list) or len(shas) > 50
                               or any(not isinstance(v, str) or not re.fullmatch(r"[a-f0-9]{40}", v) for v in shas)
                               or shas != sorted(set(shas))):
                           raise ValueError("candidate SHAs invalid")

@@ -98,6 +98,16 @@ def test_datadog_receipt_gate_executes_against_valid_and_adversarial_cases(tmp_p
     cases = [
         ("clean", 0, success, True),
         ("candidates", 0, candidates, True),
+        ("sha_limit_50_allowed", 0, {
+            **candidates, "events_inspected": 50,
+            "findings": [{**finding, "count": 50,
+                "release_shas": [f"{i:040x}" for i in range(50)]}],
+        }, True),
+        ("sha_limit_51_rejected", 0, {
+            **candidates, "events_inspected": 51,
+            "findings": [{**finding, "count": 51,
+                "release_shas": [f"{i:040x}" for i in range(51)]}],
+        }, False),
         ("typed_outage", 2, held, True),
         ("missing_receipt", 2, None, False),
         ("malformed_json", 2, "{", False),
