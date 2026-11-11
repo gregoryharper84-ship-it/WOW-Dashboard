@@ -126,6 +126,37 @@ def test_scope_binds_the_served_model_not_a_sport_default():
     assert scope.prediction_timestamp == PREDICTION_AT
 
 
+@pytest.mark.parametrize("sport", ("NBA", "WNBA", "NHL", "NCAAF", "NCAAB", "SOCCER"))
+def test_cross_sport_scope_never_borrows_nfl_feature_schema(sport):
+    """Missing sport-specific schema is a typed hold, not NFL evidence."""
+    served = _served_result(
+        model_family=f"{sport}_FITTED_TEST_V1",
+        model_artifact_version=f"{sport}_FITTED_TEST_V1_20261111",
+        feature_schema_version=None,
+    )
+    scope, missing = build_evidence_scope(served, _req(sport=sport, league=sport), sport=sport)
+    assert scope is None
+    assert "feature_schema_version" in missing
+
+    report = evaluate_served_model_evidence(
+        served, _req(sport=sport, league=sport), sport=sport, db=_EmptyDb(),
+        assessor=_complete_assessor,
+    )
+    assert report["status"] == IDENTITY_UNRESOLVED
+    assert report["bundle_complete"] is False
+    assert "MODEL_EVIDENCE_TRIAD_IDENTITY_UNRESOLVED:feature_schema_version" in report["blockers"]
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+    served["feature_schema_version"] = f"{sport}_FEATURE_SCHEMA_V1"
+    resolved, missing = build_evidence_scope(
+        served, _req(sport=sport, league=sport), sport=sport,
+    )
+    assert missing == ()
+    assert resolved is not None
+    assert resolved.feature_schema_version == f"{sport}_FEATURE_SCHEMA_V1"
+
+
 def test_unresolved_identity_names_the_missing_fields_and_withholds():
     # MLB declares a repository artifact version, so an omitted one is a real
     # contract fallback. NFL declares no version: the served result must name it.
