@@ -83,9 +83,12 @@ jobs:
           # Preserve the source CLI's typed exit 2 as a non-actionable provider
           # HOLD, not a failing protected-main code-validation check. Unexpected
           # exits and missing/malformed receipts remain hard failures.
+          # GitHub Actions starts bash with -e. Capture the expected typed
+          # source exit inside a conditional list; never disable fail-fast
+          # globally or let an unexpected result bypass receipt validation.
+          intake_exit=0
           python artifacts/wow-engine/v17/log_incident_intake.py \
-            --hours 2 --out "$RUNNER_TEMP/wow-v17-log-intake.json"
-          intake_exit=$?
+            --hours 2 --out "$RUNNER_TEMP/wow-v17-log-intake.json" || intake_exit=$?
           python - "$RUNNER_TEMP/wow-v17-log-intake.json" "$intake_exit" "$RUNNER_TEMP/wow-v17-log-intake-validated.json" <<'PY'
           import hashlib
           import json
