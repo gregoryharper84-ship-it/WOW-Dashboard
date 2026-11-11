@@ -260,3 +260,126 @@ def test_shadow_runtime_error_remains_held_without_changing_original_fit(monkeyp
         assert metrics["research_screen_pass"] == row["research_screen_pass"]
         assert row["active"] is False and row["promoted"] is False
         assert row["can_execute"] is False
+
+
+def test_saved_artifact_family_must_match_replayed_tour():
+    rows = _rows()
+    candidate = _candidate(rows)
+    artifact = dict(candidate.artifact_payload)
+    artifact["model_family"] = "NFL_DYNAMIC_TEAM_STATE_LOGIT_V2"
+    with pytest.raises(TennisCalibrationShadowError, match="TENNIS_ARTIFACT_MODEL_FAMILY_MISMATCH"):
+        replay_tennis_calibration_shadow(rows, replace(candidate, artifact_payload=artifact))
+
+
+def test_saved_artifact_format_must_be_supported():
+    rows = _rows()
+    candidate = _candidate(rows)
+    artifact = dict(candidate.artifact_payload)
+    artifact["artifact_format"] = "UNKNOWN_LOGISTIC_FORMAT"
+    with pytest.raises(TennisCalibrationShadowError, match="TENNIS_ARTIFACT_FORMAT_UNSUPPORTED"):
+        replay_tennis_calibration_shadow(rows, replace(candidate, artifact_payload=artifact))
+
+
+def test_saved_artifact_split_policy_must_match_frozen_partitions():
+    rows = _rows()
+    candidate = _candidate(rows)
+    artifact = dict(candidate.artifact_payload)
+    artifact["split_policy"] = "SHUFFLED_SPLIT"
+    with pytest.raises(TennisCalibrationShadowError, match="TENNIS_ARTIFACT_SPLIT_POLICY_INVALID"):
+        replay_tennis_calibration_shadow(rows, replace(candidate, artifact_payload=artifact))
+
+
+def test_extreme_raw_probabilities_follow_predict_proba_without_early_clipping():
+    """Logit -40 must survive raw replay for sklearn-equivalent identity."""
+    artifact = {
+        "feature_names": ["delta"],
+        "scaler_mean": [0.0],
+        "scaler_scale": [1.0],
+        "coefficients": [1.0],
+        "intercept": 0.0,
+    }
+    features = np.asarray([[-40.0], [0.0], [40.0]])
+    probabilities = shadow_module._raw_predictions(features, artifact, ("delta",))
+    assert probabilities[0] == pytest.approx(expit(-40.0), rel=1e-12)
+    assert probabilities[0] < 1e-12
+    assert probabilities[1] == pytest.approx(0.5)
+    assert probabilities[2] == pytest.approx(expit(40.0), rel=1e-12)
+
+
+def _configure_maintenance(monkeypatch):
+    tennis = tennis_module
+    monkeypatch.setattr(tennis, "FEATURE_NAMES", NAMES)
+    monkeypatch.setattr(tennis, "fetch_matches", lambda: ([], []))
+    monkeypatch.setattr(tennis, "build_training_rows",
+                        lambda matches, *, tour: (_rows(1300, tour), []))
+    monkeypatch.setattr(tennis, "_persist_rows", lambda *args, **kwargs: None)
+
+
+def test_idempotent_retry_returns_only_stored_original_research_evidence(monkeypatch):
+    _configure_maintenance(monkeypatch)
+    db = FakeDb()
+    first = tennis_module.train_all(db, training_code_sha="c" * 40)
+    second = tennis_module.train_all(db, training_code_sha="c" * 40)
+    assert first["ok"] is True and second["ok"] is True
+    assert first["rows"] == second["rows"]
+    assert len(db.records) == 2
+    assert len(db.saved) == 2
+
+
+def test_evaluated_to_held_retry_is_rejected_without_replacing_frozen_evidence(monkeypatch):
+    _configure_maintenance(monkeypatch)
+    db = FakeDb()
+    first = tennis_module.train_all(db, training_code_sha="d" * 40)
+    assert first["rows"][0]["metrics"]["calibration_shadow_status"] == "EVALUATED_RESEARCH_ONLY"
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("shadow failed on retry")
+
+    monkeypatch.setattr(shadow_module, "replay_tennis_calibration_shadow", broken)
+    with pytest.raises(tennis_module.TennisCandidateUnavailable, match="shadow evidence") as caught:
+        tennis_module.train_all(db, training_code_sha="d" * 40)
+    assert caught.value.code == "TENNIS_SHADOW_RETRY_EVIDENCE_CONFLICT"
+    assert len(db.records) == 2
+    assert all(row["validation_metrics"]["calibration_shadow_status"] == "EVALUATED_RESEARCH_ONLY"
+               for row in db.records.values())
+
+
+def test_held_to_evaluated_retry_is_rejected_without_false_pass(monkeypatch):
+    _configure_maintenance(monkeypatch)
+    db = FakeDb()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("shadow disabled")
+
+    original = shadow_module.replay_tennis_calibration_shadow
+    monkeypatch.setattr(shadow_module, "replay_tennis_calibration_shadow", broken)
+    first = tennis_module.train_all(db, training_code_sha="e" * 40)
+    assert first["rows"][0]["metrics"]["calibration_shadow_status"] == "HELD"
+    monkeypatch.setattr(shadow_module, "replay_tennis_calibration_shadow", original)
+    with pytest.raises(tennis_module.TennisCandidateUnavailable) as caught:
+        tennis_module.train_all(db, training_code_sha="e" * 40)
+    assert caught.value.code == "TENNIS_SHADOW_RETRY_EVIDENCE_CONFLICT"
+    assert len(db.records) == 2
+    assert all(row["validation_metrics"]["calibration_shadow_status"] == "HELD"
+               for row in db.records.values())
+
+
+def test_tampered_frozen_candidate_identity_rejected_on_readback(monkeypatch):
+    _configure_maintenance(monkeypatch)
+    db = FakeDb()
+    tennis_module.train_all(db, training_code_sha="f" * 40)
+    first = next(iter(db.records.values()))
+    first["artifact_checksum"] = "0" * 64
+    with pytest.raises(tennis_module.TennisCandidateUnavailable) as caught:
+        tennis_module.train_all(db, training_code_sha="f" * 40)
+    assert caught.value.code == "TENNIS_CANDIDATE_FROZEN_VERSION_CONFLICT"
+    assert len(db.records) == 2
+
+
+def test_absent_database_readback_is_a_typed_hold_not_success(monkeypatch):
+    _configure_maintenance(monkeypatch)
+    db = FakeDb()
+    db.force_readback = []
+    with pytest.raises(tennis_module.TennisCandidateUnavailable) as caught:
+        tennis_module.train_all(db, training_code_sha="1" * 40)
+    assert caught.value.code == "TENNIS_CANDIDATE_READBACK_UNVERIFIED"
