@@ -387,3 +387,21 @@ def test_missing_or_wrong_event_identity_never_exposes_research_evidence():
     assert row['media_headlines'] == []
     assert row['source_publishers_verified'] == 0
     assert row['selected_side'] is None
+
+def test_duplicate_official_event_identity_cannot_expose_media_or_scripts():
+    original = event("NBA", "identity-collision")
+    collision = dict(original, away_team="DifferentAway")
+    p = pick("NBA", "identity-collision", selected_side="Home")
+    r = audit([original, collision], [p])
+    assert r["board_complete"] is False
+    assert "DUPLICATE_OFFICIAL_EVENT" in r["board_blockers"]
+    assert len(r["rows"]) == 2
+    for row in r["rows"]:
+        assert "OFFICIAL_EVENT_IDENTITY_CONFLICT" in row["selection_blockers"]
+        assert row["selection_class"] == "RESEARCH_INVALID"
+        assert row["selected_side"] is None
+        assert row["source_publishers_verified"] == 0
+        assert row["media_headlines"] == []
+        assert row["media_storylines"] == []
+        assert row["game_script_verified_pregame"] is False
+        assert row["governed_probability"] is None
