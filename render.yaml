@@ -157,7 +157,8 @@ services:
     region: oregon
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
-    startCommand: celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    # Keep the engine root importable for dependencies loaded inside tasks.
+    startCommand: python -m celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
     autoDeployTrigger: "checksPass"
     maxShutdownDelaySeconds: 120
     envVars:

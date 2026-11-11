@@ -177,7 +177,8 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
 
     event_name = str(claims.get("event_name") or "")
     if post_deploy_reusable_call:
-        if event_name != "workflow_run":
+        # Manual acceptance uses the same exact caller/callee identity policy.
+        if event_name not in {"workflow_run", "workflow_dispatch"}:
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif workflow_ref in {
         SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
