@@ -187,7 +187,11 @@ def audit_ranked_winner_retro(
             or not _text(cohort_row.get("pregame_receipt_id"))
             or _text(cohort_row.get("pregame_receipt_id")) != _text(p.get("pregame_receipt_id"))
             or _utc(cohort_row.get("frozen_at_utc")) is None
-            or _utc(cohort_row.get("frozen_at_utc")) != frozen):
+            or _utc(cohort_row.get("frozen_at_utc")) != frozen
+            or _text(cohort_row.get("settlement_basis")) != _text(p.get("settlement_basis"))
+            or not _text(cohort_row.get("settlement_basis"))
+            or _utc(cohort_row.get("available_to_user_at_utc")) is None
+            or _utc(cohort_row.get("available_to_user_at_utc")) != visible):
             errors.append("RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED")
         if final is None or final_counts[(sport, event_id)] != 1:
             errors.append("OFFICIAL_FINAL_MISSING_OR_DUPLICATE")
