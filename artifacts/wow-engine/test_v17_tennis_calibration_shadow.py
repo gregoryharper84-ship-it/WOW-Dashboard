@@ -7,6 +7,68 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from v17.binary_candidate_lifecycle import BinaryTrainingRow, train_binary_candidate
+from copy import deepcopy
+from types import SimpleNamespace
+
+import numpy as np
+from scipy.special import expit
+
+from v17 import tennis_calibration_shadow as shadow_module
+from v17 import tennis_valuebet_candidate as tennis_module
+
+
+class FakeDb:
+    """Mimic PostgREST ignore_duplicates and separate readback requests."""
+
+    def __init__(self):
+        self.saved = []
+        self.rows = self.saved
+        self.records = {}
+        self.force_readback = None
+
+    def table(self, name):
+        return FakeQuery(self, name)
+
+
+class FakeQuery:
+    def __init__(self, db, name):
+        self.db, self.name = db, name
+        self.write = None
+        self.filter = None
+        self.max_rows = None
+
+    def upsert(self, payload, **kwargs):
+        self.write = deepcopy(payload)
+        return self
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def eq(self, name, value):
+        self.filter = (name, value)
+        return self
+
+    def limit(self, n):
+        self.max_rows = n
+        return self
+
+    def execute(self):
+        if self.write is not None:
+            if self.name == "wow_d1_candidate_artifacts":
+                key = self.write["model_artifact_version"]
+                if key not in self.db.records:
+                    self.db.records[key] = deepcopy(self.write)
+                    self.db.saved.append((self.name, deepcopy(self.write)))
+            return SimpleNamespace(data=[])
+        if self.db.force_readback is not None:
+            return SimpleNamespace(data=deepcopy(self.db.force_readback))
+        records = list(self.db.records.values())
+        if self.filter:
+            name, value = self.filter
+            records = [r for r in records if r.get(name) == value]
+        return SimpleNamespace(data=deepcopy(records[:self.max_rows]))
+
+
 from v17.tennis_calibration_shadow import (
     ALPHAS,
     CAN_EXECUTE,
@@ -144,24 +206,8 @@ def test_invalid_scale_from_saved_artifact_is_typed_hold():
 
 
 def test_existing_tennis_maintenance_attaches_shadow_without_model_promotion(monkeypatch):
-    from types import SimpleNamespace
-    from v17 import tennis_valuebet_candidate as tennis
-
-    class FakeDb:
-        def __init__(self):
-            self.rows = []
-
-        def table(self, name):
-            self.name = name
-            return self
-
-        def upsert(self, payload, **kwargs):
-            self.rows.append((self.name, payload))
-            return self
-
-        def execute(self):
-            return SimpleNamespace(data=[])
-
+    tennis = tennis_module
+    shadow = shadow_module
     monkeypatch.setattr(tennis, "FEATURE_NAMES", NAMES)
     monkeypatch.setattr(tennis, "fetch_matches", lambda: ([], []))
     monkeypatch.setattr(
@@ -191,28 +237,8 @@ def test_existing_tennis_maintenance_attaches_shadow_without_model_promotion(mon
 
 
 def test_shadow_runtime_error_remains_held_without_changing_original_fit(monkeypatch):
-    from types import SimpleNamespace
-    from v17 import tennis_valuebet_candidate as tennis
-    from v17 import tennis_calibration_shadow as shadow
-
-    class FakeDb:
-        def __init__(self):
-            self.saved = []
-
-        def table(self, name):
-            self.name = name
-            return self
-
-        def upsert(self, payload, **kwargs):
-            self.saved.append((self.name, payload))
-            return self
-
-        def execute(self):
-            return SimpleNamespace(data=[])
-
-    def broken_shadow(*args, **kwargs):
-        raise RuntimeError("shadow experiment unavailable")
-
+    tennis = tennis_module
+    shadow = shadow_module
     monkeypatch.setattr(tennis, "FEATURE_NAMES", NAMES)
     monkeypatch.setattr(tennis, "fetch_matches", lambda: ([], []))
     monkeypatch.setattr(
