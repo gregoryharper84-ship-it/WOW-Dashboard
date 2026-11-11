@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional
 from fastapi import Header, HTTPException
 
 import pick_request_runtime_core as pick_runtime
+from v17.pick_request_run_status import governed_run_status
 from v17.top10_model_reconciliation import enforce_top10_completion
 
 LOGGER = logging.getLogger("wow.v17.pick_request_state")
@@ -557,14 +558,10 @@ class PickRequestStateStore:
             )
             for item in all_rows
         )
-        if pending:
-            run_status = "RUNNING"
-        elif completed == len(all_rows):
-            run_status = "COMPLETE"
-        elif completed:
-            run_status = "DEGRADED"
-        else:
-            run_status = "BLOCKED"
+        run_status = governed_run_status(
+            total=len(all_rows), completed=completed, held=held, rejected=rejected,
+            pending=pending, unresolved=unresolved,
+        )
         manifest = {
             "run_id": ctx.run_id,
             "request_id": ctx.request_id,
@@ -725,7 +722,9 @@ def _merged_response(ctx: RunContext, inner: dict[str, Any] | None) -> tuple[dic
     completed = sum(item.get("terminal_status") == "COMPLETED" for item in outcomes)
     held = sum(item.get("terminal_status") == "HELD" for item in outcomes)
     rejected = sum(item.get("terminal_status") == "REJECTED" for item in outcomes)
-    status = "COMPLETE" if completed == rows_in else ("DEGRADED" if completed else "BLOCKED")
+    status = governed_run_status(
+        total=rows_in, completed=completed, held=held, rejected=rejected,
+    )
 
     response = dict(inner or {})
     response.update(
@@ -827,6 +826,8 @@ def install_pick_request_state_wrapper(
 
             response, full_outcomes = _merged_response(ctx, inner)
             manifest = store.finalize(ctx, full_outcomes)
+            if not response.get("completion_blocker"):
+                response["run_controller_status"] = manifest["run_status"]
             response["durable_run_manifest"] = manifest
             response["can_execute"] = False
             LOGGER.warning(
