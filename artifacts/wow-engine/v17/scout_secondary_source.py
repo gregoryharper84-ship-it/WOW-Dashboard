@@ -485,10 +485,18 @@ def _find_event(
             if value and value not in lookup_dates:
                 lookup_dates.append(value)
         if not lookup_dates and context.get("commence_time"):
-            # ESPN partitions US evening fixtures by the Eastern calendar day,
-            # even when their actual UTC kickoff is after midnight next day.
-            # Example: 2026-11-12T00:00Z belongs to ESPN dates=20261111.
-            lookup_dates.append(_scoreboard_date_key(str(context.get("commence_time"))))
+            # ESPN partitions US evening events by Eastern date, not UTC.
+            # The permitted 30-minute identity-match window may straddle
+            # Eastern midnight: query both affected day partitions or we
+            # would lose a matching event despite a valid kickoff tolerance.
+            start = _identity_time(context["commence_time"])
+            if start is None:
+                return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_NOT_FOUND")
+            margin = timedelta(seconds=_EVENT_RELOOKUP_TOLERANCE_SECONDS)
+            lookup_dates.extend(sorted({
+                (start - margin).astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d"),
+                (start + margin).astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d"),
+            }))
 
     if not lookup_dates:
         board = _scoreboard(sport_key, {})
@@ -505,6 +513,28 @@ def _find_event(
             if not board.ok:
                 return board
             boards.append(board)
+
+    # An external provider ID is resolved by *uniqueness* across a source
+    # slate. Missing or unverified completeness makes that proof impossible;
+    # an ESPN-prefixed exact ID does not depend on whole-slate uniqueness.
+    if not str(event_id).startswith("espn-"):
+        if any(
+            isinstance(board.data, dict)
+            and board.data.get("_wow_provider_truncated") is True
+            for board in boards
+        ):
+            return SecondaryResult(
+                False, status=409, code="ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
+            )
+        if any(
+            not isinstance(board.data, dict)
+            or board.data.get("_wow_provider_truncated") is not False
+            or board.data.get("_wow_provider_completeness_unverified") is not False
+            for board in boards
+        ):
+            return SecondaryResult(
+                False, status=409, code="ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
+            )
 
     candidates: dict[str, dict[str, Any]] = {}
     for board in boards:
