@@ -148,3 +148,28 @@ def test_all_zero_offensive_snaps_cannot_pass_coverage(sample_cohort):
     snaps["offense_snaps"] = 0
     with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_EMPTY"):
         reconcile_player_games(stats, snaps, players)
+
+def test_unrelated_historical_pfr_collision_does_not_block_a_valid_cohort(sample_cohort):
+    """Only snap-participating PFR identities need one-to-one reconciliation."""
+    stats, snaps, players = sample_cohort
+    # The upstream player registry may include older namesakes never appearing
+    # in the selected five-season offensive participant keyset.
+    unrelated = pd.DataFrame([
+        {"gsis_id": "00-0010000", "pfr_id": "OlderName01"},
+        {"gsis_id": "00-0020000", "pfr_id": "OlderName01"},
+    ])
+    receipt = reconcile_player_games(
+        stats, snaps, pd.concat([players, unrelated], ignore_index=True),
+    )
+    assert receipt["status"] == "RESEARCH_COVERAGE_RECONCILED_ONLY"
+    assert receipt["offensive_participant_games"] == 2
+    assert receipt["player_games_matched"] == 2
+
+
+def test_active_pfr_collision_remains_fail_closed(sample_cohort):
+    """A participating PFR ID with two possible GSIS identities is not usable."""
+    stats, snaps, players = sample_cohort
+    conflict = pd.DataFrame([{"gsis_id": "00-0099999", "pfr_id": "PlayerA01"}])
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT"):
+        reconcile_player_games(stats, snaps, pd.concat([players, conflict], ignore_index=True))
+
