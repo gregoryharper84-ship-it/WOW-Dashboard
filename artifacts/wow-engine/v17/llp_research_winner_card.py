@@ -100,6 +100,14 @@ def audit_research_winner_card(
             issues.append("OFFICIAL_EVENT_IDENTITY_CONFLICT")
         if pick_counts[(sport, event_id)] != 1:
             issues.append("MISSING_OR_DUPLICATE_WINNER")
+        if chosen and (
+            _text(chosen.get("home_team")).casefold() != home.casefold()
+            or _text(chosen.get("away_team")).casefold() != away.casefold()
+            or _utc(chosen.get("event_start_time_utc")) != kickoff
+        ):
+            # No evidence from an unmatched or rescheduled event may be
+            # treated as pregame evidence for the verified manifest event.
+            issues.append("RESEARCH_SELECTION_EVENT_IDENTITY_CONFLICT")
         if side.casefold() not in {home.casefold(), away.casefold()} or side.upper() in NO_WINNER_TOKENS:
             issues.append("INVALID_OR_PASS_WINNER")
         if when is None or kickoff is None or when >= kickoff:
