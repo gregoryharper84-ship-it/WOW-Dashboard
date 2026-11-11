@@ -724,4 +724,5 @@ Produced only by `scripts/audit_nfl_count_prop_pbp_presence.py`, owned by WOW_PR
 | `NFL_PROP_PBP_SOURCE_UNREADABLE` | INPUT | Verified gzip bytes cannot be parsed without truncation or schema transport failure; repair data provenance, not counts. | No |
 | `NFL_PROP_PBP_EVENT_SCHEMA_INVALID` | INPUT | PBP does not contain required game/season/week/role actor columns, valid season identity, REG scope or even one regular-season game; no presence receipt. | No |
 | `NFL_PROP_PBP_RECONCILIATION_DRIFT` | IDENTITY | PBP evidence selection disagrees with canonical mapped-missing-game count; preserve HOLD, repair joins without guessing PFR↔GSIS. | No |
+| `HOLD_PBP_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | PBP acquisition/parsing/reconciliation could not complete all five pinned research archives, even if the original 11 sources verified; preserve explicit partial count and retain unknown stat rows. | No |
 | `HOLD_PBP_PRESENCE_ONLY` | RESEARCH_HOLD | All source and actor-presence evidence remains observation-only; no absence-as-zero, fitted specialist, registration, promotion or execution. | No |
