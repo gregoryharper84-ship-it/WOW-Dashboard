@@ -101,6 +101,18 @@ class AuditResultTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "AUDIT_INCOMPLETE")
         self.assertEqual(len(report["audit_errors"]), 1)
 
+    def test_inventory_drift_fails_closed(self):
+        class DriftingClient(self.Client):
+            def __init__(self):
+                super().__init__([BASE_PR], reviews=[review()])
+                self.calls = 0
+            def pulls(self, repository):
+                self.calls += 1
+                return [BASE_PR] if self.calls == 1 else [{"number": 123, "head_sha": "b" * 40}]
+        report = audit_mod.audit(DriftingClient(), "owner/repo")
+        self.assertEqual(report["outcome"], "AUDIT_INCOMPLETE")
+        self.assertEqual(report["audit_errors"][0]["error"], "GITHUB_OPEN_PR_INVENTORY_DRIFT")
+
     def test_exact_head_review_is_not_release_approval(self):
         report = audit_mod.audit(self.Client([BASE_PR], reviews=[review()]), "owner/repo")
         self.assertEqual(report["outcome"], "NO_OPEN_GREPTILE_FINDINGS_IN_EXACT_HEAD_REVIEWS")
