@@ -26,8 +26,8 @@ artifact demonstrates.
 
 | Item | Requirement | Current status | Read from |
 |---|---|---|---|
-| Forward cohort | `graded_n >= 100` | **95 / 100** — 5 short | `wow_nfl_forward_calibration_health` |
-| Nov 15 slate | 12 games, all pregame-publishable, no ties | up to **107**; 7 games of slack | `wow_nfl_event_predictions` + preflight |
+| Forward cohort | `graded_n >= 100` | **unverified here** — last recorded observation was 95 / 100 (5 short), without a timestamp in this document | `wow_nfl_forward_calibration_health` (`graded_n`, `generated_at`) |
+| Nov 15 slate | real slate size known before kickoff, every row pregame-publishable | **unverified here** — the slate size and the up-to-107 projection come from a same-day preflight run, not from this document | `wow_nfl_event_predictions` + `POST /internal/v17/nfl-forward-cohort-preflight` |
 | Metric gate | Brier, log loss, ECE, bias, lower-bound gap | not evaluated until `graded_n >= 100` | `calibration_health()` |
 | Per-row stage proof | exact readback, calibration producer receipt, final refresh | contract present; per-row proof unproven | `v17/nfl_daily_stage_receipts.py` |
 | Fitted artifact | `active`, `promoted`, `calibrator_id`, `certification_id`, `lifecycle_state IN ('PROSPECTIVE_CERTIFIED','CHAMPION')` | unproven | `wow_nfl_event_fitted_model_artifacts` |
@@ -37,13 +37,19 @@ artifact demonstrates.
 | Health probe | live champion loads through `load_champion_model` | `NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN` | `v17/all_sport_capability_readiness.py` |
 | Build classification | — | `FORWARD_EVIDENCE_PENDING` | `v17/capability_build_registry.py` |
 
-The 5-game gap is real arithmetic, not a reporting artifact: the cohort counts
-only settled games whose immutable pregame prediction was created before
-kickoff with `model_package_valid`, `provenance_complete` and
-`model_probability_publishable` all true. Ties are excluded. A prediction
-written after kickoff can never be added, because
-`wow_nfl_event_predictions` is immutable and late rows are dropped by
-`select_canonical_forward_predictions`.
+Any gap is arithmetic, not a reporting artifact: the cohort counts only settled
+games whose immutable pregame prediction was created before kickoff with
+`model_package_valid`, `provenance_complete` and
+`model_probability_publishable` all true. Ties are excluded, and an outcome row
+without `home_win` is skipped. A prediction written after kickoff can never be
+added, because `wow_nfl_event_predictions` is immutable and late rows are
+dropped by `select_canonical_forward_predictions`.
+
+Both figures in the table are observations, not assertions. Read `graded_n`
+together with the `generated_at` of the health row it came from, and take the
+slate size from a preflight run on the same gameday. A count whose timestamp is
+unknown is unverified, and neither figure in this document should be quoted as
+current state.
 
 ---
 
@@ -57,9 +63,12 @@ written after kickoff can never be added, because
 - **Clears when:** `graded_n >= 100` in the latest
   `wow_nfl_forward_calibration_health` row.
 - **Blocker today:** `FORWARD_GRADED_N_<n>_LT_100`.
-- **Operational note:** predictions for the Nov 15 slate must exist *before*
-  kickoff. The read-only preflight in PR #2599 lists any slate game that cannot
-  count, with its reason, hours before the first kickoff.
+- **Operational note:** predictions for a slate must exist *before* kickoff.
+  The read-only preflight in PR #2599 lists any slate game that cannot count,
+  with its reason, hours before the first kickoff. It reports
+  `ELIGIBLE_PREGAME` for pregame eligibility (not a grade), and withholds
+  `PROJECTED_TO_REACH_MINIMUM` when slate coverage is unverified or the
+  prediction ledger would make the grader abort.
 
 ### G2 — Calibration-health metrics pass on the same cohort
 
@@ -110,18 +119,31 @@ an exact immutable readback:
 - **Note:** stage proof does not certify accuracy. A passing stage receipt on
   fewer than 100 real grades still returns `NFL_FORWARD_CERTIFICATION_UNPROVEN`.
 
-### G4 — Forward certification proof for the exact model version
+### G4 — Exact-version forward evidence (pre-promotion)
 
-- **Requires, simultaneously:** the latest health row `PASS` /
-  `FORWARD_EVIDENCE_PASS` / no blockers / `graded_n >= minimum` with
-  `minimum >= 100`; at least that many **distinct** grades carrying this
-  prediction's exact `model_version`; and the artifact row `active`,
-  `promoted`, `probability_publishable`.
-- **Enforced by:** `_forward_certification_proven()` in
-  `v17/nfl_daily_stage_receipts.py`.
+- **Requires:** the latest health row `PASS` / `FORWARD_EVIDENCE_PASS` / no
+  blockers / `graded_n >= minimum` with `minimum >= 100`, **and** at least that
+  many **distinct** grades carrying this prediction's exact `model_version`.
+- **Enforced by:** the cohort checks in `_forward_certification_proven()`
+  (`v17/nfl_daily_stage_receipts.py`) and `calibration_health()` in
+  `v17/nfl_forward_shadow.py`.
+- **On hold:** the health row's metric fields (Brier, log loss, ECE,
+  calibration bias, lower-bound gap) are one **global** snapshot. The code
+  proves the exact-version *count* and requires that global row to say `PASS`;
+  it does not recompute those metrics for a single model version. G4 stays on
+  hold until version-scoped health evidence exists, because a mixed-version
+  global `PASS` would otherwise satisfy the count check on its own.
 - **Blocker today:** `NFL_FORWARD_CERTIFICATION_UNPROVEN`.
 - **Note:** a global PASS earned by another fitted model version cannot be
   borrowed. Mixed-version cohorts do not count.
+
+**Ordering note.** G1–G4 are pre-promotion evidence; G5 is the promotion
+*decision*. The full `_forward_certification_proven()` predicate additionally
+requires the artifact row to be `active`, `promoted` and
+`probability_publishable`, and those flags only exist after G5, so that
+predicate is a receipt-time check evaluated on scored rows. It is not a
+precondition for making the G5 decision, and G4 does not require promotion to
+have happened already.
 
 ### G5 — Artifact and calibrator promotion (governance decision)
 
@@ -244,12 +266,21 @@ select certification_id, certification_status, independent_verification_status,
  where sport = 'NFL';
 ```
 
-Pre-kickoff cohort check (after PR #2599 deploys):
+Read-only pre-kickoff cohort check (after PR #2599 deploys). Do **not** use
+`workflow_dispatch: wow-v17-nfl-forward-shadow` for this read: its
+`forward-shadow` job also runs the grading route, which writes grade rows and a
+calibration-health row. Only the reporting step inside that job is read-only.
 
 ```text
-workflow_dispatch: wow-v17-nfl-forward-shadow
-  expected_slate_games: <today's real slate size>
+POST /internal/v17/nfl-forward-cohort-preflight   (OIDC-authenticated)
+  {"slate_date": "<US/Eastern gameday>", "expected_slate_games": <n>}
+
+or, against a read-only database client:
+python -m v17.nfl_forward_cohort_preflight --slate-date <date> --expected-slate-games <n>
 ```
+
+Omitting `expected_slate_games` leaves slate coverage unverified, so the
+projection will not report `PROJECTED_TO_REACH_MINIMUM`.
 
 Repository checks for any change touching these gates:
 
