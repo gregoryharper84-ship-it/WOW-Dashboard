@@ -10,6 +10,7 @@ import pytest
 from fastapi import Depends, FastAPI
 
 from v17.fitted_model_certification_promotion import (
+    DEFAULT_REQUIRED_METRICS,
     PROMOTION_ALREADY_APPLIED,
     PROMOTION_APPROVED,
     PROMOTION_AUTHORIZATION_INVALID,
@@ -793,6 +794,42 @@ def test_promotion_receipt_is_idempotent_and_broken_store_blocks_apply():
     assert replay_broken["receipt_persisted"] is False
     assert replay_broken["audit_complete"] is False
     assert replay_broken["receipt_store_error"] == "RuntimeError"
+
+
+@pytest.mark.parametrize("selected_metrics", (["row_n"], []))
+def test_promotion_service_persists_the_same_full_metric_replay_it_evaluates(
+    selected_metrics,
+):
+    """Promotion may add diagnostics but cannot persist a narrower replay."""
+    db = _FakeDB()
+    artifact = _artifact()
+    artifact["stored_metrics"]["row_n"] = 1
+    policy = _signed_policy()
+    effective_metrics = tuple(
+        dict.fromkeys((*DEFAULT_REQUIRED_METRICS, *selected_metrics))
+    )
+    receipt = replay_fitted_artifact(artifact, required_metrics=effective_metrics)
+    authorization = _signed_authorization(receipt, policy, artifact)
+
+    result = run_fitted_model_promotion(
+        FittedPromotionRequest(
+            artifact=artifact,
+            policy=policy.as_dict(),
+            authorization=authorization.as_dict(),
+            required_metrics=selected_metrics,
+        ),
+        db=db,
+        approval_key=TEST_APPROVAL_KEY,
+    )
+
+    assert result["status"] == PROMOTION_APPROVED
+    assert result["audit_complete"] is True
+    stored_replays = db.tables["wow_fitted_model_certification_replay_receipts"]
+    assert len(stored_replays) == 1
+    stored = stored_replays[0]
+    assert stored["receipt_sha256"] == result["replay"]["receipt_sha256"]
+    assert result["replay_receipt_id"] == stored["receipt_id"]
+    assert set(stored["payload"]["verified_stored_metrics"]) == set(effective_metrics)
 
 
 def test_service_rejects_unsigned_policy_and_authorization():
