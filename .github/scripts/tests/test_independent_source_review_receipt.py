@@ -691,7 +691,6 @@ def test_release_only_superseded_qa_is_neutral_after_authentic_policy(state, hea
     ("head.repo", {"full_name": "foreign/repository"}),
     ("base.ref", "development"),
     ("head.sha", "not-a-sha"),
-    ("draft", True),
 ])
 def test_release_superseded_qa_never_neutralizes_foreign_or_invalid_target(change, value):
     routes, archive = qa_policy_routes()
@@ -701,10 +700,8 @@ def test_release_superseded_qa_never_neutralizes_foreign_or_invalid_target(chang
         target["head"]["repo"] = value
     elif change == "base.ref":
         target["base"]["ref"] = value
-    elif change == "head.sha":
-        target["head"]["sha"] = value
     else:
-        target["draft"] = value
+        target["head"]["sha"] = value
     routes["/pulls/1822"] = target
     with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
         review.resolve_qa_review_policy(
@@ -868,6 +865,94 @@ def test_qa_policy_rejects_missing_duplicate_or_expired_artifacts(mutation, reas
             now=datetime.now(timezone.utc),
             get_json=routes.__getitem__,
             download_artifact=lambda artifact_id: archive,
+        )
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_main_scoped_admission_neutralizes_absent_qa_policy_artifact(conclusion):
+    """Automatic workflow_run admission must not poison checksPass.
+
+    Observed on main tip e82af6a (2026-11-10): upstream QA failed before
+    uploading wow-v17-qa-policy-{run}-{attempt} (TARGET_PR_IDENTITY_MISMATCH
+    on draft/retargeted #2559). Strict resolve still fails closed; only the
+    opt-in main-scoped callback may exit neutral with no Release check.
+    """
+    routes, archive = qa_policy_routes()
+    # Both successful and failed authenticated QA producers may have no policy;
+    # neither outcome must create a main-scoped Release failure or approval.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}"]["conclusion"] = conclusion
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    kwargs = dict(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"],
+        run_attempt=1,
+        token="read-only",
+        now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+    )
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+    ):
+        review.resolve_qa_review_policy(**kwargs)
+    neutral = review.resolve_qa_review_policy(
+        **kwargs, allow_superseded_target=True,
+    )
+    assert neutral == {
+        "disposition": "neutral",
+        "reason": "RELEASE_QA_POLICY_ARTIFACT_ABSENT",
+    }
+    # Duplicate inventory remains fail-closed even for the main-scoped opt-in.
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [
+            {"id": 778, "name": f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-1", "expired": False,
+             "created_at": "2026-11-04T16:40:00Z"},
+            {"id": 779, "name": f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-1", "expired": False,
+             "created_at": "2026-11-04T16:40:01Z"},
+        ],
+    }
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+    ):
+        review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_id", 1),
+        ("path", ".github/workflows/foreign.yml"),
+        ("event", "pull_request_target"),
+        ("head_branch", "feature/foreign"),
+        ("head_sha", "not-a-sha"),
+        ("repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("head_repository", {"full_name": "foreign/WOW-Dashboard"}),
+        ("status", "in_progress"),
+        ("conclusion", "cancelled"),
+    ],
+)
+def test_missing_policy_neutral_requires_authenticated_qa_run(field, value):
+    """Foreign or unfinished producer evidence can never become neutral."""
+    routes, archive = qa_policy_routes()
+    run_id = PRODUCER_RUN["id"]
+    routes[f"/actions/runs/{run_id}/artifacts?per_page=100&page=1"] = {
+        "artifacts": [],
+    }
+    routes[f"/actions/runs/{run_id}"][field] = value
+    with pytest.raises(
+        review.SourceReviewError, match="QA_POLICY_RUN_PROVENANCE_MISMATCH",
+    ):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=run_id,
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+            allow_superseded_target=True,
         )
 
 
@@ -1185,3 +1270,70 @@ def test_both_qa_producer_payloads_use_pinned_workflow_id():
     assert 'run.get("name") == WORKFLOW_NAME' not in script
     assert 'and workflow_id == WORKFLOW_ID' in script
     assert 'run.get("path") == WORKFLOW_PATH' in script
+
+
+def _release_kwargs(routes, archive):
+    return dict(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"], run_attempt=1, token="read-only",
+        now=datetime.now(timezone.utc), get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+    )
+
+
+def test_release_draft_pr_with_moved_head_is_neutral_but_strict_mode_still_fails():
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["draft"] = True
+    target["head"]["sha"] = MAIN
+    routes["/pulls/1822"] = target
+    kwargs = _release_kwargs(routes, archive)
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(**kwargs)
+    neutral = review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
+    assert neutral["disposition"] == "neutral"
+    assert neutral["reason"] == "RELEASE_QA_SOURCE_PR_SUPERSEDED"
+
+
+def test_release_draft_pr_at_same_head_is_never_neutral():
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["draft"] = True
+    routes["/pulls/1822"] = target
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(
+            **_release_kwargs(routes, archive), allow_superseded_target=True,
+        )
+
+
+def test_release_draft_target_at_policy_head_is_neutral_only_when_explicitly_enabled():
+    """A draft can never merge, so it can never be a Release target.
+
+    The strict default is unchanged: only the automatic workflow_run admission
+    opts in, and it publishes no Release check either way.
+    """
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["draft"] = True
+    routes["/pulls/1822"] = target
+    kwargs = _release_kwargs(routes, archive)
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(**kwargs, allow_superseded_target=True)
+    neutral = review.resolve_qa_review_policy(
+        **kwargs, allow_superseded_target=True, neutralize_draft_target=True,
+    )
+    assert neutral["disposition"] == "neutral"
+    assert neutral["reason"] == "RELEASE_QA_DRAFT_TARGET_NOT_RELEASABLE"
+
+
+def test_release_draft_pr_with_moved_head_from_foreign_repo_is_never_neutral():
+    routes, archive = qa_policy_routes()
+    target = pr()
+    target["draft"] = True
+    target["head"]["sha"] = MAIN
+    target["head"]["repo"] = {"full_name": "foreign/repository"}
+    routes["/pulls/1822"] = target
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(
+            **_release_kwargs(routes, archive), allow_superseded_target=True,
+        )
