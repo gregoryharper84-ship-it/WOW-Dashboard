@@ -35,7 +35,7 @@ Tests include scenario preference counts, split and contradicted scripts, future
 
 ## Verification and release status
 
-Seven local focused synthetic tests passed, including three-sport coverage under model HOLD, contrary evidence without pass conversion, bad/source-late and market discrepancies, duplicate/late/missing picks, unverified slate, and no numeric model spoofing. These synthetic tests do NOT validate an actual sport selection or prove live operational integration.
+Historical local synthetic verification applied only to earlier source revisions, not this amended head. The expanded research winner-card suite must pass on the exact current commit, including truthful boolean slate attestation, invalid/duplicate/late pick isolation, independent sources, game-script versus opponent scenario declarations, scenario-probability alias rejection and media chronology. Even a green exact-head CI suite does NOT authenticate publisher data, certify sporting model probabilities or prove deployed integration.
 
 Remaining gates: hosted exact-head CI on current branch, independent semantic/QA/SIRT review, protected authorized merge, deployed exact SHA readback, Custom GPT/editor sync and true full-slate/frozen-real-result evidence. This patch is not operationally released.
 
