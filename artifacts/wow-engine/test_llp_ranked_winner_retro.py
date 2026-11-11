@@ -1,6 +1,8 @@
 """Cross-sport ranked research retro: synthetic receipts, no fitted credit."""
 from copy import deepcopy
 
+import pytest
+
 from v17.llp_ranked_winner_retro import audit_ranked_winner_retro
 
 START = "2026-11-10T23:00:00Z"
@@ -105,7 +107,7 @@ def test_boolean_attestation_is_literal_and_cohort_cannot_be_called_full_slate()
     rep = audit_ranked_winner_retro(
         [p], [final()], ranked_cohort=[p],
         cohort_verified="true", cohort_receipt_id="fake",
-        cohort_kind="VERIFIED_FULL_SLATE")
+        cohort_kind="RANKED_SUBSET")
     assert rep["cohort_complete"] is False
     assert rep["subset_accuracy"] is None
 
@@ -197,3 +199,49 @@ def test_oversized_spreads_do_not_crash_or_change_winner_grade():
         assert r["correct"] == 1
         assert r["rows"][0]["spread_outcome_diagnostic_only"] == "NOT_EVALUATED"
         assert r["rows"][0]["selection_grade"] == "WIN"
+
+
+def test_full_slate_scope_is_explicitly_unsupported_even_if_attested_true():
+    p = pick()
+    with pytest.raises(ValueError, match="FULL_SLATE_SCOPE_UNSUPPORTED"):
+        audit_ranked_winner_retro(
+            [p], [final()], ranked_cohort=[p], cohort_verified=True,
+            cohort_receipt_id="cohort-1", cohort_kind="VERIFIED_FULL_SLATE")
+
+
+def test_verified_cohort_side_mismatch_is_held():
+    p = pick(side="HOME")
+    cohort = [{k: p[k] for k in
+               ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc")}]
+    cohort[0]["selected_side"] = "AWAY"
+    r = audit_ranked_winner_retro(
+        [p], [final()], ranked_cohort=cohort,
+        cohort_verified=True, cohort_receipt_id="cohort-2")
+    assert r["cohort_complete"] is False
+    assert r["correct"] is None
+    assert "RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED" in r["rows"][0]["selection_blockers"]
+
+
+def test_huge_official_score_holds_before_spread_arithmetic():
+    p = pick(spread={
+        "home_line": -1.5, "settlement_basis": "FULL_GAME",
+        "sport": "NCAAB", "official_event_id": "a",
+        "home_team": "Home", "away_team": "Away",
+        "event_start_time_utc": START, "available_to_user_at_utc": FREEZE,
+        "as_of_utc": FREEZE, "receipt_id": "spread-a", "independently_verified": True})
+    r = audit([p], [final(home_score=10**1000, away_score=80)])
+    assert r["correct"] is None
+    assert r["rows"][0]["selection_grade"] == "HELD"
+    assert "OFFICIAL_SCORE_INVALID" in r["rows"][0]["selection_blockers"]
+    assert r["rows"][0]["spread_outcome_diagnostic_only"] == "NOT_EVALUATED"
+
+
+def test_incomplete_cohort_withholds_all_sport_totals():
+    ps = [pick("NCAAB", "a"), pick("NCAAF", "b")]
+    finals = [final("NCAAB", "a"), final("NCAAF", "b", independently_verified=False)]
+    r = audit(ps, finals)
+    assert r["cohort_complete"] is False
+    assert r["correct"] is None
+    assert len(r["by_sport"]) == 2
+    assert all(k["graded"] is None and k["correct"] is None
+               and k["incomplete_cohort"] is True for k in r["by_sport"])
