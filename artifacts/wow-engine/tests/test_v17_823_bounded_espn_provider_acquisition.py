@@ -497,6 +497,10 @@ def test_espn_lookup_validates_context_even_when_event_id_matches(monkeypatch):
          "commence_time": "2026-11-12T00:00:00Z"},
         {"home_team": "Home 401892690", "away_team": "Away 401892690",
          "commence_time": "2026-11-12T03:00:00Z"},
+        {"home_team": "Wrong Home Only"},
+        {"away_team": "Wrong Away Only"},
+        {"home_team": "Home 401892690", "away_team": "Away 401892690",
+         "commence_time": "2026-11-12T00:00:00"},
     ):
         found = secondary._find_event("icehockey_nhl", "espn-401892690", context)
         assert found.ok is False
@@ -533,6 +537,12 @@ def test_non_espn_alias_requires_unique_same_teams_and_kickoff(monkeypatch):
     )
     assert late.ok is False
     assert late.code == "SECONDARY_SOURCE_EVENT_NOT_FOUND"
+    naive = secondary._find_event(
+        "americanfootball_ncaaf", "other-source-1",
+        {**context, "commence_time": "2026-11-12T00:00:00"},
+    )
+    assert naive.ok is False
+    assert naive.code == "SECONDARY_SOURCE_EVENT_NOT_FOUND"
 
 
 def test_real_empty_scoreboard_is_valid_not_fabricated_model_unavailable(monkeypatch):
