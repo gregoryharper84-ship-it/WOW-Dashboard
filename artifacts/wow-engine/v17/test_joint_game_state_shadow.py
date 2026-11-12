@@ -53,6 +53,7 @@ def test_deterministic_coherent_market_projection_and_terminal_hold():
 
 @pytest.mark.parametrize("field,value,error", [
     ("home_scores", [0, 1], "50000"),
+    ("home_scores", [10 ** 400] + [0] * (N - 1), "bounded integer"),
     ("away_scores", [1] * (N - 1), "aligned"),
     ("fitted_artifact_sha256", "not-a-digest", "SHA-256"),
     ("home_spread", float("nan"), "finite"),
