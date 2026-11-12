@@ -734,6 +734,7 @@ Produced only by `scripts/audit_nfl_count_prop_pbp_stats.py`, owned by WOW_PROP_
 | Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
 |---|---|---|---|
 | `NFL_PROP_PBP_EVENT_DUPLICATE` | IDENTITY | Two actor-bearing PBP records share the exact game/play identity; reject any additive event count. | No |
+| `NFL_PROP_PBP_ATTRIBUTION_INCOMPLETE` | IDENTITY | A relevant regular-season pass/rush flag has no attributable player ID; reject per-stat agreement rather than dropping the play from the candidate source. | No |
 | `NFL_PROP_PBP_FLAG_INVALID` | INPUT | An event flag is neither binary nor absent; reject rather than interpret as a valid play. | No |
 | `NFL_PROP_PBP_STAT_COLUMNS_MISSING` | INPUT | Weekly frozen stats lack declared target/identity fields; reject comparison. | No |
 | `HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT` | RESEARCH_HOLD | Event signal counts have not been independently reconciled to NFL stat/scoring rules or source semantics; no model-certification authority. | No |

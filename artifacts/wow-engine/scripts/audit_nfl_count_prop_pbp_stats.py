@@ -98,6 +98,21 @@ def read_pinned_pbp_signals(
                 )
                 actor = reg.loc[:, ("passer_player_id", "receiver_player_id",
                                     "rusher_player_id")].notna().any(axis=1)
+                # A claimed pass/rush without any actor is incomplete source
+                # attribution, not a missing positive play to silently drop.
+                claimed = (
+                    pd.to_numeric(reg["pass_attempt"], errors="coerce").eq(1)
+                    | pd.to_numeric(reg["rush_attempt"], errors="coerce").eq(1)
+                )
+                unassigned = (
+                    ~actor & claimed & reg["play_type"].ne("no_play")
+                    & ~pd.to_numeric(reg["two_point_attempt"], errors="coerce").eq(1)
+                )
+                if unassigned.any():
+                    raise ValueError(
+                        "NFL_PROP_PBP_ATTRIBUTION_INCOMPLETE:"
+                        + str(season) + ":" + str(int(unassigned.sum()))
+                    )
                 relevant = reg.loc[actor].copy()
                 if relevant.empty:
                     continue
@@ -105,16 +120,28 @@ def read_pinned_pbp_signals(
                         or relevant["play_id"].astype(str).str.strip().eq("").any()):
                     raise ValueError("NFL_PROP_PBP_EVENT_SCHEMA_INVALID:" + str(season) + ":play_id")
                 for game, play in zip(relevant["game_id"], relevant["play_id"]):
-                    key = (str(game), str(play))
+                    key = (str(game).strip(), str(play).strip())
                     if key in seen_plays:
                         raise ValueError("NFL_PROP_PBP_EVENT_DUPLICATE:" + str(season))
                     seen_plays.add(key)
                 for field in FLAGS:
-                    values = pd.to_numeric(relevant[field], errors="coerce")
-                    if not values.dropna().isin((0, 1)).all():
+                    original = relevant[field]
+                    values = pd.to_numeric(original, errors="coerce")
+                    if ((original.notna() & values.isna()).any()
+                            or not values.dropna().isin((0, 1)).all()):
                         raise ValueError("NFL_PROP_PBP_FLAG_INVALID:" + field)
                     unknown[field] += int(values.isna().sum())
                     relevant[field] = values
+                relevant["play_type"] = relevant["play_type"].str.strip()
+                flagged = (relevant["pass_attempt"].eq(1)
+                           | relevant["rush_attempt"].eq(1))
+                missing_type = (relevant["play_type"].isna()
+                                | relevant["play_type"].eq(""))
+                if (flagged & missing_type).any():
+                    raise ValueError(
+                        "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:" + str(season)
+                        + ":play_type"
+                    )
                 normal = relevant["two_point_attempt"].eq(0)
                 passing = (
                     normal & relevant["pass_attempt"].eq(1)

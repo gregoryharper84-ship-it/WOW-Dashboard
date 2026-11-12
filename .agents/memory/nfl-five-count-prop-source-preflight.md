@@ -172,3 +172,14 @@
 - **prevention_artifact:** `test_quality_aggregation_retains_new_administrative_play_dimensions` protects newly observed dimensions across multiple pinned source files; hosted exact-head replay required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None, research-only; can_execute=false, V17_TERMINAL_REDUCER.
+
+## PBP source validation follow-up — actor attribution, normalized identity, malformed flags (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PBP_ATTRIBUTION_INCOMPLETE; NFL_PROP_PBP_EVENT_DUPLICATE; NFL_PROP_PBP_FLAG_INVALID; NFL_PROP_PBP_EVENT_SCHEMA_INVALID
+- **mechanism:** Unattributed pass/rush flags can disappear before the actor-only filter, whitespace-variant game/play IDs can double-count one play, nonnumeric flag text can be coerced to missing, and a missing play type can silently reduce the counted candidate. Each predicts a misleading lower PBP number even with a complete frozen source.
+- **detection_point:** CodeRabbit review of the offline event comparator after first six-stat source comparison, before zero-label reconciliation.
+- **fix:** Fail closed on relevant actorless flags with source count, compare normalized game/play keys, reject nonnumeric flag tokens distinct from null, and reject flagged opportunities without play_type while retaining an explicit no_play exclusion.
+- **prevention_artifact:** tests/test_nfl_count_prop_pbp_stats.py actorless flagged and no_play controls, whitespace duplicate, nonnumeric and missing play-type rejection. Hosted exact-head replay pending; no direct probability/threshold changes.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. Research-only P/C; no merge, deploy, certification or execution. can_execute=false; V17_TERMINAL_REDUCER.

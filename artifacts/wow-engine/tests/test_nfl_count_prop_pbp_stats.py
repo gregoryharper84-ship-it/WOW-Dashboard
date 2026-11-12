@@ -107,6 +107,8 @@ def test_rush_event_counts_only_rusher(tmp_path, monkeypatch):
 @pytest.mark.parametrize("change,code", [
     ({"week": 2}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID"),
     ({"pass_attempt": 2}, "NFL_PROP_PBP_FLAG_INVALID"),
+    ({"pass_attempt": "bad"}, "NFL_PROP_PBP_FLAG_INVALID"),
+    ({"play_type": ""}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID"),
 ])
 def test_invalid_source_event_fails_closed(tmp_path, monkeypatch, change, code):
     path = _synthetic(tmp_path, monkeypatch, pd.DataFrame([_play(**change)]))
@@ -169,3 +171,32 @@ def test_quality_aggregation_retains_new_administrative_play_dimensions():
         "qb_spike_rows": 5, "qb_kneel_rows": 5,
     }
     assert aggregate["unattributed"]["targets"] == 2
+
+
+def test_actorless_flagged_opportunity_is_a_typed_source_hold(tmp_path, monkeypatch):
+    """Never omit a flagged pass/rush solely because all actor IDs are blank."""
+    row = _play(passer_player_id="", receiver_player_id="", rusher_player_id="")
+    source = _synthetic(tmp_path, monkeypatch, pd.DataFrame([row]))
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_ATTRIBUTION_INCOMPLETE:2024:1"):
+        mod.read_pinned_pbp_signals(source, 2024)
+
+
+def test_actorless_no_play_is_not_an_observed_stat_event(tmp_path, monkeypatch):
+    """Wiped-out plays remain excluded without manufacturing an opportunity."""
+    row = _play(play_type="no_play", passer_player_id="",
+                receiver_player_id="", rusher_player_id="")
+    source = _synthetic(tmp_path, monkeypatch, pd.DataFrame([row]))
+    signals, games, quality = mod.read_pinned_pbp_signals(source, 2024)
+    assert games == {"2024_01_BAL_KC"}
+    assert sum(sum(count.values()) for count in signals.values()) == 0
+    assert quality["unattributed"]["attempts"] == 0
+
+
+def test_whitespace_equivalent_event_ids_are_rejected_as_duplicates(
+    tmp_path, monkeypatch,
+):
+    """Normalized game+play identity must be exact once even across whitespace."""
+    rows = [_play(), _play(game_id=" 2024_01_BAL_KC ", play_id=" 42 ")]
+    source = _synthetic(tmp_path, monkeypatch, pd.DataFrame(rows))
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_DUPLICATE"):
+        mod.read_pinned_pbp_signals(source, 2024)
