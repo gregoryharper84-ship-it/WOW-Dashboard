@@ -412,3 +412,15 @@
 - **prevention_artifact:** `tests/test_nfl_missing_prop_candidates.py::test_unattributed_possible_participant_fails_closed` now includes four malformed/stale event-id negative variants and a valid canonical event fixture. Synthetic original-branch guard accepted all four malformed examples (RED); local proposed regex 5/5 synthetic controls PASS (GREEN). Exact-head hosted CI and independent semantic acceptance remain separate/unverified at authoring.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no model, source-rights authorization, P/C merge, certified route or deployment. `can_execute=false`, `V17_TERMINAL_REDUCER`.
+
+## Mechanical promotion: sparse manual player overrides are not full identity coverage — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** NFL_PROP_ROSTER_SCHEMA_INVALID (existing, malformed manual upstream pfr_id); HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW remains unresolved.
+- **mechanism:** nflverse-players manual overwrite JSON is a sparse correction list, not the full PFR/GSIS universe. Missing a PFR code shows no explicit correction, not player absence. Guessed mappings would hide 48 unresolved player-games. An unhashable malformed upstream ID previously produced an untyped TypeError.
+- **detection_point:** Identity-only source triage before training cohort joins.
+- **observed_artifact:** nflverse/nflverse-players/inst/players_manual_overwrite.json Git blob 8c8985361e7e8a5871e112fc482adb0525f5e302: 4,351 correction objects, 0 exact PFR entries for CartNa00, ShenJo00, WhitCo05, WillRo08. Not full player coverage, label evidence, or data-use clearance. Full players RDS remains unadjudicated.
+- **fix:** Added research-only inspect_manual_pfr_overrides to the existing roster crosswalk inspector. All flags remain non-authorizing. Reproduced malformed list-valued PFR ID TypeError (RED); replaced with canonical NFL_PROP_ROSTER_SCHEMA_INVALID (GREEN).
+- **prevention_artifact:** tests/test_nfl_count_prop_roster_crosswalk.py covers no-manual-match-not-absence, exact candidate-only, conflicting pairs, malformed target/GSIS/PFR, and non-dict source. Exact-head hosted regression remains pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; zero certified specialists or qualified rows. No P/C merge, source substitution, model fitting, zero-stat imputation or execution. can_execute=false.
