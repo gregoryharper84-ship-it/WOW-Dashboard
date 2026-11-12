@@ -12,7 +12,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from acquire_nfl_count_prop_sources import (frozen_assets, acquire_one, verify_official_release_metadata)
+from acquire_nfl_count_prop_sources import (
+    ARCHIVE_OBSERVATION, frozen_assets, acquire_one,
+    verify_official_release_metadata, observe_official_archive_metadata,
+)
 
 
 class FakeResponse(io.BytesIO):
@@ -66,6 +69,104 @@ def test_official_release_metadata_preflight_rejects_incomplete_manifest():
     with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_PINS_INVALID:release_metadata"):
         verify_official_release_metadata(frozen_assets(), {"players": {"assets": []}})
 
+
+
+
+def _synthetic_dated_archive_release():
+    """Use reviewed metadata only, not fabricated historical player values."""
+    info = ARCHIVE_OBSERVATION
+    return {
+        "tag_name": info["tag_name"], "id": info["id"],
+        "assets": [
+            {"name": name, "id": asset_id, "size": size, "digest": "sha256:" + sha}
+            for name, (asset_id, size, sha) in info["assets"].items()
+        ],
+    }
+
+
+def test_dated_archive_metadata_is_never_a_frozen_csv_replacement():
+    """Even seven matching RDS metadata records cannot authorize player fitting."""
+    old_assets = frozen_assets()
+    original_pfr_pin = next(sha for name, sha, _ in old_assets
+                            if name == "players/players.csv")
+    observation = observe_official_archive_metadata(_synthetic_dated_archive_release())
+    assert observation["status"] == "HOLD_ARCHIVE_RDS_NOT_EQUIVALENT_TO_FROZEN_CSV"
+    assert observation["metadata_matched_asset_count"] == 7
+    assert observation["source_bytes_sha256_verified"] is False
+    for key in ("equivalent_frozen_csv_proven", "historical_player_identities_reconciled",
+                "source_rights_independently_approved", "training_authorized",
+                "certification_eligible", "probability_publishable", "can_execute"):
+        assert observation[key] is False
+    assert frozen_assets() == old_assets
+    assert next(sha for name, sha, _ in frozen_assets()
+                if name == "players/players.csv") == original_pfr_pin
+
+
+@pytest.mark.parametrize("mutation", [
+    "release_id", "tag_name", "missing_assets", "missing_one",
+    "duplicate", "asset_id", "asset_size", "asset_digest", "bool_asset_size",
+])
+def test_dated_archive_metadata_mismatch_stays_a_typed_hold(mutation):
+    """Never silently replace missing or mutated archive evidence."""
+    release = _synthetic_dated_archive_release()
+    if mutation == "release_id":
+        release["id"] += 1
+    elif mutation == "tag_name":
+        release["tag_name"] = "archive-current"
+    elif mutation == "missing_assets":
+        release.pop("assets")
+    elif mutation == "missing_one":
+        release["assets"].pop()
+    elif mutation == "duplicate":
+        release["assets"].append(release["assets"][0].copy())
+    elif mutation == "asset_id":
+        release["assets"][0]["id"] += 1
+    elif mutation == "asset_size":
+        release["assets"][0]["size"] += 1
+    elif mutation == "asset_digest":
+        release["assets"][0]["digest"] = "sha256:" + "a" * 64
+    elif mutation == "bool_asset_size":
+        release["assets"][0]["size"] = True
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_(PINS_INVALID|DIGEST_MISMATCH)"):
+        observe_official_archive_metadata(release)
+
+
+def test_pr2605_official_archive_is_a_read_only_provenance_observation():
+    """Network read only in this PR's rapid runner; no archive download or fit."""
+    import json
+    import os
+
+    if (os.environ.get("GITHUB_WORKFLOW") != "wow-v17-rapid-repair"
+            or os.environ.get("GITHUB_HEAD_REF")
+            != "engineering/nfl-five-count-candidates-20261111"):
+        pytest.skip("NFL_PROP_ARCHIVE_METADATA_PR2605_OBSERVER_ONLY")
+
+    class RejectRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED:archive_metadata")
+
+    url = ("https://api.github.com/repos/nflverse/"
+           "nflverse-data-archives/releases/tags/archive-2026-11-05")
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "WOW-V17-public-source-research/1.0",
+        "Accept": "application/vnd.github+json",
+    })
+    opener = urllib.request.build_opener(RejectRedirects())
+    try:
+        with opener.open(request, timeout=20) as response:
+            assert response.geturl() == url
+            metadata = json.load(response)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        pytest.skip("NFL_PROP_ARCHIVE_METADATA_NETWORK_HOLD:" + type(exc).__name__)
+    try:
+        observation = observe_official_archive_metadata(metadata)
+    except ValueError as exc:
+        pytest.skip("NFL_PROP_ARCHIVE_METADATA_SOURCE_HOLD:" + str(exc)[:140])
+    assert observation["release_metadata_matched"] is True
+    assert observation["training_authorized"] is False
+    assert observation["source_bytes_sha256_verified"] is False
+    assert observation["probability_publishable"] is False
+    assert observation["can_execute"] is False
 
 def test_good_download_then_verified_existing(tmp_path):
     blob = b"gsis_id,pfr_id\nQ1,P1\n"
