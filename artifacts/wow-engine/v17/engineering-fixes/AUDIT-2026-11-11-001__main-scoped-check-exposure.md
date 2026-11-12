@@ -13,7 +13,7 @@ counted as **isolated** only when every one of its steps is
 `continue-on-error: true` (job-level `continue-on-error` is insufficient: the
 job check still concludes `failure`).
 
-Machine result at `main` = `e9b3faac`:
+Post-fix worktree count, derived from the `e9b3faac` base plus observer-isolation patches (**not** a measurement of `e9b3faac` itself):
 
 ```text
 MAIN_SCOPED_WORKFLOWS = 48
@@ -66,7 +66,7 @@ The readback and reconciler describe themselves as non-deploy-gating observers;
 the keepalive, external wake, golden acceptance and nightly scan are read-only
 observers that never mutate repository or production state.
 
-## Remaining unisolated optional jobs (39 workflows)
+## Historical unisolated-optional-job candidate inventory (baseline audit; not refreshed post-fix)
 
 ```text
 kalshi-weather-external-wake.yml 1
@@ -110,7 +110,7 @@ wow-v17-terminal-closure-controller.yml 1
 wow-v17-wnba-prop-candidate.yml 2
 ```
 
-Each remaining workflow must be handled individually: either isolate every step
+This is a **baseline candidate list**, not a claim that all named jobs remain unisolated at the present PR head. The four recently isolated observers are intentionally still represented in the historical list; a fresh count is needed after merge. Each truly remaining optional workflow must be handled individually: either isolate every step
 and add guards proving no mutation follows a failed verification, or move the
 optional work off the main-attached path. New observers must be added to
 `artifacts/wow-engine/tests/test_v17_optional_observer_checkspass_isolation.py`
