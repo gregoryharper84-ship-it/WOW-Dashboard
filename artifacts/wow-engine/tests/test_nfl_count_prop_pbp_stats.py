@@ -298,3 +298,61 @@ def test_residual_sack_is_recorded_as_excluded_flagged_pass(tmp_path, monkeypatc
     assert result["flagged_excluded_examples"][0]["sack"] == "1"
     assert result["missing_play_imputed"] is False
     assert result["status"] == "HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED"
+
+
+def test_held_sample_event_signals_are_never_settled_count_labels():
+    from collections import Counter
+    sample = [{
+        "game_id": "2025_03_NYJ_TB", "gsis_id": "00-0038129",
+        "position": "TE", "research_presence": "on_field",
+        "source_count_label": "UNKNOWN",
+    }]
+    signals = {name: Counter() for name in mod.SOURCE_ROLES}
+    key = ("2025_03_NYJ_TB", "00-0038129")
+    signals["targets"][key] = 2
+    signals["receptions"][key] = 1
+    result = mod.summarize_held_sample_event_signals(
+        sample, signals, {"2025_03_NYJ_TB"},
+    )
+    assert result["sample_size"] == 1
+    assert result["with_positive_pbp_flags"] == 1
+    assert result["examples"][0]["positive_pbp_flags_only"] == {
+        "targets": 2, "receptions": 1,
+    }
+    assert result["examples"][0]["settled_count_label"] == "UNKNOWN"
+    assert result["stat_labels_verified"] is False
+    assert result["can_execute"] is False
+    signals["targets"].clear()
+    signals["receptions"].clear()
+    no_event = mod.summarize_held_sample_event_signals(
+        sample, signals, {"2025_03_NYJ_TB"},
+    )
+    assert no_event["with_positive_pbp_flags"] == 0
+    assert no_event["examples"][0]["pbp_no_positive_signal_implies_zero"] is False
+    assert no_event["examples"][0]["settled_count_label"] == "UNKNOWN"
+
+
+def test_held_sample_rejects_zero_as_predeclared_stat_label():
+    from collections import Counter
+    sample = [{
+        "game_id": "2025_03_NYJ_TB", "gsis_id": "00-0038129",
+        "position": "TE", "research_presence": "on_field",
+        "source_count_label": "0",
+    }]
+    signals = {name: Counter() for name in mod.SOURCE_ROLES}
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_SCHEMA_INVALID:review_identity"):
+        mod.summarize_held_sample_event_signals(
+            sample, signals, {"2025_03_NYJ_TB"},
+        )
+
+
+def test_held_sample_rejects_missing_pbp_game():
+    from collections import Counter
+    sample = [{
+        "game_id": "2025_03_NYJ_TB", "gsis_id": "00-0038129",
+        "position": "TE", "research_presence": "on_field",
+        "source_count_label": "UNKNOWN",
+    }]
+    signals = {name: Counter() for name in mod.SOURCE_ROLES}
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_SCHEMA_INVALID:review_game_absent"):
+        mod.summarize_held_sample_event_signals(sample, signals, set())

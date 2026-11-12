@@ -771,6 +771,36 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
             + type(exc).__name__ + ":" + str(exc)[:220]
             + ":fitted_model_certified=false:can_execute=false"
         )
+    # Independent pinned PBP flags can show positive activity; a missing flag
+    # is NEVER a verified zero or an official settled gamebook event. Only
+    # cross-check the eight predeclared FTN-confirmed identities.
+    pbp_signal_review = {
+        "status": "HOLD_PBP_STAT_EVIDENCE_INCOMPLETE",
+        "stat_labels_verified": False,
+        "can_execute": False,
+    }
+    try:
+        from audit_nfl_count_prop_pbp_presence import PBP_GZ_SHA256
+        from audit_nfl_count_prop_pbp_stats import (
+            read_pinned_pbp_signals, summarize_held_sample_event_signals,
+        )
+        relative = "pbp/play_by_play_2025.csv.gz"
+        receipt = acquire_one(
+            relative, PBP_GZ_SHA256[2025],
+            OFFICIAL_SIZE_BYTES["pbp"][2025], tmp_path, timeout=40,
+        )
+        provisional, covered, quality = read_pinned_pbp_signals(
+            tmp_path / relative, 2025,
+        )
+        pbp_signal_review = summarize_held_sample_event_signals(
+            observed["missing_player_game_review_examples"], provisional,
+            covered,
+        )
+        pbp_signal_review["pinned_pbp_sha256"] = receipt["sha256"]
+        pbp_signal_review["pinned_pbp_bytes"] = receipt["size_bytes"]
+        pbp_signal_review["pbp_unattributed_positive_flags"] = quality["unattributed"]
+    except (ValueError, OSError, TimeoutError, KeyError, TypeError) as exc:
+        pbp_signal_review["error_code"] = type(exc).__name__ + ":" + str(exc)[:200]
     report = {
         "status": "HOLD_FTN_OFFENSE_PRESENCE_ONLY",
         "season": 2025,
@@ -783,6 +813,7 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
         "unmapped_pfr_player_games_2025": observed["unmapped_pfr_player_games"],
         "missing_weekly_offense_player_on_play": observed["pbp_presence_counts"]["pbp_actor_observed"],
         "stratified_official_gamebook_review_cases": observed["missing_player_game_review_examples"],
+        "research_pbp_event_sample": pbp_signal_review,
         "missing_weekly_not_observed_on_offense": observed["pbp_presence_counts"]["pbp_actor_not_observed"],
         "missing_weekly_game_absent_in_participation": observed["pbp_presence_counts"]["pbp_game_absent"],
         "source_blank_offense_play_rows": source["blank_offense_play_rows"],

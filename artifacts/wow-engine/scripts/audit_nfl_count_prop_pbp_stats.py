@@ -347,3 +347,63 @@ def compare_weekly_source_to_pbp_signals(
         "fitted_specialist_certified": False,
         "can_execute": False,
     }
+
+
+def summarize_held_sample_event_signals(
+    samples: list[dict], signals: dict[str, Counter],
+    covered_games: set[str],
+) -> dict[str, object]:
+    """Research-only comparison: positive PBP flags are NOT settled count labels.
+
+    This does not infer zero from a missing event. Individual PBP flags differ
+    from NFL gamebook treatment of penalties, replay reversals and no_play.
+    """
+    import re
+    if (not isinstance(samples, list) or not samples or len(samples) > 8
+            or not isinstance(signals, dict)
+            or set(signals) != set(SOURCE_ROLES)):
+        raise ValueError("NFL_PROP_PBP_STAT_COLUMNS_MISSING:review_samples")
+    results = []
+    seen = set()
+    for item in samples:
+        if not isinstance(item, dict):
+            raise ValueError("NFL_PROP_PBP_STAT_COLUMNS_MISSING:review_identity")
+        game = item.get("game_id")
+        gsis = item.get("gsis_id")
+        role = item.get("position")
+        if (item.get("source_count_label") != "UNKNOWN"
+                or item.get("research_presence") != "on_field"
+                or role not in ("QB", "RB", "WR", "TE")
+                or not isinstance(game, str)
+                or not re.fullmatch(r"2025_[0-9]{2}_[A-Z0-9]+_[A-Z0-9]+", game)
+                or not isinstance(gsis, str)
+                or not re.fullmatch(r"00-[0-9]{7}", gsis)
+                or (game, gsis) in seen):
+            raise ValueError("NFL_PROP_PBP_EVENT_SCHEMA_INVALID:review_identity")
+        seen.add((game, gsis))
+        if game not in covered_games:
+            raise ValueError("NFL_PROP_PBP_EVENT_SCHEMA_INVALID:review_game_absent")
+        positive = {}
+        for stat, roles in SOURCE_ROLES.items():
+            if role not in roles:
+                continue
+            count = signals[stat].get((game, gsis), 0)
+            if type(count) is not int or count < 0:
+                raise ValueError("NFL_PROP_SOURCE_COUNT_INVALID:" + stat)
+            if count > 0:
+                positive[stat] = count
+        results.append({
+            "game_id": game, "gsis_id": gsis, "position": role,
+            "positive_pbp_flags_only": positive,
+            "settled_count_label": "UNKNOWN",
+            "pbp_no_positive_signal_implies_zero": False,
+        })
+    return {
+        "status": "HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT",
+        "sample_size": len(results),
+        "with_positive_pbp_flags": sum(bool(item["positive_pbp_flags_only"]) for item in results),
+        "examples": results,
+        "stat_labels_verified": False,
+        "source_rights_independently_approved": False,
+        "can_execute": False,
+    }
