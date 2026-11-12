@@ -142,3 +142,36 @@ def test_missing_optional_duckdb_dependency_is_a_typed_hold(monkeypatch):
     monkeypatch.setattr(m.importlib, "import_module", missing)
     with pytest.raises(m.PreflightHold, match="COLUMNAR_DUCKDB_UNAVAILABLE"):
         m._duckdb_scan(["/tmp/file.parquet"], "NBA", 2025)
+
+
+@pytest.mark.parametrize("future_feature", [False, True])
+def test_real_duckdb_parquet_scan_when_research_dependency_present(tmp_path, future_feature):
+    duckdb = pytest.importorskip("duckdb")
+    root = tmp_path / "frozen"
+    root.mkdir()
+    parquet = root / "NBA_2025.parquet"
+    con = duckdb.connect(database=":memory:")
+    try:
+        feature_epoch = 1730000100 if future_feature else 1729999900
+        con.execute("""CREATE TABLE frozen AS SELECT 'NBA' AS sport,
+                  2025::INTEGER AS season, 'nba-1' AS observation_id,
+                  'game-1' AS event_id, 1730000000::BIGINT AS event_start_epoch,
+                  ?::BIGINT AS feature_available_epoch,
+                  1729999000::BIGINT AS quote_captured_epoch""", [feature_epoch])
+        con.execute(f"COPY frozen TO '{parquet}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    manifest_path = tmp_path / "frozen_manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema": m.SCHEMA, "can_execute": False, "dataset_id": "nba_frozen",
+        "sport": "NBA", "season": 2025,
+        "files": [{"path": parquet.name, "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest()}],
+    }))
+    if future_feature:
+        with pytest.raises(m.PreflightHold, match="COLUMNAR_INTEGRITY_HOLD"):
+            m.audit(manifest_path, root)
+    else:
+        outcome = m.audit(manifest_path, root)
+        assert outcome["metrics"]["row_count"] == 1
+        assert outcome["metrics"]["quoted_rows"] == 1
+        assert outcome["probability_publishable"] is False
