@@ -277,6 +277,37 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     note["pbp_verified_compressed_bytes"] = sum(
         receipt["size_bytes"] for receipt in pbp_receipts
     )
+    # Reuse only the already-frozen PBP archives; event totals are provisional
+    # source-comparison signals, not certified settlement labels.
+    if note.get("pbp_status") == "HOLD_PBP_PRESENCE_ONLY":
+        from audit_nfl_count_prop_pbp_stats import (
+            read_pinned_pbp_signals, compare_weekly_source_to_pbp_signals,
+            SOURCE_ROLES,
+        )
+        from collections import Counter
+        candidates = {name: Counter() for name in SOURCE_ROLES}
+        stat_games = set()
+        source_issues = {"flag_nulls": {}, "unattributed": {}}
+        try:
+            for year in SEASONS:
+                path = tmp_path / "pbp" / f"play_by_play_{year}.csv.gz"
+                year_signals, year_games, issues = read_pinned_pbp_signals(path, year)
+                for name in SOURCE_ROLES:
+                    candidates[name].update(year_signals[name])
+                stat_games.update(year_games)
+                for dimension, values in issues.items():
+                    for field, count in values.items():
+                        aggregate = source_issues[dimension]
+                        aggregate[field] = aggregate.get(field, 0) + count
+            fidelity = compare_weekly_source_to_pbp_signals(
+                stats, candidates, stat_games,
+            )
+            note["pbp_stat_signal_status"] = fidelity["status"]
+            note["pbp_stat_signal_comparison"] = fidelity["by_source_stat"]
+            note["pbp_stat_flag_quality"] = source_issues
+        except (ValueError, OSError, KeyError) as exc:
+            note["pbp_stat_signal_status"] = "HOLD_PBP_STAT_EVIDENCE_INCOMPLETE"
+            note["pbp_stat_signal_failure"] = type(exc).__name__ + ":" + str(exc)[:160]
     note["pbp_absence_proves_zero"] = False
 
     pytest.skip(

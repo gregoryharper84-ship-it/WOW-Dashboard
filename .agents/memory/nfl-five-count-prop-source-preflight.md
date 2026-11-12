@@ -139,3 +139,14 @@
 - **prevention_artifact:** tests/test_nfl_count_prop_pbp_presence.py mismatched week/game ID and all-zero opportunity negatives; test_acquire_nfl_count_prop_sources.py PR-only receipt. Hosted CI at next exact head required, no new workflow.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None, all outcomes research-only. can_execute=false, V17_TERMINAL_REDUCER.
+
+## Exact per-stat PBP flag source-comparison probe (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PBP_FLAG_INVALID; NFL_PROP_PBP_EVENT_DUPLICATE; HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT
+- **mechanism:** The initial actor-presence control aligned all 26,283 weekly-stat rows with positive attempts/targets/carries, but identity presence does not establish per-stat settlement semantics. nflfastR documents that pass_attempt includes sacks, so naïvely summing flags could miscount official QB attempts; spikes, two-point attempts, no-play penalties and rushing classifications also require rule-constrained reconciliation.
+- **detection_point:** Before converting sparse weekly-stat omissions into any zero-count event or using a PBP-derived target in offline fitted research.
+- **fix:** Count only candidate PBP signals at exact game/play/player keys with predeclared sack/spike/two-point/no-play exclusions, compare only to existing official weekly source counts, preserve per-stat disagreement evidence and positive-weekly/zero-weekly distinctions. No empty player-game zero is manufactured.
+- **prevention_artifact:** scripts/audit_nfl_count_prop_pbp_stats.py; tests/test_nfl_count_prop_pbp_stats.py negative duplicate/flag/sack/spike/two-point/no-play and noncertifying comparison; PR-scoped hosted observation receipt. Exact-head CI and real-data validation pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; fitted model, calibration, semantic certification and protected release remain HOLD, can_execute=false, V17_TERMINAL_REDUCER.

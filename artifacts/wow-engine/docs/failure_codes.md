@@ -726,3 +726,15 @@ Produced only by `scripts/audit_nfl_count_prop_pbp_presence.py`, owned by WOW_PR
 | `NFL_PROP_PBP_RECONCILIATION_DRIFT` | IDENTITY | PBP evidence selection disagrees with canonical mapped-missing-game count; preserve HOLD, repair joins without guessing PFR↔GSIS. | No |
 | `HOLD_PBP_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | PBP acquisition/parsing/reconciliation could not complete all five pinned research archives, even if the original 11 sources verified; preserve explicit partial count and retain unknown stat rows. | No |
 | `HOLD_PBP_PRESENCE_ONLY` | RESEARCH_HOLD | All source and actor-presence evidence remains observation-only; no absence-as-zero, fitted specialist, registration, promotion or execution. | No |
+
+## Offline PBP-to-weekly stat signal comparison (2026-11-11)
+
+Produced only by `scripts/audit_nfl_count_prop_pbp_stats.py`, owned by WOW_PROP_LANE as research-only C-class data diagnostics. Event flag counts are **not** official settled stat labels and never authorize rank, betting execution, or a fitted-probability route.
+
+| Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_PBP_EVENT_DUPLICATE` | IDENTITY | Two actor-bearing PBP records share the exact game/play identity; reject any additive event count. | No |
+| `NFL_PROP_PBP_FLAG_INVALID` | INPUT | An event flag is neither binary nor absent; reject rather than interpret as a valid play. | No |
+| `NFL_PROP_PBP_STAT_COLUMNS_MISSING` | INPUT | Weekly frozen stats lack declared target/identity fields; reject comparison. | No |
+| `HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT` | RESEARCH_HOLD | Event signal counts have not been independently reconciled to NFL stat/scoring rules or source semantics; no model-certification authority. | No |
+| `HOLD_PBP_STAT_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | Pinned PBP event flags are absent/inconsistent, parsing failed or required identity checks failed; preserve source HOLD. | No |

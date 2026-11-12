@@ -1,0 +1,124 @@
+"""PBP play flag comparison remains an offline disagreement diagnostic."""
+from __future__ import annotations
+
+import gzip
+import hashlib
+import sys
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import audit_nfl_count_prop_pbp_stats as mod
+from audit_nfl_count_prop_pbp_presence import PBP_GZ_SHA256
+from acquire_nfl_count_prop_sources import OFFICIAL_SIZE_BYTES
+
+
+def _synthetic(tmp_path, monkeypatch, frame):
+    blob = gzip.compress(frame.to_csv(index=False).encode(), mtime=0)
+    path = tmp_path / "play_by_play_2024.csv.gz"
+    path.write_bytes(blob)
+    monkeypatch.setitem(PBP_GZ_SHA256, 2024, hashlib.sha256(blob).hexdigest())
+    monkeypatch.setitem(OFFICIAL_SIZE_BYTES["pbp"], 2024, len(blob))
+    return path
+
+
+def _play(**changes):
+    row = {
+        "game_id": "2024_01_BAL_KC", "season": 2024, "week": 1,
+        "season_type": "REG", "play_id": 42, "play_type": "pass",
+        "pass_attempt": 1, "complete_pass": 1, "pass_touchdown": 0,
+        "rush_attempt": 0, "sack": 0, "qb_spike": 0,
+        "two_point_attempt": 0, "passer_player_id": "00-0032222",
+        "receiver_player_id": "00-0031111", "rusher_player_id": "",
+    }
+    row.update(changes)
+    return row
+
+
+def test_single_completed_pass_has_one_attempt_reception_and_target(tmp_path, monkeypatch):
+    path = _synthetic(tmp_path, monkeypatch, pd.DataFrame([_play()]))
+    counts, games, quality = mod.read_pinned_pbp_signals(path, 2024)
+    assert games == {"2024_01_BAL_KC"}
+    assert counts["attempts"][("2024_01_BAL_KC", "00-0032222")] == 1
+    assert counts["completions"][("2024_01_BAL_KC", "00-0032222")] == 1
+    assert counts["receptions"][("2024_01_BAL_KC", "00-0031111")] == 1
+    assert counts["targets"][("2024_01_BAL_KC", "00-0031111")] == 1
+    assert not counts["passing_tds"]
+    assert not counts["carries"]
+    assert quality["flag_nulls"]["pass_attempt"] == 0
+
+
+@pytest.mark.parametrize("change", [
+    {"sack": 1}, {"qb_spike": 1}, {"two_point_attempt": 1},
+    {"play_type": "no_play"},
+])
+def test_excluded_pass_events_never_count_as_box_score_attempts(
+    tmp_path, monkeypatch, change,
+):
+    path = _synthetic(tmp_path, monkeypatch, pd.DataFrame([_play(**change)]))
+    counts, _, _ = mod.read_pinned_pbp_signals(path, 2024)
+    assert sum(counts["attempts"].values()) == 0
+    assert sum(counts["completions"].values()) == 0
+
+
+def test_rush_event_counts_only_rusher(tmp_path, monkeypatch):
+    row = _play(play_id=44, play_type="run", pass_attempt=0, complete_pass=0,
+                rush_attempt=1, passer_player_id="", receiver_player_id="",
+                rusher_player_id="00-0031111")
+    counts, _, _ = mod.read_pinned_pbp_signals(
+        _synthetic(tmp_path, monkeypatch, pd.DataFrame([row])), 2024,
+    )
+    assert counts["carries"][("2024_01_BAL_KC", "00-0031111")] == 1
+    assert not counts["attempts"]
+
+
+@pytest.mark.parametrize("change,code", [
+    ({"week": 2}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID"),
+    ({"pass_attempt": 2}, "NFL_PROP_PBP_FLAG_INVALID"),
+])
+def test_invalid_source_event_fails_closed(tmp_path, monkeypatch, change, code):
+    path = _synthetic(tmp_path, monkeypatch, pd.DataFrame([_play(**change)]))
+    with pytest.raises(ValueError, match=code):
+        mod.read_pinned_pbp_signals(path, 2024)
+
+
+def test_duplicate_same_game_play_id_fails_closed(tmp_path, monkeypatch):
+    path = _synthetic(tmp_path, monkeypatch, pd.DataFrame([_play(), _play()]))
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_DUPLICATE"):
+        mod.read_pinned_pbp_signals(path, 2024)
+
+
+def test_weekly_parity_is_diagnostic_not_a_zero_label():
+    weekly = pd.DataFrame([
+        {"game_id": "2024_01_BAL_KC", "player_id": "00-0032222", "position": "QB",
+         "attempts": 2, "completions": 1, "passing_tds": 0,
+         "receptions": 0, "targets": 0, "carries": 0},
+    ])
+    from collections import Counter
+    signals = {name: Counter() for name in mod.SOURCE_ROLES}
+    signals["attempts"][("2024_01_BAL_KC", "00-0032222")] = 1
+    signals["completions"][("2024_01_BAL_KC", "00-0032222")] = 1
+    result = mod.compare_weekly_source_to_pbp_signals(
+        weekly, signals, {"2024_01_BAL_KC"},
+    )
+    assert result["by_source_stat"]["attempts"]["pbp_signal_lower"] == 1
+    assert result["by_source_stat"]["completions"]["pbp_signal_equal"] == 1
+    assert result["status"] == "HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT"
+    assert result["no_missing_weekly_label_imputed"] is True
+    assert result["fitted_specialist_certified"] is False
+    assert result["can_execute"] is False
+
+
+def test_negative_weekly_count_rejected():
+    from collections import Counter
+    weekly = pd.DataFrame([{
+        "game_id": "2024_01_BAL_KC", "player_id": "00-0032222", "position": "QB",
+        **{name: ( -1 if name == "attempts" else 0) for name in mod.SOURCE_ROLES},
+    }])
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_COUNT_INVALID:attempts"):
+        mod.compare_weekly_source_to_pbp_signals(
+            weekly, {name: Counter() for name in mod.SOURCE_ROLES},
+            {"2024_01_BAL_KC"},
+        )
