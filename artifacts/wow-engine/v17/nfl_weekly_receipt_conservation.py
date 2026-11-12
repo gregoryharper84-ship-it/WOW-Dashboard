@@ -109,6 +109,7 @@ def audit_weekly_receipts(
         hold("PICKEM_OFFICIAL_SLATE_COUNT_MISMATCH")
 
     grouped: dict[str, list[tuple[datetime, Mapping[str, Any]]]] = {}
+    receipt_events: dict[str, set[str]] = {}
     unmatched: set[str] = set()
     for row in prediction_rows:
         if not isinstance(row, Mapping):
@@ -130,6 +131,15 @@ def audit_weekly_receipts(
             # An invalid/after-kickoff observation cannot supply pregame proof.
             continue
         grouped.setdefault(official_id, []).append((created_at, row))
+        receipt_events.setdefault(str(row["event_prediction_id"]), set()).add(official_id)
+
+    # One immutable prediction cannot satisfy two different official events.
+    # Reject every use of a reused ID, rather than selecting an arbitrary side.
+    reused_ids = {receipt_id for receipt_id, ids in receipt_events.items() if len(ids) > 1}
+    if reused_ids:
+        hold("PICKEM_REUSED_IMMUTABLE_PREDICTION_ID")
+        for official_id, candidates in grouped.items():
+            grouped[official_id] = [item for item in candidates if str(item[1]["event_prediction_id"]) not in reused_ids]
 
     events: list[dict[str, Any]] = []
     missing: list[str] = []
