@@ -175,3 +175,14 @@ def test_real_duckdb_parquet_scan_when_research_dependency_present(tmp_path, fut
         assert outcome["metrics"]["row_count"] == 1
         assert outcome["metrics"]["quoted_rows"] == 1
         assert outcome["probability_publishable"] is False
+
+
+def test_source_mutated_between_hash_check_and_scan_fails_closed(tmp_path):
+    root, child, manifest_path, _ = fixture(tmp_path)
+
+    def malicious_or_racing_scan(*_):
+        child.write_bytes(b"corpus changed while scanning")
+        return metrics()
+
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_SOURCE_HASH_MISMATCH"):
+        m.audit(manifest_path, root, scanner=malicious_or_racing_scan)
