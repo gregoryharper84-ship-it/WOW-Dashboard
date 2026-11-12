@@ -21,3 +21,14 @@
 - **prevention_artifact:** Two additional negative-first tests in tests/test_offline_market_calibration.py. Original 43 passed / 2 RED, patched 45/45 local PASS; synthetic 30-row CLI receipt remains descriptive and can_execute=false. Exact-head CI must be reacquired.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
 - **production_evidence:** None. Protected merge/release and independent semantic acceptance unproven; model coverage +0, no live changes.
+
+## Independent CodeRabbit numerical and complement challenge (2026-11-12)
+
+- **date:** 2026-11-12
+- **typed_reason:** REPLAY_TIME_LEAKAGE_OR_MISMATCH; REPLAY_MARKET_QUOTE_PAIR_MISMATCH (existing registry entries); valid-probability loss-math defect
+- **mechanism:** Model probabilities valid within (0,1) were silently clipped to [1e-12,1-1e-12] in reporting, hiding true extreme forecast loss. UTC conversion near year bounds could overflow outside validation and abort the whole audit. Merely distinct quote-side names/directions were insufficient to prove complementary payouts; (HOME,WIN) and (AWAY,LOSE) describe the same outcome.
+- **detection_point:** External CodeRabbit review of initial exact head, then five new offline negative regression cases; original evaluator RED in all five. Should have been checked at mathematical scoring and opposite-side schema boundary.
+- **fix:** Compute exact log loss for already-valid 0<p<1 without clipping; convert timezone inside checked try/except (ValueError,OverflowError); reduce pilot to explicit HOME-WIN vs AWAY-WIN MONEYLINE/NO_LINE while holding spreads, totals and any unsupported market alias pending their own settlement contracts.
+- **prevention_artifact:** tests/test_offline_market_calibration.py, five additional RED→GREEN cases. 50/50 targeted local tests PASS; 30-row synthetic CLI remains descriptive and can_execute=false.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
+- **production_evidence:** None. Fresh exact-head CI/independent semantic approval still required; 0 fitted model/market qualification changes, 0 production deployment.
