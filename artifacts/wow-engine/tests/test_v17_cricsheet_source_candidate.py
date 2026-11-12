@@ -103,3 +103,87 @@ def test_cli_creates_only_receipt_and_does_not_overwrite(tmp_path):
     assert record["model_training_authorized"] is False
     with pytest.raises(FileExistsError):
         main(["--archive", str(raw), "--receipt", str(receipt)])
+
+
+
+def test_damaged_or_unsupported_license_is_typed_hold(monkeypatch):
+    original = zipfile.ZipFile.read
+
+    def broken_read(self, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if member_name == "LICENSE.txt":
+            raise NotImplementedError("unrecognized compression")
+        return original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", broken_read)
+    with pytest.raises(SourceCandidateHold, match="SOURCE_ARCHIVE_LICENSE_READ_FAILED"):
+        audit_t20_archive(archive())
+
+
+@pytest.mark.parametrize(("info_updates", "outcome", "expected"), [
+    ({"match_type": ["T20"]}, {"winner": "A"}, "SOURCE_ARCHIVE_MATCH_TYPE_UNVERIFIED"),
+    ({}, {"result": ["tie"]}, "SOURCE_ARCHIVE_OUTCOME_UNRESOLVED"),
+    ({}, {"winner": "A", "result": "tie"}, "SOURCE_ARCHIVE_OUTCOME_CONTRADICTORY"),
+    ({}, {"winner": ["A"]}, "SOURCE_ARCHIVE_SETTLEMENT_TEAM_MISMATCH"),
+])
+def test_malformed_schema_and_contradictory_settlement_fail_closed(info_updates, outcome, expected):
+    game = sample(outcome=outcome)
+    game["info"].update(info_updates)
+    with pytest.raises(SourceCandidateHold, match=expected):
+        audit_t20_archive(archive(match_items=[("42.json", game)]))
+
+
+def test_existing_receipt_conflict_does_not_create_quarantine(tmp_path):
+    from v17.cricsheet_source_candidate import main
+
+    raw = tmp_path / "input.zip"
+    raw.write_bytes(archive())
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("existing independent receipt", encoding="utf-8")
+    quarantine = tmp_path / "quarantine.zip"
+    with pytest.raises(FileExistsError):
+        main([
+            "--archive", str(raw), "--receipt", str(receipt),
+            "--quarantine-archive", str(quarantine),
+        ])
+    assert not quarantine.exists()
+    assert receipt.read_text() == "existing independent receipt"
+
+
+def test_existing_quarantine_conflict_rolls_back_new_receipt(tmp_path):
+    from v17.cricsheet_source_candidate import main
+
+    raw = tmp_path / "input.zip"
+    raw.write_bytes(archive())
+    receipt = tmp_path / "receipt.json"
+    quarantine = tmp_path / "quarantine.zip"
+    quarantine.write_bytes(b"prior quarantine")
+    with pytest.raises(FileExistsError):
+        main([
+            "--archive", str(raw), "--receipt", str(receipt),
+            "--quarantine-archive", str(quarantine),
+        ])
+    assert not receipt.exists()
+    assert quarantine.read_bytes() == b"prior quarantine"
+
+
+def test_partial_receipt_write_rolls_back_created_archive(tmp_path, monkeypatch):
+    from v17 import cricsheet_source_candidate as c
+
+    raw = tmp_path / "input.zip"
+    raw.write_bytes(archive())
+    receipt = tmp_path / "receipt.json"
+    quarantine = tmp_path / "quarantine.zip"
+
+    def broken_dump(*_args, **_kwargs):
+        raise OSError("simulated receipt-write failure")
+
+    monkeypatch.setattr(c.json, "dump", broken_dump)
+    with pytest.raises(OSError, match="receipt-write failure"):
+        c.main([
+            "--archive", str(raw), "--receipt", str(receipt),
+            "--quarantine-archive", str(quarantine),
+        ])
+    assert not receipt.exists()
+    assert not quarantine.exists()
+    assert raw.exists()
