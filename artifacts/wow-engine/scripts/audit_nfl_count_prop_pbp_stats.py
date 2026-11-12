@@ -375,7 +375,12 @@ def summarize_held_sample_event_signals(
                 or item.get("research_presence") != "on_field"
                 or role not in ("QB", "RB", "WR", "TE")
                 or not isinstance(game, str)
-                or not re.fullmatch(r"2025_[0-9]{2}_[A-Z0-9]+_[A-Z0-9]+", game)
+                or not re.fullmatch(r"2025_(0[1-9]|1[0-8])_[A-Z0-9]+_[A-Z0-9]+", game)
+                or (("season" in item or "week" in item)
+                    and (type(item.get("season")) is not int
+                         or type(item.get("week")) is not int
+                         or item["season"] != 2025
+                         or item["week"] != int(game.split("_")[1])))
                 or not isinstance(gsis, str)
                 or not re.fullmatch(r"00-[0-9]{7}", gsis)
                 or (game, gsis) in seen):
