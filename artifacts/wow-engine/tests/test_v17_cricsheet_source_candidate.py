@@ -36,6 +36,7 @@ def test_candidate_archive_is_pinned_and_never_model_certified():
     assert r["unique_t20_match_ids"] == 2
     assert (r["binary_settled_matches"], r["nonbinary_or_void_matches"]) == (1, 1)
     assert r["archive_pin_status"] == "MATCHED"
+    assert r["archive_scope"] == "INTERNATIONAL_T20_ONLY"
     assert r["pregame_feature_chronology_status"] == "UNVERIFIED"
     assert r["model_training_authorized"] is False
     assert r["probability_publishable"] is False
