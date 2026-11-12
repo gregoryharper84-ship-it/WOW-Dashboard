@@ -305,3 +305,13 @@
 - **prevention_artifact:** \`artifacts/wow-engine/tests/test_nfl_count_prop_participation_audit.py\` (eight boundary/negative cases); offline standalone equivalent 12/12 synthetic PASS. Existing PR-only rapid runner prints bounded per-route/by-season real-source receipt after 11 pinned hashes, but until it executes at the fresh head its source findings remain **unverified**.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. No new fitted model, certified specialist, source-rights approval, independent SIRT acceptance, production merge/deployment, user Action or wager. \`can_execute=false\`, \`V17_TERMINAL_REDUCER\`.
+
+## Embedded game year/week mismatch in L10 feature audit — 2026-11-12
+- **date:** 2026-11-12
+- **typed_reason:** NFL_PROP_PARTICIPATION_SNAP_INVALID (existing typed input failure).
+- **mechanism:** An otherwise syntactically valid `season`/`week` pair could disagree with the embedded `game_id` year/week. The L10 history audit then ordered a mislabeled event by the wrong instant and could report false missing-game exposure or omit a true gap.
+- **detection_point:** CodeRabbit exact-head review on PR #2605 after the new source receipt; must have been caught at the same input-to-event-index preflight.
+- **fix:** Require the full canonical `YYYY_WW_AWAY_HOME` game identity and exact `season/week` prefix agreement in both weekly-stat and mapped-missing inputs; fail closed instead of guessing dates or repairing IDs.
+- **prevention_artifact:** four negative-first RED→GREEN cases for source-year disagreement and missing team names, each on both source frames; standalone audit test suite 16/16 PASS. New hosted exact-head review still required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. Observed 2021–2025 L10 exposure remains research-only; no model activation, zero imputation, source rights clearance, or protected release. `can_execute=false`.

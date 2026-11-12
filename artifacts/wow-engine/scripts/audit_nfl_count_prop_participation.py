@@ -80,6 +80,12 @@ def audit_observed_l10_history_gap_exposure(
             if not valid.all() or numeric.mod(1).ne(0).any():
                 raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:history_chronology")
             frame[field] = numeric.astype(int)
+        canonical = frame["game_id"].astype(str).str.strip()
+        expected_prefix = (frame["season"].astype(str) + "_"
+                           + frame["week"].map(lambda week: f"{week:02d}") + "_")
+        if (not canonical.str.slice(0, 8).eq(expected_prefix).all()
+                or not canonical.str.fullmatch(r"[0-9]{4}_[0-9]{2}_[A-Z0-9]+_[A-Z0-9]+").all()):
+            raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:history_game_id")
         frame["event_index"] = frame.season * 100 + frame.week
         frame["position"] = frame.position.astype(str).str.upper()
     if stats.duplicated(["player_id", "season", "week"]).any():

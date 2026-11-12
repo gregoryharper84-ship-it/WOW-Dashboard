@@ -462,3 +462,33 @@ def test_duplicate_missing_history_week_fails_closed():
     doubled = pd.concat([missing, missing], ignore_index=True)
     with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_DUPLICATE"):
         audit_observed_l10_history_gap_exposure(stats, doubled)
+
+
+@pytest.mark.parametrize("source", ["stats", "missing"])
+def test_l10_history_game_id_season_week_mismatch_fails_closed(source):
+    """An embedded game year must agree with the source row chronology."""
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    if source == "stats":
+        stats.loc[0, "game_id"] = "2024_01_A_B"
+    else:
+        missing.loc[0, "game_id"] = "2024_11_A_B"
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:history_game_id"):
+        audit_observed_l10_history_gap_exposure(stats, missing)
+
+
+@pytest.mark.parametrize("source", ["stats", "missing"])
+def test_l10_history_game_id_without_teams_fails_closed(source):
+    """A year/week prefix alone is not an official event identity."""
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    if source == "stats":
+        stats.loc[0, "game_id"] = "2023_01_"
+    else:
+        missing.loc[0, "game_id"] = "2023_11_"
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:history_game_id"):
+        audit_observed_l10_history_gap_exposure(stats, missing)
