@@ -36,8 +36,8 @@ A pass returns DATA_PREFLIGHT_PASS_ONLY, corpus counts, quote counts, manifest d
 
 ## Verification boundary
 
-- Local synthetic tests: **14 passed, 2 conditional real-DuckDB integration tests skipped** (Python 3.13 environment, 2026-11-12).
-- Deliberately suppressed the features_after_start rejection: corresponding regression RED (**1 failed, 6 passed**), then restored the guard and reran GREEN (**14 passed**). Test remains permanently in the suite.
+- Local synthetic tests: **15 passed, 2 conditional real-DuckDB integration tests skipped** (Python 3.13 environment, 2026-11-12).
+- Deliberately suppressed the features_after_start rejection: corresponding regression RED (**1 failed, 6 passed**), then restored the guard and reran GREEN (**14 passed**). Tests remain permanently in the suite. A second RED reproduction mutated source bytes inside the scanner (1 failed before fix); post-scan hash revalidation made it GREEN (15 passed, 2 skipped).
 - Real DuckDB + real Parquet execution: **unrun**; dedicated two-case integration test will run when research DuckDB is installed (DuckDB and approved corpus unavailable in this environment).
 - Production SHA/row persistence: **unrun**, not applicable to this research-only change.
 - Scoreboard delta: **0** model-evaluated, **0** qualified, **0** production SHA changes established from this research change.
