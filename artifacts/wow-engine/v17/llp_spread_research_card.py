@@ -159,6 +159,12 @@ def _final_grade(event: Mapping[str, Any], row: Mapping[str, Any], final: Mappin
         errors.append("SPORT_MARKET_FORMAT_UNSUPPORTED")
     if errors:
         return "HELD", errors
+    if (sport == "TENNIS" and final.get("deciding_match_tiebreak") is True
+            and final.get("provider_handicap_rule_verified") is not True):
+        return "HELD", ["TENNIS_MATCH_TIEBREAK_SETTLEMENT_UNVERIFIED"]
+    if (sport == "MLB" and final.get("shortened_game") is True
+            and final.get("provider_settlement_rule_verified") is not True):
+        return "HELD", ["SHORTENED_GAME_SETTLEMENT_UNVERIFIED"]
     assert rule is not None
     home = final.get(rule[1])
     away = final.get(rule[2])
