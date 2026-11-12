@@ -143,6 +143,59 @@ def test_repeated_pfr_gap_counts_games_and_distinct_ids_separately(sample_cohort
     assert receipt["independent_semantic_acceptance"] is False
 
 
+@pytest.mark.parametrize("earlier_source_rows,expected_upper_bound", [
+    (9, 0), (10, 1),
+])
+def test_missing_label_history_uses_earlier_rows_without_zero_imputation(
+    sample_cohort, earlier_source_rows, expected_upper_bound,
+):
+    """Prior source-game threshold is an upper bound, never a fitted label."""
+    stats, snaps, players = sample_cohort
+    one = stats.loc[stats.player_id.eq("00-0031111")].copy()
+    before = []
+    for week in range(1, earlier_source_rows + 1):
+        row = one.iloc[0].copy()
+        row["game_id"] = f"2023_{week:02d}_BAL_KC"
+        row["season"] = 2023
+        row["week"] = week
+        before.append(row)
+    stats = pd.concat([
+        stats.loc[stats.player_id.eq("00-0032222")],
+        pd.DataFrame(before),
+    ], ignore_index=True)
+    result = reconcile_player_games(stats, snaps, players)
+    receptions = result["missing_weekly_label_history_exposure"]["RECEPTIONS"]
+    carries = result["missing_weekly_label_history_exposure"]["RUSH_ATTEMPTS"]
+    attempts = result["missing_weekly_label_history_exposure"]["PASS_ATTEMPTS"]
+    assert receptions["upper_bound_history_eligible_missing_rows"] == expected_upper_bound
+    assert carries["upper_bound_history_eligible_missing_rows"] == expected_upper_bound
+    assert attempts["upper_bound_history_eligible_missing_rows"] == 0
+    assert receptions["count_label_inferred"] is False
+    assert result["missing_player_games"] == 1
+    assert result["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+    assert result["can_execute"] is False
+
+
+def test_future_source_rows_never_count_toward_a_missing_pregame_label(sample_cohort):
+    stats, snaps, players = sample_cohort
+    later = []
+    for week in range(1, 11):
+        row = stats.loc[stats.player_id.eq("00-0031111")].iloc[0].copy()
+        row["game_id"] = f"2025_{week:02d}_BAL_KC"
+        row["season"] = 2025
+        row["week"] = week
+        later.append(row)
+    stats = pd.concat([
+        stats.loc[stats.player_id.eq("00-0032222")],
+        pd.DataFrame(later),
+    ], ignore_index=True)
+    result = reconcile_player_games(stats, snaps, players)
+    assert result["missing_weekly_label_history_exposure"]["RECEPTIONS"][
+        "upper_bound_history_eligible_missing_rows"
+    ] == 0
+    assert result["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+
+
 def test_missing_eight_snap_participant_game_stays_unknown(sample_cohort):
     """A player who logged eight offensive snaps cannot disappear as a zero."""
     stats, snaps, players = sample_cohort

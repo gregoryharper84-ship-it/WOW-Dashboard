@@ -249,3 +249,14 @@
 - **prevention_artifact:** scripts/audit_nfl_count_prop_roster_crosswalk.py; tests/test_nfl_count_prop_roster_crosswalk.py, PR-only original rapid-runner observational receipt. Exact head hosted verification and independent semantic reviewer still required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no source-rights clearance, model certification, protected merge, deploy or execution. can_execute=false, V17_TERMINAL_REDUCER.
+
+## NFL count-stat missing weekly-row historical-selection exposure (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_UNRESOLVED_PARTICIPATION
+- **mechanism:** Despite exact PBP actor parity, 3,994 snap-positive participants lack weekly stats rows. The five candidate builders require 10 earlier observed weekly games for L10/L5 inputs; training only observed stats omits a selected population of sparse opportunities. This predicts that a subset of 3,994 omissions would fall after 10 earlier recorded games and could bias model outcomes if treated as complete coverage.
+- **detection_point:** Before fitting any offline specialist, and before treating a sparse source's label selection as a valid chronological target population.
+- **fix:** Report route-specific *upper bounds* on missing player-games with >=10 earlier observed weekly records, using strict earlier season/week ordering (future weeks excluded) and the route's eligible positions. Do not infer missing zero counts or claim true feature eligibility across position changes.
+- **prevention_artifact:** test_missing_label_history_uses_earlier_rows_without_zero_imputation with 9-versus-10 positive control, and test_future_source_rows_never_count_toward_a_missing_pregame_label. Existing PR-only full 16-file pinned-source observation will report five research-only counts.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. No probability fit, label imputation, protected merge or deploy; can_execute=false, V17_TERMINAL_REDUCER.

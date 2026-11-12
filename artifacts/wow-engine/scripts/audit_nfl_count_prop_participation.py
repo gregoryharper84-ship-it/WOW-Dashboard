@@ -11,13 +11,14 @@ import argparse
 import hashlib
 import io
 import json
+from bisect import bisect_left
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from train_nfl_missing_prop_candidates import (
-    EXPECTED_RELEASE_SHA256, SEASONS, load_source_files,
+    EXPECTED_RELEASE_SHA256, SEASONS, MIN_PRIOR_GAMES, ROUTES, load_source_files,
 )
 
 # Published digests from the official nflverse-data release-asset metadata.
@@ -196,6 +197,40 @@ def reconcile_player_games(
             "mapped_missing_stats": _histogram(missing, dimension),
             "unmapped_identity": _histogram(unmapped, dimension),
         }
+    # Upper bound on potential fitted-candidate label loss.  These are
+    # *prior known weekly rows*, not a fitted feature audit or zero-stat proof.
+    # Any historical position changes can only lower true route eligibility.
+    prior_events: dict[str, list[int]] = {}
+    for stat in keys.itertuples(index=False):
+        prior_events.setdefault(str(stat.player_id), []).append(
+            int(stat.season) * 100 + int(stat.week)
+        )
+    for events in prior_events.values():
+        events.sort()
+    history_exposure = {}
+    for route, config in ROUTES.items():
+        roles = set(config["roles"].split(","))
+        route_rows = missing.loc[
+            missing["position"].astype(str).str.upper().isin(roles)
+        ]
+        seasonal = {str(year): 0 for year in SEASONS}
+        affected = 0
+        for row in route_rows.itertuples(index=False):
+            current = int(row.season) * 100 + int(row.week)
+            prior = bisect_left(
+                prior_events.get(str(row.gsis_id), []), current
+            )
+            if prior >= MIN_PRIOR_GAMES:
+                affected += 1
+                seasonal[str(int(row.season))] += 1
+        history_exposure[route] = {
+            "missing_source_participant_games": int(len(route_rows)),
+            "upper_bound_history_eligible_missing_rows": affected,
+            "upper_bound_by_season": seasonal,
+            "min_prior_recorded_rows": MIN_PRIOR_GAMES,
+            "method": "known_earlier_player_weekly_rows_only_conservative_upper_bound",
+            "count_label_inferred": False,
+        }
     defects = len(missing) + len(unmapped)
     return {
         "scope": "2021-2025_REG_QB_RB_WR_TE_OFFENSE_SNAPS_GT_ZERO",
@@ -208,6 +243,7 @@ def reconcile_player_games(
         "unmapped_gap_cause_distinct_ids": gap_distinct_ids,
         "unmapped_player_profiles": unmapped_profiles[:20],
         "unmapped_profile_total_pfr_ids": int(len(unmapped_profiles)),
+        "missing_weekly_label_history_exposure": history_exposure,
         "participation_breakdown": strata,
         "missing_examples": examples.head(20).to_dict(orient="records"),
         "unmapped_examples": unknown_examples.head(20).to_dict(orient="records"),
