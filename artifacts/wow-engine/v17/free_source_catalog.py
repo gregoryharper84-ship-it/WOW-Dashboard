@@ -70,6 +70,18 @@ SOURCES = (
     FreeSource("NHL_PUBLIC_WEB_API", ("NHL",), ("HISTORY", "STATUS"),
                "CANDIDATE_REVIEW", "v17/model_source_entitlements.py",
                "REGISTRY_CANDIDATE_REVIEW_REQUIRED", "NHL_PUBLIC_WEB_API"),
+    # Candidate-only, source-rights-reviewed published archive. CRICKET remains
+    # NO_APPROVED_SOURCE in the authoritative entitlement registry until
+    # an independent dataset-use review; this does NOT permit fitted training.
+    FreeSource("CRICSHEET_ODC_BY", ("CRICKET",), ("HISTORY",),
+               "RESEARCH_ARCHIVE_CANDIDATE_ONLY", "v17/cricsheet_source_candidate.py",
+               "ODC_BY_LICENSE_TEXT_SEEN_DATASET_RIGHTS_AND_PREGAME_REPLAY_HOLD"),
+    # Open Boxing offers public world-title bout CSV/JSON, but a publication
+    # endpoint is not commercial model-training consent and title-only
+    # coverage is not all professional boxing events.
+    FreeSource("OPENBOXING_PUBLIC", ("BOXING",), ("HISTORY", "DISCOVERY"),
+               "SOURCE_RESEARCH_ONLY", "https://openboxing.org/api/",
+               "DATASET_LICENSE_AND_FULL_BOUT_COVERAGE_UNVERIFIED"),
     FreeSource("PROPSMADNESS_PUBLIC_EXPLORE", tuple(MARKETS),
                ("DISCOVERY",), "EXISTING_OFFLINE_RESEARCH",
                "v17/propsmadness_multisport_public_explore.py",
