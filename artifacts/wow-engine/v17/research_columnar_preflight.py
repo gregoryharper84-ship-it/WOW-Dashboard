@@ -53,9 +53,9 @@ SELECT
                       AND (TRY_CAST(quote_captured_epoch AS BIGINT) IS NULL
                            OR TRY_CAST(quote_captured_epoch AS BIGINT) <= 0
                            OR TRY_CAST(quote_captured_epoch AS DOUBLE) <> TRY_CAST(quote_captured_epoch AS BIGINT)
-                           OR TRY_CAST(quote_captured_epoch AS BIGINT) > TRY_CAST(event_start_epoch AS BIGINT)))
+                           OR TRY_CAST(quote_captured_epoch AS BIGINT) >= TRY_CAST(event_start_epoch AS BIGINT)))
              THEN 1 ELSE 0 END) AS invalid_quote_time
-FROM read_parquet(?)
+FROM read_parquet(?, union_by_name = true)
 """
 _METRICS = (
     "row_count", "distinct_observations", "missing_identity", "wrong_partition",
