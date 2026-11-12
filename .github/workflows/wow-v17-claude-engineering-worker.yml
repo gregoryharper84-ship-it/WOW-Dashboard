@@ -506,7 +506,12 @@ jobs:
             from root cause, define objective acceptance criteria and the smallest fix boundary.
             Preserve the exact typed failure. Do not edit files. Preserve V17 terminal authority,
             exact-once semantics, and can_execute=false. Never substitute market evidence for model probability.
-          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"primary_subsystem":{"type":"string"},"typed_failure":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","root_cause","risk_class","primary_subsystem","typed_failure","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
+            reproduction_status must be REPRODUCED, INTERMITTENT, ENVIRONMENT_SPECIFIC, NOT_REPRODUCED or
+            INSUFFICIENT_EVIDENCE. reproduction_test must be an existing tracked pytest node id relative to
+            artifacts/wow-engine (for example test_x.py::test_y) that currently FAILS because of this
+            incident, or NONE. Implementation is admitted only after the worker deterministically re-runs
+            that test and observes it fail; a self-reported status alone is not evidence.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"reproduction_test":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"primary_subsystem":{"type":"string"},"typed_failure":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","reproduction_test","root_cause","risk_class","primary_subsystem","typed_failure","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
 
       - name: Normalize Triage packet
         id: triage
@@ -526,7 +531,20 @@ jobs:
           fi
           subsystem=$(jq -r '.primary_subsystem // "UNKNOWN"' <<<"$RESULT")
           failure=$(jq -r '.typed_failure // "NONE"' <<<"$RESULT")
+          # LLM-origin claim only; admission still requires deterministic corroboration below.
+          reproduction=$(jq -r '(.reproduction_status // "MISSING") | tostring | ascii_upcase | gsub("^\\s+|\\s+$"; "")' <<<"$RESULT")
+          reproduction_test=$(jq -r '(.reproduction_test // "NONE") | tostring | gsub("^\\s+|\\s+$"; "")' <<<"$RESULT")
+          case "$reproduction" in
+            REPRODUCED|INTERMITTENT|ENVIRONMENT_SPECIFIC|NOT_REPRODUCED|INSUFFICIENT_EVIDENCE) ;;
+            *) reproduction=UNRECOGNIZED ;;
+          esac
+          node_re='^[][A-Za-z0-9_./:,-]{1,300}$'
+          if ! [[ "$reproduction_test" =~ $node_re ]]; then
+            reproduction_test=INVALID
+          fi
           echo "repairable=$repairable" >> "$GITHUB_OUTPUT"
+          echo "reproduction=$reproduction" >> "$GITHUB_OUTPUT"
+          echo "reproduction_test=$reproduction_test" >> "$GITHUB_OUTPUT"
           echo "risk=$risk" >> "$GITHUB_OUTPUT"
           echo "incident=$incident" >> "$GITHUB_OUTPUT"
           echo "subsystem=$subsystem" >> "$GITHUB_OUTPUT"
@@ -593,6 +611,55 @@ jobs:
           echo "subagent=$subagent" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/specialist.json
 
+      # Triage reproduction_status is an LLM-origin claim. Mutation is admitted only after the
+      # worker itself re-runs the named tracked regression and observes it fail (pytest exit 1)
+      # on the exact checked-out head. No secrets are exposed to this step; it never fails the
+      # job, it only emits corroborated=true|false with an exact reason.
+      - name: Corroborate triage reproduction deterministically
+        id: reproduction
+        if: steps.lead.outputs.action == 'REPAIR' && steps.triage.outcome == 'success'
+        shell: bash
+        working-directory: artifacts/wow-engine
+        env:
+          REPRODUCTION: ${{ steps.triage.outputs.reproduction }}
+          REPRODUCTION_TEST: ${{ steps.triage.outputs.reproduction_test }}
+        run: |
+          set -euo pipefail
+          admit() {
+            echo "corroborated=$1" >> "$GITHUB_OUTPUT"
+            echo "reason=$2" >> "$GITHUB_OUTPUT"
+            echo "Reproduction corroboration: corroborated=$1 ($2)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          case "${REPRODUCTION:-}" in
+            REPRODUCED|INTERMITTENT|ENVIRONMENT_SPECIFIC) ;;
+            *) admit false "STATUS_NOT_ADMISSIBLE:${REPRODUCTION:-MISSING}" ;;
+          esac
+          node_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*\.py(::[A-Za-z0-9_]+){0,2}(\[[A-Za-z0-9_.,-]+\])?$'
+          if ! [[ "${REPRODUCTION_TEST:-}" =~ $node_re ]] || [[ "$REPRODUCTION_TEST" == *..* ]]; then
+            admit false TEST_NODE_INVALID
+          fi
+          file="${REPRODUCTION_TEST%%::*}"
+          case "${file##*/}" in
+            test_*.py) ;;
+            *) admit false TEST_NODE_NOT_A_TEST_MODULE ;;
+          esac
+          if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+            admit false TEST_NODE_UNTRACKED
+          fi
+          log="${RUNNER_TEMP:-/tmp}/wow-reproduction.log"
+          set +e
+          timeout 600 python -m pytest -q -p no:cacheprovider "$REPRODUCTION_TEST" >"$log" 2>&1
+          status=$?
+          set -e
+          tail -n 40 "$log" || true
+          case "$status" in
+            1) admit true "RED_OBSERVED:$REPRODUCTION_TEST" ;;
+            0) admit false TEST_PASSED_NOT_REPRODUCED ;;
+            124) admit false TEST_TIMEOUT ;;
+            *) admit false "TEST_ERROR_EXIT_$status" ;;
+          esac
+
       - name: Deny policy-changing implementation lease
         if: steps.lead.outputs.action == 'REPAIR' && (steps.triage.outputs.risk == 'R2-repair-policy' || steps.triage.outputs.risk == 'R3')
         run: echo "Governed hard boundary; implementation lease denied." >> "$GITHUB_STEP_SUMMARY"
@@ -601,6 +668,7 @@ jobs:
         id: mutation_gate
         if: >-
           steps.triage.outputs.repairable == 'true' &&
+          steps.reproduction.outputs.corroborated == 'true' &&
           (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
            steps.specialist.outputs.hypothesis == 'NARROWED') &&
           (steps.triage.outputs.risk == 'R0' ||
@@ -681,6 +749,7 @@ jobs:
         if: >-
           steps.mutation_gate.outputs.allowed == 'true' &&
           steps.triage.outputs.repairable == 'true' &&
+          steps.reproduction.outputs.corroborated == 'true' &&
           (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
            steps.specialist.outputs.hypothesis == 'NARROWED') &&
           (steps.triage.outputs.risk == 'R0' ||
@@ -704,7 +773,8 @@ jobs:
             existing original PR #${{ steps.repair_target.outputs.pr_number }} at exact
             head ${{ steps.repair_target.outputs.head_sha }}. Keep its original branch;
             never replace the PR, alter another incident, or delete/skip failing tests.
-            Run the narrowest reproduction first and relevant regressions. Preserve can_execute=false,
+            The deterministically corroborated RED reproduction is ${{ steps.triage.outputs.reproduction_test }};
+            it must pass after your change. Run it first, then relevant regressions. Preserve can_execute=false,
             DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, exact typed failures, exact-once
             behavior, V17_TERMINAL_REDUCER, and all probability governance. No Class C change is authorized.
           output_schema: '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
@@ -1061,6 +1131,9 @@ jobs:
           TRIAGE_REPAIRABLE: ${{ steps.triage.outputs.repairable }}
           TRIAGE_RISK: ${{ steps.triage.outputs.risk }}
           SPECIALIST_HYPOTHESIS: ${{ steps.specialist.outputs.hypothesis }}
+          TRIAGE_REPRODUCTION: ${{ steps.triage.outputs.reproduction }}
+          REPRODUCTION_CORROBORATED: ${{ steps.reproduction.outputs.corroborated }}
+          REPRODUCTION_REASON: ${{ steps.reproduction.outputs.reason }}
           MUTATION_GATE_OUTCOME: ${{ steps.mutation_gate.outcome }}
           IMPLEMENTATION_OUTCOME: ${{ steps.implementation_agent.outcome }}
           IMPL_OUTCOME: ${{ steps.impl.outcome }}
@@ -1084,6 +1157,10 @@ jobs:
                 disposition=UNRESOLVED_TYPED_FAILURE
                 next_action="Re-triage with new reproducible evidence."
                 revisit="New evidence or next dispatcher cycle." ;;
+              ACTIONABLE_REPAIR_EVIDENCE_INSUFFICIENT)
+                disposition=UNRESOLVED_TYPED_FAILURE
+                next_action="Re-triage with a tracked failing regression that deterministically reproduces this incident."
+                revisit="New deterministic reproduction evidence or next dispatcher cycle." ;;
               ACTIONABLE_REPAIR_MUTATION_DENIED)
                 disposition=UNRESOLVED_TYPED_FAILURE
                 next_action="Re-acquire a valid implementation lease (fence, epoch, SAFE_HOLD cleared)."
@@ -1129,6 +1206,13 @@ jobs:
             R0|R1|R2-restorative) ;;
             *) fail ACTIONABLE_REPAIR_RISK_UNRECOGNIZED "risk=${TRIAGE_RISK:-MISSING}." ;;
           esac
+          case "${TRIAGE_REPRODUCTION:-}" in
+            REPRODUCED|INTERMITTENT|ENVIRONMENT_SPECIFIC) ;;
+            *) fail ACTIONABLE_REPAIR_EVIDENCE_INSUFFICIENT "triage reproduction_status=${TRIAGE_REPRODUCTION:-MISSING}." ;;
+          esac
+          if [ "${REPRODUCTION_CORROBORATED:-}" != "true" ]; then
+            fail ACTIONABLE_REPAIR_EVIDENCE_INSUFFICIENT "reproduction not deterministically corroborated: ${REPRODUCTION_REASON:-NOT_RUN}."
+          fi
           if [ "${MUTATION_GATE_OUTCOME:-}" != "success" ]; then
             fail ACTIONABLE_REPAIR_MUTATION_DENIED "mutation gate outcome=${MUTATION_GATE_OUTCOME:-NOT_RUN}."
           fi
@@ -1412,6 +1496,7 @@ jobs:
             echo "- Incident: ${{ steps.lead.outputs.incident || 'NONE' }}"
             echo "- Acceleration advancement: ${{ steps.acceleration.outputs.advancement || 'NOT_RUN' }}"
             echo "- Triage repairable: ${{ steps.triage.outputs.repairable || 'NOT_RUN' }}"
+            echo "- Reproduction corroborated: ${{ steps.reproduction.outputs.corroborated || 'NOT_RUN' }}"
             echo "- Specialist: ${{ steps.specialist.outputs.subagent || 'NOT_RUN' }}"
             echo "- Specialist hypothesis: ${{ steps.specialist.outputs.hypothesis || 'NOT_RUN' }}"
             echo "- Implementation changed: ${{ steps.impl.outputs.changed || 'false' }}"
