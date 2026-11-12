@@ -100,3 +100,25 @@ def test_threshold_monotonicity_is_draw_derived():
     assert high["game_total"]["more"] <= low["game_total"]["more"]
     assert high["home_spread"]["more"] <= low["home_spread"]["more"]
     assert high["moneyline"] == low["moneyline"]
+
+
+def test_dst_fold_late_capture_rejected_even_with_same_tzinfo():
+    from zoneinfo import ZoneInfo
+    pacific = ZoneInfo("America/Los_Angeles")
+    # Second 01:15 is 09:15 UTC, which comes after first 01:45 (08:45 UTC).
+    p = packet()
+    p["captured_at"] = datetime(2020, 11, 1, 1, 15, tzinfo=pacific, fold=1)
+    p["event_start_at"] = datetime(2020, 11, 1, 1, 45, tzinfo=pacific, fold=0)
+    assert p["captured_at"] < p["event_start_at"]  # reproduces buggy wall-time compare
+    with pytest.raises(ValueError, match="strictly precede"):
+        module.project_joint_shadow(**p)
+
+
+def test_dst_fold_earlier_capture_is_accepted():
+    from zoneinfo import ZoneInfo
+    pacific = ZoneInfo("America/Los_Angeles")
+    p = packet()
+    p["captured_at"] = datetime(2020, 11, 1, 1, 45, tzinfo=pacific, fold=0)
+    p["event_start_at"] = datetime(2020, 11, 1, 1, 15, tzinfo=pacific, fold=1)
+    result = module.project_joint_shadow(**p)
+    assert result["probability_publishable"] is False
