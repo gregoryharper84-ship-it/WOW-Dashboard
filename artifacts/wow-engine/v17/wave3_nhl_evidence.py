@@ -132,15 +132,16 @@ def nhl_evidence_preflight(
 ) -> Mapping[str, object]:
     """NHL evidence preflight. Fail closed; research-only HOLD by default.
 
-    The triad binding proof is required, and partition event times are
-    mandatory: a review-ready decision cannot omit chronology evidence.
-    The standalone reconciliation also fails closed on empty partitions
-    and ID reuse.
+    The triad binding proof and registry/validation/provenance attestations
+    are required, and partition event times are mandatory: a review-ready
+    decision cannot omit chronology or attested-evidence. The standalone
+    reconciliation also fails closed on empty partitions and ID reuse.
     """
     blockers: list[str] = []
     triad_verdict = verify_triad(
         {**dict(triad), "expected_sport": SPORT, "expected_market": MARKET},
         require_binding=True,
+        require_attestation=True,
     )
     blockers.extend(triad_verdict.blockers)
     if (

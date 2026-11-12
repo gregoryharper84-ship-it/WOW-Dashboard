@@ -153,7 +153,7 @@ def test_preflight_rejects_stale_snapshot_lineage():
 
 def _full_nba_kwargs(triadic=None):
     return {
-        "triad": triadic if triadic is not None else _bound("NBA"),
+        "triad": triadic if triadic is not None else _attested("NBA"),
         "train": ["2026-01-01T00:00:00Z"],
         "calibration": ["2026-02-01T00:00:00Z"],
         "holdout": ["2026-03-01T00:00:00Z"],
@@ -170,9 +170,56 @@ def _full_nba_kwargs(triadic=None):
             {"official_event_id": "g2", "home_team_id": "h2", "away_team_id": "a2"},
             {"official_event_id": "g3", "home_team_id": "h3", "away_team_id": "a3"},
         ],
-        "lineup_evidence": {"rotation_changed": False},
-        "bounds_policy_approved": True,
+        "lineup_evidence": {
+            "rotation_changed": False,
+            "latest_material_update_ts": None,
+            "official_event_ids": ["g1", "g2", "g3"],
+            "source_id": "nba-official-injury-report",
+            "evidence_as_of": "2026-01-01T11:00:00Z",
+        },
+        "bounds_policy": {
+            "policy_id": "NBA_DYNAMIC_BOUNDS_POLICY",
+            "policy_version": "V1",
+            "policy_artifact_sha256": SHA,
+            "scope_sport": "NBA",
+            "scope_market": "MONEYLINE",
+            "approved_by": "SIRT",
+            "submitted_by": "MODEL_RESEARCH",
+            "approval_receipt_id": "receipt-001",
+            "valid_from": "2026-01-01T00:00:00Z",
+            "valid_until": "2026-06-30T00:00:00Z",
+        },
     }
+
+
+def _attested(sport: str) -> dict:
+    triad = _bound(sport)
+    triad["artifact_registration"] = {
+        "registry_id": "wow-prop-fitted-model-artifacts",
+        "registered_artifact_sha256": SHA,
+        "registrar": "governed-registry",
+        "attested_by": "SIRT",
+        "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+        "active": True,
+        "promoted": True,
+    }
+    triad["calibrator_validation"] = {
+        "validation_status": "PASS",
+        "health_status": "PASS",
+        "calibrator_artifact_sha256": SHA,
+        "scope_sport": sport,
+        "scope_market": "MONEYLINE",
+        "attested_by": "SIRT",
+    }
+    triad["corpus_provenance"] = {
+        "source_id": "nba-official-pregame-corpus",
+        "manifest_sha256": SHA,
+        "frozen_at": "2026-01-01T10:00:00Z",
+        "retrieved_at": "2026-01-01T11:00:00Z",
+        "prelock_attested": True,
+        "attested_by": "INDEPENDENT_VERIFICATION",
+    }
+    return triad
 
 
 def test_preflight_accepts_clean_lineage_with_binding_and_ids():
@@ -210,10 +257,17 @@ def test_empty_records_and_lineup_evidence_fail_closed():
 
 def test_unapproved_bounds_policy_blocks_ready():
     kwargs = _full_nba_kwargs()
-    kwargs["bounds_policy_approved"] = False
+    kwargs["bounds_policy"] = None
     verdict = nba_evidence_preflight(**kwargs)
     assert verdict["decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED"
     assert "NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED" in verdict["blockers"]
+    kwargs = _full_nba_kwargs()
+    policy = dict(kwargs["bounds_policy"])
+    policy["submitted_by"] = policy["approved_by"]
+    kwargs["bounds_policy"] = policy
+    verdict = nba_evidence_preflight(**kwargs)
+    assert verdict["decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED"
+    assert "NBA_BOUNDS_SELF_APPROVAL_REJECTED" in verdict["blockers"]
 
 
 def test_preflight_mandatory_evidence_cannot_be_omitted():
@@ -357,7 +411,7 @@ def test_nhl_preflight_omitted_chronology_fails_closed():
 def test_nhl_preflight_holds_until_binding_and_goalie_evidence():
     train, cal, test = _nhl_ids()
     verdict = nhl_evidence_preflight(
-        triad=_bound("NHL"),
+        triad=_attested("NHL"),
         train_ids=train,
         calibration_ids=cal,
         test_ids=test,
@@ -370,5 +424,6 @@ def test_nhl_preflight_holds_until_binding_and_goalie_evidence():
         test_times=["2025-04-01T00:00:00Z"] * len(test),
     )
     assert verdict["decision"] == "READY_FOR_INDEPENDENT_MODEL_REVIEW"
+    assert verdict["accounting"]["ok"] is True
     assert verdict["probability_publishable"] is False
     assert verdict["can_execute"] is False

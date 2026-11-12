@@ -13,6 +13,7 @@ fails closed — a lane cannot reach review on timestamps alone.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Mapping, Sequence
 
@@ -21,6 +22,8 @@ from v17.wave3_evidence_triad import verify_probability_bounds, verify_triad
 CAN_EXECUTE = False
 SPORT = "NBA"
 MARKET = "MONEYLINE"
+
+_SHA256_RE = "^[0-9a-f]{64}$"
 
 
 def _parse_utc(value: str) -> datetime:
@@ -196,6 +199,153 @@ def verify_nba_lineup_freshness(
     return {"ok": True, "blockers": []}
 
 
+def verify_nba_orientation_coverage(
+    records: Sequence[Mapping[str, object]],
+    expected_ids: Sequence[str],
+) -> Mapping[str, object]:
+    """Every supplied partition ID must be covered by exactly one record.
+
+    Missing IDs, unrelated records and duplicate records all fail closed —
+    an orientation file that merely exists but does not describe the cohort
+    under review proves nothing.
+    """
+    blockers: list[str] = []
+    expected = [str(v) for v in list(expected_ids)]
+    seen: list[str] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
+            continue
+        event_id = record.get("official_event_id")
+        if not _is_official_id(event_id):
+            blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
+            continue
+        seen.append(str(event_id))
+    if not expected:
+        blockers.append("NBA_EVENT_IDS_REQUIRED")
+        return {"ok": False, "blockers": blockers}
+    counts: dict[str, int] = {}
+    for event_id in seen:
+        counts[event_id] = counts.get(event_id, 0) + 1
+    duplicates = sorted(v for v, n in counts.items() if n > 1)
+    if duplicates:
+        blockers.append("NBA_EVENT_ORIENTATION_DUPLICATE_RECORD")
+    missing = [v for v in expected if v not in counts]
+    if missing:
+        blockers.append("NBA_EVENT_ORIENTATION_COVERAGE_MISSING")
+    unrelated = sorted(v for v in counts if v not in set(expected))
+    if unrelated:
+        blockers.append("NBA_EVENT_ORIENTATION_UNRELATED_EVENT")
+    return {"ok": not blockers, "blockers": blockers}
+
+
+def verify_nba_lineup_evidence(
+    lineup_evidence: Mapping[str, object] | None,
+    *,
+    expected_ids: Sequence[str],
+    source_snapshot_ts: str | None,
+    feature_ts: str | None,
+    tipoff_ts: str | None,
+) -> Mapping[str, object]:
+    """Lineup evidence must bind the cohort, name its source and prove prelock age.
+
+    A bare ``rotation_changed=False`` attests nothing: without the event
+    binding, source identity and an as-of timestamp inside the prelock
+    window, staleness and substitution cannot be excluded.
+    """
+    blockers: list[str] = []
+    if not isinstance(lineup_evidence, Mapping) or not lineup_evidence:
+        return {"ok": False, "blockers": ["NBA_LINEUP_EVIDENCE_MISSING"]}
+    bound_ids = lineup_evidence.get("official_event_ids")
+    if not isinstance(bound_ids, list) or not bound_ids:
+        blockers.append("NBA_LINEUP_EVENT_BINDING_MISSING")
+    elif sorted(str(v) for v in bound_ids) != sorted(str(v) for v in expected_ids):
+        blockers.append("NBA_LINEUP_EVENT_BINDING_MISMATCH")
+    if not isinstance(lineup_evidence.get("source_id"), str) or not str(
+        lineup_evidence.get("source_id")
+    ).strip():
+        blockers.append("NBA_LINEUP_SOURCE_IDENTITY_MISSING")
+    as_of_raw = lineup_evidence.get("evidence_as_of")
+    try:
+        as_of = _parse_utc(str(as_of_raw))
+    except (ValueError, TypeError, AttributeError):
+        blockers.append("NBA_LINEUP_AS_OF_MISSING")
+        as_of = None
+    if as_of is not None:
+        try:
+            tipoff = _parse_utc(str(tipoff_ts))
+            snapshot = _parse_utc(str(source_snapshot_ts))
+        except (ValueError, TypeError, AttributeError):
+            tipoff = snapshot = None
+        if tipoff is None:
+            blockers.append("NBA_PRELOCK_LINEAGE_REQUIRED")
+        else:
+            if as_of > tipoff:
+                blockers.append("NBA_LINEUP_AS_OF_AFTER_LOCK")
+            if snapshot is not None and as_of < snapshot:
+                blockers.append("NBA_LINEUP_AS_OF_BEFORE_SOURCE_SNAPSHOT")
+    if lineup_evidence.get("rotation_changed", False):
+        if feature_ts is None:
+            blockers.append("NBA_LINEUP_FRESHNESS_UNVERIFIABLE")
+        else:
+            freshness = verify_nba_lineup_freshness(str(feature_ts), lineup_evidence)
+            blockers.extend(freshness["blockers"])
+    return {"ok": not blockers, "blockers": blockers}
+
+
+def verify_nba_bounds_authority(
+    bounds_policy: Mapping[str, object] | None,
+    *,
+    tipoff_ts: str | None,
+) -> Mapping[str, object]:
+    """An independent, in-force bounds-policy authority — not a boolean.
+
+    Approval must name the policy artifact (hash-verified), the exact lane
+    scope, distinct submitter and approver identities (self-approval
+    rejected), a retrievable approval receipt and a validity window covering
+    the cohort tipoff.
+    """
+    blockers: list[str] = []
+    if not isinstance(bounds_policy, Mapping) or not bounds_policy:
+        return {"ok": False, "blockers": ["NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED"]}
+    if not _is_official_id(bounds_policy.get("policy_id")) or not _is_official_id(
+        bounds_policy.get("policy_version")
+    ):
+        blockers.append("NBA_BOUNDS_POLICY_ID_MISSING")
+    artifact_sha = bounds_policy.get("policy_artifact_sha256")
+    if not isinstance(artifact_sha, str) or not re.match(
+        _SHA256_RE, artifact_sha.strip().lower()
+    ):
+        blockers.append("NBA_BOUNDS_POLICY_ARTIFACT_UNVERIFIED")
+    scope_sport = str(bounds_policy.get("scope_sport", "") or "").strip().upper()
+    scope_market = str(bounds_policy.get("scope_market", "") or "").strip().upper()
+    if scope_sport != SPORT or scope_market != MARKET:
+        blockers.append("NBA_BOUNDS_POLICY_SCOPE_MISMATCH")
+    approved_by = bounds_policy.get("approved_by")
+    submitted_by = bounds_policy.get("submitted_by")
+    if not _is_official_id(approved_by):
+        blockers.append("NBA_BOUNDS_APPROVER_MISSING")
+    if not _is_official_id(submitted_by):
+        blockers.append("NBA_BOUNDS_SUBMITTER_UNRECORDED")
+    if (
+        _is_official_id(approved_by)
+        and _is_official_id(submitted_by)
+        and str(approved_by).strip().lower() == str(submitted_by).strip().lower()
+    ):
+        blockers.append("NBA_BOUNDS_SELF_APPROVAL_REJECTED")
+    if not _is_official_id(bounds_policy.get("approval_receipt_id")):
+        blockers.append("NBA_BOUNDS_APPROVAL_RECEIPT_MISSING")
+    try:
+        valid_from = _parse_utc(str(bounds_policy.get("valid_from")))
+        valid_until = _parse_utc(str(bounds_policy.get("valid_until")))
+        tipoff = _parse_utc(str(tipoff_ts))
+        if not valid_from <= tipoff <= valid_until:
+            blockers.append("NBA_BOUNDS_POLICY_NOT_IN_FORCE")
+    except (ValueError, TypeError, AttributeError):
+        blockers.append("NBA_BOUNDS_POLICY_NOT_IN_FORCE")
+    return {"ok": not blockers, "blockers": blockers}
+
+
 def nba_evidence_preflight(
     *,
     triad: Mapping[str, object],
@@ -212,20 +362,23 @@ def nba_evidence_preflight(
     tipoff_ts: str | None = None,
     event_records: Sequence[Mapping[str, object]] | None = None,
     lineup_evidence: Mapping[str, object] | None = None,
-    bounds_policy_approved: bool = False,
+    bounds_policy: Mapping[str, object] | None = None,
 ) -> Mapping[str, object]:
     """NBA fitted-evidence preflight. Fail closed; research-only.
 
     Mandatory evidence for any review-ready decision: official event IDs,
-    event orientation records, complete prelock lineage timestamps, lineup
-    evidence, an approved dynamic bounds policy and a recomputable triad
-    binding proof. Omitting any of them is a blocker, not a silent pass;
-    no READY decision ever carries an outstanding blocker.
+    orientation records covering every supplied ID, complete prelock lineage
+    timestamps, trusted lineup evidence bound to the cohort, an independent
+    in-force bounds-policy authority, and a recomputable triad binding proof
+    backed by registry/validation/provenance attestations. Omitting any of
+    them is a blocker, not a silent pass; no READY decision ever carries an
+    outstanding blocker.
     """
     blockers: list[str] = []
     triad_verdict = verify_triad(
         {**dict(triad), "expected_sport": SPORT, "expected_market": MARKET},
         require_binding=True,
+        require_attestation=True,
     )
     blockers.extend(triad_verdict.blockers)
     if train_ids is None or calibration_ids is None or holdout_ids is None:
@@ -261,13 +414,30 @@ def nba_evidence_preflight(
     else:
         orientations = verify_nba_event_orientations(event_records)
         blockers.extend(orientations["blockers"])
-    if not lineup_evidence:
-        blockers.append("NBA_LINEUP_EVIDENCE_MISSING")
-    elif feature_ts is not None:
-        freshness = verify_nba_lineup_freshness(str(feature_ts), lineup_evidence)
-        blockers.extend(freshness["blockers"])
-    if not bounds_policy_approved:
-        blockers.append("NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED")
+        if (
+            train_ids is not None
+            and calibration_ids is not None
+            and holdout_ids is not None
+        ):
+            coverage = verify_nba_orientation_coverage(
+                event_records,
+                [*train_ids, *calibration_ids, *holdout_ids],
+            )
+            blockers.extend(coverage["blockers"])
+    lineup = verify_nba_lineup_evidence(
+        lineup_evidence,
+        expected_ids=[
+            *(train_ids or []),
+            *(calibration_ids or []),
+            *(holdout_ids or []),
+        ],
+        source_snapshot_ts=source_snapshot_ts,
+        feature_ts=feature_ts,
+        tipoff_ts=tipoff_ts,
+    )
+    blockers.extend(lineup["blockers"])
+    bounds = verify_nba_bounds_authority(bounds_policy, tipoff_ts=tipoff_ts)
+    blockers.extend(bounds["blockers"])
     if blockers:
         return {
             "decision": "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED",
@@ -360,7 +530,10 @@ __all__ = [
     "nba_evidence_preflight",
     "nba_hard_negative",
     "verify_chronology_disjoint",
+    "verify_nba_bounds_authority",
     "verify_nba_event_orientations",
+    "verify_nba_lineup_evidence",
     "verify_nba_lineup_freshness",
+    "verify_nba_orientation_coverage",
     "verify_nba_snapshot_order",
 ]

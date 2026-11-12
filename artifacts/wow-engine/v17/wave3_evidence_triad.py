@@ -30,6 +30,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping
 
 CAN_EXECUTE = False
@@ -87,7 +88,89 @@ def compute_binding_proof(triad: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def verify_triad(triad: Mapping[str, Any], *, require_binding: bool = True) -> TriadVerdict:
+CERTIFIED_LIFECYCLES = ("PROSPECTIVE_CERTIFIED", "CHAMPION")
+
+
+def _verify_artifact_attestation(data: Mapping[str, Any], blockers: list[str]) -> None:
+    """Registry attestation for the fitted artifact. Fail closed."""
+    reg = data.get("artifact_registration")
+    if not isinstance(reg, Mapping) or not reg:
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_ATTESTATION_MISSING")
+        return
+    if not _nonempty(reg.get("registry_id")):
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_REGISTRY_ID_MISSING")
+    if not _nonempty(reg.get("attested_by")):
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_ATTESTER_MISSING")
+    registered = reg.get("registered_artifact_sha256")
+    if not _nonempty(registered):
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_REGISTRY_SHA_MISSING")
+    elif str(registered).strip().lower() != str(data.get("fitted_artifact_sha256", "")).strip().lower():
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_REGISTRY_MISMATCH")
+    if reg.get("lifecycle_state") not in CERTIFIED_LIFECYCLES:
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_LIFECYCLE_UNCERTIFIED")
+    if reg.get("active") is not True or reg.get("promoted") is not True:
+        blockers.append("EVIDENCE_TRIAD_ARTIFACT_NOT_PROMOTED")
+
+
+def _verify_calibrator_attestation(data: Mapping[str, Any], blockers: list[str]) -> None:
+    """Independent validation attestation for the calibrator. Fail closed."""
+    val = data.get("calibrator_validation")
+    if not isinstance(val, Mapping) or not val:
+        blockers.append("EVIDENCE_TRIAD_CALIBRATOR_ATTESTATION_MISSING")
+        return
+    if not _nonempty(val.get("attested_by")):
+        blockers.append("EVIDENCE_TRIAD_CALIBRATOR_ATTESTER_MISSING")
+    if val.get("validation_status") != "PASS" or val.get("health_status") != "PASS":
+        blockers.append("EVIDENCE_TRIAD_CALIBRATOR_NOT_VALIDATED")
+    cal_sha = val.get("calibrator_artifact_sha256")
+    if not _nonempty(cal_sha):
+        blockers.append("EVIDENCE_TRIAD_CALIBRATOR_SHA_MISSING")
+    elif str(cal_sha).strip().lower() != str(data.get("calibrator_artifact_sha256", "")).strip().lower():
+        blockers.append("EVIDENCE_TRIAD_CALIBRATOR_SHA_MISMATCH")
+    scope_sport = str(val.get("scope_sport", "") or "").strip().upper()
+    scope_market = str(val.get("scope_market", "") or "").strip().upper()
+    if scope_sport != str(data.get("sport", "") or "").strip().upper() or scope_market != str(
+        data.get("market", "") or ""
+    ).strip().upper():
+        blockers.append("EVIDENCE_TRIAD_CALIBRATOR_SCOPE_MISMATCH")
+
+
+def _verify_corpus_attestation(data: Mapping[str, Any], blockers: list[str]) -> None:
+    """Provenance attestation binding the corpus record to the digest. Fail closed."""
+    prov = data.get("corpus_provenance")
+    if not isinstance(prov, Mapping) or not prov:
+        blockers.append("EVIDENCE_TRIAD_CORPUS_ATTESTATION_MISSING")
+        return
+    if not _nonempty(prov.get("attested_by")):
+        blockers.append("EVIDENCE_TRIAD_CORPUS_ATTESTER_MISSING")
+    if not _nonempty(prov.get("source_id")):
+        blockers.append("EVIDENCE_TRIAD_CORPUS_SOURCE_MISSING")
+    manifest = prov.get("manifest_sha256")
+    if not _nonempty(manifest):
+        blockers.append("EVIDENCE_TRIAD_CORPUS_MANIFEST_MISSING")
+    elif str(manifest).strip().lower() != str(data.get("pregame_corpus_digest", "")).strip().lower():
+        blockers.append("EVIDENCE_TRIAD_CORPUS_MANIFEST_MISMATCH")
+    try:
+        frozen = datetime.fromisoformat(str(prov.get("frozen_at", "") or "").replace("Z", "+00:00"))
+        retrieved = datetime.fromisoformat(
+            str(prov.get("retrieved_at", "") or "").replace("Z", "+00:00")
+        )
+        if frozen.utcoffset() is None or retrieved.utcoffset() is None:
+            raise ValueError("naive timestamp")
+        if retrieved < frozen:
+            blockers.append("EVIDENCE_TRIAD_CORPUS_RETRIEVED_BEFORE_FROZEN")
+    except (ValueError, TypeError):
+        blockers.append("EVIDENCE_TRIAD_CORPUS_TIME_INVALID")
+    if prov.get("prelock_attested") is not True:
+        blockers.append("EVIDENCE_TRIAD_CORPUS_PRELOCK_UNATTESTED")
+
+
+def verify_triad(
+    triad: Mapping[str, Any],
+    *,
+    require_binding: bool = True,
+    require_attestation: bool = False,
+) -> TriadVerdict:
     """Verify one lane's artifact + calibrator + corpus binding. Fail closed.
 
     The binding proof is required by default: it is recomputed with
@@ -96,6 +179,13 @@ def verify_triad(triad: Mapping[str, Any], *, require_binding: bool = True) -> T
     ``EVIDENCE_TRIAD_BINDING_MISMATCH`` (tampered claim). Pass
     ``require_binding=False`` only for narrow unit checks of the other
     fields — never for a review-ready decision.
+
+    With ``require_attestation=True`` the payload must also carry registry,
+    validation and provenance attestations that are cross-checked against
+    the triad digests, scope and lifecycle. This proves the attested records
+    describe the same artifact/calibrator/corpus — it does not reproduce
+    bytes, which remains the job of independent verification against the
+    pinned artifact bytes and corpus snapshot.
     """
     blockers: list[str] = []
     data = dict(triad)
@@ -150,6 +240,11 @@ def verify_triad(triad: Mapping[str, Any], *, require_binding: bool = True) -> T
             blockers.append("EVIDENCE_TRIAD_BINDING_UNPROVEN")
         elif str(proof).strip().lower() != compute_binding_proof(data):
             blockers.append("EVIDENCE_TRIAD_BINDING_MISMATCH")
+
+    if require_attestation:
+        _verify_artifact_attestation(data, blockers)
+        _verify_calibrator_attestation(data, blockers)
+        _verify_corpus_attestation(data, blockers)
 
     if blockers:
         return TriadVerdict(
