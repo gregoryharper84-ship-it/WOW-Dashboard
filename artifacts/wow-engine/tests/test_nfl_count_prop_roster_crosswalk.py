@@ -165,3 +165,65 @@ def test_direct_roster_inspector_rejects_wrong_or_null_season(season):
     }])
     with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
         mod.inspect_roster_id_candidates(roster, ["CartNa00"])
+
+
+def test_unpublished_historical_roster_is_always_research_hold(monkeypatch):
+    frame = pd.DataFrame([{
+        "pfr_id": "WhitCo05", "gsis_id": "00-0033333", "season": 2021,
+        "position": "WR", "team": "PIT",
+    }])
+    data = frame.to_csv(index=False).encode()
+    monkeypatch.setitem(mod.HISTORICAL_ROSTER_SIZES, 2021, len(data))
+    downloads = []
+    def fake(*args, **kwargs):
+        downloads.append(1)
+        return FakeResponse(data)
+    result, receipt = mod.read_two_copy_historical_roster(
+        2021, open_url=fake,
+    )
+    assert len(downloads) == 2
+    assert receipt["release_digest_published"] is False
+    assert receipt["status"] == "HOLD_HISTORICAL_ROSTER_UNPUBLISHED_DIGEST"
+    assert receipt["identical_read_count"] == 2
+    candidates = mod.inspect_roster_id_candidates(
+        result, ["WhitCo05"], expected_season=2021,
+    )
+    assert candidates["targets"][0]["gsis_candidates"] == ["00-0033333"]
+    assert candidates["candidate_crosswalk_applied"] is False
+
+
+def test_historical_roster_same_size_changed_bytes_fail_closed(monkeypatch):
+    frame = pd.DataFrame([{
+        "pfr_id": "WhitCo05", "gsis_id": "00-0033333", "season": 2021,
+        "position": "WR", "team": "PIT",
+    }])
+    data = frame.to_csv(index=False).encode()
+    changed = data.replace(b"00-0033333", b"00-0044444")
+    assert len(data) == len(changed)
+    monkeypatch.setitem(mod.HISTORICAL_ROSTER_SIZES, 2021, len(data))
+    samples = iter([data, changed])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_TWO_READ_DRIFT"):
+        mod.read_two_copy_historical_roster(
+            2021, open_url=lambda *a, **k: FakeResponse(next(samples)),
+        )
+
+
+def test_historical_roster_wrong_size_or_unknown_year_rejected(monkeypatch):
+    monkeypatch.setitem(mod.HISTORICAL_ROSTER_SIZES, 2021, 10)
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SOURCE_SIZE_MISMATCH"):
+        mod.read_two_copy_historical_roster(
+            2021, open_url=lambda *a, **k: FakeResponse(b"too short"),
+        )
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_YEAR_UNPINNED"):
+        mod.read_two_copy_historical_roster(2020)
+
+
+def test_historical_roster_direct_inspector_rejects_wrong_season():
+    frame = pd.DataFrame([{
+        "pfr_id": "WhitCo05", "gsis_id": "00-0033333", "season": 2021,
+        "position": "WR", "team": "PIT",
+    }])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_roster_id_candidates(
+            frame, ["WhitCo05"], expected_season=2024,
+        )

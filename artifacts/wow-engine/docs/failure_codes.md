@@ -754,3 +754,15 @@ These are research-only source failures owned by NFL_PROP_SOURCE_RESEARCH; no cr
 | `NFL_PROP_ROSTER_CROSSWALK_CONFLICT` | IDENTITY | More than one GSIS identity shares the same exact target PFR code in the frozen roster; no candidate accepted. | No |
 | `HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE` | RESEARCH_HOLD | Research-only 2025 candidate mapping not observed because required pinned bytes are inaccessible or invalid. | No |
 | `HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW` | RESEARCH_HOLD | Exact-ID roster pairs are source-supported research candidates only; none is adopted into fitted, live or model feature pathways. | No |
+
+## Historical nflverse roster two-read research (2026-11-11)
+
+Older release assets from 2021–2024 have public byte-size metadata but no **published** SHA-256. These typed conditions belong to NFL_PROP_SOURCE_RESEARCH, and even a content hash reproduced twice is NOT a trusted source pin. No outcome is rank eligible or production-serving.
+
+| Code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_ROSTER_YEAR_UNPINNED` | INPUT | Only predeclared 2021–24 historical roster assets may enter the two-read research probe. | No |
+| `NFL_PROP_ROSTER_SOURCE_SIZE_MISMATCH` | INPUT | A historical response differs from GitHub release-published byte size; refuse content. | No |
+| `NFL_PROP_ROSTER_TWO_READ_DRIFT` | SECURITY | Two consecutive public-source reads differ even though expected size matches; retain HOLD and reject all candidate pairs. | No |
+| `HOLD_HISTORICAL_ROSTER_UNPUBLISHED_DIGEST` | RESEARCH_HOLD | Two matching source reads supply only provisional PFR/GSIS candidate evidence, with no upstream-published digest or independent semantic sign-off. | No |
+| `HOLD_HISTORICAL_ROSTER_SOURCE_UNAVAILABLE` | RESEARCH_HOLD | Source could not be read and validated twice; output failure evidence, never substitute a name/position guessed player identity. | No |

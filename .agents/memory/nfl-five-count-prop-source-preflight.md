@@ -282,3 +282,14 @@
 - **prevention_artifact:** Three parameterized negative tests for season 2024/2026/null in tests/test_nfl_count_prop_roster_crosswalk.py. Hosted exact-head replay required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no roster candidate accepted or applied, can_execute=false, V17_TERMINAL_REDUCER.
+
+## Historical 2021–24 roster source evidence without published hashes (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_HISTORICAL_ROSTER_UNPUBLISHED_DIGEST; NFL_PROP_ROSTER_TWO_READ_DRIFT; NFL_PROP_ROSTER_SOURCE_SIZE_MISMATCH
+- **mechanism:** Both 2025 release-pinned season and weekly roster files showed 0/4 exact PFR candidates despite 2,196 and 35,113 roster rows with populated PFR identifiers respectively. Historical 2021–24 nflverse season roster assets may contain missing active roster PFR-to-GSIS pairs, but their GitHub release metadata lists public file sizes without SHA-256 digests, so they cannot satisfy the existing trusted-source pin.
+- **detection_point:** After published-checksum 2025 roster sources supplied no exact PFR pairs for the four unmatched PFR identities.
+- **fix:** Add a separate observation-only two-read source probe for archived seasons with predeclared published byte sizes, strict HTTPS release host, exact byte-for-byte/hash concordance across reads, and season-column validation. Any pair found remains provisional/unapproved, never joined into fitted model data; no no-hash route to protected publication.
+- **prevention_artifact:** Test for two identical source reads and mandatory HOLD, same-size drift rejection, size/year refusal, and direct season-scope check; existing PR-only source observation. Exact-head CI and independent SIRT review required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. 4 unresolved historical PFR IDs and 3,994 missing weekly count-stat rows retain UNKNOWN; can_execute=false and V17_TERMINAL_REDUCER.

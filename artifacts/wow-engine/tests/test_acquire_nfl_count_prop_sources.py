@@ -366,6 +366,37 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     except (ValueError, OSError) as exc:
         note["roster_2025_weekly_status"] = "HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE"
         note["roster_2025_weekly_failure"] = type(exc).__name__ + ":" + str(exc)[:200]
+    # Before any acceptance, inspect four older, size-matched public archive
+    # reads twice. GitHub publishes no SHA for those assets: results are always
+    # explicitly unapproved, read-only provenance candidates.
+    from audit_nfl_count_prop_roster_crosswalk import (
+        read_two_copy_historical_roster,
+    )
+    historical_notes = []
+    for year in (2021, 2022, 2023, 2024):
+        targets = [
+            profile["pfr_player_id"]
+            for profile in result["unmapped_player_profiles"]
+            if year in profile["seasons"]
+        ]
+        if not targets:
+            continue
+        try:
+            historical, receipt = read_two_copy_historical_roster(year, timeout=20)
+            match = inspect_roster_id_candidates(
+                historical, targets, expected_season=year,
+            )
+            historical_notes.append({
+                "year": year, "source": receipt, "exact_pair_candidates": match,
+            })
+        except (ValueError, OSError) as exc:
+            historical_notes.append({
+                "year": year, "status": "HOLD_HISTORICAL_ROSTER_SOURCE_UNAVAILABLE",
+                "failure": type(exc).__name__ + ":" + str(exc)[:180],
+            })
+    note["historical_roster_research_only"] = historical_notes
+    note["historical_roster_digest_independently_published"] = False
+    note["historical_roster_candidates_applied"] = False
     note["pbp_absence_proves_zero"] = False
 
     pytest.skip(

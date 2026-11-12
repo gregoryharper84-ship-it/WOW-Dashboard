@@ -32,6 +32,13 @@ ROSTER_URL = (
     + ROSTER_2025_PATH
 )
 CROSSWALK_FIELDS = ("pfr_id", "gsis_id", "season", "position", "team")
+# Historical GitHub release metadata publishes asset IDs and byte sizes
+# but no SHA-256 for these files. This separate two-read research path can
+# yield provisional exact-pair evidence only; never a governed identity.
+HISTORICAL_ROSTER_SIZES = {
+    2021: 953822, 2022: 980115, 2023: 967354, 2024: 1005701,
+}
+
 
 
 def read_pinned_2025_roster(
@@ -85,16 +92,80 @@ def read_pinned_2025_roster(
     }
 
 
+def read_two_copy_historical_roster(
+    season: int, *, open_url=None, timeout: int = 20,
+) -> tuple[pd.DataFrame, dict]:
+    """Read an unsigned historic release twice; always return a HOLD."""
+    if season not in HISTORICAL_ROSTER_SIZES:
+        raise ValueError("NFL_PROP_ROSTER_YEAR_UNPINNED")
+    expected_size = HISTORICAL_ROSTER_SIZES[season]
+    asset = f"rosters/roster_{season}.csv"
+    url = ("https://github.com/nflverse/nflverse-data/releases/download/"
+           + asset)
+
+    def one_read() -> bytes:
+        request = urllib.request.Request(
+            url, headers={
+                "User-Agent": "WOW-V17-public-source-research/1.0",
+                "Accept": "application/octet-stream",
+            },
+        )
+        stream = (open_url or _trusted_release_urlopen)(request, timeout=timeout)
+        contents = bytearray()
+        with stream:
+            final = urlparse(stream.geturl())
+            if final.scheme != "https" or final.hostname not in RELEASE_HOSTS:
+                raise ValueError("NFL_PROP_ROSTER_REDIRECT_UNTRUSTED")
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                contents.extend(block)
+                if len(contents) > expected_size:
+                    raise ValueError("NFL_PROP_ROSTER_SOURCE_SIZE_MISMATCH")
+        if len(contents) != expected_size:
+            raise ValueError("NFL_PROP_ROSTER_SOURCE_SIZE_MISMATCH")
+        return bytes(contents)
+
+    first = one_read()
+    second = one_read()
+    digest = hashlib.sha256(first).hexdigest()
+    if digest != hashlib.sha256(second).hexdigest() or first != second:
+        raise ValueError("NFL_PROP_ROSTER_TWO_READ_DRIFT")
+    try:
+        roster = pd.read_csv(io.BytesIO(first), dtype=str, low_memory=False)
+    except (UnicodeError, pd.errors.ParserError) as exc:
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID") from exc
+    if set(CROSSWALK_FIELDS) - set(roster.columns):
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
+    if (roster["season"].isna().any()
+            or not roster["season"].eq(str(season)).all()):
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
+    return roster, {
+        "status": "HOLD_HISTORICAL_ROSTER_UNPUBLISHED_DIGEST",
+        "asset": asset,
+        "source_sha256_observed_twice": digest,
+        "bytes_observed_twice": expected_size,
+        "release_digest_published": False,
+        "identical_read_count": 2,
+        "candidate_crosswalk_applied": False,
+        "source_rights_independently_approved": False,
+        "can_execute": False,
+    }
+
+
 def inspect_roster_id_candidates(
-    roster: pd.DataFrame, target_pfr_ids: list[str],
+    roster: pd.DataFrame, target_pfr_ids: list[str], *, expected_season: int = 2025,
 ) -> dict[str, object]:
     """Enumerate exact ID pairs, never invent or apply a player identity."""
     if set(CROSSWALK_FIELDS) - set(roster.columns):
         raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
     # This function is public to other research-only callers; do not trust
     # that they went through the pinned 2025 reader first.
+    if expected_season not in (*HISTORICAL_ROSTER_SIZES, 2025):
+        raise ValueError("NFL_PROP_ROSTER_YEAR_UNPINNED")
     season = roster["season"].astype("string")
-    if not season.eq("2025").fillna(False).all():
+    if not season.eq(str(expected_season)).fillna(False).all():
         raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
     targets = sorted(set(target_pfr_ids))
     if not targets or any(not x or x != x.strip() for x in targets):
@@ -129,7 +200,7 @@ def inspect_roster_id_candidates(
         })
     return {
         "status": "HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW",
-        "season": 2025,
+        "season": expected_season,
         "target_pfr_count": len(targets),
         "source_exact_pair_candidate_count": sum(bool(row["gsis_candidates"]) for row in out),
         "source_rows_total": int(len(copy)),
