@@ -46,6 +46,95 @@ def _verified_csv(path: Path, expected_sha: str) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(blob), low_memory=False)
 
 
+
+def audit_observed_l10_history_gap_exposure(
+    player_stats: pd.DataFrame, mapped_missing: pd.DataFrame,
+    routes: dict = ROUTES, min_prior_games: int = MIN_PRIOR_GAMES,
+) -> dict[str, object]:
+    """Bound gaps inside model-eligible observed L10 windows; never infer targets.
+
+    Recorded weekly-stat rows can omit official snap-positive player-games.
+    This reports potential feature-selection exposure, NOT verified true-zero
+    counts, reconstructed features, training certification or source clearance.
+    """
+    if "position" not in player_stats.columns:
+        return {
+            "status": "HOLD_UNRESOLVED_PARTICIPATION", "by_route": {},
+            "unavailable_reason": "NFL_PROP_PARTICIPATION_COLUMNS_MISSING",
+            "missing_source_zero_imputed": False, "can_execute": False,
+        }
+    if not {"player_id", "season", "week", "game_id", "position"}.issubset(player_stats):
+        raise ValueError("NFL_PROP_PARTICIPATION_COLUMNS_MISSING:STATS")
+    if not {"gsis_id", "season", "week", "game_id", "position"}.issubset(mapped_missing):
+        raise ValueError("NFL_PROP_PARTICIPATION_COLUMNS_MISSING:MISSING")
+    stats, missing = player_stats.copy(), mapped_missing.copy()
+    for frame, idfield in ((stats, "player_id"), (missing, "gsis_id")):
+        if any(frame[field].isna().any()
+               or frame[field].astype(str).str.strip().eq("").any()
+               for field in (idfield, "game_id", "position")):
+            raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:history_identity")
+        for field in ("season", "week"):
+            numeric = pd.to_numeric(frame[field], errors="coerce")
+            valid = (numeric.ge(2021) & numeric.le(2025) if field == "season"
+                     else numeric.ge(1) & numeric.le(18))
+            if not valid.all() or numeric.mod(1).ne(0).any():
+                raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:history_chronology")
+            frame[field] = numeric.astype(int)
+        frame["event_index"] = frame.season * 100 + frame.week
+        frame["position"] = frame.position.astype(str).str.upper()
+    if stats.duplicated(["player_id", "season", "week"]).any():
+        raise ValueError("NFL_PROP_PARTICIPATION_STATS_DUPLICATE")
+    if missing.duplicated(["gsis_id", "season", "week"]).any():
+        raise ValueError("NFL_PROP_PARTICIPATION_SNAP_DUPLICATE")
+    results = {}
+    for route, config in routes.items():
+        roles = frozenset(config["roles"].split(","))
+        observed = stats.loc[stats.position.isin(roles)].sort_values(
+            ["player_id", "event_index", "game_id"])
+        gaps = missing.loc[missing.position.isin(roles)]
+        missing_events = {
+            str(player): sorted(group.event_index.astype(int).tolist())
+            for player, group in gaps.groupby("gsis_id", sort=False)
+        }
+        eligible = exposed = 0
+        by_season = {str(year): {"eligible": 0, "exposed": 0} for year in SEASONS}
+        examples = []
+        for player_id, group in observed.groupby("player_id", sort=False):
+            event_indexes = group.event_index.astype(int).tolist()
+            unknown = missing_events.get(str(player_id), [])
+            for index in range(min_prior_games, len(event_indexes)):
+                current = event_indexes[index]
+                oldest_recorded = event_indexes[index - min_prior_games]
+                year = str(int(group.iloc[index].season))
+                eligible += 1
+                by_season[year]["eligible"] += 1
+                first = bisect_left(unknown, oldest_recorded)
+                end = bisect_left(unknown, current)
+                if end > first:
+                    exposed += 1
+                    by_season[year]["exposed"] += 1
+                    if len(examples) < 6:
+                        examples.append({
+                            "player_id": str(player_id),
+                            "observed_game_id": str(group.iloc[index].game_id),
+                            "unknown_prior_participant_games": end - first,
+                            "oldest_l10_recorded_event_index": oldest_recorded,
+                        })
+        results[route] = {
+            "eligible_recorded_l10_rows": eligible,
+            "observed_l10_windows_with_unrecorded_snap_positive_game": exposed,
+            "by_season": by_season, "examples": examples,
+            "missing_source_zero_imputed": False, "feature_vector_rebuilt": False,
+        }
+    return {
+        "status": "HOLD_UNRESOLVED_PARTICIPATION", "by_route": results,
+        "scope": "source_observed_prior_rows_vs_mapped_offensive_snap_positive_gaps",
+        "unmapped_identity_audited": False, "unknown_outcomes_filled": False,
+        "missing_source_zero_imputed": False, "candidate_training_authorized": False,
+        "independent_semantic_acceptance": False, "can_execute": False,
+    }
+
+
 def reconcile_player_games(
     player_stats: pd.DataFrame,
     snap_counts: pd.DataFrame,
@@ -231,8 +320,12 @@ def reconcile_player_games(
             "method": "known_earlier_player_weekly_rows_only_conservative_upper_bound",
             "count_label_inferred": False,
         }
+    observed_l10_gaps = audit_observed_l10_history_gap_exposure(
+        player_stats, missing,
+    )
     defects = len(missing) + len(unmapped)
     return {
+        "observed_l10_history_gap_exposure": observed_l10_gaps,
         "scope": "2021-2025_REG_QB_RB_WR_TE_OFFENSE_SNAPS_GT_ZERO",
         "offensive_participant_games": int(len(snap)),
         "player_games_matched": int(len(checked) - len(missing)),

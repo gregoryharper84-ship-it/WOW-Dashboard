@@ -361,3 +361,104 @@ def test_main_rejects_single_empty_or_zero_offense_snap_season(
         mod.main()
     assert capsys.readouterr().out == ""
 
+
+
+def _synthetic_recorded_history_gap(*, gap_season=2023, gap_week=11, include_position=True):
+    """Create 10 recorded prior games, one missing positive-snap game, one target."""
+    stats = pd.DataFrame([
+        {"player_id": "00-0000001", "game_id": f"2023_{week:02d}_A_B",
+         "season": 2023, "week": week,
+         **({"position": "WR"} if include_position else {})}
+        for week in [*range(1, 11), 12]
+    ])
+    missing = pd.DataFrame([{
+        "gsis_id": "00-0000001",
+        "game_id": f"{gap_season}_{gap_week:02d}_A_B",
+        "season": gap_season, "week": gap_week, "position": "WR",
+    }])
+    return stats, missing
+
+
+def test_recorded_l10_source_skips_missing_positive_snap_game():
+    """A missing eligible prior appearance must not be called clean L10 history."""
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    result = audit_observed_l10_history_gap_exposure(stats, missing)
+    receptions = result["by_route"]["RECEPTIONS"]
+    assert receptions["eligible_recorded_l10_rows"] == 1
+    assert receptions["observed_l10_windows_with_unrecorded_snap_positive_game"] == 1
+    assert receptions["by_season"]["2023"] == {"eligible": 1, "exposed": 1}
+    assert result["unknown_outcomes_filled"] is False
+    assert result["candidate_training_authorized"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("season,week", [(2022, 5), (2024, 1)])
+def test_prior_l10_window_excludes_gap_outside_chronological_window(season, week):
+    """Older-than-L10 and future observations never contaminate this window."""
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap(
+        gap_season=season, gap_week=week,
+    )
+    result = audit_observed_l10_history_gap_exposure(stats, missing)
+    assert result["by_route"]["RECEPTIONS"][
+        "observed_l10_windows_with_unrecorded_snap_positive_game"
+    ] == 0
+    assert result["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+
+
+def test_still_fewer_than_ten_recorded_priors_has_no_eligible_l10():
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    result = audit_observed_l10_history_gap_exposure(stats.iloc[:-1], missing)
+    assert result["by_route"]["RECEPTIONS"]["eligible_recorded_l10_rows"] == 0
+
+
+def test_audit_without_role_evidence_does_not_claim_clean_history():
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap(include_position=False)
+    result = audit_observed_l10_history_gap_exposure(stats, missing)
+    assert result["by_route"] == {}
+    assert result["unavailable_reason"] == "NFL_PROP_PARTICIPATION_COLUMNS_MISSING"
+    assert result["can_execute"] is False
+
+
+def test_missing_other_role_not_silently_assumed_as_eligible_target():
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    missing.loc[0, "position"] = "QB"
+    result = audit_observed_l10_history_gap_exposure(stats, missing)
+    assert result["by_route"]["RECEPTIONS"][
+        "observed_l10_windows_with_unrecorded_snap_positive_game"
+    ] == 0
+    assert result["unmapped_identity_audited"] is False
+
+
+def test_duplicate_observed_history_week_fails_closed():
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    duplicated = pd.concat([stats, stats.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_STATS_DUPLICATE"):
+        audit_observed_l10_history_gap_exposure(duplicated, missing)
+
+
+def test_duplicate_missing_history_week_fails_closed():
+    from audit_nfl_count_prop_participation import (
+        audit_observed_l10_history_gap_exposure,
+    )
+    stats, missing = _synthetic_recorded_history_gap()
+    doubled = pd.concat([missing, missing], ignore_index=True)
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_DUPLICATE"):
+        audit_observed_l10_history_gap_exposure(stats, doubled)

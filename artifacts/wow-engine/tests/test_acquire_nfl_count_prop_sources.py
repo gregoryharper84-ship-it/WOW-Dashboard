@@ -254,6 +254,23 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             "unmapped_player_profiles": result["unmapped_player_profiles"],
             "missing_weekly_label_history_exposure":
                 result["missing_weekly_label_history_exposure"],
+            # Offline observational exposure only: previous ten recorded
+            # weekly rows may skip real snap-positive participant games.
+            "observed_l10_history_gap_exposure": {
+                "status": result["observed_l10_history_gap_exposure"]["status"],
+                "by_route": {
+                    route: {
+                        "eligible_recorded_l10_rows": values["eligible_recorded_l10_rows"],
+                        "observed_l10_windows_with_unrecorded_snap_positive_game":
+                            values["observed_l10_windows_with_unrecorded_snap_positive_game"],
+                        "by_season": values["by_season"],
+                        "examples": values["examples"][:2],
+                    }
+                    for route, values in result[
+                        "observed_l10_history_gap_exposure"
+                    ]["by_route"].items()
+                },
+            },
             "unmapped_profile_total_pfr_ids": result["unmapped_profile_total_pfr_ids"],
             "participation_breakdown": result["participation_breakdown"],
             "missing_examples": result["missing_examples"][:2],

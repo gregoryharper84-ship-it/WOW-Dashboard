@@ -293,3 +293,15 @@
 - **prevention_artifact:** Test for two identical source reads and mandatory HOLD, same-size drift rejection, size/year refusal, and direct season-scope check; existing PR-only source observation. Exact-head CI and independent SIRT review required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. 4 unresolved historical PFR IDs and 3,994 missing weekly count-stat rows retain UNKNOWN; can_execute=false and V17_TERMINAL_REDUCER.
+
+
+## Observed L10 window vs positive-snap participation gap — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** HOLD_UNRESOLVED_PARTICIPATION (existing; no new runtime failure code).
+- **mechanism:** The offline count-model feature builder uses the ten most recent *recorded weekly stat rows*. Verified official snap-positive participant games can be absent from that source. A valid observed game following ten recorded prior rows can therefore have a hidden positive-snap game inside its L10 chronological window. This predicts that previous-stat feature histories are potentially selection-biased even where the current target row exists, separate from missing target labels.
+- **detection_point:** In source cohort reconciliation before any 2021–23 fit, 2024 calibration or untouched 2025 holdout, not after fitted-score evaluation.
+- **fix:** Add a read-only, route/season-scoped audit comparing the most recent ten recorded eligible-role source events against **mapped** snap-positive player-games lacking source rows. Count affected *observed* feature windows and keep missing counts/identities UNKNOWN. Do not infer zero values, rebuild features, change model fit rules, lower source thresholds, attach markets or publish probabilities. Unmapped identities and cross-role histories stay outside the positive assertion.
+- **prevention_artifact:** \`artifacts/wow-engine/tests/test_nfl_count_prop_participation_audit.py\` (eight boundary/negative cases); offline standalone equivalent 12/12 synthetic PASS. Existing PR-only rapid runner prints bounded per-route/by-season real-source receipt after 11 pinned hashes, but until it executes at the fresh head its source findings remain **unverified**.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. No new fitted model, certified specialist, source-rights approval, independent SIRT acceptance, production merge/deployment, user Action or wager. \`can_execute=false\`, \`V17_TERMINAL_REDUCER\`.
