@@ -321,3 +321,24 @@ def test_history_reference_clock_is_refreshed_after_collection(monkeypatch):
     result = history.collect_history_once(object())
     assert observed == [finish]
     assert result["can_execute"] is False
+
+
+def test_legacy_open_close_ordered_by_provider_time_cannot_override_capture_order():
+    """Both legacy references pass individual chronology but select opposite captures."""
+    kickoff = "2026-09-24T19:00:00Z"
+    early = _row(key="a", odds=-110, updated="2026-09-24T17:00:00Z", event_start=kickoff)
+    early["price_updated_at"] = "2026-09-24T16:30:00Z"
+    late = _row(key="b", odds=-135, updated="2026-09-24T18:00:00Z", event_start=kickoff)
+    late["price_updated_at"] = "2026-09-24T16:00:00Z"
+    legacy_open = {**late, "observation_key": "legacy-open", "snapshot_kind": "OPEN"}
+    legacy_close = {**early, "observation_key": "legacy-close", "snapshot_kind": "CLOSE"}
+
+    references = history.derive_captured_reference_rows(
+        [early, late, legacy_open, legacy_close],
+        now=datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc),
+    )
+    assert [(row["snapshot_kind"], row["american_odds"]) for row in references] == [
+        ("OPEN", -110),
+        ("CLOSE", -135),
+    ]
+    assert all(row["can_execute"] is False for row in references)
