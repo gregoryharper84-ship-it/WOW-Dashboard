@@ -728,7 +728,7 @@ Produced only by scripts/acquire_nfl_count_prop_sources.py; owned by WOW_PROP_LA
 | `NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE` | TRANSIENT | DNS, connection or timeout prevents official source acquisition | No |
 | `NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED` | SECURITY | GitHub release redirect used an untrusted host or non-HTTPS scheme | No |
 | `NFL_PROP_ACQUIRE_TARGET_RACE` | CONCURRENCY | Concurrent writer occupied frozen target before atomic install | No |
-| `HOLD_ARCHIVE_RDS_NOT_EQUIVALENT_TO_FROZEN_CSV` | RESEARCH_HOLD | Official archive RDS digests and byte sizes may verify without proving that archived identities, participation or stat labels are equivalent to the original frozen CSV. Keep separate source semantics/rights review; do not replace pins, fit, or publish from metadata alone. | No |
+| `HOLD_ARCHIVE_RDS_NOT_EQUIVALENT_TO_FROZEN_CSV` | SOURCE | Official archive RDS digests and byte sizes may verify without proving that archived identities, participation or stat labels are equivalent to the original frozen CSV. Keep separate source semantics/rights review; do not replace pins, fit, or publish from metadata alone. | No |
 
 ## Offline NFL PBP presence audit failures (2026-11-11)
 
