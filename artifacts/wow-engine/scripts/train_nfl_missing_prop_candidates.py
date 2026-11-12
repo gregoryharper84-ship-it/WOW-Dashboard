@@ -205,7 +205,7 @@ def observe_anonymous_weekly_source_shape(
                 or type(year) is not int or year not in SEASONS
                 or type(week) is not int or not 1 <= week <= 18
                 or not isinstance(row["position_token"], str)
-                or row["position_token"] in {"QB", "RB", "WR", "TE"}
+                or row["position_token"].strip().upper() in {"QB", "RB", "WR", "TE"}
                 or row["count_fields_all_zero"] is not True
                 or row["source_identity_unresolved"] is not True
                 or not isinstance(row["game_id"], str)
