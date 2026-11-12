@@ -295,7 +295,7 @@ def classify_missing_pbp_presence(
     for role in ("QB", "RB", "WR", "TE"):
         role_rows = missing.loc[
             missing["position"].astype(str).str.upper().eq(role)
-        ].sort_values(["offense_snaps", "game_id", "gsis_id"])
+        ].assign(_numeric_snaps=lambda frame: pd.to_numeric(frame["offense_snaps"], errors="raise")).sort_values(["_numeric_snaps", "game_id", "gsis_id"])
         if role_rows.empty:
             continue
         for index in sorted(set((0, len(role_rows) - 1))):
@@ -379,7 +379,7 @@ def classify_missing_pbp_presence(
             ]
             positive_rows = 0
             positive_flags = 0
-            examples = []
+            stat_examples = []
             for item in scoped.itertuples(index=False):
                 key = (str(item.game_id), str(item.gsis_id))
                 if key[0] not in source_games:
@@ -392,8 +392,8 @@ def classify_missing_pbp_presence(
                 if value > 0:
                     positive_rows += 1
                     positive_flags += value
-                    if len(examples) < 4:
-                        examples.append({
+                    if len(stat_examples) < 4:
+                        stat_examples.append({
                             "game_id": key[0], "gsis_id": key[1],
                             "positive_source_flags": value,
                             "settled_count_label": "UNKNOWN",
@@ -403,7 +403,7 @@ def classify_missing_pbp_presence(
                 "with_positive_pbp_event_flags": positive_rows,
                 "positive_pbp_flags_total": positive_flags,
                 "without_positive_pbp_flags_STILL_UNKNOWN": len(scoped) - positive_rows,
-                "positive_source_examples": examples,
+                "positive_source_examples": stat_examples,
                 "no_positive_pbp_signal_implies_zero": False,
             }
         full_signal = {
