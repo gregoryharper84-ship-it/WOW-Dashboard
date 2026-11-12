@@ -239,6 +239,8 @@ def inspect_manual_pfr_overrides(
     chosen = {key: [] for key in targets}
     for record in records:
         source_pfr = record.get("pfr_id")
+        if source_pfr is not None and not isinstance(source_pfr, str):
+            raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:manual_override_pfr")
         if source_pfr not in chosen:
             continue
         source_gsis = record.get("gsis_id")
