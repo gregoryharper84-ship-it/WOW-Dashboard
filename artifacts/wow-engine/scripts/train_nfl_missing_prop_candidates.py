@@ -13,6 +13,7 @@ import io
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -99,12 +100,19 @@ def _quarantine_unattributed_zero_stat_rows(
         if (not math.isfinite(parsed_season) or parsed_season != season
                 or not math.isfinite(week) or not week.is_integer() or not 1 <= week <= 18):
             raise ValueError("NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE")
+        # Anonymous records still require a canonical, self-consistent event.
+        # All-zero fields cannot legitimize a malformed or stale game identity.
+        game_id = str(row["game_id"]).strip()
+        if not re.fullmatch(
+            rf"{season}_{int(week):02d}_[A-Z0-9]+_[A-Z0-9]+", game_id
+        ):
+            raise ValueError("NFL_PROP_SOURCE_IDENTITY_INVALID:game_id")
         counts = pd.to_numeric(pd.Series({field: row[field] for field in COUNT_COLUMNS}), errors="coerce")
         if not np.isfinite(counts.to_numpy(dtype=float)).all() or counts.ne(0).any():
             raise ValueError("NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING")
         record = {
             "source_line": int(row_index) + 2, "source_season": season,
-            "game_id": str(row["game_id"]).strip(), "week": int(week),
+            "game_id": game_id, "week": int(week),
             "position_token": position, "count_fields_all_zero": True,
             "source_identity_unresolved": True,
         }
