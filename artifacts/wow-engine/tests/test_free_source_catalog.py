@@ -27,7 +27,11 @@ def test_propsmadness_is_present_for_all_four_sports_without_training_authority(
 
 def test_only_nfl_account_layout_has_real_page_observation():
     for sport in ("NFL", "NBA", "MLB", "WNBA"):
-        route = compile_free_source_plan(sport, "HISTORICAL_RESEARCH")["sources"][0]
+        research = compile_free_source_plan(sport, "HISTORICAL_RESEARCH")
+        route = next(
+            r for r in research["sources"]
+            if r["source_id"] == "PROPSMADNESS_ACCOUNT_VIEW"
+        )
         assert route["account_view_validation"] == "NFL_VIEW_OBSERVED_NBA_MLB_WNBA_LAYOUTS_SYNTHETIC"
 
 
