@@ -139,6 +139,9 @@ class Test24x7(unittest.TestCase):
                   "wow-engineering-24x7.yml").read_text(encoding="utf-8")
         self.assertIn("--lease-for-incident", source)
         self.assertIn("approved-issues.json", source)
+        # Shadow must enforce the same manifest as protected selection.
+        # A passing test on unregistered SIRT issue #1563 is false-green.
+        self.assertEqual(source.count('mv "$RUNNER_TEMP/approved-issues.json" "$RUNNER_TEMP/engineering-issues.json"'), 2)
         self.assertIn('-f lease_group="$lease_group"', source)
         self.assertNotIn("-f lease_group=GLOBAL", source)
 
