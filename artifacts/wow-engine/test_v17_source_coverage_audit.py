@@ -149,3 +149,41 @@ def test_research_tool_scan_ignores_vendor_tree(tmp_path):
     uses = sca.research_tool_usage(tmp_path)
     assert uses["mlflow"] == []
     assert uses["evidently"] == ["first_party.py"]
+
+
+def test_new_cricket_and_boxing_research_sources_cannot_clear_training():
+    """Publisher accessibility is not permission to train or certify a model."""
+    from v17.free_source_catalog import SPORTS
+
+    rows = sca.build_source_matrix(ROOT)
+    assert set(SPORTS) == {
+        "NFL", "NBA", "NCAAF", "NCAAB", "MLB", "NHL", "WNBA",
+        "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET",
+    }
+    assert set(sca.sport_summary(rows)) == set(SPORTS)
+    keyed = {(r["sport"], r["source_id"]): r for r in rows}
+    cricket = keyed[("CRICKET", "CRICSHEET_ODC_BY")]
+    boxing = keyed[("BOXING", "OPENBOXING_PUBLIC")]
+    assert sca.B_UNCLASSIFIED in cricket["blockers"]
+    assert sca.B_NO_LIVE_RECEIPT in cricket["blockers"]
+    assert sca.B_NO_ADAPTER not in cricket["blockers"]
+    assert sca.B_UNCLASSIFIED in boxing["blockers"]
+    assert sca.B_NO_ADAPTER in boxing["blockers"]
+    assert all(r["probability_source"] is False and r["can_execute"] is False
+               and r["legal_reproducible_fitted_training"] is False
+               for r in (cricket, boxing))
+
+
+def test_unreviewed_receipt_ids_do_not_promote_new_public_sources():
+    rows = sca.build_source_matrix(
+        ROOT,
+        live_receipts={"CRICSHEET_ODC_BY": "downloaded-zip",
+                       "OPENBOXING_PUBLIC": "reachable-public-url"},
+        license_receipts={"CRICSHEET_ODC_BY": "publisher-terms",
+                          "OPENBOXING_PUBLIC": "unverified-license"},
+    )
+    for r in rows:
+        if r["source_id"] in {"CRICSHEET_ODC_BY", "OPENBOXING_PUBLIC"}:
+            assert sca.B_UNCLASSIFIED in r["blockers"]
+            assert not r["legal_reproducible_fitted_training"]
+            assert r["can_execute"] is False
