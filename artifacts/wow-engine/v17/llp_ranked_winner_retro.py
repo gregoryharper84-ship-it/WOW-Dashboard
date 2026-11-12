@@ -73,6 +73,23 @@ def _key(row: Mapping[str, Any]) -> tuple[str, str]:
     return (_text(row.get("sport")).upper(), _text(row.get("official_event_id")))
 
 
+_CONFIDENCE_LABELS = frozenset({"HIGH", "MEDIUM", "LOW"})
+
+
+def _confidence_label(row: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """Research confidence is categorical, never a calibrated probability.
+
+    The label must be frozen in the independent cohort receipt alongside the
+    selected side. Missing historical labels remain UNLABELED, not inferred.
+    """
+    if "confidence_label" not in row:
+        return "UNLABELED", []
+    raw = row.get("confidence_label")
+    if not isinstance(raw, str) or raw.strip().upper() not in _CONFIDENCE_LABELS:
+        return "INVALID", ["RESEARCH_CONFIDENCE_LABEL_INVALID"]
+    return raw.strip().upper(), []
+
+
 def _identity(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return (_key(a) == _key(b)
             and _utc(a.get("event_start_time_utc")) is not None
@@ -157,10 +174,11 @@ def audit_ranked_winner_retro(
     for p in picks:
         sport, event_id = _key(p)
         chosen = _text(p.get("selected_side")).upper()
+        confidence_label, confidence_problems = _confidence_label(p)
         kickoff = _utc(p.get("event_start_time_utc"))
         frozen = _utc(p.get("frozen_at_utc"))
         final = result_map.get((sport, event_id))
-        errors = []
+        errors = list(confidence_problems)
         if (sport not in SPORTS or not event_id
             or not _text(p.get("home_team")) or not _text(p.get("away_team"))
             or _text(p.get("home_team")).casefold() == _text(p.get("away_team")).casefold()
@@ -184,6 +202,7 @@ def audit_ranked_winner_retro(
         # must never inherit the original cohort's verification.
         if (not cohort_ok or not _identity(p, cohort_row)
             or _text(cohort_row.get("selected_side")).upper() != chosen
+            or _confidence_label(cohort_row)[0] != confidence_label
             or not _text(cohort_row.get("pregame_receipt_id"))
             or _text(cohort_row.get("pregame_receipt_id")) != _text(p.get("pregame_receipt_id"))
             or _utc(cohort_row.get("frozen_at_utc")) is None
@@ -261,6 +280,12 @@ def audit_ranked_winner_retro(
         rows.append({
             "sport": sport, "official_event_id": event_id,
             "selection_grade": pick_grade, "market_favorite_grade": market_grade,
+            "research_confidence_label": confidence_label,
+            "research_confidence_is_calibrated": False,
+            "settlement_verification_state": (
+                "PENDING_OR_MISSING_FINAL" if final is None or final.get("final_status") != "FINAL"
+                else "VERIFIED" if valid else "HELD_UNVERIFIED"
+            ),
             "market_favorite": favorite if valid else None,
             "different_from_market_favorite": (chosen != favorite if valid and favorite else None),
             "official_outcome": outcome if valid else None,
@@ -282,10 +307,32 @@ def audit_ranked_winner_retro(
                            "graded": sum(r["selection_grade"] != "HELD" for r in group) if complete else None,
                            "correct": sum(r["selection_grade"] == "WIN" for r in group) if complete else None,
                            "incomplete_cohort": not complete})
+    confidence_groups = []
+    for label in ("HIGH", "MEDIUM", "LOW", "UNLABELED", "INVALID"):
+        group = [r for r in rows if r["research_confidence_label"] == label]
+        if not group:
+            continue
+        wins = sum(r["selection_grade"] == "WIN" for r in group)
+        losses = sum(r["selection_grade"] == "LOSS" for r in group)
+        market_wins = sum(r["market_favorite_grade"] == "WIN" for r in group)
+        confidence_groups.append({
+            "label": label, "selected": len(group),
+            "verified_wins": wins, "verified_losses": losses,
+            "held": len(group) - wins - losses,
+            "accuracy": wins / len(group) if complete else None,
+            "market_favorite_correct": market_wins if market_complete else None,
+            "incremental_correct_vs_market": wins - market_wins if market_complete else None,
+            "calibration_proven": False, "fitted_model_credit": False,
+        })
     return {
         "research_scope": cohort_kind,
         "cohort_complete": complete,
         "market_baseline_complete": market_complete,
+        "cohort_selected": len(rows),
+        "cohort_verified_graded": sum(r["selection_grade"] in {"WIN", "LOSS"} for r in rows),
+        "cohort_held": sum(r["selection_grade"] == "HELD" for r in rows),
+        "confidence_cohorts": confidence_groups,
+        "confidence_labels_are_calibrated": False,
         "graded": len(rows) if complete else None,
         "correct": sum(r["selection_grade"] == "WIN" for r in rows) if complete else None,
         "subset_accuracy": (sum(r["selection_grade"] == "WIN" for r in rows) / len(rows)) if complete else None,
