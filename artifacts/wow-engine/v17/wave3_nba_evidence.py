@@ -30,6 +30,16 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _is_official_id(value: object) -> bool:
+    """Type guard for official event identity: non-blank strings only.
+
+    No coercion: ``str(None)`` (``"None"``) and ``str([])`` (``"[]"``) must
+    never count as identity, and unhashable values must be rejected before
+    any set/dict operation can crash on them.
+    """
+    return isinstance(value, str) and bool(value.strip())
+
+
 def verify_chronology_disjoint(
     train: Sequence[str],
     calibration: Sequence[str],
@@ -69,7 +79,7 @@ def verify_chronology_disjoint(
                 if len(id_list) != len(time_list):
                     blockers.append("NBA_EVENT_ID_COUNT_MISMATCH")
                     break
-                if any(not str(v).strip() for v in id_list):
+                if any(not _is_official_id(v) for v in id_list):
                     blockers.append("NBA_EVENT_ID_MISSING")
                     break
             else:
@@ -133,13 +143,20 @@ def verify_nba_event_orientations(
     blockers: list[str] = []
     orientation_by_id: dict[str, tuple[str, str]] = {}
     for record in records:
-        event_id = str(record.get("official_event_id", "") or "").strip()
-        home = str(record.get("home_team_id", "") or "").strip()
-        away = str(record.get("away_team_id", "") or "").strip()
-        if not event_id or not home or not away:
+        if not isinstance(record, Mapping):
             blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
             continue
-        if home == away:
+        event_id = record.get("official_event_id")
+        home = record.get("home_team_id")
+        away = record.get("away_team_id")
+        if not (
+            _is_official_id(event_id)
+            and _is_official_id(home)
+            and _is_official_id(away)
+        ):
+            blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
+            continue
+        if str(home).strip() == str(away).strip():
             blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
             continue
         orientation = (home, away)

@@ -28,6 +28,15 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _is_official_id(value: object) -> bool:
+    """Type guard for official game identity: non-blank strings only.
+
+    No coercion: ``str(None)`` (``"None"``) must never count as identity,
+    and unhashable values must be rejected before any set operation.
+    """
+    return isinstance(value, str) and bool(value.strip())
+
+
 def reconcile_partition_accounting(
     train_ids: Sequence[str],
     calibration_ids: Sequence[str],
@@ -49,7 +58,6 @@ def reconcile_partition_accounting(
     cal = list(calibration_ids)
     test = list(test_ids)
     total = len(train) + len(cal) + len(test)
-    unique = len(set(train) | set(cal) | set(test))
     blockers: list[str] = []
     if not train:
         blockers.append("NHL_TRAIN_PARTITION_EMPTY")
@@ -57,17 +65,23 @@ def reconcile_partition_accounting(
         blockers.append("NHL_CALIBRATION_PARTITION_EMPTY")
     if not test:
         blockers.append("NHL_TEST_PARTITION_EMPTY")
-    if any(not str(game_id).strip() for game_id in train + cal + test):
+    ids_valid = all(_is_official_id(game_id) for game_id in train + cal + test)
+    if not ids_valid:
         blockers.append("NHL_GAME_ID_MISSING")
-    if total != unique:
-        blockers.append("NHL_PARTITION_EVENT_REUSE")
+    # Set operations run only on validated string IDs: unhashable values
+    # are already held above and must never crash the accounting.
+    unique = -1
+    if ids_valid:
+        unique = len(set(train) | set(cal) | set(test))
+        if total != unique:
+            blockers.append("NHL_PARTITION_EVENT_REUSE")
+        if total == CONTRADICTED_TOTAL or unique == CONTRADICTED_TOTAL:
+            blockers.append("NHL_CONTRADICTED_8580_TOTAL_REJECTED")
+        overlap = (set(train) & set(cal)) | (set(cal) & set(test)) | (set(train) & set(test))
+        if overlap:
+            blockers.append("NHL_DUPLICATE_GAME_CONFLICT")
     if unique != CANONICAL_UNIQUE_TOTAL:
         blockers.append(f"NHL_UNIQUE_TOTAL_{unique}_NE_{CANONICAL_UNIQUE_TOTAL}")
-    if total == CONTRADICTED_TOTAL or unique == CONTRADICTED_TOTAL:
-        blockers.append("NHL_CONTRADICTED_8580_TOTAL_REJECTED")
-    overlap = (set(train) & set(cal)) | (set(cal) & set(test)) | (set(train) & set(test))
-    if overlap:
-        blockers.append("NHL_DUPLICATE_GAME_CONFLICT")
     time_groups = (train_times, calibration_times, test_times)
     if any(group is not None for group in time_groups):
         if train_times is None or calibration_times is None or test_times is None:

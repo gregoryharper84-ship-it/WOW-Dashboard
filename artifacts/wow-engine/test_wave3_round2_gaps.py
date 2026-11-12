@@ -6,9 +6,12 @@ from __future__ import annotations
 import pytest
 
 from v17.wave3_evidence_triad import compute_binding_proof, verify_triad
+import pytest
+
 from v17.wave3_nba_evidence import (
     nba_evidence_preflight,
     verify_chronology_disjoint,
+    verify_nba_event_orientations,
     verify_nba_snapshot_order,
 )
 from v17.wave3_nfl_ml_readiness import GradedRow
@@ -250,6 +253,38 @@ def test_snapshot_order_validator_accepts_clean_lineage():
 
 
 # --- Gap 3: lower bound above forecast is rejected at row construction ---
+
+
+@pytest.mark.parametrize("bad", [None, 0, [], {}, True, b"raw-bytes", "   "])
+def test_bad_official_event_id_holds_without_crash(bad):
+    result = verify_chronology_disjoint(
+        ["2026-01-01T00:00:00Z"],
+        ["2026-02-01T00:00:00Z"],
+        ["2026-03-01T00:00:00Z"],
+        train_ids=[bad],
+        calibration_ids=["game-2"],
+        holdout_ids=["game-3"],
+    )
+    assert result["ok"] is False
+    assert "NBA_EVENT_ID_MISSING" in result["blockers"]
+
+
+@pytest.mark.parametrize("bad", [None, 0, [], {}, True, b"raw-bytes", "   "])
+def test_bad_official_id_in_orientation_records_holds_without_crash(bad):
+    result = verify_nba_event_orientations([
+        {"official_event_id": bad, "home_team_id": "h1", "away_team_id": "a1"},
+    ])
+    assert result["ok"] is False
+    assert "NBA_EVENT_IDENTITY_INCOMPLETE" in result["blockers"]
+
+
+@pytest.mark.parametrize("bad", [None, 0, [], {}, True, b"raw-bytes", "   "])
+def test_bad_nhl_game_id_holds_without_crash(bad):
+    train, cal, test = _nhl_ids()
+    train = [bad] + train[1:]
+    accounting = reconcile_partition_accounting(train, cal, test)
+    assert accounting["ok"] is False
+    assert "NHL_GAME_ID_MISSING" in accounting["blockers"]
 
 
 def test_graded_row_rejects_lower_bound_above_forecast():
