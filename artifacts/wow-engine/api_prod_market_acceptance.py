@@ -326,8 +326,10 @@ async def _run_prop_live_self_acceptance() -> None:
                 if passed:
                     _logger.warning(
                         "WOW_PROP_SELF_ACCEPTANCE result=PASS direction=%s status=422 code=%s "
+                        "fixture=EXPECTED_NO_SNAPSHOT "
                         "auth=PASS acquisition_fail_closed=PASS specialist_invoked=false "
-                        "probability_publishable=false can_execute=false numeric_probability_fields=0",
+                        "probability_publishable=false can_execute=false numeric_probability_fields=0 "
+                        "model_path=NOT_PROVEN_IN_THIS_PROBE",
                         direction,
                         last_code,
                     )
@@ -338,7 +340,8 @@ async def _run_prop_live_self_acceptance() -> None:
         if not passed:
             _logger.error(
                 "WOW_PROP_SELF_ACCEPTANCE result=FAIL direction=%s status=%s code=%s "
-                "numeric_probability_fields=%s",
+                "fixture=EXPECTED_NO_SNAPSHOT numeric_probability_fields=%s "
+                "model_path=NOT_PROVEN_IN_THIS_PROBE",
                 direction,
                 last_status,
                 last_code,
@@ -348,11 +351,15 @@ async def _run_prop_live_self_acceptance() -> None:
 
     settlement_math = "PROVEN" if settlement_self_acceptance() else "FAILED"
     if settlement_math != "PROVEN":
-        _logger.error("WOW_PROP_SELF_ACCEPTANCE result=FAIL settlement_math=FAILED can_execute=false")
+        _logger.error(
+            "WOW_PROP_SELF_ACCEPTANCE result=FAIL settlement_math=FAILED "
+            "fixture=EXPECTED_NO_SNAPSHOT can_execute=false"
+        )
         return
     _logger.warning(
         "WOW_PROP_SELF_ACCEPTANCE result=PASS directions=MORE,LESS auth=PASS "
-        "acquisition_fail_closed=PASS specialist_invoked=false zero_probability_leak=true "
+        "fixture=EXPECTED_NO_SNAPSHOT acquisition_fail_closed=PASS "
+        "specialist_invoked=false zero_probability_leak=true "
         "settlement_math=PROVEN model_path=NOT_PROVEN_IN_THIS_PROBE can_execute=false"
     )
 
