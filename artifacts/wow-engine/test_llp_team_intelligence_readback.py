@@ -288,3 +288,449 @@ def test_no_selected_side_is_invented_from_larger_home_probability():
     view = llp.project_llp_intelligence_page(_page([saved]))
     assert view["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
     assert "WINNER_SIDE_INVALID" in view["events"][0]["markets"][0]["reason_codes"]
+
+
+def _spread_row(
+    *, index=1, certified=False, side="HOME", line=-3.5, bounds=True,
+    family="POINT_SPREAD", identity=None, row_status=None,
+):
+    status = row_status or ("COMPLETED" if certified else "HELD")
+    result = {
+        "market_family": family,
+        "exact_line_side": side,
+        "exact_signed_spread": line,
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
+        "source_receipt_id": "spread-receipt-prekick-1",
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "controlling_engine_identity": "LLP_TEAM_BETTING_ENGINE",
+        "model_class": "CERTIFIED_FITTED" if certified else "RESEARCH_ONLY",
+        "model_version": "spread-test-model",
+        "calibration_version": "spread-test-calibration",
+        "model_timestamp": (START-timedelta(minutes=1)).isoformat(),
+        "source_snapshot_timestamp": (START-timedelta(minutes=2)).isoformat(),
+        "p_cover": .52, "p_push": 0.0, "p_not_cover": .48,
+        "probability_publishable": certified,
+        "rank_eligible": certified,
+        "can_execute": False,
+    }
+    if bounds:
+        result["calibrated_probability_lower_bound"] = .45
+        result["calibrated_probability_upper_bound"] = .59
+    return {
+        "lane": "SPREAD", "row_index": index, "row_status": status,
+        "identity": identity or {
+            "sport": "NFL", "official_event_id": "nfl-123",
+            "home_team": "DAL", "away_team": "NYG",
+            "commence_time_utc": START.isoformat(),
+        },
+        "detail": {"result": result, "probability_publishable": certified},
+    }
+
+
+def test_saved_governed_spread_receipt_becomes_a_qualified_card_row():
+    view = llp.project_llp_intelligence_page(
+        _page([_row(certified=True), _spread_row(certified=True)])
+    )
+    assert len(view["events"]) == 1
+    event = view["events"][0]
+    card = event["spread_card"]
+    assert card["status"] == "QUALIFIED"
+    assert card["selected_side"] == "HOME"
+    assert card["exact_line"] == -3.5
+    assert card["settlement_basis"] == "FULL_GAME_INCLUDING_OVERTIME"
+    assert card["p_cover"] == .52 and card["p_push"] == 0.0 and card["p_not_cover"] == .48
+    assert card["calibrated_probability_lower_bound"] == .45
+    assert card["probability_visible"] is True
+    assert card["reason_codes"] == []
+    assert event["market_coverage"]["POINT_SPREAD"] == "RECEIPT_PRESENT"
+    # The existing winner market is untouched and still first.
+    assert [m["market_family"] for m in event["markets"]] == ["OUTRIGHT_WINNER", "POINT_SPREAD"]
+    assert event["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    assert view["spread_card_summary"]["qualified"] == 1
+    assert view["spread_card_summary"]["every_event_has_spread_status"] is True
+    assert view["invalid_event_rows"] == 0
+    assert view["duplicate_lane_rows"] == 0
+    assert view["can_execute"] is False
+
+
+def test_research_spread_receipt_is_provisional_and_never_numeric():
+    view = llp.project_llp_intelligence_page(_page([_spread_row(certified=False, bounds=False)]))
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "PROVISIONAL"
+    assert card["probability_visible"] is False
+    assert "p_cover" not in card and "calibrated_probability_lower_bound" not in card
+    assert "MODEL_CLASS_NOT_CERTIFIED_FITTED" in card["reason_codes"]
+    assert card["upstream_probability_publishable"] is False
+    assert view["spread_card_summary"]["provisional"] == 1
+
+
+def test_missing_spread_receipt_is_visible_not_hidden():
+    view = llp.project_llp_intelligence_page(_page([_row(certified=True)]))
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "MISSING_RECEIPT"
+    assert card["reason_codes"] == ["SPREAD_RECEIPT_NOT_SAVED_IN_DAILY_RUN"]
+    assert card["exact_line"] is None and card["selected_side"] is None
+    assert "p_cover" not in card
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+    assert view["spread_card_summary"]["missing_receipt"] == 1
+
+
+def test_spread_without_exact_line_is_held():
+    view = llp.project_llp_intelligence_page(_page([_spread_row(certified=True, line=None)]))
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "HELD"
+    assert "SPREAD_EXACT_LINE_OR_SETTLEMENT_MISSING" in card["reason_codes"]
+    assert "p_cover" not in card
+
+
+def test_spread_row_with_different_participants_is_held_on_identity_mismatch():
+    mismatched = _spread_row(
+        certified=True,
+        identity={
+            "sport": "NFL", "official_event_id": "nfl-123",
+            "home_team": "PHI", "away_team": "WSH",
+            "commence_time_utc": START.isoformat(),
+        },
+    )
+    view = llp.project_llp_intelligence_page(_page([_row(certified=True), mismatched]))
+    assert len(view["events"]) == 1
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "HELD"
+    assert "CROSS_MARKET_EVENT_IDENTITY_MISMATCH" in card["reason_codes"]
+    assert "p_cover" not in card
+
+
+def test_puck_line_row_is_held_and_never_relabelled_as_point_spread():
+    view = llp.project_llp_intelligence_page(
+        _page([_spread_row(certified=True, family="PUCK_LINE", line=-1.5)])
+    )
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "HELD"
+    assert card["reason_codes"] == ["SPREAD_MARKET_FAMILY_NOT_YET_GOVERNED"]
+    assert card["declared_market_family"] == "PUCK_LINE"
+    assert card["reported_exact_line"] == -1.5
+    assert "p_cover" not in card
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+
+
+def test_two_competing_spread_theses_hold_the_card_row():
+    first = _spread_row(certified=True, side="HOME", index=1)
+    second = _spread_row(certified=True, side="AWAY", line=3.5, index=2)
+    view = llp.project_llp_intelligence_page(_page([first, second]))
+    assert view["duplicate_lane_rows"] == 1
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "HELD"
+    assert "DUPLICATE_SPREAD_THESIS_IN_PAGE" in card["reason_codes"]
+    assert card["probability_visible"] is False
+    assert "p_cover" not in card
+
+
+def test_real_producer_payload_written_by_daily_terminal_row_maps_exactly():
+    """End-to-end mapping check against the actual producer and writer.
+
+    No spread lane exists in Daily yet, so there is no persisted spread row to
+    read. This instead builds the row the way the real code would: the challenger
+    receipt from ``_common_result``, the row from ``_terminal_row``, and the saved
+    ``detail`` exactly as ``persist_row_detail`` flattens it (``{**row}``).
+    """
+    from types import SimpleNamespace
+    from v17 import daily_snapshot_runtime as daily
+    from v17 import spread_forward_shadow_leagues as leagues
+
+    artifact = SimpleNamespace(
+        model_family="NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        feature_schema_version="NFL_PRIOR_ONLY_V1",
+        training_dataset_hash="hash-abc",
+        train_rows=1200,
+        calibration_rows=300,
+        test_rows=300,
+    )
+    payload = leagues._common_result(
+        sport="NFL",
+        event_id="nfl-123",
+        event_start_time=START.isoformat(),
+        home_team="DAL",
+        away_team="NYG",
+        home_spread=-6.5,
+        artifact=artifact,
+        latest_training=START - timedelta(days=1),
+        scored={
+            "predicted_home_margin_center": -2.1,
+            "p_cover": .52, "p_push": .03, "p_not_cover": .45,
+            "p_cover_given_no_push": .53,
+            "research_lower_bound_cover": .44,
+            "distribution_sample_n": 500,
+        },
+        feature_audit={"market_features_used": False, "can_execute": False},
+    )
+    identity = {
+        "sport": "NFL", "official_event_id": "nfl-123",
+        "home_team": "DAL", "away_team": "NYG",
+        "commence_time_utc": START.isoformat(),
+    }
+    row = daily._terminal_row("SPREAD", identity, payload, {"final_terminal": "HELD"})
+    saved = {
+        "run_id": "run-map", "row_index": 0, "lane": row["lane"],
+        "row_status": row["row_status"], "identity": row["identity"],
+        "detail": {**row},
+    }
+    view = llp.project_llp_intelligence_page({
+        "run_id": "run-map", "status": "OK", "rows": [saved],
+        "offset": 0, "returned": 1, "next_offset": None, "blockers": [],
+    })
+    assert len(view["events"]) == 1
+    card = view["events"][0]["spread_card"]
+    # Exact market identity maps through unchanged.
+    assert card["selected_side"] == "HOME"
+    assert card["exact_line"] == -6.5
+    assert card["settlement_basis"] == "FULL_GAME_INCLUDING_OVERTIME"
+    # model_family is the real field name; it must not read as missing.
+    assert card["model_version"] == "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1"
+    # An uncertified research receipt with no receipt id / calibrator / engine
+    # identity is HELD, never QUALIFIED, and never numeric.
+    assert card["status"] == "HELD"
+    assert card["probability_visible"] is False
+    assert "p_cover" not in card and "p_push" not in card
+    # A research lower bound must never be lifted into calibrated bounds.
+    assert "calibrated_probability_lower_bound" not in card
+    assert "SPREAD_BOUNDS_MISSING" in card["reason_codes"]
+    assert "SOURCE_RECEIPT_MISSING" in card["reason_codes"]
+    assert "MODEL_CALIBRATION_PROVENANCE_MISSING" in card["reason_codes"]
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "RECEIPT_PRESENT"
+    assert view["spread_card_summary"]["held"] == 1
+    assert view["can_execute"] is False
+
+
+def test_no_card_status_leaks_a_probability_or_execution():
+    pages = [
+        [_row(certified=True), _spread_row(certified=True)],
+        [_spread_row(certified=False, bounds=False)],
+        [_spread_row(certified=True, line=None)],
+        [_row(certified=True)],
+    ]
+    for rows in pages:
+        view = llp.project_llp_intelligence_page(_page(rows))
+        for event in view["events"]:
+            card = event["spread_card"]
+            assert card["can_execute"] is False
+            assert card["probability_publishable"] is False
+            if card["status"] != "QUALIFIED":
+                assert card["probability_visible"] is False
+                assert "p_cover" not in card
+            assert event["can_execute"] is False
+        assert view["spread_card_summary"]["events_total"] == len(view["events"])
+        assert view["spread_card_summary"]["can_execute"] is False
+
+
+class _TableQuery:
+    def __init__(self, rows):
+        self._rows = rows
+        self._slice = None
+
+    def select(self, *_args):
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def gte(self, *_args):
+        return self
+
+    def lte(self, *_args):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self._slice = (int(start), int(end))
+        return self
+
+    def upsert(self, payload, *_args, **_kwargs):
+        self._rows[:] = [dict(row) for row in payload]
+        return self
+
+    def execute(self):
+        data = self._rows
+        if self._slice is not None:
+            start, end = self._slice
+            data = self._rows[start:end + 1]
+            self._slice = None
+        return type("Response", (), {"data": data})()
+
+
+class _DualStore:
+    """Minimal Supabase-shaped store with the two tables this chain touches."""
+
+    def __init__(self):
+        self.tables = {
+            "wow_v17_daily_run_row_detail": [],
+            "wow_market_price_observations": [],
+            "wow_v17_spread_card_receipts": [],
+        }
+
+    def table(self, name):
+        return _TableQuery(self.tables.setdefault(name, []))
+
+
+def test_spread_lane_row_reaches_the_llp_card_end_to_end():
+    """Producer -> persisted Daily row -> authenticated LLP card projection."""
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+    from v17.daily_response_contract import persist_row_detail
+
+    store = _DualStore()
+    quote_at = (START - timedelta(hours=2)).isoformat()
+    common = {
+        "provider_event_id": "rd-nfl-9001",
+        "sport_key": "americanfootball_nfl",
+        "event_start_utc": START.isoformat(),
+        "market_id": "2",
+        "market_name": "spreads",
+        "sportsbook": "Pinnacle",
+        "price_updated_at": quote_at,
+        "is_live": False,
+        "is_main_line": True,
+        "is_available": True,
+    }
+    store.tables["wow_market_price_observations"] = [
+        {**common, "participant_type": "home", "participant_name": "Dallas Cowboys", "line_value": -6.5},
+        {**common, "participant_type": "away", "participant_name": "Atlanta Falcons", "line_value": 6.5},
+    ]
+    moneyline = [{
+        "lane": "MONEYLINE",
+        "identity": {
+            "official_event_id": "nfl-123",
+            "sport": "NFL",
+            "home_team": "DAL",
+            "away_team": "ATL",
+            "event_start_time": START.isoformat(),
+        },
+        "result": {"sport": "NFL"},
+    }]
+    spread_rows = _spread_lane_rows(store, moneyline_rows=moneyline, requested_limit=6)
+    assert len(spread_rows) == 1
+    persistence = persist_row_detail(store, run_id="run-e2e", rows=spread_rows)
+    assert persistence["detail_available"] is True
+
+    page = {
+        "run_id": "run-e2e",
+        "status": "OK",
+        "rows": store.tables["wow_v17_daily_run_row_detail"],
+        "offset": 0,
+        "returned": 1,
+        "next_offset": None,
+        "blockers": [],
+    }
+    view = llp.project_llp_intelligence_page(page)
+    assert len(view["events"]) == 1
+    event = view["events"][0]
+    card = event["spread_card"]
+    assert event["sport"] == "NFL"
+    assert card["status"] == "HELD"
+    assert card["exact_line"] == -6.5
+    assert card["selected_side"] == "HOME"
+    assert card["settlement_basis"] == "FULL_GAME_INCLUDING_OVERTIME"
+    assert card["probability_visible"] is False
+    assert "p_cover" not in card
+    assert event["market_coverage"]["POINT_SPREAD"] == "RECEIPT_PRESENT"
+    # The lane's own reason survives to the card's diagnostics.
+    assert "SPREAD_RECEIPT_NOT_PUBLISHED" in event["source_diagnostics"]["source_reason_codes"]
+    assert card["can_execute"] is False
+    assert view["can_execute"] is False
+
+
+def test_certified_receipt_completes_the_row_and_the_card_shows_qualified():
+    """A governed receipt attached by the lane reaches the card as QUALIFIED."""
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+    from v17.daily_response_contract import persist_row_detail
+
+    store = _DualStore()
+    quote_at = (START - timedelta(hours=2)).isoformat()
+    common = {
+        "provider_event_id": "rd-nfl-9101",
+        "sport_key": "americanfootball_nfl",
+        "event_start_utc": START.isoformat(),
+        "market_id": "2",
+        "market_name": "spreads",
+        "sportsbook": "Pinnacle",
+        "price_updated_at": quote_at,
+        "is_live": False,
+        "is_main_line": True,
+        "is_available": True,
+    }
+    store.tables["wow_market_price_observations"] = [
+        {**common, "participant_type": "home", "participant_name": "Dallas Cowboys", "line_value": -6.5},
+        {**common, "participant_type": "away", "participant_name": "Atlanta Falcons", "line_value": 6.5},
+    ]
+    moneyline = [{
+        "lane": "MONEYLINE",
+        "identity": {
+            "official_event_id": "nfl-123",
+            "sport": "NFL",
+            "home_team": "DAL",
+            "away_team": "ATL",
+            "event_start_time": START.isoformat(),
+        },
+        "result": {"sport": "NFL"},
+    }]
+    receipt = {
+        "sport": "NFL",
+        "official_event_id": "nfl-123",
+        "exact_line_side": "HOME",
+        "exact_signed_spread": -6.5,
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
+        "controlling_spread_specialist": "NFL_SPREAD_MARGIN_DISTRIBUTION_CHALLENGER_V1",
+        "model_artifact_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        "model_family": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        "p_cover": 0.54, "p_push": 0.02, "p_not_cover": 0.44,
+        "lower_bound_required": True,
+        "calibrated_lower_bound": 0.47,
+        "calibrated_upper_bound": 0.61,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "model_timestamp": (START - timedelta(minutes=30)).isoformat(),
+        "event_state": "SCHEDULED",
+        "score_snapshot_status": "PASS",
+        "can_execute": False,
+        "source_receipt_id": "receipt-spread-1",
+        "model_class": "CERTIFIED_FITTED",
+        "model_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        "calibration_version": "cal-v1",
+        "source_snapshot_timestamp": (START - timedelta(minutes=40)).isoformat(),
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "controlling_engine_identity": "LLP_TEAM_BETTING_ENGINE",
+    }
+    spread_rows = _spread_lane_rows(
+        store,
+        moneyline_rows=moneyline,
+        requested_limit=6,
+        receipt_provider=lambda _db, **_kwargs: (dict(receipt), None),
+    )
+    assert spread_rows[0]["row_status"] == "COMPLETED"
+    persistence = persist_row_detail(store, run_id="run-qualified", rows=spread_rows)
+    assert persistence["detail_available"] is True
+
+    view = llp.project_llp_intelligence_page({
+        "run_id": "run-qualified",
+        "status": "OK",
+        "rows": store.tables["wow_v17_daily_run_row_detail"],
+        "offset": 0,
+        "returned": 1,
+        "next_offset": None,
+        "blockers": [],
+    })
+    event = view["events"][0]
+    card = event["spread_card"]
+    assert card["status"] == "QUALIFIED"
+    assert card["exact_line"] == -6.5
+    assert card["selected_side"] == "HOME"
+    assert card["probability_visible"] is True
+    assert card["p_cover"] == 0.54
+    assert card["calibrated_probability_lower_bound"] == 0.47
+    assert card["can_execute"] is False
+    assert card["probability_publishable"] is False  # LLP card never grants publication
+    assert view["spread_card_summary"]["qualified"] == 1
+    assert view["can_execute"] is False

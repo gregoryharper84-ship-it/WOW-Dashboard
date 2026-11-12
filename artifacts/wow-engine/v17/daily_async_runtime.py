@@ -37,7 +37,9 @@ class AsyncDailySubmitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requested_slate_date: str
     requested_timezone: str = Field(min_length=1, max_length=64)
-    lanes: list[Literal["PROPS", "MONEYLINE"]] = Field(default_factory=lambda: ["PROPS", "MONEYLINE"])
+    lanes: list[Literal["PROPS", "MONEYLINE", "SPREAD"]] = Field(
+        default_factory=lambda: ["PROPS", "MONEYLINE"]
+    )
     max_props: int = Field(default=6, ge=0, le=12)
     max_team_events: int = Field(default=6, ge=0, le=12)
     response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
