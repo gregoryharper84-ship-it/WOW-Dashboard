@@ -11,6 +11,8 @@ import hashlib
 import importlib
 import json
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -24,7 +26,8 @@ _IDENTIFIER = re.compile(r"[a-zA-Z0-9_\-]{1,80}\Z")
 
 # Required Parquet columns, with UTC-epoch seconds to avoid naive timezone casts:
 # sport, season, observation_id, event_id, event_start_epoch,
-# feature_available_epoch, quote_captured_epoch (NULL allowed for nonmarket rows).
+# feature_available_epoch, is_market_observation (BOOLEAN),
+# quote_captured_epoch (NULL only allowed for nonmarket rows).
 _QUERY = """
 SELECT
     COUNT(*) AS row_count,
@@ -42,19 +45,22 @@ SELECT
              THEN 1 ELSE 0 END) AS missing_feature_time,
     SUM(CASE WHEN TRY_CAST(feature_available_epoch AS BIGINT) > TRY_CAST(event_start_epoch AS BIGINT)
              THEN 1 ELSE 0 END) AS features_after_start,
+    SUM(CASE WHEN is_market_observation IS NULL OR typeof(is_market_observation) <> 'BOOLEAN'
+             THEN 1 ELSE 0 END) AS invalid_market_flag,
     SUM(CASE WHEN quote_captured_epoch IS NOT NULL THEN 1 ELSE 0 END) AS quoted_rows,
-    SUM(CASE WHEN quote_captured_epoch IS NOT NULL
-                  AND (TRY_CAST(quote_captured_epoch AS BIGINT) IS NULL
-                       OR TRY_CAST(quote_captured_epoch AS BIGINT) <= 0
-                       OR TRY_CAST(quote_captured_epoch AS DOUBLE) <> TRY_CAST(quote_captured_epoch AS BIGINT)
-                       OR TRY_CAST(quote_captured_epoch AS BIGINT) > TRY_CAST(event_start_epoch AS BIGINT))
+    SUM(CASE WHEN (is_market_observation = TRUE AND quote_captured_epoch IS NULL)
+                  OR (quote_captured_epoch IS NOT NULL
+                      AND (TRY_CAST(quote_captured_epoch AS BIGINT) IS NULL
+                           OR TRY_CAST(quote_captured_epoch AS BIGINT) <= 0
+                           OR TRY_CAST(quote_captured_epoch AS DOUBLE) <> TRY_CAST(quote_captured_epoch AS BIGINT)
+                           OR TRY_CAST(quote_captured_epoch AS BIGINT) > TRY_CAST(event_start_epoch AS BIGINT)))
              THEN 1 ELSE 0 END) AS invalid_quote_time
 FROM read_parquet(?)
 """
 _METRICS = (
     "row_count", "distinct_observations", "missing_identity", "wrong_partition",
     "invalid_event_time", "missing_feature_time", "features_after_start",
-    "quoted_rows", "invalid_quote_time",
+    "invalid_market_flag", "quoted_rows", "invalid_quote_time",
 )
 
 
@@ -96,7 +102,8 @@ def _read_manifest(path: Path) -> dict[str, Any]:
                  and bool(_SHA256.fullmatch(digest)), "COLUMNAR_MANIFEST_INVALID")
         candidate = Path(rel)
         _require(not candidate.is_absolute() and ".." not in candidate.parts
-                 and candidate.suffix == ".parquet", "COLUMNAR_MANIFEST_INVALID")
+                 and candidate.suffix == ".parquet"
+                 and not any(char in rel for char in "*?[]"), "COLUMNAR_MANIFEST_INVALID")
         paths.append(rel)
     _require(paths == sorted(set(paths)), "COLUMNAR_MANIFEST_INVALID")
     return data
@@ -129,6 +136,24 @@ def _verified_paths(root: Path, entries: Sequence[Mapping[str, str]]) -> list[st
     return result
 
 
+def _snapshot_verified_files(
+    source_paths: Sequence[str], entries: Sequence[Mapping[str, str]], private_root: Path,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Copy hash-pinned bytes to private regular files; scan only those bytes."""
+    snapshot_entries: list[dict[str, str]] = []
+    for index, (source, entry) in enumerate(zip(source_paths, entries)):
+        name = f"part-{index:05d}.parquet"
+        target = private_root / name
+        try:
+            with Path(source).open("rb") as input_stream, target.open("xb") as output_stream:
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            target.chmod(0o400)
+        except OSError as exc:
+            raise PreflightHold("COLUMNAR_SOURCE_UNAVAILABLE") from exc
+        snapshot_entries.append({"path": name, "sha256": entry["sha256"]})
+    return _verified_paths(private_root, snapshot_entries), snapshot_entries
+
+
 def _duckdb_scan(paths: Sequence[str], sport: str, season: int) -> dict[str, int]:
     try:
         duckdb = importlib.import_module("duckdb")
@@ -156,16 +181,26 @@ def audit(
     """Return corpus-integrity evidence only, never model or training approval."""
     source = _read_manifest(manifest)
     paths = _verified_paths(root, source["files"])
-    started = time.perf_counter()
+    # A verified immutable-in-practice private copy eliminates changes in the
+    # mutable original source path during scan, including A -> B -> A races.
     try:
-        metrics = scanner(paths, source["sport"], source["season"])
-    except PreflightHold:
-        raise
-    except Exception as exc:
-        raise PreflightHold("COLUMNAR_SCAN_INVALID") from exc
-    # Close the hash-then-scan TOCTOU window before accepting evidence.
-    _verified_paths(root, source["files"])
-    elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        with tempfile.TemporaryDirectory(prefix="wow-v17-columnar-") as scratch:
+            private_root = Path(scratch)
+            scan_paths, snapshot_entries = _snapshot_verified_files(
+                paths, source["files"], private_root,
+            )
+            started = time.perf_counter()
+            try:
+                metrics = scanner(scan_paths, source["sport"], source["season"])
+            except PreflightHold:
+                raise
+            except Exception as exc:
+                raise PreflightHold("COLUMNAR_SCAN_INVALID") from exc
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+            _verified_paths(private_root, snapshot_entries)
+            _verified_paths(root, source["files"])
+    except OSError as exc:
+        raise PreflightHold("COLUMNAR_SOURCE_UNAVAILABLE") from exc
     _require(isinstance(metrics, dict) and set(metrics) == set(_METRICS), "COLUMNAR_SCAN_INVALID")
     _require(all(isinstance(v, int) and not isinstance(v, bool) and v >= 0
                  for v in metrics.values()), "COLUMNAR_SCAN_INVALID")
@@ -175,7 +210,8 @@ def audit(
     _require(metrics["row_count"] == metrics["distinct_observations"]
              and not any(metrics[key] for key in (
                  "missing_identity", "wrong_partition", "invalid_event_time",
-                 "missing_feature_time", "features_after_start", "invalid_quote_time",
+                 "missing_feature_time", "features_after_start", "invalid_market_flag",
+                 "invalid_quote_time",
              )), "COLUMNAR_INTEGRITY_HOLD")
     digest = hashlib.sha256(json.dumps(source, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {
