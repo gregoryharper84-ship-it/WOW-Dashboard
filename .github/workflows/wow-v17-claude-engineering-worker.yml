@@ -507,11 +507,14 @@ jobs:
             Preserve the exact typed failure. Do not edit files. Preserve V17 terminal authority,
             exact-once semantics, and can_execute=false. Never substitute market evidence for model probability.
             reproduction_status must be REPRODUCED, INTERMITTENT, ENVIRONMENT_SPECIFIC, NOT_REPRODUCED or
-            INSUFFICIENT_EVIDENCE. reproduction_test must be an existing tracked pytest node id relative to
-            artifacts/wow-engine (for example test_x.py::test_y) that currently FAILS because of this
-            incident, or NONE. Implementation is admitted only after the worker deterministically re-runs
-            that test and observes it fail; a self-reported status alone is not evidence.
-          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"reproduction_test":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"primary_subsystem":{"type":"string"},"typed_failure":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","reproduction_test","root_cause","risk_class","primary_subsystem","typed_failure","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
+            INSUFFICIENT_EVIDENCE. Provide deterministic evidence the worker can re-verify itself:
+            reproduction_test is an existing tracked pytest node id relative to artifacts/wow-engine
+            (for example test_x.py::test_y) that currently FAILS because of this incident, or NONE;
+            reproduction_run_id is the numeric id of a failed GitHub Actions run in this repository
+            (not this worker) whose GitHub-emitted ##[error] log contains typed_failure, or NONE.
+            Implementation is admitted only after the worker re-verifies one of them; a self-reported
+            status alone is not evidence.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"reproduction_test":{"type":"string"},"reproduction_run_id":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"primary_subsystem":{"type":"string"},"typed_failure":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","reproduction_test","reproduction_run_id","root_cause","risk_class","primary_subsystem","typed_failure","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
 
       - name: Normalize Triage packet
         id: triage
@@ -542,9 +545,14 @@ jobs:
           if ! [[ "$reproduction_test" =~ $node_re ]]; then
             reproduction_test=INVALID
           fi
+          reproduction_run_id=$(jq -r '(.reproduction_run_id // "NONE") | tostring | gsub("^\\s+|\\s+$"; "")' <<<"$RESULT")
+          if ! [[ "$reproduction_run_id" =~ ^([1-9][0-9]{0,19}|NONE)$ ]]; then
+            reproduction_run_id=INVALID
+          fi
           echo "repairable=$repairable" >> "$GITHUB_OUTPUT"
           echo "reproduction=$reproduction" >> "$GITHUB_OUTPUT"
           echo "reproduction_test=$reproduction_test" >> "$GITHUB_OUTPUT"
+          echo "reproduction_run_id=$reproduction_run_id" >> "$GITHUB_OUTPUT"
           echo "risk=$risk" >> "$GITHUB_OUTPUT"
           echo "incident=$incident" >> "$GITHUB_OUTPUT"
           echo "subsystem=$subsystem" >> "$GITHUB_OUTPUT"
@@ -612,11 +620,12 @@ jobs:
           printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/specialist.json
 
       # Triage reproduction_status is an LLM-origin claim. Mutation is admitted only after the
-      # worker itself re-runs the named tracked regression and observes it fail (pytest exit 1)
-      # on the exact checked-out head. No secrets are exposed to this step; it never fails the
-      # job, it only emits corroborated=true|false with an exact reason.
+      # worker itself re-verifies deterministic evidence: either it re-runs the named tracked
+      # regression and observes it fail (pytest exit 1) on the exact checked-out head, or it
+      # verifies an authentic failed run (next step). No token or secret is exposed while test
+      # code executes; neither step fails the job, they emit corroborated=true|false + reason.
       - name: Corroborate triage reproduction deterministically
-        id: reproduction
+        id: reproduction_test
         if: steps.lead.outputs.action == 'REPAIR' && steps.triage.outcome == 'success'
         shell: bash
         working-directory: artifacts/wow-engine
@@ -659,6 +668,66 @@ jobs:
             124) admit false TEST_TIMEOUT ;;
             *) admit false "TEST_ERROR_EXIT_$status" ;;
           esac
+
+      - name: Corroborate triage reproduction from failed run evidence
+        id: reproduction
+        if: steps.lead.outputs.action == 'REPAIR' && steps.triage.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPRODUCTION: ${{ steps.triage.outputs.reproduction }}
+          REPRODUCTION_RUN_ID: ${{ steps.triage.outputs.reproduction_run_id }}
+          TYPED_FAILURE: ${{ steps.triage.outputs.failure }}
+          TEST_CORROBORATED: ${{ steps.reproduction_test.outputs.corroborated }}
+          TEST_REASON: ${{ steps.reproduction_test.outputs.reason }}
+        run: |
+          set -euo pipefail
+          admit() {
+            echo "corroborated=$1" >> "$GITHUB_OUTPUT"
+            echo "reason=$2" >> "$GITHUB_OUTPUT"
+            echo "Reproduction admission: corroborated=$1 ($2)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          if [ "${TEST_CORROBORATED:-}" = "true" ]; then
+            admit true "${TEST_REASON:-RED_OBSERVED}"
+          fi
+          case "${REPRODUCTION:-}" in
+            REPRODUCED|INTERMITTENT|ENVIRONMENT_SPECIFIC) ;;
+            *) admit false "STATUS_NOT_ADMISSIBLE:${REPRODUCTION:-MISSING}" ;;
+          esac
+          prior="${TEST_REASON:-NOT_RUN}"
+          if [ "${REPRODUCTION_RUN_ID:-NONE}" = "NONE" ]; then
+            admit false "$prior;RUN_EVIDENCE_NONE"
+          fi
+          if ! [[ "${REPRODUCTION_RUN_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || [ "$REPRODUCTION_RUN_ID" = "${GITHUB_RUN_ID:-}" ]; then
+            admit false "$prior;RUN_EVIDENCE_INVALID"
+          fi
+          # Worker/agent self-reported codes are never evidence of the incident itself.
+          if ! [[ "${TYPED_FAILURE:-}" =~ ^[A-Z][A-Z0-9_]{3,99}$ ]] ||
+             [ "$TYPED_FAILURE" = NONE ] || [ "$TYPED_FAILURE" = UNKNOWN ] ||
+             [[ "$TYPED_FAILURE" == ACTIONABLE_REPAIR_* ]] || [[ "$TYPED_FAILURE" == CLAUDE_* ]]; then
+            admit false "$prior;RUN_EVIDENCE_TYPED_FAILURE_INVALID"
+          fi
+          if ! run=$(timeout 120 gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${REPRODUCTION_RUN_ID}"); then
+            admit false "$prior;RUN_EVIDENCE_LOOKUP_FAILED"
+          fi
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" --argjson now "$(date -u +%s)" '
+              .repository.full_name == $repo and
+              .head_repository.full_name == $repo and
+              .conclusion == "failure" and
+              .path != ".github/workflows/wow-v17-claude-engineering-worker.yml" and
+              (.created_at | fromdateiso8601) >= ($now - 14 * 86400)
+            ' >/dev/null <<<"$run"; then
+            admit false "$prior;RUN_EVIDENCE_NOT_A_RECENT_FAILED_RUN"
+          fi
+          log="${RUNNER_TEMP:-/tmp}/wow-reproduction-run.log"
+          if ! timeout 300 gh run view "$REPRODUCTION_RUN_ID" --repo "$GITHUB_REPOSITORY" --log-failed >"$log" 2>/dev/null; then
+            admit false "$prior;RUN_EVIDENCE_LOG_UNAVAILABLE"
+          fi
+          if ! grep -F '##[error]' "$log" | grep -F -- "$TYPED_FAILURE" >/dev/null; then
+            admit false "$prior;RUN_EVIDENCE_TYPED_FAILURE_ABSENT"
+          fi
+          admit true "RUN_FAILURE_OBSERVED:${REPRODUCTION_RUN_ID}:${TYPED_FAILURE}"
 
       - name: Deny policy-changing implementation lease
         if: steps.lead.outputs.action == 'REPAIR' && (steps.triage.outputs.risk == 'R2-repair-policy' || steps.triage.outputs.risk == 'R3')
@@ -773,8 +842,9 @@ jobs:
             existing original PR #${{ steps.repair_target.outputs.pr_number }} at exact
             head ${{ steps.repair_target.outputs.head_sha }}. Keep its original branch;
             never replace the PR, alter another incident, or delete/skip failing tests.
-            The deterministically corroborated RED reproduction is ${{ steps.triage.outputs.reproduction_test }};
-            it must pass after your change. Run it first, then relevant regressions. Preserve can_execute=false,
+            Deterministically corroborated reproduction: ${{ steps.reproduction.outputs.reason }}.
+            A RED_OBSERVED test must pass after your change; for RUN_FAILURE_OBSERVED add a regression
+            that fails before your fix. Run it first, then relevant regressions. Preserve can_execute=false,
             DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, exact typed failures, exact-once
             behavior, V17_TERMINAL_REDUCER, and all probability governance. No Class C change is authorized.
           output_schema: '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
