@@ -36,6 +36,8 @@ jobs:
     outputs:
       already_accepted: ${{ steps.dedupe.outputs.already_accepted }}
       deploy_pending: ${{ steps.readback.outputs.deploy_pending }}
+      readback_outcome: ${{ steps.readback.outcome }}
+      source_identity_outcome: ${{ steps.source_identity.outcome }}
     env:
       GH_TOKEN: ${{ github.token }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -48,12 +50,17 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Checkout protected main (read-only)
+        id: source_checkout
+        continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
           persist-credentials: false
 
       - name: Verify execution and checkout identity
+        id: source_identity
+        if: steps.source_checkout.outcome == 'success'
+        continue-on-error: true
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
@@ -61,6 +68,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Fresh authenticated exact-SHA readback of BOTH native deployments
+        if: steps.source_identity.outcome == 'success'
+        continue-on-error: true
         id: readback
         # The upstream observer is nonblocking. Its success is only a trigger;
         # fresh GET-only service/deploy/current-main evidence gates these lanes.
@@ -72,7 +81,8 @@ jobs:
 
       - name: Skip repeat acceptance only for the identical deployment
         id: dedupe
-        if: steps.readback.outputs.deploy_pending != 'true'
+        if: steps.readback.outcome == 'success' && steps.readback.outputs.deploy_pending != 'true'
+        continue-on-error: true
         # The hourly observer re-triggers this workflow on unchanged deployments.
         # The fresh readback above still ran (drift fails the job). Expensive
         # lanes are skipped only when a prior successful run observed the same
@@ -82,6 +92,7 @@ jobs:
 
       - name: Preserve readback receipt (observation, never SIRT approval)
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-post-deploy-readback-${{ github.run_id }}-${{ github.run_attempt }}
@@ -89,11 +100,31 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Preserve typed readback HOLD independently of CI conclusion
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SOURCE_IDENTITY_OUTCOME: ${{ steps.source_identity.outcome }}
+          READBACK_OUTCOME: ${{ steps.readback.outcome }}
+          DEPLOY_PENDING: ${{ steps.readback.outputs.deploy_pending }}
+        run: |
+          if [ "$SOURCE_IDENTITY_OUTCOME" != "success" ] || [ "$READBACK_OUTCOME" != "success" ]; then
+            echo "::error::POST_DEPLOY_READBACK_HOLD: exact-main source identity or live SHA unverified."
+            echo "POST_DEPLOY_READBACK_HOLD source_identity=$SOURCE_IDENTITY_OUTCOME readback=$READBACK_OUTCOME production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$DEPLOY_PENDING" = "true" ]; then
+            echo "READBACK_PENDING_DEPLOY production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "POST_DEPLOY_READBACK_OBSERVED_SIRT_PENDING production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   spread-forward:
     name: Run spread-forward production canaries
     needs: deployment-readback
     if: >-
       needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.source_identity_outcome == 'success' &&
+      needs.deployment-readback.outputs.readback_outcome == 'success' &&
       needs.deployment-readback.outputs.deploy_pending != 'true' &&
       needs.deployment-readback.outputs.already_accepted != 'true'
     uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml
@@ -105,6 +136,8 @@ jobs:
     if: >-
       always() &&
       needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.source_identity_outcome == 'success' &&
+      needs.deployment-readback.outputs.readback_outcome == 'success' &&
       needs.deployment-readback.outputs.deploy_pending != 'true' &&
       needs.deployment-readback.outputs.already_accepted != 'true' &&
       needs.spread-forward.result == 'success'
@@ -117,6 +150,8 @@ jobs:
     if: >-
       always() &&
       needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.source_identity_outcome == 'success' &&
+      needs.deployment-readback.outputs.readback_outcome == 'success' &&
       needs.deployment-readback.outputs.deploy_pending != 'true' &&
       needs.deployment-readback.outputs.already_accepted != 'true'
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
@@ -130,6 +165,8 @@ jobs:
     if: >-
       always() &&
       needs.deployment-readback.result == 'success' &&
+      needs.deployment-readback.outputs.source_identity_outcome == 'success' &&
+      needs.deployment-readback.outputs.readback_outcome == 'success' &&
       needs.deployment-readback.outputs.deploy_pending != 'true' &&
       needs.deployment-readback.outputs.already_accepted != 'true'
     uses: ./.github/workflows/wow-v17-daily-snapshot.yml
@@ -156,9 +193,13 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Publish domain receipt matrix
+        id: receipt_matrix
+        continue-on-error: true
         shell: bash
         env:
           DEPLOYMENT_READBACK: ${{ needs.deployment-readback.result }}
+          READBACK_OUTCOME: ${{ needs.deployment-readback.outputs.readback_outcome }}
+          SOURCE_IDENTITY_OUTCOME: ${{ needs.deployment-readback.outputs.source_identity_outcome }}
           ALREADY_ACCEPTED: ${{ needs.deployment-readback.outputs.already_accepted }}
           DEPLOY_PENDING: ${{ needs.deployment-readback.outputs.deploy_pending }}
           SPREAD_FORWARD: ${{ needs.spread-forward.result }}
@@ -173,7 +214,8 @@ jobs:
             echo "### Serialized domain-isolated post-deploy acceptance"
             echo "| Lane | Result |"
             echo "| --- | --- |"
-            echo "| exact-current-main web/worker readback | ${DEPLOYMENT_READBACK} |"
+            echo "| exact-current-main web/worker readback | ${DEPLOYMENT_READBACK} / ${READBACK_OUTCOME} |"
+            echo "| source SHA identity | ${SOURCE_IDENTITY_OUTCOME} |"
             echo "| spread-forward | ${SPREAD_FORWARD} |"
             echo "| spread-certification | ${SPREAD_CERTIFICATION} |"
             echo "| priority-props | ${PRIORITY_PROPS} |"
@@ -185,6 +227,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           failed=0
+          if [ "${READBACK_OUTCOME:-}" != "success" ] || [ "${SOURCE_IDENTITY_OUTCOME:-}" != "success" ]; then
+            failed=1
+            echo "::error::POST_DEPLOY_READBACK_HOLD: source or deployed SHA unverified."
+            echo "POST_DEPLOY_READBACK_HOLD production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           # Bounded pending deploy: the merged SHA is not live yet, so no
           # acceptance lane ran against stale production. This is a typed
@@ -213,23 +260,47 @@ jobs:
           exit "$failed"
 
       - name: Checkout the previously authenticated SHA for final identity readback
+        id: receipt_checkout
+        if: steps.receipt_matrix.outcome == 'success' && needs.deployment-readback.outputs.deploy_pending != 'true'
+        continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.expected_sha || github.event.workflow_run.head_sha }}
           persist-credentials: false
 
       - name: Verify checkout still matches accepted SHA
+        id: receipt_identity
+        if: steps.receipt_checkout.outcome == 'success'
+        continue-on-error: true
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Reject main or deployment changes during acceptance
+        if: steps.receipt_identity.outcome == 'success'
+        continue-on-error: true
         id: final-readback
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
       - name: Preserve final observation receipt (independent acceptance still required)
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-post-deploy-final-readback-${{ github.run_id }}-${{ github.run_attempt }}
           path: wow-v17-post-deploy-final-readback.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Preserve nonauthoritative post-deploy observer status
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          MATRIX_OUTCOME: ${{ steps.receipt_matrix.outcome }}
+          FINAL_READBACK_OUTCOME: ${{ steps.final-readback.outcome }}
+          DEPLOY_PENDING: ${{ needs.deployment-readback.outputs.deploy_pending }}
+        run: |
+          if [ "$MATRIX_OUTCOME" != "success" ] || [ "$FINAL_READBACK_OUTCOME" != "success" ]; then
+            echo "POST_DEPLOY_ACCEPTANCE_HOLD matrix=$MATRIX_OUTCOME final_readback=$FINAL_READBACK_OUTCOME pending=$DEPLOY_PENDING production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "POST_DEPLOY_LANES_OBSERVED_SIRT_PENDING production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          fi
