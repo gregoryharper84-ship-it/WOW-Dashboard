@@ -137,3 +137,44 @@ def test_typed_identity_hydration_failure_is_row_scoped(monkeypatch: pytest.Monk
     assert result["held"]==1
     assert result["status"]=="COMPLETED_WITH_ROW_BLOCKERS"
     assert any("PROP_PLAYER_IDENTITY_UNRESOLVED" in value for value in result["blockers"])
+
+
+def test_evidence_validation_value_error_is_typed_row_hold_not_write_failure(monkeypatch: pytest.MonkeyPatch):
+    """Regression: nightly NFL forward acquisition reported RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE
+    with only `ValueError` because governed validation reasons were swallowed by the catch-all."""
+    candidates = [_candidate(), _candidate("Beta WR", "RECEIVING_YARDS", "WR")]
+    _install(monkeypatch, candidates)
+
+    def validate(row, stat):
+        raise ValueError("L10_GAME_LOG_INCOMPLETE")
+
+    monkeypatch.setattr(subject, "_validate_evidence", validate)
+    db = _DB()
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=2),
+        db=db, now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
+    assert result["snapshot_write_failed"] == 0 and result["persisted"] == 0 and result["held"] == 2
+    assert db.upserts == []  # nothing written for a held row
+    assert all("NFL_FORWARD_EVIDENCE_INVALID:L10_GAME_LOG_INCOMPLETE" in b for b in result["blockers"])
+    assert result["can_execute"] is False
+
+
+def test_genuine_snapshot_write_value_error_still_fails_the_run(monkeypatch: pytest.MonkeyPatch):
+    _install(monkeypatch, [_candidate()])
+
+    class _BadDB(_DB):
+        def table(self, name):
+            q = super().table(name)
+            def upsert(row, on_conflict=None):
+                raise ValueError("bad write")
+            q.upsert = upsert
+            return q
+
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=_BadDB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    assert result["snapshot_write_failed"] == 1

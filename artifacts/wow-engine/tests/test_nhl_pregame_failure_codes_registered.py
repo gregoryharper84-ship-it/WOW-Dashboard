@@ -272,13 +272,16 @@ def test_every_nhl_failure_row_names_its_emitting_module():
         needle = code.split(":", 1)[0].split("<", 1)[0]
         assert _mentions(module.read_text(encoding="utf-8"), needle), (code, emitter)
         rows += 1
-    assert rows >= 270, rows
+    # The floor tracks the current vocabulary: adopting the attested
+    # two-provider contract removed 17 superseded codes and added 13, so the
+    # per-row emitter assertions above remain the real guard.
+    assert rows >= 268, rows
 
 
 SHARED_EMITTERS = {
-    "NHL_CANONICAL_IDENTITY_RECEIPT_MISSING": ["v17/nhl_pregame_evidence_boundary.py"],
-    "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH": ["v17/nhl_pregame_evidence_boundary.py"],
-    "NHL_EVENT_NOT_PREGAME": ["v17/nhl_pregame_evidence_boundary.py"],
+    # The candidate-preflight identity codes are single-emitter again: the
+    # adopted starting-goalie contract raises its own NHL_STARTER_* vocabulary
+    # instead of the gate's canonical-identity codes.
     "NHL_EVENT_TIME_INVALID": ["nhl_candidate_pipeline.py"],
     "NHL_TOTALS_SOURCE_ROWS_EMPTY": ["v17/nhl_total_goals_challenger.py"],
     "NHL_TOTALS_SOURCE_IDENTITY_CONFLICT": ["v17/nhl_total_goals_challenger.py"],

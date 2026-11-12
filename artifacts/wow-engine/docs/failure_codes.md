@@ -711,27 +711,24 @@ registered once under the gate/confirmation tables above.
 
 | Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
 |---|---|---|---|---:|
-| `NHL_CANONICAL_IDENTITY_RECEIPT_MISSING` | No server-owned canonical identity receipt was supplied. A caller field is not authoritative identity. | `v17/nhl_starter_goalie_confirmation.py` | `v17/nhl_pregame_evidence_boundary.py` | No |
-| `NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH` | Identity provider/source/event/start/teams/flags/staleness fail validation. | `v17/nhl_starter_goalie_confirmation.py` | `v17/nhl_pregame_evidence_boundary.py` | No |
-| `NHL_EVENT_NOT_PREGAME` | The canonical start is not in the future. | `v17/nhl_starter_goalie_confirmation.py` | `v17/nhl_pregame_evidence_boundary.py` | No |
-| `NHL_GOALIE_INDEPENDENT_CONFIRMATION_INSUFFICIENT` | Fewer than two usable confirmation receipts were supplied. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_EVIDENCE_INCOMPLETE` | Aggregate wrapper for one or more per-source blockers; the specific blocker codes remain in the receipt. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GAMECENTER_PARTICIPATION_NOT_CONFIRMATION` | Source kind is Gamecenter boxscore participation, which never proves who starts in goal. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_SOURCE_KIND_UNSUPPORTED` | Source kind is not an approved starter designation, lineup or roster designation. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_PROVIDER_NOT_OFFICIAL` | Provider is outside the official confirmation allowlist. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_SNAPSHOT_MISSING` | Source snapshot identity is blank. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_PAYLOAD_HASH_INVALID` | Payload hash is not 64 lowercase hexadecimal characters. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_EVENT_MISMATCH` | Receipt event ID or kickoff clock differs from the canonical event. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_TEAM_MISMATCH` | Receipt home/away teams differ from the canonical event. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_TIME_MISSING` | Observation timestamp is absent or not timezone-aware. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_TIME_IN_FUTURE` | Observation timestamp is later than the run instant. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_AFTER_KICKOFF` | Observation timestamp is at or after the official start. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_CONFIRMATION_STALE` | Observation is older than the 90-minute confirmation window. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_RECEIPTS_INCOMPLETE` | Provider receipts are not exactly two, or a receipt lacks identity, snapshot id, 64-hex payload hash, timezone-aware times or required fields. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-acquire both official receipts server-side. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_SOURCE_NOT_OFFICIAL` | A starting-goalie receipt does not carry official source authority. Aggregators and caller-supplied strings cannot confirm a starter. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_SOURCE_NOT_TRUSTED` | The receipt's provider is absent from the server-owned trusted-provider registry, is not registered as OFFICIAL, or the receipt's declared provider family disagrees with the registry. Authority is never read from receipt fields. Recovery: `WAIT_FOR_EVIDENCE` / source-rights decision. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_ATTESTATION_INVALID` | The receipt lacks a valid server attestation (HMAC-SHA256 under the server-held key), was edited after signing, or the attestation key is unavailable. Recovery: `WAIT_FOR_EVIDENCE` through the server-owned acquisition path. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_PROVIDERS_NOT_INDEPENDENT` | The two receipts share a source id, provider family, snapshot id or payload hash; syndicated or duplicated evidence is one provider. Recovery: `SOURCE_AUTHORITY_CONFLICT`; obtain a genuinely independent official provider. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_EVENT_IDENTITY_MISMATCH` | Official event id, home team or away team differs between the two receipts. No neighboring-event substitution. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_START_TIME_DISAGREEMENT` | Scheduled start times differ by more than 60 seconds. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-read the official schedule. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_VERIFICATION_WINDOW` | Evidence is not strictly before scheduled start, is older than 90 minutes before start, or evaluation is at or after start. Recovery: `WAIT_FOR_EVIDENCE`; re-collect inside the pregame window. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_EVIDENCE_STALE` | Evidence is older than 24 hours at evaluation time or timestamped in the future. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_GOALIE_CONFLICT` | The two official providers name different goalie identities for the same side. HOLD; never choose a provider to resolve. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_GOALIE_MISSING` | A receipt lacks a goalie identity for home or away. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_PREGAME_ADAPTER_PROVIDER_MISSING` | An adapter was registered without a provider id or provider family. Configuration error, never a sport result. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_UNATTESTED` | A collected receipt could not be signed under the server-held attestation key, so it is never persisted as evidence. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_CANONICAL_IDENTITY_RECEIPT_MISSING` | No server-owned canonical identity receipt was supplied. A caller field is not authoritative identity. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH` | Identity provider/source/event/start/teams/flags/staleness fail validation. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_EVENT_NOT_PREGAME` | The canonical start is not in the future. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
 | `NHL_STARTING_GOALIE_NOT_CONFIRMED` | Source status is not `CONFIRMED` (for example `PROJECTED`). | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_IDENTITY_MISSING` | Starting-goalie identity is missing on a side. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_IDENTITY_INVALID` | Home and away starting-goalie identities are identical. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_GOALIE_SOURCES_NOT_INDEPENDENT` | Fewer than two distinct providers or distinct source receipts. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
-| `NHL_STARTING_GOALIE_CONFLICT` | Independent receipts disagree on a starting-goalie identity. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_IDENTITY_INVALID` | Home and away starting-goalie identities are identical. | `v17/nhl_candidate_preflight.py` | — | No |
 
 ### Pregame evidence gate (`v17/nhl_pregame_evidence_boundary.py`)
 
@@ -761,7 +758,6 @@ validator. The receipt adds independent proof; it does not replace these checks.
 
 | Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
 |---|---|---|---|---:|
-| `NHL_PREGAME_ADAPTER_PROVIDER_NOT_OFFICIAL` | Adapter registration used a non-official provider. Configuration error, never a sport result. | `v17/nhl_pregame_orchestration.py` | — | No |
 | `NHL_PREGAME_ADAPTER_NOT_A_STARTER_SOURCE` | Adapter registration used a Gamecenter participation, projection or last-start-inference kind. | `v17/nhl_pregame_orchestration.py` | — | No |
 | `NHL_PREGAME_ADAPTER_SOURCE_KIND_UNSUPPORTED` | Adapter registration used a kind outside the approved starter kinds. | `v17/nhl_pregame_orchestration.py` | — | No |
 | `NHL_PREGAME_ADAPTER_COLLECT_NOT_CALLABLE` | Adapter registration supplied a non-callable collector. | `v17/nhl_pregame_orchestration.py` | — | No |
@@ -1365,6 +1361,16 @@ as a failure. `can_execute=false` and dry-run-only remain invariant.
 | `NBA_FEATURE_TIMESTAMP_INVALID_FOR_PREGAME` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_FEATURE_TIMESTAMP_MISSING` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
 | `NBA_FITTED_RESEARCH_SCORER_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FORWARD_SHADOW_DUPLICATE_GAME_ID` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_IDENTITY_INVALID` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_IDENTITY_MISSING` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_NOT_PREGAME` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_PRIOR_GAMES_INSUFFICIENT` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_SETTLEMENT_TIME_PREDATES_GAME` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_SOURCE_AFTER_FEATURE` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_TIED_SETTLED_SCORE` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_TIMESTAMP_INVALID` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
 | `NBA_HISTORY_BOX_GAME_ID_MISMATCH` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
 | `NBA_HISTORY_BOX_PLAYER_ID_MISSING_OR_DUPLICATE` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
 | `NBA_HISTORY_BOX_SCORE_SCHEMA_INVALID` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |

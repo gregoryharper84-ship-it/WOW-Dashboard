@@ -12,10 +12,19 @@ from v17.nhl_pregame_orchestration import (
     StarterReceiptAdapter,
     orchestrate_nhl_pregame_gate,
 )
+from v17.nhl_starter_goalie_confirmation import TrustedProvider
 
 NOW = datetime(2026, 11, 10, 17, 0, tzinfo=timezone.utc)
 EVENT_ID = "2026020219"
-START = NOW + timedelta(hours=3)
+# Receipts must land inside the 90-minute pregame window, so the fixture start
+# is deliberately close to evaluation time.
+START = NOW + timedelta(minutes=30)
+RECEIPT_AT = (START - timedelta(minutes=45)).isoformat()
+KEY = b"k" * 32  # test-only; the real key lives only in the server acquisition path
+TRUSTED = {
+    "NHL_OFFICIAL_CLUB_FEED": TrustedProvider("NHL_OFFICIAL_CLUB_FEED", "CLUB_SITE"),
+    "NHL_OFFICIAL_LINEUP_FEED": TrustedProvider("NHL_OFFICIAL_LINEUP_FEED", "LEAGUE_FEED"),
+}
 MIGRATION = (
     Path(__file__).resolve().parents[1]
     / "migrations"
@@ -63,35 +72,49 @@ def evidence() -> dict:
     return row
 
 
-def adapter(provider, snapshot, payload_sha, *, source_kind="STARTING_GOALIE_DESIGNATION", receipt_provider=None, **overrides):
+def adapter(
+    provider,
+    snapshot,
+    payload_sha,
+    *,
+    provider_family="CLUB_SITE",
+    source_kind="STARTING_GOALIE_DESIGNATION",
+    receipt_source=None,
+    **overrides,
+):
     def collect(_identity, _as_of):
         row = {
             "official_event_id": EVENT_ID,
-            "provider": receipt_provider,
+            "source_id": receipt_source,
+            "provider_family": provider_family,
             "source_snapshot_id": snapshot,
             "source_payload_sha256": payload_sha,
-            "observed_at": (NOW - timedelta(minutes=10)).isoformat(),
-            "event_id": EVENT_ID,
+            "as_of": RECEIPT_AT,
             "event_start_time_utc": START.isoformat(),
-            "home_team": "BOS",
-            "away_team": "NYR",
-            "home_goalie_id": "8478402",
-            "away_goalie_id": "8479318",
-            "starting_status": "CONFIRMED",
+            "home_team_id": "BOS",
+            "away_team_id": "NYR",
+            "home": {"goalie_id": "8478402", "starting_status": "CONFIRMED"},
+            "away": {"goalie_id": "8479318", "starting_status": "CONFIRMED"},
         }
         row.update(overrides)
         return row
 
-    return StarterReceiptAdapter(provider=provider, source_kind=source_kind, collect=collect)
+    return StarterReceiptAdapter(
+        provider=provider,
+        provider_family=provider_family,
+        source_kind=source_kind,
+        collect=collect,
+    )
 
 
 def default_adapters(**overrides):
     return [
-        adapter("NHL_PUBLIC_WEB_API", "snap-1", "a" * 64, **overrides),
+        adapter("NHL_OFFICIAL_CLUB_FEED", "snap-1", "a" * 64, **overrides),
         adapter(
-            "NHL_OFFICIAL_CLUB_FEED",
+            "NHL_OFFICIAL_LINEUP_FEED",
             "snap-2",
             "b" * 64,
+            provider_family="LEAGUE_FEED",
             source_kind="OFFICIAL_ROSTER_DESIGNATION",
         ),
     ]
@@ -129,13 +152,24 @@ class FakeDb:
         return _Query(self)
 
 
-def run(*, db=None, adapters=None, evidence_row=None, identity_row=None, as_of=NOW):
+def run(
+    *,
+    db=None,
+    adapters=None,
+    evidence_row=None,
+    identity_row=None,
+    as_of=NOW,
+    trusted=None,
+    key=KEY,
+):
     return orchestrate_nhl_pregame_gate(
         db=db if db is not None else FakeDb(),
         identity=identity_row if identity_row is not None else identity(),
         evidence=evidence_row if evidence_row is not None else evidence(),
         adapters=adapters if adapters is not None else default_adapters(),
         as_of_utc=as_of,
+        trusted_providers=TRUSTED if trusted is None else trusted,
+        attestation_key=key,
     )
 
 
@@ -144,7 +178,11 @@ def test_two_official_adapters_persist_receipts_then_pass_the_gate():
     result = run(db=db)
     assert result["status"] == "PREGAME_EVIDENCE_COMPLETE_NOT_CERTIFICATION"
     assert result["pregame_gate"]["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION"
-    assert result["goalie_confirmation"]["status"] == "STARTER_GOALIE_CONFIRMED_RESEARCH_ONLY"
+    confirmation = result["goalie_confirmation"]
+    assert confirmation["goalie_status"] == "CONFIRMED"
+    assert confirmation["derived_server_side"] is True
+    assert confirmation["goalie_identity_snapshot_id"].startswith("sha256:")
+    assert len(confirmation["provider_receipts"]) == 2
     assert result["receipt_persistence"]["persisted"] == 2
     assert result["gate_invoked"] is True
     assert result["fitted_specialist_invoked"] is False
@@ -156,8 +194,11 @@ def test_two_official_adapters_persist_receipts_then_pass_the_gate():
     assert db.calls[0]["table"] == RECEIPT_TABLE
     assert db.calls[0]["on_conflict"] == "receipt_identity_key"
     assert db.calls[0]["ignore_duplicates"] is True
-    assert db.calls[0]["rows"][0]["can_execute"] is False
-    assert db.calls[0]["rows"][0]["prediction_authority"] is False
+    stored = db.calls[0]["rows"][0]
+    assert stored["can_execute"] is False
+    assert stored["prediction_authority"] is False
+    # The persisted capture carries the server attestation, not just the claim.
+    assert stored["raw_receipt"]["server_attestation"]
 
 
 def test_gamecenter_participation_adapter_is_rejected_at_registration():
@@ -171,16 +212,25 @@ def test_gamecenter_participation_adapter_is_rejected_at_registration():
     assert "NHL_PREGAME_ADAPTER_NOT_A_STARTER_SOURCE" in str(exc.value)
 
 
-def test_unknown_provider_adapter_is_rejected_at_registration():
-    with pytest.raises(NHLPregameOrchestrationError):
-        adapter("SOME_SCRAPER", "snap-1", "a" * 64)
+def test_provider_absent_from_the_trusted_registry_holds():
+    # Registration cannot grant authority: an unregistered source is rejected
+    # only when the confirmation contract consults the server registry.
+    result = run(
+        adapters=[
+            adapter("SOME_SCRAPER", "snap-1", "a" * 64),
+            default_adapters()[1],
+        ]
+    )
+    assert result["status"] == "HELD"
+    assert "NHL_STARTER_SOURCE_NOT_TRUSTED" in result["blockers"]
+    assert result["probability_publishable"] is False
 
 
 def test_one_adapter_cannot_collect_and_nothing_is_persisted():
     db = FakeDb()
     result = run(
         db=db,
-        adapters=[adapter("NHL_PUBLIC_WEB_API", "snap-1", "a" * 64)],
+        adapters=[adapter("NHL_OFFICIAL_CLUB_FEED", "snap-1", "a" * 64)],
     )
     assert result["status"] == "HELD"
     assert result["code"] == "NHL_PREGAME_ORCHESTRATION_ADAPTERS_INSUFFICIENT"
@@ -193,8 +243,8 @@ def test_same_provider_twice_is_not_two_independent_sources():
     result = run(
         db=db,
         adapters=[
-            adapter("NHL_PUBLIC_WEB_API", "snap-1", "a" * 64),
-            adapter("NHL_PUBLIC_WEB_API", "snap-2", "b" * 64),
+            adapter("NHL_OFFICIAL_CLUB_FEED", "snap-1", "a" * 64),
+            adapter("NHL_OFFICIAL_CLUB_FEED", "snap-2", "b" * 64),
         ],
     )
     assert result["status"] == "HELD"
@@ -202,12 +252,45 @@ def test_same_provider_twice_is_not_two_independent_sources():
     assert db.calls == []
 
 
+def test_two_registered_sources_in_one_provider_family_are_not_independent():
+    trusted = {
+        "SITE_A": TrustedProvider("SITE_A", "CLUB_SITE"),
+        "SITE_B": TrustedProvider("SITE_B", "CLUB_SITE"),
+    }
+    result = run(
+        adapters=[
+            adapter("SITE_A", "snap-1", "a" * 64),
+            adapter("SITE_B", "snap-2", "b" * 64),
+        ],
+        trusted=trusted,
+    )
+    assert result["status"] == "HELD"
+    # Independence is judged on the registry's provider family, so two sites
+    # syndicating one family cannot confirm a starter.
+    assert "NHL_STARTER_PROVIDERS_NOT_INDEPENDENT" in result["blockers"]
+    assert result["receipt_persistence"]["persisted"] == 2
+
+
+def test_projected_starter_status_holds_end_to_end():
+    projected = {"goalie_id": "8478402", "starting_status": "PROJECTED"}
+    result = run(
+        adapters=[
+            adapter("NHL_OFFICIAL_CLUB_FEED", "snap-1", "a" * 64, home=projected),
+            default_adapters()[1],
+        ]
+    )
+    assert result["status"] == "HELD"
+    assert "NHL_STARTING_GOALIE_NOT_CONFIRMED" in result["blockers"]
+    assert result["goalie_confirmation"]["status"] == "HELD"
+
+
 def test_failed_collection_holds_and_never_invents_a_receipt():
     def boom(_identity, _as_of):
         raise TimeoutError("upstream")
 
     failing = StarterReceiptAdapter(
-        provider="NHL_PUBLIC_WEB_API",
+        provider="NHL_OFFICIAL_CLUB_FEED",
+        provider_family="CLUB_SITE",
         source_kind="STARTING_GOALIE_DESIGNATION",
         collect=boom,
     )
@@ -220,6 +303,14 @@ def test_failed_collection_holds_and_never_invents_a_receipt():
     )
     # Only the one real capture is persisted; the failure never becomes evidence.
     assert result["receipt_persistence"]["persisted"] == 1
+
+
+def test_missing_attestation_key_holds_without_persisting_a_pass():
+    db = FakeDb()
+    result = run(db=db, key=b"short")
+    assert result["status"] == "HELD"
+    assert "NHL_STARTER_ATTESTATION_INVALID" in result["blockers"]
+    assert result["probability_publishable"] is False
 
 
 def test_persistence_failure_holds_before_the_gate_is_called():
@@ -239,16 +330,17 @@ def test_disagreeing_official_goalies_hold_at_the_gate():
         adapters=[
             adapters[0],
             adapter(
-                "NHL_OFFICIAL_CLUB_FEED",
+                "NHL_OFFICIAL_LINEUP_FEED",
                 "snap-2",
                 "b" * 64,
+                provider_family="LEAGUE_FEED",
                 source_kind="OFFICIAL_ROSTER_DESIGNATION",
-                home_goalie_id="8479999",
+                home={"goalie_id": "8479999", "starting_status": "CONFIRMED"},
             ),
         ],
     )
     assert result["status"] == "HELD"
-    assert "NHL_STARTING_GOALIE_CONFLICT" in result["blockers"]
+    assert "NHL_STARTER_GOALIE_CONFLICT" in result["blockers"]
     assert result["goalie_confirmation"]["status"] == "HELD"
     assert result["pregame_gate"]["status"] == "HELD"
     # Both conflicting captures are still persisted as evidence.
@@ -263,14 +355,15 @@ def test_caller_supplied_confirmed_goalie_is_overwritten_when_confirmation_fails
         goalie_identity_snapshot_id="c" * 64,
     )
     conflict = adapter(
-        "NHL_OFFICIAL_CLUB_FEED",
+        "NHL_OFFICIAL_LINEUP_FEED",
         "snap-2",
         "b" * 64,
+        provider_family="LEAGUE_FEED",
         source_kind="OFFICIAL_ROSTER_DESIGNATION",
-        home_goalie_id="8479999",
+        home={"goalie_id": "8479999", "starting_status": "CONFIRMED"},
     )
     result = run(
-        adapters=[adapter("NHL_PUBLIC_WEB_API", "snap-1", "a" * 64), conflict],
+        adapters=[adapter("NHL_OFFICIAL_CLUB_FEED", "snap-1", "a" * 64), conflict],
         evidence_row=claimed,
     )
     assert result["status"] == "HELD"
@@ -283,10 +376,10 @@ def test_receipt_claiming_another_provider_is_rejected():
     result = run(
         adapters=[
             adapter(
-                "NHL_PUBLIC_WEB_API",
+                "NHL_OFFICIAL_CLUB_FEED",
                 "snap-1",
                 "a" * 64,
-                receipt_provider="NHL_OFFICIAL_LINEUP_FEED",
+                receipt_source="NHL_OFFICIAL_LINEUP_FEED",
             ),
             adapters[1],
         ]

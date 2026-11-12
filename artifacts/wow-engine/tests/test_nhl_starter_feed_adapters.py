@@ -14,10 +14,17 @@ from v17.nhl_starter_feed_adapters import (
     collect_club_lineup_receipt,
     collect_league_roster_receipt,
 )
+from v17.nhl_starter_goalie_confirmation import TrustedProvider
 
 NOW = datetime(2026, 11, 10, 17, 0, tzinfo=timezone.utc)
 EVENT_ID = "2026020219"
-START = NOW + timedelta(hours=3)
+# Receipts must land inside the contract's 90-minute pregame window.
+START = NOW + timedelta(minutes=30)
+KEY = b"k" * 32  # test-only; the real key lives only in the server acquisition path
+TRUSTED = {
+    "NHL_OFFICIAL_CLUB_FEED": TrustedProvider("NHL_OFFICIAL_CLUB_FEED", "CLUB_SITE"),
+    "NHL_OFFICIAL_LINEUP_FEED": TrustedProvider("NHL_OFFICIAL_LINEUP_FEED", "LEAGUE_FEED"),
+}
 CLUB_URL = f"https://www.nhl.com/clubs/bos/lineup/{EVENT_ID}.json"
 LEAGUE_URL = f"https://api-web.nhle.com/v1/roster-designation/{EVENT_ID}"
 
@@ -106,13 +113,14 @@ def test_club_adapter_emits_a_bound_canonical_receipt():
     result = collect_club_lineup_receipt(
         identity=identity(), endpoint=CLUB_URL, as_of_utc=NOW, get=calls
     )
-    assert result["provider"] == "NHL_OFFICIAL_CLUB_FEED"
+    assert result["source_id"] == "NHL_OFFICIAL_CLUB_FEED"
+    assert result["provider_family"] == "CLUB_SITE"
+    assert result["source_authority"] == "OFFICIAL"
     assert result["source_kind"] == "STARTING_LINEUP"
     assert result["official_event_id"] == EVENT_ID
-    assert result["home_team"] == "BOS" and result["away_team"] == "NYR"
-    assert result["home_goalie_id"] == "8478402"
-    assert result["away_goalie_id"] == "8479318"
-    assert result["starting_status"] == "CONFIRMED"
+    assert result["home_team_id"] == "BOS" and result["away_team_id"] == "NYR"
+    assert result["home"] == {"goalie_id": "8478402", "starting_status": "CONFIRMED"}
+    assert result["away"] == {"goalie_id": "8479318", "starting_status": "CONFIRMED"}
     assert len(result["source_payload_sha256"]) == 64
     assert result["source_snapshot_id"].startswith("nhl-official-club-feed-")
     assert result["can_execute"] is False
@@ -122,10 +130,11 @@ def test_club_adapter_emits_a_bound_canonical_receipt():
 
 def test_league_adapter_emits_a_distinct_receipt_from_a_distinct_schema():
     result = league()
-    assert result["provider"] == "NHL_OFFICIAL_LINEUP_FEED"
+    assert result["source_id"] == "NHL_OFFICIAL_LINEUP_FEED"
+    assert result["provider_family"] == "LEAGUE_FEED"
     assert result["source_kind"] == "OFFICIAL_ROSTER_DESIGNATION"
-    assert result["home_goalie_id"] == "8478402"
-    assert result["away_goalie_id"] == "8479318"
+    assert result["home"]["goalie_id"] == "8478402"
+    assert result["away"]["goalie_id"] == "8479318"
     assert result["source_snapshot_id"].startswith("nhl-official-lineup-feed-")
 
 
@@ -346,9 +355,12 @@ def test_built_adapters_drive_the_orchestration_end_to_end():
         evidence=evidence(),
         adapters=adapters,
         as_of_utc=NOW,
+        trusted_providers=TRUSTED,
+        attestation_key=KEY,
     )
     assert result["status"] == "PREGAME_EVIDENCE_COMPLETE_NOT_CERTIFICATION"
-    assert result["goalie_confirmation"]["status"] == "STARTER_GOALIE_CONFIRMED_RESEARCH_ONLY"
+    assert result["goalie_confirmation"]["goalie_status"] == "CONFIRMED"
+    assert result["goalie_confirmation"]["derived_server_side"] is True
     assert result["receipt_persistence"]["persisted"] == 2
     assert len(db.calls[0]["rows"]) == 2
     assert result["can_execute"] is False
@@ -370,6 +382,8 @@ def test_adapter_failure_through_orchestration_is_not_model_unavailable():
         evidence=evidence(),
         adapters=adapters,
         as_of_utc=NOW,
+        trusted_providers=TRUSTED,
+        attestation_key=KEY,
     )
     assert result["status"] == "HELD"
     assert any(

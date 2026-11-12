@@ -221,3 +221,15 @@ def test_worker_and_api_same_error_have_separate_fingerprint():
 def result_services_are_explicit(*reports):
     from v17.log_incident_intake import SERVICES
     return all(r["services"] == sorted(SERVICES) for r in reports)
+
+
+def test_subsecond_timestamps_are_ordered_by_instant_not_string():
+    """Reporter chronology must not reject :00Z vs :00.500000Z candidates."""
+    early = NOW - timedelta(minutes=2)
+    late = early + timedelta(microseconds=500_000)
+    r = report(event("MODEL_SCORER_FAILED", timestamp=late),
+               event("MODEL_SCORER_FAILED", timestamp=early))
+    assert r["status"] == "CANDIDATES"
+    f = r["findings"][0]
+    assert datetime.fromisoformat(f["first_seen_utc"].replace("Z", "+00:00")) == early
+    assert datetime.fromisoformat(f["last_seen_utc"].replace("Z", "+00:00")) == late

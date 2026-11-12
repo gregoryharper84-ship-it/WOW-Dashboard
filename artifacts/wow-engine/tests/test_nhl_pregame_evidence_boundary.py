@@ -40,18 +40,20 @@ def trusted_identity():
 def confirmation_for(evidence):
     """Synthetic two-source receipt used ONLY as a test fixture."""
     return {
-        "status": "STARTER_GOALIE_CONFIRMED_RESEARCH_ONLY",
-        "code": "NHL_STARTER_GOALIE_INDEPENDENTLY_CONFIRMED",
-        "blockers": [],
-        "official_event_id": evidence.get("official_event_id"),
         "goalie_status": "CONFIRMED",
-        "goalie_status_observed_at": evidence.get("goalie_status_observed_at"),
         "goalie_identity_snapshot_id": evidence.get("goalie_identity_snapshot_id"),
+        "official_event_id": evidence.get("official_event_id"),
         "home_goalie_id": "8478402",
         "away_goalie_id": "8479318",
-        "independent_source_count": 2,
+        "verified_at": evidence.get("goalie_status_observed_at"),
+        "provider_receipts": [
+            {"source_id": "NHL_OFFICIAL_CLUB_FEED", "source_snapshot_id": "snap-a",
+             "source_payload_sha256": "a" * 64},
+            {"source_id": "NHL_OFFICIAL_LINEUP_FEED", "source_snapshot_id": "snap-b",
+             "source_payload_sha256": "b" * 64},
+        ],
+        "derived_server_side": True,
         "probability_publishable": False,
-        "rank_eligible": False,
         "can_execute": False,
     }
 
@@ -333,7 +335,7 @@ def test_goalie_receipt_must_bind_exact_event_snapshot_and_time():
     )["blockers"]
 
     shifted = confirmation_for(evidence)
-    shifted["goalie_status_observed_at"] = (NOW - timedelta(minutes=30)).isoformat()
+    shifted["verified_at"] = (NOW - timedelta(minutes=30)).isoformat()
     assert "NHL_GOALIE_CONFIRMATION_TIME_MISMATCH" in verify(
         evidence, as_of_utc=NOW, goalie_confirmation=shifted
     )["blockers"]
@@ -342,7 +344,7 @@ def test_goalie_receipt_must_bind_exact_event_snapshot_and_time():
 def test_goalie_receipt_requires_two_sources_and_confirmed_status():
     evidence = valid()
     single = confirmation_for(evidence)
-    single["independent_source_count"] = 1
+    single["provider_receipts"] = single["provider_receipts"][:1]
     assert "NHL_GOALIE_CONFIRMATION_SOURCES_NOT_INDEPENDENT" in verify(
         evidence, as_of_utc=NOW, goalie_confirmation=single
     )["blockers"]
@@ -353,10 +355,11 @@ def test_goalie_receipt_requires_two_sources_and_confirmed_status():
         evidence, as_of_utc=NOW, goalie_confirmation=unconfirmed
     )["blockers"]
 
-    blocked = confirmation_for(evidence)
-    blocked["blockers"] = ["NHL_STARTING_GOALIE_CONFLICT"]
+    # A receipt a caller assembled itself is not the server-derived boundary.
+    not_derived = confirmation_for(evidence)
+    not_derived["derived_server_side"] = False
     assert "NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED" in verify(
-        evidence, as_of_utc=NOW, goalie_confirmation=blocked
+        evidence, as_of_utc=NOW, goalie_confirmation=not_derived
     )["blockers"]
 
 

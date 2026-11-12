@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from v17.nhl_event_identity import team_abbreviation
 from v17.nhl_pregame_orchestration import StarterReceiptAdapter
-from v17.nhl_starter_goalie_confirmation import MAX_CONFIRMATION_AGE_MINUTES
+from v17.nhl_starter_goalie_confirmation import VERIFICATION_WINDOW
 
 CAN_EXECUTE = False
 TIMEOUT_SECONDS = 8.0
@@ -154,6 +154,7 @@ def _status(value: Any, side: str) -> str:
 def _receipt(
     *,
     provider: str,
+    provider_family: str,
     source_kind: str,
     event_id: str,
     source_start: datetime,
@@ -189,7 +190,7 @@ def _receipt(
         raise NHLStarterSourceError("NHL_STARTER_FEED_TIMESTAMP_IN_FUTURE", event_id)
     if observed >= canonical_start:
         raise NHLStarterSourceError("NHL_STARTER_FEED_AFTER_KICKOFF", event_id)
-    if (now - observed).total_seconds() > MAX_CONFIRMATION_AGE_MINUTES * 60:
+    if (now - observed).total_seconds() > VERIFICATION_WINDOW.total_seconds():
         raise NHLStarterSourceError("NHL_STARTER_FEED_STALE", event_id)
     if home_goalie == away_goalie:
         raise NHLStarterSourceError("NHL_STARTER_FEED_GOALIE_AMBIGUOUS", event_id)
@@ -197,14 +198,23 @@ def _receipt(
     return {
         "official_event_id": event_id,
         "event_id": event_id,
-        "provider": provider,
+        # Authority and family are re-checked against the server-owned trusted
+        # provider registry at confirmation time; these fields are only claims.
+        "source_authority": "OFFICIAL",
+        "source_id": provider,
+        "provider_family": provider_family,
         "source_kind": source_kind,
         "source_snapshot_id": f"{provider.lower().replace('_', '-')}-{sha[:32]}",
         "source_payload_sha256": sha,
+        "as_of": observed.isoformat(),
         "observed_at": observed.isoformat(),
         "event_start_time_utc": canonical_start.isoformat(),
+        "home_team_id": home,
+        "away_team_id": away,
         "home_team": home,
         "away_team": away,
+        "home": {"goalie_id": home_goalie, "starting_status": status},
+        "away": {"goalie_id": away_goalie, "starting_status": status},
         "home_goalie_id": home_goalie,
         "away_goalie_id": away_goalie,
         "starting_status": status,
@@ -261,6 +271,7 @@ def collect_club_lineup_receipt(
     observed = _observed_at(payload.get("observedAt"), event_id=event_id)
     return _receipt(
         provider="NHL_OFFICIAL_CLUB_FEED",
+        provider_family="CLUB_SITE",
         source_kind="STARTING_LINEUP",
         event_id=event_id,
         source_start=source_start,
@@ -332,6 +343,7 @@ def collect_league_roster_receipt(
     observed = _observed_at(payload.get("updatedAt"), event_id=event_id)
     return _receipt(
         provider="NHL_OFFICIAL_LINEUP_FEED",
+        provider_family="LEAGUE_FEED",
         source_kind="OFFICIAL_ROSTER_DESIGNATION",
         event_id=event_id,
         source_start=source_start,
@@ -373,6 +385,7 @@ def club_lineup_adapter(
 
     return StarterReceiptAdapter(
         provider="NHL_OFFICIAL_CLUB_FEED",
+        provider_family="CLUB_SITE",
         source_kind="STARTING_LINEUP",
         collect=collect,
     )
@@ -403,6 +416,7 @@ def league_roster_adapter(
 
     return StarterReceiptAdapter(
         provider="NHL_OFFICIAL_LINEUP_FEED",
+        provider_family="LEAGUE_FEED",
         source_kind="OFFICIAL_ROSTER_DESIGNATION",
         collect=collect,
     )

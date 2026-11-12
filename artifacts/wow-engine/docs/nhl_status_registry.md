@@ -23,7 +23,6 @@ calibration → validation → pregame evidence → candidate persistence.
 |---|---|---|---|---|
 | `NHL_CANDIDATE_PREFLIGHT_READY` | Candidate package preflight | `v17/nhl_candidate_preflight.py` | Source identity, artifact checksum, disjoint chronological partitions and the recomputed dataset hash all match. The evidence is fit to persist as a CANDIDATE only. | None |
 | `NHL_GOALIE_STATUS_UNCHANGED` | Frozen → current goalie handoff | `v17/nhl_candidate_preflight.py` | Both source-pinned snapshots agree on event, kickoff, starter identity and a confirmed status, and the current receipt is genuinely refreshed inside the 4-hour window. Evidence reconciliation only. | None |
-| `NHL_STARTER_GOALIE_INDEPENDENTLY_CONFIRMED` | Independent goalie confirmation | `v17/nhl_starter_goalie_confirmation.py` | At least two distinct official receipts agree on both starters and bind to the event, snapshot identity and observation instant, with every authority flag false. | None |
 | `NHL_PREGAME_GATE_INPUTS_COMPLETE` | Pregame orchestration | `v17/nhl_pregame_orchestration.py` | Receipts persisted and the gate passed, so required evidence, full-game settlement basis, canonical identity and independent goalie confirmation are all present. Inputs complete, explicitly not certification. | None |
 | `NHL_PLAYER_BOX_OUTCOME_RESEARCH_ONLY` | NHL player box outcome research | `v17/nhl_player_box_outcome_research.py` | Player-game box outcomes were assembled as a research dataset; no fitted probability, ranking or publication. | None |
 | `NHL_TOTALS_OFFICIAL_HISTORICAL_PROJECTION_VERIFIED` | Official fixture admission | `v17/nhl_total_goals_official_fixture.py` | A season projection passed 1,312-game coverage, two-mirror identity, pinned source and regime checksums, and REG/OT/SO label admission. | None |
@@ -46,7 +45,6 @@ terminal status values of the NHL lanes.
 
 | Disposition | Lane / stage | Emitting module | Meaning | Grants authority? |
 |---|---|---|---|---|
-| `STARTER_GOALIE_CONFIRMED_RESEARCH_ONLY` | Confirmation receipt status | `v17/nhl_starter_goalie_confirmation.py` | Paired with the independently-confirmed code. The receipt exists only as research evidence and carries no publication authority. | None |
 | `PREGAME_EVIDENCE_COMPLETE_NOT_CERTIFICATION` | Pregame orchestration | `v17/nhl_pregame_orchestration.py` | Receipts were persisted and the evidence gate returned a pass. Explicitly inputs-complete, not certification. | None |
 | `INPUT_EVIDENCE_PASS_NOT_CERTIFICATION` | Pregame evidence gate return | `v17/nhl_pregame_evidence_boundary.py` | Validator status when nothing is missing and no blocker fired; still returns `probability_publishable=false`, `rank_eligible=false`, `can_execute=false`. | None |
 | `HELD` | Gate, orchestration, confirmation, Gamecenter capture | `v17/nhl_pregame_evidence_boundary.py` | Generic fail-closed hold. Also emitted by orchestration, the confirmation receipt and the Gamecenter capture adapter; the accompanying blocker list names the exact typed cause. | None |
@@ -57,3 +55,5 @@ terminal status values of the NHL lanes.
 | `ADVISORY_RESEARCH_ONLY` | Goalie/shot challenger report | `v17/nhl_goalie_shot_challenger.py` | Side-by-side V1/V2 research report. A passing research gate only routes to forward shadow and governed review. | None |
 | `RESEARCH_REGIME_MIXTURE_FITTED_HOLD` | Regime mixture fit | `v17/nhl_total_goals_regime_mixture_research.py` | The mixture fitted but is held: no calibrated lower bound, and certification and promotion remain false. | None |
 | `EXPERIMENT_CREATED` | Poisson challenger fit | `v17/nhl_total_goals_challenger.py` | Research experiment receipt created with `certified_calibrated_probability=false` and a null calibrated lower bound. | None |
+| `PERSISTED` | Receipt persistence | `v17/nhl_pregame_orchestration.py` | Collected starter receipts were appended to the immutable receipt table before the gate ran. Evidence storage only. | None |
+| `NO_RECEIPTS` | Receipt persistence | `v17/nhl_pregame_orchestration.py` | No receipt survived collection or attestation, so nothing was persisted and the gate proceeds on missing evidence. | None |
