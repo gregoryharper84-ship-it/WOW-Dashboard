@@ -7,7 +7,7 @@ Run only with an explicit command and retain raw archive in quarantine.
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import io
 import json
@@ -215,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raw = acquire_published_t20_archive()
     receipt = audit_t20_archive(raw, expected_sha256=args.expected_sha256)
+    # Acquisition clock is observer-local, never the source's publication time or
+    # evidence that match features existed before kickoff/first ball.
+    receipt["observed_at_utc"] = datetime.now(timezone.utc).isoformat()
+    receipt["acquisition_mode"] = "PUBLISHER_HTTPS_SAME_ORIGIN" if args.download else "LOCAL_ARCHIVE_UNVERIFIED_ORIGIN"
+    receipt["source_publication_timestamp_verified"] = False
+    receipt["source_rights_independently_attested"] = False
     # Reserve receipt first. If a subsequent exclusive archive create/write or
     # receipt write fails, remove only paths created by this invocation.
     # Existing files are never replaced, and no unreceipted archive is stranded.
