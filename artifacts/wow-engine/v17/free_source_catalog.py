@@ -70,7 +70,7 @@ SOURCES = (
     FreeSource("NHL_PUBLIC_WEB_API", ("NHL",), ("HISTORY", "STATUS"),
                "CANDIDATE_REVIEW", "v17/model_source_entitlements.py",
                "REGISTRY_CANDIDATE_REVIEW_REQUIRED", "NHL_PUBLIC_WEB_API"),
-    # Candidate-only, source-rights-reviewed published archive. CRICKET remains
+    # Candidate-only, source-rights-review-pending published archive. CRICKET remains
     # NO_APPROVED_SOURCE in the authoritative entitlement registry until
     # an independent dataset-use review; this does NOT permit fitted training.
     FreeSource("CRICSHEET_ODC_BY", ("CRICKET",), ("HISTORY",),
