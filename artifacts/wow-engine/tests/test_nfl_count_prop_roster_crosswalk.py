@@ -434,3 +434,40 @@ def test_archived_players_rds_rejects_untrusted_target_value(tmp_path, monkeypat
     ])
     with pytest.raises(ValueError, match="NFL_PROP_ROSTER_TARGET_INVALID"):
         mod.inspect_archived_players_rds(path, ["CartNa00", "../other"], read_rds=parser)
+
+
+def test_archived_players_rds_rejects_snapshot_mutated_during_parse(tmp_path, monkeypatch):
+    """Parsing must not bless a mutated temporary source snapshot."""
+    path, _ = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+    ])
+
+    def mutate_snapshot(snapshot_path):
+        Path(snapshot_path).write_bytes(b"modified-archive-snapshot")
+        return {None: pd.DataFrame([
+            {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+        ])}
+
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_DIGEST_MISMATCH:archive_snapshot"):
+        mod.inspect_archived_players_rds(
+            path, ["CartNa00"], read_rds=mutate_snapshot,
+        )
+
+
+def test_archived_players_rds_rejects_source_mutated_during_parse(tmp_path, monkeypatch):
+    """Parsing must not bless a changed caller-owned RDS source file."""
+    path, _ = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+    ])
+
+    def mutate_source(snapshot_path):
+        assert Path(snapshot_path) != path
+        path.write_bytes(b"modified-original-source")
+        return {None: pd.DataFrame([
+            {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+        ])}
+
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_DIGEST_MISMATCH:source_changed"):
+        mod.inspect_archived_players_rds(
+            path, ["CartNa00"], read_rds=mutate_source,
+        )
