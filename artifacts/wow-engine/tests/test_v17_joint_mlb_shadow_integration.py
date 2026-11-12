@@ -7,7 +7,6 @@ registry, certification or terminal reducer is modified.
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
-import numpy as np
 import pytest
 
 from mlb_event_specialist_v16 import LineupAdjustment, WeatherContext
