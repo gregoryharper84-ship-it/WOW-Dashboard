@@ -178,6 +178,12 @@ def inspect_roster_id_candidates(
         .str.fullmatch(r"00-[0-9]{7}").fillna(False)
     )
     selected = copy.loc[copy["pfr_id"].isin(targets)]
+    # A valid-looking target is ambiguous if any other source PFR code claims
+    # its GSIS ID, including PFR codes outside this review sample.
+    source_pfr_by_gsis = (
+        copy.loc[nonblank_pfr & valid_gsis]
+        .groupby("gsis_id")["pfr_id"].nunique()
+    )
     out = []
     for pfr in targets:
         rows = selected.loc[selected["pfr_id"].eq(pfr)]
@@ -186,7 +192,7 @@ def inspect_roster_id_candidates(
             & rows["gsis_id"].astype("string").str.fullmatch(r"00-[0-9]{7}").fillna(False)
         ]
         ids = sorted(set(valid["gsis_id"].astype(str)))
-        if len(ids) > 1:
+        if len(ids) > 1 or any(source_pfr_by_gsis.get(gsis, 0) > 1 for gsis in ids):
             raise ValueError("NFL_PROP_ROSTER_CROSSWALK_CONFLICT:" + pfr)
         out.append({
             "pfr_player_id": pfr,
