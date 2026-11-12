@@ -270,7 +270,12 @@ def verify(
                 _reject("RECEIPT_COSIGN_IDENTITY_OR_SIGNATURE_INVALID")
             if not tsa_response or not tsa_roots:
                 _reject("RECEIPT_INDEPENDENT_PREGAME_TIME_PROOF_MISSING")
-            issued = _tsa_time(tsa_response, tsa_roots, str(frozen_statement),
+            tsa_copy = Path(directory) / "timestamp.tsr"
+            tsa_bytes = Path(tsa_response).read_bytes()
+            if not tsa_bytes or len(tsa_bytes) > MAX_BYTES:
+                _reject("RECEIPT_TSA_RESPONSE_SIZE_INVALID")
+            tsa_copy.write_bytes(tsa_bytes)
+            issued = _tsa_time(str(tsa_copy), tsa_roots, str(frozen_statement),
                                tsa_intermediates)
         frozen_at = _utc(prediction["frozen_at_utc"])
         kickoff = _utc(prediction["event_start_time_utc"])

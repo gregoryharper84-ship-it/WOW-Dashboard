@@ -204,3 +204,28 @@ def test_unsupported_artifact_key_rejected(tmp_path):
                    signer="expected", issuer="https://oidc.example",
                    artifact_paths={"unreviewed": str(frozen)})
     assert "RECEIPT_ARTIFACT_NAME_INVALID" in out["reason_codes"]
+
+
+def test_verified_tsa_time_parser_follows_successful_imprint_verification():
+    results = iter([
+        type("Result", (), {"returncode": 0, "stdout": "Verification: OK\n"})(),
+        type("Result", (), {"returncode": 0,
+             "stdout": "Status info:\nTime stamp: Nov 12 22:12:34 2026 GMT\n"})(),
+    ])
+    with patch.object(p, "_run", side_effect=lambda _args: next(results)) as call:
+        observed = p._tsa_time("trusted.tsr", "roots.pem", "exact-statement.json", None)
+    assert observed.isoformat() == "2026-11-12T22:12:34+00:00"
+    assert call.call_args_list[0].args[0][:6] == [
+        "openssl", "ts", "-verify", "-data", "exact-statement.json", "-in"
+    ]
+
+
+def test_tsa_time_parser_rejects_invalid_or_duplicate_output():
+    results = iter([
+        type("Result", (), {"returncode": 0, "stdout": ""})(),
+        type("Result", (), {"returncode": 0, "stdout":
+             "Time stamp: Nov 12 22:12:34 2026 GMT\nTime stamp: Nov 12 22:12:34 2026 GMT\n"})(),
+    ])
+    with patch.object(p, "_run", side_effect=lambda _args: next(results)):
+        with pytest.raises(p.ReceiptHold, match="TSA_TIME_UNREADABLE"):
+            p._tsa_time("trusted.tsr", "roots.pem", "exact-statement.json", None)
