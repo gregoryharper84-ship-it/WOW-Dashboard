@@ -54,9 +54,6 @@ def verify_chronology_disjoint(
     blockers: list[str] = []
     if not train_t or not cal_t or not hold_t:
         blockers.append("NBA_PARTITION_EMPTY")
-    ids = [v for v in list(train) + list(calibration) + list(holdout)]
-    if len(set(ids)) != len(ids):
-        blockers.append("NBA_PARTITION_EVENT_REUSE")
     id_groups = (train_ids, calibration_ids, holdout_ids)
     if any(group is not None for group in id_groups):
         if (
@@ -83,6 +80,13 @@ def verify_chronology_disjoint(
                     if len(set(id_list)) != len(id_list):
                         blockers.append("NBA_PARTITION_EVENT_REUSE")
                         break
+    if all(group is None for group in id_groups):
+        # Fallback identity only when no official event IDs are supplied.
+        # Timestamp strings alone are never authoritative identity, so this
+        # duplicate check applies solely to the ID-less fallback path.
+        fallback_ids = [v for v in list(train) + list(calibration) + list(holdout)]
+        if len(set(fallback_ids)) != len(fallback_ids):
+            blockers.append("NBA_PARTITION_EVENT_REUSE")
     if train_t and cal_t and max(train_t) >= min(cal_t):
         blockers.append("NBA_TRAIN_CALIBRATION_OVERLAP")
     if cal_t and hold_t and max(cal_t) >= min(hold_t):
@@ -191,13 +195,15 @@ def nba_evidence_preflight(
     tipoff_ts: str | None = None,
     event_records: Sequence[Mapping[str, object]] | None = None,
     lineup_evidence: Mapping[str, object] | None = None,
+    bounds_policy_approved: bool = False,
 ) -> Mapping[str, object]:
     """NBA fitted-evidence preflight. Fail closed; research-only.
 
     Mandatory evidence for any review-ready decision: official event IDs,
     event orientation records, complete prelock lineage timestamps, lineup
-    evidence and a recomputable triad binding proof. Omitting any of them is
-    a blocker, not a silent pass.
+    evidence, an approved dynamic bounds policy and a recomputable triad
+    binding proof. Omitting any of them is a blocker, not a silent pass;
+    no READY decision ever carries an outstanding blocker.
     """
     blockers: list[str] = []
     triad_verdict = verify_triad(
@@ -233,16 +239,18 @@ def nba_evidence_preflight(
             str(source_snapshot_ts), str(feature_ts), str(tipoff_ts)
         )
         blockers.extend(lineage["blockers"])
-    if event_records is None:
+    if not event_records:
         blockers.append("NBA_EVENT_ORIENTATION_EVIDENCE_MISSING")
     else:
         orientations = verify_nba_event_orientations(event_records)
         blockers.extend(orientations["blockers"])
-    if lineup_evidence is None:
+    if not lineup_evidence:
         blockers.append("NBA_LINEUP_EVIDENCE_MISSING")
     elif feature_ts is not None:
         freshness = verify_nba_lineup_freshness(str(feature_ts), lineup_evidence)
         blockers.extend(freshness["blockers"])
+    if not bounds_policy_approved:
+        blockers.append("NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED")
     if blockers:
         return {
             "decision": "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED",
@@ -250,10 +258,9 @@ def nba_evidence_preflight(
             "probability_publishable": False,
             "can_execute": False,
         }
-    bounds_note = "BOUNDS_POLICY_REVIEW_REQUIRED"
     return {
         "decision": "READY_FOR_INDEPENDENT_MODEL_REVIEW",
-        "blockers": [bounds_note],
+        "blockers": [],
         "probability_publishable": False,
         "can_execute": False,
     }

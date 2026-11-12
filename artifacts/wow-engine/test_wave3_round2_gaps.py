@@ -168,14 +168,49 @@ def _full_nba_kwargs(triadic=None):
             {"official_event_id": "g3", "home_team_id": "h3", "away_team_id": "a3"},
         ],
         "lineup_evidence": {"rotation_changed": False},
+        "bounds_policy_approved": True,
     }
 
 
 def test_preflight_accepts_clean_lineage_with_binding_and_ids():
     verdict = nba_evidence_preflight(**_full_nba_kwargs())
     assert verdict["decision"] == "READY_FOR_INDEPENDENT_MODEL_REVIEW"
+    assert verdict["blockers"] == []
     assert verdict["probability_publishable"] is False
     assert verdict["can_execute"] is False
+
+
+def test_same_tipoff_distinct_ids_are_not_duplicates():
+    result = verify_chronology_disjoint(
+        ["2026-01-01T00:00:00Z"],
+        ["2026-01-01T00:00:00Z"],
+        ["2026-01-01T00:00:00Z"],
+        train_ids=["game-1"],
+        calibration_ids=["game-2"],
+        holdout_ids=["game-3"],
+    )
+    assert "NBA_PARTITION_EVENT_REUSE" not in result["blockers"]
+
+
+def test_empty_records_and_lineup_evidence_fail_closed():
+    base = _full_nba_kwargs()
+    for field, expected in (
+        ("event_records", "NBA_EVENT_ORIENTATION_EVIDENCE_MISSING"),
+        ("lineup_evidence", "NBA_LINEUP_EVIDENCE_MISSING"),
+    ):
+        kwargs = dict(base)
+        kwargs[field] = [] if field == "event_records" else {}
+        verdict = nba_evidence_preflight(**kwargs)
+        assert verdict["decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED", field
+        assert expected in verdict["blockers"], (field, verdict["blockers"])
+
+
+def test_unapproved_bounds_policy_blocks_ready():
+    kwargs = _full_nba_kwargs()
+    kwargs["bounds_policy_approved"] = False
+    verdict = nba_evidence_preflight(**kwargs)
+    assert verdict["decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED"
+    assert "NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED" in verdict["blockers"]
 
 
 def test_preflight_mandatory_evidence_cannot_be_omitted():
