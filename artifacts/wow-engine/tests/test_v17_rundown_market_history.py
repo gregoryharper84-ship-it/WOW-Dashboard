@@ -241,7 +241,10 @@ def test_no_open_or_close_from_quote_first_seen_after_event_start():
 def test_close_uses_last_prestart_observed_not_backdated_late_snapshot():
     early = _row(key="early", odds=-110, updated="2026-09-24T17:30:00Z")
     middle = _row(key="middle", odds=-125, updated="2026-09-24T17:55:00Z")
-    late = _row(key="late", odds=-200, updated="2026-09-24T17:40:00Z")
+    # This provider time is later than the legitimate middle quote but the
+    # price was actually fetched only after kickoff; the old algorithm
+    # incorrectly selected -200 as CLOSE.
+    late = _row(key="late", odds=-200, updated="2026-09-24T17:58:00Z")
     late["fetched_at"] = "2026-09-24T18:12:00Z"
     refs = history.derive_captured_reference_rows(
         [early, late, middle], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
