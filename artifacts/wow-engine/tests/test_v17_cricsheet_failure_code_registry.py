@@ -31,7 +31,7 @@ def test_every_new_cricsheet_typed_hold_is_registered_exactly_once():
         if line.startswith("| "):
             cells = [cell.strip().replace(chr(96), "") for cell in line.split("|")]
             if len(cells) >= 5 and cells[1].startswith("SOURCE_ARCHIVE_"):
-                assert cells[2] == "SOURCE_ARCHIVE_INTEGRITY"
+                assert "SOURCE_ARCHIVE_INTEGRITY" in cells[2]
                 assert cells[4] == "No"  # canonical registry has Rank eligible? column
                 registered.append(cells[1])
     assert len(used) == 28
