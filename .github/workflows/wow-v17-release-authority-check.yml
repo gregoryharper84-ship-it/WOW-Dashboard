@@ -59,6 +59,11 @@ jobs:
           python-version: "3.11"
       - name: Resolve authenticated exact-PR release lane
         id: target
+        # Automatic QA callbacks are checks on protected main, not authority
+        # to approve the target PR. Source 403/missing policy => no Release
+        # App check, never a red checksPass dependency on unrelated main.
+        # Explicit owner dispatch retains hard failure on invalid source.
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -141,6 +146,13 @@ jobs:
           echo "head_sha=$head" >> "$GITHUB_OUTPUT"
           echo "applicable=true" >> "$GITHUB_OUTPUT"
           echo "Authenticated QA policy resolved PR #$pr head $head" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve automatic Release target admission HOLD
+        if: always() && github.event_name == 'workflow_run' && steps.target.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::RELEASE_AUTOMATIC_TARGET_HOLD: QA source unreadable or invalid; no Release Authority App check published."
+          echo "RELEASE_AUTOMATIC_TARGET_HOLD production_verified=false can_execute=false (no exact-head Release PASS)" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     needs: admit-release
