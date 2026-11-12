@@ -94,6 +94,7 @@ def test_verified_kickoff_must_be_explicitly_timezone_aware_and_linked_to_receip
 
 def test_untrusted_openfootball_json_cannot_inject_fake_utc_proof(monkeypatch):
     import json
+    import pytest
 
     payload = {
         "name": "untrusted synthetic source",
