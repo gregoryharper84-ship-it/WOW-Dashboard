@@ -9,6 +9,18 @@ from pathlib import Path
 RECEIPT = (Path(__file__).resolve().parents[1] / "v17" / "research"
            / "source_openfootball_five_leagues_2024_25_observation_20261112.json")
 
+EXPECTED_GITHUB_BLOBS = {
+    "2024-25/de.1.json": "9921b1d8485429913ff6d161500beb519d8b0e51",
+    "2024-25/en.1.json": "504f2e732fbc3c9caeb98e4382b13b094453b840",
+    "2024-25/es.1.json": "ba4e9bc10b172d6413a92aeba0c04eb70961cd05",
+    "2024-25/fr.1.json": "8bc6ec90c62fa423386ec60473cfa6236419a636",
+    "2024-25/it.1.json": "5c1cb89a7b676eee1db06d79b65773220b599e96",
+}
+EXPECTED_LICENSE_BLOB = "670154e3538863b2d9891fd5483160fbdfc89164"
+EXPECTED_LICENSE_SHA256 = "36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673"
+EXPECTED_EPL_SHA256 = "c3d18f552d83382cd4b6b21127adbbfe38e7f8618ddc979fb5404f2df07d0a75"
+
+
 
 def _receipt():
     return json.loads(RECEIPT.read_text(encoding="utf-8"))
@@ -17,6 +29,11 @@ def _receipt():
 def test_source_observation_conserves_every_record_and_third_outcome():
     r = _receipt()
     assert r["source_repo_commit"] == "e6744429ee395bc86f247348c6184bb08d4eb361"
+    assert {item["path"]: item["github_blob_sha1"] for item in r["datasets"]} == EXPECTED_GITHUB_BLOBS
+    assert r["license_evidence"]["github_blob_sha1"] == EXPECTED_LICENSE_BLOB
+    assert r["license_evidence"]["decoded_utf8_sha256"] == EXPECTED_LICENSE_SHA256
+    assert next(item["decoded_utf8_sha256"] for item in r["datasets"]
+                if item["path"] == "2024-25/en.1.json") == EXPECTED_EPL_SHA256
     assert len(r["datasets"]) == r["totals"]["league_files"] == 5
     assert len({row["path"] for row in r["datasets"]}) == 5
     for field in ("match_records", "with_final_score", "home_wins", "away_wins",
