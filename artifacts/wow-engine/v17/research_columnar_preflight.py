@@ -23,6 +23,10 @@ _REQUIRED_MANIFEST = frozenset({"schema", "can_execute", "dataset_id", "sport", 
 _REQUIRED_FILE = frozenset({"path", "sha256"})
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER = re.compile(r"[a-zA-Z0-9_\-]{1,80}\Z")
+_REQUIRED_COLUMNS = frozenset({
+    "sport", "season", "observation_id", "event_id", "event_start_epoch",
+    "feature_available_epoch", "is_market_observation", "quote_captured_epoch",
+})
 
 # Required Parquet columns, with UTC-epoch seconds to avoid naive timezone casts:
 # sport, season, observation_id, event_id, event_start_epoch,
@@ -111,7 +115,10 @@ def _read_manifest(path: Path) -> dict[str, Any]:
 
 def _verified_paths(root: Path, entries: Sequence[Mapping[str, str]]) -> list[str]:
     _require(root.is_dir(), "COLUMNAR_SOURCE_UNAVAILABLE")
-    base = root.resolve(strict=True)
+    try:
+        base = root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise PreflightHold("COLUMNAR_SOURCE_UNAVAILABLE") from exc
     result: list[str] = []
     for item in entries:
         candidate = root / item["path"]
@@ -161,6 +168,15 @@ def _duckdb_scan(paths: Sequence[str], sport: str, season: int) -> dict[str, int
         raise PreflightHold("COLUMNAR_DUCKDB_UNAVAILABLE") from exc
     connection = duckdb.connect(database=":memory:")
     try:
+        # Validate every immutable file independently before DuckDB unions by name;
+        # otherwise absent columns in one file can silently become NULL.
+        for path in paths:
+            descriptor = connection.execute(
+                "SELECT * FROM read_parquet(?) LIMIT 0", [path]
+            ).description
+            _require(descriptor is not None, "COLUMNAR_SCHEMA_INVALID")
+            names = {column[0] for column in descriptor}
+            _require(_REQUIRED_COLUMNS <= names, "COLUMNAR_SCHEMA_INVALID")
         # Parameter binding prevents file paths or sport values becoming SQL.
         values = connection.execute(_QUERY, [sport, str(season), list(paths)]).fetchone()
     finally:
