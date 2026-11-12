@@ -426,3 +426,46 @@ def test_full_missing_cohort_absent_pbp_game_rejects_instead_of_zero(source_coho
             *source_cohort, {game}, {(game, "00-0031111")},
             source_signals=counters, source_games=set(),
         )
+
+
+def test_review_snap_extremes_are_numeric_not_lexicographic(source_cohort):
+    """String snap inputs must choose numeric min/max, not alphabetic extremes."""
+    stats, snaps, players = source_cohort
+    snaps = snaps.copy()
+    snaps.loc[snaps["position"].eq("TE"), "offense_snaps"] = "2"
+    game = "2024_01_BAL_KC"
+    snaps = pd.concat([snaps, pd.DataFrame([
+        {"game_id": game, "season": 2024, "week": 1, "game_type": "REG",
+         "position": "TE", "pfr_player_id": "PlayerC01", "offense_snaps": "10"},
+        {"game_id": game, "season": 2024, "week": 1, "game_type": "REG",
+         "position": "TE", "pfr_player_id": "PlayerD01", "offense_snaps": "9"},
+    ])], ignore_index=True)
+    players = pd.concat([players, pd.DataFrame([
+        {"gsis_id": "00-0033333", "pfr_id": "PlayerC01"},
+        {"gsis_id": "00-0034444", "pfr_id": "PlayerD01"},
+    ])], ignore_index=True)
+    result = mod.classify_missing_pbp_presence(stats, snaps, players, {game}, set())
+    selected = [row["offense_snaps"] for row in result["missing_player_game_review_examples"]
+                if row["position"] == "TE"]
+    assert selected == [2, 10]
+    assert result["missing_actor_means_zero"] is False
+
+
+def test_full_stat_source_does_not_overwrite_actor_examples(source_cohort):
+    """Independent research lists retain their own identities and zero-label HOLD."""
+    from collections import Counter
+    from audit_nfl_count_prop_pbp_stats import SOURCE_ROLES
+    game = "2024_01_BAL_KC"
+    gsis = "00-0031111"
+    flags = {stat: Counter() for stat in SOURCE_ROLES}
+    flags["receptions"][(game, gsis)] = 1
+    result = mod.classify_missing_pbp_presence(
+        *source_cohort, {game}, {(game, gsis)},
+        source_signals=flags, source_games={game},
+    )
+    assert result["pbp_examples"] == [{
+        "game_id": game, "gsis_id": gsis, "classification": "pbp_actor_observed",
+    }]
+    assert result["missing_full_cohort_pbp_signals"]["by_source_stat"]["receptions"][
+        "positive_source_examples"][0]["positive_source_flags"] == 1
+    assert result["missing_full_cohort_pbp_signals"]["missing_count_labels_promoted"] == 0
