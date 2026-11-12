@@ -354,6 +354,18 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     except (ValueError, OSError) as exc:
         note["roster_2025_status"] = "HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE"
         note["roster_2025_failure"] = type(exc).__name__ + ":" + str(exc)[:200]
+    # A separately SHA-256-pinned historical weekly roster from the same
+    # public provider; no unpinned year or identity guessing is accepted.
+    try:
+        weekly, weekly_receipt = read_pinned_2025_roster(timeout=20, weekly=True)
+        weekly_candidates = inspect_roster_id_candidates(
+            weekly, [p["pfr_player_id"] for p in result["unmapped_player_profiles"]],
+        )
+        note["roster_2025_weekly_asset"] = weekly_receipt
+        note["roster_2025_weekly_crosswalk"] = weekly_candidates
+    except (ValueError, OSError) as exc:
+        note["roster_2025_weekly_status"] = "HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE"
+        note["roster_2025_weekly_failure"] = type(exc).__name__ + ":" + str(exc)[:200]
     note["pbp_absence_proves_zero"] = False
 
     pytest.skip(

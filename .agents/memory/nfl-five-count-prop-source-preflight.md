@@ -260,3 +260,14 @@
 - **prevention_artifact:** test_missing_label_history_uses_earlier_rows_without_zero_imputation with 9-versus-10 positive control, and test_future_source_rows_never_count_toward_a_missing_pregame_label. Existing PR-only full 16-file pinned-source observation will report five research-only counts.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. No probability fit, label imputation, protected merge or deploy; can_execute=false, V17_TERMINAL_REDUCER.
+
+## Independent 2025 weekly-roster pin and PFR coverage contrast (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW; HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE
+- **mechanism:** Exact-head rapid run 43134300583 verified the season-level 2025 roster (1,010,039 bytes, published SHA), but found 0/4 exact PFR targets. The roster may not cover these individuals or may have missing PFR columns; one no-match cannot resolve a historical identity gap. An independent 2025 weekly-roster asset is available with its own official digest and 15,385,661 bytes.
+- **detection_point:** Zero exact PFR-ID pairs after first pinned season roster, before assigning any inferred GSIS/zero count.
+- **fix:** Reuse the same official-host digest-checked reader to inspect the 2025 weekly roster with exact published SHA `c2f7a1ffebe06058400af1989d1cd2900cc5c9659f084623708a06d4e28de35b`, report PFR field coverage and independently enumerate exact candidate pairs. Never mutate canonical crosswalk, fit output, or publish probability.
+- **prevention_artifact:** Three tests for separate weekly published digest, wrong checksum, and sparse source PFR coverage; existing PR-only hosted source receipt, no new workflow/gate.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. Historical 2021–24 roster files remain unverified because upstream GitHub release metadata lacks published hashes. can_execute=false, V17_TERMINAL_REDUCER.

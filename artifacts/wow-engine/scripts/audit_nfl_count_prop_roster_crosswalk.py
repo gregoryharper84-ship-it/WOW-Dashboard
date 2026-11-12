@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One digest-pinned 2025 nflverse roster crosswalk diagnostic, read-only.
+"""Two digest-pinned 2025 nflverse roster crosswalk diagnostics, read-only.
 
 The only source admitted here has a published release SHA-256. Historical
 roster assets lacking an independently reviewed checksum are not silently
@@ -24,6 +24,9 @@ CAN_EXECUTE = False
 ROSTER_2025_PATH = "rosters/roster_2025.csv"
 ROSTER_2025_SIZE = 1010039
 ROSTER_2025_SHA256 = "531ee5de386037bb17de3e3e3d50f7b4ed08789526bbaae9876fdd3dfb4d04ad"
+WEEKLY_ROSTER_2025_PATH = "weekly_rosters/roster_weekly_2025.csv"
+WEEKLY_ROSTER_2025_SIZE = 15385661
+WEEKLY_ROSTER_2025_SHA256 = "c2f7a1ffebe06058400af1989d1cd2900cc5c9659f084623708a06d4e28de35b"
 ROSTER_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
     + ROSTER_2025_PATH
@@ -31,10 +34,17 @@ ROSTER_URL = (
 CROSSWALK_FIELDS = ("pfr_id", "gsis_id", "season", "position", "team")
 
 
-def read_pinned_2025_roster(*, open_url=None, timeout: int = 20) -> tuple[pd.DataFrame, dict]:
-    """Verify exact published bytes before parsing; no source mutation."""
+def read_pinned_2025_roster(
+    *, open_url=None, timeout: int = 20, weekly: bool = False,
+) -> tuple[pd.DataFrame, dict]:
+    """Verify exact published bytes before parsing; no identity mutation."""
+    asset = WEEKLY_ROSTER_2025_PATH if weekly else ROSTER_2025_PATH
+    size = WEEKLY_ROSTER_2025_SIZE if weekly else ROSTER_2025_SIZE
+    digest = WEEKLY_ROSTER_2025_SHA256 if weekly else ROSTER_2025_SHA256
+    url = ("https://github.com/nflverse/nflverse-data/releases/download/"
+           + asset)
     req = urllib.request.Request(
-        ROSTER_URL, headers={
+        url, headers={
             "User-Agent": "WOW-V17-public-source-research/1.0",
             "Accept": "application/octet-stream",
         },
@@ -52,9 +62,9 @@ def read_pinned_2025_roster(*, open_url=None, timeout: int = 20) -> tuple[pd.Dat
                 break
             payload.extend(chunk)
             sha.update(chunk)
-            if len(payload) > ROSTER_2025_SIZE:
+            if len(payload) > size:
                 raise ValueError("NFL_PROP_ROSTER_DIGEST_MISMATCH")
-    if len(payload) != ROSTER_2025_SIZE or sha.hexdigest() != ROSTER_2025_SHA256:
+    if len(payload) != size or sha.hexdigest() != digest:
         raise ValueError("NFL_PROP_ROSTER_DIGEST_MISMATCH")
     try:
         roster = pd.read_csv(io.BytesIO(payload), dtype=str, low_memory=False)
@@ -66,7 +76,7 @@ def read_pinned_2025_roster(*, open_url=None, timeout: int = 20) -> tuple[pd.Dat
             or not roster["season"].eq("2025").all()):
         raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
     return roster, {
-        "asset": ROSTER_2025_PATH,
+        "asset": asset,
         "sha256": sha.hexdigest(),
         "bytes_sha256_verified": len(payload),
         "release_digest_published": True,
@@ -86,6 +96,11 @@ def inspect_roster_id_candidates(
         raise ValueError("NFL_PROP_ROSTER_TARGET_INVALID")
     copy = roster.loc[:, CROSSWALK_FIELDS].copy()
     copy["pfr_id"] = copy["pfr_id"].astype("string").str.strip()
+    nonblank_pfr = copy["pfr_id"].notna() & copy["pfr_id"].ne("")
+    valid_gsis = (
+        copy["gsis_id"].astype("string")
+        .str.fullmatch(r"00-[0-9]{7}").fillna(False)
+    )
     selected = copy.loc[copy["pfr_id"].isin(targets)]
     out = []
     for pfr in targets:
@@ -112,6 +127,10 @@ def inspect_roster_id_candidates(
         "season": 2025,
         "target_pfr_count": len(targets),
         "source_exact_pair_candidate_count": sum(bool(row["gsis_candidates"]) for row in out),
+        "source_rows_total": int(len(copy)),
+        "source_nonblank_pfr_rows": int(nonblank_pfr.sum()),
+        "source_valid_gsis_rows": int(valid_gsis.sum()),
+        "source_both_exact_id_rows": int((nonblank_pfr & valid_gsis).sum()),
         "targets": out,
         "candidate_crosswalk_applied": False,
         "source_rights_independently_approved": False,

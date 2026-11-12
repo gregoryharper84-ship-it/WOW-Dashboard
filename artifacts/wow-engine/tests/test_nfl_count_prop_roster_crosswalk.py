@@ -106,3 +106,51 @@ def test_bad_target_identity_rejected():
     roster = pd.DataFrame(columns=mod.CROSSWALK_FIELDS)
     with pytest.raises(ValueError, match="NFL_PROP_ROSTER_TARGET_INVALID"):
         mod.inspect_roster_id_candidates(roster, [" CartNa00 "])
+
+
+def test_weekly_roster_published_pin_and_review_only_id(monkeypatch):
+    frame = pd.DataFrame([{
+        "pfr_id": "CartNa00", "gsis_id": "00-0099999", "season": 2025,
+        "week": 2, "game_type": "REG", "position": "RB", "team": "ATL",
+    }])
+    data = frame.to_csv(index=False).encode()
+    monkeypatch.setattr(mod, "WEEKLY_ROSTER_2025_SIZE", len(data))
+    monkeypatch.setattr(
+        mod, "WEEKLY_ROSTER_2025_SHA256", hashlib.sha256(data).hexdigest(),
+    )
+    read, receipt = mod.read_pinned_2025_roster(
+        weekly=True, open_url=lambda *a, **kw: FakeResponse(data),
+    )
+    assert receipt["asset"] == mod.WEEKLY_ROSTER_2025_PATH
+    assert receipt["bytes_sha256_verified"] == len(data)
+    result = mod.inspect_roster_id_candidates(read, ["CartNa00"])
+    assert result["source_exact_pair_candidate_count"] == 1
+    assert result["source_both_exact_id_rows"] == 1
+    assert result["candidate_crosswalk_applied"] is False
+
+
+def test_weekly_asset_rejects_wrong_checksum_even_with_valid_schema(monkeypatch):
+    frame = pd.DataFrame([{
+        "pfr_id": "CartNa00", "gsis_id": "00-0099999", "season": 2025,
+        "week": 2, "game_type": "REG", "position": "RB", "team": "ATL",
+    }])
+    data = frame.to_csv(index=False).encode()
+    monkeypatch.setattr(mod, "WEEKLY_ROSTER_2025_SIZE", len(data))
+    monkeypatch.setattr(mod, "WEEKLY_ROSTER_2025_SHA256", "f" * 64)
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_DIGEST_MISMATCH"):
+        mod.read_pinned_2025_roster(
+            weekly=True, open_url=lambda *a, **kw: FakeResponse(data),
+        )
+
+
+def test_roster_source_column_coverage_does_not_prove_nonparticipation():
+    frame = pd.DataFrame([{
+        "pfr_id": None, "gsis_id": "00-0099999", "season": 2025,
+        "position": "RB", "team": "ATL",
+    }])
+    result = mod.inspect_roster_id_candidates(frame, ["CartNa00"])
+    assert result["source_rows_total"] == 1
+    assert result["source_nonblank_pfr_rows"] == 0
+    assert result["source_valid_gsis_rows"] == 1
+    assert result["source_exact_pair_candidate_count"] == 0
+    assert result["can_execute"] is False
