@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import pandas as pd
 
 from acquire_nfl_count_prop_sources import (
-    RELEASE_HOSTS, _trusted_release_urlopen,
+    ARCHIVE_OBSERVATION, RELEASE_HOSTS, _trusted_release_urlopen,
 )
 
 CAN_EXECUTE = False
@@ -277,5 +277,109 @@ def inspect_manual_pfr_overrides(
         "candidate_crosswalk_applied": False,
         "source_rights_independently_approved": False,
         "fitted_specialist_certified": False,
+        "can_execute": False,
+    }
+
+
+def inspect_archived_players_rds(
+    path: Path, target_pfr_ids: list[str], *, read_rds=None,
+) -> dict[str, object]:
+    """Inspect a locally pinned Nov-05 identity master; never adopt identities.
+
+    The archive is comparison evidence only. A GSIS/PFR pair may originate in
+    name-based upstream joins and requires independent semantic acceptance.
+    This function cannot fit, register, calibrate, publish, or approve use.
+    """
+    import importlib
+    import re
+    import tempfile
+
+    if (not isinstance(target_pfr_ids, list) or not target_pfr_ids
+            or any(not isinstance(x, str)
+                   or re.fullmatch(r"[A-Za-z0-9]{8}", x) is None
+                   for x in target_pfr_ids)):
+        raise ValueError("NFL_PROP_ROSTER_TARGET_INVALID")
+    targets = sorted(set(target_pfr_ids))
+    frozen = Path(path)
+    if frozen.is_symlink() or not frozen.is_file():
+        raise ValueError("NFL_PROP_ACQUIRE_FILE_MISSING:players.rds")
+    try:
+        payload = frozen.read_bytes()
+    except OSError as exc:
+        raise ValueError("NFL_PROP_ACQUIRE_FILE_MISSING:players.rds") from exc
+    _asset_id, expected_size, expected_sha = ARCHIVE_OBSERVATION["assets"]["players.rds"]
+    actual_sha = hashlib.sha256(payload).hexdigest()
+    if len(payload) != expected_size or actual_sha != expected_sha:
+        raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:players.rds")
+    if read_rds is None:
+        try:
+            read_rds = importlib.import_module("pyreadr").read_r
+        except (ImportError, AttributeError) as exc:
+            raise ValueError("NFL_PROP_ROSTER_RDS_READER_UNAVAILABLE") from exc
+
+    # The decoder never sees mutable caller-owned bytes. Source and snapshot
+    # are both checked again after parsing; a changed file cannot pass.
+    with tempfile.TemporaryDirectory(prefix="wow-nfl-archive-rds-") as scratch:
+        snapshot = Path(scratch) / "players.rds"
+        snapshot.write_bytes(payload)
+        try:
+            parsed = read_rds(str(snapshot))
+        except Exception as exc:
+            raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:archive_rds_parse") from exc
+        if snapshot.read_bytes() != payload:
+            raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:archive_snapshot")
+    try:
+        if frozen.read_bytes() != payload:
+            raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:source_changed")
+    except OSError as exc:
+        raise ValueError("NFL_PROP_ACQUIRE_FILE_MISSING:players.rds") from exc
+    if (not isinstance(parsed, dict) or len(parsed) != 1
+            or not isinstance(next(iter(parsed.values())), pd.DataFrame)):
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:archive_rds_shape")
+    frame = next(iter(parsed.values()))
+    if {"pfr_id", "gsis_id"} - set(frame.columns):
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:archive_identity_columns")
+    source = frame.loc[:, ["pfr_id", "gsis_id"]].copy()
+    source["pfr_id"] = source["pfr_id"].astype("string").str.strip()
+    source["gsis_id"] = source["gsis_id"].astype("string").str.strip()
+    nonblank_pfr = source["pfr_id"].notna() & source["pfr_id"].ne("")
+    valid_gsis = source["gsis_id"].str.fullmatch(r"00-[0-9]{7}").fillna(False)
+    # Check against the whole master, not just the selected four players.
+    pfr_count_by_gsis = (
+        source.loc[nonblank_pfr & valid_gsis]
+        .groupby("gsis_id")["pfr_id"].nunique()
+    )
+    results = []
+    for pfr in targets:
+        matching = source.loc[source["pfr_id"].eq(pfr).fillna(False)]
+        if not matching.empty and not valid_gsis.loc[matching.index].all():
+            raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:archive_target_gsis")
+        candidates = sorted(set(matching["gsis_id"].dropna().astype(str)))
+        if (len(candidates) > 1
+                or any(pfr_count_by_gsis.get(gsis, 0) > 1 for gsis in candidates)):
+            raise ValueError("NFL_PROP_ROSTER_CROSSWALK_CONFLICT:" + pfr)
+        results.append({
+            "pfr_player_id": pfr,
+            "source_rows": int(len(matching)),
+            "gsis_candidates": candidates,
+            "status": ("CANDIDATE_EXACT_SOURCE_PAIR_NOT_ADOPTED" if candidates
+                       else "HOLD_ARCHIVE_PFR_ID_NOT_FOUND"),
+        })
+    return {
+        "status": "HOLD_ARCHIVED_IDENTITY_INDEPENDENT_REVIEW",
+        "source": "nflverse/nflverse-data-archives/players.rds",
+        "archive_tag": ARCHIVE_OBSERVATION["tag_name"],
+        "source_sha256": actual_sha,
+        "source_bytes_sha256_verified": True,
+        "source_rows": int(len(frame)),
+        "target_pfr_count": len(results),
+        "target_exact_candidate_count": sum(bool(x["gsis_candidates"]) for x in results),
+        "targets": results,
+        "source_absence_does_not_prove_player_absence": True,
+        "crosswalk_applied": False,
+        "independent_identity_accepted": False,
+        "source_rights_independently_approved": False,
+        "training_authorized": False,
+        "probability_publishable": False,
         "can_execute": False,
     }
