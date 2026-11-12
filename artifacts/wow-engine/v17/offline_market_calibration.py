@@ -70,8 +70,10 @@ def _identity(row: Mapping[str, Any]) -> tuple[str, ...] | None:
     parts = tuple(row.get(field) for field in KEYS)
     if any(not isinstance(v, str) or not v.strip() or v != v.strip() for v in parts):
         return None
-    if not all(isinstance(row.get(key), str) and row[key].strip() for key in
-               ("home_team_id", "away_team_id", "quote_home_team_id", "quote_away_team_id")):
+    if not all(isinstance(row.get(key), str) and row[key].strip()
+               and row[key] == row[key].strip() for key in
+               ("home_team_id", "away_team_id", "quote_home_team_id",
+                "quote_away_team_id", "settled_home_team_id", "settled_away_team_id")):
         return None
     if row["home_team_id"] == row["away_team_id"]:
         return None

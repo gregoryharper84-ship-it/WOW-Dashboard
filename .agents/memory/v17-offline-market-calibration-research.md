@@ -42,3 +42,13 @@
 - **prevention_artifact:** tests/test_offline_market_calibration.py; two original RED, one control GREEN; updated 53/53 GREEN, Python compile PASS (local).
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
 - **production_evidence:** None; protected exact-head and independent SIRT acceptance pending. No registered probability, changed threshold, live order or execution; can_execute=false.
+
+## Canonical team-token mismatch caused malformed-row audit crash — 2026-11-12
+- **date:** 2026-11-12
+- **typed_reason:** REPLAY_EXACT_IDENTITY_MISMATCH (existing canonical fail-closed reason).
+- **mechanism:** `_identity` accepted whitespace-padded home/away IDs if all input streams matched, but the event-context collection rejected padded team IDs. The scoring loop then attempted a nonexistent context key and raised KeyError, aborting all other rows.
+- **detection_point:** CodeRabbit exact-head review after initial synthetic regression acceptance; the malformed same-ID-in-all-streams counterexample should have been an initial input-contract test.
+- **fix:** Reject padded team tokens consistently across primary, quoted and settled home/away fields in `_identity`; preserve per-row HOLD without coercing tokens or changing event-identity joins.
+- **prevention_artifact:** `tests/test_offline_market_calibration.py` two new malformed-team cases (initial KeyError RED, then targeted GREEN); 55/55 locally PASS and Python compile PASS. New hosted exact-head CI/independent SIRT needed.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
+- **production_evidence:** None; no price/probability model, protected merge, runtime deployment, data rights, or terminal execution. `can_execute=false`, `V17_TERMINAL_REDUCER`.

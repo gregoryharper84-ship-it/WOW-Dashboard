@@ -300,3 +300,29 @@ def test_empty_team_identity_does_not_poison_valid_peer():
     assert report["eligible_unattested"] == 1 and report["held"] == 1
     assert report["rows"][0]["status"] == "REPLAY_CANDIDATE_UNVERIFIED"
     assert report["rows"][1]["status"] == "REPLAY_EXACT_IDENTITY_MISMATCH"
+
+
+def test_padded_consistent_team_ids_hold_without_aborting_a_clean_peer():
+    """An all-stream padded ID must HOLD locally, not miss event_contexts lookup."""
+    padded = sample(home_team_id=" ABC ", quote_home_team_id=" ABC ",
+                    settled_home_team_id=" ABC ")
+    clean = sample(event_id="2025_02_GHI_JKL", quote_event_id="2025_02_GHI_JKL",
+                   opposite_quote_event_id="2025_02_GHI_JKL",
+                   settled_event_id="2025_02_GHI_JKL",
+                   home_team_id="GHI", quote_home_team_id="GHI",
+                   settled_home_team_id="GHI",
+                   away_team_id="JKL", quote_away_team_id="JKL",
+                   settled_away_team_id="JKL", immutable_prediction_id="pred-2")
+    result = evaluate_binary_market_baseline([padded, clean])
+    assert result["held"] == 1 and result["eligible_unattested"] == 1
+    assert result["rows"][0]["status"] == "REPLAY_EXACT_IDENTITY_MISMATCH"
+    assert result["rows"][1]["status"] == "REPLAY_CANDIDATE_UNVERIFIED"
+
+
+def test_padded_away_identifier_is_held_even_if_all_sources_agree():
+    """Require strict canonical away ID tokens as well as home ID tokens."""
+    bad = sample(away_team_id=" DEF ", quote_away_team_id=" DEF ",
+                 settled_away_team_id=" DEF ")
+    result = evaluate_binary_market_baseline([bad])
+    assert result["eligible_unattested"] == 0
+    assert result["rows"][0]["status"] == "REPLAY_EXACT_IDENTITY_MISMATCH"
