@@ -141,6 +141,89 @@ def audit_observed_l10_history_gap_exposure(
     }
 
 
+
+def summarize_known_gap_excluded_candidate_splits(
+    exposure: dict[str, object],
+) -> dict[str, object]:
+    """Read-only candidate row-count sensitivity, not a clean-source assertion.
+
+    Only the chronology and player/game identities used in the prior-row
+    exposure audit matter. No result, modeled target, fitted estimate,
+    calibration outcome or 2025 holdout label is read here.
+    """
+    if exposure.get("status") != "HOLD_UNRESOLVED_PARTICIPATION":
+        raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_status")
+    by_route = exposure.get("by_route")
+    if not isinstance(by_route, dict):
+        raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_route")
+    if not by_route and exposure.get("unavailable_reason"):
+        return {
+            "status": "HOLD_FEATURE_COHORT_POSITION_UNAVAILABLE",
+            "by_route": {}, "holdout_outcomes_read": False,
+            "source_rights_independently_approved": False,
+            "candidate_training_authorized": False, "can_execute": False,
+        }
+    if set(by_route) != set(ROUTES):
+        raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_route")
+    # Mirrors the frozen offline candidate row-count requirements. These
+    # counts are informational, never training or release authorization.
+    periods = (
+        ("TRAIN", ("2021", "2022", "2023"), 1000),
+        ("CALIBRATION", ("2024",), 300),
+        ("HOLDOUT", ("2025",), 300),
+    )
+    results = {}
+    for route in ROUTES:
+        record = by_route[route]
+        annual = record.get("by_season") if isinstance(record, dict) else None
+        if not isinstance(annual, dict) or set(annual) != {str(s) for s in SEASONS}:
+            raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_years")
+        total_eligible = total_exposed = 0
+        for year in SEASONS:
+            counts = annual[str(year)]
+            if not isinstance(counts, dict) or set(counts) != {"eligible", "exposed"}:
+                raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_counts")
+            e, x = counts["eligible"], counts["exposed"]
+            if (type(e) is not int or type(x) is not int or e < 0
+                    or not 0 <= x <= e):
+                raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_counts")
+            total_eligible += e
+            total_exposed += x
+        if (total_eligible != record.get("eligible_recorded_l10_rows")
+                or total_exposed != record.get(
+                    "observed_l10_windows_with_unrecorded_snap_positive_game")):
+            raise ValueError("NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_totals")
+        splits = {}
+        for label, years, minimum in periods:
+            eligible = sum(annual[y]["eligible"] for y in years)
+            excluded = sum(annual[y]["exposed"] for y in years)
+            remaining = eligible - excluded
+            splits[label] = {
+                "recorded_feature_candidate_rows": eligible,
+                "excluded_known_mapped_gap_windows": excluded,
+                "not_flagged_by_mapped_gap_audit": remaining,
+                "existing_candidate_minimum": minimum,
+                "count_minimum_met_only": remaining >= minimum,
+            }
+        results[route] = {
+            "splits": splits,
+            "known_gap_count_floor_met_all_splits": all(
+                s["count_minimum_met_only"] for s in splits.values()),
+            "source_completeness_certified": False,
+            "fitted_candidate_authorized": False,
+        }
+    return {
+        "status": "RESEARCH_ONLY_KNOWN_GAP_EXCLUSION_NOT_SOURCE_CERTIFICATION",
+        "by_route": results,
+        "model_probabilities_fitted": False,
+        "holdout_outcomes_read": False,
+        "source_identity_gaps_reconciled": False,
+        "source_rights_independently_approved": False,
+        "candidate_training_authorized": False,
+        "can_execute": False,
+    }
+
+
 def reconcile_player_games(
     player_stats: pd.DataFrame,
     snap_counts: pd.DataFrame,
@@ -329,9 +412,13 @@ def reconcile_player_games(
     observed_l10_gaps = audit_observed_l10_history_gap_exposure(
         player_stats, missing,
     )
+    split_sensitivity = summarize_known_gap_excluded_candidate_splits(
+        observed_l10_gaps,
+    )
     defects = len(missing) + len(unmapped)
     return {
         "observed_l10_history_gap_exposure": observed_l10_gaps,
+        "known_gap_excluded_candidate_splits": split_sensitivity,
         "scope": "2021-2025_REG_QB_RB_WR_TE_OFFENSE_SNAPS_GT_ZERO",
         "offensive_participant_games": int(len(snap)),
         "player_games_matched": int(len(checked) - len(missing)),

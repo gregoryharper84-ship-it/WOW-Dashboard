@@ -492,3 +492,128 @@ def test_l10_history_game_id_without_teams_fails_closed(source):
         missing.loc[0, "game_id"] = "2023_11_"
     with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:history_game_id"):
         audit_observed_l10_history_gap_exposure(stats, missing)
+
+
+def _synthetic_route_split_exposure():
+    """Synthetic identity-only counts; no outcome or fitted probability inputs."""
+    from train_nfl_missing_prop_candidates import ROUTES
+    annual = {
+        "2021": {"eligible": 400, "exposed": 5},
+        "2022": {"eligible": 400, "exposed": 10},
+        "2023": {"eligible": 250, "exposed": 20},
+        "2024": {"eligible": 325, "exposed": 20},
+        "2025": {"eligible": 320, "exposed": 25},
+    }
+    return {
+        "status": "HOLD_UNRESOLVED_PARTICIPATION",
+        "by_route": {
+            name: {
+                "by_season": {year: dict(counts) for year, counts in annual.items()},
+                "eligible_recorded_l10_rows": 1695,
+                "observed_l10_windows_with_unrecorded_snap_positive_game": 80,
+            }
+            for name in ROUTES
+        },
+    }
+
+
+def test_known_gap_exclusion_split_receipt_never_grants_model_authority():
+    from audit_nfl_count_prop_participation import (
+        summarize_known_gap_excluded_candidate_splits,
+    )
+    receipt = summarize_known_gap_excluded_candidate_splits(
+        _synthetic_route_split_exposure())
+    assert receipt["status"] == "RESEARCH_ONLY_KNOWN_GAP_EXCLUSION_NOT_SOURCE_CERTIFICATION"
+    assert receipt["holdout_outcomes_read"] is False
+    assert receipt["model_probabilities_fitted"] is False
+    assert receipt["source_identity_gaps_reconciled"] is False
+    assert receipt["candidate_training_authorized"] is False
+    assert receipt["can_execute"] is False
+    for route in receipt["by_route"].values():
+        splits = route["splits"]
+        assert splits["TRAIN"]["not_flagged_by_mapped_gap_audit"] == 1015
+        assert splits["CALIBRATION"]["not_flagged_by_mapped_gap_audit"] == 305
+        assert splits["HOLDOUT"]["not_flagged_by_mapped_gap_audit"] == 295
+        assert splits["TRAIN"]["count_minimum_met_only"] is True
+        assert splits["CALIBRATION"]["count_minimum_met_only"] is True
+        assert splits["HOLDOUT"]["count_minimum_met_only"] is False
+        assert route["known_gap_count_floor_met_all_splits"] is False
+        assert route["fitted_candidate_authorized"] is False
+
+
+def test_known_gap_exclusion_all_count_floors_do_not_certify_training():
+    from audit_nfl_count_prop_participation import (
+        summarize_known_gap_excluded_candidate_splits,
+    )
+    source = _synthetic_route_split_exposure()
+    for record in source["by_route"].values():
+        record["by_season"]["2025"]["exposed"] = 10
+        record["observed_l10_windows_with_unrecorded_snap_positive_game"] = 65
+    receipt = summarize_known_gap_excluded_candidate_splits(source)
+    assert all(route["known_gap_count_floor_met_all_splits"]
+               for route in receipt["by_route"].values())
+    assert receipt["candidate_training_authorized"] is False
+    assert receipt["holdout_outcomes_read"] is False
+
+
+@pytest.mark.parametrize("malformation,reason", [
+    ("negative", "cohort_counts"),
+    ("over_exposed", "cohort_counts"),
+    ("bool_count", "cohort_counts"),
+    ("missing_year", "cohort_years"),
+    ("extra_year", "cohort_years"),
+    ("wrong_total", "cohort_totals"),
+    ("missing_route", "cohort_route"),
+    ("missing_count", "cohort_counts"),
+])
+def test_known_gap_exclusion_inconsistent_receipt_fails_closed(
+    malformation, reason,
+):
+    from audit_nfl_count_prop_participation import (
+        summarize_known_gap_excluded_candidate_splits,
+    )
+    source = _synthetic_route_split_exposure()
+    one = source["by_route"]["RECEPTIONS"]
+    if malformation == "negative":
+        one["by_season"]["2025"]["eligible"] = -1
+    elif malformation == "over_exposed":
+        one["by_season"]["2025"]["exposed"] = 321
+    elif malformation == "bool_count":
+        one["by_season"]["2025"]["exposed"] = True
+    elif malformation == "missing_year":
+        one["by_season"].pop("2025")
+    elif malformation == "extra_year":
+        one["by_season"]["2026"] = {"eligible": 0, "exposed": 0}
+    elif malformation == "wrong_total":
+        one["eligible_recorded_l10_rows"] = 1696
+    elif malformation == "missing_route":
+        source["by_route"].pop("RECEPTIONS")
+    else:
+        one["by_season"]["2025"].pop("exposed")
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:" + reason):
+        summarize_known_gap_excluded_candidate_splits(source)
+
+
+def test_known_gap_exclusion_no_position_data_stays_held_not_green():
+    from audit_nfl_count_prop_participation import (
+        summarize_known_gap_excluded_candidate_splits,
+    )
+    report = summarize_known_gap_excluded_candidate_splits({
+        "status": "HOLD_UNRESOLVED_PARTICIPATION",
+        "unavailable_reason": "NFL_PROP_PARTICIPATION_COLUMNS_MISSING",
+        "by_route": {},
+    })
+    assert report["status"] == "HOLD_FEATURE_COHORT_POSITION_UNAVAILABLE"
+    assert report["by_route"] == {}
+    assert report["candidate_training_authorized"] is False
+    assert report["can_execute"] is False
+
+
+def test_known_gap_exclusion_invalid_upstream_status_is_not_accepted():
+    from audit_nfl_count_prop_participation import (
+        summarize_known_gap_excluded_candidate_splits,
+    )
+    fake = _synthetic_route_split_exposure()
+    fake["status"] = "RESEARCH_COVERAGE_RECONCILED_ONLY"
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_status"):
+        summarize_known_gap_excluded_candidate_splits(fake)

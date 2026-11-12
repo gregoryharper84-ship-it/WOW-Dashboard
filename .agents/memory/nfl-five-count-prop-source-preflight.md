@@ -315,3 +315,14 @@
 - **prevention_artifact:** four negative-first RED→GREEN cases for source-year disagreement and missing team names, each on both source frames; standalone audit test suite 16/16 PASS. New hosted exact-head review still required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. Observed 2021–2025 L10 exposure remains research-only; no model activation, zero imputation, source rights clearance, or protected release. `can_execute=false`.
+
+
+## Frozen candidate split identity-count sensitivity — 2026-11-12
+- **date:** 2026-11-12
+- **typed_reason:** NFL_PROP_PARTICIPATION_SNAP_INVALID (reused for malformed or internally inconsistent split receipts; current negative paths have subcode \`cohort_*\`).
+- **mechanism:** Historical source weekly-stat rows omit official snap-positive participant-games, so an ordinary count of L10 feature rows cannot establish a clean pregame history. A later train/cal/holdout partition could satisfy minimum row counts but still include known contaminated history windows. This predicts affected eligible-source counts even where the current game has a recorded target.
+- **detection_point:** After SHA-pinned source/snap reconciliation and before any fitted specialist training, not on post-hoc holdout metrics.
+- **fix:** On the existing read-only audit, compute exact 2021–23 TRAIN, 2024 CALIBRATION, 2025 HOLDOUT **identity counts only** for unflagged L10 windows. Validate all five route labels, five declared years, integer nonnegative counts, exposed <= eligible, and sum parity with original source audit; fail closed on discrepancy. Compare each count with the current 1000/300/300 offline candidate row minima without modifying them or labeling the source certified. Never read holdout outcome values, fit a model, impute missing counts, or substitute an unverified PFR/GSIS ID.
+- **prevention_artifact:** \`tests/test_nfl_count_prop_participation_audit.py\` (12 added exact-boundary and malformed-receipt cases). Existing PR-only trusted runner adds \`known_gap_excluded_candidate_splits\` to the signed-source observational receipt; **hosted exact-head results not yet observed**, so no new empirical claim.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no valid source-rights clearance, no source completeness certification, no trained or calibrated probability, no change to qualification/routing/threshold, no production deployment or persisted terminal receipt. \`can_execute=false\`, \`V17_TERMINAL_REDUCER\`.

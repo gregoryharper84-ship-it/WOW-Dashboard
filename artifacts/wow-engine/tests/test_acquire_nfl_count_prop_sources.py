@@ -254,6 +254,10 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             "unmapped_player_profiles": result["unmapped_player_profiles"],
             "missing_weekly_label_history_exposure":
                 result["missing_weekly_label_history_exposure"],
+            # Identity-only split sensitivity from the pinned archived cohort;
+            # 2025 holdout result labels are not inspected or used for fitting.
+            "known_gap_excluded_candidate_splits":
+                result["known_gap_excluded_candidate_splits"],
             # Offline observational exposure only: previous ten recorded
             # weekly rows may skip real snap-positive participant games.
             "observed_l10_history_gap_exposure": {
