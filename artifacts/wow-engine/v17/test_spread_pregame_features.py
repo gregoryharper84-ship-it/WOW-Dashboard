@@ -298,6 +298,7 @@ def _market_rows(*, home_spread=-0.5, start=START):
         "market_name": "spreads",
         "sportsbook": "Pinnacle",
         "price_updated_at": (start - timedelta(hours=2)).isoformat(),
+        "fetched_at": (start - timedelta(hours=2)).isoformat(),
         "is_live": False,
         "is_main_line": True,
         "is_available": True,

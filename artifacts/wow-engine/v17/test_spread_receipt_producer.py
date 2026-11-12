@@ -56,6 +56,8 @@ def _market_rows(*, home_spread=-0.5, provider_event_id="rd-nfl-9101", start=STA
         "market_name": "spreads",
         "sportsbook": "Pinnacle",
         "price_updated_at": (start - timedelta(hours=2)).isoformat(),
+        # A bound quote must have been actually observed, not merely re-timestamped.
+        "fetched_at": (start - timedelta(hours=2)).isoformat(),
         "is_live": False,
         "is_main_line": True,
         "is_available": True,
