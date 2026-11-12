@@ -106,11 +106,11 @@ def test_untrusted_openfootball_json_cannot_inject_fake_utc_proof(monkeypatch):
         }],
     }
 
+    response_bytes = json.dumps(payload).encode("utf-8")
+
     class Reply:
         status_code = 200
-
-        def __init__(self):
-            self.content = json.dumps(payload).encode("utf-8")
+        content = response_bytes
 
         def json(self):
             return payload
