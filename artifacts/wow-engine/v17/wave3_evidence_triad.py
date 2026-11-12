@@ -12,18 +12,42 @@ inconsistent or cross-sport components. Probability normalization
 ``0 <= lower <= calibrated <= upper <= 1`` and multiclass sum are enforced
 where applicable.
 
+Binding proof: format checks alone cannot prove the three digests were
+co-presented as one claim. A submitter therefore attaches ``binding_proof``,
+the SHA-256 over the canonical binding fields computed by
+:func:`compute_binding_proof`. Verification recomputes it; a missing or
+mismatched proof fails closed. Byte-level reproduction of the artifact from
+the corpus still requires the pinned artifact bytes and corpus snapshot and
+remains the job of independent verification — this proof establishes
+co-presentation and tamper-evidence of the claim, not byte reproduction.
+
 Research-only: never certifies, promotes, publishes or executes.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 CAN_EXECUTE = False
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_RE = re.compile("^[0-9a-f]{64}$")
+
+BINDING_FIELDS = (
+    "sport",
+    "market",
+    "model_family",
+    "model_version",
+    "fitted_artifact_sha256",
+    "feature_schema_version",
+    "calibrator_artifact_sha256",
+    "calibration_method",
+    "pregame_corpus_digest",
+    "settlement_basis",
+)
 
 
 @dataclass(frozen=True)
@@ -53,10 +77,27 @@ def _nonempty(value: Any) -> bool:
     return isinstance(value, str) and len(value.strip()) > 0
 
 
-def verify_triad(triad: Mapping[str, Any]) -> TriadVerdict:
-    """Verify one lane's artifact + calibrator + corpus binding. Fail closed."""
+def compute_binding_proof(triad: Mapping[str, Any]) -> str:
+    """SHA-256 over the canonical binding fields of one triad claim."""
+    payload = {}
+    for field in BINDING_FIELDS:
+        value = triad.get(field, "")
+        payload[field] = str(value).strip().lower() if "sha256" in field or "digest" in field else str(value).strip()
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def verify_triad(triad: Mapping[str, Any], *, require_binding: bool = False) -> TriadVerdict:
+    """Verify one lane's artifact + calibrator + corpus binding. Fail closed.
+
+    When ``require_binding`` is true, or whenever the payload carries a
+    ``binding_proof``, the proof is recomputed with :func:`compute_binding_proof`
+    and must match exactly; otherwise ``EVIDENCE_TRIAD_BINDING_UNPROVEN``
+    (missing proof) or ``EVIDENCE_TRIAD_BINDING_MISMATCH`` (tampered claim).
+    """
     blockers: list[str] = []
-    get = dict(triad).get
+    data = dict(triad)
+    get = data.get
 
     for field in (
         "sport",
@@ -101,6 +142,13 @@ def verify_triad(triad: Mapping[str, Any]) -> TriadVerdict:
     if get("poststart_corpus", False) is True:
         blockers.append("EVIDENCE_TRIAD_POSTSTART_CORPUS")
 
+    proof = get("binding_proof")
+    if require_binding or _nonempty(proof):
+        if not _nonempty(proof):
+            blockers.append("EVIDENCE_TRIAD_BINDING_UNPROVEN")
+        elif str(proof).strip().lower() != compute_binding_proof(data):
+            blockers.append("EVIDENCE_TRIAD_BINDING_MISMATCH")
+
     if blockers:
         return TriadVerdict(
             ok=False,
@@ -141,9 +189,11 @@ def verify_probability_bounds(
 
 
 __all__ = [
+    "BINDING_FIELDS",
     "CAN_EXECUTE",
     "EvidenceTriad",
     "TriadVerdict",
+    "compute_binding_proof",
     "verify_probability_bounds",
     "verify_triad",
 ]

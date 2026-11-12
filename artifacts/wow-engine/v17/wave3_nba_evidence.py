@@ -26,9 +26,20 @@ def _parse_utc(value: str) -> datetime:
 
 
 def verify_chronology_disjoint(
-    train: Sequence[str], calibration: Sequence[str], holdout: Sequence[str]
+    train: Sequence[str],
+    calibration: Sequence[str],
+    holdout: Sequence[str],
+    *,
+    train_ids: Sequence[str] | None = None,
+    calibration_ids: Sequence[str] | None = None,
+    holdout_ids: Sequence[str] | None = None,
 ) -> Mapping[str, object]:
-    """Partitions must be disjoint and ordered train < calibration < holdout."""
+    """Partitions must be disjoint and ordered train < calibration < holdout.
+
+    Identity is checked on official event IDs whenever they are supplied;
+    timestamp strings alone are never trusted as identity. When ID sequences
+    are provided they must run parallel to the timestamp sequences.
+    """
     try:
         train_t = sorted(_parse_utc(v) for v in train)
         cal_t = sorted(_parse_utc(v) for v in calibration)
@@ -41,6 +52,32 @@ def verify_chronology_disjoint(
     ids = [v for v in list(train) + list(calibration) + list(holdout)]
     if len(set(ids)) != len(ids):
         blockers.append("NBA_PARTITION_EVENT_REUSE")
+    id_groups = (train_ids, calibration_ids, holdout_ids)
+    if any(group is not None for group in id_groups):
+        if (
+            train_ids is None
+            or calibration_ids is None
+            or holdout_ids is None
+        ):
+            blockers.append("NBA_EVENT_ID_COVERAGE_INCOMPLETE")
+        else:
+            id_lists = (list(train_ids), list(calibration_ids), list(holdout_ids))
+            time_lists = (list(train), list(calibration), list(holdout))
+            for id_list, time_list in zip(id_lists, time_lists):
+                if len(id_list) != len(time_list):
+                    blockers.append("NBA_EVENT_ID_COUNT_MISMATCH")
+                    break
+                if any(not str(v).strip() for v in id_list):
+                    blockers.append("NBA_EVENT_ID_MISSING")
+                    break
+            else:
+                flat_ids = id_lists[0] + id_lists[1] + id_lists[2]
+                if len(set(flat_ids)) != len(flat_ids):
+                    blockers.append("NBA_PARTITION_EVENT_REUSE")
+                for id_list in id_lists:
+                    if len(set(id_list)) != len(id_list):
+                        blockers.append("NBA_PARTITION_EVENT_REUSE")
+                        break
     if train_t and cal_t and max(train_t) >= min(cal_t):
         blockers.append("NBA_TRAIN_CALIBRATION_OVERLAP")
     if cal_t and hold_t and max(cal_t) >= min(hold_t):
@@ -48,41 +85,6 @@ def verify_chronology_disjoint(
     if train_t and hold_t and max(train_t) >= min(hold_t):
         blockers.append("NBA_TRAIN_HOLDOUT_OVERLAP")
     return {"ok": not blockers, "blockers": blockers}
-
-
-def nba_evidence_preflight(
-    *,
-    triad: Mapping[str, object],
-    train: Sequence[str],
-    calibration: Sequence[str],
-    holdout: Sequence[str],
-    settlement_includes_ot: bool,
-    post_tipoff_features_used: bool,
-) -> Mapping[str, object]:
-    """NBA fitted-evidence preflight. Fail closed; research-only."""
-    blockers: list[str] = []
-    triad_verdict = verify_triad({**dict(triad), "expected_sport": SPORT, "expected_market": MARKET})
-    blockers.extend(triad_verdict.blockers)
-    chrono = verify_chronology_disjoint(train, calibration, holdout)
-    blockers.extend(chrono["blockers"])
-    if not settlement_includes_ot:
-        blockers.append("NBA_OT_SETTLEMENT_BASIS_UNPROVEN")
-    if post_tipoff_features_used:
-        blockers.append("NBA_POST_TIPOFF_FEATURE_LEAKAGE")
-    if blockers:
-        return {
-            "decision": "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED",
-            "blockers": blockers,
-            "probability_publishable": False,
-            "can_execute": False,
-        }
-    bounds_note = "BOUNDS_POLICY_REVIEW_REQUIRED"
-    return {
-        "decision": "READY_FOR_INDEPENDENT_MODEL_REVIEW",
-        "blockers": [bounds_note],
-        "probability_publishable": False,
-        "can_execute": False,
-    }
 
 
 def verify_nba_snapshot_order(
@@ -109,6 +111,72 @@ def verify_nba_snapshot_order(
     return {"ok": not blockers, "blockers": blockers}
 
 
+def nba_evidence_preflight(
+    *,
+    triad: Mapping[str, object],
+    train: Sequence[str],
+    calibration: Sequence[str],
+    holdout: Sequence[str],
+    settlement_includes_ot: bool,
+    post_tipoff_features_used: bool,
+    train_ids: Sequence[str] | None = None,
+    calibration_ids: Sequence[str] | None = None,
+    holdout_ids: Sequence[str] | None = None,
+    source_snapshot_ts: str | None = None,
+    feature_ts: str | None = None,
+    tipoff_ts: str | None = None,
+) -> Mapping[str, object]:
+    """NBA fitted-evidence preflight. Fail closed; research-only.
+
+    The triad binding proof is required: a claim without a recomputable
+    artifact-to-corpus binding cannot proceed. When event IDs are supplied
+    they are checked as identity; when snapshot/feature/tipoff timestamps
+    are supplied the pregame lineage order is enforced.
+    """
+    blockers: list[str] = []
+    triad_verdict = verify_triad(
+        {**dict(triad), "expected_sport": SPORT, "expected_market": MARKET},
+        require_binding=True,
+    )
+    blockers.extend(triad_verdict.blockers)
+    chrono = verify_chronology_disjoint(
+        train,
+        calibration,
+        holdout,
+        train_ids=train_ids,
+        calibration_ids=calibration_ids,
+        holdout_ids=holdout_ids,
+    )
+    blockers.extend(chrono["blockers"])
+    if not settlement_includes_ot:
+        blockers.append("NBA_OT_SETTLEMENT_BASIS_UNPROVEN")
+    if post_tipoff_features_used:
+        blockers.append("NBA_POST_TIPOFF_FEATURE_LEAKAGE")
+    lineage_args = (source_snapshot_ts, feature_ts, tipoff_ts)
+    if any(arg is not None for arg in lineage_args):
+        if any(arg is None for arg in lineage_args):
+            blockers.append("NBA_PRELOCK_LINEAGE_INCOMPLETE")
+        else:
+            lineage = verify_nba_snapshot_order(
+                str(source_snapshot_ts), str(feature_ts), str(tipoff_ts)
+            )
+            blockers.extend(lineage["blockers"])
+    if blockers:
+        return {
+            "decision": "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED",
+            "blockers": blockers,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    bounds_note = "BOUNDS_POLICY_REVIEW_REQUIRED"
+    return {
+        "decision": "READY_FOR_INDEPENDENT_MODEL_REVIEW",
+        "blockers": [bounds_note],
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def nba_hard_negative(
     kind: str,
     *,
@@ -120,10 +188,14 @@ def nba_hard_negative(
     base_triad = dict(triad) if triad else {}
     if kind == "swapped_home_away":
         # Same official event claimed under both home/away orientations
-        # surfaces as a duplicate identity across partitions.
-        event = "2026-01-15T00:00:00Z"
+        # surfaces as a duplicate official event ID across partitions.
         result = verify_chronology_disjoint(
-            [event], [event], ["2026-03-01T00:00:00Z"]
+            ["2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z"],
+            ["2026-02-01T00:00:00Z"],
+            ["2026-03-01T00:00:00Z"],
+            train_ids=["espn-1", "espn-1"],
+            calibration_ids=["espn-2"],
+            holdout_ids=["espn-3"],
         )
         held = not result["ok"]
         return {"kind": kind, "held_closed": held, "blockers": list(result["blockers"])}
