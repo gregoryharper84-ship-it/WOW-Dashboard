@@ -2340,6 +2340,7 @@ def test_qa_workflow_run_pr_403_is_hold_without_app_check(fake_gh):
             os.environ,
             PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
             FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+            FAKE_GH_LOG=str(fake_gh / "gh.log"),
             GITHUB_REPOSITORY=REPO,
             GITHUB_OUTPUT=str(out),
             GH_TOKEN="read-only",
@@ -2352,7 +2353,7 @@ def test_qa_workflow_run_pr_403_is_hold_without_app_check(fake_gh):
     )
     assert proc.returncode != 0
     assert "QA_TARGETS_UNRESOLVED" in proc.stdout
-    assert "TARGET_PR_UNREADABLE" in proc.stdout
+    assert "TARGET_PR_UNREADABLE:7:403" in proc.stdout
     assert not out.exists() or "pr_number=" not in out.read_text()
     assert _qa_target_output_enables_publish("") is False
     workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
