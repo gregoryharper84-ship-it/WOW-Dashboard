@@ -40,20 +40,27 @@ def test_summary_is_explicitly_non_authoritative():
     assert report["can_execute"] is False
 
 
-@pytest.mark.parametrize("market", ("WINNER", "HANDICAP", "TOTAL", "PLAYER_PROP"))
-def test_excluded_market_keeps_a_non_authoritative_inventory_row(monkeypatch, market):
+@pytest.mark.parametrize("sport,market", (
+    ("NBA", "WINNER"), ("NBA", "HANDICAP"), ("NBA", "TOTAL"),
+    ("NBA", "PLAYER_PROP"), ("MLB", "WINNER"),
+))
+def test_excluded_market_keeps_a_non_authoritative_inventory_row(monkeypatch, sport, market):
     baseline = audit_summary()
+    if sport == "MLB":
+        winner = next(row for row in baseline["rows"]
+                      if (row["sport"], row["market"]) == ("MLB", "WINNER"))
+        assert winner["declared_specialist"] == "MLB_GAME_WIN_PROBABILITY_EXPERT"
     # Exercise a structurally excluded market without changing the production
     # applicability declarations or treating a missing model as inapplicable.
     monkeypatch.setitem(
-        MARKET_APPLICABILITY, "NBA",
+        MARKET_APPLICABILITY, sport,
         frozenset({"WINNER", "HANDICAP", "TOTAL", "PLAYER_PROP"} - {market}),
     )
 
     report = audit_summary()
     excluded = [row for row in report["rows"] if row["status"] == "NOT_APPLICABLE"]
     assert excluded == [{
-        "sport": "NBA", "market": market, "status": "NOT_APPLICABLE",
+        "sport": sport, "market": market, "status": "NOT_APPLICABLE",
         "declared_specialist": None, "required_inputs": (), "missing_evidence": (),
         "is_certified_market": False, "production_verified": False,
         "can_execute": False,
@@ -64,5 +71,5 @@ def test_excluded_market_keeps_a_non_authoritative_inventory_row(monkeypatch, ma
     assert report["can_execute"] is False
     assert [row for row in report["rows"] if row not in excluded] == [
         row for row in baseline["rows"]
-        if (row["sport"], row["market"]) != ("NBA", market)
+        if (row["sport"], row["market"]) != (sport, market)
     ]
