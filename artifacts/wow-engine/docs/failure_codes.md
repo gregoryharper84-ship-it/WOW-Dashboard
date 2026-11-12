@@ -8,6 +8,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
 | `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
 | `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
 | `COLUMNAR_SOURCE_HASH_MISMATCH` | Offline Parquet corpus preflight | Actual SHA-256 differs from manifest pin. Recovery: reconcile immutable source provenance, never silently repin. | No |
