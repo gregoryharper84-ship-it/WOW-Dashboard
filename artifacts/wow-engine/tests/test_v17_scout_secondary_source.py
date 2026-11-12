@@ -55,3 +55,22 @@ def test_missing_moneyline_fails_closed_instead_of_fabricating_market():
     event = _event()
     event["competitions"][0]["odds"][0]["homeTeamOdds"].pop("moneyLine")
     assert espn_h2h_payload(event, primary_failure="HTTP_401") is None
+
+
+
+def test_espn_missing_odds_update_does_not_invent_fresh_quote_from_kickoff():
+    event = _event()
+    event["competitions"][0]["odds"][0].pop("lastUpdated")
+    payload = espn_h2h_payload(event, primary_failure="ODDS_API_QUOTA_EXHAUSTED")
+    assert payload is not None
+    assert payload["commence_time"] == "2026-09-12T19:00:00Z"
+    assert payload["bookmakers"][0]["last_update"] is None
+    assert payload["bookmakers"][0]["markets"][0]["last_update"] is None
+    assert payload["_wow_secondary_source"]["research_only"] is True
+    assert payload["_wow_secondary_source"]["prediction_authority"] is False
+
+    # A legitimate observed quote timestamp is still preserved unmodified.
+    event["competitions"][0]["odds"][0]["lastUpdated"] = "2026-09-12T17:10:00Z"
+    observed = espn_h2h_payload(event)
+    assert observed["bookmakers"][0]["last_update"] == "2026-09-12T17:10:00Z"
+    assert observed["bookmakers"][0]["markets"][0]["last_update"] == "2026-09-12T17:10:00Z"
