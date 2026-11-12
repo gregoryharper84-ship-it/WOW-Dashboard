@@ -13,8 +13,8 @@ def test_propsmadness_is_present_for_all_four_sports_without_training_authority(
         discovery = compile_free_source_plan(sport, "DISCOVERY")
         research = compile_free_source_plan(sport, "HISTORICAL_RESEARCH")
         assert "PROPSMADNESS_PUBLIC_EXPLORE" in {s["source_id"] for s in discovery["sources"]}
-        assert [s["source_id"] for s in research["sources"]] == ["PROPSMADNESS_ACCOUNT_VIEW"]
-        account = research["sources"][0]
+        assert "PROPSMADNESS_ACCOUNT_VIEW" in {s["source_id"] for s in research["sources"]}
+        account = next(s for s in research["sources"] if s["source_id"] == "PROPSMADNESS_ACCOUNT_VIEW")
         assert account["training_authorized_by_catalog"] is False
         assert account["source_rights_independently_attested"] is False
         assert account["historical_chart_threshold_is_closing_line"] is False
@@ -27,7 +27,11 @@ def test_propsmadness_is_present_for_all_four_sports_without_training_authority(
 
 def test_only_nfl_account_layout_has_real_page_observation():
     for sport in ("NFL", "NBA", "MLB", "WNBA"):
-        route = compile_free_source_plan(sport, "HISTORICAL_RESEARCH")["sources"][0]
+        research = compile_free_source_plan(sport, "HISTORICAL_RESEARCH")
+        route = next(
+            r for r in research["sources"]
+            if r["source_id"] == "PROPSMADNESS_ACCOUNT_VIEW"
+        )
         assert route["account_view_validation"] == "NFL_VIEW_OBSERVED_NBA_MLB_WNBA_LAYOUTS_SYNTHETIC"
 
 
@@ -103,3 +107,41 @@ def test_espn_player_box_remains_research_not_canonical_cfbd_source():
     assert espn["pregame_model_feature_eligible"] is False
     assert espn["model_probability"] is None
     assert espn["can_execute"] is False
+
+
+def test_oddsharvester_is_reference_only_and_never_a_market_or_training_route():
+    for sport in ("NFL", "NBA", "MLB", "NHL", "SOCCER", "TENNIS", "CRICKET"):
+        research = compile_free_source_plan(sport, "HISTORICAL_RESEARCH")
+        source = next(r for r in research["sources"] if r["source_id"] == "ODDSHARVESTER_ODDSPORTAL")
+        assert source["integration"] == "REFERENCE_ONLY_NO_ACQUISITION"
+        assert source["rights_state"] == "ODDSPORTAL_EXPRESS_CONSENT_REQUIRED"
+        assert source["source_rights_independently_attested"] is False
+        assert source["training_authorized_by_catalog"] is False
+        assert source["exact_historical_market_line_verified"] is False
+        assert source["pregame_model_feature_eligible"] is False
+        assert source["probability_publishable"] is False
+        assert source["can_execute"] is False
+        for purpose in ("HISTORY", "MARKET"):
+            assert "ODDSHARVESTER_ODDSPORTAL" not in {
+                r["source_id"] for r in compile_free_source_plan(sport, purpose)["sources"]
+            }
+
+
+def test_nflverse_close_proxy_and_soccer_archive_remain_non_authoritative():
+    nfl = compile_free_source_plan("NFL", "HISTORICAL_RESEARCH")
+    nflverse = next(r for r in nfl["sources"] if r["source_id"] == "NFLVERSE")
+    assert nflverse["exact_historical_market_line_verified"] is False
+    assert nflverse["source_rights_independently_attested"] is False
+    assert nflverse["pregame_model_feature_eligible"] is False
+
+    soccer = compile_free_source_plan("SOCCER", "HISTORICAL_RESEARCH")
+    source = next(r for r in soccer["sources"] if r["source_id"] == "FOOTBALL_DATA_UK")
+    assert source["integration"] == "REFERENCE_ONLY_NO_ACQUISITION"
+    assert source["rights_state"] == "PRIVATE_NONCOMMERCIAL_NO_AUTOMATED_AI_TRAINING"
+    assert source["source_rights_independently_attested"] is False
+    assert source["training_authorized_by_catalog"] is False
+    assert source["exact_historical_market_line_verified"] is False
+    assert source["can_execute"] is False
+    assert "FOOTBALL_DATA_UK" not in {
+        r["source_id"] for r in compile_free_source_plan("SOCCER", "MARKET")["sources"]
+    }
