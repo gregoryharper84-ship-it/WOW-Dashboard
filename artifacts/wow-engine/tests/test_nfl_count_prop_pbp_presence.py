@@ -310,3 +310,70 @@ def test_ftn_source_missing_offense_field_fails_closed(monkeypatch):
         mod.read_verified_ftn_2025_offense_presence(
             open_url=lambda *a, **k: FTNResponse(corrupt),
         )
+
+
+def test_ftn_default_opener_untrusted_redirect_is_scoped_to_ftn():
+    """Failure before any body is received uses the FTN-specific reason."""
+    def untrusted(*args, **kwargs):
+        raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED")
+
+    with pytest.raises(ValueError, match="^NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED$"):
+        mod.read_verified_ftn_2025_offense_presence(open_url=untrusted)
+
+
+def test_ftn_default_opener_unrelated_value_error_keeps_original_cause():
+    """A nonredirect source validation failure must not be mislabeled."""
+    def other(*args, **kwargs):
+        raise ValueError("NFL_PROP_ANOTHER_SOURCE_FAILURE")
+
+    with pytest.raises(ValueError, match="^NFL_PROP_ANOTHER_SOURCE_FAILURE$"):
+        mod.read_verified_ftn_2025_offense_presence(open_url=other)
+
+
+def test_ftn_stream_fails_after_partial_read_with_typed_network_hold(monkeypatch):
+    """Network termination after valid prefix bytes never becomes a source row."""
+    content = _ftn_source(monkeypatch)
+
+    class BrokenFTNStream(FTNResponse):
+        def __init__(self, payload):
+            super().__init__(payload)
+            self.calls = 0
+
+        def read(self, size=-1):
+            self.calls += 1
+            if self.calls == 2:
+                raise OSError("connection reset after first chunk")
+            return super().read(size)
+
+    with pytest.raises(ValueError, match="^NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE$"):
+        mod.read_verified_ftn_2025_offense_presence(
+            open_url=lambda *a, **k: BrokenFTNStream(content),
+        )
+
+
+@pytest.mark.parametrize("observation", [
+    {"pbp_actor_id_alignment_observed": False,
+     "pbp_positive_opportunity_control": {"pbp_actor_observed": 0}},
+    {"pbp_actor_id_alignment_observed": True,
+     "pbp_positive_opportunity_control": {"pbp_actor_observed": 0}},
+    {"pbp_actor_id_alignment_observed": True,
+     "pbp_positive_opportunity_control": None},
+    {"pbp_actor_id_alignment_observed": True,
+     "pbp_positive_opportunity_control": {"pbp_actor_observed": True}},
+    {},
+])
+def test_ftn_negative_presence_reporting_requires_positive_identity_alignment(observation):
+    """No negative-presence report is permitted without an observed active control."""
+    with pytest.raises(ValueError, match="HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY"):
+        mod.require_ftn_positive_identity_control(observation)
+
+
+def test_ftn_verified_positive_identity_control_only_enables_research_report():
+    """Identity validation is necessary but never a count-label clearance."""
+    mod.require_ftn_positive_identity_control({
+        "pbp_actor_id_alignment_observed": True,
+        "pbp_positive_opportunity_control": {"pbp_actor_observed": 1},
+        "missing_actor_means_zero": False,
+        "can_execute": False,
+    })
+    assert mod.CAN_EXECUTE is False
