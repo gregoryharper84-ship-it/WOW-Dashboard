@@ -7,7 +7,7 @@ sample index across outcomes preserves dependence already present in that source
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from math import isfinite
 from re import fullmatch
 from typing import Mapping, Sequence
@@ -47,7 +47,7 @@ def _scores(values: Sequence[int], name: str) -> tuple[int, ...]:
 def _as_utc(value: datetime, name: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone aware")
-    return value
+    return value.astimezone(timezone.utc)
 
 
 def _fractions(*, more: int, exact: int, less: int, count: int) -> dict[str, float]:
