@@ -31,6 +31,8 @@ def _play(**changes):
         "pass_attempt": 1, "complete_pass": 1, "pass_touchdown": 0,
         "rush_attempt": 0, "sack": 0, "qb_spike": 0,
         "two_point_attempt": 0, "passer_player_id": "00-0032222",
+        "penalty": 0, "penalty_type": "", "penalty_team": "",
+        "desc": "Synthetic test play",
         "receiver_player_id": "00-0031111", "rusher_player_id": "",
     }
     row.update(changes)
@@ -214,6 +216,8 @@ def test_residual_play_type_evidence_never_corrects_weekly_counts(
     assert result["actor_play_type_counts"] == {"no_play": 1}
     assert result["actor_flagged_event_rows"] == 1
     assert result["flagged_unmatched_play_types"] == {"no_play": 1}
+    assert result["flagged_excluded_examples"][0]["penalty_flag"] == "0"
+    assert result["flagged_excluded_examples"][0]["play_description_excerpt"] == "Synthetic test play"
     assert result["status"] == "HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED"
     assert result["missing_play_imputed"] is False
     assert result["can_execute"] is False
@@ -225,3 +229,25 @@ def test_residual_evidence_rejects_unapproved_stat(tmp_path):
             tmp_path / "does-not-matter.gz", 2024,
             "2024_01_BAL_KC", "00-0032222", "passing_tds",
         )
+
+
+def test_residual_penalty_context_is_bounded_and_never_a_stat_fix(
+    tmp_path, monkeypatch,
+):
+    """Pinned no_play penalties remain original evidence; no count correction."""
+    row = _play(
+        play_id=2274, play_type="no_play", pass_attempt=1, complete_pass=0,
+        penalty=1, penalty_type="Offensive Holding", penalty_team="PIT",
+        desc="Synthetic penalty nullifies the play; game count is not implied.",
+    )
+    source = _synthetic(tmp_path, monkeypatch, pd.DataFrame([row]))
+    result = mod.inspect_pinned_residual_actor_plays(
+        source, 2024, "2024_01_BAL_KC", "00-0032222", "attempts",
+    )
+    example = result["flagged_excluded_examples"][0]
+    assert example["penalty_type"] == "Offensive Holding"
+    assert example["penalty_team"] == "PIT"
+    assert example["penalty_flag"] == "1"
+    assert result["status"] == "HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED"
+    assert result["missing_play_imputed"] is False
+    assert result["can_execute"] is False

@@ -201,7 +201,8 @@ def inspect_pinned_residual_actor_plays(
     excluded = Counter()
     examples = []
     columns = ("game_id", "season_type", "play_id", "play_type", field,
-               flag, "sack", "qb_spike", "two_point_attempt")
+               flag, "sack", "qb_spike", "two_point_attempt",
+               "penalty", "penalty_type", "penalty_team", "desc")
     with gzip.GzipFile(fileobj=io.BytesIO(blob)) as source:
         try:
             chunks = pd.read_csv(source, usecols=list(dict.fromkeys(columns)),
@@ -231,6 +232,22 @@ def inspect_pinned_residual_actor_plays(
                                 "sack": row["sack"],
                                 "qb_spike": row["qb_spike"],
                                 "two_point_attempt": row["two_point_attempt"],
+                                "penalty_flag": (
+                                    None if pd.isna(row["penalty"])
+                                    else str(row["penalty"]).strip()
+                                ),
+                                "penalty_type": (
+                                    None if pd.isna(row["penalty_type"])
+                                    else str(row["penalty_type"]).strip()[:120]
+                                ),
+                                "penalty_team": (
+                                    None if pd.isna(row["penalty_team"])
+                                    else str(row["penalty_team"]).strip()[:20]
+                                ),
+                                "play_description_excerpt": (
+                                    None if pd.isna(row["desc"])
+                                    else str(row["desc"]).strip()[:180]
+                                ),
                             })
         except (ValueError, OSError, EOFError, pd.errors.ParserError) as exc:
             raise ValueError("NFL_PROP_PBP_SOURCE_UNREADABLE:" + str(season)) from exc

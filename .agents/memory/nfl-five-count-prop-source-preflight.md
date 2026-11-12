@@ -194,3 +194,14 @@
 - **prevention_artifact:** tests/test_nfl_count_prop_pbp_stats.py residual no_play exclusion and unsupported-stat negative checks; existing PR-only official-source receipt. New exact-head hosted validation required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None, no fitted candidate accepted or production serving route; can_execute=false, V17_TERMINAL_REDUCER.
+
+## No-play residual penalty context retained as evidence (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED
+- **mechanism:** Exact-head hosted run 43127994809 verified 698 tests and identified two one-play residual PBP differences: pass_attempts 33 vs 32 for player GSIS 00-0023459 in 2025_02_SEA_PIT, `no_play` at play_id=3686; carries 1 vs 0 for GSIS 00-0033854 in 2024_15_MIA_HOU, `no_play` at play_id=2274. The source's PBP play_type alone cannot establish official penalty/void settlement. The same verified source revealed 90 all-zero identity-quarantined source rows, exactly 18 in each of 2021–2025, all still pending independent semantic adjudication.
+- **detection_point:** Residual positive-weekly event trace after PBP spike/kneel source-definition corrections and before candidate count-label construction.
+- **fix:** Preserve original flag/penalty type/team/description excerpt (bounded) in the two pinned-source residual receipts without assigning an extra play. Repair canonical failure-code table row continuity. No change to candidate probability fit, qualification, model routing or source labels.
+- **prevention_artifact:** `test_residual_penalty_context_is_bounded_and_never_a_stat_fix`, and existing `test_residual_play_type_evidence_never_corrects_weekly_counts`. Hosted exact-head checks required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605 ; https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/43127994809
+- **production_evidence:** None; independent source-rights and SIRT semantic acceptance absent, no fit/certification/activation or deploy, can_execute=false and V17_TERMINAL_REDUCER.
