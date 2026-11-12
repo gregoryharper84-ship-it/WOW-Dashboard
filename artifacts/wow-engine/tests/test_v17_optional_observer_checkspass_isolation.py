@@ -1,0 +1,109 @@
+"""P0 #2422: optional main-scoped observers must not gate Render checksPass.
+
+GitHub attaches every job's check run to the workflow-run head SHA, which for
+``schedule``/``workflow_run`` events is the protected ``main`` tip. Render's
+``checksPass`` trigger refuses to deploy while any check run on that SHA is
+``failure``, so an autonomous/optional observer that ends red blocks deploys of
+already-merged commits it never touched.
+
+``jobs.<id>.continue-on-error`` does *not* fix this: the job's check run still
+concludes ``failure`` (the workflow run merely reports success). Only a step
+whose final conclusion is ``success`` keeps the job check green. These tests
+therefore pin step-level isolation for the optional observers and require that
+their authentic typed reasons remain in the durable step summary.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[3]
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+# Optional, autonomous jobs that never carry merge/deploy authority and whose
+# check runs land on the protected-main SHA they did not produce.
+OPTIONAL_MAIN_SCOPED_JOBS: dict[str, tuple[str, ...]] = {
+    "wow-v17-scout-persist-resume.yml": ("resume-persistence",),
+    "wow-v17-lean-production-readback.yml": ("production-readback",),
+    "wow-v17-main-verification-reconciler.yml": ("reconcile",),
+    "wow-v17-engineering-auto-repair.yml": (
+        "discover",
+        "adoption-readonly-preflight",
+        "adopt-reviewed-owner-source",
+        "route-hold-findings",
+    ),
+}
+
+
+def _workflow(name: str) -> dict:
+    document = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+    assert isinstance(document, dict), name
+    return document
+
+
+def test_optional_main_scoped_observers_cannot_fail_a_main_commit_check() -> None:
+    for name, jobs in OPTIONAL_MAIN_SCOPED_JOBS.items():
+        document = _workflow(name)
+        for job in jobs:
+            steps = document["jobs"][job]["steps"]
+            assert steps, f"{name}:{job} has no steps"
+            exposed = [
+                step.get("name")
+                for step in steps
+                if step.get("continue-on-error") is not True
+            ]
+            assert not exposed, (
+                f"{name}:{job} can still publish a failing check on protected main: {exposed}"
+            )
+
+
+def test_optional_observers_keep_authentic_typed_reasons() -> None:
+    """Isolation must not drop the typed HOLD/FAIL reason or its durability."""
+    for name, jobs in OPTIONAL_MAIN_SCOPED_JOBS.items():
+        document = _workflow(name)
+        for job in jobs:
+            scripts = "\n".join(
+                str(step.get("run", "")) for step in document["jobs"][job]["steps"]
+            )
+            assert "GITHUB_STEP_SUMMARY" in scripts, (
+                f"{name}:{job} no longer records its outcome in the durable step summary"
+            )
+            typed = ("::error::", "_HOLD", "_INCOMPLETE", "_UNAVAILABLE", "_UNCONFIRMED")
+            assert any(marker in scripts for marker in typed), (
+                f"{name}:{job} no longer emits a typed reason"
+            )
+
+
+def test_scout_recovery_never_acts_on_an_unresolved_source() -> None:
+    """Isolation must not let later steps dispatch a writer with no source id."""
+    document = _workflow("wow-v17-scout-persist-resume.yml")
+    steps = document["jobs"]["resume-persistence"]["steps"]
+    dependent = [
+        "Verify recoverable discovery artifact exists",
+        "Capture persistence receipt baseline",
+        "Allow native workflow_run persistence to win first",
+        "Check for existing persistence receipt",
+        "Detect same-source persistence writer state",
+        "Explicitly resume Scout persistence",
+        "Verify persistence receipt appears",
+    ]
+    by_name = {step["name"]: step for step in steps}
+    for name in dependent:
+        condition = str(by_name[name].get("if", ""))
+        assert "steps.source.outputs.run_id != ''" in condition, (
+            f"{name} can run without a resolved source run id"
+        )
+
+
+def test_required_merge_gates_are_not_blanket_suppressed() -> None:
+    """Isolation is limited to optional observers; merge gates stay fail-closed."""
+    for gate in ("wow-verify.yml", "wow-engine-verify.yml"):
+        document = _workflow(gate)
+        for job, spec in document["jobs"].items():
+            steps = spec.get("steps") or []
+            if not steps:
+                continue
+            assert any(step.get("continue-on-error") is not True for step in steps), (
+                f"{gate}:{job} fully suppresses failures and can no longer gate a merge"
+            )
