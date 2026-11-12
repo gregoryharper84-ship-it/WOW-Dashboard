@@ -362,3 +362,37 @@ def test_per_file_schema_contract_is_mandatory():
         "sport", "season", "observation_id", "event_id", "event_start_epoch",
         "feature_available_epoch", "is_market_observation", "quote_captured_epoch",
     })
+
+
+def test_missing_nonmarket_quote_column_in_second_parquet_is_schema_hold(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    root = tmp_path / "frozen"
+    root.mkdir()
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.execute("""CREATE TABLE complete AS SELECT 'NBA' AS sport,
+            2025::INTEGER AS season, 'obs-1' AS observation_id,
+            'event-1' AS event_id, 1730000000::BIGINT AS event_start_epoch,
+            1729999900::BIGINT AS feature_available_epoch,
+            TRUE::BOOLEAN AS is_market_observation,
+            1729999000::BIGINT AS quote_captured_epoch""")
+        con.execute("""CREATE TABLE incomplete AS SELECT 'NBA' AS sport,
+            2025::INTEGER AS season, 'obs-2' AS observation_id,
+            'event-2' AS event_id, 1730000000::BIGINT AS event_start_epoch,
+            1729999900::BIGINT AS feature_available_epoch,
+            FALSE::BOOLEAN AS is_market_observation""")
+        for table, name in (("complete", "a.parquet"), ("incomplete", "b.parquet")):
+            con.execute(f"COPY {table} TO '{root / name}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema": m.SCHEMA, "can_execute": False, "dataset_id": "nba_2025",
+        "sport": "NBA", "season": 2025,
+        "files": [
+            {"path": name, "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest()}
+            for name in ("a.parquet", "b.parquet")
+        ],
+    }))
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_SCHEMA_INVALID"):
+        m.audit(manifest_path, root)
