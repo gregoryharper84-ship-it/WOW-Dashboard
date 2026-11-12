@@ -1,9 +1,7 @@
 """Adversarial proof regression; no external time service and no keyless signing."""
-from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 from hashlib import sha256
 import json
-from pathlib import Path
 from unittest.mock import patch
 import pytest
 from v17 import pregame_attestation as p
@@ -52,6 +50,10 @@ def test_statement_binds_exact_canonical_frozen_receipt():
 
 @pytest.mark.parametrize("override", [
     {"selected_side": "UNKNOWN"},
+    {"selected_side": []},
+    {"sport": {}},
+    {"market_type": []},
+    {"model_certification_status": []},
     {"can_execute": True},
     {"probability_publishable": "false"},
     {"terminal_authority": "ATTACKER"},

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
 CAN_EXECUTE = False
@@ -138,11 +139,11 @@ def validate_prediction(obj: Any) -> dict[str, Any]:
                   "quote_source_id"):
         if not _text(obj[field]) or len(obj[field]) > 256:
             _reject("RECEIPT_IDENTITY_INVALID")
-    if obj["home_team"] == obj["away_team"] or obj["selected_side"] not in {"HOME", "AWAY"}:
+    if obj["home_team"] == obj["away_team"] or not isinstance(obj["selected_side"], str) or obj["selected_side"] not in {"HOME", "AWAY"}:
         _reject("RECEIPT_SIDE_OR_TEAMS_INVALID")
     sport = obj["sport"]
     market = obj["market_type"]
-    if sport not in MARKETS or MARKETS[sport].get(market) != obj["settlement_basis"]:
+    if not isinstance(sport, str) or not isinstance(market, str) or sport not in MARKETS or MARKETS[sport].get(market) != obj["settlement_basis"]:
         _reject("RECEIPT_MARKET_SETTLEMENT_MISMATCH")
     _decimal(obj["signed_home_line"])
     for field in ("model_artifact_sha256", "feature_snapshot_sha256", "quote_receipt_sha256"):
@@ -167,7 +168,7 @@ def validate_prediction(obj: Any) -> dict[str, Any]:
             _reject("RECEIPT_BOUNDS_NOT_INTERIOR")
     state = obj["model_certification_status"]
     ref = obj["certification_reference_id"]
-    if state not in {"UNQUALIFIED", "CERTIFIED_FITTED"}:
+    if not isinstance(state, str) or state not in {"UNQUALIFIED", "CERTIFIED_FITTED"}:
         _reject("RECEIPT_CERTIFICATION_LABEL_INVALID")
     if ref is not None and (not _text(ref) or len(ref) > 256):
         _reject("RECEIPT_CERTIFICATION_REFERENCE_INVALID")
@@ -246,8 +247,9 @@ def verify(
         "card_admission_eligible": False, "can_execute": False,
     }
     try:
-        prediction = validate_statement(Path(frozen).read_bytes(),
-                                        Path(statement).read_bytes())
+        frozen_bytes = Path(frozen).read_bytes()
+        statement_bytes = Path(statement).read_bytes()
+        prediction = validate_statement(frozen_bytes, statement_bytes)
         if not _text(signer) or not _text(issuer):
             _reject("RECEIPT_SIGNER_POLICY_NOT_PINNED")
         for field, path in (artifact_paths or {}).items():
@@ -256,14 +258,20 @@ def verify(
                 _reject("RECEIPT_ARTIFACT_NAME_INVALID")
             if sha256(Path(path).read_bytes()).hexdigest() != prediction[field]:
                 _reject("RECEIPT_REFERENCED_ARTIFACT_HASH_MISMATCH")
-        cmd = ["cosign", "verify-blob", "--bundle", bundle,
-               "--certificate-identity", signer, "--certificate-oidc-issuer", issuer,
-               statement]
-        if _run(cmd).returncode != 0:
-            _reject("RECEIPT_COSIGN_IDENTITY_OR_SIGNATURE_INVALID")
-        if not tsa_response or not tsa_roots:
-            _reject("RECEIPT_INDEPENDENT_PREGAME_TIME_PROOF_MISSING")
-        issued = _tsa_time(tsa_response, tsa_roots, statement, tsa_intermediates)
+        # Both independent verifiers consume the same held, already-validated
+        # byte snapshot; a mutable source path cannot be swapped between calls.
+        with TemporaryDirectory(prefix="wow-v17-proof-") as directory:
+            frozen_statement = Path(directory) / "statement.intoto.json"
+            frozen_statement.write_bytes(statement_bytes)
+            cmd = ["cosign", "verify-blob", "--bundle", bundle,
+                   "--certificate-identity", signer, "--certificate-oidc-issuer", issuer,
+                   str(frozen_statement)]
+            if _run(cmd).returncode != 0:
+                _reject("RECEIPT_COSIGN_IDENTITY_OR_SIGNATURE_INVALID")
+            if not tsa_response or not tsa_roots:
+                _reject("RECEIPT_INDEPENDENT_PREGAME_TIME_PROOF_MISSING")
+            issued = _tsa_time(tsa_response, tsa_roots, str(frozen_statement),
+                               tsa_intermediates)
         frozen_at = _utc(prediction["frozen_at_utc"])
         kickoff = _utc(prediction["event_start_time_utc"])
         if not frozen_at <= issued < kickoff:
