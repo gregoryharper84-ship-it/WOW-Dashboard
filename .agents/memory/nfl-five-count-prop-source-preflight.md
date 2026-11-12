@@ -271,3 +271,14 @@
 - **prevention_artifact:** Three tests for separate weekly published digest, wrong checksum, and sparse source PFR coverage; existing PR-only hosted source receipt, no new workflow/gate.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. Historical 2021–24 roster files remain unverified because upstream GitHub release metadata lacks published hashes. can_execute=false, V17_TERMINAL_REDUCER.
+
+## Direct roster inspector historical-season spoofing (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_ROSTER_SCHEMA_INVALID
+- **mechanism:** `read_pinned_2025_roster` validates season before returning, but `inspect_roster_id_candidates` can be called independently on arbitrary input. Without its own guard a 2024 row could be presented as a 2025 exact pair, despite no pinned 2024 asset.
+- **detection_point:** CodeRabbit direct-call negative review after frozen 2025 season/weekly roster probe was added; should have been found when exposing a public read-only helper.
+- **fix:** Require every direct-inspector roster row to have exact non-null season 2025. Fail closed using existing NFL_PROP_ROSTER_SCHEMA_INVALID; no new gate or status code.
+- **prevention_artifact:** Three parameterized negative tests for season 2024/2026/null in tests/test_nfl_count_prop_roster_crosswalk.py. Hosted exact-head replay required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no roster candidate accepted or applied, can_execute=false, V17_TERMINAL_REDUCER.

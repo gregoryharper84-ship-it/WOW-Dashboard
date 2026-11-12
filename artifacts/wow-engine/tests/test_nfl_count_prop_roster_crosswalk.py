@@ -154,3 +154,14 @@ def test_roster_source_column_coverage_does_not_prove_nonparticipation():
     assert result["source_valid_gsis_rows"] == 1
     assert result["source_exact_pair_candidate_count"] == 0
     assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("season", ["2024", None, "2026"])
+def test_direct_roster_inspector_rejects_wrong_or_null_season(season):
+    """Even direct callers cannot launder a non-2025 source as 2025."""
+    roster = pd.DataFrame([{
+        "pfr_id": "CartNa00", "gsis_id": "00-0099999",
+        "season": season, "position": "RB", "team": "ATL",
+    }])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_roster_id_candidates(roster, ["CartNa00"])

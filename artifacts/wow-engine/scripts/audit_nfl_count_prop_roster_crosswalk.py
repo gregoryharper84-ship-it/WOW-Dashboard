@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two digest-pinned 2025 nflverse roster crosswalk diagnostics, read-only.
 
-The only source admitted here has a published release SHA-256. Historical
+Only assets with independently published release SHA-256 values are admitted. Historical
 roster assets lacking an independently reviewed checksum are not silently
 substituted. Candidate ID bridges NEVER alter fitted/serving player identity.
 """
@@ -90,6 +90,11 @@ def inspect_roster_id_candidates(
 ) -> dict[str, object]:
     """Enumerate exact ID pairs, never invent or apply a player identity."""
     if set(CROSSWALK_FIELDS) - set(roster.columns):
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
+    # This function is public to other research-only callers; do not trust
+    # that they went through the pinned 2025 reader first.
+    season = roster["season"].astype("string")
+    if not season.eq("2025").fillna(False).all():
         raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID")
     targets = sorted(set(target_pfr_ids))
     if not targets or any(not x or x != x.strip() for x in targets):
