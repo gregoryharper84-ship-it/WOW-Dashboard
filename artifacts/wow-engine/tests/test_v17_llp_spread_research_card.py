@@ -262,3 +262,24 @@ def test_tennis_match_winner_may_differ_from_game_handicap_units():
     assert report['card_complete'] is True
     assert report['rows'][0]['grade_status'] == 'LOSS'
     assert report['settlement_complete'] is True
+
+
+def test_tennis_deciding_match_tiebreak_requires_handicap_rule_proof():
+    p = pick('TENNIS', line=-1.5)
+    f = final('TENNIS', home_games=12, away_games=9,
+              deciding_match_tiebreak=True, provider_handicap_rule_verified=False)
+    r = audit([event('TENNIS')], [p], [f])
+    assert r['rows'][0]['grade_status'] == 'HELD'
+    assert 'TENNIS_MATCH_TIEBREAK_SETTLEMENT_UNVERIFIED' in r['rows'][0]['blockers']
+    assert r['settlement_complete'] is False
+
+
+def test_mlb_shortened_game_requires_independent_runline_rule():
+    p=pick('MLB',line=-1.5)
+    f=final('MLB',hs=4,aws=2,shortened_game=True)
+    r=audit([event('MLB')],[p],[f])
+    assert r['rows'][0]['grade_status']=='HELD'
+    assert 'SHORTENED_GAME_SETTLEMENT_UNVERIFIED' in r['rows'][0]['blockers']
+    f['provider_settlement_rule_verified']=True
+    r=audit([event('MLB')],[p],[f])
+    assert r['rows'][0]['grade_status']=='WIN'
