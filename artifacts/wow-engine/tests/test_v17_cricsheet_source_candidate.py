@@ -14,7 +14,7 @@ from v17.cricsheet_source_candidate import (
 
 
 def sample(*, outcome=None, teams=None, date="2026-08-01", match_type="T20"):
-    return {"info": {"match_type": match_type, "teams": teams or ["A", "B"],
+    return {"info": {"match_type": match_type, "team_type": "international", "teams": teams or ["A", "B"],
                      "dates": [date], "outcome": outcome or {"winner": "A"}},
             "innings": []}
 
@@ -110,6 +110,17 @@ def test_cli_creates_only_receipt_and_does_not_overwrite(tmp_path):
     with pytest.raises(FileExistsError):
         main(["--archive", str(raw), "--receipt", str(receipt)])
 
+
+
+def test_domestic_t20_cannot_be_mislabeled_international():
+    domestic = sample(match_type="T20")
+    domestic["info"]["team_type"] = "club"
+    with pytest.raises(SourceCandidateHold, match="SOURCE_ARCHIVE_INTERNATIONAL_SCOPE_UNVERIFIED"):
+        audit_t20_archive(archive(match_items=[("42.json", domestic)]))
+    no_team_type = sample(match_type="IT20")
+    del no_team_type["info"]["team_type"]
+    with pytest.raises(SourceCandidateHold, match="SOURCE_ARCHIVE_INTERNATIONAL_SCOPE_UNVERIFIED"):
+        audit_t20_archive(archive(match_items=[("43.json", no_team_type)]))
 
 
 def test_damaged_or_unsupported_license_is_typed_hold(monkeypatch):
