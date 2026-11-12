@@ -20,13 +20,37 @@ jobs:
 
     steps:
       - name: Checkout protected main
+        id: checkout_main
+        continue-on-error: true
         uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Resolve checked-out source SHA
+        id: checkout_sha
+        continue-on-error: true
+        shell: bash
+        env:
+          CHECKOUT_MAIN_OUTCOME: ${{ steps.checkout_main.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$CHECKOUT_MAIN_OUTCOME" != "success" ]; then
+            echo "::error::GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED: main checkout action did not succeed."
+            echo "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ ! "$checked_out_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED: checkout did not produce a valid SHA."
+            echo "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "sha=$checked_out_sha" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
+        continue-on-error: true
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -34,55 +58,78 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
 
       - name: Install governed engine test dependencies
+        continue-on-error: true
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r artifacts/wow-engine/requirements.txt
 
       - name: Run deterministic product-acceptance contract tests
+        id: contract_tests
+        continue-on-error: true
         run: |
           python -m pytest -q \
             artifacts/wow-engine/test_v17_engineering_effectiveness.py \
             artifacts/wow-engine/tests/test_v17_user_journey_recovery_contract.py
 
       - name: Read declared golden user-journey health
+        continue-on-error: true
         id: health
         shell: bash
         run: |
           set -euo pipefail
-          payload=$(python artifacts/wow-engine/v17/engineering_effectiveness.py health \
-            artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md)
-          status=$(jq -r '.user_journey_status' <<<"$payload")
+          if ! payload=$(python artifacts/wow-engine/v17/engineering_effectiveness.py health \
+            artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md); then
+            echo "status=GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE" >> "$GITHUB_OUTPUT"
+            echo "::error::GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE: declared journey health could not be read."
+            echo "GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! status=$(jq -er '.user_journey_status | select(type == "string" and length > 0)' <<<"$payload"); then
+            echo "status=GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE" >> "$GITHUB_OUTPUT"
+            echo "::error::GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE: declared journey health missing or invalid."
+            echo "GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$payload" | tee "$RUNNER_TEMP/product-health.json"
 
       - name: Verify production backend liveness without inferring product PASS
+        continue-on-error: true
         id: backend
         shell: bash
         run: |
           set -euo pipefail
+          curl_status=0
           code=$(curl --silent --show-error --location \
             --connect-timeout 10 --max-time 30 \
             --output "$RUNNER_TEMP/health-live.json" \
             --write-out '%{http_code}' \
-            https://wow-governed-probability-engine.onrender.com/health/live || true)
-          if [ "$code" = "200" ]; then
+            https://wow-governed-probability-engine.onrender.com/health/live) || curl_status=$?
+          if [ "$curl_status" -eq 0 ] && [ "$code" = "200" ]; then
             echo "status=PASS" >> "$GITHUB_OUTPUT"
           else
             echo "status=FAIL" >> "$GITHUB_OUTPUT"
+            echo "::error::GOLDEN_ACCEPTANCE_BACKEND_LIVENESS_UNAVAILABLE: GET /health/live returned ${code:-no-response}."
+            echo "GOLDEN_ACCEPTANCE_BACKEND_LIVENESS_UNAVAILABLE http=${code:-none} can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "backend_health_http=$code" >> "$GITHUB_STEP_SUMMARY"
+          echo "backend_health_http=${code:-none} curl_exit=$curl_status" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce false-green boundary
+        continue-on-error: true
         shell: bash
         env:
           PRODUCT_STATUS: ${{ steps.health.outputs.status }}
+          HEALTH_READ_OUTCOME: ${{ steps.health.outcome }}
           BACKEND_STATUS: ${{ steps.backend.outputs.status }}
+          CONTRACT_TEST_OUTCOME: ${{ steps.contract_tests.outcome }}
         run: |
           set -euo pipefail
           {
             echo "# WOW V17 Golden Product Acceptance"
-            echo "- repository_declared_user_journey: ${PRODUCT_STATUS}"
+            echo "- repository_declared_user_journey: ${PRODUCT_STATUS:-GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE}"
+            echo "- health_read_outcome: ${HEALTH_READ_OUTCOME}"
             echo "- backend_liveness: ${BACKEND_STATUS}"
+            echo "- contract_tests_outcome: ${CONTRACT_TEST_OUTCOME}"
             echo "- live-host rule: backend/CI success alone can never produce USER_JOURNEY_HEALTH=PASS"
             echo "- required live-host identity: WOW_BETTING_ENGINE"
             echo "- required action: scoreWowPickRequest"
@@ -90,19 +137,40 @@ jobs:
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [ "$CONTRACT_TEST_OUTCOME" != "success" ]; then
+            echo "::error::GOLDEN_ACCEPTANCE_CONTRACT_TESTS_FAILED: deterministic product contract tests did not pass."
+          fi
           if [ "$PRODUCT_STATUS" != "PASS" ]; then
             echo "::notice::Golden user journey remains fail-closed. Discretionary model-improvement work must remain preempted."
           fi
 
       - name: Record product-acceptance receipt
+        continue-on-error: true
         shell: bash
         env:
           PRODUCT_STATUS: ${{ steps.health.outputs.status }}
+          HEALTH_READ_OUTCOME: ${{ steps.health.outcome }}
+          CHECKED_OUT_SHA: ${{ steps.checkout_sha.outputs.sha }}
+          CHECKOUT_MAIN_OUTCOME: ${{ steps.checkout_main.outcome }}
+          CHECKOUT_SHA_OUTCOME: ${{ steps.checkout_sha.outcome }}
           BACKEND_STATUS: ${{ steps.backend.outputs.status }}
+          CONTRACT_TEST_OUTCOME: ${{ steps.contract_tests.outcome }}
         run: |
+          set -euo pipefail
+          checked_out_sha="${CHECKED_OUT_SHA:-}"
+          if [ "$CHECKOUT_MAIN_OUTCOME" != "success" ] || [ "$CHECKOUT_SHA_OUTCOME" != "success" ] || [[ ! "$checked_out_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            checked_out_sha="UNVERIFIED"
+            echo "::error::GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED: receipt cannot identify checked-out source."
+            echo "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          product_status="${PRODUCT_STATUS:-GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE}"
           jq -n \
-            --arg product_status "$PRODUCT_STATUS" \
+            --arg product_status "$product_status" \
             --arg backend_status "$BACKEND_STATUS" \
-            --arg sha "$GITHUB_SHA" \
-            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,backend_liveness:$backend_status,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
+            --arg contract_tests_outcome "$CONTRACT_TEST_OUTCOME" \
+            --arg health_read_outcome "$HEALTH_READ_OUTCOME" \
+            --arg checkout_main_outcome "$CHECKOUT_MAIN_OUTCOME" \
+            --arg checkout_sha_outcome "$CHECKOUT_SHA_OUTCOME" \
+            --arg sha "$checked_out_sha" \
+            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,health_read_outcome:$health_read_outcome,checkout_main_outcome:$checkout_main_outcome,checkout_sha_outcome:$checkout_sha_outcome,backend_liveness:$backend_status,contract_tests_outcome:$contract_tests_outcome,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
             | tee "$RUNNER_TEMP/golden-product-acceptance.json"
