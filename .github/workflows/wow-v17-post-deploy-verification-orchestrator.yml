@@ -297,10 +297,11 @@ jobs:
         env:
           MATRIX_OUTCOME: ${{ steps.receipt_matrix.outcome }}
           FINAL_READBACK_OUTCOME: ${{ steps.final-readback.outcome }}
+          FINAL_DEPLOY_PENDING: ${{ steps.final-readback.outputs.deploy_pending }}
           DEPLOY_PENDING: ${{ needs.deployment-readback.outputs.deploy_pending }}
         run: |
-          if [ "$MATRIX_OUTCOME" != "success" ] || [ "$FINAL_READBACK_OUTCOME" != "success" ]; then
-            echo "POST_DEPLOY_ACCEPTANCE_HOLD matrix=$MATRIX_OUTCOME final_readback=$FINAL_READBACK_OUTCOME pending=$DEPLOY_PENDING production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MATRIX_OUTCOME" != "success" ] || [ "$FINAL_READBACK_OUTCOME" != "success" ] || [ "${FINAL_DEPLOY_PENDING:-}" = "true" ]; then
+            echo "POST_DEPLOY_ACCEPTANCE_HOLD matrix=$MATRIX_OUTCOME final_readback=$FINAL_READBACK_OUTCOME initial_pending=$DEPLOY_PENDING final_pending=${FINAL_DEPLOY_PENDING:-missing} production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "POST_DEPLOY_LANES_OBSERVED_SIRT_PENDING production_verified=false can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           fi
