@@ -12,10 +12,13 @@ import re
 from pathlib import Path
 import sys
 
-# GitHub invokes this file directly, not with the engine root on PYTHONPATH.
-# Add only the canonical package parent for the existing v17 validator import.
-if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# GitHub invokes this as a script. Some tests also load it by an absolute
+# file spec without a package context. Both need the existing v17 validator.
+# Normal v17 package imports must not mutate the interpreter's sys.path.
+if __name__ == "__main__" or not __package__:
+    _engine_root = str(Path(__file__).resolve().parent.parent)
+    if _engine_root not in sys.path:
+        sys.path.insert(0, _engine_root)
 
 # Accept the canonical "#123" form AND the literal existing worker PR
 # template: echo "Incident: \`$INCIDENT\`" (which produces "Incident: \`123\`").
