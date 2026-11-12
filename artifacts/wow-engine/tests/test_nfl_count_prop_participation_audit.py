@@ -78,6 +78,57 @@ def test_unmapped_identity_is_stratified_without_guessing_gsis_id(sample_cohort)
     assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
 
 
+def test_missing_pfr_record_never_becomes_a_gsis_guess(sample_cohort):
+    stats, snaps, players = sample_cohort
+    players = players.loc[players.pfr_id != "PlayerA01"].copy()
+    receipt = reconcile_player_games(stats, snaps, players)
+    assert receipt["unmapped_pfr_player_games"] == 1
+    assert receipt["unmapped_distinct_pfr_ids"] == 1
+    assert receipt["unmapped_gap_cause_player_games"] == {
+        "PFR_NOT_IN_PINNED_PLAYERS": 1,
+        "PFR_PRESENT_GSIS_UNAVAILABLE": 0,
+    }
+    assert receipt["unmapped_examples"][0]["identity_gap_type"] == (
+        "PFR_NOT_IN_PINNED_PLAYERS"
+    )
+    assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+    assert receipt["can_execute"] is False
+
+
+def test_present_pfr_without_gsis_is_separate_unknown_identity(sample_cohort):
+    stats, snaps, players = sample_cohort
+    players = players.copy()
+    players.loc[players.pfr_id.eq("PlayerA01"), "gsis_id"] = None
+    receipt = reconcile_player_games(stats, snaps, players)
+    assert receipt["unmapped_pfr_player_games"] == 1
+    assert receipt["unmapped_gap_cause_player_games"] == {
+        "PFR_NOT_IN_PINNED_PLAYERS": 0,
+        "PFR_PRESENT_GSIS_UNAVAILABLE": 1,
+    }
+    assert receipt["unmapped_gap_cause_distinct_ids"][
+        "PFR_PRESENT_GSIS_UNAVAILABLE"
+    ] == 1
+    assert receipt["player_games_matched"] == 1
+    assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+
+
+def test_repeated_pfr_gap_counts_games_and_distinct_ids_separately(sample_cohort):
+    stats, snaps, players = sample_cohort
+    extra = snaps.loc[snaps.pfr_player_id.eq("PlayerA01")].copy()
+    extra["game_id"] = "2024_02_BAL_LV"
+    extra["week"] = 2
+    snaps = pd.concat([snaps, extra], ignore_index=True)
+    players = players.loc[players.pfr_id != "PlayerA01"]
+    receipt = reconcile_player_games(stats, snaps, players)
+    assert receipt["unmapped_pfr_player_games"] == 2
+    assert receipt["unmapped_distinct_pfr_ids"] == 1
+    assert receipt["unmapped_gap_cause_distinct_ids"][
+        "PFR_NOT_IN_PINNED_PLAYERS"
+    ] == 1
+    assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
+    assert receipt["independent_semantic_acceptance"] is False
+
+
 def test_missing_eight_snap_participant_game_stays_unknown(sample_cohort):
     """A player who logged eight offensive snaps cannot disappear as a zero."""
     stats, snaps, players = sample_cohort

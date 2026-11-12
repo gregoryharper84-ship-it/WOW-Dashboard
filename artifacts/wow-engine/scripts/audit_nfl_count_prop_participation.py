@@ -121,6 +121,35 @@ def reconcile_player_games(
     missing = checked.loc[checked["_present"].eq("left_only")]
     examples = missing.loc[:, ["season", "week", "game_id", "pfr_player_id", "gsis_id", "offense_snaps"]]
     unknown_examples = unmapped.loc[:, ["season", "week", "game_id", "pfr_player_id", "offense_snaps"]]
+    # Distinguish an entirely unknown PFR key from a PFR record that exists
+    # but has no usable GSIS bridge. Neither is a defensible player mapping.
+    source_pfr = set(
+        players["pfr_id"].dropna().astype(str).str.strip().loc[
+            lambda ids: ids.ne("") & ~ids.str.upper().isin(("NA", "NAN", "NONE", "NULL"))
+        ]
+    )
+    unmapped = unmapped.copy()
+    unmapped["identity_gap_type"] = unmapped["pfr_player_id"].map(
+        lambda pfr: ("PFR_PRESENT_GSIS_UNAVAILABLE"
+                     if pfr in source_pfr else "PFR_NOT_IN_PINNED_PLAYERS")
+    )
+    gap_names = ("PFR_NOT_IN_PINNED_PLAYERS", "PFR_PRESENT_GSIS_UNAVAILABLE")
+    gap_counts = {
+        gap: int(unmapped["identity_gap_type"].eq(gap).sum())
+        for gap in gap_names
+    }
+    gap_distinct_ids = {
+        gap: int(unmapped.loc[
+            unmapped["identity_gap_type"].eq(gap), "pfr_player_id"
+        ].nunique())
+        for gap in gap_names
+    }
+    if sum(gap_counts.values()) != len(unmapped):
+        raise ValueError("NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT")
+    unknown_examples = unmapped.loc[:, [
+        "season", "week", "game_id", "pfr_player_id",
+        "offense_snaps", "identity_gap_type",
+    ]]
     # Diagnostic-only strata: isolate absent event rows from crosswalk gaps.
     # Never convert a missing participant-game into an observed zero count.
     matched = checked.loc[checked["_present"].eq("both")]
@@ -155,6 +184,9 @@ def reconcile_player_games(
         "player_games_matched": int(len(checked) - len(missing)),
         "missing_player_games": int(len(missing)),
         "unmapped_pfr_player_games": int(len(unmapped)),
+        "unmapped_distinct_pfr_ids": int(unmapped["pfr_player_id"].nunique()),
+        "unmapped_gap_cause_player_games": gap_counts,
+        "unmapped_gap_cause_distinct_ids": gap_distinct_ids,
         "participation_breakdown": strata,
         "missing_examples": examples.head(20).to_dict(orient="records"),
         "unmapped_examples": unknown_examples.head(20).to_dict(orient="records"),

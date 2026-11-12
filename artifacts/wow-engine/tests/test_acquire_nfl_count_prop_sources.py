@@ -247,6 +247,10 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             "offensive_participant_games": result["offensive_participant_games"],
             "missing_player_games": result["missing_player_games"],
             "unmapped_pfr_player_games": result["unmapped_pfr_player_games"],
+            "unmapped_distinct_pfr_ids": result["unmapped_distinct_pfr_ids"],
+            "unmapped_gap_cause_player_games": result["unmapped_gap_cause_player_games"],
+            "unmapped_gap_cause_distinct_ids": result["unmapped_gap_cause_distinct_ids"],
+            "unmapped_gap_examples": result["unmapped_examples"][:8],
             "participation_breakdown": result["participation_breakdown"],
             "missing_examples": result["missing_examples"][:2],
         }

@@ -216,3 +216,14 @@
 - **prevention_artifact:** Four negative/positive checks in tests/test_nfl_count_prop_pbp_stats.py; hosted exact-head replay required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; P/C research only, 0 new certified lanes, can_execute=false, V17_TERMINAL_REDUCER.
+
+## NFL missing PFR→GSIS exact-source diagnosis (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_UNRESOLVED_PARTICIPATION
+- **mechanism:** The verified five-season snap-positive cohort has 48 PFR identity-unmatched player-games. This can happen because the PFR ID is absent from pinned players.csv or because a PFR source row exists but its GSIS ID is blank; these predict different source repair tasks. Unmapped game count alone cannot show whether failures are concentrated in a few players.
+- **detection_point:** Immediately following the verified 48 player-game crosswalk gap receipt, before mapping identity into any model target or event.
+- **fix:** Add a read-only partition of unmatched player-games and distinct PFR IDs into PFR-not-in-pinned-players versus PFR-present-without-valid-GSIS, based on the same pinned source. Preserve all unmatched rows UNKNOWN and bound review examples.
+- **prevention_artifact:** test_missing_pfr_record_never_becomes_a_gsis_guess, test_present_pfr_without_gsis_is_separate_unknown_identity, test_repeated_pfr_gap_counts_games_and_distinct_ids_separately. Existing PR-only rapid regression will observe exact source categories.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. No inferred identity, zero count, fitted probability or protected merge; can_execute=false, V17_TERMINAL_REDUCER.
