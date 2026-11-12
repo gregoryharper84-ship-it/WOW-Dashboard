@@ -94,3 +94,32 @@ def test_mlb_unresolved_ninth_inning_ties_must_not_be_misrepresented_as_final():
             home_spread=-1.5, game_total=8.5, moneyline_tie_rule="NO_TIES",
             simulation_seed=seed,
         )
+
+
+def test_mlb_joint_replay_preflight_stays_select_only_and_fail_closed():
+    import re
+    from pathlib import Path
+
+    sql_path = Path(__file__).parents[1] / "v17" / "sql" / "mlb_joint_asof_replay_preflight_readonly.sql"
+    sql = sql_path.read_text(encoding="utf-8")
+    active_sql = "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+    assert active_sql.lstrip().upper().startswith("WITH SCORED AS (")
+    assert not re.search(
+        r"\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|CALL|DO|EXECUTE|MERGE)\b",
+        active_sql,
+        re.IGNORECASE,
+    )
+    for required in (
+        "s.model_timestamp < e.event_start_time",
+        "l.captured_at <= s.model_timestamp",
+        "l.captured_at < s.event_start_time",
+        "f.created_at <= s.model_timestamp",
+        "b.captured_at > s.event_start_time",
+        "fin.captured_at > s.event_start_time",
+        "g.value #>> '{status,abstractGameState}' = 'Final'",
+        "FALSE AS replay_fitted_source_proven",
+        "FALSE AS probability_publishable",
+        "FALSE AS can_execute",
+        "'V17_TERMINAL_REDUCER'::text AS terminal_authority",
+    ):
+        assert required in active_sql, required
