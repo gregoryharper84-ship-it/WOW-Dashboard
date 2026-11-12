@@ -10,3 +10,14 @@
 - **independent_evidence:** Hosted CI / SIRT semantic review / production verification not established at local test time. Unattested metrics cannot certify a fitted model or rights to a source. No new source acquisition and no commercial spend.
 - **scoreboard:** NFL prop runtime-scoreable lanes unchanged at 4/10; newly qualified 0, production SHA improvement not claimed; research suite 35 to 43 passing (+8), source gap 3,994 mapped missing weekly rows and 48 unmapped player-games unchanged.
 - **safety:** custom_gpt_identity=WOW_BETTING_ENGINE; runtime_generation=V17_ACTIVE; terminal_authority=V17_TERMINAL_REDUCER; can_execute=false; DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true.
+
+## Reused receipt and non-book quote hardening (2026-11-12)
+
+- **date:** 2026-11-12
+- **typed_reason:** REPLAY_PREDICTION_RECEIPT_REUSED; REPLAY_MARKET_QUOTE_INVALID
+- **mechanism:** Exact-thesis duplicate detection did not reject the same immutable pregame prediction ID mapped to different official events. This could inflate retrospective sample counts with one prediction replayed as independent evidence. A whitespace-only bookmaker string was also accepted as a same-book claim.
+- **detection_point:** Source-identity audit before offline calibration metric collection; these should have been preflighted when the immutable-prediction and bookmaker-key fields were introduced.
+- **fix:** Reject every row sharing an immutable prediction ID with another thesis; require trimmed, nonblank bookmaker tokens for both sides; no model fitting or automatic eligibility/promotion.
+- **prevention_artifact:** Two additional negative-first tests in tests/test_offline_market_calibration.py. Original 43 passed / 2 RED, patched 45/45 local PASS; synthetic 30-row CLI receipt remains descriptive and can_execute=false. Exact-head CI must be reacquired.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
+- **production_evidence:** None. Protected merge/release and independent semantic acceptance unproven; model coverage +0, no live changes.
