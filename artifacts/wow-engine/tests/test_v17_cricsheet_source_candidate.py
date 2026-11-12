@@ -59,6 +59,18 @@ def test_archive_rejects_bad_sources(data, error):
         audit_t20_archive(data)
 
 
+def test_international_t20_and_impossible_calendar_dates():
+    receipt = audit_t20_archive(
+        archive(match_items=[("99.json", sample(match_type="IT20"))])
+    )
+    assert receipt["unique_t20_match_ids"] == 1
+    assert receipt["archive_pin_status"] == "UNPINNED"
+    with pytest.raises(SourceCandidateHold, match="SOURCE_ARCHIVE_MATCH_DATE_INVALID"):
+        audit_t20_archive(
+            archive(match_items=[("42.json", sample(date="2026-02-30"))])
+        )
+
+
 def test_wrong_pin_rejected_before_archive_parsing():
     with pytest.raises(SourceCandidateHold, match="SOURCE_ARCHIVE_PIN_MISMATCH"):
         audit_t20_archive(archive(), expected_sha256="f" * 64)
