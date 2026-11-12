@@ -26,6 +26,17 @@ WITH scored AS (
     AND s.probability_publishable IS FALSE
     AND s.model_timestamp < e.event_start_time
 ),
+event_identity_collisions AS (
+  -- One official game ID with incompatible date, start, or participants
+  -- cannot count as two independent fitted holdout games.
+  SELECT official_event_id
+  FROM scored
+  GROUP BY official_event_id
+  HAVING COUNT(DISTINCT official_date) > 1
+      OR COUNT(DISTINCT event_start_time) > 1
+      OR COUNT(DISTINCT home_team_id) > 1
+      OR COUNT(DISTINCT away_team_id) > 1
+),
 official_schedule_final AS (
   SELECT
       g.value ->> 'gamePk' AS official_event_id,
@@ -47,6 +58,7 @@ official_schedule_final AS (
 evidence AS (
   SELECT
       s.*,
+      (conflicted.official_event_id IS NOT NULL) AS event_identity_conflict,
       EXISTS (
           SELECT 1
           FROM public.wow_mlb_forward_lineup_snapshots l
@@ -107,6 +119,8 @@ evidence AS (
             AND fin.away_runs = b.raw_body::jsonb #>> '{teams,away,teamStats,batting,runs}'
       ) AS official_final_and_boxscore_concordant
   FROM scored s
+  LEFT JOIN event_identity_collisions conflicted
+    ON conflicted.official_event_id = s.official_event_id
 )
 SELECT
     CASE WHEN model_timestamp < '2026-09-21 00:00:00+00'::timestamptz
@@ -121,7 +135,16 @@ SELECT
     count(*) FILTER (WHERE both_features_captured_asof) AS feature_asof_candidates,
     count(*) FILTER (
         WHERE confirmed_lineup_captured_asof AND both_features_captured_asof
+          AND NOT event_identity_conflict
     ) AS aligned_pregame_source_candidates,
+    count(*) FILTER (WHERE event_identity_conflict) AS event_identity_conflict_score_rows,
+    count(DISTINCT official_event_id) FILTER (
+        WHERE event_identity_conflict
+    ) AS event_identity_conflict_games,
+    count(DISTINCT official_event_id) FILTER (
+        WHERE confirmed_lineup_captured_asof AND both_features_captured_asof
+          AND NOT event_identity_conflict
+    ) AS distinct_aligned_games_without_identity_conflicts,
     count(*) FILTER (WHERE boxscore_score_candidate) AS archived_boxscore_candidates,
     count(*) FILTER (
         WHERE official_final_and_boxscore_concordant
