@@ -1,6 +1,9 @@
 """Guard against cross-sport coverage silently becoming certification."""
+import pytest
+
 from v17.universal_sport_market_audit import (
-    AUDIT_SCHEMA_VERSION, MARKETS, audit_summary, build_universal_sport_market_audit,
+    AUDIT_SCHEMA_VERSION, MARKET_APPLICABILITY, MARKETS, audit_summary,
+    build_universal_sport_market_audit,
 )
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 
@@ -35,3 +38,31 @@ def test_summary_is_explicitly_non_authoritative():
     assert report["certified_market_rows"] == 0
     assert report["production_verified_rows"] == 0
     assert report["can_execute"] is False
+
+
+@pytest.mark.parametrize("market", ("WINNER", "HANDICAP", "TOTAL", "PLAYER_PROP"))
+def test_excluded_market_keeps_a_non_authoritative_inventory_row(monkeypatch, market):
+    baseline = audit_summary()
+    # Exercise a structurally excluded market without changing the production
+    # applicability declarations or treating a missing model as inapplicable.
+    monkeypatch.setitem(
+        MARKET_APPLICABILITY, "NBA",
+        frozenset({"WINNER", "HANDICAP", "TOTAL", "PLAYER_PROP"} - {market}),
+    )
+
+    report = audit_summary()
+    excluded = [row for row in report["rows"] if row["status"] == "NOT_APPLICABLE"]
+    assert excluded == [{
+        "sport": "NBA", "market": market, "status": "NOT_APPLICABLE",
+        "declared_specialist": None, "required_inputs": (), "missing_evidence": (),
+        "is_certified_market": False, "production_verified": False,
+        "can_execute": False,
+    }]
+    assert report["row_count"] == len(report["rows"]) == 52
+    assert report["certified_market_rows"] == 0
+    assert report["production_verified_rows"] == 0
+    assert report["can_execute"] is False
+    assert [row for row in report["rows"] if row not in excluded] == [
+        row for row in baseline["rows"]
+        if (row["sport"], row["market"]) != ("NBA", market)
+    ]
