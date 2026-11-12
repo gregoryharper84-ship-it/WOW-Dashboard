@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from v17.nhl_provenance import SOURCE_PAYLOAD_HASH_SCOPE
+
 CAN_EXECUTE = False
 SOURCE_TABLE = "wow_d1_source_events"
 TRAINING_TABLE = "wow_d1_training_rows"
@@ -21,18 +23,88 @@ class D1RegistryError(RuntimeError):
 
 
 def _one(result: Any) -> dict[str, Any] | None:
+    """Return the first row from a PostgREST-like result, if any."""
     data = getattr(result, "data", None) or []
     return dict(data[0]) if data else None
 
 
+def _is_sha256(value: Any) -> bool:
+    """True when value is a 64-char lowercase hex SHA-256 digest."""
+    token = str(value or "").strip().lower()
+    return len(token) == 64 and all(char in "0123456789abcdef" for char in token)
+
+
+def _is_git_sha(value: Any) -> bool:
+    """Accept short or full lowercase git commit SHAs (Render ingest heads)."""
+    token = str(value or "").strip().lower()
+    return 7 <= len(token) <= 40 and all(char in "0123456789abcdef" for char in token)
+
+
 def _validate_governance(row: Mapping[str, Any], *, prefix: str) -> None:
+    """Reject any row that claims execution or probability publication authority."""
     if row.get("can_execute") is not False:
         raise D1RegistryError(f"{prefix}_CAN_EXECUTE_FORBIDDEN", "can_execute must be false")
     if row.get("probability_publishable") not in (None, False):
         raise D1RegistryError(f"{prefix}_PROBABILITY_PUBLICATION_FORBIDDEN", "candidate registry is non-publishable")
 
 
+_V2_PROVENANCE_KEYS = (
+    "game_type",
+    "neutral_site",
+    "game_state",
+    "provenance_version",
+    "ingest_code_sha",
+    "source_payload_commitment",
+    "payload_hash_scope",
+)
+
+
+def source_outcome_json(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the append-only source outcome, preserving optional provenance.
+
+    Legacy rows carry only scores. NHL provenance V2 rows additionally commit
+    the regular-season game type, neutral-site flag and settled state. If any
+    V2 field is supplied, the complete V2 provenance set is required — including
+    a valid ingest_code_sha — and a partial row is rejected rather than silently
+    downgraded to legacy shape.
+    """
+    outcome: dict[str, Any] = {
+        "home_score": raw.get("home_score"),
+        "away_score": raw.get("away_score"),
+        "positive_outcome": raw.get("positive_outcome"),
+    }
+    # Key presence (including explicit null) enters V2 validation; absent keys
+    # alone keep the legacy score-only shape.
+    present_v2 = [key for key in _V2_PROVENANCE_KEYS if key in raw]
+    for key in present_v2:
+        outcome[key] = raw.get(key)
+    if not present_v2:
+        return outcome
+
+    event_id = str(raw.get("official_event_id") or "")
+    # Any supplied V2 field requires the complete V2 contract.
+    missing = [key for key in _V2_PROVENANCE_KEYS if outcome.get(key) is None]
+    if missing:
+        raise D1RegistryError("D1_SOURCE_PROVENANCE_INCOMPLETE", f"{event_id}:{missing[0]}")
+    if type(outcome.get("game_type")) is not int or outcome["game_type"] != 2:
+        raise D1RegistryError("D1_SOURCE_GAME_TYPE_UNVERIFIED", event_id)
+    if type(outcome.get("neutral_site")) is not bool:
+        raise D1RegistryError("D1_SOURCE_NEUTRAL_SITE_UNVERIFIED", event_id)
+    if str(outcome.get("game_state") or "").upper() not in {"FINAL", "OFF"}:
+        raise D1RegistryError("D1_SOURCE_GAME_STATE_UNVERIFIED", event_id)
+    if not str(outcome.get("provenance_version") or "").strip():
+        raise D1RegistryError("D1_SOURCE_PROVENANCE_INVALID", event_id)
+    if not _is_git_sha(outcome.get("ingest_code_sha")):
+        raise D1RegistryError("D1_SOURCE_INGEST_CODE_SHA_INVALID", event_id)
+    if not _is_sha256(outcome.get("source_payload_commitment")):
+        raise D1RegistryError("D1_SOURCE_PAYLOAD_COMMITMENT_INVALID", event_id)
+    if outcome.get("payload_hash_scope") != SOURCE_PAYLOAD_HASH_SCOPE:
+        raise D1RegistryError("D1_SOURCE_PAYLOAD_HASH_SCOPE_INVALID", event_id)
+    return outcome
+
+
 def persist_source_events(db: Any, rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Append-only insert of immutable source events; identical payloads are no-ops."""
     inserted_n = 0
     existing_n = 0
     for raw in rows:
@@ -54,11 +126,7 @@ def persist_source_events(db: Any, rows: Sequence[Mapping[str, Any]]) -> dict[st
         if existing:
             existing_n += 1
             continue
-        outcome = {
-            "home_score": raw.get("home_score"),
-            "away_score": raw.get("away_score"),
-            "positive_outcome": raw.get("positive_outcome"),
-        }
+        outcome = source_outcome_json(raw)
         row = {
             "sport": sport,
             "league": str(raw.get("league") or sport).strip().upper(),
@@ -86,6 +154,7 @@ def persist_training_rows(
     *,
     model_family: str,
 ) -> dict[str, int]:
+    """Persist reconstructed feature rows without market features or publication."""
     inserted_n = 0
     existing_n = 0
     for raw in rows:
@@ -137,6 +206,7 @@ def persist_training_rows(
 
 
 def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Register an inert CANDIDATE artifact; identical checksums are idempotent."""
     _validate_governance(raw, prefix="D1_CANDIDATE")
     if raw.get("lifecycle_state") != "CANDIDATE":
         raise D1RegistryError("D1_CANDIDATE_LIFECYCLE_INVALID", str(raw.get("lifecycle_state")))
@@ -200,6 +270,7 @@ def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def persist_candidate_package(db: Any, package: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist source events, training rows, and the inert candidate as one package."""
     if package.get("can_execute") is not False or package.get("probability_publishable") is not False:
         raise D1RegistryError("D1_PACKAGE_GOVERNANCE_INVALID", "package must be inert")
     candidate = dict(package.get("candidate") or {})
