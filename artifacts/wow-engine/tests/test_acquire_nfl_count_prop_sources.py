@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from acquire_nfl_count_prop_sources import frozen_assets, acquire_one
+from acquire_nfl_count_prop_sources import (frozen_assets, acquire_one, verify_official_release_metadata)
 
 
 class FakeResponse(io.BytesIO):
@@ -30,6 +30,41 @@ def test_all_official_pins_complete_and_immutable():
     assert len({a[0] for a in assets}) == 11
     assert sum(a[2] for a in assets) == 61620003
     assert all(len(a[1]) == 64 for a in assets)
+
+
+def _synthetic_metadata_from_frozen_pins():
+    releases = {}
+    for relative, digest, size in frozen_assets():
+        family, name = relative.split("/")
+        releases.setdefault(family, {"assets": []})["assets"].append({
+            "name": name, "size": size, "digest": "sha256:" + digest,
+        })
+    return releases
+
+
+def test_official_release_metadata_preflight_accepts_matching_frozen_pins():
+    verify_official_release_metadata(frozen_assets(), _synthetic_metadata_from_frozen_pins())
+
+
+@pytest.mark.parametrize("mutation", ("size", "digest", "missing", "duplicate"))
+def test_official_release_metadata_preflight_rejects_asset_drift(mutation):
+    manifests = _synthetic_metadata_from_frozen_pins()
+    entries = manifests["players"]["assets"]
+    if mutation == "size":
+        entries[0]["size"] += 1490
+    elif mutation == "digest":
+        entries[0]["digest"] = "sha256:" + "f" * 64
+    elif mutation == "missing":
+        entries.clear()
+    else:
+        entries.append(entries[0].copy())
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_DIGEST_MISMATCH:players.csv"):
+        verify_official_release_metadata(frozen_assets(), manifests)
+
+
+def test_official_release_metadata_preflight_rejects_incomplete_manifest():
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_PINS_INVALID:release_metadata"):
+        verify_official_release_metadata(frozen_assets(), {"players": {"assets": []}})
 
 
 def test_good_download_then_verified_existing(tmp_path):
@@ -195,6 +230,33 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
 
     from acquire_nfl_count_prop_sources import frozen_assets
     assets = frozen_assets()
+    # A release asset can be replaced in-place without a versioned URL.  Read
+    # official metadata before downloading ten still-matching pinned files.
+    # This is a PR-scoped observation, not a source-licensing/fit clearance.
+    class _RejectMetadataRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED:release_metadata")
+
+    try:
+        opener = urllib.request.build_opener(_RejectMetadataRedirects())
+        released = {}
+        for family in sorted({relative.split("/")[0] for relative, _, _ in assets}):
+            url = ("https://api.github.com/repos/nflverse/nflverse-data/releases/tags/"
+                   + family)
+            request = urllib.request.Request(url, headers={
+                "User-Agent": "WOW-V17-frozen-source-research/1.0",
+                "Accept": "application/vnd.github+json",
+            })
+            with opener.open(request, timeout=20) as response:
+                if response.geturl() != url:
+                    raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED:release_metadata")
+                released[family] = json.load(response)
+        verify_official_release_metadata(assets, released)
+    except (ValueError, OSError, urllib.error.URLError, TimeoutError,
+            json.JSONDecodeError) as exc:
+        pytest.skip("NFL_PROP_SOURCE_RELEASE_METADATA_HOLD:"
+                    + type(exc).__name__ + ":" + str(exc)[:180]
+                    + ":verified_prior_assets=0/11")
     downloaded = []
     # Every real network request must use the trusted redirect handler.
     for name, digest, size in assets:

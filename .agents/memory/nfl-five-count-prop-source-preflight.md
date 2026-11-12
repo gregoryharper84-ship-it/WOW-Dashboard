@@ -326,3 +326,16 @@
 - **prevention_artifact:** \`tests/test_nfl_count_prop_participation_audit.py\` (12 added exact-boundary and malformed-receipt cases). Existing PR-only trusted runner adds \`known_gap_excluded_candidate_splits\` to the signed-source observational receipt; **hosted exact-head results not yet observed**, so no new empirical claim.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no valid source-rights clearance, no source completeness certification, no trained or calibrated probability, no change to qualification/routing/threshold, no production deployment or persisted terminal receipt. \`can_execute=false\`, \`V17_TERMINAL_REDUCER\`.
+
+## Mutable official players.csv release asset drift — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** `NFL_PROP_ACQUIRE_DIGEST_MISMATCH` (existing canonical code; no new status class).
+- **mechanism:** GitHub release tag `players` replaced the same-name `players.csv` artifact at 2026-11-12T16:32:05Z, shortly before exact-head rapid regression `43260224970` tried acquiring the source. Frozen WOW SHA `da58c285c9013d65bb517d687095e0970f3a4bb148bb81f6ed2aec2bf398b72e` and 7,306,971 bytes conflict with the new published SHA `f90a9d0009b8e5d50353b0013971b466534b25cc2f98b7ad14d39361356975d7` and 7,308,461 bytes. The other ten pinned stats_player/snap_counts assets still match their upstream metadata. A mutable release URL is not an immutable dataset identifier.
+- **detection_point:** Before transferring large source archives in the existing PR-only research runner; source asset metadata is cheap enough to inspect before downloading ~54 MB of unrelated matching files.
+- **observed_red:** Exact-head rapid regression `43260224970` reported `731 passed, 1 skipped`, with `NFL_PROP_ACQUIRE_DIGEST_MISMATCH:players.csv:verified_prior_assets=10/11`. This is a source-data HOLD, not green real-source audit or failing code test.
+- **fix:** Research-only early release-metadata pinset preflight, comparing exact `name`, published SHA-256 and byte-size with frozen code-owned pins across 11 assets before transfer. Existing downloaded-byte hash check remains mandatory and unchanged; no repinning, no historical source substitute.
+- **prevention_artifact:** `scripts/acquire_nfl_count_prop_sources.py:verify_official_release_metadata` and four negative variants (size, digest, absent and duplicate asset), plus incomplete-metadata HOLD in `tests/test_acquire_nfl_count_prop_sources.py`; existing PR-only runner observes release metadata, no new workflow or production fetch.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; source rights and lineage for replacement asset unreviewed, 3,994 missing weekly player-games and 48 unmapped identities remain UNKNOWN, fitted calibration and promotion HOLD, `can_execute=false` and `V17_TERMINAL_REDUCER`.
+

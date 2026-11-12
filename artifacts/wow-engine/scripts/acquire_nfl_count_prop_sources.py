@@ -63,6 +63,35 @@ def frozen_assets() -> list[tuple[str, str, int]]:
     return assets
 
 
+def verify_official_release_metadata(assets: list[tuple[str, str, int]],
+                                     releases: dict[str, dict]) -> None:
+    """Detect a moved GitHub release asset before costly offline downloads.
+
+    Metadata is only an early HOLD signal; the original source SHA/size pins
+    remain authoritative and every acquired byte must still pass verify_file.
+    This function never updates a pin, supplies a target, or authorizes fitting.
+    """
+    families = {relative.split("/")[0] for relative, _, _ in assets}
+    if not isinstance(releases, dict) or set(releases) != families:
+        raise ValueError("NFL_PROP_ACQUIRE_PINS_INVALID:release_metadata")
+    for relative, digest, size in assets:
+        family, name = relative.split("/")
+        release = releases[family]
+        if not isinstance(release, dict) or not isinstance(release.get("assets"), list):
+            raise ValueError("NFL_PROP_ACQUIRE_PINS_INVALID:release_metadata")
+        matches = [item for item in release["assets"]
+                   if isinstance(item, dict) and item.get("name") == name]
+        if len(matches) != 1:
+            raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:" + name
+                             + ":release_asset_missing_or_ambiguous")
+        observed = matches[0]
+        if (type(observed.get("size")) is not int
+                or observed["size"] != size
+                or observed.get("digest") != "sha256:" + digest):
+            raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:" + name
+                             + ":upstream_release_metadata")
+
+
 def verify_file(path: Path, digest: str, size: int) -> None:
     """Verify exact downloaded bytes; never accept a symlink or guessed zero."""
     if path.is_symlink() or not path.is_file():
