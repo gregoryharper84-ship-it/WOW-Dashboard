@@ -205,3 +205,14 @@
 - **prevention_artifact:** `test_residual_penalty_context_is_bounded_and_never_a_stat_fix`, and existing `test_residual_play_type_evidence_never_corrects_weekly_counts`. Hosted exact-head checks required.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605 ; https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/43127994809
 - **production_evidence:** None; independent source-rights and SIRT semantic acceptance absent, no fit/certification/activation or deploy, can_execute=false and V17_TERMINAL_REDUCER.
+
+## PBP actor attribution and flag completeness refinements (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PBP_ATTRIBUTION_INCOMPLETE; NFL_PROP_PBP_FLAG_INVALID; HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT
+- **mechanism:** Code review found whitespace-only spike/kneel actors could be miscounted as attributed, an otherwise-valid spike could create a receiver target through a shared passing mask, actorless invalid flags were discarded before validation, and residual inspector reported flagged sacks as eligible although the candidate source rejected them.
+- **detection_point:** CodeRabbit review of exact-head PBP stats source audit, before accepting six-stat source reconciliation or a no-play penalty explanation.
+- **fix:** Use nonblank exact GSIS IDs for actor attribution, validate raw opportunity flags ahead of the actor filter, restrict receiver signals to nonspike passes, and mirror exact candidate mask in residual excludes. Do not alter inferred labels, existing source pins, fitted probability or qualification.
+- **prevention_artifact:** Four negative/positive checks in tests/test_nfl_count_prop_pbp_stats.py; hosted exact-head replay required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; P/C research only, 0 new certified lanes, can_execute=false, V17_TERMINAL_REDUCER.

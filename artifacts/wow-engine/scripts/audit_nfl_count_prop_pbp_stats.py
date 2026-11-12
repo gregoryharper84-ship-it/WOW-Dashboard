@@ -89,15 +89,30 @@ def read_pinned_pbp_signals(
                 special["qb_spike_attributed"] += int(
                     (reg["play_type"].eq("qb_spike")
                      & reg["passer_player_id"].notna()
+                     & reg["passer_player_id"].astype(str).str.strip().ne("")
                      & pd.to_numeric(reg["pass_attempt"], errors="coerce").eq(1)).sum()
                 )
                 special["qb_kneel_attributed"] += int(
                     (reg["play_type"].eq("qb_kneel")
                      & reg["rusher_player_id"].notna()
+                     & reg["rusher_player_id"].astype(str).str.strip().ne("")
                      & pd.to_numeric(reg["rush_attempt"], errors="coerce").eq(1)).sum()
                 )
-                actor = reg.loc[:, ("passer_player_id", "receiver_player_id",
-                                    "rusher_player_id")].notna().any(axis=1)
+                # Validate opportunity flags even on rows with no attributable
+                # actor; otherwise malformed source bytes can disappear.
+                for field in ("pass_attempt", "rush_attempt"):
+                    raw_values = reg[field]
+                    parsed = pd.to_numeric(raw_values, errors="coerce")
+                    if ((raw_values.notna() & parsed.isna()).any()
+                            or not parsed.dropna().isin((0, 1)).all()):
+                        raise ValueError("NFL_PROP_PBP_FLAG_INVALID:" + field)
+                candidate_actors = reg.loc[:, (
+                    "passer_player_id", "receiver_player_id", "rusher_player_id",
+                )]
+                actor = (candidate_actors.notna()
+                         & candidate_actors.astype(str).apply(
+                             lambda col: col.str.strip().ne("")
+                         )).any(axis=1)
                 # A claimed pass/rush without any actor is incomplete source
                 # attribution, not a missing positive play to silently drop.
                 claimed = (
@@ -156,12 +171,14 @@ def read_pinned_pbp_signals(
                     normal & relevant["rush_attempt"].eq(1)
                     & relevant["play_type"].isin(("run", "qb_kneel"))
                 )
+                # A QB spike is a passing attempt, never a receiver target.
+                receiver_passing = passing & relevant["play_type"].eq("pass")
                 specs = {
                     "attempts": ("passer_player_id", passing),
                     "completions": ("passer_player_id", passing & relevant["complete_pass"].eq(1)),
                     "passing_tds": ("passer_player_id", passing & relevant["pass_touchdown"].eq(1)),
-                    "receptions": ("receiver_player_id", passing & relevant["complete_pass"].eq(1)),
-                    "targets": ("receiver_player_id", passing),
+                    "receptions": ("receiver_player_id", receiver_passing & relevant["complete_pass"].eq(1)),
+                    "targets": ("receiver_player_id", receiver_passing),
                     "carries": ("rusher_player_id", rushing),
                 }
                 for name, (field, mask) in specs.items():
@@ -220,9 +237,22 @@ def inspect_pinned_residual_actor_plays(
                     if not flagged_play:
                         continue
                     flagged += 1
-                    eligible = (play_type in ("pass", "qb_spike")
-                                if stat == "attempts"
-                                else play_type in ("run", "qb_kneel"))
+                    normal = pd.to_numeric(
+                        row["two_point_attempt"], errors="coerce"
+                    ) == 0
+                    if stat == "attempts":
+                        eligible = (
+                            normal
+                            and pd.to_numeric(row["sack"], errors="coerce") == 0
+                            and (
+                                (play_type == "pass"
+                                 and pd.to_numeric(row["qb_spike"], errors="coerce") == 0)
+                                or (play_type == "qb_spike"
+                                    and pd.to_numeric(row["qb_spike"], errors="coerce") == 1)
+                            )
+                        )
+                    else:
+                        eligible = normal and play_type in ("run", "qb_kneel")
                     if not eligible:
                         excluded[play_type] += 1
                         if len(examples) < 5:
