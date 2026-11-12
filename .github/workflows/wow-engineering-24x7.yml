@@ -47,8 +47,10 @@ permissions:
 concurrency:
   # PR test jobs must not displace queued protected-main controller events.
   group: wow-engineering-24x7-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'controller' }}
+  # Intake is a stateless full-snapshot read: a newer pending run supersedes an
+  # older one, so coalesce (default single-pending queue). Never cancel the
+  # running run. The implementation single-writer mutex keeps its own queue: max.
   cancel-in-progress: false
-  queue: max
 
 jobs:
   test:
