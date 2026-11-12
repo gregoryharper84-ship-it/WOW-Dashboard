@@ -842,3 +842,58 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
             == report["mapped_missing_player_games_2025"])
     pytest.skip("HOLD_FTN_OFFENSE_PRESENCE_ONLY:"
                 + json.dumps(report, sort_keys=True, separators=(",", ":")))
+
+
+def test_pr2605_frozen_weekly_anonymous_group_origin_shadow(tmp_path):
+    """Independently inspect five pinned weekly sources despite players.csv drift.
+
+    PR-only source diagnosis, not an alternate acquisition route for fitting:
+    retain the 11-file source HOLD and never turn anonymous groups into players.
+    """
+    import json
+    import os
+    from train_nfl_missing_prop_candidates import (
+        EXPECTED_RELEASE_SHA256, load_source_files,
+        observe_anonymous_weekly_source_shape,
+    )
+
+    if (os.environ.get("GITHUB_WORKFLOW") != "wow-v17-rapid-repair"
+            or os.environ.get("GITHUB_HEAD_REF")
+            != "engineering/nfl-five-count-candidates-20261111"):
+        pytest.skip("NFL_PROP_ANONYMOUS_SOURCE_OBSERVATION_PR_ONLY")
+
+    original_weekly = [
+        (name, digest, size) for name, digest, size in frozen_assets()
+        if name.startswith("stats_player/")
+    ]
+    assert len(original_weekly) == 5
+    verified = []
+    for name, digest, size in original_weekly:
+        try:
+            receipt = acquire_one(name, digest, size, tmp_path, timeout=20)
+        except (ValueError, OSError) as exc:
+            pytest.skip("HOLD_FROZEN_WEEKLY_SOURCE_OBSERVATION:"
+                        + type(exc).__name__ + ":" + str(exc)[:150]
+                        + f":verified_assets={len(verified)}/5")
+        verified.append(receipt)
+
+    try:
+        _, provenance = load_source_files(
+            tmp_path / "stats_player",
+            expected_sha256=EXPECTED_RELEASE_SHA256,
+        )
+        summary = observe_anonymous_weekly_source_shape(provenance)
+    except (ValueError, KeyError, TypeError) as exc:
+        pytest.skip("HOLD_FROZEN_WEEKLY_SOURCE_GROUP_SCHEMA:"
+                    + type(exc).__name__ + ":" + str(exc)[:160])
+    note = {
+        **summary,
+        "verified_frozen_weekly_assets": len(verified),
+        "verified_frozen_weekly_bytes": sum(x["size_bytes"] for x in verified),
+        "source_observation_only": True,
+        "frozen_players_csv_source_gate_unmodified": True,
+        "game_id_represents_individual_player_game": False,
+        "quarantine_independently_reviewed": False,
+    }
+    pytest.skip("HOLD_ANONYMOUS_WEEKLY_SOURCE_SEMANTICS:"
+                + json.dumps(note, sort_keys=True, separators=(",", ":")))
