@@ -7,6 +7,7 @@ Run only with an explicit command and retain raw archive in quarantine.
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import hashlib
 import io
 import json
@@ -113,7 +114,7 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
             except (ValueError, UnicodeDecodeError, RuntimeError, zipfile.BadZipFile) as exc:
                 raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_JSON_INVALID") from exc
             info = obj.get("info") if isinstance(obj, dict) else None
-            if not isinstance(info, dict) or info.get("match_type") != "T20":
+            if not isinstance(info, dict) or info.get("match_type") not in {"T20", "IT20"}:
                 raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_TYPE_UNVERIFIED")
             teams = info.get("teams")
             dates = info.get("dates")
@@ -123,6 +124,11 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
                     teams[0] == teams[1] or not isinstance(dates, list) or not dates or
                     any(not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) for d in dates)):
                 raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_IDENTITY_OR_DATE_INVALID")
+            try:
+                for match_day in dates:
+                    date.fromisoformat(match_day)
+            except ValueError as exc:
+                raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_DATE_INVALID") from exc
             if not isinstance(outcome, dict):
                 raise SourceCandidateHold("SOURCE_ARCHIVE_OUTCOME_MISSING")
             winner = outcome.get("winner")
