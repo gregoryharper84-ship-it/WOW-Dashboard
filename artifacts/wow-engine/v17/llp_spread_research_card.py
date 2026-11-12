@@ -169,10 +169,20 @@ def _final_grade(event: Mapping[str, Any], row: Mapping[str, Any], final: Mappin
     if line is None:
         return "HELD", ["EXACT_LINE_INVALID"]
     winner = _text(final.get("winning_side")).upper()
-    if winner:
+    if winner and sport == "TENNIS" and market_type == "GAME_HANDICAP":
+        # Match winner follows sets, not accumulated games. Never compare a
+        # match-winner label to game-handicap settlement units.
+        home_sets, away_sets = final.get("home_sets"), final.get("away_sets")
+        if type(home_sets) is int and type(away_sets) is int and home_sets >= 0 and away_sets >= 0:
+            winner_home, winner_away = home_sets, away_sets
+        else:
+            winner_home = winner_away = None
+    else:
+        winner_home, winner_away = home, away
+    if winner and winner_home is not None and winner_away is not None:
         home_name = _text(event.get("home_team")).upper()
         away_name = _text(event.get("away_team")).upper()
-        expected = "HOME" if home > away else "AWAY" if away > home else "DRAW"
+        expected = "HOME" if winner_home > winner_away else "AWAY" if winner_away > winner_home else "DRAW"
         aliases = {"HOME": "HOME", home_name: "HOME", "AWAY": "AWAY",
                    away_name: "AWAY", "DRAW": "DRAW", "TIE": "DRAW"}
         if aliases.get(winner) != expected:
