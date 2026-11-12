@@ -617,3 +617,58 @@ def test_known_gap_exclusion_invalid_upstream_status_is_not_accepted():
     fake["status"] = "RESEARCH_COVERAGE_RECONCILED_ONLY"
     with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:cohort_status"):
         summarize_known_gap_excluded_candidate_splits(fake)
+
+
+def test_missingness_diagnostic_exposes_role_and_snap_disparity_without_labels(sample_cohort):
+    """Record descriptive missing-source shares; never certify sampling fairness."""
+    stats, snaps, players = sample_cohort
+    stats = stats.loc[stats.player_id.eq("00-0032222")].copy()
+    receipt = reconcile_player_games(stats, snaps, players)
+    report = receipt["missingness_selection_diagnostic"]
+    assert report["status"] == "HOLD_PARTICIPATION_SELECTION_UNKNOWN"
+    te = report["by_dimension"]["position"]["TE"]
+    qb = report["by_dimension"]["position"]["QB"]
+    low = report["by_dimension"]["snap_band"]["1-9"]
+    high = report["by_dimension"]["snap_band"]["50+"]
+    assert te["source_matched"] == 0
+    assert te["mapped_missing"] == 1
+    assert te["unmapped_identity"] == 0
+    assert te["unrecorded_share_pct"] == 100.0
+    assert qb["source_matched"] == 1
+    assert qb["unrecorded_share_pct"] == 0.0
+    assert low["unrecorded_share_pct"] == 100.0
+    assert high["unrecorded_share_pct"] == 0.0
+    assert report["by_dimension"]["season"]["2021"]["unrecorded_share_pct"] is None
+    assert report["unresolved_player_games"] == 1
+    assert report["outcome_sampling_bias_direction_known"] is False
+    assert report["unobserved_count_labels_reconstructed"] is False
+    assert report["training_authorized"] is False
+    assert report["can_execute"] is False
+
+
+def test_missingness_diagnostic_counts_unmapped_separately(sample_cohort):
+    """Crosswalk gaps must not disappear from observed-row denominators."""
+    stats, snaps, players = sample_cohort
+    players = players.loc[players.pfr_id.ne("PlayerA01")]
+    receipt = reconcile_player_games(stats, snaps, players)
+    te = receipt["missingness_selection_diagnostic"]["by_dimension"]["position"]["TE"]
+    assert te == {
+        "source_matched": 0, "mapped_missing": 0, "unmapped_identity": 1,
+        "all_snap_positive_player_games": 1, "unrecorded_share_pct": 100.0,
+    }
+
+
+def test_missingness_diagnostic_rejects_inconsistent_stratum_totals(sample_cohort):
+    """Any partial numerator/denominator must fail closed rather than report rates."""
+    from audit_nfl_count_prop_participation import (
+        summarize_missingness_selection_diagnostic,
+    )
+    receipt = reconcile_player_games(*sample_cohort)
+    breakdown = receipt["participation_breakdown"]
+    bad = {
+        key: {part: dict(values) for part, values in v.items()}
+        for key, v in breakdown.items()
+    }
+    bad["position"]["matched_stats"]["QB"] += 1
+    with pytest.raises(ValueError, match="NFL_PROP_PARTICIPATION_SNAP_INVALID:missingness_counts"):
+        summarize_missingness_selection_diagnostic(bad)
