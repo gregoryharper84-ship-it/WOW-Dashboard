@@ -255,14 +255,6 @@ def derive_captured_reference_rows(
 
     derived: list[dict[str, Any]] = []
     for group_rows in grouped.values():
-        # Legacy OPEN/CLOSE rows may have been derived using backdated
-        # provider times. Invalid persisted references cannot suppress a
-        # fresh, valid pregame reference; they remain stored for audit.
-        kinds = {
-            str(row.get("snapshot_kind") or "").upper()
-            for row in group_rows
-            if _valid_pregame_capture(row, now=current_now)
-        }
         current_rows = [
             row
             for row in group_rows
@@ -272,7 +264,22 @@ def derive_captured_reference_rows(
         if not current_rows:
             continue
         current_rows.sort(key=lambda row: _quote_time(row) or current_now)
-        if "OPEN" not in kinds:
+
+        def matches_capture(kind: str, capture: dict[str, Any]) -> bool:
+            # An old reference can be individually pregame but sourced from
+            # the wrong capture under provider-updated-time ordering. Only
+            # the correct first/last observed quote may suppress replacement.
+            return any(
+                str(row.get("snapshot_kind") or "").upper() == kind
+                and _valid_pregame_capture(row, now=current_now)
+                and _quote_time(row) == _quote_time(capture)
+                and row.get("american_odds") == capture.get("american_odds")
+                and row.get("line_value") == capture.get("line_value")
+                and _parse_dt(row.get("event_start_utc")) == _parse_dt(capture.get("event_start_utc"))
+                for row in group_rows
+            )
+
+        if not matches_capture("OPEN", current_rows[0]):
             derived.append(
                 _clone_reference(
                     current_rows[0],
@@ -283,7 +290,7 @@ def derive_captured_reference_rows(
             )
 
         event_start = _parse_dt(current_rows[0].get("event_start_utc"))
-        if event_start is None or event_start > current_now or "CLOSE" in kinds:
+        if event_start is None or event_start > current_now or matches_capture("CLOSE", current_rows[-1]):
             continue
         eligible = [row for row in current_rows if (_quote_time(row) or current_now) <= event_start]
         if not eligible:
