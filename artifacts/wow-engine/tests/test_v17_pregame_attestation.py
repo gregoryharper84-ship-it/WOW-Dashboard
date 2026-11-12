@@ -163,11 +163,13 @@ def test_verified_cosign_without_independent_tsa_stays_held(tmp_path):
 ])
 def test_trusted_time_must_be_between_freeze_and_kickoff(tmp_path, stamp, should_pass):
     frozen, statement = _files(tmp_path)
+    tsa = tmp_path / "timestamp.tsr"
+    tsa.write_bytes(b"synthetic-only-timestamp-response")
     with patch.object(p, "_run", return_value=type("Result", (), {"returncode": 0})()), \
          patch.object(p, "_tsa_time", return_value=datetime.fromisoformat(stamp.replace("Z", "+00:00"))):
         output = p.verify(frozen=str(frozen), statement=str(statement), bundle="bundle",
                           signer="expected", issuer="https://oidc.example",
-                          tsa_response="timestamp.tsr", tsa_roots="trusted.pem")
+                          tsa_response=str(tsa), tsa_roots="trusted.pem")
     assert output["cryptographic_pregame_verified"] is should_pass
     assert output["model_certification_verified"] is False
     assert output["probability_publishable"] is False
@@ -176,13 +178,15 @@ def test_trusted_time_must_be_between_freeze_and_kickoff(tmp_path, stamp, should
 
 def test_tsa_signature_or_imprint_failure_is_hold(tmp_path):
     frozen, statement = _files(tmp_path)
+    tsa = tmp_path / "bad.tsr"
+    tsa.write_bytes(b"malformed-synthetic-timestamp")
     calls = iter([0, 1])
     def run(_args):
         return type("Result", (), {"returncode": next(calls), "stdout": ""})()
     with patch.object(p, "_run", side_effect=run):
         out = p.verify(frozen=str(frozen), statement=str(statement), bundle="bundle",
                        signer="expected", issuer="https://oidc.example",
-                       tsa_response="bad.tsr", tsa_roots="trusted.pem")
+                       tsa_response=str(tsa), tsa_roots="trusted.pem")
     assert "RECEIPT_TSA_SIGNATURE_OR_IMPRINT_INVALID" in out["reason_codes"]
 
 
