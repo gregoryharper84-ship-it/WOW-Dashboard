@@ -377,3 +377,18 @@ def test_ftn_verified_positive_identity_control_only_enables_research_report():
         "can_execute": False,
     })
     assert mod.CAN_EXECUTE is False
+
+
+def test_ftn_review_examples_are_role_stratified_not_zero_labels(source_cohort):
+    game = "2024_01_BAL_KC"
+    result = mod.classify_missing_pbp_presence(
+        *source_cohort, {game},
+        {(game, "00-0031111"), (game, "00-0032222")},
+    )
+    assert result["missing_player_game_review_examples"] == [{
+        "position": "TE", "season": 2024, "week": 1,
+        "game_id": game, "pfr_player_id": "PlayerA01",
+        "gsis_id": "00-0031111", "offense_snaps": 8,
+        "research_presence": "on_field",
+        "source_count_label": "UNKNOWN",
+    }]

@@ -287,6 +287,29 @@ def classify_missing_pbp_presence(
         counts[category] += 1
         if category != "pbp_actor_not_observed" and len(examples) < 8:
             examples.append({"game_id": game_id, "gsis_id": player_id, "classification": category})
+    # Predetermined low/high snap examples by offensive role for external
+    # gamebook adjudication; these are event identities, never zero-count labels.
+    review_examples = []
+    for role in ("QB", "RB", "WR", "TE"):
+        role_rows = missing.loc[
+            missing["position"].astype(str).str.upper().eq(role)
+        ].sort_values(["offense_snaps", "game_id", "gsis_id"])
+        if role_rows.empty:
+            continue
+        for index in sorted(set((0, len(role_rows) - 1))):
+            row = role_rows.iloc[index]
+            game_id, gsis_id = str(row.game_id), str(row.gsis_id)
+            presence = ("game_unavailable" if game_id not in games
+                        else "on_field" if (game_id, gsis_id) in actors
+                        else "not_in_source")
+            review_examples.append({
+                "position": role, "season": int(row.season),
+                "week": int(row.week), "game_id": game_id,
+                "pfr_player_id": str(row.pfr_player_id), "gsis_id": gsis_id,
+                "offense_snaps": int(row.offense_snaps),
+                "research_presence": presence,
+                "source_count_label": "UNKNOWN",
+            })
     if sum(counts.values()) != canonical["missing_player_games"]:
         raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
     control = {"pbp_actor_observed": 0, "pbp_actor_not_observed": 0, "pbp_game_absent": 0}
@@ -343,6 +366,7 @@ def classify_missing_pbp_presence(
         "mapped_missing_player_games": canonical["missing_player_games"],
         "unmapped_pfr_player_games": canonical["unmapped_pfr_player_games"],
         "pbp_presence_counts": counts,
+        "missing_player_game_review_examples": review_examples,
         "pbp_matched_positive_control": control,
         "pbp_positive_opportunity_control": positive_control,
         "pbp_actor_id_alignment_observed": (

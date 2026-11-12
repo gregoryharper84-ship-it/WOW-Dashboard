@@ -782,6 +782,7 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
         "mapped_missing_player_games_2025": observed["mapped_missing_player_games"],
         "unmapped_pfr_player_games_2025": observed["unmapped_pfr_player_games"],
         "missing_weekly_offense_player_on_play": observed["pbp_presence_counts"]["pbp_actor_observed"],
+        "stratified_official_gamebook_review_cases": observed["missing_player_game_review_examples"],
         "missing_weekly_not_observed_on_offense": observed["pbp_presence_counts"]["pbp_actor_not_observed"],
         "missing_weekly_game_absent_in_participation": observed["pbp_presence_counts"]["pbp_game_absent"],
         "source_blank_offense_play_rows": source["blank_offense_play_rows"],
