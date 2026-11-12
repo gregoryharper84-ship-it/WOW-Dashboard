@@ -261,3 +261,4 @@ def test_unobserved_quote_and_future_provider_update_are_held():
         [unknown, future_update], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
     )
     assert refs == []
+    assert history.CAN_EXECUTE is False
