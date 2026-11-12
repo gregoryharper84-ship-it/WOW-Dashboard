@@ -424,3 +424,14 @@
 - **prevention_artifact:** tests/test_nfl_count_prop_roster_crosswalk.py covers no-manual-match-not-absence, exact candidate-only, conflicting pairs, malformed target/GSIS/PFR, and non-dict source. Exact-head hosted regression remains pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; zero certified specialists or qualified rows. No P/C merge, source substitution, model fitting, zero-stat imputation or execution. can_execute=false.
+
+## Reciprocal GSIS collision must hold in roster identity research — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** NFL_PROP_ROSTER_CROSSWALK_CONFLICT (existing canonical IDENTITY HOLD).
+- **mechanism:** An exact-PFR-to-GSIS candidate inspector rejected one PFR code mapping to multiple GSIS IDs but failed to detect two PFR codes sharing one GSIS ID. This predicted an apparently valid pair for both reviewed PFR codes, even if one conflicting PFR was outside the target list. The upstream nflverse-players PFR release algorithm uses successive name/rookie-year, name, and first-last joins (R/players_pfr.R, Git blob c9c3fe0eb0ae91010dc946baf150ce502eec2228), so even a source pair requires independent identity validation.
+- **detection_point:** Before archived identity evidence is prepared for independent source-semantics review, not during training or model promotion.
+- **fix:** Inspect all nonblank, structurally valid source PFR/GSIS pairs before returning candidate identities; fail closed on any GSIS key associated with more than one PFR code, including unrequested aliases. Existing output retains candidate_crosswalk_applied=false, source_rights_independently_approved=false and can_execute=false.
+- **prevention_artifact:** tests/test_nfl_count_prop_roster_crosswalk.py::test_two_distinct_pfr_aliases_to_same_gsis_fail_closed and ::test_candidate_gsis_collision_with_unrequested_pfr_also_fails_closed. The prior exact-method local reproduction raised no exception (RED); reciprocal-uniqueness fix passed 2/2 local probes (GREEN). Exact-head hosted suite remains to be observed.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** No protected merge, certified fitted specialist, qualified row, source repin, entitlement approval or wager execution; live core remains can_execute=false.
