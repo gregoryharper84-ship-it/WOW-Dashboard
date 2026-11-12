@@ -796,6 +796,15 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
             observed["missing_player_game_review_examples"], provisional,
             covered,
         )
+        # Same frozen stats/snap and shadow player cohort as the FTN proof.
+        # Reconcile all 2025 held rows, never infer missing count zeros.
+        full_cohort = classify_missing_pbp_presence(
+            stats, snaps, players, games, offense,
+            source_signals=provisional, source_games=covered,
+        )
+        pbp_signal_review["full_held_2025_cohort"] = (
+            full_cohort["missing_full_cohort_pbp_signals"]
+        )
         pbp_signal_review["pinned_pbp_sha256"] = receipt["sha256"]
         pbp_signal_review["pinned_pbp_bytes"] = receipt["size_bytes"]
         pbp_signal_review["pbp_unattributed_positive_flags"] = quality["unattributed"]

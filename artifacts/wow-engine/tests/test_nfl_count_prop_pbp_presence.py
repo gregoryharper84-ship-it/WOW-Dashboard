@@ -392,3 +392,37 @@ def test_ftn_review_examples_are_role_stratified_not_zero_labels(source_cohort):
         "research_presence": "on_field",
         "source_count_label": "UNKNOWN",
     }]
+
+
+def test_full_missing_cohort_pbp_signals_do_not_promote_count_zeros(source_cohort):
+    from collections import Counter
+    from audit_nfl_count_prop_pbp_stats import SOURCE_ROLES
+    game = "2024_01_BAL_KC"
+    gsis = "00-0031111"
+    counters = {stat: Counter() for stat in SOURCE_ROLES}
+    counters["receptions"][(game, gsis)] = 1
+    result = mod.classify_missing_pbp_presence(
+        *source_cohort, {game}, {(game, gsis), (game, "00-0032222")},
+        source_signals=counters, source_games={game},
+    )
+    by_stat = result["missing_full_cohort_pbp_signals"]["by_source_stat"]
+    assert by_stat["receptions"]["missing_weekly_rows_role_eligible"] == 1
+    assert by_stat["receptions"]["with_positive_pbp_event_flags"] == 1
+    assert by_stat["receptions"]["positive_source_examples"][0]["settled_count_label"] == "UNKNOWN"
+    assert by_stat["targets"]["with_positive_pbp_event_flags"] == 0
+    assert by_stat["targets"]["without_positive_pbp_flags_STILL_UNKNOWN"] == 1
+    assert by_stat["targets"]["no_positive_pbp_signal_implies_zero"] is False
+    assert result["missing_full_cohort_pbp_signals"]["missing_count_labels_promoted"] == 0
+    assert result["can_execute"] is False
+
+
+def test_full_missing_cohort_absent_pbp_game_rejects_instead_of_zero(source_cohort):
+    from collections import Counter
+    from audit_nfl_count_prop_pbp_stats import SOURCE_ROLES
+    game = "2024_01_BAL_KC"
+    counters = {stat: Counter() for stat in SOURCE_ROLES}
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_SCHEMA_INVALID:full_cohort_game_absent"):
+        mod.classify_missing_pbp_presence(
+            *source_cohort, {game}, {(game, "00-0031111")},
+            source_signals=counters, source_games=set(),
+        )

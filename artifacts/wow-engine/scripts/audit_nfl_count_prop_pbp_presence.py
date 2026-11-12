@@ -239,6 +239,8 @@ def classify_missing_pbp_presence(
     players: pd.DataFrame,
     games: set[str],
     actors: set[tuple[str, str]],
+    source_signals: dict | None = None,
+    source_games: set[str] | None = None,
 ) -> dict[str, object]:
     """Diagnose weekly-stat omissions; no absence ever becomes a count-zero."""
     canonical = reconcile_player_games(stats, snaps, players)
@@ -360,12 +362,64 @@ def classify_missing_pbp_presence(
                 positive_control["pbp_actor_not_observed"] += 1
         if sum(positive_control.values()) != len(positive):
             raise ValueError("NFL_PROP_PBP_RECONCILIATION_DRIFT")
+    # Per-stat PBP positive evidence over the ENTIRE mapped missing-row cohort.
+    # A missing source event is never a zero; even positive flags have no
+    # official box-score settlement authority or source-rights clearance.
+    full_signal = None
+    if source_signals is not None or source_games is not None:
+        from audit_nfl_count_prop_pbp_stats import SOURCE_ROLES
+        if (not isinstance(source_signals, dict)
+                or set(source_signals) != set(SOURCE_ROLES)
+                or not isinstance(source_games, set)):
+            raise ValueError("NFL_PROP_PBP_STAT_COLUMNS_MISSING:full_cohort")
+        full_by_stat = {}
+        for stat, roles in SOURCE_ROLES.items():
+            scoped = missing.loc[
+                missing["position"].astype(str).str.upper().isin(roles)
+            ]
+            positive_rows = 0
+            positive_flags = 0
+            examples = []
+            for item in scoped.itertuples(index=False):
+                key = (str(item.game_id), str(item.gsis_id))
+                if key[0] not in source_games:
+                    raise ValueError(
+                        "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:full_cohort_game_absent"
+                    )
+                value = source_signals[stat].get(key, 0)
+                if type(value) is not int or value < 0:
+                    raise ValueError("NFL_PROP_SOURCE_COUNT_INVALID:" + stat)
+                if value > 0:
+                    positive_rows += 1
+                    positive_flags += value
+                    if len(examples) < 4:
+                        examples.append({
+                            "game_id": key[0], "gsis_id": key[1],
+                            "positive_source_flags": value,
+                            "settled_count_label": "UNKNOWN",
+                        })
+            full_by_stat[stat] = {
+                "missing_weekly_rows_role_eligible": len(scoped),
+                "with_positive_pbp_event_flags": positive_rows,
+                "positive_pbp_flags_total": positive_flags,
+                "without_positive_pbp_flags_STILL_UNKNOWN": len(scoped) - positive_rows,
+                "positive_source_examples": examples,
+                "no_positive_pbp_signal_implies_zero": False,
+            }
+        full_signal = {
+            "status": "HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT",
+            "by_source_stat": full_by_stat,
+            "missing_count_labels_promoted": 0,
+            "source_rights_independently_approved": False,
+            "can_execute": False,
+        }
     return {
         "status": "HOLD_PBP_PRESENCE_ONLY",
         "scope": canonical["scope"],
         "mapped_missing_player_games": canonical["missing_player_games"],
         "unmapped_pfr_player_games": canonical["unmapped_pfr_player_games"],
         "pbp_presence_counts": counts,
+        "missing_full_cohort_pbp_signals": full_signal,
         "missing_player_game_review_examples": review_examples,
         "pbp_matched_positive_control": control,
         "pbp_positive_opportunity_control": positive_control,
