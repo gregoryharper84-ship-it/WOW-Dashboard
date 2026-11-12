@@ -250,3 +250,15 @@ def test_away_soccer_quarter_line_correct_half_settlement():
                   [final('SOCCER',hs=2,aws=2)])
         assert r['rows'][0]['grade_status'] == expected
         assert r['rows'][0]['selected_signed_line'] == -line
+
+
+def test_tennis_match_winner_may_differ_from_game_handicap_units():
+    # Match winner is defined by sets, not total games: a 2-1 sets winner
+    # can win fewer individual games than the opponent.
+    p = pick('TENNIS', line=4.5, side='HOME')
+    official = final('TENNIS', home_games=15, away_games=20,
+                     home_sets=2, away_sets=1, winning_side='HOME')
+    report = audit([event('TENNIS')], [p], [official])
+    assert report['card_complete'] is True
+    assert report['rows'][0]['grade_status'] == 'LOSS'
+    assert report['settlement_complete'] is True
