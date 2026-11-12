@@ -63,6 +63,36 @@ def test_excluded_pass_events_never_count_as_box_score_attempts(
     assert sum(counts["completions"].values()) == 0
 
 
+def test_qb_spike_source_passing_attempt_remains_a_count_candidate(
+    tmp_path, monkeypatch,
+):
+    """A spike is an NFL incompletion and must not vanish from attempt audit."""
+    row = _play(play_type="qb_spike", qb_spike=1, complete_pass=0,
+                receiver_player_id="")
+    counts, _, info = mod.read_pinned_pbp_signals(
+        _synthetic(tmp_path, monkeypatch, pd.DataFrame([row])), 2024,
+    )
+    assert counts["attempts"][("2024_01_BAL_KC", "00-0032222")] == 1
+    assert not counts["completions"]
+    assert info["administrative_play_rows"]["qb_spike_attributed"] == 1
+
+
+def test_qb_kneel_is_included_only_in_research_carry_candidate(
+    tmp_path, monkeypatch,
+):
+    """Weekly official carries include verified quarterback kneeldowns."""
+    row = _play(play_id=45, play_type="qb_kneel",
+                pass_attempt=0, complete_pass=0, rush_attempt=1,
+                passer_player_id="", receiver_player_id="",
+                rusher_player_id="00-0032222")
+    counts, _, info = mod.read_pinned_pbp_signals(
+        _synthetic(tmp_path, monkeypatch, pd.DataFrame([row])), 2024,
+    )
+    assert counts["carries"][("2024_01_BAL_KC", "00-0032222")] == 1
+    assert not counts["attempts"]
+    assert info["administrative_play_rows"]["qb_kneel_attributed"] == 1
+
+
 def test_rush_event_counts_only_rusher(tmp_path, monkeypatch):
     row = _play(play_id=44, play_type="run", pass_attempt=0, complete_pass=0,
                 rush_attempt=1, passer_player_id="", receiver_player_id="",

@@ -150,3 +150,14 @@
 - **prevention_artifact:** scripts/audit_nfl_count_prop_pbp_stats.py; tests/test_nfl_count_prop_pbp_stats.py negative duplicate/flag/sack/spike/two-point/no-play and noncertifying comparison; PR-scoped hosted observation receipt. Exact-head CI and real-data validation pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; fitted model, calibration, semantic certification and protected release remain HOLD, can_execute=false, V17_TERMINAL_REDUCER.
+
+## PBP administrative-play source misclassification — 2026-11-11
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT
+- **mechanism:** Exact actual PBP-vs-weekly source audit run 43125527946 showed 302/3,123 positive QB-attempt player-games undercounted and 1,234/11,141 positive carry player-games undercounted, with zero PBP-overcount cases; completions (3,068), passing TDs (2,166), receptions (19,154) and targets (21,330) matched their positive weekly rows without a single discrepancy. nflfastR references show passing EPA includes play_type qb_spike while rushing EPA includes qb_kneel; official player carries include kneels. This predicts the 302 and 1,234 lower groups will shrink when correctly attributed spikes and kneels are included in the provisional event comparison.
+- **detection_point:** Independent six-stat event-level positive-weekly comparison, before using any missing weekly count as training/settlement label.
+- **fix:** Include pass_attempt=1, sack=0, qb_spike=1 + play_type=qb_spike in passing count diagnostics and include rush_attempt=1 + play_type=qb_kneel in carry diagnostics. Retain strict two-point exclusion, invalid/inconsistent events, no-play rejection, and zero-imputation prohibition. Emit observed source spike/kneel attribution counts for causal verification.
+- **prevention_artifact:** tests/test_nfl_count_prop_pbp_stats.py synthetic QB spike/kneel positive regressions, plus existing exact-head hosted real-source skip comparison. Not a model or settlement rule certification.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; source-research only, can_execute=false and V17_TERMINAL_REDUCER.

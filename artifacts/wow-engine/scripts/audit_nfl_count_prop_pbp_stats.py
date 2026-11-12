@@ -49,6 +49,8 @@ def read_pinned_pbp_signals(
     seen_plays: set[tuple[str, str]] = set()
     unknown = {flag: 0 for flag in FLAGS}
     unattributed = {name: 0 for name in SOURCE_ROLES}
+    special = {"qb_spike_rows": 0, "qb_kneel_rows": 0,
+               "qb_spike_attributed": 0, "qb_kneel_attributed": 0}
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(blob)) as source:
             for frame in pd.read_csv(source, usecols=list(FIELDS), dtype=str,
@@ -69,6 +71,21 @@ def read_pinned_pbp_signals(
                         or not pd.to_numeric(ids[1], errors="coerce").eq(week).all()):
                     raise ValueError("NFL_PROP_PBP_EVENT_SCHEMA_INVALID:" + str(season) + ":game_id")
                 games.update(reg["game_id"].astype(str).str.strip())
+                # Two NFL box-score count definitions include administrative
+                # plays: spikes are incompletions/attempts; kneels are carries.
+                # Record source-attribution evidence before applying filters.
+                special["qb_spike_rows"] += int(reg["play_type"].eq("qb_spike").sum())
+                special["qb_kneel_rows"] += int(reg["play_type"].eq("qb_kneel").sum())
+                special["qb_spike_attributed"] += int(
+                    (reg["play_type"].eq("qb_spike")
+                     & reg["passer_player_id"].notna()
+                     & pd.to_numeric(reg["pass_attempt"], errors="coerce").eq(1)).sum()
+                )
+                special["qb_kneel_attributed"] += int(
+                    (reg["play_type"].eq("qb_kneel")
+                     & reg["rusher_player_id"].notna()
+                     & pd.to_numeric(reg["rush_attempt"], errors="coerce").eq(1)).sum()
+                )
                 actor = reg.loc[:, ("passer_player_id", "receiver_player_id",
                                     "rusher_player_id")].notna().any(axis=1)
                 relevant = reg.loc[actor].copy()
@@ -89,12 +106,19 @@ def read_pinned_pbp_signals(
                     unknown[field] += int(values.isna().sum())
                     relevant[field] = values
                 normal = relevant["two_point_attempt"].eq(0)
-                passing = (normal & relevant["pass_attempt"].eq(1)
-                           & relevant["sack"].eq(0)
-                           & relevant["qb_spike"].eq(0)
-                           & relevant["play_type"].eq("pass"))
-                rushing = (normal & relevant["rush_attempt"].eq(1)
-                           & relevant["play_type"].eq("run"))
+                passing = (
+                    normal & relevant["pass_attempt"].eq(1)
+                    & relevant["sack"].eq(0)
+                    & (
+                        (relevant["play_type"].eq("pass") & relevant["qb_spike"].eq(0))
+                        | (relevant["play_type"].eq("qb_spike")
+                           & relevant["qb_spike"].eq(1))
+                    )
+                )
+                rushing = (
+                    normal & relevant["rush_attempt"].eq(1)
+                    & relevant["play_type"].isin(("run", "qb_kneel"))
+                )
                 specs = {
                     "attempts": ("passer_player_id", passing),
                     "completions": ("passer_player_id", passing & relevant["complete_pass"].eq(1)),
@@ -117,7 +141,8 @@ def read_pinned_pbp_signals(
         raise ValueError("NFL_PROP_PBP_SOURCE_UNREADABLE:" + str(season)) from exc
     if not games:
         raise ValueError("NFL_PROP_PBP_EVENT_SCHEMA_INVALID:" + str(season) + ":empty")
-    return counts, games, {"flag_nulls": unknown, "unattributed": unattributed}
+    return counts, games, {"flag_nulls": unknown, "unattributed": unattributed,
+                           "administrative_play_rows": special}
 
 
 def compare_weekly_source_to_pbp_signals(
