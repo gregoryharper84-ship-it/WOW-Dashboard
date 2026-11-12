@@ -224,3 +224,89 @@ def test_pbp_all_zero_weekly_opportunities_do_not_prove_identity_alignment(sourc
     assert result["status"] == "HOLD_PBP_PRESENCE_ONLY"
     assert result["missing_actor_means_zero"] is False
     assert result["can_execute"] is False
+
+
+class FTNResponse(__import__("io").BytesIO):
+    def __init__(self, data, url="https://release-assets.githubusercontent.com/ftn"):
+        super().__init__(data)
+        self.url = url
+
+    def geturl(self):
+        return self.url
+
+
+def _ftn_source(monkeypatch, **changes):
+    import io
+    game = "2025_01_DAL_PHI"
+    row = {
+        "nflverse_game_id": game,
+        "play_id": "108",
+        "offense_players": "00-0032222;00-0031111",
+    }
+    row.update(changes)
+    payload = pd.DataFrame([row]).to_csv(index=False).encode()
+    monkeypatch.setattr(mod, "FTN_PARTICIPATION_2025_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(mod, "FTN_PARTICIPATION_2025_BYTES", len(payload))
+    return payload
+
+
+def test_ftn_2025_offensive_participants_are_presence_not_stat_labels(monkeypatch):
+    content = _ftn_source(monkeypatch)
+    games, participants, receipt = mod.read_verified_ftn_2025_offense_presence(
+        open_url=lambda *a, **k: FTNResponse(content),
+    )
+    assert games == {"2025_01_DAL_PHI"}
+    assert participants == {
+        ("2025_01_DAL_PHI", "00-0032222"),
+        ("2025_01_DAL_PHI", "00-0031111"),
+    }
+    assert receipt["status"] == "HOLD_FTN_OFFENSE_PRESENCE_RESEARCH_ONLY"
+    assert receipt["license"] == "CC-BY-SA-4.0"
+    assert receipt["attribution"] == "FTN Data via nflverse"
+    assert receipt["participation_proves_missing_count_zero"] is False
+    assert receipt["fitted_specialist_certified"] is False
+    assert receipt["can_execute"] is False
+
+
+def test_ftn_source_mutated_bytes_fail_digest_before_participant_extraction(monkeypatch):
+    original = _ftn_source(monkeypatch)
+    modified = original.replace(b"00-0031111", b"00-0039999")
+    assert len(modified) == len(original)
+    with pytest.raises(ValueError, match="NFL_PROP_FTN_PARTICIPATION_DIGEST_MISMATCH"):
+        mod.read_verified_ftn_2025_offense_presence(
+            open_url=lambda *a, **k: FTNResponse(modified),
+        )
+
+
+@pytest.mark.parametrize("changed,code", [
+    ({"nflverse_game_id": "2024_01_DAL_PHI"}, "game_id"),
+    ({"nflverse_game_id": "2025_01_DAL_PHI_EXTRA"}, "game_id"),
+    ({"play_id": "unknown"}, "play_id"),
+    ({"offense_players": "00-0031111;WRONG_ID"}, "offense_players"),
+    ({"offense_players": "00-0031111;00-0031111"}, "offense_players"),
+])
+def test_ftn_source_malformed_event_or_player_identity_fails_closed(monkeypatch, changed, code):
+    content = _ftn_source(monkeypatch, **changed)
+    with pytest.raises(ValueError, match=f"NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:{code}"):
+        mod.read_verified_ftn_2025_offense_presence(
+            open_url=lambda *a, **k: FTNResponse(content),
+        )
+
+
+def test_ftn_source_redirect_outside_approved_release_hosts_is_rejected(monkeypatch):
+    content = _ftn_source(monkeypatch)
+    with pytest.raises(ValueError, match="NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED"):
+        mod.read_verified_ftn_2025_offense_presence(
+            open_url=lambda *a, **k: FTNResponse(content, "https://evil.example.com/data"),
+        )
+
+
+def test_ftn_source_missing_offense_field_fails_closed(monkeypatch):
+    content = _ftn_source(monkeypatch)
+    corrupt = pd.DataFrame([{"nflverse_game_id": "2025_01_DAL_PHI", "play_id": "1"}]).to_csv(index=False).encode()
+    monkeypatch.setattr(mod, "FTN_PARTICIPATION_2025_SHA256", hashlib.sha256(corrupt).hexdigest())
+    monkeypatch.setattr(mod, "FTN_PARTICIPATION_2025_BYTES", len(corrupt))
+    with pytest.raises(ValueError, match="NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:columns"):
+        mod.read_verified_ftn_2025_offense_presence(
+            open_url=lambda *a, **k: FTNResponse(corrupt),
+        )
