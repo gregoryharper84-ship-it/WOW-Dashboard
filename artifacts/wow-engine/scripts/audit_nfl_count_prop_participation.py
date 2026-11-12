@@ -142,6 +142,77 @@ def audit_observed_l10_history_gap_exposure(
 
 
 
+
+def summarize_missingness_selection_diagnostic(
+    breakdown: dict[str, object],
+) -> dict[str, object]:
+    """Report outcome-blind missingness disparities, never certify sampling bias.
+
+    Denominators are snap-positive player-games in the already reconciled
+    source. Missing and unmapped outcomes remain UNKNOWN; the percentages
+    describe source completeness, not fitted hit probabilities.
+    """
+    invalid = "NFL_PROP_PARTICIPATION_SNAP_INVALID:missingness_counts"
+    categories = {
+        "season": tuple(str(year) for year in SEASONS),
+        "position": ("QB", "RB", "WR", "TE"),
+        "snap_band": ("1-9", "10-24", "25-49", "50+"),
+    }
+    fields = ("matched_stats", "mapped_missing_stats", "unmapped_identity")
+    if not isinstance(breakdown, dict) or set(breakdown) != set(categories):
+        raise ValueError(invalid)
+    reference_totals = None
+    report = {}
+    for dimension, keys in categories.items():
+        groups = breakdown[dimension]
+        if not isinstance(groups, dict) or set(groups) != set(fields):
+            raise ValueError(invalid)
+        if any(not isinstance(groups[field], dict)
+               or set(groups[field]) != set(keys) for field in fields):
+            raise ValueError(invalid)
+        totals = {field: 0 for field in fields}
+        per_category = {}
+        for key in keys:
+            values = [groups[field][key] for field in fields]
+            if any(type(value) is not int or value < 0 for value in values):
+                raise ValueError(invalid)
+            matched, missing, unmapped = values
+            for field, value in zip(fields, values):
+                totals[field] += value
+            count = matched + missing + unmapped
+            per_category[key] = {
+                "source_matched": matched,
+                "mapped_missing": missing,
+                "unmapped_identity": unmapped,
+                "all_snap_positive_player_games": count,
+                "unrecorded_share_pct": (
+                    round(100 * (missing + unmapped) / count, 2)
+                    if count else None
+                ),
+            }
+        if reference_totals is None:
+            reference_totals = totals
+        elif totals != reference_totals:
+            raise ValueError(invalid)
+        report[dimension] = per_category
+    if reference_totals is None:
+        raise ValueError(invalid)
+    return {
+        "status": "HOLD_PARTICIPATION_SELECTION_UNKNOWN",
+        "scope": "snap_positive_participant_games_descriptive_source_completeness",
+        "total_snap_positive_player_games": sum(reference_totals.values()),
+        "unresolved_player_games": (
+            reference_totals["mapped_missing_stats"]
+            + reference_totals["unmapped_identity"]
+        ),
+        "by_dimension": report,
+        "outcome_sampling_bias_direction_known": False,
+        "unobserved_count_labels_reconstructed": False,
+        "training_authorized": False,
+        "can_execute": False,
+    }
+
+
 def summarize_known_gap_excluded_candidate_splits(
     exposure: dict[str, object],
 ) -> dict[str, object]:
@@ -375,6 +446,7 @@ def reconcile_player_games(
             "mapped_missing_stats": _histogram(missing, dimension),
             "unmapped_identity": _histogram(unmapped, dimension),
         }
+    missingness_diagnostic = summarize_missingness_selection_diagnostic(strata)
     # Upper bound on potential fitted-candidate label loss.  These are
     # *prior known weekly rows*, not a fitted feature audit or zero-stat proof.
     # Any historical position changes can only lower true route eligibility.
@@ -431,6 +503,7 @@ def reconcile_player_games(
         "unmapped_profile_total_pfr_ids": int(len(unmapped_profiles)),
         "missing_weekly_label_history_exposure": history_exposure,
         "participation_breakdown": strata,
+        "missingness_selection_diagnostic": missingness_diagnostic,
         "missing_examples": examples.head(20).to_dict(orient="records"),
         "unmapped_examples": unknown_examples.head(20).to_dict(orient="records"),
         "status": "HOLD_UNRESOLVED_PARTICIPATION" if defects else "RESEARCH_COVERAGE_RECONCILED_ONLY",
