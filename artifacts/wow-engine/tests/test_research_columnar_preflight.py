@@ -116,6 +116,8 @@ def test_database_sql_uses_bound_values_and_closes_session(monkeypatch):
     seen = []
 
     class FakeCursor:
+        description = [(name,) for name in sorted(m._REQUIRED_COLUMNS)]
+
         def fetchone(self):
             return tuple(metrics().values())
 
@@ -135,8 +137,9 @@ def test_database_sql_uses_bound_values_and_closes_session(monkeypatch):
     monkeypatch.setattr(m.importlib, "import_module", lambda _: FakeDuckDB())
     out = m._duckdb_scan(["/tmp/one.parquet"], "NBA' or 1=1 --", 2025)
     assert out["row_count"] == 4
-    assert seen[0][1] == ["NBA' or 1=1 --", "2025", ["/tmp/one.parquet"]]
-    assert "NBA' or 1=1" not in seen[0][0]
+    assert seen[0][1] == ["/tmp/one.parquet"]
+    assert seen[1][1] == ["NBA' or 1=1 --", "2025", ["/tmp/one.parquet"]]
+    assert "NBA' or 1=1" not in seen[1][0]
     assert seen[-1] == "closed"
 
 
@@ -310,3 +313,52 @@ def test_parquet_columns_swapped_across_files_do_not_hide_future_features(tmp_pa
 def test_parquet_scan_contract_uses_column_alignment_and_prestart_quotes():
     assert "union_by_name = true" in m._QUERY
     assert "quote_captured_epoch AS BIGINT) >= TRY_CAST(event_start_epoch" in m._QUERY
+
+
+def test_each_parquet_file_is_checked_for_required_columns_even_without_duckdb(monkeypatch):
+    calls = []
+
+    class FakeSchema:
+        description = [(name,) for name in sorted(m._REQUIRED_COLUMNS - {"quote_captured_epoch"})]
+
+    class FakeConnection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if sql.startswith("SELECT *"):
+                return FakeSchema()
+            raise AssertionError("aggregate must not run when per-file schema is incomplete")
+
+        def close(self):
+            calls.append("closed")
+
+    class FakeDuckDB:
+        def connect(self, database):
+            assert database == ":memory:"
+            return FakeConnection()
+
+    monkeypatch.setattr(m.importlib, "import_module", lambda _: FakeDuckDB())
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_SCHEMA_INVALID"):
+        m._duckdb_scan(["/frozen/nonmarket_missing_quote_column.parquet"], "NBA", 2025)
+    assert calls[-1] == "closed"
+    assert len(calls) == 2
+
+
+def test_disappearing_source_root_produces_typed_hold(tmp_path, monkeypatch):
+    root, _, manifest_path, _ = fixture(tmp_path)
+    original_resolve = m.Path.resolve
+
+    def disappear(self, strict=False):
+        if self == root:
+            raise FileNotFoundError("root disappeared")
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(m.Path, "resolve", disappear)
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_SOURCE_UNAVAILABLE"):
+        m.audit(manifest_path, root, scanner=lambda *_: metrics())
+
+
+def test_per_file_schema_contract_is_mandatory():
+    assert m._REQUIRED_COLUMNS == frozenset({
+        "sport", "season", "observation_id", "event_id", "event_start_epoch",
+        "feature_available_epoch", "is_market_observation", "quote_captured_epoch",
+    })
