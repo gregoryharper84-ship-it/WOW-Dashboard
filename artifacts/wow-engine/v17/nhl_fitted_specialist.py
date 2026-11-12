@@ -47,11 +47,16 @@ SOURCE_POLICY_ID = "NHL_PUBLIC_WEB_API"
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
 SOURCE_TABLE = "wow_d1_source_events"
 TIMELINE_RECEIPT_TABLE = "wow_nhl_season_timeline_receipts"
+REINGEST_LEASE_TABLE = "wow_nhl_source_reingest_leases"
 # Maximum age of a persisted season timeline receipt before scoring fails closed.
 # Narrows the missing-history window between settlement and the next re-ingest;
 # it does not replace running re-ingest after settlement windows.
 RECEIPT_MAX_AGE = timedelta(hours=24)
 RECEIPT_FUTURE_SKEW = timedelta(minutes=5)
+REINGEST_LEASE_TTL = timedelta(minutes=15)
+SETTLED_SCHEDULE_STATES = frozenset({"FINAL", "OFF"})
+UNSETTLED_SCHEDULE_STATES = frozenset({"FUT", "PRE", "SCHED", "LIVE", "CRIT"})
+SCHEDULE_COVERAGE_SOURCE = "NHL_PUBLIC_WEB_API_SEASON_SCHEDULE"
 
 # Exact training constants/feature order. A regression test asserts these stay
 # identical to nhl_candidate_pipeline so the registry artifact cannot be fed a
@@ -1155,17 +1160,34 @@ def persist_nhl_season_timeline_receipt(db: Any, receipt: Mapping[str, Any]) -> 
         )
     season = str(receipt.get("season") or "").strip()
     settled = receipt.get("settled_events")
-    if not season or not isinstance(settled, list):
+    scheduled = receipt.get("scheduled_events")
+    digest = str(receipt.get("schedule_digest") or "").strip().lower()
+    if not season or not isinstance(settled, list) or not isinstance(scheduled, list):
         raise NHLFittedSpecialistError(
             "MODEL_INPUTS_INSUFFICIENT",
             ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
             {"reason": "SOURCE_TIMELINE_RECEIPT_INVALID"},
+        )
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SCHEDULE_DIGEST_MISSING"},
+        )
+    if str(receipt.get("season_scope") or "") != "FULL_SEASON":
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_RECEIPT_PARTIAL_SCOPE"},
         )
     row = {
         "season": season,
         "provenance_complete": True,
         "season_scope": "FULL_SEASON",
         "settled_events": list(settled),
+        "scheduled_events": list(scheduled),
+        "schedule_digest": digest,
+        "schedule_retrieved_at": str(receipt.get("schedule_retrieved_at") or ""),
         "verified_at": str(receipt.get("verified_at") or datetime.now(timezone.utc).isoformat()),
         "ingest_code_sha": str(receipt.get("ingest_code_sha") or ""),
         "source": str(receipt.get("source") or "NHL_SOURCE_REINGEST"),
@@ -1180,6 +1202,8 @@ def persist_nhl_season_timeline_receipt(db: Any, receipt: Mapping[str, Any]) -> 
         "status": "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED",
         "season": season,
         "settled_event_n": len(settled),
+        "scheduled_event_n": len(scheduled),
+        "schedule_digest": digest,
         "written": len(getattr(result, "data", None) or []),
         "can_execute": False,
     }
@@ -1193,6 +1217,7 @@ def load_nhl_season_timeline_receipt(db: Any, *, season: int | str) -> dict[str,
         db.table(TIMELINE_RECEIPT_TABLE)
         .select(
             "season,provenance_complete,season_scope,settled_events,"
+            "scheduled_events,schedule_digest,schedule_retrieved_at,"
             "verified_at,ingest_code_sha,source"
         )
         .eq("season", str(season))
@@ -1229,6 +1254,19 @@ def timeline_receipt_for_target(
             "MODEL_INPUTS_INSUFFICIENT",
             ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
             {"reason": "SOURCE_TIMELINE_SEASON_MISMATCH"},
+        )
+    digest = str(stored.get("schedule_digest") or "").strip().lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SCHEDULE_DIGEST_MISSING"},
+        )
+    if not isinstance(stored.get("scheduled_events"), list):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SCHEDULE_COVERAGE_INVALID"},
         )
     settled = stored.get("settled_events")
     if not isinstance(settled, list):
@@ -1270,13 +1308,157 @@ def timeline_receipt_for_target(
     }
 
 
+def build_independent_schedule_coverage(
+    schedule_events: Iterable[Mapping[str, Any]],
+    *,
+    season: int | str,
+    retrieved_at: str,
+    source: str = SCHEDULE_COVERAGE_SOURCE,
+) -> dict[str, Any]:
+    """Build independent season-schedule coverage including unsettled games.
+
+    Settled V2 rows alone cannot self-attest FULL_SEASON completeness. The
+    official schedule denominator must be supplied separately and digest-bound.
+    """
+    season_token = str(season or "").strip()
+    retrieved = str(retrieved_at or "").strip()
+    if not season_token or not retrieved or _aware(retrieved) is None:
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_SCHEDULE_COVERAGE_INVALID"},
+        )
+    by_id: dict[str, dict[str, str]] = {}
+    for raw in schedule_events:
+        if not isinstance(raw, Mapping):
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+                {"reason": "SOURCE_SCHEDULE_EVENT_INVALID"},
+            )
+        event_id = str(raw.get("official_event_id") or "").strip()
+        start = _aware(raw.get("event_start_time"))
+        state = str(raw.get("game_state") or "").strip().upper()
+        game_type = raw.get("game_type")
+        if not event_id or start is None:
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+                {"reason": "SOURCE_SCHEDULE_EVENT_INVALID"},
+            )
+        if type(game_type) is not int or game_type != 2:
+            continue
+        if state not in SETTLED_SCHEDULE_STATES | UNSETTLED_SCHEDULE_STATES:
+            continue
+        item = {
+            "official_event_id": event_id,
+            "event_start_time": start.isoformat(),
+            "game_state": state,
+        }
+        existing = by_id.get(event_id)
+        if existing is not None and existing != item:
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+                {
+                    "reason": "SOURCE_SCHEDULE_EVENT_IDENTITY_CONFLICT",
+                    "official_event_id": event_id,
+                },
+            )
+        by_id[event_id] = item
+    ordered = sorted(
+        by_id.values(),
+        key=lambda row: (row["event_start_time"], row["official_event_id"]),
+    )
+    settled = [row for row in ordered if row["game_state"] in SETTLED_SCHEDULE_STATES]
+    scheduled = [
+        row for row in ordered if row["game_state"] in UNSETTLED_SCHEDULE_STATES
+    ]
+    digest_payload = {
+        "season": season_token,
+        "events": [
+            {
+                "official_event_id": row["official_event_id"],
+                "event_start_time": row["event_start_time"],
+                "game_state": row["game_state"],
+            }
+            for row in ordered
+        ],
+    }
+    digest = _sha256(digest_payload)
+    return {
+        "season": season_token,
+        "settled_event_ids": [row["official_event_id"] for row in settled],
+        "scheduled_or_unsettled_event_ids": [
+            row["official_event_id"] for row in scheduled
+        ],
+        "all_event_ids": [row["official_event_id"] for row in ordered],
+        "settled_events": [
+            {
+                "official_event_id": row["official_event_id"],
+                "event_start_time": row["event_start_time"],
+            }
+            for row in settled
+        ],
+        "scheduled_events": [
+            {
+                "official_event_id": row["official_event_id"],
+                "event_start_time": row["event_start_time"],
+                "game_state": row["game_state"],
+            }
+            for row in scheduled
+        ],
+        "schedule_digest": digest,
+        "schedule_retrieved_at": retrieved,
+        "source": str(source or SCHEDULE_COVERAGE_SOURCE),
+        "can_execute": False,
+    }
+
+
 def build_reingest_timeline_receipt(
     verified_rows: Iterable[Mapping[str, Any]],
     *,
     season: int | str,
     ingest_code_sha: str,
+    schedule_coverage: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Build a persistable full-season receipt from verified V2 settled rows."""
+    """Build a persistable full-season receipt from verified V2 settled rows.
+
+    FULL_SEASON requires independently sourced schedule coverage. A valid
+    settled subset cannot self-attest completeness.
+    """
+    if not isinstance(schedule_coverage, Mapping):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SCHEDULE_COVERAGE_MISSING"},
+        )
+    if str(schedule_coverage.get("season") or "") != str(season):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SEASON_MISMATCH"},
+        )
+    expected_settled = {
+        str(item).strip()
+        for item in (schedule_coverage.get("settled_event_ids") or [])
+        if str(item).strip()
+    }
+    digest = str(schedule_coverage.get("schedule_digest") or "").strip().lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SCHEDULE_DIGEST_MISSING"},
+        )
+    scheduled_events = schedule_coverage.get("scheduled_events")
+    if not isinstance(scheduled_events, list):
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {"reason": "SOURCE_TIMELINE_SCHEDULE_COVERAGE_INVALID"},
+        )
+
     settled_events: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in verified_rows:
@@ -1294,7 +1476,7 @@ def build_reingest_timeline_receipt(
             continue
         if type(outcome.get("neutral_site")) is not bool:
             continue
-        if str(outcome.get("game_state") or "").upper() not in {"FINAL", "OFF"}:
+        if str(outcome.get("game_state") or "").upper() not in SETTLED_SCHEDULE_STATES:
             continue
         start = _aware(row.get("event_start_time"))
         if start is None:
@@ -1307,14 +1489,122 @@ def build_reingest_timeline_receipt(
             }
         )
     settled_events.sort(key=lambda item: (item["event_start_time"], item["official_event_id"]))
+    observed = {item["official_event_id"] for item in settled_events}
+    if observed != expected_settled:
+        missing = sorted(expected_settled - observed)
+        unexpected = sorted(observed - expected_settled)
+        raise NHLFittedSpecialistError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+            {
+                "reason": "SOURCE_TIMELINE_SCHEDULE_COVERAGE_INCOMPLETE",
+                "missing_settled_event_n": len(missing),
+                "unexpected_settled_event_n": len(unexpected),
+                "missing_settled_event_ids": missing[:20],
+                "unexpected_settled_event_ids": unexpected[:20],
+            },
+        )
     return {
         "season": str(season),
         "provenance_complete": True,
         "season_scope": "FULL_SEASON",
         "settled_events": settled_events,
+        "scheduled_events": [
+            dict(item) for item in scheduled_events if isinstance(item, Mapping)
+        ],
+        "schedule_digest": digest,
+        "schedule_retrieved_at": str(
+            schedule_coverage.get("schedule_retrieved_at") or ""
+        ),
         "verified_at": datetime.now(timezone.utc).isoformat(),
         "ingest_code_sha": str(ingest_code_sha or ""),
         "source": "NHL_SOURCE_REINGEST",
+        "can_execute": False,
+    }
+
+
+def acquire_nhl_reingest_season_lease(
+    db: Any,
+    *,
+    season: int | str,
+    lease_token: str,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Acquire a season-scoped re-ingest lease; concurrent writers fail closed."""
+    if db is None:
+        return {
+            "status": "BLOCKED",
+            "code": "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE",
+            "can_execute": False,
+        }
+    now = now_utc or datetime.now(timezone.utc)
+    season_token = str(season or "").strip()
+    token = str(lease_token or "").strip()
+    if not season_token or not token:
+        return {
+            "status": "BLOCKED",
+            "code": "NHL_SOURCE_REINGEST_LEASE_INVALID",
+            "can_execute": False,
+        }
+    existing = (
+        db.table(REINGEST_LEASE_TABLE)
+        .select("season,lease_token,expires_at")
+        .eq("season", season_token)
+        .limit(1)
+        .execute()
+    )
+    rows = list(getattr(existing, "data", None) or [])
+    if rows:
+        current = rows[0]
+        expires = _aware(current.get("expires_at"))
+        holder = str(current.get("lease_token") or "")
+        if expires is not None and expires > now and holder and holder != token:
+            return {
+                "status": "BLOCKED",
+                "code": "NHL_SOURCE_REINGEST_IN_PROGRESS",
+                "detail": {"season": season_token, "retryable": True},
+                "can_execute": False,
+            }
+    row = {
+        "season": season_token,
+        "lease_token": token,
+        "acquired_at": now.isoformat(),
+        "expires_at": (now + REINGEST_LEASE_TTL).isoformat(),
+        "can_execute": False,
+    }
+    try:
+        db.table(REINGEST_LEASE_TABLE).upsert([row], on_conflict="season").execute()
+    except Exception as exc:  # noqa: BLE001 - lease conflict is a typed boundary
+        return {
+            "status": "BLOCKED",
+            "code": "NHL_SOURCE_REINGEST_IN_PROGRESS",
+            "detail": {"error_type": type(exc).__name__, "retryable": True},
+            "can_execute": False,
+        }
+    return {
+        "status": "NHL_SOURCE_REINGEST_LEASE_ACQUIRED",
+        "season": season_token,
+        "lease_token": token,
+        "expires_at": row["expires_at"],
+        "can_execute": False,
+    }
+
+
+def release_nhl_reingest_season_lease(
+    db: Any, *, season: int | str, lease_token: str
+) -> dict[str, Any]:
+    """Release a previously acquired season re-ingest lease."""
+    if db is None:
+        return {"status": "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED", "can_execute": False}
+    season_token = str(season or "").strip()
+    token = str(lease_token or "").strip()
+    query = db.table(REINGEST_LEASE_TABLE).delete().eq("season", season_token)
+    if hasattr(query, "eq"):
+        query = query.eq("lease_token", token)
+    query.execute()
+    return {
+        "status": "NHL_SOURCE_REINGEST_LEASE_RELEASED",
+        "season": season_token,
         "can_execute": False,
     }
 
@@ -1471,6 +1761,13 @@ __all__ = [
     "RECEIPT_FUTURE_SKEW",
     "RECEIPT_MAX_AGE",
     "TIMELINE_RECEIPT_TABLE",
+    "REINGEST_LEASE_TABLE",
+    "REINGEST_LEASE_TTL",
+    "SCHEDULE_COVERAGE_SOURCE",
+    "SETTLED_SCHEDULE_STATES",
+    "UNSETTLED_SCHEDULE_STATES",
+    "acquire_nhl_reingest_season_lease",
+    "build_independent_schedule_coverage",
     "build_official_club_timeline_receipt",
     "build_official_season_timeline_receipt",
     "build_reingest_timeline_receipt",
@@ -1481,6 +1778,7 @@ __all__ = [
     "load_nhl_season_timeline_receipt",
     "persist_nhl_season_timeline_receipt",
     "reconstruct_nhl_pregame_features",
+    "release_nhl_reingest_season_lease",
     "reset_nhl_fitted_registry_provider",
     "reset_nhl_timeline_receipt_provider",
     "resolve_nhl_timeline_receipt",

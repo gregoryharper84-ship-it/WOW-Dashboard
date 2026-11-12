@@ -66,6 +66,10 @@ class _Query:
         self.range_ = (int(start), int(end))
         return self
 
+    def delete(self):
+        self.mode = "delete"
+        return self
+
     def upsert(self, payload, *, on_conflict=None, ignore_duplicates=False):
         self.mode = "upsert"
         self.payload = [dict(item) for item in payload]
@@ -83,7 +87,8 @@ class _Query:
                     if payload.get("official_event_id") in self.db.ignored_event_ids:
                         continue
                     if (
-                        self.db.fail_after_upserts is not None
+                        self.table_name != fitted.REINGEST_LEASE_TABLE
+                        and self.db.fail_after_upserts is not None
                         and self.db.upsert_attempts >= self.db.fail_after_upserts
                     ):
                         raise RuntimeError("simulated write failure")
@@ -107,9 +112,21 @@ class _Query:
                         row.setdefault("candidate_id", f"candidate-{len(rows)}")
                     rows.append(row)
                     inserted.append(row)
-                self.db.upsert_attempts += 1
+                if self.table_name != fitted.REINGEST_LEASE_TABLE:
+                    self.db.upsert_attempts += 1
                 self.db.operations.append((self.table_name, "upsert", len(inserted)))
                 return SimpleNamespace(data=inserted)
+        if self.mode == "delete":
+            with self.db.lock:
+                kept = [
+                    row
+                    for row in rows
+                    if not all(row.get(key) == value for key, value in self.filters)
+                ]
+                deleted = len(rows) - len(kept)
+                rows[:] = kept
+                self.db.operations.append((self.table_name, "delete", deleted))
+                return SimpleNamespace(data=[{"deleted": deleted}])
 
         matched = [
             row for row in rows
@@ -183,7 +200,17 @@ def _normalized_games(fixture: dict) -> list[pipeline.NHLGame]:
     ]
 
 
-def _run(db=None, session=None, *, dry_run=False, teams=("BOS", "PIT")):
+def _run(
+    db=None,
+    session=None,
+    *,
+    dry_run=False,
+    teams=("BOS", "PIT"),
+    rights_approved=True,
+):
+    # Unit tests simulate an engineering-authorized write path. Production
+    # live writes remain behind NHL_SOURCE_RIGHTS_HOLD unless explicitly
+    # approved via env or rights_approved=True at an authorized boundary.
     return reingest.run_nhl_source_reingest(
         db or _FakeDB(),
         season=int(SEASON),
@@ -191,6 +218,7 @@ def _run(db=None, session=None, *, dry_run=False, teams=("BOS", "PIT")):
         session=session or _Session(_by_team(_fixture())),
         ingest_code_sha=INGEST_SHA,
         dry_run=dry_run,
+        rights_approved=rights_approved,
     )
 
 
@@ -310,7 +338,7 @@ def test_reingest_appends_genuine_2026_27_provenance_idempotently():
         )
         assert row["sport"] == "NHL" and row["league"] == "NHL"
         assert row["can_execute"] is False
-    assert all(mode in {"upsert", "select"} for _, mode, _ in db.operations)
+    assert all(mode in {"upsert", "select", "delete"} for _, mode, _ in db.operations)
 
     second = _run(db)
     assert second["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
@@ -856,11 +884,15 @@ def test_concurrent_reingest_attempts_are_idempotent():
     db = _FakeDB()
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: _run(db), range(2)))
-    assert all(
-        result["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
-        for result in results
-    )
-    assert all(result["provenance_complete"] is True for result in results)
+    statuses = {result["status"] for result in results}
+    # Season lease serializes writers: one run persists, a colliding peer holds.
+    assert "NHL_SOURCE_REINGEST_PERSISTED" in statuses
+    assert statuses <= {"NHL_SOURCE_REINGEST_PERSISTED", "BLOCKED"}
+    if "BLOCKED" in statuses:
+        blocked = next(result for result in results if result["status"] == "BLOCKED")
+        assert blocked["code"] == "NHL_SOURCE_REINGEST_IN_PROGRESS"
+    else:
+        assert all(result["provenance_complete"] is True for result in results)
     rows = db.rows["wow_d1_source_events"]
     assert len(rows) == 32
     assert len({row["official_event_id"] for row in rows}) == 32
@@ -905,6 +937,21 @@ def _install_corrected_acquisition(monkeypatch, games, **changes):
         replace(game, **changes) if game.game_id == games[0].game_id else game
         for game in games
     ]
+    schedule_events = [
+        {
+            "official_event_id": game.game_id,
+            "event_start_time": game.event_start_time,
+            "game_state": game.game_state,
+            "game_type": game.game_type,
+        }
+        for game in corrected
+    ]
+    retrieved_at = "2026-11-07T00:00:00+00:00"
+
+    def _corpus(*args, **kwargs):
+        return corrected, schedule_events, retrieved_at
+
+    monkeypatch.setattr(pipeline, "fetch_season_reingest_corpus", _corpus)
     monkeypatch.setattr(
         pipeline, "fetch_historical_games", lambda *args, **kwargs: corrected
     )

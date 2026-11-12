@@ -285,6 +285,25 @@ dropped row on the non-strict training path. Re-ingesting the same settled game
 first as `FINAL` and then as `OFF` keeps exactly one provenance row and never
 rewrites the persisted evidence.
 
+## 6b. Triple-D engineering gates landed on #2637 (2026-11-12)
+
+Fail-closed repairs now in source (still not production certification):
+
+1. **Independent FULL_SEASON schedule coverage** — `build_reingest_timeline_receipt` requires `build_independent_schedule_coverage` with a SHA-256 `schedule_digest`. A valid settled V2 subset cannot self-attest completeness. Scheduled/unsettled regular-season games are retained on the receipt.
+2. **Migration + concurrency** — `20261110_nhl_season_timeline_receipts.sql` now persists `scheduled_events` / `schedule_digest` / `schedule_retrieved_at` and adds `wow_nhl_source_reingest_leases`. Rollback SQL and contract tests are present. **Validation DB apply remains a governed migration action** (`to_regclass` still NULL on `iczfhsmjrrafhvcpmqhr` until authorized apply).
+3. **Current-season chronology** — one-pass `fetch_season_reingest_corpus` acquires settled plus unsettled schedule rows; no fabricated historical substitutes.
+4. **Source rights HOLD** — live re-ingest writes return `NHL_SOURCE_RIGHTS_HOLD` unless `WOW_NHL_SOURCE_RIGHTS_APPROVED` / authorized `rights_approved=True`. Dry-run remains available. Starting-goalie two-provider HOLDs are unchanged and still fail closed without independent official evidence.
+5. **Scorer reconciliation** — scoring continues to resolve the registry candidate + lifecycle calibrator + V2 provenance + exact current-game inputs server-side; timeline projection now also requires schedule digest coverage on the stored receipt.
+
+Blocked externally (do not bypass):
+
+- Authorized migration apply to validation/production Supabase
+- Explicit NHL source-rights approval for live 2026–27 append
+- Independent starting-goalie evidence for live events
+- Independent SIRT + protected QA/Release Apps on the exact new HEAD after restack
+
+`can_execute=false`; `V17_TERMINAL_REDUCER` unchanged; no model promotion.
+
 ## 7. Acceptance status
 
 | Requirement | Status |

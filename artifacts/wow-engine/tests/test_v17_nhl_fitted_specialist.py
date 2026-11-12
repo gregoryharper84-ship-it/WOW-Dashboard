@@ -173,6 +173,23 @@ def _legacy_event(event: dict) -> dict:
     return legacy
 
 
+def _schedule_coverage_for_events(events: list[dict], *, season: str = SEASON) -> dict:
+    """Independent schedule coverage matching a synthetic settled-only timeline."""
+    return nhl.build_independent_schedule_coverage(
+        [
+            {
+                "official_event_id": str(event["official_event_id"]),
+                "event_start_time": event["event_start_time"],
+                "game_state": str(event["outcome_json"]["game_state"]),
+                "game_type": 2,
+            }
+            for event in events
+        ],
+        season=season,
+        retrieved_at=NOW.isoformat(),
+    )
+
+
 def _timeline_receipt(
     events: list[dict],
     *,
@@ -568,6 +585,7 @@ def test_resolve_timeline_receipt_uses_persisted_full_season_receipt(monkeypatch
         events,
         season=SEASON,
         ingest_code_sha="b" * 40,
+        schedule_coverage=_schedule_coverage_for_events(events),
     )
     db = _DB(events=events, receipts=[])
     nhl.persist_nhl_season_timeline_receipt(db, stored)
@@ -616,6 +634,8 @@ def test_resolve_timeline_receipt_fail_closed_without_persisted_receipt(monkeypa
         (lambda row: {**row, "season_scope": "PARTIAL"}, "SOURCE_TIMELINE_RECEIPT_PARTIAL_SCOPE"),
         (lambda row: {**row, "season": "20992000"}, "SOURCE_TIMELINE_SEASON_MISMATCH"),
         (lambda row: {**row, "settled_events": {"bad": True}}, "SOURCE_TIMELINE_RECEIPT_INVALID"),
+        (lambda row: {**row, "schedule_digest": ""}, "SOURCE_TIMELINE_SCHEDULE_DIGEST_MISSING"),
+        (lambda row: {**row, "scheduled_events": None}, "SOURCE_TIMELINE_SCHEDULE_COVERAGE_INVALID"),
         (
             lambda row: {
                 **row,
@@ -636,7 +656,10 @@ def test_resolve_timeline_receipt_fail_closed_without_persisted_receipt(monkeypa
 def test_timeline_receipt_for_target_fail_closed_guards(mutate, reason):
     events = _events()
     stored = nhl.build_reingest_timeline_receipt(
-        events, season=SEASON, ingest_code_sha="c" * 40
+        events,
+        season=SEASON,
+        ingest_code_sha="c" * 40,
+        schedule_coverage=_schedule_coverage_for_events(events),
     )
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl.timeline_receipt_for_target(
@@ -660,7 +683,10 @@ def test_timeline_receipt_for_target_fail_closed_guards(mutate, reason):
 def test_persist_nhl_season_timeline_receipt_fail_closed(mutate):
     events = _events()
     stored = nhl.build_reingest_timeline_receipt(
-        events, season=SEASON, ingest_code_sha="d" * 40
+        events,
+        season=SEASON,
+        ingest_code_sha="d" * 40,
+        schedule_coverage=_schedule_coverage_for_events(events),
     )
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl.persist_nhl_season_timeline_receipt(_DB(receipts=[]), mutate(stored))

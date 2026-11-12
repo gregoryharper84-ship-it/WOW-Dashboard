@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
+import uuid
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from fastapi import FastAPI
@@ -30,9 +31,12 @@ from v17.d1_bulk_candidate_registry import persist_source_events_bulk
 from v17.d1_candidate_registry import D1RegistryError
 from v17.nhl_fitted_specialist import (
     NHLFittedSpecialistError,
+    acquire_nhl_reingest_season_lease,
+    build_independent_schedule_coverage,
     build_reingest_timeline_receipt,
     load_nhl_season_events,
     persist_nhl_season_timeline_receipt,
+    release_nhl_reingest_season_lease,
 )
 
 if TYPE_CHECKING:
@@ -241,6 +245,24 @@ def _identity_conflicts(
     return sorted(conflicted)
 
 
+def _source_rights_approved(explicit: bool | None) -> bool:
+    """Return whether live NHL source persistence is rights-approved.
+
+    Reachability of the public schedule API is not commercial training
+    permission. Dry-run remains available without approval; live writes hold.
+    """
+    if explicit is True:
+        return True
+    if explicit is False:
+        return False
+    return str(os.getenv("WOW_NHL_SOURCE_RIGHTS_APPROVED", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "approved",
+    }
+
+
 def run_nhl_source_reingest(
     db: Any,
     *,
@@ -250,13 +272,16 @@ def run_nhl_source_reingest(
     ingest_code_sha: str | None = None,
     dry_run: bool = False,
     max_games: int = DEFAULT_MAX_GAMES,
+    rights_approved: bool | None = None,
 ) -> dict[str, Any]:
     """Acquire settled official games and append V2 provenance rows.
 
     All games are acquired and validated before the first write. A source or
     identity failure therefore cannot leave a partially appended timeline.
+    FULL_SEASON receipts require independently sourced schedule coverage that
+    includes scheduled/unsettled games. Concurrent writers are lease-serialized.
     """
-    from nhl_candidate_pipeline import NHLCandidateError, fetch_historical_games
+    from nhl_candidate_pipeline import NHLCandidateError, fetch_season_reingest_corpus
 
     try:
         if season is None:
@@ -280,12 +305,38 @@ def run_nhl_source_reingest(
     if len(sha) < 7:
         return _blocked("NHL_INGEST_CODE_SHA_UNAVAILABLE", stage="PROVENANCE")
 
+    if not dry_run and not _source_rights_approved(rights_approved):
+        return _blocked(
+            "NHL_SOURCE_RIGHTS_HOLD",
+            stage="SOURCE_RIGHTS",
+            detail={
+                "reason": "NHL_SOURCE_RIGHTS_NOT_APPROVED",
+                "dry_run_allowed": True,
+                "note": "API reachability is not commercial training permission",
+            },
+        )
+
+    transport = session or requests
     try:
-        games = fetch_historical_games(
-            [start_year],
+        games, schedule_events, schedule_retrieved_at = fetch_season_reingest_corpus(
+            start_year,
             teams=tuple(teams) if teams is not None else None,
-            session=session or requests,
+            session=transport,
             strict=True,
+        )
+        schedule_coverage = build_independent_schedule_coverage(
+            schedule_events,
+            season=effective_season,
+            retrieved_at=schedule_retrieved_at,
+        )
+    except NHLFittedSpecialistError as exc:
+        reason = None
+        if isinstance(exc.detail, Mapping):
+            reason = exc.detail.get("reason")
+        return _blocked(
+            "NHL_SOURCE_SCHEDULE_COVERAGE_INVALID",
+            stage="SOURCE_ACQUISITION",
+            detail={"blockers": list(exc.blockers), "reason": reason},
         )
     except NHLCandidateError as exc:
         return _blocked(
@@ -358,6 +409,10 @@ def run_nhl_source_reingest(
             "season": str(effective_season),
             "source_event_n": len(rows),
             "event_ids": sorted(expected_events),
+            "schedule_digest": schedule_coverage.get("schedule_digest"),
+            "scheduled_event_n": len(
+                schedule_coverage.get("scheduled_or_unsettled_event_ids") or []
+            ),
             "provenance_version": SOURCE_PROVENANCE_VERSION,
             "ingest_code_sha": sha,
             "automatic_certification": False,
@@ -366,132 +421,168 @@ def run_nhl_source_reingest(
             "can_execute": False,
         }
 
-    try:
-        persistence = persist_source_events_bulk(db, rows)
-    except D1RegistryError as exc:
-        return _blocked(
-            exc.code,
-            stage="SOURCE_PERSISTENCE",
-            detail={"error_type": type(exc).__name__},
-        )
-    except Exception as exc:  # noqa: BLE001 - persistence is a typed boundary
-        return _blocked(
-            "NHL_SOURCE_PERSISTENCE_FAILED",
-            stage="SOURCE_PERSISTENCE",
-            detail={
-                "error_type": type(exc).__name__,
-                "retryable": True,
-                "partial_write_possible": True,
-            },
-        )
-
-    try:
-        verified = load_nhl_season_events(db, season=effective_season)
-    except NHLFittedSpecialistError as exc:
-        return {
-            "status": "NHL_SOURCE_REINGEST_PROVENANCE_UNVERIFIED",
-            "season": str(effective_season),
-            "source_event_n": len(rows),
-            "persistence": persistence,
-            "blockers": list(exc.blockers),
-            "provenance_complete": False,
-            "automatic_certification": False,
-            "automatic_promotion": False,
-            "probability_publishable": False,
-            "can_execute": False,
-        }
-    except Exception as exc:  # noqa: BLE001 - verification is a typed boundary
-        return _blocked(
-            "NHL_SOURCE_VERIFICATION_FAILED",
-            stage="SOURCE_VERIFICATION",
-            detail={
-                "error_type": type(exc).__name__,
-                "retryable": True,
-                "persistence": persistence,
-            },
-        )
-
-    # The preflight is check-then-write, so a concurrent writer or a correction
-    # that surfaced mid-run can still land a second identity. Verify the
-    # post-write season with the same invariant the reader enforces; a
-    # conflicted season must never be reported complete.
-    post_conflicts = _identity_conflicts(
-        rows, _v2_identities_from_rows(verified, expected_events)
+    lease_token = f"reingest-{uuid.uuid4().hex}"
+    lease = acquire_nhl_reingest_season_lease(
+        db, season=effective_season, lease_token=lease_token
     )
-    if post_conflicts:
+    if lease.get("status") != "NHL_SOURCE_REINGEST_LEASE_ACQUIRED":
         return _blocked(
-            "NHL_SOURCE_IDENTITY_CONFLICT",
-            stage="SOURCE_VERIFICATION",
-            detail={
-                "conflicting_event_n": len(post_conflicts),
-                "conflicting_event_ids": post_conflicts[:20],
-                "retryable": False,
-                "requires_append_only_correction_protocol": True,
-            },
+            str(lease.get("code") or "NHL_SOURCE_REINGEST_IN_PROGRESS"),
+            stage="SOURCE_LEASE",
+            detail=lease.get("detail"),
         )
 
-    provenanced: set[str] = set()
-    distinct: set[str] = set()
-    for row in verified:
-        event_id = str(row.get("official_event_id") or "")
-        if not event_id:
-            continue
-        distinct.add(event_id)
-        outcome = row.get("outcome_json")
-        if not isinstance(outcome, dict):
-            continue
-        if (
-            outcome.get("provenance_version") == SOURCE_PROVENANCE_VERSION
-            and type(outcome.get("game_type")) is int
-            and outcome.get("game_type") == 2
-            and type(outcome.get("neutral_site")) is bool
-            and str(outcome.get("game_state") or "").upper() in SETTLED_GAME_STATES
-        ):
-            provenanced.add(event_id)
-    complete = expected_events <= provenanced and distinct == expected_events
-    timeline_receipt: dict[str, Any] | None = None
-    # Full-season scope only: partial team filters must never mint a scoring receipt.
-    if complete and teams is None:
+    try:
         try:
-            receipt = build_reingest_timeline_receipt(
-                verified,
-                season=effective_season,
-                ingest_code_sha=sha,
-            )
-            timeline_receipt = persist_nhl_season_timeline_receipt(db, receipt)
-        except Exception as exc:  # noqa: BLE001 - receipt persist is a typed boundary
+            persistence = persist_source_events_bulk(db, rows)
+        except D1RegistryError as exc:
             return _blocked(
-                "NHL_SOURCE_TIMELINE_RECEIPT_PERSIST_FAILED",
+                exc.code,
+                stage="SOURCE_PERSISTENCE",
+                detail={"error_type": type(exc).__name__},
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence is a typed boundary
+            return _blocked(
+                "NHL_SOURCE_PERSISTENCE_FAILED",
+                stage="SOURCE_PERSISTENCE",
+                detail={
+                    "error_type": type(exc).__name__,
+                    "retryable": True,
+                    "partial_write_possible": True,
+                },
+            )
+
+        try:
+            verified = load_nhl_season_events(db, season=effective_season)
+        except NHLFittedSpecialistError as exc:
+            return {
+                "status": "NHL_SOURCE_REINGEST_PROVENANCE_UNVERIFIED",
+                "season": str(effective_season),
+                "source_event_n": len(rows),
+                "persistence": persistence,
+                "blockers": list(exc.blockers),
+                "provenance_complete": False,
+                "automatic_certification": False,
+                "automatic_promotion": False,
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+        except Exception as exc:  # noqa: BLE001 - verification is a typed boundary
+            return _blocked(
+                "NHL_SOURCE_VERIFICATION_FAILED",
                 stage="SOURCE_VERIFICATION",
                 detail={
                     "error_type": type(exc).__name__,
                     "retryable": True,
                     "persistence": persistence,
-                    "provenance_complete": complete,
                 },
             )
-    return {
-        "status": (
-            "NHL_SOURCE_REINGEST_PERSISTED"
-            if complete
-            else "NHL_SOURCE_REINGEST_PROVENANCE_INCOMPLETE"
-        ),
-        "season": str(effective_season),
-        "source_event_n": len(rows),
-        "distinct_source_event_n": len(distinct),
-        "provenanced_event_n": len(provenanced),
-        "persistence": persistence,
-        "timeline_receipt": timeline_receipt,
-        "timeline_receipt_persisted": timeline_receipt is not None,
-        "provenance_version": SOURCE_PROVENANCE_VERSION,
-        "ingest_code_sha": sha,
-        "provenance_complete": complete,
-        "blockers": [] if complete else ["NHL_SOURCE_PROVENANCE_INCOMPLETE"],
-        "automatic_certification": False,
-        "automatic_promotion": False,
-        "probability_publishable": False,
-        "can_execute": False,
-    }
+
+        # The preflight is check-then-write, so a concurrent writer or a correction
+        # that surfaced mid-run can still land a second identity. Verify the
+        # post-write season with the same invariant the reader enforces; a
+        # conflicted season must never be reported complete.
+        post_conflicts = _identity_conflicts(
+            rows, _v2_identities_from_rows(verified, expected_events)
+        )
+        if post_conflicts:
+            return _blocked(
+                "NHL_SOURCE_IDENTITY_CONFLICT",
+                stage="SOURCE_VERIFICATION",
+                detail={
+                    "conflicting_event_n": len(post_conflicts),
+                    "conflicting_event_ids": post_conflicts[:20],
+                    "retryable": False,
+                    "requires_append_only_correction_protocol": True,
+                },
+            )
+
+        provenanced: set[str] = set()
+        distinct: set[str] = set()
+        for row in verified:
+            event_id = str(row.get("official_event_id") or "")
+            if not event_id:
+                continue
+            distinct.add(event_id)
+            outcome = row.get("outcome_json")
+            if not isinstance(outcome, dict):
+                continue
+            if (
+                outcome.get("provenance_version") == SOURCE_PROVENANCE_VERSION
+                and type(outcome.get("game_type")) is int
+                and outcome.get("game_type") == 2
+                and type(outcome.get("neutral_site")) is bool
+                and str(outcome.get("game_state") or "").upper() in SETTLED_GAME_STATES
+            ):
+                provenanced.add(event_id)
+        complete = expected_events <= provenanced and distinct == expected_events
+        timeline_receipt: dict[str, Any] | None = None
+        # Full-season scope only: partial team filters must never mint a scoring receipt.
+        if complete and teams is None:
+            try:
+                receipt = build_reingest_timeline_receipt(
+                    verified,
+                    season=effective_season,
+                    ingest_code_sha=sha,
+                    schedule_coverage=schedule_coverage,
+                )
+                timeline_receipt = persist_nhl_season_timeline_receipt(db, receipt)
+            except NHLFittedSpecialistError as exc:
+                reason = None
+                if isinstance(exc.detail, Mapping):
+                    reason = exc.detail.get("reason")
+                return _blocked(
+                    "NHL_SOURCE_TIMELINE_RECEIPT_PERSIST_FAILED",
+                    stage="SOURCE_VERIFICATION",
+                    detail={
+                        "blockers": list(exc.blockers),
+                        "reason": reason,
+                        "retryable": False,
+                        "persistence": persistence,
+                        "provenance_complete": complete,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - receipt persist is a typed boundary
+                return _blocked(
+                    "NHL_SOURCE_TIMELINE_RECEIPT_PERSIST_FAILED",
+                    stage="SOURCE_VERIFICATION",
+                    detail={
+                        "error_type": type(exc).__name__,
+                        "retryable": True,
+                        "persistence": persistence,
+                        "provenance_complete": complete,
+                    },
+                )
+        return {
+            "status": (
+                "NHL_SOURCE_REINGEST_PERSISTED"
+                if complete
+                else "NHL_SOURCE_REINGEST_PROVENANCE_INCOMPLETE"
+            ),
+            "season": str(effective_season),
+            "source_event_n": len(rows),
+            "distinct_source_event_n": len(distinct),
+            "provenanced_event_n": len(provenanced),
+            "persistence": persistence,
+            "timeline_receipt": timeline_receipt,
+            "timeline_receipt_persisted": timeline_receipt is not None,
+            "schedule_digest": schedule_coverage.get("schedule_digest"),
+            "scheduled_event_n": len(
+                schedule_coverage.get("scheduled_or_unsettled_event_ids") or []
+            ),
+            "provenance_version": SOURCE_PROVENANCE_VERSION,
+            "ingest_code_sha": sha,
+            "provenance_complete": complete,
+            "blockers": [] if complete else ["NHL_SOURCE_PROVENANCE_INCOMPLETE"],
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    finally:
+        release_nhl_reingest_season_lease(
+            db, season=effective_season, lease_token=lease_token
+        )
 
 
 def install_nhl_source_reingest_route(
