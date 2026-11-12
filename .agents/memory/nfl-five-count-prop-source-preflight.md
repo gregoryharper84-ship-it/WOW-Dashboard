@@ -377,3 +377,15 @@
 - **verification:** Official archive metadata was read via GitHub API and seven selected hashes recorded. New synthetic/hosted exact-head tests are pending; RDS raw bytes not acquired or independently verified, and no historical source alignment/holdout evaluation was performed. 0 certified model and 0 qualified-row delta; no production verification for this candidate-only PR.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **safety:** `custom_gpt_identity=WOW_BETTING_ENGINE`; `runtime_generation=V17_ACTIVE`; `terminal_authority=V17_TERMINAL_REDUCER`; `can_execute=false`; `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`.
+
+## FTN source-error and identity-control negative reporting correction — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** `HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY` (existing canonical research HOLD; redirect and network cases reuse existing `NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED` / `NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE`).
+- **mechanism:** The shared trusted downloader may reject a redirect *before* returning a stream, yielding a generic acquire error instead of FTN-scoped failure; a mid-stream socket reset similarly escaped without its typed network failure. Worse, the FTN shadow summarized "not observed on offense" counts even if there were no positively matched GSIS/opportunity rows to establish identity alignment, predicting false absence conclusions.
+- **detection_point:** At the approved-host acquisition boundary, at the stream read site, and before any negative-presence report is formed.
+- **fix:** Translate only the precise shared redirect ValueError, preserve all unrelated ValueErrors, map stream read OSError/TimeoutError to existing FTN network-unavailable code; require `pbp_actor_id_alignment_observed is True` and at least one exact positive opportunity control before constructing the FTN research absence breakdown. If not, use existing identity HOLD and omit the misleading counts. This **never** treats non-presence as a zero count.
+- **prevention_artifact:** `tests/test_nfl_count_prop_pbp_presence.py` now keeps pre-stream redirect, unrelated ValueError, partial-stream read, five insufficient-positive-control and one valid-positive-control negative-path cases. `tests/test_acquire_nfl_count_prop_sources.py` invokes the guard before the PR-only FTN summary.
+- **verification:** Exact-head hosted regression and independent source semantics still pending at the time of this entry. No model fit, no data-rights clearance, no source repin or P/C merge.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. `can_execute=false`; `V17_TERMINAL_REDUCER`; model coverage/qualification delta +0.
