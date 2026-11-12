@@ -163,6 +163,8 @@ def audit(
         raise
     except Exception as exc:
         raise PreflightHold("COLUMNAR_SCAN_INVALID") from exc
+    # Close the hash-then-scan TOCTOU window before accepting evidence.
+    _verified_paths(root, source["files"])
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
     _require(isinstance(metrics, dict) and set(metrics) == set(_METRICS), "COLUMNAR_SCAN_INVALID")
     _require(all(isinstance(v, int) and not isinstance(v, bool) and v >= 0
