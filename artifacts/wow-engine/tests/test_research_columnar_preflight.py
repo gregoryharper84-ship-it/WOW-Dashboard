@@ -237,6 +237,8 @@ def test_snapshot_integrity_failure_is_not_reported_as_pass(tmp_path):
     (True, "NULL::BIGINT", True),
     (False, "NULL::BIGINT", False),
     (True, "1729999000::BIGINT", False),
+    (True, "1730000000::BIGINT", True),
+    (True, "1730000001::BIGINT", True),
 ])
 def test_market_quote_times_are_required_only_for_market_rows(tmp_path, is_market, quote_epoch, holds):
     duckdb = pytest.importorskip("duckdb")
@@ -266,3 +268,45 @@ def test_market_quote_times_are_required_only_for_market_rows(tmp_path, is_marke
             m.audit(manifest_path, root)
     else:
         assert m.audit(manifest_path, root)["status"] == "DATA_PREFLIGHT_PASS_ONLY"
+
+
+def test_parquet_columns_swapped_across_files_do_not_hide_future_features(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    root = tmp_path / "frozen"
+    root.mkdir()
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.execute("""CREATE TABLE clean AS SELECT
+            'NBA' AS sport, 2025::INTEGER AS season,
+            'obs-clean' AS observation_id, 'event-clean' AS event_id,
+            1730000000::BIGINT AS event_start_epoch,
+            1729999900::BIGINT AS feature_available_epoch,
+            TRUE::BOOLEAN AS is_market_observation,
+            1729999000::BIGINT AS quote_captured_epoch""")
+        con.execute("""CREATE TABLE future AS SELECT
+            'NBA' AS sport, 2025::INTEGER AS season,
+            'obs-future' AS observation_id, 'event-future' AS event_id,
+            1730000100::BIGINT AS feature_available_epoch,
+            1730000000::BIGINT AS event_start_epoch,
+            TRUE::BOOLEAN AS is_market_observation,
+            1729999000::BIGINT AS quote_captured_epoch""")
+        for table, name in (("clean", "a.parquet"), ("future", "b.parquet")):
+            con.execute(f"COPY {table} TO '{root / name}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema": m.SCHEMA, "can_execute": False, "dataset_id": "nba_2025",
+        "sport": "NBA", "season": 2025,
+        "files": [
+            {"path": name, "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest()}
+            for name in ("a.parquet", "b.parquet")
+        ],
+    }))
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_INTEGRITY_HOLD"):
+        m.audit(manifest_path, root)
+
+
+def test_parquet_scan_contract_uses_column_alignment_and_prestart_quotes():
+    assert "union_by_name = true" in m._QUERY
+    assert "quote_captured_epoch AS BIGINT) >= TRY_CAST(event_start_epoch" in m._QUERY
