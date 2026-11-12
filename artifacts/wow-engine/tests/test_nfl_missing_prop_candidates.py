@@ -441,15 +441,59 @@ def test_anonymous_group_diagnostic_fails_closed_on_corrupt_provenance(mutation)
     """Do not launder synthetic, malformed, or unpinned row evidence."""
     from train_nfl_missing_prop_candidates import observe_anonymous_weekly_source_shape
     receipt = _anonymous_weekly_group_receipt_fixture()
+    row = receipt["unattributed_identity_quarantine"][0]
     if mutation == "digest":
-        receipt["unattributed_identity_quarantine"][0]["week"] = 9
+        row["week"] = 9
     elif mutation == "source_year":
-        receipt["unattributed_identity_quarantine"][0]["source_season"] = 2022
+        row["source_season"] = 2022
     elif mutation == "event_week":
-        receipt["unattributed_identity_quarantine"][0]["game_id"] = "2021_02_BAL_KC"
+        row["game_id"] = "2021_02_BAL_KC"
     elif mutation == "missing_asset":
         del receipt["assets"]["2025"]
     else:
         receipt["release_hashes_verified"] = False
+    # Re-sign semantic mutations so the test actually reaches identity validation.
+    if mutation in {"source_year", "event_week"}:
+        from train_nfl_missing_prop_candidates import _json_digest
+        row["audit_sha256"] = _json_digest({
+            k: v for k, v in row.items() if k != "audit_sha256"
+        })
     with pytest.raises(ValueError, match="NFL_PROP_SOURCE_IDENTITY_INVALID:anonymous_group_provenance"):
         observe_anonymous_weekly_source_shape(receipt)
+
+
+
+def test_anonymous_observer_rejects_lowercase_eligible_role_even_with_valid_digest():
+    """An authenticated row cannot relabel a QB into an anonymous group by case."""
+    from train_nfl_missing_prop_candidates import _json_digest, observe_anonymous_weekly_source_shape
+    receipt = _anonymous_weekly_group_receipt_fixture()
+    row = receipt["unattributed_identity_quarantine"][0]
+    row["position_token"] = " qb "
+    row["audit_sha256"] = _json_digest({k: v for k, v in row.items() if k != "audit_sha256"})
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_IDENTITY_INVALID:anonymous_group_provenance"):
+        observe_anonymous_weekly_source_shape(receipt)
+
+
+def test_cli_does_not_fit_or_write_with_unapproved_source(tmp_path, weekly_frame, monkeypatch):
+    """Research candidate fitting must not bypass source identity/rights admission."""
+    import hashlib
+    import sys
+    import train_nfl_missing_prop_candidates as trainer
+
+    expected = {}
+    for season in range(2021, 2026):
+        file = tmp_path / f"stats_player_week_{season}.csv"
+        weekly_frame.loc[weekly_frame.season == season].to_csv(file, index=False)
+        expected[str(season)] = hashlib.sha256(file.read_bytes()).hexdigest()
+    # Synthetic hashes only for the isolated test; no production pin rewritten.
+    monkeypatch.setattr(trainer, "EXPECTED_RELEASE_SHA256", expected)
+    def forbidden_fit(*args, **kwargs):
+        raise AssertionError("source admission guard ran after model fitting")
+    monkeypatch.setattr(trainer, "build_candidate", forbidden_fit)
+    output = tmp_path / "unapproved_candidates.json"
+    monkeypatch.setattr(sys, "argv", [
+        "trainer", "--input-dir", str(tmp_path), "--out", str(output),
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_FITTING_SOURCE_ADMISSION_HOLD"):
+        trainer.main()
+    assert not output.exists()
