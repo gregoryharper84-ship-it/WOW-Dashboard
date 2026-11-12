@@ -261,9 +261,12 @@ def main() -> int:
             except Exception:  # any lookup doubt keeps the fail-closed HOLD
                 deferred = None
         if deferred is not None:
-            path.write_text(json.dumps(deferred, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(deferred, sort_keys=True))
+            # A prior-run receipt must exist only after the GitHub output is
+            # successfully emitted. Otherwise post-deploy dedupe could reuse
+            # an observation from a failed final-readback step.
             _emit_output("deploy_pending", "true")
+            path.write_text(json.dumps(deferred, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             return 0
         # Even a transport reset, truncated HTTP response or malformed JSON
         # shape must leave a typed, credential-free HOLD for independent SIRT.
@@ -277,9 +280,11 @@ def main() -> int:
             "can_execute": False,
         }
         code = 1
-    path.write_text(json.dumps(outcome, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(outcome, sort_keys=True))
     _emit_output("deploy_pending", "false")
+    # Emit the observation artifact last: failed step output must never
+    # leave behind a re-usable success receipt.
+    path.write_text(json.dumps(outcome, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return code
 
 
