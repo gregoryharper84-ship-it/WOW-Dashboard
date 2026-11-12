@@ -60,10 +60,13 @@ is authorized by this table.
 **Required acceptance for any historical market dataset:** attributable
 rights; immutable raw source hash; official event/participant identity;
 book/market/period/line/outcome/settlement; timezone-aware UTC kickoff and
-observed_at; distinguish provider_updated_at from first_seen_at; quote observed
-no later than the frozen prediction for CLV; separate closing-line research
-from pregame inputs; source-specific reconciliation and no missing-event
-silence. If any of these are absent, retain research-only/unavailable status,
+observed_at; distinguish provider_updated_at from first_seen_at;
+require the entry quote's actual first_seen_at no later than the immutable
+prediction timestamp, and independently require the closing quote's first_seen_at
+strictly before kickoff. A closing quote is an evaluation benchmark for CLV,
+not proof that its price was observable when the pick was frozen; keep
+closing-line research separate from pregame inputs. Enforce source-specific
+reconciliation and no missing-event silence. If any of these are absent, retain research-only/unavailable status,
 never infer a fitted probability or claim market-time accuracy.
 
 **Regression:** `tests/test_free_source_catalog.py` pins the two
