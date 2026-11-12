@@ -15,6 +15,11 @@ their authentic typed reasons remain in the durable step summary.
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
+import subprocess
+import tempfile
+import time
 
 import yaml
 
@@ -157,3 +162,136 @@ def test_observer_audit_does_not_attribute_postfix_counts_to_base_sha() -> None:
     assert "Post-fix worktree count" in text
     assert "not** a measurement" in text
     assert "Historical unisolated-optional-job candidate inventory" in text
+
+
+def _run_isolated_bash(
+    script: str,
+    *,
+    prefix: str = "",
+    extra_env: dict[str, str] | None = None,
+    stall_python: bool = False,
+) -> dict[str, object]:
+    """Exercise the actual workflow shell, not just check that tokens exist."""
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary)
+        summary = directory / "summary.md"
+        outputs = directory / "outputs"
+        env = os.environ.copy()
+        env.update(
+            GITHUB_STEP_SUMMARY=str(summary),
+            GITHUB_OUTPUT=str(outputs),
+            RUNNER_TEMP=str(directory),
+        )
+        if stall_python:
+            fakebin = directory / "fakebin"
+            fakebin.mkdir()
+            executable = fakebin / "python3"
+            executable.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+            executable.chmod(0o755)
+            env["PATH"] = str(fakebin) + os.pathsep + env.get("PATH", "")
+        env.update(extra_env or {})
+        started = time.monotonic()
+        completed = subprocess.run(
+            ["bash", "-c", prefix + "\n" + script],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+        )
+        receipt = directory / "golden-product-acceptance.json"
+        return {
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "summary": summary.read_text(encoding="utf-8") if summary.exists() else "",
+            "outputs": outputs.read_text(encoding="utf-8") if outputs.exists() else "",
+            "receipt": receipt.read_text(encoding="utf-8") if receipt.exists() else "",
+            "elapsed": time.monotonic() - started,
+        }
+
+
+def test_keepalive_http_200_with_curl_transport_error_is_not_ok() -> None:
+    """A truncated HTTP 200 is a transport failure, never a green heartbeat."""
+    steps = _workflow("wow-v17-action-origin-keepalive.yml")["jobs"]["keepalive"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Keep V17 Action origin warm")
+    result = _run_isolated_bash(
+        script,
+        prefix="curl() { printf '200'; return 18; }",
+    )
+    assert result["returncode"] != 0
+    assert "ACTION_ORIGIN_KEEPALIVE_UNREACHABLE" in result["summary"]
+    assert "curl_exit=18" in result["summary"]
+    assert "ACTION_ORIGIN_KEEPALIVE_OK" not in result["summary"]
+
+
+def test_weather_stalled_probe_is_bounded_and_emits_failure_receipt() -> None:
+    """A stalled Python process must not block until job-level timeout."""
+    steps = _workflow("kalshi-weather-external-wake.yml")["jobs"]["heartbeat"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Wake API, verify DB-read and shadow collector flags")
+    result = _run_isolated_bash(
+        script,
+        stall_python=True,
+        extra_env={"WAKE_HEARTBEAT_DEADLINE_EPOCH": str(int(time.time()) + 3)},
+    )
+    assert result["returncode"] != 0
+    assert result["elapsed"] < 8
+    assert "KALSHI_WEATHER_WAKE_PROBE_FAILED" in result["summary"]
+    assert "KALSHI_WEATHER_WAKE_PROBE_OK" not in result["summary"]
+
+
+def test_golden_health_command_failure_is_typed_and_nonpublishable() -> None:
+    steps = _workflow("wow-v17-golden-product-acceptance.yml")["jobs"]["product-acceptance"]["steps"]
+    script = next(step["run"] for step in steps if step.get("id") == "health")
+    result = _run_isolated_bash(script, prefix="python() { return 23; }")
+    assert result["returncode"] != 0
+    assert "status=GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE" in result["outputs"]
+    assert "GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE" in result["summary"]
+
+
+def test_golden_receipt_uses_checked_out_sha_not_dispatch_sha() -> None:
+    steps = _workflow("wow-v17-golden-product-acceptance.yml")["jobs"]["product-acceptance"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Record product-acceptance receipt")
+    result = _run_isolated_bash(
+        script,
+        extra_env={
+            "PRODUCT_STATUS": "FAIL",
+            "HEALTH_READ_OUTCOME": "success",
+            "BACKEND_STATUS": "FAIL",
+            "CONTRACT_TEST_OUTCOME": "failure",
+            "CHECKOUT_SHA_OUTCOME": "success",
+            "CHECKED_OUT_SHA": "a" * 40,
+            "GITHUB_SHA": "f" * 40,
+        },
+    )
+    assert result["returncode"] == 0, result["stderr"]
+    receipt = json.loads(str(result["receipt"]))
+    assert receipt["sha"] == "a" * 40
+    assert receipt["sha"] != "f" * 40
+    assert receipt["contract_tests_outcome"] == "failure"
+    assert receipt["health_read_outcome"] == "success"
+    assert receipt["can_execute"] is False
+
+
+def test_golden_receipt_invalid_checkout_sha_is_explicitly_unverified() -> None:
+    steps = _workflow("wow-v17-golden-product-acceptance.yml")["jobs"]["product-acceptance"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Record product-acceptance receipt")
+    result = _run_isolated_bash(
+        script,
+        extra_env={
+            "PRODUCT_STATUS": "",
+            "HEALTH_READ_OUTCOME": "failure",
+            "BACKEND_STATUS": "FAIL",
+            "CONTRACT_TEST_OUTCOME": "failure",
+            "CHECKOUT_SHA_OUTCOME": "failure",
+            "CHECKED_OUT_SHA": "invalid",
+            "GITHUB_SHA": "f" * 40,
+        },
+    )
+    assert result["returncode"] == 0, result["stderr"]
+    receipt = json.loads(str(result["receipt"]))
+    assert receipt["sha"] == "UNVERIFIED"
+    assert receipt["user_journey_status"] == "GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE"
+    assert receipt["checkout_sha_outcome"] == "failure"
+    assert "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED" in result["summary"]
