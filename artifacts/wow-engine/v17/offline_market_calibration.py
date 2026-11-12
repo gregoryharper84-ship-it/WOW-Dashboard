@@ -143,15 +143,24 @@ def evaluate_binary_market_baseline(rows: Sequence[Mapping[str, Any]], *,
         and isinstance(row.get("immutable_prediction_id"), str)
         and row["immutable_prediction_id"].strip()
     )
-    # Event identity is shared across selections; reject contradictory team
-    # contexts for the *whole* event, not just duplicate selection keys.
+    # Read each primary event/team assertion *before* per-row quote and
+    # settlement checks. A conflicting row with a bad quote must not hide its
+    # contradictory event identity and allow another side into the metrics.
+    # Missing/blank assertions do not create fabricated conflicts.
     event_contexts: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for row in rows:
-        if not isinstance(row, Mapping) or _identity(row) is None:
+        if not isinstance(row, Mapping):
             continue
-        event_contexts.setdefault((row["sport"], row["event_id"]), set()).add(
-            (row["home_team_id"], row["away_team_id"])
+        sport, event_id, home, away = (
+            row.get("sport"), row.get("event_id"),
+            row.get("home_team_id"), row.get("away_team_id"),
         )
+        if not all(isinstance(v, str) and v.strip() and v == v.strip() for v in
+                   (sport, event_id, home, away)):
+            continue
+        if home == away:
+            continue
+        event_contexts.setdefault((sport, event_id), set()).add((home, away))
     statuses: list[dict[str, Any]] = []
     pairs: list[tuple[float, float, int]] = []
     for index, row in enumerate(rows):

@@ -32,3 +32,13 @@
 - **prevention_artifact:** tests/test_offline_market_calibration.py, five additional RED→GREEN cases. 50/50 targeted local tests PASS; 30-row synthetic CLI remains descriptive and can_execute=false.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
 - **production_evidence:** None. Fresh exact-head CI/independent semantic approval still required; 0 fitted model/market qualification changes, 0 production deployment.
+
+## Event-level conflict hidden by a malformed sibling — 2026-11-12
+- **date:** 2026-11-12
+- **typed_reason:** REPLAY_EVENT_CONTEXT_CONFLICT (existing canonical code)
+- **mechanism:** Event context counted only fully valid quote/settlement rows. A bad quote carrying a different primary home/away pair was ignored, so its sibling selection was erroneously included in calibration metrics.
+- **detection_point:** CodeRabbit PR #2623 review before independent semantic acceptance. Needed pre-release malformed-peer regression.
+- **fix:** Read nonblank primary event/team pairs independently of row quote acceptance. Reject the valid side of a conflicting event; blank identities remain held without fabricating conflict.
+- **prevention_artifact:** tests/test_offline_market_calibration.py; two original RED, one control GREEN; updated 53/53 GREEN, Python compile PASS (local).
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2623
+- **production_evidence:** None; protected exact-head and independent SIRT acceptance pending. No registered probability, changed threshold, live order or execution; can_execute=false.

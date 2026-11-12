@@ -261,3 +261,42 @@ def test_unsupported_quote_complement_never_becomes_market_baseline(patch):
     r = evaluate_binary_market_baseline([sample(**patch)])
     assert r["eligible_unattested"] == 0
     assert r["rows"][0]["status"] == "REPLAY_MARKET_QUOTE_PAIR_MISMATCH"
+
+
+def test_malformed_quote_cannot_hide_conflicting_event_home_team():
+    """Conflicting game identity must HOLD every side, even on an invalid second quote."""
+    clean = sample()
+    corrupt = sample(selection="AWAY", quote_selection="AWAY", settled_selection="AWAY",
+                     opposite_quote_selection="HOME", immutable_prediction_id="pred-2",
+                     home_team_id="XYZ")
+    # Opposite quote is still for ABC; the corrupt row fails its own _identity,
+    # but its contradictory official event-team claim invalidates the clean one.
+    report = evaluate_binary_market_baseline([clean, corrupt])
+    assert report["eligible_unattested"] == 0 and report["held"] == 2
+    assert report["rows"][0]["status"] == "REPLAY_EVENT_CONTEXT_CONFLICT"
+    assert report["rows"][1]["status"] == "REPLAY_EXACT_IDENTITY_MISMATCH"
+
+
+def test_malformed_settlement_cannot_hide_conflicting_event_away_team():
+    """Invalid settlement context must not mask a contradictory primary event pair."""
+    clean = sample()
+    corrupt = sample(selection="AWAY", quote_selection="AWAY", settled_selection="AWAY",
+                     opposite_quote_selection="HOME", immutable_prediction_id="pred-2",
+                     away_team_id="QRS", quote_away_team_id="QRS")
+    # settled_away_team_id still DEF: invalid second-row settlement, distinct game.
+    report = evaluate_binary_market_baseline([clean, corrupt])
+    assert report["eligible_unattested"] == 0 and report["held"] == 2
+    assert report["rows"][0]["status"] == "REPLAY_EVENT_CONTEXT_CONFLICT"
+    assert report["rows"][1]["status"] == "REPLAY_EXACT_IDENTITY_MISMATCH"
+
+
+def test_empty_team_identity_does_not_poison_valid_peer():
+    """No asserted team pair means no contradictory evidence to block a valid row."""
+    clean = sample()
+    invalid = sample(selection="AWAY", quote_selection="AWAY", settled_selection="AWAY",
+                     opposite_quote_selection="HOME", immutable_prediction_id="pred-2",
+                     home_team_id="")
+    report = evaluate_binary_market_baseline([clean, invalid])
+    assert report["eligible_unattested"] == 1 and report["held"] == 1
+    assert report["rows"][0]["status"] == "REPLAY_CANDIDATE_UNVERIFIED"
+    assert report["rows"][1]["status"] == "REPLAY_EXACT_IDENTITY_MISMATCH"
