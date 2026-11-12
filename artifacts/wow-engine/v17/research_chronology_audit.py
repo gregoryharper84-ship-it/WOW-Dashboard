@@ -87,6 +87,9 @@ def audit_chronological_corpus(
         lambda: defaultdict(list)
     )
     seen_rows: set[str] = set()
+    # An immutable source snapshot ID must bind to the same bytes and
+    # claimed publication/capture times everywhere it appears.
+    seen_snapshots: dict[str, tuple[str, str, datetime | None, datetime | None]] = {}
     seen_theses: set[tuple[str, str, str, str]] = set()
     event_splits: dict[tuple[str, str], str] = {}
     global_blockers: set[str] = set()
@@ -146,6 +149,15 @@ def audit_chronological_corpus(
                     issues.add(f"HASH_MISMATCH:{field_name}")
 
         parsed = {name: _timestamp(row.get(name)) for name in TIMESTAMPS}
+        snapshot_id = row.get("source_snapshot_id")
+        if isinstance(snapshot_id, str) and snapshot_id.strip():
+            signature = (
+                sport, str(row.get("source_payload_sha256") or ""),
+                parsed["source_published_at"], parsed["source_captured_at"],
+            )
+            prior = seen_snapshots.setdefault(snapshot_id, signature)
+            if prior != signature:
+                issues.add("SOURCE_SNAPSHOT_ID_CONFLICT")
         for name, value in parsed.items():
             if value is None:
                 issues.add(f"TIMESTAMP_INVALID_OR_NAIVE:{name}")
