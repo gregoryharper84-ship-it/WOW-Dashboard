@@ -23,7 +23,7 @@ This is a **research/acquisition routing plan**, not a new authority or source-r
 | PGA | DataGolf commercial entitlement only in current governed registry | Explore genuinely open tournament/field history; don't reuse paid API without entitlement | Source/license rights and full-field winner distribution; BUILD_REQUIRED |
 | MMA | UFCStats public candidate | Find documented permitted historical bout/fighter inputs and verified pre-fight timing | First-party rights undocumented, collector not proven, calibrator absent |
 | BOXING | **New research-only** Open Boxing public title-bout JSON/CSV | Verify its published dataset license, historical completeness, fighters, bouts and results | No recognized training license; title fights are not full boxing event coverage |
-| CRICKET | **New research-only** Cricsheet T20 JSON ZIP (ODC-BY publisher notice) | Bounded explicit publisher download; pin SHA, verify included LICENSE, unique match IDs, winners/ties and no ZIP traversal | Source license scope/independent review; match dates are not archived pre-match team inputs; T20 model BUILD_REQUIRED |
+| CRICKET | **New research-only** Cricsheet **international T20** JSON ZIP (ODC-BY publisher notice) | Bounded explicit publisher download for **international T20 only** (not all domestic T20 competitions); pin SHA, verify included LICENSE, unique match IDs, winners/ties and no ZIP traversal | Source license scope/independent review; match dates are not archived pre-match team inputs; T20 model BUILD_REQUIRED |
 
 ## Source discovery performed — no rights granted
 
