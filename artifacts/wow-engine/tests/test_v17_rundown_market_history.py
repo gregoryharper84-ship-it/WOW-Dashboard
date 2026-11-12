@@ -279,3 +279,45 @@ def test_reference_not_materialized_before_its_first_seen_capture_time():
     assert history.derive_captured_reference_rows(
         [future], now=datetime(2026, 9, 24, 17, 0, tzinfo=timezone.utc)
     ) == []
+
+
+def test_persisted_late_close_cannot_suppress_new_valid_capture_reference():
+    valid = _row(key="valid", odds=-120, updated="2026-09-24T17:45:00Z")
+    stale = _row(key="stale", odds=-200, updated="2026-09-24T17:50:00Z", snapshot_kind="CLOSE")
+    stale["fetched_at"] = "2026-09-24T18:15:00Z"  # persisted legacy post-start quote
+    refs = history.derive_captured_reference_rows(
+        [valid, stale], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert [(row["snapshot_kind"], row["american_odds"]) for row in refs] == [
+        ("OPEN", -120), ("CLOSE", -120)
+    ]
+    assert all(row["can_execute"] is False for row in refs)
+
+
+def test_history_reference_clock_is_refreshed_after_collection(monkeypatch):
+    start = datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc)
+    finish = datetime(2026, 10, 9, 15, 1, tzinfo=timezone.utc)
+
+    class TwoTickClock(datetime):
+        ticks = iter((start, finish))
+
+        @classmethod
+        def now(cls, tz=None):
+            return next(cls.ticks)
+
+    monkeypatch.setattr(history, "datetime", TwoTickClock)
+    monkeypatch.setattr(history, "_read_budget", lambda *_a, **_k: {"calls": 0, "datapoints": 0})
+    monkeypatch.setattr(history, "resolve_collection_scope", lambda _c: {
+        "status": "READY", "market_ids": ("1",), "affiliate_ids": ("19",), "book_names": ["Pinnacle"]
+    })
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb",))
+    monkeypatch.setattr(history.ingestor, "collect_snapshot", lambda *_a, **_k: {
+        "status": "COMPLETE", "provider_calls": 1, "datapoints": 0, "rows_written": 1
+    })
+    monkeypatch.setattr(history, "_write_budget", lambda *_a, **_k: None)
+    observed = []
+    monkeypatch.setattr(history, "materialize_reference_backlog",
+                        lambda _c, *, now: observed.append(now) or 0)
+    result = history.collect_history_once(object())
+    assert observed == [finish]
+    assert result["can_execute"] is False

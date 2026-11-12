@@ -181,3 +181,28 @@ def test_missing_exact_lines_do_not_fall_back_to_synthetic_grid():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         evaluate_exact_line_candidate(_artifact(), [_row("e1", start, 7)], {})
     assert exc.value.code == "SPREAD_EXACT_LINE_EVIDENCE_UNAVAILABLE"
+
+
+def test_legacy_poststart_captured_close_cannot_override_pregame_spread():
+    start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
+    rows = _market_rows(start)
+    stale_close = {
+        **rows[0],
+        "snapshot_kind": "CLOSE",
+        "line_value": -9.5,
+        "price_updated_at": (start - timedelta(minutes=1)).isoformat(),
+        "fetched_at": (start + timedelta(minutes=5)).isoformat(),
+    }
+    evidence, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "2026_04_PHI_DAL",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=rows + [stale_close],
+    )
+    assert evidence["2026_04_PHI_DAL"].home_spread == -3.5
+    assert audit["bound_event_n"] == 1
+    assert audit["can_execute"] is False
