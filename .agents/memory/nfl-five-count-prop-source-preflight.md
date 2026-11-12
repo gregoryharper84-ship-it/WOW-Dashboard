@@ -435,3 +435,14 @@
 - **prevention_artifact:** tests/test_nfl_count_prop_roster_crosswalk.py::test_two_distinct_pfr_aliases_to_same_gsis_fail_closed and ::test_candidate_gsis_collision_with_unrequested_pfr_also_fails_closed. The prior exact-method local reproduction raised no exception (RED); reciprocal-uniqueness fix passed 2/2 local probes (GREEN). Exact-head hosted suite remains to be observed.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** No protected merge, certified fitted specialist, qualified row, source repin, entitlement approval or wager execution; live core remains can_execute=false.
+
+
+## Verified weekly anonymous source shape independent of mutable crosswalk — 2026-11-12
+- **date:** 2026-11-12
+- **typed_reason:** HOLD_ANONYMOUS_WEEKLY_SOURCE_SEMANTICS (SOURCE, existing model-publication HOLD preserved).
+- **mechanism:** Full 11-asset NFL source acquisition correctly stops when publisher-replaced `players.csv` fails the frozen SHA. That early gate prevents contemporary PR-scoped readback of the five *unchanged* SHA-pinned weekly-stat CSVs, leaving the 90 anonymous group origin unadjudicated even though the original weekly files can be checked separately. Upstream nflfastR source groups weekly player stats by season/week/player_id and emits `first(game_id)`; with an NA player ID, a canonical-looking game ID can merely represent a multi-play aggregate.
+- **detection_point:** Offline source-provenance observation before source semantic review, not training, calibration, ranking or publication.
+- **fix:** Add a PR-rapid-runner-only diagnostic using existing `acquire_one` to SHA/size-verify precisely five frozen stats_player CSVs without requiring the drifted players crosswalk; feed them through the same frozen weekly-source loader and summarize hash-checked anonymous quarantine rows. Emit an explicit research HOLD with per-season counts and shape, not an identity/rights/label clearance. Leave the original 11-asset fail-closed acquisition unchanged.
+- **prevention_artifact:** `tests/test_nfl_missing_prop_candidates.py` adds 6 tests verifying strict synthetic provenance and nonauthorization; observed rapid-run RED at `84f1176`: 6 failed specifically due missing source-observation function, 798 passed, 3 research skips. Subsequent GREEN/exact-head CI at final implementation unverified at this ledger entry. `tests/test_acquire_nfl_count_prop_sources.py` adds PR-only real-byte source observation.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. No source pin rewrite, crosswalk promotion, missing label imputation, model fit, certification, protected merge or deployment. `can_execute=false`, `V17_TERMINAL_REDUCER`.
