@@ -1454,4 +1454,5 @@ def test_unversioned_calibrator_is_rejected_during_candidate_selection():
     candidate = nhl.load_nhl_fitted_candidate(
         _DB(candidates=[malformed, valid]), as_of_utc=NOW
     )
-    assert candidate.model_version == "NHL_RS_LOGISTIC_V1-5528ab8891df79fd-372bef19a04a"
+    # Both fixtures share model_version; created_at proves the older valid row won.
+    assert candidate.created_at == datetime.fromisoformat(valid["created_at"])
