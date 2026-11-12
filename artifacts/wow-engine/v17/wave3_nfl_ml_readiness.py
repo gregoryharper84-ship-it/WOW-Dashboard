@@ -113,23 +113,34 @@ def compute_metrics(rows: Sequence[GradedRow]) -> dict:
 
 
 def build_readiness_ledger(rows: Sequence[GradedRow]) -> ReadinessLedger:
-    """Emit the daily forward-grade readiness ledger. Fail closed below 100."""
+    """Emit the daily forward-grade readiness ledger. Fail closed below 100.
+
+    Metrics are always recomputed and reported when rows exist, even below
+    the 100-sample minimum, so reviewers can see the diagnostic trajectory.
+    Below-minimum metrics are observation only: the decision stays
+    ``DO_NOT_CERTIFY_YET`` and no metric gate is evaluated as passing.
+    """
     valid_n = len(rows)
     missing = max(0, MIN_FORWARD_GRADED - valid_n)
+    metrics = compute_metrics(rows) if valid_n else None
+
+    def _field(name: str) -> float | None:
+        return metrics[name] if metrics is not None else None
+
     if valid_n < MIN_FORWARD_GRADED:
         return ReadinessLedger(
             valid_n=valid_n,
             missing_to_100=missing,
             decision="DO_NOT_CERTIFY_YET",
             blockers=(f"FORWARD_GRADED_N_{valid_n}_LT_100",),
-            mean_forecast=None,
-            observed_rate=None,
-            brier=None,
-            log_loss=None,
-            ece=None,
-            calibration_bias=None,
-            mean_lower_bound=None,
-            lower_bound_gap=None,
+            mean_forecast=_field("mean_forecast"),
+            observed_rate=_field("observed_rate"),
+            brier=_field("brier"),
+            log_loss=_field("log_loss"),
+            ece=_field("ece"),
+            calibration_bias=_field("calibration_bias"),
+            mean_lower_bound=_field("mean_lower_bound"),
+            lower_bound_gap=_field("lower_bound_gap"),
         )
     metrics = compute_metrics(rows)
     blockers: list[str] = []

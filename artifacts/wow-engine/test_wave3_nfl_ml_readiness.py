@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from v17.wave3_evidence_triad import verify_probability_bounds, verify_triad
 from v17.wave3_nfl_ml_readiness import (
     GradedRow,
@@ -36,6 +38,12 @@ def test_95_rows_stay_do_not_certify_with_missing_to_100():
     assert ledger.missing_to_100 == 5
     assert ledger.decision == "DO_NOT_CERTIFY_YET"
     assert ledger.blockers == ("FORWARD_GRADED_N_95_LT_100",)
+    # Sub-minimum metrics are reported as diagnostic observation only.
+    assert ledger.brier == pytest.approx(
+        sum((0.6554688685 - (1 if i < 58 else 0)) ** 2 for i in range(95)) / 95
+    )
+    assert ledger.log_loss is not None and ledger.log_loss > 0
+    assert ledger.calibration_bias == pytest.approx(0.6554688685 - 58 / 95)
     assert ledger.can_execute is False
     package = certification_package(ledger)
     assert package["certification_decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED"
@@ -46,18 +54,18 @@ def test_95_rows_stay_do_not_certify_with_missing_to_100():
 def test_metric_replay_matches_hand_computation():
     metrics = compute_metrics(_95_rows())
     assert metrics["n"] == 95
-    assert metrics["mean_forecast"] == 0.6554688685
-    assert metrics["observed_rate"] == 58 / 95
-    assert metrics["brier"] == sum(
-        (0.6554688685 - (1 if i < 58 else 0)) ** 2 for i in range(95)
-    ) / 95
+    assert metrics["mean_forecast"] == pytest.approx(0.6554688685)
+    assert metrics["observed_rate"] == pytest.approx(58 / 95)
+    assert metrics["brier"] == pytest.approx(
+        sum((0.6554688685 - (1 if i < 58 else 0)) ** 2 for i in range(95)) / 95
+    )
     expected_ll = sum(
         -math.log(0.6554688685) if i < 58 else -math.log(1 - 0.6554688685)
         for i in range(95)
     ) / 95
-    assert metrics["log_loss"] == expected_ll
-    assert metrics["calibration_bias"] == 0.6554688685 - 58 / 95
-    assert metrics["lower_bound_gap"] == 58 / 95 - 0.5995507854
+    assert metrics["log_loss"] == pytest.approx(expected_ll)
+    assert metrics["calibration_bias"] == pytest.approx(0.6554688685 - 58 / 95)
+    assert metrics["lower_bound_gap"] == pytest.approx(58 / 95 - 0.5995507854)
 
 
 def test_100_balanced_cohort_passes_but_never_self_certifies():

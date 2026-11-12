@@ -85,33 +85,99 @@ def nba_evidence_preflight(
     }
 
 
+def verify_nba_snapshot_order(
+    source_snapshot_ts: str, feature_ts: str, tipoff_ts: str
+) -> Mapping[str, object]:
+    """Snapshot must precede feature hydration, which must precede tipoff.
+
+    Real pregame-lineage validator shared by the preflight path and the
+    hard-negative probes, so negatives exercise production logic.
+    """
+    try:
+        snapshot = _parse_utc(source_snapshot_ts)
+        feature = _parse_utc(feature_ts)
+        tipoff = _parse_utc(tipoff_ts)
+    except (ValueError, TypeError):
+        return {"ok": False, "blockers": ["NBA_EVENT_TIME_INVALID"]}
+    blockers: list[str] = []
+    if not snapshot < feature:
+        blockers.append("NBA_SOURCE_SNAPSHOT_AFTER_FEATURE")
+    if not feature < tipoff:
+        blockers.append("NBA_FEATURE_TIMESTAMP_INVALID_FOR_PREGAME")
+    if not snapshot < tipoff:
+        blockers.append("NBA_SOURCE_SNAPSHOT_AFTER_KICKOFF")
+    return {"ok": not blockers, "blockers": blockers}
+
+
 def nba_hard_negative(
     kind: str,
     *,
     triad: Mapping[str, object] | None = None,
 ) -> Mapping[str, object]:
-    """Hard-negative probes: every tampered input must fail closed."""
-    kinds = {
-        "swapped_home_away": ["NBA_CANONICAL_EVENT_AMBIGUOUS"],
-        "late_scratch": ["NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION"],
-        "missing_tip_time": ["NBA_EVENT_TIME_INVALID"],
-        "stale_source": ["NBA_SOURCE_SNAPSHOT_AFTER_FEATURE"],
-        "missing_artifact": ["EVIDENCE_TRIAD_FITTED_ARTIFACT_SHA256_MISSING"],
-        "missing_calibrator": ["EVIDENCE_TRIAD_CALIBRATOR_ARTIFACT_SHA256_MISSING"],
-        "cross_sport_swap": ["EVIDENCE_TRIAD_CROSS_SPORT_SWAP"],
-    }
+    """Hard-negative probes: each tampers a real input and runs the real
+    validator, asserting the tampered input fails closed. No predetermined
+    outcomes: ``held_closed`` is True only when the genuine check rejects."""
+    base_triad = dict(triad) if triad else {}
+    if kind == "swapped_home_away":
+        # Same official event claimed under both home/away orientations
+        # surfaces as a duplicate identity across partitions.
+        event = "2026-01-15T00:00:00Z"
+        result = verify_chronology_disjoint(
+            [event], [event], ["2026-03-01T00:00:00Z"]
+        )
+        held = not result["ok"]
+        return {"kind": kind, "held_closed": held, "blockers": list(result["blockers"])}
+    if kind == "late_scratch":
+        # Material update after feature hydration: features are no longer
+        # prelock, so the preflight must hold on leakage.
+        verdict = nba_evidence_preflight(
+            triad=base_triad,
+            train=["2026-01-01T00:00:00Z"],
+            calibration=["2026-02-01T00:00:00Z"],
+            holdout=["2026-03-01T00:00:00Z"],
+            settlement_includes_ot=True,
+            post_tipoff_features_used=True,
+        )
+        held = verdict["decision"] != "READY_FOR_INDEPENDENT_MODEL_REVIEW"
+        return {"kind": kind, "held_closed": held, "blockers": list(verdict["blockers"])}
+    if kind == "missing_tip_time":
+        result = verify_chronology_disjoint(
+            ["not-a-timestamp"], ["2026-02-01T00:00:00Z"], ["2026-03-01T00:00:00Z"]
+        )
+        held = not result["ok"]
+        return {"kind": kind, "held_closed": held, "blockers": list(result["blockers"])}
+    if kind == "stale_source":
+        result = verify_nba_snapshot_order(
+            "2026-01-01T12:00:00Z",  # snapshot after feature hydration
+            "2026-01-01T10:00:00Z",
+            "2026-01-02T00:00:00Z",
+        )
+        held = not result["ok"]
+        return {"kind": kind, "held_closed": held, "blockers": list(result["blockers"])}
+    if kind == "missing_artifact":
+        tampered = {**base_triad, "fitted_artifact_sha256": ""}
+        verdict = verify_triad(
+            {**tampered, "expected_sport": "NBA", "expected_market": "MONEYLINE"}
+        )
+        held = not verdict.ok
+        return {"kind": kind, "held_closed": held, "blockers": list(verdict.blockers)}
+    if kind == "missing_calibrator":
+        tampered = {**base_triad, "calibrator_artifact_sha256": ""}
+        verdict = verify_triad(
+            {**tampered, "expected_sport": "NBA", "expected_market": "MONEYLINE"}
+        )
+        held = not verdict.ok
+        return {"kind": kind, "held_closed": held, "blockers": list(verdict.blockers)}
     if kind == "cross_sport_swap":
         verdict = verify_triad(
-            {**(dict(triad) if triad else {}), "expected_sport": "NBA", "expected_market": "MONEYLINE"}
+            {**base_triad, "expected_sport": "NBA", "expected_market": "MONEYLINE"}
         )
         held = not verdict.ok
         return {"kind": kind, "held_closed": held, "blockers": list(verdict.blockers)}
     if kind == "bounds_violation":
         verdict = verify_probability_bounds(0.6, 0.7, 0.8)
         return {"kind": kind, "held_closed": not verdict.ok, "blockers": list(verdict.blockers)}
-    if kind not in kinds:
-        return {"kind": kind, "held_closed": False, "blockers": ["UNKNOWN_NEGATIVE_KIND"]}
-    return {"kind": kind, "held_closed": True, "blockers": kinds[kind]}
+    return {"kind": kind, "held_closed": False, "blockers": ["UNKNOWN_NEGATIVE_KIND"]}
 
 
 __all__ = [
@@ -121,4 +187,5 @@ __all__ = [
     "nba_evidence_preflight",
     "nba_hard_negative",
     "verify_chronology_disjoint",
+    "verify_nba_snapshot_order",
 ]
