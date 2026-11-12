@@ -39,8 +39,8 @@ def _scores(values: Sequence[int], name: str) -> tuple[int, ...]:
     if not isinstance(values, (tuple, list)):
         raise ValueError(f"{name} must be a score sequence")
     for value in values:
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"{name} must contain nonnegative integer scores")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 1_000_000:
+            raise ValueError(f"{name} must contain nonnegative bounded integer scores")
     return tuple(values)
 
 
