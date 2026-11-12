@@ -1,0 +1,11 @@
+# Market-history first-seen and immutable legacy references
+
+- date: 2026-11-12
+- typed_reason: `SPREAD_EXACT_LINE_PREGAME_QUOTE_UNAVAILABLE` (existing missing-verified-evidence status; registered in docs/failure_codes.md in this change)
+- mechanism: the historical reference generator trusted provider_updated_at ahead of actual fetched_at. The first repair rejected late CURRENT rows, but pre-existing OPEN/CLOSE rows still suppressed clean replacements; the spread-exact-line research reader independently trusted the same backdated provider time.
+- detection_point: before reference materialization, after acquisition, and again at research read-binding. Had this been checked at the original reference schema, malformed historical as-of quotes could not have looked like valid pregame closes.
+- observed_red: PR #1581 test-only head `65a44ca360a59ae36a2f9866a190f2def7cbae55` had 2 failed / 47 passed (job 131292596399). Follow-up test-only head `f82c27ffe5ed6a9a42bccc39f4f75d4ce832f303` had 3 failed / 57 passed (job 131302353209), including a spread-replay job 131302353270 with -9.5 stale versus -3.5 valid line.
+- fix: use verified fetched_at for OPEN/CLOSE chronology; prohibit capture at/after kickoff, future to as-of read, and provider-updated time later than capture. Validate legacy OPEN/CLOSE before they suppress deriving new references, refresh the clock after provider collection, and reject invalid persisted rows at research spread binding. No data deletion or overwrite.
+- prevention_artifact: tests/test_v17_rundown_market_history.py and tests/test_v17_spread_exact_line_evidence.py hold permanent negative and positive coverage. Code and acceptance tracked at https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/1581
+- rights: ESPN collection PR #1567 remains separate, disabled by default, unmerged and source-rights-held. This existing Rundown history correction adds no network call or charge.
+- scope: exact-line replay is read-only, sporting probability weights/calibration unchanged, V17_TERMINAL_REDUCER unaffected, `can_execute=false`.
