@@ -717,6 +717,7 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
     from audit_nfl_count_prop_participation import SNAP_SHA256
     from audit_nfl_count_prop_pbp_presence import (
         classify_missing_pbp_presence, read_verified_ftn_2025_offense_presence,
+        require_ftn_positive_identity_control,
     )
     from train_nfl_missing_prop_candidates import (
         EXPECTED_RELEASE_SHA256, _quarantine_unattributed_zero_stat_rows,
@@ -761,6 +762,9 @@ def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
         observed = classify_missing_pbp_presence(
             stats, snaps, players, games, offense,
         )
+        # Negative "not observed" counts are an identity assertion; they
+        # have no source meaning without a real positive GSIS control.
+        require_ftn_positive_identity_control(observed)
     except (ValueError, OSError, TimeoutError, KeyError, TypeError) as exc:
         pytest.skip(
             "HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY:"
