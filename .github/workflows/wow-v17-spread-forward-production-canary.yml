@@ -209,6 +209,11 @@ jobs:
               assert detail, result
               # A market/source/tooling blocker must keep its own typed reason.
               assert code != "MODEL_UNAVAILABLE", result
+              # The ESPN identity-source outage is the WNBA canary's governed
+              # upstream blocker: it arrives with its own exact code and is never
+              # rewritten into a generic or suffixed acquisition failure.
+              if code.startswith("WNBA_SPREAD_CANARY_IDENTITY_SOURCE"):
+                  assert code=="WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE", result
               receipt={"status":"BLOCKED_WITH_EXACT_REASON","code":code,"detail":detail,"sport":"WNBA","elapsed_seconds":round(elapsed,3),"can_execute":False}
               print(json.dumps(receipt,sort_keys=True))
               raise RuntimeError(f"BLOCKED_WITH_EXACT_REASON:{code}:{detail}")
