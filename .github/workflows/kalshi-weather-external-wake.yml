@@ -43,18 +43,29 @@ jobs:
     if: github.event_name != 'pull_request'
     name: Wake and validate isolated weather shadow service
     runs-on: ubuntu-latest
-    # Two endpoints can each take 65s on every one of three cold-start retries.
-    # 3 * 2 * 65 + 2 * 8 + 30s runner margin = 436s; five minutes truncates
-    # the final permitted retry. Concurrency still serializes overlapping wakes.
+    # Up to three read-only probe attempts run within a hard 420s deadline,
+    # reserving at least 60s for a durable failure receipt before the 480s job limit.
+    # Concurrency still serializes overlapping scheduled wakes.
     timeout-minutes: 8
     steps:
+      # Reserve a receipt window even if the repository checkout is slow.
+      - name: Set bounded heartbeat deadline
+        continue-on-error: true
+        shell: bash
+        run: echo "WAKE_HEARTBEAT_DEADLINE_EPOCH=$(($(date +%s) + 420))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         continue-on-error: true
       - name: Wake API, verify DB-read and shadow collector flags
         continue-on-error: true
         run: |
           set -euo pipefail
-          if ! python3 artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py; then
+          remaining=$(( ${WAKE_HEARTBEAT_DEADLINE_EPOCH:-0} - $(date +%s) ))
+          if [ "$remaining" -le 0 ]; then
+            echo "::error::KALSHI_WEATHER_WAKE_PROBE_FAILED: heartbeat source checkout exceeded probe deadline."
+            echo "KALSHI_WEATHER_WAKE_PROBE_FAILED deadline_exceeded=true can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! timeout --signal=TERM --kill-after=5s "${remaining}s" python3 artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py; then
             echo "::error::KALSHI_WEATHER_WAKE_PROBE_FAILED: read-only heartbeat could not prove API, DB-read and shadow collector flags."
             echo "KALSHI_WEATHER_WAKE_PROBE_FAILED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
             exit 1
