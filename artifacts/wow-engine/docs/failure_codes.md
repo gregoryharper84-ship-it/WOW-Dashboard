@@ -769,6 +769,7 @@ These are research-only source failures owned by NFL_PROP_SOURCE_RESEARCH; no cr
 |---|---|---|---|
 | `NFL_PROP_ROSTER_DIGEST_MISMATCH` | INPUT | Refuse a size or SHA-256-mismatched roster before decoding any IDs. | No |
 | `NFL_PROP_ROSTER_SCHEMA_INVALID` | INPUT | Pinned asset lacks required source identity fields or is not exclusively 2025 season. | No |
+| `NFL_PROP_ROSTER_RDS_READER_UNAVAILABLE` | RESEARCH_INPUT | The optional offline RDS parser is unavailable; Nov-05 SHA-pinned archive identities cannot be inspected and must remain on HOLD. Recovery: provision the free research-only RDS decoder in an isolated environment and rerun; never fall back to mutable CSV or guessed identifiers. | No |
 | `NFL_PROP_ROSTER_REDIRECT_UNTRUSTED` | SECURITY | Refuse a response outside the existing HTTPS official-release host allowlist. | No |
 | `NFL_PROP_ROSTER_TARGET_INVALID` | IDENTITY | Invalid requested source PFR key; never guess an identity from a name or position. | No |
 | `NFL_PROP_ROSTER_CROSSWALK_CONFLICT` | IDENTITY | An exact source PFR code maps to multiple GSIS identities, or a GSIS identity is reused by distinct PFR codes anywhere in the frozen roster; no candidate accepted. | No |
