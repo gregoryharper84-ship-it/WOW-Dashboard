@@ -1,4 +1,4 @@
-"""Bounded Cricsheet T20 archive acquisition and integrity research ONLY.
+"""Bounded Cricsheet international T20 archive integrity research ONLY.
 
 Acquires an openly published candidate archive, but does not attest original
 publisher ownership, authorize commercial training, create a model, or certify.
@@ -22,6 +22,7 @@ from typing import Any
 
 SOURCE_ID = "CRICSHEET_ODC_BY"
 SOURCE_URL = "https://cricsheet.org/downloads/t20s_json.zip"
+SOURCE_ARCHIVE_SCOPE = "INTERNATIONAL_T20_ONLY"
 SOURCE_TERMS = "https://cricsheet.org/licensing/"
 VERSION = "WOW_V17_CRICSHEET_T20_CANDIDATE_V1"
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -154,7 +155,8 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
         return {
             "schema": VERSION, "source_id": SOURCE_ID, "source_url": SOURCE_URL,
             "terms_url": SOURCE_TERMS, "archive_sha256": digest,
-            "archive_bytes": len(data), "license_sha256": hashlib.sha256(license_bytes).hexdigest(),
+            "archive_bytes": len(data), "archive_scope": SOURCE_ARCHIVE_SCOPE,
+            "license_sha256": hashlib.sha256(license_bytes).hexdigest(),
             "unique_t20_match_ids": len(selected_match_ids),
             "binary_settled_matches": settled, "nonbinary_or_void_matches": tie_or_no_result,
             "date_only_match_rows": date_only,
