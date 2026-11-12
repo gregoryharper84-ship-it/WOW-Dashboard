@@ -260,6 +260,7 @@ def test_golden_receipt_uses_checked_out_sha_not_dispatch_sha() -> None:
             "HEALTH_READ_OUTCOME": "success",
             "BACKEND_STATUS": "FAIL",
             "CONTRACT_TEST_OUTCOME": "failure",
+            "CHECKOUT_MAIN_OUTCOME": "success",
             "CHECKOUT_SHA_OUTCOME": "success",
             "CHECKED_OUT_SHA": "a" * 40,
             "GITHUB_SHA": "f" * 40,
@@ -269,6 +270,8 @@ def test_golden_receipt_uses_checked_out_sha_not_dispatch_sha() -> None:
     receipt = json.loads(str(result["receipt"]))
     assert receipt["sha"] == "a" * 40
     assert receipt["sha"] != "f" * 40
+    assert receipt["user_journey_status"] == "FAIL"
+    assert receipt["checkout_main_outcome"] == "success"
     assert receipt["contract_tests_outcome"] == "failure"
     assert receipt["health_read_outcome"] == "success"
     assert receipt["can_execute"] is False
@@ -284,6 +287,7 @@ def test_golden_receipt_invalid_checkout_sha_is_explicitly_unverified() -> None:
             "HEALTH_READ_OUTCOME": "failure",
             "BACKEND_STATUS": "FAIL",
             "CONTRACT_TEST_OUTCOME": "failure",
+            "CHECKOUT_MAIN_OUTCOME": "success",
             "CHECKOUT_SHA_OUTCOME": "failure",
             "CHECKED_OUT_SHA": "invalid",
             "GITHUB_SHA": "f" * 40,
@@ -295,3 +299,33 @@ def test_golden_receipt_invalid_checkout_sha_is_explicitly_unverified() -> None:
     assert receipt["user_journey_status"] == "GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE"
     assert receipt["checkout_sha_outcome"] == "failure"
     assert "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED" in result["summary"]
+
+
+def test_golden_receipt_valid_sha_rejected_when_checkout_outcome_failed() -> None:
+    """A plausible SHA must not survive a failed provenance-verification step."""
+    steps = _workflow("wow-v17-golden-product-acceptance.yml")["jobs"]["product-acceptance"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Record product-acceptance receipt")
+    for checkout_main_outcome, checkout_sha_outcome in (
+        ("success", "failure"),
+        ("failure", "success"),
+    ):
+        result = _run_isolated_bash(
+            script,
+            extra_env={
+                "PRODUCT_STATUS": "FAIL",
+                "HEALTH_READ_OUTCOME": "failure",
+                "BACKEND_STATUS": "FAIL",
+                "CONTRACT_TEST_OUTCOME": "failure",
+                "CHECKOUT_MAIN_OUTCOME": checkout_main_outcome,
+                "CHECKOUT_SHA_OUTCOME": checkout_sha_outcome,
+                "CHECKED_OUT_SHA": "a" * 40,
+                "GITHUB_SHA": "f" * 40,
+            },
+        )
+        assert result["returncode"] == 0, result["stderr"]
+        receipt = json.loads(str(result["receipt"]))
+        assert receipt["sha"] == "UNVERIFIED"
+        assert receipt["user_journey_status"] == "FAIL"
+        assert receipt["checkout_main_outcome"] == checkout_main_outcome
+        assert receipt["checkout_sha_outcome"] == checkout_sha_outcome
+        assert "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED" in result["summary"]
