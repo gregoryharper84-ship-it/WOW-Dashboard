@@ -155,6 +155,7 @@ def load_source_files(
                                     and expected_sha256 == EXPECTED_RELEASE_SHA256),
         "unattributed_identity_quarantine": identity_quarantine,
         "source_identity_quarantine_independently_reviewed": False,
+        "candidate_training_authorized": False,
         "assets": assets, "bundle_sha256": _json_digest(assets),
         "can_execute": False,
     }
@@ -409,6 +410,13 @@ def main() -> int:
                                                     and os.path.samefile(args.out, source)):
             raise ValueError(f"NFL_PROP_SOURCE_OUTPUT_COLLISION:{season}")
     frame, provenance = load_source_files(args.input_dir, expected_sha256=EXPECTED_RELEASE_SHA256)
+    # The hash check alone cannot adjudicate anonymous groups, missing
+    # participant games or upstream rights. Fail closed before any model fit.
+    if not (provenance.get("release_hashes_verified") is True
+            and provenance.get("source_identity_quarantine_independently_reviewed") is True
+            and provenance.get("source_rights_independently_approved") is True
+            and provenance.get("candidate_training_authorized") is True):
+        raise ValueError("NFL_PROP_FITTING_SOURCE_ADMISSION_HOLD")
     candidates = [build_candidate(build_feature_rows(frame, stat), stat, provenance) for stat in ROUTES]
     output = {
         "schema_version": "WOW_NFL_MISSING_COUNT_PROP_CANDIDATES_V1",
