@@ -87,13 +87,15 @@ def compute_binding_proof(triad: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def verify_triad(triad: Mapping[str, Any], *, require_binding: bool = False) -> TriadVerdict:
+def verify_triad(triad: Mapping[str, Any], *, require_binding: bool = True) -> TriadVerdict:
     """Verify one lane's artifact + calibrator + corpus binding. Fail closed.
 
-    When ``require_binding`` is true, or whenever the payload carries a
-    ``binding_proof``, the proof is recomputed with :func:`compute_binding_proof`
-    and must match exactly; otherwise ``EVIDENCE_TRIAD_BINDING_UNPROVEN``
-    (missing proof) or ``EVIDENCE_TRIAD_BINDING_MISMATCH`` (tampered claim).
+    The binding proof is required by default: it is recomputed with
+    :func:`compute_binding_proof` and must match exactly, otherwise
+    ``EVIDENCE_TRIAD_BINDING_UNPROVEN`` (missing proof) or
+    ``EVIDENCE_TRIAD_BINDING_MISMATCH`` (tampered claim). Pass
+    ``require_binding=False`` only for narrow unit checks of the other
+    fields — never for a review-ready decision.
     """
     blockers: list[str] = []
     data = dict(triad)

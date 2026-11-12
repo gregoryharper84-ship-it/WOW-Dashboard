@@ -4,6 +4,11 @@ Research-only preflight. No retraining, no registration, no activation.
 Verifies chronology disjointness (train/calibration/holdout by official event
 time), tipoff/timezone sanity, home/away identity, OT settlement basis, and
 the artifact + calibrator + corpus triad binding for one NBA lane.
+
+Review-ready decisions are mandatory-evidence: official event IDs, event
+orientation records, full prelock lineage timestamps, lineup evidence and a
+recomputable triad binding proof must all be present. Omission of any of them
+fails closed — a lane cannot reach review on timestamps alone.
 """
 
 from __future__ import annotations
@@ -111,6 +116,65 @@ def verify_nba_snapshot_order(
     return {"ok": not blockers, "blockers": blockers}
 
 
+def verify_nba_event_orientations(
+    records: Sequence[Mapping[str, object]],
+) -> Mapping[str, object]:
+    """One official event ID must map to exactly one home/away orientation.
+
+    The exact swapped-home/away failure — the same event claimed once as
+    team A hosting team B and again as B hosting A — is an identity conflict
+    even when every timestamp parses. Records carry ``official_event_id``,
+    ``home_team_id`` and ``away_team_id``.
+    """
+    blockers: list[str] = []
+    orientation_by_id: dict[str, tuple[str, str]] = {}
+    for record in records:
+        event_id = str(record.get("official_event_id", "") or "").strip()
+        home = str(record.get("home_team_id", "") or "").strip()
+        away = str(record.get("away_team_id", "") or "").strip()
+        if not event_id or not home or not away:
+            blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
+            continue
+        if home == away:
+            blockers.append("NBA_EVENT_IDENTITY_INCOMPLETE")
+            continue
+        orientation = (home, away)
+        previous = orientation_by_id.get(event_id)
+        if previous is None:
+            orientation_by_id[event_id] = orientation
+        elif previous != orientation:
+            blockers.append("NBA_HOME_AWAY_ORIENTATION_CONFLICT")
+    return {"ok": not blockers, "blockers": blockers}
+
+
+def verify_nba_lineup_freshness(
+    feature_ts: str, lineup_evidence: Mapping[str, object]
+) -> Mapping[str, object]:
+    """A material starter/rotation change at or after feature hydration voids
+    prelock status. This is the exact late-scratch scenario: features hydrated
+    from a rotation that is no longer current must hold, not score."""
+    try:
+        feature = _parse_utc(feature_ts)
+    except (ValueError, TypeError):
+        return {"ok": False, "blockers": ["NBA_EVENT_TIME_INVALID"]}
+    changed = bool(lineup_evidence.get("rotation_changed", False))
+    if not changed:
+        return {"ok": True, "blockers": []}
+    update_raw = lineup_evidence.get("latest_material_update_ts")
+    if update_raw is None or not str(update_raw).strip():
+        return {"ok": False, "blockers": ["NBA_LINEUP_UPDATE_TIME_UNVERIFIED"]}
+    try:
+        updated = _parse_utc(str(update_raw))
+    except (ValueError, TypeError):
+        return {"ok": False, "blockers": ["NBA_LINEUP_UPDATE_TIME_UNVERIFIED"]}
+    if updated >= feature:
+        return {
+            "ok": False,
+            "blockers": ["NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION"],
+        }
+    return {"ok": True, "blockers": []}
+
+
 def nba_evidence_preflight(
     *,
     triad: Mapping[str, object],
@@ -125,13 +189,15 @@ def nba_evidence_preflight(
     source_snapshot_ts: str | None = None,
     feature_ts: str | None = None,
     tipoff_ts: str | None = None,
+    event_records: Sequence[Mapping[str, object]] | None = None,
+    lineup_evidence: Mapping[str, object] | None = None,
 ) -> Mapping[str, object]:
     """NBA fitted-evidence preflight. Fail closed; research-only.
 
-    The triad binding proof is required: a claim without a recomputable
-    artifact-to-corpus binding cannot proceed. When event IDs are supplied
-    they are checked as identity; when snapshot/feature/tipoff timestamps
-    are supplied the pregame lineage order is enforced.
+    Mandatory evidence for any review-ready decision: official event IDs,
+    event orientation records, complete prelock lineage timestamps, lineup
+    evidence and a recomputable triad binding proof. Omitting any of them is
+    a blocker, not a silent pass.
     """
     blockers: list[str] = []
     triad_verdict = verify_triad(
@@ -139,28 +205,44 @@ def nba_evidence_preflight(
         require_binding=True,
     )
     blockers.extend(triad_verdict.blockers)
-    chrono = verify_chronology_disjoint(
-        train,
-        calibration,
-        holdout,
-        train_ids=train_ids,
-        calibration_ids=calibration_ids,
-        holdout_ids=holdout_ids,
-    )
+    if train_ids is None or calibration_ids is None or holdout_ids is None:
+        blockers.append("NBA_EVENT_IDS_REQUIRED")
+        chrono = verify_chronology_disjoint(train, calibration, holdout)
+    else:
+        chrono = verify_chronology_disjoint(
+            train,
+            calibration,
+            holdout,
+            train_ids=train_ids,
+            calibration_ids=calibration_ids,
+            holdout_ids=holdout_ids,
+        )
     blockers.extend(chrono["blockers"])
     if not settlement_includes_ot:
         blockers.append("NBA_OT_SETTLEMENT_BASIS_UNPROVEN")
     if post_tipoff_features_used:
         blockers.append("NBA_POST_TIPOFF_FEATURE_LEAKAGE")
-    lineage_args = (source_snapshot_ts, feature_ts, tipoff_ts)
-    if any(arg is not None for arg in lineage_args):
-        if any(arg is None for arg in lineage_args):
-            blockers.append("NBA_PRELOCK_LINEAGE_INCOMPLETE")
-        else:
-            lineage = verify_nba_snapshot_order(
-                str(source_snapshot_ts), str(feature_ts), str(tipoff_ts)
-            )
-            blockers.extend(lineage["blockers"])
+    if (
+        source_snapshot_ts is None
+        or feature_ts is None
+        or tipoff_ts is None
+    ):
+        blockers.append("NBA_PRELOCK_LINEAGE_REQUIRED")
+    else:
+        lineage = verify_nba_snapshot_order(
+            str(source_snapshot_ts), str(feature_ts), str(tipoff_ts)
+        )
+        blockers.extend(lineage["blockers"])
+    if event_records is None:
+        blockers.append("NBA_EVENT_ORIENTATION_EVIDENCE_MISSING")
+    else:
+        orientations = verify_nba_event_orientations(event_records)
+        blockers.extend(orientations["blockers"])
+    if lineup_evidence is None:
+        blockers.append("NBA_LINEUP_EVIDENCE_MISSING")
+    elif feature_ts is not None:
+        freshness = verify_nba_lineup_freshness(str(feature_ts), lineup_evidence)
+        blockers.extend(freshness["blockers"])
     if blockers:
         return {
             "decision": "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED",
@@ -187,31 +269,26 @@ def nba_hard_negative(
     outcomes: ``held_closed`` is True only when the genuine check rejects."""
     base_triad = dict(triad) if triad else {}
     if kind == "swapped_home_away":
-        # Same official event claimed under both home/away orientations
-        # surfaces as a duplicate official event ID across partitions.
-        result = verify_chronology_disjoint(
-            ["2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z"],
-            ["2026-02-01T00:00:00Z"],
-            ["2026-03-01T00:00:00Z"],
-            train_ids=["espn-1", "espn-1"],
-            calibration_ids=["espn-2"],
-            holdout_ids=["espn-3"],
-        )
+        # Exact scenario: the same official event claimed twice with the
+        # home/away orientation swapped.
+        result = verify_nba_event_orientations([
+            {"official_event_id": "espn-401999001", "home_team_id": "espn-1", "away_team_id": "espn-2"},
+            {"official_event_id": "espn-401999001", "home_team_id": "espn-2", "away_team_id": "espn-1"},
+        ])
         held = not result["ok"]
         return {"kind": kind, "held_closed": held, "blockers": list(result["blockers"])}
     if kind == "late_scratch":
-        # Material update after feature hydration: features are no longer
-        # prelock, so the preflight must hold on leakage.
-        verdict = nba_evidence_preflight(
-            triad=base_triad,
-            train=["2026-01-01T00:00:00Z"],
-            calibration=["2026-02-01T00:00:00Z"],
-            holdout=["2026-03-01T00:00:00Z"],
-            settlement_includes_ot=True,
-            post_tipoff_features_used=True,
+        # Exact scenario: a material starter change timestamped after the
+        # feature hydration it would invalidate.
+        result = verify_nba_lineup_freshness(
+            "2026-01-15T16:00:00Z",
+            {
+                "rotation_changed": True,
+                "latest_material_update_ts": "2026-01-15T16:30:00Z",
+            },
         )
-        held = verdict["decision"] != "READY_FOR_INDEPENDENT_MODEL_REVIEW"
-        return {"kind": kind, "held_closed": held, "blockers": list(verdict["blockers"])}
+        held = not result["ok"]
+        return {"kind": kind, "held_closed": held, "blockers": list(result["blockers"])}
     if kind == "missing_tip_time":
         result = verify_chronology_disjoint(
             ["not-a-timestamp"], ["2026-02-01T00:00:00Z"], ["2026-03-01T00:00:00Z"]
@@ -259,5 +336,7 @@ __all__ = [
     "nba_evidence_preflight",
     "nba_hard_negative",
     "verify_chronology_disjoint",
+    "verify_nba_event_orientations",
+    "verify_nba_lineup_freshness",
     "verify_nba_snapshot_order",
 ]

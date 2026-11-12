@@ -118,10 +118,9 @@ def nhl_evidence_preflight(
 ) -> Mapping[str, object]:
     """NHL evidence preflight. Fail closed; research-only HOLD by default.
 
-    The triad binding proof is required. Partition chronology is enforced
-    whenever event times are supplied; without them the accounting holds on
-    unverified chronology only when a caller explicitly requires it — the
-    standalone reconciliation above already fails closed on empty partitions
+    The triad binding proof is required, and partition event times are
+    mandatory: a review-ready decision cannot omit chronology evidence.
+    The standalone reconciliation also fails closed on empty partitions
     and ID reuse.
     """
     blockers: list[str] = []
@@ -130,6 +129,12 @@ def nhl_evidence_preflight(
         require_binding=True,
     )
     blockers.extend(triad_verdict.blockers)
+    if (
+        train_times is None
+        or calibration_times is None
+        or test_times is None
+    ):
+        blockers.append("NHL_PARTITION_CHRONOLOGY_UNVERIFIED")
     accounting = reconcile_partition_accounting(
         train_ids,
         calibration_ids,

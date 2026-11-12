@@ -68,8 +68,11 @@ def test_binding_proof_mismatch_detects_tampered_digest():
     assert "EVIDENCE_TRIAD_BINDING_MISMATCH" in verdict.blockers
 
 
-def test_unrequired_triad_without_proof_keeps_prior_behavior():
-    assert verify_triad(_triad("NFL")).ok is True
+def test_binding_opt_out_is_explicit_never_a_review_default():
+    # Narrow unit checks may opt out explicitly; review-ready paths keep the
+    # default require_binding=True.
+    assert verify_triad(_triad("NFL"), require_binding=False).ok is True
+    assert verify_triad(_triad("NFL")).ok is False
 
 
 # --- Gap 1: NBA identity on official event IDs ---
@@ -145,24 +148,51 @@ def test_preflight_rejects_stale_snapshot_lineage():
     assert "NBA_SOURCE_SNAPSHOT_AFTER_FEATURE" in verdict["blockers"]
 
 
+def _full_nba_kwargs(triadic=None):
+    return {
+        "triad": triadic if triadic is not None else _bound("NBA"),
+        "train": ["2026-01-01T00:00:00Z"],
+        "calibration": ["2026-02-01T00:00:00Z"],
+        "holdout": ["2026-03-01T00:00:00Z"],
+        "settlement_includes_ot": True,
+        "post_tipoff_features_used": False,
+        "train_ids": ["g1"],
+        "calibration_ids": ["g2"],
+        "holdout_ids": ["g3"],
+        "source_snapshot_ts": "2026-01-01T10:00:00Z",
+        "feature_ts": "2026-01-01T12:00:00Z",
+        "tipoff_ts": "2026-01-02T00:00:00Z",
+        "event_records": [
+            {"official_event_id": "g1", "home_team_id": "h1", "away_team_id": "a1"},
+            {"official_event_id": "g2", "home_team_id": "h2", "away_team_id": "a2"},
+            {"official_event_id": "g3", "home_team_id": "h3", "away_team_id": "a3"},
+        ],
+        "lineup_evidence": {"rotation_changed": False},
+    }
+
+
 def test_preflight_accepts_clean_lineage_with_binding_and_ids():
-    verdict = nba_evidence_preflight(
-        triad=_bound("NBA"),
-        train=["2026-01-01T00:00:00Z"],
-        calibration=["2026-02-01T00:00:00Z"],
-        holdout=["2026-03-01T00:00:00Z"],
-        settlement_includes_ot=True,
-        post_tipoff_features_used=False,
-        train_ids=["g1"],
-        calibration_ids=["g2"],
-        holdout_ids=["g3"],
-        source_snapshot_ts="2026-01-01T10:00:00Z",
-        feature_ts="2026-01-01T12:00:00Z",
-        tipoff_ts="2026-01-02T00:00:00Z",
-    )
+    verdict = nba_evidence_preflight(**_full_nba_kwargs())
     assert verdict["decision"] == "READY_FOR_INDEPENDENT_MODEL_REVIEW"
     assert verdict["probability_publishable"] is False
     assert verdict["can_execute"] is False
+
+
+def test_preflight_mandatory_evidence_cannot_be_omitted():
+    base = _full_nba_kwargs()
+    omitted = {
+        "train_ids": "NBA_EVENT_IDS_REQUIRED",
+        "source_snapshot_ts": "NBA_PRELOCK_LINEAGE_REQUIRED",
+        "event_records": "NBA_EVENT_ORIENTATION_EVIDENCE_MISSING",
+        "lineup_evidence": "NBA_LINEUP_EVIDENCE_MISSING",
+        "triad": "EVIDENCE_TRIAD_BINDING_UNPROVEN",
+    }
+    for field, expected in omitted.items():
+        kwargs = dict(base)
+        kwargs[field] = _triad("NBA") if field == "triad" else None
+        verdict = nba_evidence_preflight(**kwargs)
+        assert verdict["decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED", field
+        assert expected in verdict["blockers"], (field, verdict["blockers"])
 
 
 def test_preflight_without_binding_proof_holds():
@@ -236,6 +266,22 @@ def test_nhl_partial_time_coverage_fails_closed():
     )
     assert accounting["ok"] is False
     assert "NHL_PARTITION_CHRONOLOGY_UNVERIFIED" in accounting["blockers"]
+
+
+def test_nhl_preflight_omitted_chronology_fails_closed():
+    train, cal, test = _nhl_ids()
+    verdict = nhl_evidence_preflight(
+        triad=_bound("NHL"),
+        train_ids=train,
+        calibration_ids=cal,
+        test_ids=test,
+        settlement_includes_ot_shootout=True,
+        goalie_source_permitted=True,
+        goalie_second_corroboration=True,
+        goalie_confirmation_prelock=True,
+    )
+    assert verdict["decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED"
+    assert "NHL_PARTITION_CHRONOLOGY_UNVERIFIED" in verdict["blockers"]
 
 
 def test_nhl_preflight_holds_until_binding_and_goalie_evidence():

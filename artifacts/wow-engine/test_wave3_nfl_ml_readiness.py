@@ -6,7 +6,11 @@ import math
 
 import pytest
 
-from v17.wave3_evidence_triad import verify_probability_bounds, verify_triad
+from v17.wave3_evidence_triad import (
+    compute_binding_proof,
+    verify_probability_bounds,
+    verify_triad,
+)
 from v17.wave3_nfl_ml_readiness import (
     GradedRow,
     build_readiness_ledger,
@@ -15,6 +19,27 @@ from v17.wave3_nfl_ml_readiness import (
 )
 
 SHA = "a" * 64
+
+
+def _triad_base() -> dict:
+    return {
+        "sport": "NFL",
+        "market": "MONEYLINE",
+        "model_family": "NFL_EVENT_LOGREG_PLATT_V1",
+        "model_version": "v1",
+        "fitted_artifact_sha256": SHA,
+        "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
+        "calibrator_artifact_sha256": SHA,
+        "calibration_method": "PLATT_TIME_SPLIT_V1",
+        "pregame_corpus_digest": SHA,
+        "settlement_basis": "OFFICIAL_FINAL_HOME_WIN",
+    }
+
+
+def _bound_triad() -> dict:
+    base = _triad_base()
+    base["binding_proof"] = compute_binding_proof(base)
+    return base
 
 
 def _95_rows() -> list:
@@ -78,18 +103,7 @@ def test_100_balanced_cohort_passes_but_never_self_certifies():
 
 
 def test_triad_rejects_missing_stale_and_cross_sport():
-    base = {
-        "sport": "NFL",
-        "market": "MONEYLINE",
-        "model_family": "NFL_EVENT_LOGREG_PLATT_V1",
-        "model_version": "v1",
-        "fitted_artifact_sha256": SHA,
-        "feature_schema_version": "NFL_EVENT_PREGAME_PRIOR_V1",
-        "calibrator_artifact_sha256": SHA,
-        "calibration_method": "PLATT_TIME_SPLIT_V1",
-        "pregame_corpus_digest": SHA,
-        "settlement_basis": "OFFICIAL_FINAL_HOME_WIN",
-    }
+    base = _bound_triad()
     assert verify_triad({**base, "expected_sport": "NFL"}).ok is True
     missing = dict(base)
     missing["calibrator_artifact_sha256"] = ""
