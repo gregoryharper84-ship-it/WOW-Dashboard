@@ -59,3 +59,5 @@ Static repository certification (`CERTIFIED_TEAM_EVENT_SPORTS`) remains **MLB on
 | #2637 | Cursor NHL adoption of #2571 | Nonowner rebase onto `1ab243ca`; not yet certified publication |
 | #2550 | NCAAB event identity | CONFLICTING with main |
 | #2605 | Freebuff offline NFL props | Out of Cursor scope |
+
+<!-- qa-incident-body-reentry 2026-11-12T17:07Z -->
