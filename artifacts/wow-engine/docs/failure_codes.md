@@ -740,3 +740,17 @@ Produced only by `scripts/audit_nfl_count_prop_pbp_stats.py`, owned by WOW_PROP_
 | `HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT` | RESEARCH_HOLD | Event signal counts have not been independently reconciled to NFL stat/scoring rules or source semantics; no model-certification authority. | No |
 | `HOLD_PBP_STAT_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | Pinned PBP event flags are absent/inconsistent, parsing failed or required identity checks failed; preserve source HOLD. | No |
 | `HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED` | RESEARCH_HOLD | A positive weekly count differs from the independently pinned PBP actor event flags. Preserve exact event/play type examples, never manufacture an extra event or correct a stat without independent source authority. | No |
+
+## Pinned 2025 historical roster ID shadow (2026-11-11)
+
+These are research-only source failures owned by NFL_PROP_SOURCE_RESEARCH; no crosswalk adoption or new model registration is permitted. The published 2025 nflverse season-roster GitHub release has SHA-256 `531ee5de386037bb17de3e3e3d50f7b4ed08789526bbaae9876fdd3dfb4d04ad`, 1,010,039 bytes. 2021–24 archived roster CSVs lack independently published digests; they are not admitted by this diagnostic.
+
+| Code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_ROSTER_DIGEST_MISMATCH` | INPUT | Refuse a size or SHA-256-mismatched roster before decoding any IDs. | No |
+| `NFL_PROP_ROSTER_SCHEMA_INVALID` | INPUT | Pinned asset lacks required source identity fields or is not exclusively 2025 season. | No |
+| `NFL_PROP_ROSTER_REDIRECT_UNTRUSTED` | SECURITY | Refuse a response outside the existing HTTPS official-release host allowlist. | No |
+| `NFL_PROP_ROSTER_TARGET_INVALID` | IDENTITY | Invalid requested source PFR key; never guess an identity from a name or position. | No |
+| `NFL_PROP_ROSTER_CROSSWALK_CONFLICT` | IDENTITY | More than one GSIS identity shares the same exact target PFR code in the frozen roster; no candidate accepted. | No |
+| `HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE` | RESEARCH_HOLD | Research-only 2025 candidate mapping not observed because required pinned bytes are inaccessible or invalid. | No |
+| `HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW` | RESEARCH_HOLD | Exact-ID roster pairs are source-supported research candidates only; none is adopted into fitted, live or model feature pathways. | No |

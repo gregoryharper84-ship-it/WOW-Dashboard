@@ -238,3 +238,14 @@
 - **prevention_artifact:** Existing synthetic crosswalk fixtures assert observed player profiles and repeats; original rapid PR-only source observation reports all four records. Hosted exact-head replay pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. No PFR-to-GSIS mapping made, any remaining untrusted supplemental roster source is research only. can_execute=false, V17_TERMINAL_REDUCER.
+
+## Published-checksum 2025 season-roster research identity probe (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW; NFL_PROP_ROSTER_DIGEST_MISMATCH; NFL_PROP_ROSTER_CROSSWALK_CONFLICT
+- **mechanism:** The source audit isolated 48 PFR-only snap-positive player-games to 4 PFR codes absent from pinned players.csv: CartNa00 (4 RB games 2025), ShenJo00 (7 TE games 2024), WhitCo05 (22 WR games 2021/22/24/25), WillRo08 (15 TE games 2023/24). Exact historical season rosters are a candidate bridge because they publish PFR and GSIS IDs, but only roster_2025.csv currently supplies an official SHA-256 digest in GitHub release metadata; 2021–24 assets lack published SHA values. A name/position/club match cannot certify GSIS.
+- **detection_point:** Immediately after isolating four source-missing PFR identities, before PBP event join or pretrained candidate labels.
+- **fix:** Add one pinned 2025 roster asset read-only audit using the existing HTTPS host allowlist and official 2025 SHA+size. Enumerate exact PFR↔GSIS pairs, reject ambiguous/malformed IDs, preserve HOLD, never apply candidate pairs to snaps/stats/model.
+- **prevention_artifact:** scripts/audit_nfl_count_prop_roster_crosswalk.py; tests/test_nfl_count_prop_roster_crosswalk.py, PR-only original rapid-runner observational receipt. Exact head hosted verification and independent semantic reviewer still required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no source-rights clearance, model certification, protected merge, deploy or execution. can_execute=false, V17_TERMINAL_REDUCER.

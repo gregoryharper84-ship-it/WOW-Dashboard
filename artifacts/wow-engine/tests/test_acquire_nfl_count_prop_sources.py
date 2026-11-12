@@ -336,6 +336,22 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
         except (ValueError, OSError, KeyError) as exc:
             note["pbp_stat_signal_status"] = "HOLD_PBP_STAT_EVIDENCE_INCOMPLETE"
             note["pbp_stat_signal_failure"] = type(exc).__name__ + ":" + str(exc)[:160]
+    # Source-authorized one-asset ID bridge probe; the roster never enters
+    # the snap/stat join or fitted model. Older roster vintages have no
+    # published SHA-256 and remain unavailable for this frozen test.
+    from audit_nfl_count_prop_roster_crosswalk import (
+        read_pinned_2025_roster, inspect_roster_id_candidates,
+    )
+    try:
+        roster, roster_receipt = read_pinned_2025_roster(timeout=20)
+        candidates = inspect_roster_id_candidates(
+            roster, [p["pfr_player_id"] for p in result["unmapped_player_profiles"]],
+        )
+        note["roster_2025_asset"] = roster_receipt
+        note["roster_2025_crosswalk"] = candidates
+    except (ValueError, OSError) as exc:
+        note["roster_2025_status"] = "HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE"
+        note["roster_2025_failure"] = type(exc).__name__ + ":" + str(exc)[:200]
     note["pbp_absence_proves_zero"] = False
 
     pytest.skip(
