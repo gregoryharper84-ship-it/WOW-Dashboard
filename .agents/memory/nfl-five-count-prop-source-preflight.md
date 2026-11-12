@@ -227,3 +227,14 @@
 - **prevention_artifact:** test_missing_pfr_record_never_becomes_a_gsis_guess, test_present_pfr_without_gsis_is_separate_unknown_identity, test_repeated_pfr_gap_counts_games_and_distinct_ids_separately. Existing PR-only rapid regression will observe exact source categories.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. No inferred identity, zero count, fitted probability or protected merge; can_execute=false, V17_TERMINAL_REDUCER.
+
+## Four-source-player case roster for independent identity adjudication (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_UNRESOLVED_PARTICIPATION
+- **mechanism:** Hosted run 43132684562 confirmed 48 unmatched player-games are exactly four distinct PFR IDs absent from pinned players.csv, zero cases with PFR present and GSIS missing. This predicts repeated weekly appearances by a small historical roster set, not 48 distinct identities.
+- **detection_point:** First exact-source crosswalk cause partition, before seeking any supplemental roster evidence or inserting a GSIS ID.
+- **fix:** Enumerate bounded per-PFR source profiles with observed seasons, offensive positions, player-game count, maximum offensive snaps and a game ID for independently authorized historical roster matching. No name/position heuristic becomes a player identity.
+- **prevention_artifact:** Existing synthetic crosswalk fixtures assert observed player profiles and repeats; original rapid PR-only source observation reports all four records. Hosted exact-head replay pending.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. No PFR-to-GSIS mapping made, any remaining untrusted supplemental roster source is research only. can_execute=false, V17_TERMINAL_REDUCER.

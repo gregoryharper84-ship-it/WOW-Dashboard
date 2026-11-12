@@ -84,6 +84,15 @@ def test_missing_pfr_record_never_becomes_a_gsis_guess(sample_cohort):
     receipt = reconcile_player_games(stats, snaps, players)
     assert receipt["unmapped_pfr_player_games"] == 1
     assert receipt["unmapped_distinct_pfr_ids"] == 1
+    assert receipt["unmapped_player_profiles"] == [{
+        "pfr_player_id": "PlayerA01",
+        "identity_gap_type": "PFR_NOT_IN_PINNED_PLAYERS",
+        "player_games": 1,
+        "seasons": [2024],
+        "positions": ["TE"],
+        "max_offense_snaps": 8,
+        "first_game_id": "2024_01_BAL_KC",
+    }]
     assert receipt["unmapped_gap_cause_player_games"] == {
         "PFR_NOT_IN_PINNED_PLAYERS": 1,
         "PFR_PRESENT_GSIS_UNAVAILABLE": 0,
@@ -125,6 +134,11 @@ def test_repeated_pfr_gap_counts_games_and_distinct_ids_separately(sample_cohort
     assert receipt["unmapped_gap_cause_distinct_ids"][
         "PFR_NOT_IN_PINNED_PLAYERS"
     ] == 1
+    assert receipt["unmapped_player_profiles"][0]["player_games"] == 2
+    assert receipt["unmapped_player_profiles"][0]["first_game_id"] == (
+        "2024_01_BAL_KC"
+    )
+    assert receipt["unmapped_player_profiles"][0]["max_offense_snaps"] == 8
     assert receipt["status"] == "HOLD_UNRESOLVED_PARTICIPATION"
     assert receipt["independent_semantic_acceptance"] is False
 

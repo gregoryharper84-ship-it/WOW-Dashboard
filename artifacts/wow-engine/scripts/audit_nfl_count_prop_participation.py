@@ -146,6 +146,25 @@ def reconcile_player_games(
     }
     if sum(gap_counts.values()) != len(unmapped):
         raise ValueError("NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT")
+    # Four PFR IDs account for 48 unmatched player-games in the first hosted
+    # cohort; preserve exact source IDs and affected game scope for SIRT only.
+    # A source PFR ID is never substituted for a missing GSIS player identity.
+    unmapped_profiles = []
+    for pfr_id, occurrences in unmapped.groupby("pfr_player_id", sort=True):
+        reasons = sorted(set(occurrences["identity_gap_type"]))
+        if len(reasons) != 1:
+            raise ValueError("NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT")
+        unmapped_profiles.append({
+            "pfr_player_id": str(pfr_id),
+            "identity_gap_type": reasons[0],
+            "player_games": int(len(occurrences)),
+            "seasons": sorted(int(v) for v in occurrences["season"].unique()),
+            "positions": sorted(str(v) for v in occurrences["position"].unique()),
+            "max_offense_snaps": int(occurrences["offense_snaps"].max()),
+            "first_game_id": str(occurrences.sort_values(
+                ["season", "week", "game_id"]
+            ).iloc[0]["game_id"]),
+        })
     unknown_examples = unmapped.loc[:, [
         "season", "week", "game_id", "pfr_player_id",
         "offense_snaps", "identity_gap_type",
@@ -187,6 +206,8 @@ def reconcile_player_games(
         "unmapped_distinct_pfr_ids": int(unmapped["pfr_player_id"].nunique()),
         "unmapped_gap_cause_player_games": gap_counts,
         "unmapped_gap_cause_distinct_ids": gap_distinct_ids,
+        "unmapped_player_profiles": unmapped_profiles[:20],
+        "unmapped_profile_total_pfr_ids": int(len(unmapped_profiles)),
         "participation_breakdown": strata,
         "missing_examples": examples.head(20).to_dict(orient="records"),
         "unmapped_examples": unknown_examples.head(20).to_dict(orient="records"),
