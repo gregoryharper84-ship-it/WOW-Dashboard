@@ -391,3 +391,65 @@ def test_pinned_release_only_flag_when_digest_map_matches_authoritative(tmp_path
     assert provenance["release_hashes_verified"] is False
     with pytest.raises(ValueError, match="NFL_PROP_SOURCE_DIGEST_MISMATCH"):
         load_source_files(tmp_path, expected_sha256=EXPECTED_RELEASE_SHA256)
+
+
+def _anonymous_weekly_group_receipt_fixture():
+    """Representative source-row pointers; synthetic values never prove origin."""
+    from train_nfl_missing_prop_candidates import (
+        EXPECTED_RELEASE_SHA256, _json_digest,
+    )
+    events = []
+    for year in range(2021, 2026):
+        for week in range(1, 19):
+            row = {
+                "source_line": 100 + week, "source_season": year,
+                "game_id": f"{year}_{week:02d}_BAL_KC", "week": week,
+                "position_token": "TEAM", "count_fields_all_zero": True,
+                "source_identity_unresolved": True,
+            }
+            row["audit_sha256"] = _json_digest(row)
+            events.append(row)
+    return {
+        "release_hashes_verified": True,
+        "assets": {str(y): {"sha256": EXPECTED_RELEASE_SHA256[str(y)]}
+                   for y in range(2021, 2026)},
+        "unattributed_identity_quarantine": events,
+    }
+
+
+def test_pinned_anonymous_weekly_group_shape_is_never_semantic_approval():
+    """A source pattern may be observed without certifying individual events."""
+    from train_nfl_missing_prop_candidates import observe_anonymous_weekly_source_shape
+    receipt = observe_anonymous_weekly_source_shape(
+        _anonymous_weekly_group_receipt_fixture()
+    )
+    assert receipt["status"] == "HOLD_ANONYMOUS_WEEKLY_SOURCE_SEMANTICS"
+    assert receipt["unattributed_rows"] == 90
+    assert receipt["by_season"] == {str(y): 18 for y in range(2021, 2026)}
+    assert receipt["one_unattributed_group_per_week_shape"] is True
+    assert receipt["source_generator_equivalence_proven"] is False
+    assert receipt["individual_player_outcomes_verified"] is False
+    assert receipt["source_rights_independently_approved"] is False
+    assert receipt["fitted_training_authorized"] is False
+    assert receipt["can_execute"] is False
+
+
+@pytest.mark.parametrize("mutation", [
+    "digest", "source_year", "event_week", "missing_asset", "unverified",
+])
+def test_anonymous_group_diagnostic_fails_closed_on_corrupt_provenance(mutation):
+    """Do not launder synthetic, malformed, or unpinned row evidence."""
+    from train_nfl_missing_prop_candidates import observe_anonymous_weekly_source_shape
+    receipt = _anonymous_weekly_group_receipt_fixture()
+    if mutation == "digest":
+        receipt["unattributed_identity_quarantine"][0]["week"] = 9
+    elif mutation == "source_year":
+        receipt["unattributed_identity_quarantine"][0]["source_season"] = 2022
+    elif mutation == "event_week":
+        receipt["unattributed_identity_quarantine"][0]["game_id"] = "2021_02_BAL_KC"
+    elif mutation == "missing_asset":
+        del receipt["assets"]["2025"]
+    else:
+        receipt["release_hashes_verified"] = False
+    with pytest.raises(ValueError, match="NFL_PROP_SOURCE_IDENTITY_INVALID:anonymous_group_provenance"):
+        observe_anonymous_weekly_source_shape(receipt)
