@@ -102,6 +102,11 @@ def test_cli_creates_only_receipt_and_does_not_overwrite(tmp_path):
     assert main(["--archive", str(raw), "--receipt", str(receipt)]) == 0
     record = json.loads(receipt.read_text())
     assert record["model_training_authorized"] is False
+    assert record["acquisition_mode"] == "LOCAL_ARCHIVE_UNVERIFIED_ORIGIN"
+    assert record["source_publication_timestamp_verified"] is False
+    assert record["source_rights_independently_attested"] is False
+    assert record["observed_at_utc"].endswith("+00:00")
+
     with pytest.raises(FileExistsError):
         main(["--archive", str(raw), "--receipt", str(receipt)])
 
