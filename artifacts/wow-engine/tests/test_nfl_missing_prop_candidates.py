@@ -331,7 +331,7 @@ def _write_inputs_with_unattributed_rows(tmp_path, weekly_frame, *, count=18, ov
             for field in ("attempts", "completions", "passing_tds", "receptions", "targets", "carries"):
                 phantom[field] = 0
             rows = pd.concat([rows, pd.DataFrame([
-                {**phantom.to_dict(), "week": week, "game_id": f"2021_{week:02d}_UNATTR"}
+                {**phantom.to_dict(), "week": week, "game_id": f"2021_{week:02d}_BAL_KC"}
                 for week in range(1, count + 1)
             ])], ignore_index=True)
             if overrides:
@@ -363,6 +363,10 @@ def test_unattributed_18_zero_stat_records_quarantined_with_provenance(tmp_path,
     ("player_display_name", "Unnamed QB", "NFL_PROP_SOURCE_IDENTITY_INVALID:player_id"),
     ("game_id", float("nan"), "NFL_PROP_SOURCE_IDENTITY_INVALID:player_id"),
     ("week", 19, "NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE"),
+    ("game_id", "2021_01_UNATTR", "NFL_PROP_SOURCE_IDENTITY_INVALID:game_id"),
+    ("game_id", "2022_01_BAL_KC", "NFL_PROP_SOURCE_IDENTITY_INVALID:game_id"),
+    ("game_id", "2021_02_BAL_KC", "NFL_PROP_SOURCE_IDENTITY_INVALID:game_id"),
+    ("game_id", "2021_01_BAL_KC_EXTRA", "NFL_PROP_SOURCE_IDENTITY_INVALID:game_id"),
 ])
 def test_unattributed_possible_participant_fails_closed(tmp_path, weekly_frame, field, value, error):
     """Unidentified player exposure must stop fitting rather than be excluded."""
