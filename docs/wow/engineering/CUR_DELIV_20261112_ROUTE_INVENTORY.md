@@ -11,7 +11,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | MLB | UP | CERTIFIED | true | true | true | Canary with auth (credential BLOCKED in this agent) |
 | NFL | UP | CANDIDATE_REGISTERED_UNCERTIFIED | true | true | true | Runtime champion path; do not expand static CERTIFIED without Model Excellence |
-| NHL | UP | CANDIDATE_REGISTERED_UNCERTIFIED | false | true | false | Existing PR #2571 (green App checks); authorized merge BLOCKED |
+| NHL | UP | CANDIDATE_REGISTERED_UNCERTIFIED | false | true | false | Cursor adoption #2637 of #2571 onto current main (local 241 tests pass); still not statically CERTIFIED; authorized merge + independent cert BLOCKED |
 | WNBA | UP | CANDIDATE_REGISTERED_UNCERTIFIED | false | true | false | HOLD — Freebuff/Model Excellence |
 | SOCCER | UP | CANDIDATE_REGISTERED_UNCERTIFIED | false | true | false | HOLD |
 | TENNIS | UP | CANDIDATE_REGISTERED_UNCERTIFIED | false | true | false | HOLD |
@@ -55,6 +55,7 @@ Static repository certification (`CERTIFIED_TEAM_EVENT_SPORTS`) remains **MLB on
 | --- | --- | --- |
 | #2526 | Prop evidence canonical identity | Trust-root workflow touch |
 | #2560 | NBA restoration | Required regression currently FAIL |
-| #2571 | NHL fitted specialist | App checks green; needs authorized merge |
+| #2571 | NHL fitted specialist | App checks green but BEHIND main; superseded for Cursor path by #2637 |
+| #2637 | Cursor NHL adoption of #2571 | Nonowner rebase onto `1ab243ca`; not yet certified publication |
 | #2550 | NCAAB event identity | CONFLICTING with main |
 | #2605 | Freebuff offline NFL props | Out of Cursor scope |
