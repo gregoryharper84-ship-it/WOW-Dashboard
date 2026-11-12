@@ -69,6 +69,12 @@ def read_verified_ftn_2025_offense_presence(*, open_url=None, timeout: int = 60)
     })
     try:
         stream = (open_url or _trusted_release_urlopen)(request, timeout=timeout)
+    except ValueError as exc:
+        # The trusted GitHub redirect handler fails before returning a stream.
+        # Preserve its cause, but expose the FTN-scoped canonical failure.
+        if str(exc).startswith("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED"):
+            raise ValueError("NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED") from exc
+        raise
     except (OSError, TimeoutError) as exc:
         raise ValueError("NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE") from exc
     payload = bytearray()
@@ -77,7 +83,10 @@ def read_verified_ftn_2025_offense_presence(*, open_url=None, timeout: int = 60)
         if endpoint.scheme != "https" or endpoint.hostname not in RELEASE_HOSTS:
             raise ValueError("NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED")
         while True:
-            piece = stream.read(1024 * 1024)
+            try:
+                piece = stream.read(1024 * 1024)
+            except (OSError, TimeoutError) as exc:
+                raise ValueError("NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE") from exc
             if not piece:
                 break
             payload.extend(piece)
@@ -128,6 +137,22 @@ def read_verified_ftn_2025_offense_presence(*, open_url=None, timeout: int = 60)
         "fitted_specialist_certified": False,
         "can_execute": False,
     }
+
+
+def require_ftn_positive_identity_control(observed: dict[str, object]) -> None:
+    """Reject any FTN absence breakdown before GSIS positive-controls align.
+
+    This is a research reporting preflight only. It cannot prove count-zero,
+    amend a player-game label or authorize training under any circumstance.
+    """
+    control = observed.get("pbp_positive_opportunity_control")
+    if (observed.get("pbp_actor_id_alignment_observed") is not True
+            or not isinstance(control, dict)
+            or type(control.get("pbp_actor_observed")) is not int
+            or control["pbp_actor_observed"] <= 0):
+        raise ValueError(
+            "HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY:positive_control_unaligned"
+        )
 
 
 def pbp_assets() -> list[tuple[str, str, int]]:
