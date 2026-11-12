@@ -13,14 +13,14 @@ counted as **isolated** only when every one of its steps is
 `continue-on-error: true` (job-level `continue-on-error` is insufficient: the
 job check still concludes `failure`).
 
-Machine result at `main` = `e9b3faac`:
+Post-fix worktree count, derived from the `e9b3faac` base plus observer-isolation patches (**not** a measurement of `e9b3faac` itself):
 
 ```text
 MAIN_SCOPED_WORKFLOWS = 48
 JOBS                  = 81
-ISOLATED_JOBS         = 5    (Scout resume + 4 Engineering auto-repair jobs)
+ISOLATED_JOBS         = 11   (Scout, 4 Engineering auto-repair, readback, reconciler, 4 read-only observers)
 AUTHORITATIVE_GATE_JOBS = 3  (Independent QA, Release Authority, verification)
-UNISOLATED_OPTIONAL_JOBS = 73 across 44 workflows
+UNISOLATED_OPTIONAL_JOBS = 67 across 39 workflows
 ```
 
 `wow-v17-render-production-deploy.yml` is `disabled_manually` under Lean
@@ -51,25 +51,29 @@ receipts plus guards, per workflow. Classified exposure groups:
 | Autonomous writers | model maintenance, snapshots, Scout persist/refresh, dispatchers, secret sync, issue tickers | Not isolated in this change: each needs action-graph review so a failed verification cannot be followed by a write |
 | Disabled controller | `wow-v17-render-production-deploy` | Retired; must not be re-enabled |
 
-## Fixed in this change
+## Fixed (cumulative)
 
 | Workflow | Job | Change |
 | --- | --- | --- |
 | `wow-v17-lean-production-readback.yml` | `production-readback` | Checkout, invariant check, receipt upload and disclosure isolated; invariant mismatch emits `READBACK_EXECUTION_INVARIANT_MISMATCH` |
 | `wow-v17-main-verification-reconciler.yml` | `reconcile` | Step isolated; `MAIN_VERIFICATION_RECONCILER_SHA_INVALID` typed; superseded and re-dispatch outcomes recorded in the step summary |
+| `wow-v17-action-origin-keepalive.yml` | `keepalive` | GET-only heartbeat isolated; `ACTION_ORIGIN_KEEPALIVE_UNREACHABLE` typed, success receipt `ACTION_ORIGIN_KEEPALIVE_OK` |
+| `kalshi-weather-external-wake.yml` | `heartbeat` | Read-only wake/DB-read probe isolated; `KALSHI_WEATHER_WAKE_PROBE_FAILED` typed, success receipt `KALSHI_WEATHER_WAKE_PROBE_OK` |
+| `wow-v17-golden-product-acceptance.yml` | `product-acceptance` | Tests, liveness GET and receipt steps isolated; `GOLDEN_ACCEPTANCE_BACKEND_LIVENESS_UNAVAILABLE` typed; false-green boundary unchanged |
+| `wow-v17-nightly-engineering-scan.yml` | `nightly-engineering-scan` | All 11 steps isolated; `/health` and `/governance` probes emit `NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE`; evidence artifact retained |
 
-Both workflows describe themselves as non-deploy-gating observers, yet could
-still publish a failing check on protected `main`.
+The readback and reconciler describe themselves as non-deploy-gating observers;
+the keepalive, external wake, golden acceptance and nightly scan are read-only
+observers that never mutate repository or production state.
 
-## Remaining unisolated optional jobs (44 workflows)
+## Historical unisolated-optional-job candidate inventory (baseline audit; not refreshed post-fix)
 
 ```text
-kalshi-weather-external-wake.yml 2
+kalshi-weather-external-wake.yml 1
 wow-codeql.yml 1
 wow-engineering-24x7.yml 4
 wow-ncaaf-44-prospective-postgame.yml 2
 wow-v17-24h-engineering-closure-loop.yml 1
-wow-v17-action-origin-keepalive.yml 1
 wow-v17-basketball-model-maintenance.yml 2
 wow-v17-continuous-intelligence.yml 2
 wow-v17-daily-snapshot.yml 3
@@ -80,7 +84,6 @@ wow-v17-engineering-specialist-support.yml 1
 wow-v17-first-six-model-maintenance.yml 2
 wow-v17-first-six-transport-rescue.yml 2
 wow-v17-frontier-intelligence-agent.yml 1
-wow-v17-golden-product-acceptance.yml 1
 wow-v17-governance-dispatcher.yml 1
 wow-v17-llp-shadow-observer.yml 2
 wow-v17-log-incident-intake.yml 2
@@ -91,7 +94,6 @@ wow-v17-ncaaf-sdv-player-history-research.yml 3
 wow-v17-nfl-forward-shadow.yml 2
 wow-v17-nfl-prop-forward-evidence.yml 1
 wow-v17-nhl-model-maintenance.yml 2
-wow-v17-nightly-engineering-scan.yml 1
 wow-v17-nightly-multiscout.yml 3
 wow-v17-p0-rapid-dispatch.yml 1
 wow-v17-post-deploy-verification-orchestrator.yml 6
@@ -108,7 +110,7 @@ wow-v17-terminal-closure-controller.yml 1
 wow-v17-wnba-prop-candidate.yml 2
 ```
 
-Each remaining workflow must be handled individually: either isolate every step
+This is a **baseline candidate list**, not a claim that all named jobs remain unisolated at the present PR head. The four recently isolated observers are intentionally still represented in the historical list; a fresh count is needed after merge. Each truly remaining optional workflow must be handled individually: either isolate every step
 and add guards proving no mutation follows a failed verification, or move the
 optional work off the main-attached path. New observers must be added to
 `artifacts/wow-engine/tests/test_v17_optional_observer_checkspass_isolation.py`
