@@ -33,9 +33,9 @@ def _timestamp(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        return parsed.astimezone(timezone.utc) if parsed.utcoffset() is not None else None
+    except (ValueError, OverflowError):
         return None
-    return parsed.astimezone(timezone.utc) if parsed.utcoffset() is not None else None
 
 
 def _decimal_odds(value: Any) -> float | None:
@@ -100,8 +100,10 @@ def _identity(row: Mapping[str, Any]) -> tuple[str, ...] | None:
 
 def _binary_loss(probability: float, outcome: int) -> tuple[float, float]:
     """Brier and finite binary log loss for an observed outcome."""
-    p = min(max(probability, 1e-12), 1.0 - 1e-12)
-    return (probability - outcome) ** 2, -(outcome * math.log(p) + (1 - outcome) * math.log1p(-p))
+    # The source package already requires strict 0 < p < 1. Clipping here
+    # would understate loss for a valid but extremely incorrect probability.
+    return ((probability - outcome) ** 2,
+            -(outcome * math.log(probability) + (1 - outcome) * math.log1p(-probability)))
 
 
 def _reliability(values: Sequence[tuple[float, int]]) -> list[dict[str, Any]]:
@@ -187,8 +189,19 @@ def evaluate_binary_market_baseline(rows: Sequence[Mapping[str, Any]], *,
                   or not isinstance(row.get("opposite_quote_direction"), str)
                   or not row["opposite_quote_selection"].strip()
                   or not row["opposite_quote_direction"].strip()
-                  or (row["opposite_quote_selection"], row["opposite_quote_direction"])
-                     == (row["quote_selection"], row["quote_direction"])
+                  # Conservative first pilot: only HOME-WIN vs AWAY-WIN
+                  # with no line can be proven complementary by this schema.
+                  # Spreads, totals, props and same-outcome aliases HOLD until
+                  # their explicit market-specific settlement contracts exist.
+                  or row["market"] != "MONEYLINE"
+                  or row["line"] != "NO_LINE"
+                  or row["selection"] not in ("HOME", "AWAY")
+                  or row["quote_selection"] != row["selection"]
+                  or row["direction"] != "WIN"
+                  or row["quote_direction"] != "WIN"
+                  or row["opposite_quote_direction"] != "WIN"
+                  or row["opposite_quote_selection"] != (
+                      "AWAY" if row["selection"] == "HOME" else "HOME")
                   or _timestamp(row.get("opposite_quote_asof_utc")) is None
                   or _timestamp(row.get("opposite_quote_asof_utc"))
                      != _timestamp(row.get("quote_asof_utc"))):
