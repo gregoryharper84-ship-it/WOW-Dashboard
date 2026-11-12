@@ -339,3 +339,15 @@
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; source rights and lineage for replacement asset unreviewed, 3,994 missing weekly player-games and 48 unmapped identities remain UNKNOWN, fitted calibration and promotion HOLD, `can_execute=false` and `V17_TERMINAL_REDUCER`.
 
+
+## NFL source-stat anonymous weekly row lineage and replacement PFR shadow (2026-11-12)
+
+- **date:** 2026-11-12
+- **typed_reason:** HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW (existing code; source semantics/rights still unresolved).
+- **mechanism:** The upstream nflverse-pbp publisher uses nflfastR::calculate_stats(season,"week","player"). In nflfastR source at commit f367d0a4ba7d3a472351865467eba3a9c53a14f6, it groups raw playstats by season/week/player_id without dropping NA identities and picks dplyr::first(game_id) at the weekly group. This is consistent with one anonymous row per regular-season week (18 in each of 2021-2025), but the group's game_id is NOT an independently proven player-game identity and cannot certify those records as absent players or zero opportunities. Existing 90-row quarantine remains non-serving and independently unreviewed.
+- **detection_point:** at the weekly source quarantine/semantic preflight before any player-event label or PFR/GSIS crosswalk adoption.
+- **fix:** Preserve the existing quarantine and code-owned frozen players.csv pin, and add ONE PR-scoped, read-only exact-ID shadow observation of the replacement published 2026-11-12 16:32:05 UTC (sha256 f90a9d0009b8e5d50353b0013971b466534b25cc2f98b7ad14d39361356975d7, size 7,308,461). Existing approved-host/downloader hash checks verify the exact bytes, then report only candidate mappings for the four predeclared PFR keys, never auto-join them. Any candidate remains HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW and must be separately corroborated. No fallback source or new download workflow.
+- **prevention_artifact:** Existing fail-closed source-pair and duplicate-ID tests plus the guarded test_pr2605_shadow_replaced_players_exact_pfr_pairs in tests/test_acquire_nfl_count_prop_sources.py. No source pin, model rule, probability threshold, or gate is weakened.
+- **links:** https://github.com/nflverse/nflverse-pbp/blob/master/R/update_stats.R ; https://github.com/nflverse/nflfastR/blob/f367d0a4ba7d3a472351865467eba3a9c53a14f6/R/calculate_stats.R ; https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **independent_review_pending:** nflverse-players upstream PFR mapping is name-based with internal unknown-rights input and its manual override file does not list any of the four missing PFR IDs; not an approved substitute. Rights, identity, player participation and 2025 holdout labels remain unresolved.
+- **production_evidence:** none; can_execute=false, terminal=V17_TERMINAL_REDUCER, no new model certification or source rights clearance.

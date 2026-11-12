@@ -210,6 +210,68 @@ def test_symlink_is_not_accepted(tmp_path):
                     tmp_path, verify_only=True)
 
 
+
+def test_pr2605_shadow_replaced_players_exact_pfr_pairs(tmp_path):
+    """Observe a new public snapshot only; NEVER repin or adopt its identities.
+
+    Runs solely in the existing PR rapid runner. Synthetic/held IDs must not
+    be treated as confirmed player labels, training inputs or crosswalk edits.
+    """
+    import csv
+    import json
+    import os
+
+    if (os.environ.get("GITHUB_WORKFLOW") != "wow-v17-rapid-repair"
+            or os.environ.get("GITHUB_HEAD_REF")
+            != "engineering/nfl-five-count-candidates-20261111"):
+        pytest.skip("NFL_PROP_SOURCE_OBSERVATION_NOT_PR2605_RAPID_RUNNER")
+
+    # Recorded public GitHub release metadata, 2026-11-12T16:32:05Z.
+    # These are *shadow observation constraints*, NOT promoted source pins.
+    shadow_sha = "f90a9d0009b8e5d50353b0013971b466534b25cc2f98b7ad14d39361356975d7"
+    shadow_bytes = 7308461
+    try:
+        source = acquire_one("players/players.csv", shadow_sha,
+                             shadow_bytes, tmp_path, timeout=20)
+    except (ValueError, OSError) as exc:
+        pytest.skip("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:replacement_shadow:"
+                    + type(exc).__name__ + ":" + str(exc)[:150])
+    assert source["sha256"] == shadow_sha
+    targets = ("CartNa00", "ShenJo00", "WhitCo05", "WillRo08")
+    candidates = {pfr: [] for pfr in targets}
+    with (tmp_path / "players" / "players.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as input_file:
+        rows = csv.DictReader(input_file)
+        if not {"pfr_id", "gsis_id"}.issubset(rows.fieldnames or []):
+            pytest.skip("NFL_PROP_ROSTER_SCHEMA_INVALID:replacement_shadow")
+        for row in rows:
+            pfr = (row.get("pfr_id") or "").strip()
+            if pfr in candidates:
+                candidates[pfr].append((row.get("gsis_id") or "").strip())
+    exact = {
+        pfr: {
+            "source_rows": len(ids),
+            "gsis_candidates": sorted({value for value in ids if value}),
+            "blank_gsis_rows": sum(not value for value in ids),
+        }
+        for pfr, ids in candidates.items()
+    }
+    note = {
+        "status": "HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW",
+        "research_snapshot_sha256": shadow_sha,
+        "research_snapshot_size": shadow_bytes,
+        "exact_pfr_diagnostic": exact,
+        "source_rights_independently_attested": False,
+        "crosswalk_promoted": False,
+        "fitted_model_authorized": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+    pytest.skip("HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW:"
+                + json.dumps(note, sort_keys=True, separators=(",", ":")))
+
+
 def test_pr2605_observe_official_source_reconciliation(tmp_path):
     """One PR-scoped live-source *observation*, never a required source gate.
 
