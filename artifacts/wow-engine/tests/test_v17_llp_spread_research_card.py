@@ -35,9 +35,11 @@ def pick(sport='NFL', event_id='game-a', side='HOME', line=-3.5, **override):
     source = event(sport, event_id)
     data = dict(source, selected_side=side, signed_home_line=line,
                 frozen_at_utc=FREEZE, available_to_user_at_utc=FREEZE,
+                quote_source_id='FIXTURE_SOURCE_A',
                 immutable_pregame=True, pregame_receipt_verified=True,
                 pregame_receipt_id=f'pick-{sport}-{event_id}',
                 quote=dict(source, signed_home_line=line, observed_at_utc=OBSERVED,
+                           quote_source_id='FIXTURE_SOURCE_A',
                            available_to_user_at_utc=OBSERVED, independently_verified=True,
                            receipt_id=f'quote-{sport}-{event_id}'))
     data.update(override)
@@ -283,3 +285,59 @@ def test_mlb_shortened_game_requires_independent_runline_rule():
     f['provider_settlement_rule_verified']=True
     r=audit([event('MLB')],[p],[f])
     assert r['rows'][0]['grade_status']=='WIN'
+
+
+@pytest.mark.parametrize('winner', ['HOME', 'BANANA'])
+def test_tennis_claimed_match_winner_without_sets_cannot_grade_games(winner):
+    p = pick('TENNIS', line=-1.5)
+    f = final('TENNIS', home_games=15, away_games=11, winning_side=winner)
+    r = audit([event('TENNIS')], [p], [f])
+    assert r['rows'][0]['grade_status'] == 'HELD'
+    assert 'OFFICIAL_TENNIS_WINNER_SETS_UNVERIFIED' in r['rows'][0]['blockers']
+    assert r['settlement_complete'] is False
+
+
+def test_duplicate_postponement_does_not_allow_another_game_to_publish_complete_card():
+    valid = event()
+    postponed = event('NBA', 'post', event_state='POSTPONED')
+    r = audit([valid, postponed, deepcopy(postponed)], [pick()], [final()])
+    assert r['playable_count'] == 1
+    assert r['card_complete'] is False
+    assert r['settlement_complete'] is False
+    assert 'OFFICIAL_SLATE_MANIFEST_INVALID' in r['board_blockers']
+    assert all('DUPLICATE_OFFICIAL_EVENT' in x['blockers'] for x in r['rows'][1:])
+    assert r['headline_full_win_rate'] is None
+
+
+@pytest.mark.parametrize('source', ['', 'FIXTURE_OTHER_PROVIDER'])
+def test_quote_source_must_match_frozen_pick_source(source):
+    p = pick()
+    p['quote_source_id'] = 'FIXTURE_SOURCE_A'
+    p['quote']['quote_source_id'] = source
+    r = audit([event()], [p])
+    assert r['rows'][0]['pregame_status'] == 'HELD'
+    assert 'EXACT_QUOTE_SOURCE_MISMATCH' in r['rows'][0]['blockers']
+
+
+def test_missing_quote_source_on_pick_and_quote_is_not_authenticated():
+    p = pick()
+    p.pop('quote_source_id')
+    p['quote'].pop('quote_source_id')
+    r = audit([event()], [p])
+    assert r['rows'][0]['pregame_status'] == 'HELD'
+    assert 'EXACT_QUOTE_SOURCE_MISMATCH' in r['rows'][0]['blockers']
+
+
+def test_quote_first_visible_after_immutable_pick_is_rejected():
+    p = pick(available_to_user_at_utc='2026-11-12T21:00:00Z')
+    r = audit([event()], [p])
+    assert r['card_complete'] is False
+    assert 'EXACT_QUOTE_NOT_VISIBLE_AT_PICK_PUBLICATION' in r['rows'][0]['blockers']
+
+
+def test_reused_pregame_receipt_across_different_games_blocks_both():
+    a, b = pick(), pick('NBA', 'b')
+    b['pregame_receipt_id'] = a['pregame_receipt_id']
+    r = audit([event(), event('NBA', 'b')], [a, b])
+    assert r['card_complete'] is False
+    assert all('PREGAME_RECEIPT_UNVERIFIED_OR_REUSED' in x['blockers'] for x in r['rows'])
