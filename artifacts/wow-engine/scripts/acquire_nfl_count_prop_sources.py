@@ -92,6 +92,69 @@ def verify_official_release_metadata(assets: list[tuple[str, str, int]],
                              + ":upstream_release_metadata")
 
 
+# Dated official nflverse archive observation, NOT a replacement for frozen CSV pins.
+# Values observed in upstream release metadata at 2026-11-12; the RDS format
+# is not interchangeable with any existing stats_player or players.csv bytes.
+ARCHIVE_OBSERVATION = {
+    "repository": "nflverse/nflverse-data-archives",
+    "tag_name": "archive-2026-11-05",
+    "id": 435763302,
+    "assets": {
+        "players.rds": (714885750, 2316624, "ca240520205478165be1876ef0c1714beddf2b71f2acd9d145d646fd1fe471d9"),
+        "pfr_rosters.rds": (714885106, 1388682, "2f9ee1d330f1e61f27f93f702ada87feaa1f711bb1b0486b9a5fd09e835ca93b"),
+        "stats_player_week_2021.rds": (714898115, 918843, "ebbb39717338ae52be894c35c7e76e27517863a22bf229e83ae670ea2bff8907"),
+        "stats_player_week_2022.rds": (714898134, 903737, "31e4902b0237fabf8696389640fb43da0e595660ae50111fa793342d03512654"),
+        "stats_player_week_2023.rds": (714898137, 902405, "647af0155ab260845214e9f5a6fdc6e190ef0ef497fd7d65140318826726aa3e"),
+        "stats_player_week_2024.rds": (714898152, 905522, "7cb3f8f10fecd9ba0fac72be60c4e18442a03248ed13e9a50f51128ae30cde67"),
+        "stats_player_week_2025.rds": (714884067, 992521, "f658cb209d65af4a0521cd482fc9c6da24ebdfd3a61b77c9275076d6f2eaecb7"),
+    },
+}
+
+
+def observe_official_archive_metadata(release: dict) -> dict:
+    """Check an independently dated RDS archive without adopting any source rows.
+
+    This is release *metadata*, not a byte-level proof of its RDS payload,
+    permission to convert RDS to CSV, or verified player-game labels. A
+    mismatch is a typed HOLD; no source pin or training path may be changed.
+    """
+    expected = ARCHIVE_OBSERVATION
+    if (not isinstance(release, dict)
+            or type(release.get("id")) is not int
+            or release["id"] != expected["id"]
+            or release.get("tag_name") != expected["tag_name"]
+            or not isinstance(release.get("assets"), list)):
+        raise ValueError("NFL_PROP_ACQUIRE_PINS_INVALID:archive_metadata")
+    for name, (asset_id, size, digest) in expected["assets"].items():
+        matching = [a for a in release["assets"]
+                    if isinstance(a, dict) and a.get("name") == name]
+        if len(matching) != 1:
+            raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:archive:" + name
+                             + ":missing_or_ambiguous")
+        actual = matching[0]
+        if (type(actual.get("id")) is not int or actual["id"] != asset_id
+                or type(actual.get("size")) is not int or actual["size"] != size
+                or actual.get("digest") != "sha256:" + digest):
+            raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:archive:" + name)
+    return {
+        "status": "HOLD_ARCHIVE_RDS_NOT_EQUIVALENT_TO_FROZEN_CSV",
+        "archive_repository": expected["repository"],
+        "archive_tag": expected["tag_name"],
+        "archive_release_id": expected["id"],
+        "metadata_matched_asset_count": len(expected["assets"]),
+        "release_metadata_matched": True,
+        "source_bytes_sha256_verified": False,
+        "equivalent_frozen_csv_proven": False,
+        "historical_player_identities_reconciled": False,
+        "source_rights_independently_approved": False,
+        "training_authorized": False,
+        "certification_eligible": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+
 def verify_file(path: Path, digest: str, size: int) -> None:
     """Verify exact downloaded bytes; never accept a symlink or guessed zero."""
     if path.is_symlink() or not path.is_file():
