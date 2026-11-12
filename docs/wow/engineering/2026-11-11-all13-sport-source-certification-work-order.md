@@ -67,3 +67,16 @@ Neither command registers a model, ingests data to a durable fitted ledger or de
 **Objective acceptance target:** all 13 source routes reconciled to `SOURCE_RECEIPT_VERIFIED`, typed `BLOCKED`, `UNSUPPORTED`, or `RESEARCH_ONLY`, never omitted. A sport achieves `COMPLETE` only with independently accepted numerical model and actual serving proof. Missing price never erases sporting probability, and research/market evidence never substitutes for a fitted one.
 
 **Current verified environment limitation:** shell in this ChatGPT workspace cannot resolve `cricsheet.org`; live archive download and hash validation **not executed** here. Only synthetic negative tests ran locally. The existing hosted CI and nonauthor review must independently reproduce the new source code and receipts.
+
+
+## Verified OpenFootball source observation — 2026-11-12 UTC (research-only)
+
+At exact GitHub upstream commit `e6744429ee395bc86f247348c6184bb08d4eb361` in `openfootball/football.json`, the live connected read-only GitHub source returned CC0-1.0 `LICENSE.md` blob SHA-1 `670154e3538863b2d9891fd5483160fbdfc89164` (decoded UTF-8 SHA-256 `36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673`) and five league JSON files for 2024/25.
+
+- League files: Premier League, Bundesliga, La Liga, Serie A and Ligue 1; **1,752 exact match records** across all five; **1,732 with final scores**, **434 draws**, **20 missing scores**, **zero duplicate (date, team1, team2) keys** within files.
+- Missing-score discrepancy is **10** in `2024-25/es.1.json` and **10** in `2024-25/it.1.json`; these are `MISSING_FINAL_SCORE`, not automatic losses, voids, ties or proven postponed events.
+- The decoded `2024-25/en.1.json` has UTF-8 SHA-256 `c3d18f552d83382cd4b6b21127adbbfe38e7f8618ddc979fb5404f2df07d0a75` and Git blob SHA-1 `504f2e732fbc3c9caeb98e4382b13b094453b840`. Other exact file blob IDs and full counts are in `v17/research/source_openfootball_five_leagues_2024_25_observation_20261112.json`.
+- All 1,752 fixtures have HH:MM clock strings; timezone is **not established**, no archived historical feature snapshot is proven pregame, and repository scores are **not independently verified official settlement**. This is authentic historical file observation, not signed licensing, model replay or promotion.
+- The observation JSON and conservation tests are **read-only** and do not register training permission, model probabilities, calibrated bounds, production receipts or terminal acceptance. Required evidence remains `CLOCK_TIMEZONE`, `ORIGINAL_PREGAME_SNAPSHOT_TIME`, source upstream rights, official event settlement, model calibration and independent review.
+
+Use this evidence to target the soccer data-identity chronology patch next; do not fill missing scores, assign UTC offsets or manufacture pregame lineups from this source.
