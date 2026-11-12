@@ -122,6 +122,13 @@ def _check_pick(event: Mapping[str, Any], row: Mapping[str, Any],
         quote_line = _line(quote.get("signed_home_line"), soccer=_key(event)[0] == "SOCCER")
         if not _identity(event, quote) or line is None or quote_line != line:
             errors.append("EXACT_QUOTE_IDENTITY_OR_LINE_MISMATCH")
+        # Source ID is a stable caller-declared provider/feed identifier, not
+        # proof that the external source is authenticated. The pick must bind
+        # the same exact quote source as the evidence used to construct it.
+        qsource = _text(quote.get("quote_source_id"))
+        psource = _text(row.get("quote_source_id"))
+        if not psource or not qsource or qsource != psource:
+            errors.append("EXACT_QUOTE_SOURCE_MISMATCH")
         qreceipt = _text(quote.get("receipt_id"))
         if qreceipt and quote_counts[qreceipt] != 1:
             errors.append("QUOTE_RECEIPT_REUSED")
@@ -133,6 +140,8 @@ def _check_pick(event: Mapping[str, Any], row: Mapping[str, Any],
                 or at > frozen or at >= kickoff or qvisible > frozen or qvisible < at
                 or frozen - at > MAX_QUOTE_AGE):
             errors.append("EXACT_QUOTE_NOT_FRESH_PREGAME")
+        if visible is None or qvisible is None or qvisible > visible:
+            errors.append("EXACT_QUOTE_NOT_VISIBLE_AT_PICK_PUBLICATION")
     return errors
 
 
@@ -182,7 +191,7 @@ def _final_grade(event: Mapping[str, Any], row: Mapping[str, Any], final: Mappin
         if type(home_sets) is int and type(away_sets) is int and home_sets >= 0 and away_sets >= 0:
             winner_home, winner_away = home_sets, away_sets
         else:
-            winner_home = winner_away = None
+            return "HELD", ["OFFICIAL_TENNIS_WINNER_SETS_UNVERIFIED"]
     else:
         winner_home, winner_away = home, away
     if winner and winner_home is not None and winner_away is not None:
@@ -258,6 +267,10 @@ def audit_spread_research_card(
             problems.append("DUPLICATE_PREGAME_PICK")
         if final_keys[(sport, key)] > 1:
             problems.append("DUPLICATE_OFFICIAL_FINAL")
+        # A postponed/cancelled row is non-playable, but duplicate or
+        # contradictory official identity is still a whole-slate defect.
+        if not playable and problems:
+            board_blockers.append("OFFICIAL_SLATE_MANIFEST_INVALID")
         p = pick_map.get((sport, key))
         if playable and p is None:
             problems.append("PREGAME_PICK_MISSING")
