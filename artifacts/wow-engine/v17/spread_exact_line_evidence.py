@@ -95,7 +95,13 @@ def _team_token(sport: str, value: Any) -> str:
 
 
 def _quote_time(row: Mapping[str, Any]) -> datetime | None:
-    return _dt(row.get("price_updated_at")) or _dt(row.get("fetched_at"))
+    # A persisted OPEN/CLOSE row can predate this safeguard: never let a
+    # backdated provider time masquerade as pregame capture evidence.
+    observed = _dt(row.get("fetched_at"))
+    provider_updated = _dt(row.get("price_updated_at"))
+    if observed is None or (provider_updated is not None and provider_updated > observed):
+        return None
+    return observed
 
 
 def _line_value(row: Mapping[str, Any]) -> float | None:
