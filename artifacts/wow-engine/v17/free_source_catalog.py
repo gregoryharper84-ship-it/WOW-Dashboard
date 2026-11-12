@@ -39,7 +39,7 @@ class FreeSource:
 
 # Ordered by existing coverage first, then experimental/optional alternatives.
 SOURCES = (
-    FreeSource("NFLVERSE", ("NFL",), ("HISTORY", "STATUS"),
+    FreeSource("NFLVERSE", ("NFL",), ("HISTORY", "STATUS", "HISTORICAL_RESEARCH"),
                "EXISTING", "nflverse_historical_adapter.py", "SOURCE_REVIEW_REQUIRED"),
     FreeSource("SPORTSDATAVERSE_ESPN", ("NBA", "WNBA", "NCAAB"),
                ("HISTORY", "STATUS"), "EXISTING",
@@ -92,6 +92,18 @@ SOURCES = (
                            "NHL", "WNBA", "SOCCER"),
                ("MARKET",), "UNVERIFIED_EXPERIMENT",
                "https://oddspapi.io/", "HISTORICAL_ARCHIVE_AND_RIGHTS_UNVERIFIED"),
+    # Reference-only: the scraper's MIT code license does not grant OddsPortal
+    # data rights, automated extraction or model-training permission.
+    FreeSource("ODDSHARVESTER_ODDSPORTAL", ("NFL", "NBA", "MLB", "NHL",
+                                           "SOCCER", "TENNIS", "CRICKET"),
+               ("HISTORICAL_RESEARCH",), "REFERENCE_ONLY_NO_ACQUISITION",
+               "https://github.com/jordantete/OddsHarvester",
+               "ODDSPORTAL_EXPRESS_CONSENT_REQUIRED"),
+    # Free-to-view/download is not a commercial or automated AI-training grant.
+    FreeSource("FOOTBALL_DATA_UK", ("SOCCER",),
+               ("HISTORICAL_RESEARCH",), "REFERENCE_ONLY_NO_ACQUISITION",
+               "https://football-data.co.uk/data",
+               "PRIVATE_NONCOMMERCIAL_NO_AUTOMATED_AI_TRAINING"),
 )
 
 _SOURCE_IDS = tuple(s.source_id for s in SOURCES)
