@@ -42,6 +42,7 @@ jobs:
           python -m pip install -r artifacts/wow-engine/requirements.txt
 
       - name: Run deterministic product-acceptance contract tests
+        id: contract_tests
         continue-on-error: true
         run: |
           python -m pytest -q \
@@ -86,12 +87,14 @@ jobs:
         env:
           PRODUCT_STATUS: ${{ steps.health.outputs.status }}
           BACKEND_STATUS: ${{ steps.backend.outputs.status }}
+          CONTRACT_TEST_OUTCOME: ${{ steps.contract_tests.outcome }}
         run: |
           set -euo pipefail
           {
             echo "# WOW V17 Golden Product Acceptance"
             echo "- repository_declared_user_journey: ${PRODUCT_STATUS}"
             echo "- backend_liveness: ${BACKEND_STATUS}"
+            echo "- contract_tests_outcome: ${CONTRACT_TEST_OUTCOME}"
             echo "- live-host rule: backend/CI success alone can never produce USER_JOURNEY_HEALTH=PASS"
             echo "- required live-host identity: WOW_BETTING_ENGINE"
             echo "- required action: scoreWowPickRequest"
@@ -99,6 +102,9 @@ jobs:
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [ "$CONTRACT_TEST_OUTCOME" != "success" ]; then
+            echo "::error::GOLDEN_ACCEPTANCE_CONTRACT_TESTS_FAILED: deterministic product contract tests did not pass."
+          fi
           if [ "$PRODUCT_STATUS" != "PASS" ]; then
             echo "::notice::Golden user journey remains fail-closed. Discretionary model-improvement work must remain preempted."
           fi
@@ -109,10 +115,12 @@ jobs:
         env:
           PRODUCT_STATUS: ${{ steps.health.outputs.status }}
           BACKEND_STATUS: ${{ steps.backend.outputs.status }}
+          CONTRACT_TEST_OUTCOME: ${{ steps.contract_tests.outcome }}
         run: |
           jq -n \
             --arg product_status "$PRODUCT_STATUS" \
             --arg backend_status "$BACKEND_STATUS" \
+            --arg contract_tests_outcome "$CONTRACT_TEST_OUTCOME" \
             --arg sha "$GITHUB_SHA" \
-            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,backend_liveness:$backend_status,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
+            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,backend_liveness:$backend_status,contract_tests_outcome:$contract_tests_outcome,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
             | tee "$RUNNER_TEMP/golden-product-acceptance.json"
