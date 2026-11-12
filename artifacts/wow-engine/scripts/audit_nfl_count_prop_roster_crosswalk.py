@@ -213,3 +213,61 @@ def inspect_roster_id_candidates(
         "fitted_specialist_certified": False,
         "can_execute": False,
     }
+
+
+def inspect_manual_pfr_overrides(
+    records: list[dict[str, object]], target_pfr_ids: list[str],
+) -> dict[str, object]:
+    """Examine exact PFR/GSIS pairs in nflverse manual corrections, never adopt IDs.
+
+    Manual overrides are sparse corrections, NOT the full players universe.
+    Their lack of a PFR ID cannot establish that a player has no GSIS ID.
+    Only a separate authenticated, source-reviewed snapshot can establish
+    provenance; this function makes no source-rights or fitting assertion.
+    """
+    import re
+
+    if not isinstance(records, list) or any(not isinstance(x, dict) for x in records):
+        raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:manual_overrides")
+    if (not isinstance(target_pfr_ids, list)
+            or not target_pfr_ids
+            or any(not isinstance(x, str)
+                   or not re.fullmatch(r"[A-Za-z0-9]{8}", x)
+                   for x in target_pfr_ids)):
+        raise ValueError("NFL_PROP_ROSTER_TARGET_INVALID")
+    targets = sorted(set(target_pfr_ids))
+    chosen = {key: [] for key in targets}
+    for record in records:
+        source_pfr = record.get("pfr_id")
+        if source_pfr not in chosen:
+            continue
+        source_gsis = record.get("gsis_id")
+        if not isinstance(source_gsis, str) or not re.fullmatch(r"00-[0-9]{7}", source_gsis):
+            raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:manual_override_gsis")
+        chosen[source_pfr].append(source_gsis)
+    rows = []
+    for pfr in targets:
+        identities = sorted(set(chosen[pfr]))
+        if len(identities) > 1:
+            raise ValueError("NFL_PROP_ROSTER_CROSSWALK_CONFLICT:" + pfr)
+        rows.append({
+            "pfr_player_id": pfr,
+            "manual_override_rows": len(chosen[pfr]),
+            "gsis_candidates": identities,
+            "status": "CANDIDATE_EXACT_SOURCE_PAIR_NOT_ADOPTED" if identities
+                      else "HOLD_NO_MANUAL_OVERRIDE_PAIR",
+        })
+    return {
+        "status": "HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW",
+        "source_kind": "nflverse_players_manual_overwrite",
+        "manual_overrides_are_not_full_player_universe": True,
+        "no_exact_override_does_not_prove_no_player": True,
+        "target_pfr_count": len(rows),
+        "target_exact_override_count": sum(bool(x["gsis_candidates"]) for x in rows),
+        "source_override_records": len(records),
+        "targets": rows,
+        "candidate_crosswalk_applied": False,
+        "source_rights_independently_approved": False,
+        "fitted_specialist_certified": False,
+        "can_execute": False,
+    }
