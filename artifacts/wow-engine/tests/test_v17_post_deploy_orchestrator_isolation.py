@@ -86,6 +86,8 @@ def test_receipt_aggregator_fail_closed_behavior(
         "GOLDEN_FULL_SLATE": golden,
         "ORCHESTRATOR_EVENT_NAME": event_name,
         "DEPLOYMENT_READBACK": "success",
+        "READBACK_OUTCOME": "success",
+        "SOURCE_IDENTITY_OUTCOME": "success",
         "GITHUB_STEP_SUMMARY": str(summary),
     }
     completed = subprocess.run(
@@ -110,6 +112,8 @@ def test_repeat_acceptance_skip_requires_successful_fresh_readback(tmp_path, rea
         "PRIORITY_PROPS": "skipped",
         "GOLDEN_FULL_SLATE": "skipped",
         "DEPLOYMENT_READBACK": readback,
+        "READBACK_OUTCOME": readback,
+        "SOURCE_IDENTITY_OUTCOME": "success",
         "ALREADY_ACCEPTED": "true",
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
     }
@@ -133,7 +137,9 @@ def test_post_deploy_native_trigger_and_all_lane_admission_require_direct_readba
     assert "RENDER_API_KEY" in job["env"]
     step = next(s for s in job["steps"] if s.get("id") == "readback")
     assert "lean_production_readback.py" in step["run"]
-    assert "continue-on-error" not in step
+    assert step["continue-on-error"] == "true"
+    assert step["if"] == "steps.source_identity.outcome == 'success'"
+    assert job["outputs"]["readback_outcome"] == "${{ steps.readback.outcome }}"
     for name in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
         assert "needs.deployment-readback.result == 'success'" in workflow["jobs"][name]["if"]
 
@@ -142,7 +148,8 @@ def test_missing_deployment_readback_fails_receipt_even_when_all_lanes_claim_suc
     env = {**os.environ, "WOW_CAN_EXECUTE": "false", "WOW_DRY_RUN_ONLY": "true",
            "SPREAD_FORWARD": "success", "SPREAD_CERTIFICATION": "success",
            "PRIORITY_PROPS": "success", "GOLDEN_FULL_SLATE": "success",
-           "DEPLOYMENT_READBACK": "skipped", "ORCHESTRATOR_EVENT_NAME": "workflow_dispatch",
+           "DEPLOYMENT_READBACK": "skipped", "READBACK_OUTCOME": "skipped",
+           "SOURCE_IDENTITY_OUTCOME": "success", "ORCHESTRATOR_EVENT_NAME": "workflow_dispatch",
            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md")}
     result = subprocess.run(["bash", "-c", _receipt_script()], env=env, text=True, capture_output=True)
     assert result.returncode == 1
@@ -154,7 +161,8 @@ def test_acceptance_repeats_exact_sha_readback_after_the_long_running_lanes():
     final_readback = next((s for s in steps if s.get("id") == "final-readback"), None)
     assert final_readback is not None, "a deployment may change while the acceptance lanes run"
     assert "lean_production_readback.py" in final_readback["run"]
-    assert "continue-on-error" not in final_readback
+    assert final_readback["continue-on-error"] == "true"
+    assert final_readback["if"] == "steps.receipt_identity.outcome == 'success'"
     assert job["environment"] == "wow-release"
     assert job["env"]["EXPECTED_SHA"] == "${{ inputs.expected_sha || github.event.workflow_run.head_sha }}"
     assert job["env"]["SOURCE_RUN_KIND"] == "production_observer"
@@ -225,7 +233,8 @@ def test_pending_deploy_defers_every_acceptance_lane_and_dedupe():
     readback = jobs["deployment-readback"]
     assert readback["outputs"]["deploy_pending"] == "${{ steps.readback.outputs.deploy_pending }}"
     dedupe = next(s for s in readback["steps"] if s.get("id") == "dedupe")
-    assert dedupe["if"] == "steps.readback.outputs.deploy_pending != 'true'"
+    assert "steps.readback.outcome == 'success'" in dedupe["if"]
+    assert "steps.readback.outputs.deploy_pending != 'true'" in dedupe["if"]
     for lane in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
         condition = jobs[lane]["if"]
         assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in condition, lane
@@ -237,7 +246,8 @@ def _run_receipt(tmp_path, **overrides):
     env = {
         **os.environ,
         "WOW_CAN_EXECUTE": "false", "WOW_DRY_RUN_ONLY": "true",
-        "DEPLOYMENT_READBACK": "success", "DEPLOY_PENDING": "true", "ALREADY_ACCEPTED": "",
+        "DEPLOYMENT_READBACK": "success", "READBACK_OUTCOME": "success",
+        "SOURCE_IDENTITY_OUTCOME": "success", "DEPLOY_PENDING": "true", "ALREADY_ACCEPTED": "",
         "SPREAD_FORWARD": "skipped", "SPREAD_CERTIFICATION": "skipped",
         "PRIORITY_PROPS": "skipped", "GOLDEN_FULL_SLATE": "skipped",
         "GITHUB_STEP_SUMMARY": str(summary),
@@ -253,10 +263,76 @@ def test_pending_receipt_passes_only_with_a_successful_pending_readback(tmp_path
     assert code == 0
     assert "READBACK_PENDING_DEPLOY" in text and "production_verified=false" in text
     # A failed readback can never be rescued by the pending flag.
-    assert _run_receipt(tmp_path, DEPLOYMENT_READBACK="failure")[0] == 1
+    assert _run_receipt(tmp_path, DEPLOYMENT_READBACK="failure", READBACK_OUTCOME="failure")[0] == 1
 
 
 def test_pending_flag_cannot_hide_missing_lanes_once_deploy_is_live(tmp_path):
     # deploy_pending absent/false: skipped lanes remain missing evidence (fail closed).
     assert _run_receipt(tmp_path, DEPLOY_PENDING="false")[0] == 1
     assert _run_receipt(tmp_path, DEPLOY_PENDING="")[0] == 1
+
+
+def test_post_deploy_main_scoped_jobs_preserve_holds_without_failing_checks_pass():
+    """Observer check must not become Render's own dependency or a release gate."""
+    jobs = _load()["jobs"]
+    for jobname in ("deployment-readback", "acceptance-receipts"):
+        for step in jobs[jobname]["steps"]:
+            assert step.get("continue-on-error") == "true", (
+                f"{jobname}: {step.get('name')!r} could fail the main commit check"
+            )
+    readback = jobs["deployment-readback"]
+    steps = readback["steps"]
+    checkout = next(step for step in steps if step.get("id") == "source_checkout")
+    identity = next(step for step in steps if step.get("id") == "source_identity")
+    assert identity["if"] == "steps.source_checkout.outcome == 'success'"
+    assert checkout["continue-on-error"] == "true"
+    assert "POST_DEPLOY_READBACK_HOLD" in WORKFLOW.read_text(encoding="utf-8")
+    assert "production_verified=false" in WORKFLOW.read_text(encoding="utf-8")
+    assert 'WOW_CAN_EXECUTE: "false"' in WORKFLOW.read_text(encoding="utf-8")
+    for lane in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
+        expr = jobs[lane]["if"]
+        assert "needs.deployment-readback.outputs.source_identity_outcome == 'success'" in expr
+        assert "needs.deployment-readback.outputs.readback_outcome == 'success'" in expr
+        assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in expr
+
+
+def test_stale_sha_hold_cannot_run_lanes_or_advance_acceptance_when_job_is_green(tmp_path):
+    """Job-level conclusion is insufficient after optional step isolation."""
+    status, summary = _run_receipt(
+        tmp_path,
+        DEPLOYMENT_READBACK="success",  # isolated observer job's check conclusion
+        READBACK_OUTCOME="failure",    # actual failed authenticated deployment readback
+        SOURCE_IDENTITY_OUTCOME="success",
+        DEPLOY_PENDING="false",
+        SPREAD_FORWARD="success",
+        SPREAD_CERTIFICATION="success",
+        PRIORITY_PROPS="success",
+        GOLDEN_FULL_SLATE="success",
+    )
+    assert status == 1
+    assert "POST_DEPLOY_READBACK_HOLD" in summary
+    assert "production_verified=false" in summary
+    receipt = _load()["jobs"]["acceptance-receipts"]
+    matrix = next(step for step in receipt["steps"] if step.get("id") == "receipt_matrix")
+    checkout = next(step for step in receipt["steps"] if step.get("id") == "receipt_checkout")
+    assert matrix["continue-on-error"] == "true"
+    assert "steps.receipt_matrix.outcome == 'success'" in checkout["if"]
+    assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in checkout["if"]
+    final_readback = next(step for step in receipt["steps"] if step.get("id") == "final-readback")
+    assert final_readback["if"] == "steps.receipt_identity.outcome == 'success'"
+
+
+def test_identity_failure_fails_matrix_even_when_live_readback_claims_success(tmp_path):
+    status, summary = _run_receipt(
+        tmp_path,
+        DEPLOYMENT_READBACK="success",
+        READBACK_OUTCOME="success",
+        SOURCE_IDENTITY_OUTCOME="failure",
+        DEPLOY_PENDING="false",
+        SPREAD_FORWARD="success",
+        SPREAD_CERTIFICATION="success",
+        PRIORITY_PROPS="success",
+        GOLDEN_FULL_SLATE="success",
+    )
+    assert status == 1
+    assert "POST_DEPLOY_READBACK_HOLD" in summary
