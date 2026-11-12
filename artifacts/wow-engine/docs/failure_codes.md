@@ -689,7 +689,7 @@ These are **offline research-builder and source-coverage audit only** errors fro
 | `NFL_PROP_SOURCE_COUNT_INVALID` | INPUT | Missing, negative, nonfinite, or fractional count; do not coerce to zero. | No |
 | `NFL_PROP_SOURCE_DATE_INVALID` | INPUT | Invalid year/week numeric identity; reject snapshot. | No |
 | `NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE` | INPUT | Season/week outside frozen training scope; reject snapshot. | No |
-| `NFL_PROP_SOURCE_IDENTITY_INVALID` | IDENTITY | Null or empty player/event/role identity; reconcile source. | No |
+| `NFL_PROP_SOURCE_IDENTITY_INVALID` | IDENTITY | Null or empty player/event/role identity; reconcile source. Exception: wholly zero-count anonymous REG rows can be quarantined under the separately verified source-preflight contract; nonzero, missing or invalid counts still HOLD as `NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING`. Quarantine never certifies an event. | No |
 | `NFL_PROP_SOURCE_DUPLICATE_PLAYER_EVENT` | IDENTITY | Repeated player/game key; deduplicate at authoritative source, not by overwriting fitted outcomes. | No |
 | `NFL_PROP_SOURCE_COUNT_EXCEEDS_OPPORTUNITY` | INPUT | Completes/receptions/touchdowns exceed corresponding game opportunities; repair raw data. | No |
 | `NFL_PROP_STAT_NOT_DECLARED` | MODEL | Unsupported stat candidate request; fail closed, no shared generic fallback. | No |
@@ -708,7 +708,7 @@ These are **offline research-builder and source-coverage audit only** errors fro
 | `NFL_PROP_PARTICIPATION_SOURCE_DIGEST_MISMATCH` | INPUT | Pinned snap or crosswalk bytes differ from official release SHA-256; HOLD without interpolation. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_COLUMNS_MISSING` | INPUT | Snap, crosswalk or weekly stats lacks required explicit identity/participation columns; no fuzzy matching. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT` | IDENTITY | PFR-to-GSIS mapping ambiguous across records; HOLD rather than choose an identity. Non-rank-eligible offline research check only. | No |
-| `NFL_PROP_PARTICIPATION_SNAP_INVALID` | INPUT | Official snap row has nonfinite/negative counts or invalid date/game/participant identity; HOLD. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_SNAP_INVALID` | INPUT | Official snap row has nonfinite/negative counts or invalid date/game/participant identity; also malformed/inconsistent source-cohort split receipts (`cohort_*` diagnostics). HOLD; inspect source rows or split receipt respectively before replay. Non-rank-eligible offline research only. | No |
 | `NFL_PROP_PARTICIPATION_SNAP_DUPLICATE` | IDENTITY | Repeated participant-game snap row; do not count or silently dedupe without source resolution. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_STATS_DUPLICATE` | IDENTITY | Repeated player/week/game weekly stats identity; reject before gap reconciliation. Non-rank-eligible offline research check only. | No |
 | `NFL_PROP_PARTICIPATION_SNAP_SEASON_MISMATCH` | INPUT | Named season snap file contains unexpected season identity; reject before cohort comparison. Non-rank-eligible offline research check only. | No |
@@ -728,6 +728,7 @@ Produced only by scripts/acquire_nfl_count_prop_sources.py; owned by WOW_PROP_LA
 | `NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE` | TRANSIENT | DNS, connection or timeout prevents official source acquisition | No |
 | `NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED` | SECURITY | GitHub release redirect used an untrusted host or non-HTTPS scheme | No |
 | `NFL_PROP_ACQUIRE_TARGET_RACE` | CONCURRENCY | Concurrent writer occupied frozen target before atomic install | No |
+| `HOLD_ARCHIVE_RDS_NOT_EQUIVALENT_TO_FROZEN_CSV` | RESEARCH_HOLD | Official archive RDS digests and byte sizes may verify without proving that archived identities, participation or stat labels are equivalent to the original frozen CSV. Keep separate source semantics/rights review; do not replace pins, fit, or publish from metadata alone. | No |
 
 ## Offline NFL PBP presence audit failures (2026-11-11)
 
