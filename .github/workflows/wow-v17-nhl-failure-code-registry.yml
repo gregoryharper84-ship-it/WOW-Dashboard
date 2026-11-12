@@ -27,9 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         # A pull-request test file runs in this job; the checkout token must not
-        # be readable from .git/config while it does.
+        # be readable from .git/config while it does. Full history is needed so
+        # the conflict check below can read the base branch.
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -49,9 +51,23 @@ jobs:
           python -m pytest -q --noconftest \
             tests/test_nhl_pregame_failure_codes_registered.py \
             tests/test_nhl_status_registry.py \
-            tests/test_sport_failure_registries.py | tee /tmp/nhl-registry-guard.log
+            tests/test_sport_failure_registries.py \
+            tests/test_registry_merge_conflict.py | tee /tmp/nhl-registry-guard.log
       - name: Check the generated sport registries are current
         run: python scripts/sport_failure_registry.py --check
+      - name: Fail when a registry document conflicts with the base branch
+        # The registries are append-heavy and several lanes add rows at once, so
+        # a branch can conflict on the document itself while every earlier run
+        # was green. A conflicted head has no merge commit, which means GitHub
+        # runs no checks on it at all: the pull request goes quietly dirty.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -o pipefail
+          python scripts/registry_merge_conflict.py \
+            --base "$BASE_REF" --head "$HEAD_SHA" | tee /tmp/nhl-registry-conflict.log
       - name: Upload guard log
         if: always()
         uses: actions/upload-artifact@v4
@@ -65,8 +81,9 @@ jobs:
           {
             echo '## NHL and per-sport registry guards'
             echo 'Fails when an emitted failure code is unregistered, a documented code is no longer emitted,'
-            echo 'a row names the wrong module, a shared emitter is left undocumented, or a generated'
-            echo 'sport registry document is stale.'
+            echo 'a row names the wrong module, a shared emitter is left undocumented, a generated'
+            echo 'sport registry document is stale, or the branch conflicts with its base branch on a'
+            echo 'registry document (a conflicted head runs no checks at all).'
             echo 'These guards read documentation and source text; they do not check or grant execution authority.'
           } >> "$GITHUB_STEP_SUMMARY"
 
