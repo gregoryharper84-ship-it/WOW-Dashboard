@@ -23,7 +23,7 @@ Example manifest (frozen_manifest.json), with SHA replaced by actual full SHA-25
 }
 ~~~
 
-Required Parquet columns: sport, season, observation_id, event_id, event_start_epoch, feature_available_epoch, quote_captured_epoch. The last three are UTC epoch seconds, not ambiguous local dates; quote_captured_epoch may be NULL for nonmarket rows. observation_id is unique across the input corpus (player/event/stat rows need separate IDs). Files must be regular, under the supplied research root, and pinned by their actual contents. Manifests may not claim fitting or training authority.
+Required Parquet columns: sport, season, observation_id, event_id, event_start_epoch, feature_available_epoch, is_market_observation, quote_captured_epoch. The event and evidence times are UTC epoch seconds, not ambiguous local dates. is_market_observation must be a non-NULL BOOLEAN; market rows require a valid pre-start quote_captured_epoch, while nonmarket rows may leave it NULL. observation_id is unique across the input corpus (player/event/stat rows need separate IDs). Files must be regular, under the supplied research root, free of wildcard/glob characters, and pinned by their actual contents. The preflight copies and verifies a private read-only snapshot before scanning, then independently rehashes the snapshot and original files after scanning; scan timing excludes copy and hash verification. A brief source A → B → A mutation cannot affect the scanned snapshot. Manifests may not claim fitting or training authority.
 
 ~~~bash
 python -m pip install -r artifacts/wow-engine/requirements-research.txt
@@ -36,8 +36,8 @@ A pass returns DATA_PREFLIGHT_PASS_ONLY, corpus counts, quote counts, manifest d
 
 ## Verification boundary
 
-- Local synthetic tests: **15 passed, 2 conditional real-DuckDB integration tests skipped** (Python 3.13 environment, 2026-11-12).
-- Deliberately suppressed the features_after_start rejection: corresponding regression RED (**1 failed, 6 passed**), then restored the guard and reran GREEN (**14 passed**). Tests remain permanently in the suite. A second RED reproduction mutated source bytes inside the scanner (1 failed before fix); post-scan hash revalidation made it GREEN (15 passed, 2 skipped).
+- Local synthetic tests: **prior head 15 passed, 2 conditional real-DuckDB integration tests skipped**; fresh exact-head validation pending (new market-flag and snapshot tests added) (Python 3.13 environment, 2026-11-12).
+- Deliberately suppressed the features_after_start rejection: corresponding regression RED (**1 failed, 6 passed**), then restored the guard and reran GREEN (**14 passed**). Tests remain permanently in the suite. A second RED reproduction mutated source bytes inside the scanner (1 failed before fix); post-scan hash revalidation made it GREEN on the preceding head. Code review then found an A → B → A bypass and unpinned glob and missing market quote cases; the current head uses a private hashed scan copy and explicit market flag. Fresh exact-head acceptance remains to be observed.
 - Real DuckDB + real Parquet execution: **unrun**; dedicated two-case integration test will run when research DuckDB is installed (DuckDB and approved corpus unavailable in this environment).
 - Production SHA/row persistence: **unrun**, not applicable to this research-only change.
 - Scoreboard delta: **0** model-evaluated, **0** qualified, **0** production SHA changes established from this research change.
