@@ -41,6 +41,95 @@ PBP_FIELDS = (
 ACTOR_FIELDS = ("passer_player_id", "receiver_player_id", "rusher_player_id")
 
 
+
+# FTN Data via nflverse, CC-BY-SA-4.0. 2025 post-season research ONLY;
+# never an automatic prop target, a zero-stat label or a publishing input.
+FTN_PARTICIPATION_2025_SHA256 = "59069adfee7b0f464befba8a5e8be331e523633cc6a7ab403d37bcbcdfbe66ac"
+FTN_PARTICIPATION_2025_BYTES = 49094943
+FTN_PARTICIPATION_2025_PATH = "pbp_participation/pbp_participation_2025.csv"
+
+
+def read_verified_ftn_2025_offense_presence(*, open_url=None, timeout: int = 60):
+    """Scrape one official, digest-pinned release asset without storing it.
+
+    Field semantics: offense_players are GSIS IDs on a documented play.
+    A missing player in this source NEVER establishes zero opportunities.
+    """
+    import csv
+    import re
+    import urllib.request
+    from urllib.parse import urlparse
+    from acquire_nfl_count_prop_sources import _trusted_release_urlopen, RELEASE_HOSTS
+
+    url = ("https://github.com/nflverse/nflverse-data/releases/download/"
+           + FTN_PARTICIPATION_2025_PATH)
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "WOW-V17-public-source-research/1.0",
+        "Accept": "application/octet-stream",
+    })
+    try:
+        stream = (open_url or _trusted_release_urlopen)(request, timeout=timeout)
+    except (OSError, TimeoutError) as exc:
+        raise ValueError("NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE") from exc
+    payload = bytearray()
+    with stream:
+        endpoint = urlparse(stream.geturl())
+        if endpoint.scheme != "https" or endpoint.hostname not in RELEASE_HOSTS:
+            raise ValueError("NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED")
+        while True:
+            piece = stream.read(1024 * 1024)
+            if not piece:
+                break
+            payload.extend(piece)
+            if len(payload) > FTN_PARTICIPATION_2025_BYTES:
+                raise ValueError("NFL_PROP_FTN_PARTICIPATION_DIGEST_MISMATCH")
+    if (len(payload) != FTN_PARTICIPATION_2025_BYTES
+            or hashlib.sha256(payload).hexdigest() != FTN_PARTICIPATION_2025_SHA256):
+        raise ValueError("NFL_PROP_FTN_PARTICIPATION_DIGEST_MISMATCH")
+    games, offense = set(), set()
+    blank_offense_rows = 0
+    try:
+        with io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8-sig", newline="") as f:
+            rows = csv.DictReader(f)
+            if not {"nflverse_game_id", "play_id", "offense_players"}.issubset(rows.fieldnames or []):
+                raise ValueError("NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:columns")
+            for row in rows:
+                game = (row.get("nflverse_game_id") or "").strip()
+                if not re.fullmatch(r"2025_[0-9]{2}_[A-Z0-9]{2,4}_[A-Z0-9]{2,4}", game):
+                    raise ValueError("NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:game_id")
+                play = (row.get("play_id") or "").strip()
+                if not play.isascii() or not play.isdigit():
+                    raise ValueError("NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:play_id")
+                games.add(game)
+                raw = (row.get("offense_players") or "").strip()
+                if not raw:
+                    blank_offense_rows += 1
+                    continue
+                ids = [player.strip() for player in raw.split(";")]
+                if (len(ids) != len(set(ids))
+                        or any(not re.fullmatch(r"00-[0-9]{7}", player) for player in ids)):
+                    raise ValueError("NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:offense_players")
+                offense.update((game, player) for player in ids)
+    except (UnicodeError, csv.Error) as exc:
+        raise ValueError("NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:csv") from exc
+    if not games or not offense:
+        raise ValueError("NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID:empty")
+    return games, offense, {
+        "status": "HOLD_FTN_OFFENSE_PRESENCE_RESEARCH_ONLY",
+        "file": FTN_PARTICIPATION_2025_PATH,
+        "source_sha256_verified": FTN_PARTICIPATION_2025_SHA256,
+        "bytes_verified": len(payload),
+        "license": "CC-BY-SA-4.0",
+        "attribution": "FTN Data via nflverse",
+        "blank_offense_play_rows": blank_offense_rows,
+        "offense_player_games_seen": len(offense),
+        "participation_proves_missing_count_zero": False,
+        "source_rights_independently_approved": False,
+        "fitted_specialist_certified": False,
+        "can_execute": False,
+    }
+
+
 def pbp_assets() -> list[tuple[str, str, int]]:
     """Return the five immutably pinned upstream compressed PBP sources."""
     if set(PBP_GZ_SHA256) != set(SEASONS):
