@@ -89,14 +89,15 @@ def classify_provider_failure(code: Any) -> str:
         "DATA_POINTS_EXHAUSTED", "DATAPOINTS_EXHAUSTED", "PLAN_LIMIT",
     )):
         return QUOTA_EXHAUSTED
-    if any(marker in token for marker in (
-        "HTTP_401", "HTTP_403", "AUTH_FAILURE", "AUTH_FAILED", "UNAUTHORIZED", "FORBIDDEN",
-    )):
-        return AUTH_FAILURE
+    # Explicit deactivation outranks a co-reported HTTP auth token (e.g. HTTP_401:DEACTIVATED_KEY).
     if any(marker in token for marker in (
         "DEACTIVATED", "DISABLED_BY_POLICY", "CREDENTIAL_UNCONFIGURED", "PROVIDER_DISABLED",
     )):
         return DISABLED_BY_POLICY
+    if any(marker in token for marker in (
+        "HTTP_401", "HTTP_403", "AUTH_FAILURE", "AUTH_FAILED", "UNAUTHORIZED", "FORBIDDEN",
+    )):
+        return AUTH_FAILURE
     if any(marker in token for marker in ("429", "RATE_LIMIT", "THROTTLED")):
         return RATE_LIMITED
     return TEMPORARILY_UNAVAILABLE

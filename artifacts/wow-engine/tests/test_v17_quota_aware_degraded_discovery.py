@@ -24,6 +24,13 @@ def test_definitive_provider_failure_classification_is_conservative():
     assert quota.classify_provider_failure("HTTP_503") == quota.TEMPORARILY_UNAVAILABLE
 
 
+def test_deactivated_key_with_http_auth_token_stays_disabled_by_policy():
+    # Issue #823: an explicit deactivated-key signal must not be masked by a co-reported HTTP auth token.
+    for code in ("DEACTIVATED_KEY", "HTTP_401:DEACTIVATED_KEY", "ODDS_API_DEACTIVATED_KEY", "HTTP_403:KEY_DEACTIVATED"):
+        assert quota.classify_provider_failure(code) == quota.DISABLED_BY_POLICY
+    assert quota.classify_provider_failure("HTTP_401") == quota.AUTH_FAILURE
+
+
 def test_public_schedule_success_consumes_zero_paid_odds_calls(monkeypatch):
     paid_factory_calls = []
     paid_http_calls = []
