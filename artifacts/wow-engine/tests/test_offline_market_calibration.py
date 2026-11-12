@@ -214,3 +214,20 @@ def test_opposite_quote_source_identity_is_independently_required(field, value):
     r = evaluate_binary_market_baseline([sample(**{field: value})])
     assert r["eligible_unattested"] == 0
     assert r["rows"][0]["status"] == "REPLAY_MARKET_QUOTE_PAIR_MISMATCH"
+
+
+def test_same_immutable_prediction_receipt_cannot_grade_two_events():
+    """A reused pregame prediction ID cannot manufacture independent samples."""
+    first = sample()
+    second = sample(event_id="other-game", quote_event_id="other-game",
+                    opposite_quote_event_id="other-game", settled_event_id="other-game")
+    report = evaluate_binary_market_baseline([first, second])
+    assert report["eligible_unattested"] == 0 and report["held"] == 2
+    assert all(row["status"] == "REPLAY_PREDICTION_RECEIPT_REUSED" for row in report["rows"])
+
+
+def test_whitespace_book_claim_cannot_be_a_same_book_quote():
+    """A blank book identity cannot establish two-sided no-vig comparison."""
+    report = evaluate_binary_market_baseline([sample(quote_book=" ", opposite_quote_book=" ")])
+    assert report["eligible_unattested"] == 0
+    assert report["rows"][0]["status"] == "REPLAY_MARKET_QUOTE_INVALID"
