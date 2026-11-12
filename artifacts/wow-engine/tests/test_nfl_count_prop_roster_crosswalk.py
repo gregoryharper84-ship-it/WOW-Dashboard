@@ -314,3 +314,123 @@ def test_candidate_gsis_collision_with_unrequested_pfr_also_fails_closed():
     ])
     with pytest.raises(ValueError, match="NFL_PROP_ROSTER_CROSSWALK_CONFLICT"):
         mod.inspect_roster_id_candidates(roster, ["CartNa00"])
+
+
+def _synthetic_archived_players_rds(tmp_path, monkeypatch, rows):
+    payload = b"synthetic-rds-bytes-for-test-only"
+    path = tmp_path / "players.rds"
+    path.write_bytes(payload)
+    from copy import deepcopy
+    pins = deepcopy(mod.ARCHIVE_OBSERVATION)
+    pins["assets"]["players.rds"] = (
+        714885750, len(payload), hashlib.sha256(payload).hexdigest()
+    )
+    monkeypatch.setattr(mod, "ARCHIVE_OBSERVATION", pins)
+    frame = pd.DataFrame(rows)
+
+    def parser(snapshot_path):
+        assert Path(snapshot_path).name == "players.rds"
+        assert Path(snapshot_path).read_bytes() == payload
+        assert Path(snapshot_path) != path
+        return {None: frame}
+
+    return path, parser
+
+
+def test_archived_players_rds_exact_candidates_are_only_for_independent_review(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+        {"pfr_id": "Other000", "gsis_id": "00-0044444"},
+        {"pfr_id": None, "gsis_id": "00-0055555"},
+    ])
+    receipt = mod.inspect_archived_players_rds(
+        path, ["CartNa00", "ShenJo00", "WhitCo05", "WillRo08"], read_rds=parser
+    )
+    assert receipt["status"] == "HOLD_ARCHIVED_IDENTITY_INDEPENDENT_REVIEW"
+    assert receipt["archive_tag"] == "archive-2026-11-05"
+    assert receipt["source_bytes_sha256_verified"] is True
+    assert receipt["target_pfr_count"] == 4
+    assert receipt["target_exact_candidate_count"] == 1
+    assert receipt["targets"][0]["gsis_candidates"] == ["00-0033333"]
+    assert all(not t["gsis_candidates"] for t in receipt["targets"][1:])
+    assert receipt["source_absence_does_not_prove_player_absence"] is True
+    assert receipt["crosswalk_applied"] is False
+    assert receipt["independent_identity_accepted"] is False
+    assert receipt["source_rights_independently_approved"] is False
+    assert receipt["training_authorized"] is False
+    assert receipt["probability_publishable"] is False
+    assert receipt["can_execute"] is False
+
+
+def test_archived_players_rds_rejects_mutated_hash_before_parser(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+    ])
+    path.write_bytes(b"unverified-different-bytes")
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_DIGEST_MISMATCH"):
+        mod.inspect_archived_players_rds(path, ["CartNa00"], read_rds=lambda _: pytest.fail("unverified parser executed"))
+
+
+def test_archived_players_rds_rejects_missing_required_id_column(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "wrong_id": "00-0033333"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_archived_players_rds(path, ["CartNa00"], read_rds=parser)
+
+
+def test_archived_players_rds_rejects_gsis_alias_outside_requested_ids(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+        {"pfr_id": "Other000", "gsis_id": "00-0033333"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_CROSSWALK_CONFLICT"):
+        mod.inspect_archived_players_rds(path, ["CartNa00"], read_rds=parser)
+
+
+def test_archived_players_rds_rejects_one_pfr_with_two_gsis(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+        {"pfr_id": "CartNa00", "gsis_id": "00-0099999"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_CROSSWALK_CONFLICT"):
+        mod.inspect_archived_players_rds(path, ["CartNa00"], read_rds=parser)
+
+
+def test_archived_players_rds_rejects_target_with_invalid_gsis(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "invalid"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_archived_players_rds(path, ["CartNa00"], read_rds=parser)
+
+
+def test_archived_players_rds_rejects_symlink(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+    ])
+    alias = tmp_path / "alias.rds"
+    alias.symlink_to(path)
+    with pytest.raises(ValueError, match="NFL_PROP_ACQUIRE_FILE_MISSING"):
+        mod.inspect_archived_players_rds(alias, ["CartNa00"], read_rds=parser)
+
+
+def test_archived_players_rds_rejects_unavailable_reader(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+    ])
+    import importlib
+    def no_reader(name):
+        assert name == "pyreadr"
+        raise ModuleNotFoundError("no research-only RDS parser")
+    monkeypatch.setattr(importlib, "import_module", no_reader)
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_RDS_READER_UNAVAILABLE"):
+        mod.inspect_archived_players_rds(path, ["CartNa00"])
+
+
+def test_archived_players_rds_rejects_untrusted_target_value(tmp_path, monkeypatch):
+    path, parser = _synthetic_archived_players_rds(tmp_path, monkeypatch, [
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_TARGET_INVALID"):
+        mod.inspect_archived_players_rds(path, ["CartNa00", "../other"], read_rds=parser)
