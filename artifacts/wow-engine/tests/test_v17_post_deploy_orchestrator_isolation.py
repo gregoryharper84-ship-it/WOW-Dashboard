@@ -336,3 +336,100 @@ def test_identity_failure_fails_matrix_even_when_live_readback_claims_success(tm
     )
     assert status == 1
     assert "POST_DEPLOY_READBACK_HOLD" in summary
+
+
+
+@pytest.mark.parametrize(("final_status", "final_worker", "expected"), [
+    ("WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED", "dep-wrk-1", True),
+    ("READBACK_PENDING_DEPLOY", "dep-wrk-1", False),
+    ("READBACK_HOLD", "dep-wrk-1", False),
+    ("WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED", "dep-wrk-2", False),
+])
+def test_dedupe_requires_final_same_deployment_readback(
+    monkeypatch, final_status, final_worker, expected
+):
+    """Historical success status + initial readback cannot bypass final HOLD."""
+    import io
+    import json
+    import zipfile
+
+    d = _dedupe()
+    initial = _receipt()
+    final = _receipt(worker=final_worker, status=final_status)
+
+    def zip_artifact(filename, payload):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, mode="w") as zf:
+            zf.writestr(filename, json.dumps(payload))
+        return output.getvalue()
+
+    def fake_gh(args):
+        url = args[0]
+        if "/actions/workflows/" in url and "/runs?" in url:
+            return json.dumps({"workflow_runs": [
+                {"id": 123, "run_attempt": 2, "conclusion": "success"}
+            ]}).encode()
+        if "/actions/runs/123/artifacts?" in url:
+            return json.dumps({"artifacts": [
+                {"id": 1, "name": "wow-v17-post-deploy-readback-123-2", "expired": False},
+                {"id": 2, "name": "wow-v17-post-deploy-final-readback-123-2", "expired": False},
+            ]}).encode()
+        if url.endswith("/artifacts/1/zip"):
+            return zip_artifact("wow-v17-post-deploy-readback.json", initial)
+        if url.endswith("/artifacts/2/zip"):
+            return zip_artifact("wow-v17-post-deploy-final-readback.json", final)
+        raise AssertionError(f"unexpected GitHub read {url}")
+
+    monkeypatch.setattr(d, "_gh", fake_gh)
+    accepted = d._prior_receipts("owner/repo", "a" * 40, "999")
+    assert d.already_accepted(initial, accepted) is expected
+
+
+def test_dedupe_missing_final_artifact_does_not_skip(monkeypatch):
+    import json
+
+    d = _dedupe()
+
+    def fake_gh(args):
+        url = args[0]
+        if "/actions/workflows/" in url:
+            return json.dumps({"workflow_runs": [
+                {"id": 123, "run_attempt": 2, "conclusion": "success"}
+            ]}).encode()
+        if "/actions/runs/123/artifacts?" in url:
+            return json.dumps({"artifacts": [
+                {"id": 1, "name": "wow-v17-post-deploy-readback-123-2", "expired": False},
+            ]}).encode()
+        raise AssertionError("No receipt should be trusted without final acceptance")
+
+    monkeypatch.setattr(d, "_gh", fake_gh)
+    assert d._prior_receipts("owner/repo", "a" * 40, "999") == []
+
+
+@pytest.mark.parametrize(("final_pending", "expected"), [
+    ("true", "POST_DEPLOY_ACCEPTANCE_HOLD"),
+    ("false", "POST_DEPLOY_LANES_OBSERVED_SIRT_PENDING"),
+])
+def test_final_readback_pending_cannot_claim_acceptance(tmp_path, final_pending, expected):
+    job = _load()["jobs"]["acceptance-receipts"]
+    summary_step = next(s for s in job["steps"]
+                        if s.get("name") == "Preserve nonauthoritative post-deploy observer status")
+    assert summary_step["env"]["FINAL_DEPLOY_PENDING"] == "$" + "{{ steps.final-readback.outputs.deploy_pending }}"
+    assert summary_step["continue-on-error"] == "true"
+    summary = tmp_path / "status.txt"
+    env = {
+        **os.environ,
+        "MATRIX_OUTCOME": "success",
+        "FINAL_READBACK_OUTCOME": "success",
+        "DEPLOY_PENDING": "false",
+        "FINAL_DEPLOY_PENDING": final_pending,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    result = subprocess.run(["bash", "-c", summary_step["run"]],
+                            env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    text = summary.read_text()
+    assert expected in text
+    assert "production_verified=false can_execute=false" in text
+    if final_pending == "true":
+        assert "POST_DEPLOY_LANES_OBSERVED_SIRT_PENDING" not in text
