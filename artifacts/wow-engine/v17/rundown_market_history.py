@@ -191,9 +191,7 @@ def _group_key(row: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _quote_time(row: dict[str, Any]) -> datetime | None:
-    # Provider-updated timestamps can predate when WOW first observed a quote.
-    # OPEN/CLOSE evidence must use the acquisition time, not retroactive data.
-    return _parse_dt(row.get("fetched_at"))
+    return _parse_dt(row.get("price_updated_at")) or _parse_dt(row.get("fetched_at"))
 
 
 def _clone_reference(
@@ -248,12 +246,6 @@ def derive_captured_reference_rows(
             if str(row.get("snapshot_kind") or "").upper() == "CURRENT"
             and row.get("is_live") is not True
             and _quote_time(row) is not None
-            and _parse_dt(row.get("event_start_utc")) is not None
-            and _quote_time(row) <= _parse_dt(row.get("event_start_utc"))
-            and (
-                _parse_dt(row.get("price_updated_at")) is None
-                or _parse_dt(row.get("price_updated_at")) <= _quote_time(row)
-            )
         ]
         if not current_rows:
             continue
@@ -296,14 +288,13 @@ def materialize_captured_references(
     sport_key: str,
     slate_date: str,
     now: datetime | None = None,
-    provider: str = ledger.PROVIDER,
 ) -> int:
     """Materialize first/last captured pregame references without provider calls."""
     start_utc, end_utc = _slate_window(slate_date, _timezone())
     response = (
         client.table(ledger.TABLE)
         .select("*")
-        .eq("provider", provider)
+        .eq("provider", ledger.PROVIDER)
         .eq("sport_key", sport_key)
         .gte("event_start_utc", start_utc)
         .lt("event_start_utc", end_utc)
@@ -538,24 +529,6 @@ async def run_history_loop(
                 type(exc).__name__,
             )
         await asyncio.sleep(interval_seconds())
-
-
-def run_closing_line_grading_cycle(db_client_fn: Callable[[], Any], log: logging.Logger) -> dict[str, Any] | None:
-    """Grade settled predictions vs captured closes. DB-only, never fatal."""
-    from v17 import closing_line_grading as grading
-
-    try:
-        result = grading.run_closing_line_grading(db_client_fn())
-    except Exception as exc:  # noqa: BLE001 - measurement must not affect the loop
-        log.exception("CLOSING_LINE_GRADING=FAIL error_type=%s can_execute=false", type(exc).__name__)
-        return None
-    log.info(
-        "CLOSING_LINE_GRADING=%s written=%s by_sport=%s can_execute=false",
-        result.get("status"),
-        result.get("grades_written"),
-        result.get("by_sport"),
-    )
-    return result
 
 
 __all__ = [

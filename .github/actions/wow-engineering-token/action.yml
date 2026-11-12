@@ -1,0 +1,49 @@
+name: WOW Engineering App token
+description: >-
+  Mints a short-lived wow-engineering GitHub App installation token for git push and
+  gh pr create/edit. Fails closed (no token emitted) when the App ID or private key
+  is unset, so callers must gate mutating steps on `key-present`. can_execute=false;
+  this action never merges, deploys, or grants bypass.
+
+inputs:
+  app-id:
+    description: Numeric wow-engineering App ID (vars.WOW_ENGINEERING_APP_ID)
+    required: true
+  app-private-key:
+    description: wow-engineering App private key (secrets.WOW_ENGINEERING_APP_PRIVATE_KEY, wow-engineering environment only)
+    required: true
+
+outputs:
+  token:
+    description: Short-lived installation token, or empty when credentials are unset
+    value: ${{ steps.mint.outputs.token }}
+  key-present:
+    description: "'true' only when both app-id and app-private-key are non-empty"
+    value: ${{ steps.check.outputs.present }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        KEY_PRESENT: ${{ inputs.app-private-key != '' }}
+      run: |
+        set -euo pipefail
+        present=false
+        if [[ "${APP_ID:-}" =~ ^[0-9]+$ ]] && [ "${KEY_PRESENT:-false}" = "true" ]; then
+          present=true
+        fi
+        echo "present=$present" >> "$GITHUB_OUTPUT"
+
+    - id: mint
+      if: steps.check.outputs.present == 'true'
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+        repositories: WOW-Dashboard
+        permission-contents: write
+        permission-pull-requests: write
+        permission-issues: write

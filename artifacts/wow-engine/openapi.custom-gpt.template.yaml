@@ -85,9 +85,10 @@ paths:
       summary: Score one supported prop through the governed probability pipeline
       description: >-
         Authenticated analytical prop scoring only. Never use this operation for
-        team/event moneylines. A 409 is a governed hold, not permission to retry
-        through a qualitative or invented-probability fallback. This operation
-        does not place or authorize a wager.
+        team/event moneylines. A 409 is a governed hold; a 503 means the exact-route
+        model registry failed and proves nothing about fitted capability absence.
+        Neither status permits qualitative or invented-probability fallback.
+        This operation does not place or authorize a wager.
       security:
         - actionBearer: []
       requestBody:
@@ -112,6 +113,27 @@ paths:
           description: Candidate failed publication requirements; probability remains non-publishable.
         '501':
           description: Real fitted sport/stat parameters are not registered.
+        '503':
+          description: The exact-route model registry is unavailable or returned an invalid response. Fail-closed infrastructure hold, not a missing model or permission to use another probability source.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: object
+                    required: [code, probability_publishable, can_execute]
+                    properties:
+                      code:
+                        type: string
+                        enum: [PROP_MODEL_REGISTRY_UNAVAILABLE, PROP_MODEL_REGISTRY_INVALID_RESPONSE]
+                      probability_publishable:
+                        const: false
+                      can_execute:
+                        const: false
+                    additionalProperties: true
+                additionalProperties: true
   /score-event:
     post:
       operationId: scoreWowEvent

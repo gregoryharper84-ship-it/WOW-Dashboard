@@ -1,0 +1,56 @@
+name: wow-v17-cursor-terminal-status-receipt
+
+on:
+  workflow_dispatch:
+    inputs:
+      reservation_comment_id:
+        description: Exact original immutable #1138 Cursor reservation comment ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: wow-v17-cursor-terminal-status-probe-${{ github.ref }}-${{ inputs.reservation_comment_id }}
+  cancel-in-progress: false
+
+jobs:
+  terminal-status:
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: wow-engineering
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact dispatched source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Collect read-only Cursor run and source receipt
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          RESERVATION_COMMENT_ID: ${{ inputs.reservation_comment_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RESERVATION_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::CURSOR_RESERVATION_ID_INVALID"
+            exit 1
+          }
+          python artifacts/wow-engine/v17/cursor_terminal_status_receipt.py \
+            --reservation-comment-id "$RESERVATION_COMMENT_ID" \
+            --receipt "$RUNNER_TEMP/cursor-terminal-status-receipt.json"
+
+      - name: Upload sanitized status receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-cursor-terminal-status-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cursor-terminal-status-receipt.json
+          if-no-files-found: error

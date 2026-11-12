@@ -1,0 +1,474 @@
+{
+  "can_execute": false,
+  "full_slate_completeness_attested": false,
+  "github_run_id": 39852468868,
+  "probability_publishable": false,
+  "provenance": "GitHub Actions run 39852468868, verified off-host raw ESPNs",
+  "schema_version": "WOW_FORWARD_MODEL_IDENTITY_FIXTURE_V1",
+  "sports": {
+    "NCAAF": {
+      "capture_host_clock_utc": "2026-10-22T20:51:51.701857+00:00",
+      "events": [
+        {
+          "away_espn_team_id": "221",
+          "away_name": "Pittsburgh Panthers",
+          "espn_event_id": "401858274",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2390",
+          "home_name": "Miami Hurricanes"
+        },
+        {
+          "away_espn_team_id": "84",
+          "away_name": "Indiana Hoosiers",
+          "espn_event_id": "401858496",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "130",
+          "home_name": "Michigan Wolverines"
+        },
+        {
+          "away_espn_team_id": "2641",
+          "away_name": "Texas Tech Red Raiders",
+          "espn_event_id": "401856840",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2132",
+          "home_name": "Cincinnati Bearcats"
+        },
+        {
+          "away_espn_team_id": "99",
+          "away_name": "LSU Tigers",
+          "espn_event_id": "401856728",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2",
+          "home_name": "Auburn Tigers"
+        },
+        {
+          "away_espn_team_id": "25",
+          "away_name": "California Golden Bears",
+          "espn_event_id": "401858270",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2567",
+          "home_name": "SMU Mustangs"
+        },
+        {
+          "away_espn_team_id": "164",
+          "away_name": "Rutgers Scarlet Knights",
+          "espn_event_id": "401858498",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "77",
+          "home_name": "Northwestern Wildcats"
+        },
+        {
+          "away_espn_team_id": "277",
+          "away_name": "West Virginia Mountaineers",
+          "espn_event_id": "401856841",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2628",
+          "home_name": "TCU Horned Frogs"
+        },
+        {
+          "away_espn_team_id": "242",
+          "away_name": "Rice Owls",
+          "espn_event_id": "401862809",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2226",
+          "home_name": "Florida Atlantic Owls"
+        },
+        {
+          "away_espn_team_id": "2711",
+          "away_name": "Western Michigan Broncos",
+          "espn_event_id": "401866450",
+          "event_start_utc": "2026-10-24T16:00:00+00:00",
+          "home_espn_team_id": "2649",
+          "home_name": "Toledo Rockets"
+        },
+        {
+          "away_espn_team_id": "239",
+          "away_name": "Baylor Bears",
+          "espn_event_id": "401856834",
+          "event_start_utc": "2026-10-24T17:00:00+00:00",
+          "home_espn_team_id": "2305",
+          "home_name": "Kansas Jayhawks"
+        },
+        {
+          "away_espn_team_id": "2006",
+          "away_name": "Akron Zips",
+          "espn_event_id": "401866446",
+          "event_start_utc": "2026-10-24T17:00:00+00:00",
+          "home_espn_team_id": "2309",
+          "home_name": "Kent State Golden Flashes"
+        },
+        {
+          "away_espn_team_id": "193",
+          "away_name": "Miami (OH) RedHawks",
+          "espn_event_id": "401866476",
+          "event_start_utc": "2026-10-24T17:00:00+00:00",
+          "home_espn_team_id": "2117",
+          "home_name": "Central Michigan Chippewas"
+        },
+        {
+          "away_espn_team_id": "2483",
+          "away_name": "Oregon Ducks",
+          "espn_event_id": "401858495",
+          "event_start_utc": "2026-10-24T19:00:00+00:00",
+          "home_espn_team_id": "356",
+          "home_name": "Illinois Fighting Illini"
+        },
+        {
+          "away_espn_team_id": "252",
+          "away_name": "BYU Cougars",
+          "espn_event_id": "401856835",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "2116",
+          "home_name": "UCF Knights"
+        },
+        {
+          "away_espn_team_id": "127",
+          "away_name": "Michigan State Spartans",
+          "espn_event_id": "401858499",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "26",
+          "home_name": "UCLA Bruins"
+        },
+        {
+          "away_espn_team_id": "2633",
+          "away_name": "Tennessee Volunteers",
+          "espn_event_id": "401856731",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "2579",
+          "home_name": "South Carolina Gamecocks"
+        },
+        {
+          "away_espn_team_id": "245",
+          "away_name": "Texas A&M Aggies",
+          "espn_event_id": "401856727",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "333",
+          "home_name": "Alabama Crimson Tide"
+        },
+        {
+          "away_espn_team_id": "2294",
+          "away_name": "Iowa Hawkeyes",
+          "espn_event_id": "401858497",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "135",
+          "home_name": "Minnesota Golden Gophers"
+        },
+        {
+          "away_espn_team_id": "201",
+          "away_name": "Oklahoma Sooners",
+          "espn_event_id": "401856730",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "344",
+          "home_name": "Mississippi State Bulldogs"
+        },
+        {
+          "away_espn_team_id": "103",
+          "away_name": "Boston College Eagles",
+          "espn_event_id": "401858273",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "59",
+          "home_name": "Georgia Tech Yellow Jackets"
+        },
+        {
+          "away_espn_team_id": "249",
+          "away_name": "North Texas Mean Green",
+          "espn_event_id": "401862810",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "2426",
+          "home_name": "Navy Midshipmen"
+        },
+        {
+          "away_espn_team_id": "62",
+          "away_name": "Hawai'i Rainbow Warriors",
+          "espn_event_id": "401864526",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "2459",
+          "home_name": "Northern Illinois Huskies"
+        },
+        {
+          "away_espn_team_id": "16",
+          "away_name": "Sacramento State Hornets",
+          "espn_event_id": "401866447",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "2050",
+          "home_name": "Ball State Cardinals"
+        },
+        {
+          "away_espn_team_id": "189",
+          "away_name": "Bowling Green Falcons",
+          "espn_event_id": "401866448",
+          "event_start_utc": "2026-10-24T19:30:00+00:00",
+          "home_espn_team_id": "2084",
+          "home_name": "Buffalo Bulls"
+        },
+        {
+          "away_espn_team_id": "2306",
+          "away_name": "Kansas State Wildcats",
+          "espn_event_id": "401856839",
+          "event_start_utc": "2026-10-24T19:45:00+00:00",
+          "home_espn_team_id": "9",
+          "home_name": "Arizona State Sun Devils"
+        },
+        {
+          "away_espn_team_id": "2199",
+          "away_name": "Eastern Michigan Eagles",
+          "espn_event_id": "401866449",
+          "event_start_utc": "2026-10-24T20:00:00+00:00",
+          "home_espn_team_id": "195",
+          "home_name": "Ohio Bobcats"
+        },
+        {
+          "away_espn_team_id": "2433",
+          "away_name": "UL Monroe Warhawks",
+          "espn_event_id": "401871094",
+          "event_start_utc": "2026-10-24T20:00:00+00:00",
+          "home_espn_team_id": "2653",
+          "home_name": "Troy Trojans"
+        },
+        {
+          "away_espn_team_id": "23",
+          "away_name": "San Jos\u00e9 State Spartans",
+          "espn_event_id": "401864528",
+          "event_start_utc": "2026-10-24T21:00:00+00:00",
+          "home_espn_team_id": "2440",
+          "home_name": "Nevada Wolf Pack"
+        },
+        {
+          "away_espn_team_id": "309",
+          "away_name": "Louisiana Ragin' Cajuns",
+          "espn_event_id": "401869967",
+          "event_start_utc": "2026-10-24T21:00:00+00:00",
+          "home_espn_team_id": "2572",
+          "home_name": "Southern Miss Golden Eagles"
+        },
+        {
+          "away_espn_team_id": "295",
+          "away_name": "Old Dominion Monarchs",
+          "espn_event_id": "401871093",
+          "event_start_utc": "2026-10-24T21:00:00+00:00",
+          "home_espn_team_id": "2348",
+          "home_name": "Louisiana Tech Bulldogs"
+        },
+        {
+          "away_espn_team_id": "68",
+          "away_name": "Boise State Broncos",
+          "espn_event_id": "401860907",
+          "event_start_utc": "2026-10-24T22:00:00+00:00",
+          "home_espn_team_id": "265",
+          "home_name": "Washington State Cougars"
+        },
+        {
+          "away_espn_team_id": "21",
+          "away_name": "San Diego State Aztecs",
+          "espn_event_id": "401860905",
+          "event_start_utc": "2026-10-24T22:30:00+00:00",
+          "home_espn_team_id": "36",
+          "home_name": "Colorado State Rams"
+        },
+        {
+          "away_espn_team_id": "38",
+          "away_name": "Colorado Buffaloes",
+          "espn_event_id": "401856836",
+          "event_start_utc": "2026-10-24T23:00:00+00:00",
+          "home_espn_team_id": "197",
+          "home_name": "Oklahoma State Cowboys"
+        },
+        {
+          "away_espn_team_id": "259",
+          "away_name": "Virginia Tech Hokies",
+          "espn_event_id": "401858276",
+          "event_start_utc": "2026-10-24T23:00:00+00:00",
+          "home_espn_team_id": "228",
+          "home_name": "Clemson Tigers"
+        },
+        {
+          "away_espn_team_id": "2247",
+          "away_name": "Georgia State Panthers",
+          "espn_event_id": "401869935",
+          "event_start_utc": "2026-10-24T23:00:00+00:00",
+          "home_espn_team_id": "2032",
+          "home_name": "Arkansas State Red Wolves"
+        },
+        {
+          "away_espn_team_id": "145",
+          "away_name": "Ole Miss Rebels",
+          "espn_event_id": "401856732",
+          "event_start_utc": "2026-10-24T23:30:00+00:00",
+          "home_espn_team_id": "251",
+          "home_name": "Texas Longhorns"
+        },
+        {
+          "away_espn_team_id": "238",
+          "away_name": "Vanderbilt Commodores",
+          "espn_event_id": "401856729",
+          "event_start_utc": "2026-10-24T23:30:00+00:00",
+          "home_espn_team_id": "96",
+          "home_name": "Kentucky Wildcats"
+        },
+        {
+          "away_espn_team_id": "30",
+          "away_name": "USC Trojans",
+          "espn_event_id": "401858500",
+          "event_start_utc": "2026-10-24T23:30:00+00:00",
+          "home_espn_team_id": "275",
+          "home_name": "Wisconsin Badgers"
+        },
+        {
+          "away_espn_team_id": "66",
+          "away_name": "Iowa State Cyclones",
+          "espn_event_id": "401856838",
+          "event_start_utc": "2026-10-24T23:30:00+00:00",
+          "home_espn_team_id": "12",
+          "home_name": "Arizona Wildcats"
+        },
+        {
+          "away_espn_team_id": "183",
+          "away_name": "Syracuse Orange",
+          "espn_event_id": "401858275",
+          "event_start_utc": "2026-10-24T23:30:00+00:00",
+          "home_espn_team_id": "153",
+          "home_name": "North Carolina Tar Heels"
+        },
+        {
+          "away_espn_team_id": "328",
+          "away_name": "Utah State Aggies",
+          "espn_event_id": "401860906",
+          "event_start_utc": "2026-10-24T23:30:00+00:00",
+          "home_espn_team_id": "326",
+          "home_name": "Texas State Bobcats"
+        },
+        {
+          "away_espn_team_id": "2636",
+          "away_name": "UTSA Roadrunners",
+          "espn_event_id": "401862811",
+          "event_start_utc": "2026-10-25T00:00:00+00:00",
+          "home_espn_team_id": "2655",
+          "home_name": "Tulane Green Wave"
+        },
+        {
+          "away_espn_team_id": "2449",
+          "away_name": "North Dakota State Bison",
+          "espn_event_id": "401864527",
+          "event_start_utc": "2026-10-25T02:00:00+00:00",
+          "home_espn_team_id": "167",
+          "home_name": "New Mexico Lobos"
+        },
+        {
+          "away_espn_team_id": "248",
+          "away_name": "Houston Cougars",
+          "espn_event_id": "401856837",
+          "event_start_utc": "2026-10-25T02:15:00+00:00",
+          "home_espn_team_id": "254",
+          "home_name": "Utah Utes"
+        }
+      ],
+      "raw_sha256": "976d8ac562a9eaaa8011fdaf4158b06d2e908a05a28a97f66223d8dafa5f3428",
+      "scope": "ESPN_COLLEGE_FOOTBALL_GROUP_80_LIMIT_500_NOT_COMPLETENESS_CERTIFIED",
+      "target_date": "2026-10-24"
+    },
+    "NHL": {
+      "capture_host_clock_utc": "2026-10-22T20:51:52.037904+00:00",
+      "events": [
+        {
+          "away_espn_team_id": "27",
+          "away_name": "Nashville Predators",
+          "espn_event_id": "401892552",
+          "event_start_utc": "2026-10-22T23:00:00+00:00",
+          "home_espn_team_id": "1",
+          "home_name": "Boston Bruins"
+        },
+        {
+          "away_espn_team_id": "13",
+          "away_name": "New York Rangers",
+          "espn_event_id": "401892553",
+          "event_start_utc": "2026-10-22T23:00:00+00:00",
+          "home_espn_team_id": "21",
+          "home_name": "Toronto Maple Leafs"
+        },
+        {
+          "away_espn_team_id": "18",
+          "away_name": "San Jose Sharks",
+          "espn_event_id": "401892554",
+          "event_start_utc": "2026-10-22T23:00:00+00:00",
+          "home_espn_team_id": "14",
+          "home_name": "Ottawa Senators"
+        },
+        {
+          "away_espn_team_id": "25",
+          "away_name": "Anaheim Ducks",
+          "espn_event_id": "401892555",
+          "event_start_utc": "2026-10-22T23:00:00+00:00",
+          "home_espn_team_id": "11",
+          "home_name": "New Jersey Devils"
+        },
+        {
+          "away_espn_team_id": "26",
+          "away_name": "Florida Panthers",
+          "espn_event_id": "401892556",
+          "event_start_utc": "2026-10-22T23:00:00+00:00",
+          "home_espn_team_id": "16",
+          "home_name": "Pittsburgh Penguins"
+        },
+        {
+          "away_espn_team_id": "8",
+          "away_name": "Los Angeles Kings",
+          "espn_event_id": "401892557",
+          "event_start_utc": "2026-10-22T23:30:00+00:00",
+          "home_espn_team_id": "12",
+          "home_name": "New York Islanders"
+        },
+        {
+          "away_espn_team_id": "37",
+          "away_name": "Vegas Golden Knights",
+          "espn_event_id": "401892558",
+          "event_start_utc": "2026-10-23T00:00:00+00:00",
+          "home_espn_team_id": "19",
+          "home_name": "St. Louis Blues"
+        },
+        {
+          "away_espn_team_id": "28",
+          "away_name": "Winnipeg Jets",
+          "espn_event_id": "401892559",
+          "event_start_utc": "2026-10-23T00:00:00+00:00",
+          "home_espn_team_id": "9",
+          "home_name": "Dallas Stars"
+        },
+        {
+          "away_espn_team_id": "30",
+          "away_name": "Minnesota Wild",
+          "espn_event_id": "401892560",
+          "event_start_utc": "2026-10-23T01:00:00+00:00",
+          "home_espn_team_id": "3",
+          "home_name": "Calgary Flames"
+        },
+        {
+          "away_espn_team_id": "7",
+          "away_name": "Carolina Hurricanes",
+          "espn_event_id": "401892561",
+          "event_start_utc": "2026-10-23T01:00:00+00:00",
+          "home_espn_team_id": "6",
+          "home_name": "Edmonton Oilers"
+        },
+        {
+          "away_espn_team_id": "129764",
+          "away_name": "Utah Mammoth",
+          "espn_event_id": "401892562",
+          "event_start_utc": "2026-10-23T02:00:00+00:00",
+          "home_espn_team_id": "124292",
+          "home_name": "Seattle Kraken"
+        },
+        {
+          "away_espn_team_id": "5",
+          "away_name": "Detroit Red Wings",
+          "espn_event_id": "401892563",
+          "event_start_utc": "2026-10-23T02:00:00+00:00",
+          "home_espn_team_id": "22",
+          "home_name": "Vancouver Canucks"
+        }
+      ],
+      "raw_sha256": "224e2f7f1c2592eedadb236322bf5f1661c408f4554cb8facd13aa8df2e28199",
+      "scope": "ESPN_NHL_DATE_SCOREBOARD_NOT_COMPLETENESS_CERTIFIED",
+      "target_date": "2026-10-22"
+    }
+  }
+}

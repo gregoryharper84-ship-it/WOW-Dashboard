@@ -1,0 +1,73 @@
+name: kalshi-weather-external-wake
+
+# Read-only remote heartbeat, never an alternate weather writer or trading agent.
+# GitHub scheduled events can be delayed or dropped. A dedicated always-on
+# compute instance or paid cron job is the stronger long-term option.
+on:
+  schedule:
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/kalshi-weather-external-wake.yml
+      - artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py
+      - artifacts/wow-engine/kalshi_weather_v2/test_external_wake_probe.py
+  pull_request:
+    paths:
+      - .github/workflows/kalshi-weather-external-wake.yml
+      - artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py
+      - artifacts/wow-engine/kalshi_weather_v2/test_external_wake_probe.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kalshi-weather-external-wake-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'live' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    name: Verify external wake probe offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run network-free wake probe checks
+        run: |
+          cd artifacts/wow-engine/kalshi_weather_v2
+          python3 -m unittest -v test_external_wake_probe
+
+  heartbeat:
+    if: github.event_name != 'pull_request'
+    name: Wake and validate isolated weather shadow service
+    runs-on: ubuntu-latest
+    # Up to three read-only probe attempts run within a hard 420s deadline,
+    # reserving at least 60s for a durable failure receipt before the 480s job limit.
+    # Concurrency still serializes overlapping scheduled wakes.
+    timeout-minutes: 8
+    steps:
+      # Reserve a receipt window even if the repository checkout is slow.
+      - name: Set bounded heartbeat deadline
+        continue-on-error: true
+        shell: bash
+        run: echo "WAKE_HEARTBEAT_DEADLINE_EPOCH=$(($(date +%s) + 420))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Wake API, verify DB-read and shadow collector flags
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          remaining=$(( ${WAKE_HEARTBEAT_DEADLINE_EPOCH:-0} - $(date +%s) ))
+          if [ "$remaining" -le 0 ]; then
+            echo "::error::KALSHI_WEATHER_WAKE_PROBE_FAILED: heartbeat source checkout exceeded probe deadline."
+            echo "KALSHI_WEATHER_WAKE_PROBE_FAILED deadline_exceeded=true can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! timeout --signal=TERM --kill-after=5s "${remaining}s" python3 artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py; then
+            echo "::error::KALSHI_WEATHER_WAKE_PROBE_FAILED: read-only heartbeat could not prove API, DB-read and shadow collector flags."
+            echo "KALSHI_WEATHER_WAKE_PROBE_FAILED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "KALSHI_WEATHER_WAKE_PROBE_OK can_execute=false" >> "$GITHUB_STEP_SUMMARY"

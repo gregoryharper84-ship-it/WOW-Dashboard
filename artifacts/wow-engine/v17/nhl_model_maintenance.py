@@ -79,6 +79,10 @@ def run_nhl_model_maintenance(
     # The exception type lives beside the fitted-training code. Load only when
     # maintenance is actually invoked; production route construction stays light.
     from nhl_candidate_pipeline import NHLCandidateError
+    from v17.nhl_candidate_preflight import (
+        NHLCandidatePreflightError,
+        preflight_nhl_candidate_package,
+    )
 
     years = tuple(sorted({int(v) for v in (start_years or default_start_years())}))
     if not years:
@@ -93,6 +97,13 @@ def run_nhl_model_maintenance(
             kwargs["session"] = session
         package = build_candidate(years, **kwargs)
         _attach_training_outcomes(package)
+        candidate_preflight = preflight_nhl_candidate_package(package)
+    except NHLCandidatePreflightError as exc:
+        return _blocked(
+            "NHL_CANDIDATE_PREFLIGHT_BLOCKED",
+            stage="CANDIDATE_PREFLIGHT",
+            detail={"code": exc.code, "detail": str(exc)},
+        )
     except NHLCandidateError as exc:
         return _blocked(exc.code, stage="NHL_ACQUISITION_OR_TRAINING", detail=str(exc))
     except D1RegistryError as exc:
@@ -123,6 +134,7 @@ def run_nhl_model_maintenance(
         "seasons": list(years),
         "source_event_n": len(package.get("games") or []),
         "training_feature_n": len(package.get("feature_rows") or []),
+        "candidate_preflight": candidate_preflight,
         "model_family": candidate.get("model_family"),
         "model_artifact_version": candidate.get("model_artifact_version"),
         "research_screen_pass": bool(candidate.get("research_screen_pass")),

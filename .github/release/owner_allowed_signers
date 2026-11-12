@@ -1,0 +1,6 @@
+# WOW owner release signer (trust root).
+# Registration is pending owner bootstrap review and merge to protected main.
+# Keep the private key encrypted; never share its passphrase or load it into a shared agent.
+# Changing this file requires a separately authorized owner trust-root review.
+# Public fingerprint: SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM
+wow-owner namespaces="wow-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIu3lt8NqRa+wFzxP4apKY1iXq4ylMEHC1HP34nZxk1J wow-owner-release

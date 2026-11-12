@@ -226,6 +226,10 @@ def compact_espn_scoreboard(
         isinstance(result.data, dict)
         and result.data.get("_wow_provider_truncated") is True
     )
+    completeness_unverified = (
+        isinstance(result.data, dict)
+        and result.data.get("_wow_provider_completeness_unverified") is True
+    )
     provider_limit = result.data.get("_wow_provider_limit") if isinstance(result.data, dict) else None
     provider_result_count = (
         result.data.get("_wow_provider_result_count")
@@ -243,7 +247,8 @@ def compact_espn_scoreboard(
             "status": (
                 "DISCOVERY_INCOMPLETE_PROVIDER_LIMIT"
                 if provider_truncated
-                else "PASS"
+                else ("DISCOVERY_COMPLETENESS_UNVERIFIED"
+                      if completeness_unverified else "PASS")
             ),
             "sport_key": sport_key,
             "date": date_iso,
@@ -251,12 +256,14 @@ def compact_espn_scoreboard(
             "provider_code": (
                 "ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
                 if provider_truncated
-                else None
+                else ("ESPN_SCOREBOARD_COMPLETENESS_UNVERIFIED"
+                      if completeness_unverified else None)
             ),
             "provider_limit": provider_limit,
             "provider_result_count": provider_result_count,
             "provider_truncated": provider_truncated,
-            "coverage_complete": not provider_truncated,
+            "provider_completeness_unverified": completeness_unverified,
+            "coverage_complete": not (provider_truncated or completeness_unverified),
             "response_contract": "IDENTITY_ONLY_PAGINATED",
             "prediction_authority": False,
             "exact_line_authority": False,

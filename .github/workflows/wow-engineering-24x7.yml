@@ -1,0 +1,461 @@
+name: wow-engineering-24x7
+
+# Replacement candidate: one GitHub-native intake, not a second live controller.
+# Continuous event intake + inexpensive five-minute safety-net scan.
+# Production dispatch stays off until the protected cutover is independently accepted.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  issues:
+    types: [opened, reopened, labeled, unlabeled, closed]
+  pull_request_target:
+    branches: [main]
+    types: [closed]
+  workflow_run:
+    workflows:
+      - wow-verify
+      - wow-engine-verify
+      - wow-v17-release-production-verification-agent
+      - wow-v17-chatgpt-engineering-worker
+      - wow-v17-claude-engineering-worker
+      - wow-v17-simple-security-review
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      target_incident:
+        description: "Optional exact existing priority issue number"
+        required: false
+        type: string
+      retry_after_run_id:
+        description: "Manual only: exact latest failed worker run ID for targeted retry"
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/wow-engineering-24x7.yml"
+      - "artifacts/wow-engine/v17/engineering_24x7_selector.py"
+      - "artifacts/wow-engine/test_engineering_24x7_selector.py"
+      - "artifacts/wow-engine/v17/engineering_delivery_pipeline.py"
+      - "artifacts/wow-engine/test_engineering_delivery_pipeline.py"
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  # PR test jobs must not displace queued protected-main controller events.
+  group: wow-engineering-24x7-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'controller' }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify deterministic 24x7 admission tests
+        run: |
+          python artifacts/wow-engine/test_engineering_24x7_selector.py -v
+          python artifacts/wow-engine/test_engineering_delivery_pipeline.py -v
+      - name: Exercise real GitHub intake in READ-ONLY shadow mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null)' | jq -s '.' \
+            > "$RUNNER_TEMP/engineering-issues.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
+          # Authenticated workflow-run history is denial evidence only.
+          # Fail closed on inaccessible or incomplete API responses.
+          # Fully paginate provider run records; a possible API 1000-result
+          # search cap is incomplete evidence and must deny dispatch.
+          # Each read must succeed independently before any inventory is joined.
+          # A failed provider query must never disappear in a successful pipeline.
+          run_parts=()
+          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/${inventory_workflow}.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            run_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json"
+          python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --issues "$RUNNER_TEMP/engineering-issues.json" \
+            --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --runs "$RUNNER_TEMP/engineering-runs.json" \
+            --output "$RUNNER_TEMP/engineering-plan.json"
+          {
+            echo "### Read-only live intake proof (NO DISPATCH)"
+            echo '~~~json'
+            cat "$RUNNER_TEMP/engineering-plan.json"
+            echo '~~~'
+            echo "- This candidate cannot create code, claim merge authority or deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Exercise the exact live PR and check-run JSON contract in shadow.
+          # A missing/failed QA review yields a typed HOLD, not release authority.
+          if [ "$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")" = "RESUME_PR" ]; then
+            shadow_pr=$(jq -r '.pr' "$RUNNER_TEMP/engineering-plan.json")
+            shadow_sha=$(jq -r '.head_sha' "$RUNNER_TEMP/engineering-plan.json")
+            [[ "$shadow_pr" =~ ^[1-9][0-9]*$ ]] || exit 2
+            [[ "$shadow_sha" =~ ^[a-f0-9]{40}$ ]] || exit 2
+            gh api "/repos/$GITHUB_REPOSITORY/pulls/$shadow_pr" > "$RUNNER_TEMP/shadow-pr.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$shadow_sha/check-runs?per_page=100&filter=latest" \
+              --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-latest.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$shadow_sha/check-runs?per_page=100&filter=all&check_name=WOW%20Independent%20Security%20Review" \
+              --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-qa-history.json"
+            jq -s '.[0] + .[1]' "$RUNNER_TEMP/shadow-latest.json" "$RUNNER_TEMP/shadow-qa-history.json" > "$RUNNER_TEMP/shadow-checks.json"
+            python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
+              --pr "$RUNNER_TEMP/shadow-pr.json" \
+              --checks "$RUNNER_TEMP/shadow-checks.json" \
+              --head-sha "$shadow_sha" --output "$RUNNER_TEMP/shadow-decision.json"
+            {
+              echo "### Real PR resume evidence (SHADOW ONLY)"
+              echo '~~~json'
+              cat "$RUNNER_TEMP/shadow-decision.json"
+              echo '~~~'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  select:
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      incident: ${{ steps.plan.outputs.incident }}
+      pr: ${{ steps.plan.outputs.pr }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - name: Checkout protected main only
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Gather complete bounded canonical GitHub intake
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Never trust event payload as a coding instruction or perform PR-head checkout.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null)' | jq -s '.' \
+            > "$RUNNER_TEMP/engineering-issues.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
+          # Authenticated workflow-run history is denial evidence only.
+          # Fail closed on inaccessible or incomplete API responses.
+          # Fully paginate provider run records; a possible API 1000-result
+          # search cap is incomplete evidence and must deny dispatch.
+          # Each read must succeed independently before any inventory is joined.
+          # A failed provider query must never disappear in a successful pipeline.
+          run_parts=()
+          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/${inventory_workflow}.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            run_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json"
+      - name: Restoration-first deterministic single-target decision
+        id: plan
+        shell: bash
+        env:
+          REQUESTED_INCIDENT: ${{ inputs.target_incident }}
+          RETRY_AFTER_RUN_ID: ${{ inputs.retry_after_run_id }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${REQUESTED_INCIDENT:-}" ]; then
+            [[ "$REQUESTED_INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
+            args+=(--target "$REQUESTED_INCIDENT")
+          fi
+          if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
+            [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
+            [ -n "${REQUESTED_INCIDENT:-}" ] || exit 2
+            [[ "$RETRY_AFTER_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 2
+            args+=(--retry-after-run-id "$RETRY_AFTER_RUN_ID")
+          fi
+          python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --issues "$RUNNER_TEMP/engineering-issues.json" \
+            --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --runs "$RUNNER_TEMP/engineering-runs.json" \
+            --output "$RUNNER_TEMP/engineering-plan.json" "${args[@]}"
+          action=$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")
+          incident=$(jq -r '.incident // ""' "$RUNNER_TEMP/engineering-plan.json")
+          pr=$(jq -r '.pr // ""' "$RUNNER_TEMP/engineering-plan.json")
+          sha=$(jq -r '.head_sha // ""' "$RUNNER_TEMP/engineering-plan.json")
+          [[ "$action" == "IDLE" || "$action" == "BUILD" || "$action" == "RESUME_PR" ]] || exit 2
+          {
+            printf 'action=%s\nincident=%s\npr=%s\nsha=%s\n' "$action" "$incident" "$pr" "$sha"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## WOW Engineering — 24x7 execution intake"
+            echo "- Action: $action"
+            echo "- Canonical issue: ${incident:-none}"
+            echo "- Existing PR: ${pr:-none}"
+            echo "- Protected main: $GITHUB_SHA"
+            echo "- Cutover enabled: ${{ vars.WOW_24X7_ACTIVE == 'true' }}"
+            echo "- Old writers retired: ${{ vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true' }}"
+            echo "- Policy: RESTORE first, then APPROVED production improvement"
+            echo "- Cursor: permanently excluded"
+            echo "- Betting: can_execute=false; V17_TERMINAL_REDUCER"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  resume:
+    # Complete the previously missing RESUME_PR stage without invoking a
+    # second coder or pretending that a green check is protected approval.
+    # Running this on every new evidence event is read-only and free.
+    if: >-
+      needs.select.result == 'success' &&
+      needs.select.outputs.action == 'RESUME_PR'
+    needs: [select]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    steps:
+      - name: Checkout trusted protected controller only
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Re-read existing PR and exact-head check evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ needs.select.outputs.pr }}
+          TARGET_SHA: ${{ needs.select.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_PR" =~ ^[1-9][0-9]*$ ]] || exit 2
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 2
+          # A stale runner or moved PR is not permitted to continue a release.
+          main_head=$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$main_head" = "$GITHUB_SHA" || {
+            echo "::warning::CONTROLLER_SOURCE_ADVANCED"
+            exit 0
+          }
+          gh api "/repos/$GITHUB_REPOSITORY/pulls/$TARGET_PR" > "$RUNNER_TEMP/pr.json"
+          jq -e --arg sha "$TARGET_SHA" --arg repo "$GITHUB_REPOSITORY" --argjson n "$TARGET_PR" '
+            .number == $n and .state == "open" and .draft == false and
+            .head.sha == $sha and .base.ref == "main" and
+            .head.repo.full_name == $repo and .base.repo.full_name == $repo
+          ' "$RUNNER_TEMP/pr.json" >/dev/null || {
+            echo "::warning::PR_HEAD_CHANGED_OR_UNTRUSTED"
+            exit 0
+          }
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/check-runs?per_page=100&filter=latest" \
+            --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/latest-checks.json"
+          # Read the full same-SHA QA history: GitHub filter=latest can hide
+          # an older binding signed REJECT. Never re-review a rejected SHA.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/check-runs?per_page=100&filter=all&check_name=WOW%20Independent%20Security%20Review" \
+            --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/qa-history.json"
+          jq -s '.[0] + .[1]' "$RUNNER_TEMP/latest-checks.json" "$RUNNER_TEMP/qa-history.json" > "$RUNNER_TEMP/checks.json"
+          python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
+            --pr "$RUNNER_TEMP/pr.json" --checks "$RUNNER_TEMP/checks.json" \
+            --head-sha "$TARGET_SHA" --output "$RUNNER_TEMP/delivery-decision.json"
+          decision=$(jq -r '.decision' "$RUNNER_TEMP/delivery-decision.json")
+          action=$(jq -r '.next_action' "$RUNNER_TEMP/delivery-decision.json")
+          trigger=$(jq -r '.reentry_trigger' "$RUNNER_TEMP/delivery-decision.json")
+          {
+            echo "## Existing PR continuation — read-only exact-head evidence"
+            echo "- PR: #$TARGET_PR"
+            echo "- SHA: $TARGET_SHA"
+            echo "- Decision: $decision"
+            echo "- Next action: $action"
+            echo "- Re-entry trigger: $trigger"
+            echo "- Independent security, release, CODEOWNER and merge rules unchanged."
+            echo "- No reviewer invocation, second writer, protected merge, deploy or wager."
+            if [ "$decision" = "EVIDENCE_PENDING" ]; then
+              echo "- Exact owner re-entry (one authorized dispatch only if no active review):"
+              echo '~~~sh'
+              printf 'gh workflow run wow-v17-simple-security-review.yml -R %s --ref main -f pr_number=%s -f head_sha=%s\n' "$GITHUB_REPOSITORY" "$TARGET_PR" "$TARGET_SHA"
+              echo '~~~'
+            fi
+            if [ "$decision" = "SEMANTIC_REJECT_SAME_SHA" ]; then
+              echo "- Binding signed REJECT: repair the source on a NEW SHA; no review retry."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch:
+    # A controlled, auditable cutover: no overlapping legacy writer or provider retry.
+    # Old workers still enforce the legacy remote fence; this never bypasses it.
+    if: >-
+      needs.select.result == 'success' &&
+      needs.select.outputs.action == 'BUILD' &&
+      vars.WOW_24X7_ACTIVE == 'true' &&
+      vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true'
+    needs: [select]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Checkout protected controller for fresh, exact-target readback
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Recheck exact target and prevent duplicate active writers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ needs.select.outputs.incident }}
+          PROVIDER: ${{ vars.WOW_24X7_CODING_PROVIDER }}
+          RETRY_AFTER_RUN_ID: ${{ inputs.retry_after_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
+          case "$PROVIDER" in
+            openai) worker=wow-v17-chatgpt-engineering-worker.yml ;;
+            claude) worker=wow-v17-claude-engineering-worker.yml ;;
+            *) echo "::warning::CODING_PROVIDER_UNAVAILABLE: no authorized provider"; exit 0 ;;
+          esac
+          # Reuse protected main only, and never dispatch after source drift.
+          main_head=$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$main_head" = "$GITHUB_SHA" || {
+            echo "::warning::CONTROLLER_SOURCE_ADVANCED"; exit 0;
+          }
+          issue=$(gh api "/repos/$GITHUB_REPOSITORY/issues/$INCIDENT")
+          jq -e '.state == "open"' <<< "$issue" >/dev/null
+          # Recheck current issues, PRs and both provider receipts after
+          # acquiring the single-writer mutex. Deny if stale or already tried.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null)' | jq -s '.' > "$RUNNER_TEMP/issues.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/prs.json"
+          # Fully paginate provider run records; a possible API 1000-result
+          # search cap is incomplete evidence and must deny dispatch.
+          # Each read must succeed independently before any inventory is joined.
+          # A failed provider query must never disappear in a successful pipeline.
+          run_parts=()
+          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/${inventory_workflow}.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            run_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/runs.json"
+          retry_args=()
+          if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
+            [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
+            [[ "$RETRY_AFTER_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 2
+            retry_args+=(--retry-after-run-id "$RETRY_AFTER_RUN_ID")
+          fi
+          python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --issues "$RUNNER_TEMP/issues.json" --prs "$RUNNER_TEMP/prs.json" \
+            --runs "$RUNNER_TEMP/runs.json" --target "$INCIDENT" \
+            --output "$RUNNER_TEMP/current-plan.json" "${retry_args[@]}"
+          if [ "$(jq -r '.action' "$RUNNER_TEMP/current-plan.json")" != "BUILD" ]; then
+            echo "::notice::ISSUE_ALREADY_OWNED_OR_ATTEMPTED: issue $INCIDENT"
+            exit 0
+          fi
+          # Refresh both providers under the existing global writer mutex.
+          # Compare IDs to selector's snapshot; legitimate explicit retries
+          # must not be mistaken for an unrelated newly admitted worker.
+          # No command substitution around a multi-provider pipeline: failed
+          # provider history must fail this exact-head dispatch recheck.
+          fresh_parts=()
+          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/fresh-${inventory_workflow}.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            fresh_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${fresh_parts[@]}" > "$RUNNER_TEMP/fresh-runs.json"
+          fresh_rows=$(cat "$RUNNER_TEMP/fresh-runs.json")
+          active=$(jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested")] | length' <<< "$fresh_rows")
+          if [ "$active" -gt 0 ]; then
+            echo "::notice::EXISTING_WRITER_ACTIVE"; exit 0
+          fi
+          snapshot_ids=$(jq -c '[.[].databaseId]' "$RUNNER_TEMP/runs.json")
+          new_prior=$(jq --argjson seen "$snapshot_ids" --arg n "$INCIDENT" \
+            '[.[] | . as $run | select(($seen | index($run.databaseId)) == null) | select(($run.displayTitle // "") | test("(^|\\s)incident=" + $n + "(\\s|$)"))] | length' <<< "$fresh_rows")
+          if [ "$new_prior" -gt 0 ]; then
+            echo "::notice::WORKER_ATTEMPT_ALREADY_ADMITTED: $INCIDENT"; exit 0;
+          fi
+          prior_ids=$(jq -c '[.[].databaseId]' <<< "$fresh_rows")
+          # The current provider worker still independently owns all execution
+          # guards, quotas and remote-writer reconciliation.
+          gh workflow run "$worker" -R "$GITHUB_REPOSITORY" \
+            --ref main -f target_incident="$INCIDENT" -f lease_group=GLOBAL
+          # Keep the mutex until the new run is actually visible in GitHub.
+          # Unseen dispatch is a typed failure, never evidence of success.
+          for observation in 1 2 3 4 5 6; do
+            sleep 2
+            observed=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$worker/runs?per_page=100" \
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {databaseId: .id, displayTitle: .display_title,
+                                     status: .status}]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end')
+            observed_new=$(jq --argjson prior "$prior_ids" --arg n "$INCIDENT" \
+              '[.[] | . as $run | select(($prior | index($run.databaseId)) == null) | select(($run.displayTitle // "") | test("(^|\\s)incident=" + $n + "(\\s|$)"))] | length' <<< "$observed")
+            if [ "$observed_new" -eq 1 ]; then
+              echo "Observed one new $worker run for issue #$INCIDENT; production repair remains unverified." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if [ "$observed_new" -gt 1 ]; then
+              echo "::error::DUPLICATE_DISPATCH_OBSERVED"; exit 2;
+            fi
+          done
+          echo "::error::DISPATCH_NOT_OBSERVED"; exit 2

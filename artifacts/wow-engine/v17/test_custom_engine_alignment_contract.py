@@ -111,6 +111,7 @@ def test_render_deployment_pointer_is_governed_by_typed_exact_receipts():
         "STALE_SHA_NO_DEPLOY",
         "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+        "PRODUCTION_RELEASE_HOLD",
     }
     assert pointer["green_workflow_alone_advances_pointer"] is False
     assert pointer["direct_protected_main_mutation"] is False

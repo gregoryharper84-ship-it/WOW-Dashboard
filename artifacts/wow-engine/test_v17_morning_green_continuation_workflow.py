@@ -55,12 +55,12 @@ def test_scope_rejection_is_machine_readable_not_a_failed_workflow_step():
     assert "SCOPE_APPROVED: ${{ steps.scope.outputs.approved }}" in text
 
 
-def test_bot_merge_explicitly_resumes_main_required_checks():
+def test_bot_merge_resumes_main_checks_without_direct_deploy_dispatch():
     text = _text()
     assert "actions: write" in text
     assert "gh workflow run wow-engine-verify.yml" in text
     assert "gh workflow run wow-verify.yml" in text
-    assert "gh workflow run wow-v17-render-production-deploy.yml" in text
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in text
     assert "steps.merge.outcome == 'success'" in text
 
 

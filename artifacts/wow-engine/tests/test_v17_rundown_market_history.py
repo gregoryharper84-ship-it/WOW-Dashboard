@@ -228,7 +228,6 @@ def test_reference_backlog_failure_for_one_sport_does_not_block_others(monkeypat
     monkeypatch.setattr(history, "materialize_captured_references", flaky)
     assert history.materialize_reference_backlog(object(), now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc)) == 2
 
-
 def test_no_open_or_close_from_quote_first_seen_after_event_start():
     """Even an old provider-updated timestamp is not a historical observation."""
     late = _row(key="late", odds=-170, updated="2026-09-24T17:00:00Z")
