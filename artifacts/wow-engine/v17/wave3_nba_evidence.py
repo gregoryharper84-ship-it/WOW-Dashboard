@@ -290,6 +290,39 @@ def verify_nba_lineup_evidence(
         else:
             freshness = verify_nba_lineup_freshness(str(feature_ts), lineup_evidence)
             blockers.extend(freshness["blockers"])
+    corroboration = lineup_evidence.get("corroboration")
+    if not isinstance(corroboration, Mapping) or not corroboration:
+        blockers.append("NBA_LINEUP_CORROBORATION_MISSING")
+    else:
+        corroborating_source = corroboration.get("source_id")
+        if not _is_official_id(corroborating_source):
+            blockers.append("NBA_LINEUP_CORROBORATION_SOURCE_MISSING")
+        elif (
+            isinstance(lineup_evidence.get("source_id"), str)
+            and str(corroborating_source).strip().lower()
+            == str(lineup_evidence.get("source_id")).strip().lower()
+        ):
+            blockers.append("NBA_LINEUP_CORROBORATION_NOT_INDEPENDENT")
+        try:
+            corroborated_as_of = _parse_utc(str(corroboration.get("evidence_as_of")))
+            corroboration_ok = True
+        except (ValueError, TypeError, AttributeError):
+            blockers.append("NBA_LINEUP_CORROBORATION_TIME_INVALID")
+            corroboration_ok = False
+        if corroboration_ok:
+            try:
+                tipoff = _parse_utc(str(tipoff_ts))
+                snapshot = _parse_utc(str(source_snapshot_ts))
+                if corroborated_as_of > tipoff:
+                    blockers.append("NBA_LINEUP_AS_OF_AFTER_LOCK")
+                if corroborated_as_of < snapshot:
+                    blockers.append("NBA_LINEUP_AS_OF_BEFORE_SOURCE_SNAPSHOT")
+            except (ValueError, TypeError, AttributeError):
+                blockers.append("NBA_PRELOCK_LINEAGE_REQUIRED")
+        if bool(corroboration.get("rotation_changed", False)) != bool(
+            lineup_evidence.get("rotation_changed", False)
+        ):
+            blockers.append("NBA_LINEUP_CORROBORATION_CONFLICT")
     return {"ok": not blockers, "blockers": blockers}
 
 
@@ -346,6 +379,88 @@ def verify_nba_bounds_authority(
     return {"ok": not blockers, "blockers": blockers}
 
 
+def verify_nba_id_time_binding(
+    train_ids: Sequence[str],
+    calibration_ids: Sequence[str],
+    holdout_ids: Sequence[str],
+    event_times: Mapping[str, object] | None,
+) -> Mapping[str, object]:
+    """Chronology keyed by official event ID — no positional pairing.
+
+    Parallel ID/time arrays let a caller silently misalign which timestamp
+    belongs to which game. A mapping keyed by event ID makes the binding
+    explicit; every partition ID must be covered exactly once and partition
+    order is derived from the bound times.
+    """
+    blockers: list[str] = []
+    if not isinstance(event_times, Mapping) or not event_times:
+        return {"ok": False, "blockers": ["NBA_EVENT_TIME_BINDING_REQUIRED"]}
+    expected = [str(v) for v in [*train_ids, *calibration_ids, *holdout_ids]]
+    if not expected:
+        blockers.append("NBA_EVENT_IDS_REQUIRED")
+        return {"ok": False, "blockers": blockers}
+    missing = [v for v in expected if v not in event_times]
+    if missing:
+        blockers.append("NBA_EVENT_TIME_BINDING_MISSING")
+    unrelated = sorted(str(k) for k in event_times if str(k) not in set(expected))
+    if unrelated:
+        blockers.append("NBA_EVENT_TIME_UNRELATED_EVENT")
+    parsed: dict[str, datetime] = {}
+    for event_id in expected:
+        if event_id not in event_times:
+            continue
+        try:
+            parsed[event_id] = _parse_utc(str(event_times[event_id]))
+        except (ValueError, TypeError, AttributeError):
+            blockers.append("NBA_EVENT_TIME_INVALID")
+            break
+    if not blockers:
+        train_t = [parsed[v] for v in [str(x) for x in train_ids]]
+        cal_t = [parsed[v] for v in [str(x) for x in calibration_ids]]
+        hold_t = [parsed[v] for v in [str(x) for x in holdout_ids]]
+        if max(train_t) >= min(cal_t):
+            blockers.append("NBA_TRAIN_CALIBRATION_OVERLAP")
+        if max(cal_t) >= min(hold_t):
+            blockers.append("NBA_CALIBRATION_HOLDOUT_OVERLAP")
+        if max(train_t) >= min(hold_t):
+            blockers.append("NBA_TRAIN_HOLDOUT_OVERLAP")
+    return {"ok": not blockers, "blockers": blockers}
+
+
+def verify_nba_per_event_prelock(
+    records: Sequence[Mapping[str, object]],
+    *,
+    feature_ts: str | None,
+) -> Mapping[str, object]:
+    """Every record must prove its own event starts after feature hydration.
+
+    Cohort-wide scalars cannot prove per-event prelock: one late event hides
+    behind an early cohort tipoff. Each orientation record therefore carries
+    its own ``event_start_time``, which must parse and postdate hydration.
+    """
+    blockers: list[str] = []
+    if feature_ts is None:
+        return {"ok": False, "blockers": ["NBA_PRELOCK_LINEAGE_REQUIRED"]}
+    try:
+        feature = _parse_utc(str(feature_ts))
+    except (ValueError, TypeError, AttributeError):
+        return {"ok": False, "blockers": ["NBA_EVENT_TIME_INVALID"]}
+    if not records:
+        return {"ok": False, "blockers": ["NBA_EVENT_ORIENTATION_EVIDENCE_MISSING"]}
+    for record in records:
+        if not isinstance(record, Mapping):
+            blockers.append("NBA_PER_EVENT_PRELOCK_UNPROVEN")
+            continue
+        try:
+            start = _parse_utc(str(record.get("event_start_time")))
+        except (ValueError, TypeError, AttributeError):
+            blockers.append("NBA_PER_EVENT_PRELOCK_UNPROVEN")
+            continue
+        if not start > feature:
+            blockers.append("NBA_PER_EVENT_PRELOCK_UNPROVEN")
+    return {"ok": not blockers, "blockers": blockers}
+
+
 def nba_evidence_preflight(
     *,
     triad: Mapping[str, object],
@@ -363,16 +478,18 @@ def nba_evidence_preflight(
     event_records: Sequence[Mapping[str, object]] | None = None,
     lineup_evidence: Mapping[str, object] | None = None,
     bounds_policy: Mapping[str, object] | None = None,
+    event_times: Mapping[str, object] | None = None,
 ) -> Mapping[str, object]:
     """NBA fitted-evidence preflight. Fail closed; research-only.
 
-    Mandatory evidence for any review-ready decision: official event IDs,
-    orientation records covering every supplied ID, complete prelock lineage
-    timestamps, trusted lineup evidence bound to the cohort, an independent
-    in-force bounds-policy authority, and a recomputable triad binding proof
-    backed by registry/validation/provenance attestations. Omitting any of
-    them is a blocker, not a silent pass; no READY decision ever carries an
-    outstanding blocker.
+        Mandatory evidence for any review-ready decision: official event IDs,
+    orientation records covering every supplied ID, event times keyed by
+    official ID (no positional pairing), per-event prelock starts, complete
+    prelock lineage timestamps, corroborated lineup evidence bound to the
+    cohort, an independent in-force bounds-policy authority, and a
+    recomputable triad binding proof backed by registry/validation/
+    provenance attestations. Omitting any of them is a blocker, not a
+    silent pass; no READY decision ever carries an outstanding blocker.
     """
     blockers: list[str] = []
     triad_verdict = verify_triad(
@@ -424,6 +541,19 @@ def nba_evidence_preflight(
                 [*train_ids, *calibration_ids, *holdout_ids],
             )
             blockers.extend(coverage["blockers"])
+        prelock = verify_nba_per_event_prelock(event_records, feature_ts=feature_ts)
+        blockers.extend(prelock["blockers"])
+    if (
+        train_ids is None
+        or calibration_ids is None
+        or holdout_ids is None
+    ):
+        blockers.append("NBA_EVENT_IDS_REQUIRED")
+    else:
+        binding = verify_nba_id_time_binding(
+            train_ids, calibration_ids, holdout_ids, event_times
+        )
+        blockers.extend(binding["blockers"])
     lineup = verify_nba_lineup_evidence(
         lineup_evidence,
         expected_ids=[
@@ -532,8 +662,10 @@ __all__ = [
     "verify_chronology_disjoint",
     "verify_nba_bounds_authority",
     "verify_nba_event_orientations",
+    "verify_nba_id_time_binding",
     "verify_nba_lineup_evidence",
     "verify_nba_lineup_freshness",
     "verify_nba_orientation_coverage",
+    "verify_nba_per_event_prelock",
     "verify_nba_snapshot_order",
 ]

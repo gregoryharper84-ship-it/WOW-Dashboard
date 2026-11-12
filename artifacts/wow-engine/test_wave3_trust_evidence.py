@@ -81,6 +81,11 @@ def _lineup(ids=("g1", "g2", "g3")) -> dict:
         "official_event_ids": list(ids),
         "source_id": "nba-official-injury-report",
         "evidence_as_of": "2026-01-01T11:00:00Z",
+        "corroboration": {
+            "source_id": "nba-team-pr-wire",
+            "evidence_as_of": "2026-01-01T11:30:00Z",
+            "rotation_changed": False,
+        },
     }
 
 
@@ -110,14 +115,19 @@ def _preflight_kwargs(**overrides):
         "train_ids": ["g1"],
         "calibration_ids": ["g2"],
         "holdout_ids": ["g3"],
-        "source_snapshot_ts": "2026-01-01T10:00:00Z",
-        "feature_ts": "2026-01-01T12:00:00Z",
+        "source_snapshot_ts": "2025-12-31T10:00:00Z",
+        "feature_ts": "2025-12-31T12:00:00Z",
         "tipoff_ts": "2026-01-02T00:00:00Z",
         "event_records": [
-            {"official_event_id": "g1", "home_team_id": "h1", "away_team_id": "a1"},
-            {"official_event_id": "g2", "home_team_id": "h2", "away_team_id": "a2"},
-            {"official_event_id": "g3", "home_team_id": "h3", "away_team_id": "a3"},
+            {"official_event_id": "g1", "home_team_id": "h1", "away_team_id": "a1", "event_start_time": "2026-01-01T00:00:00Z"},
+            {"official_event_id": "g2", "home_team_id": "h2", "away_team_id": "a2", "event_start_time": "2026-02-01T00:00:00Z"},
+            {"official_event_id": "g3", "home_team_id": "h3", "away_team_id": "a3", "event_start_time": "2026-03-01T00:00:00Z"},
         ],
+        "event_times": {
+            "g1": "2026-01-01T00:00:00Z",
+            "g2": "2026-02-01T00:00:00Z",
+            "g3": "2026-03-01T00:00:00Z",
+        },
         "lineup_evidence": _lineup(),
         "bounds_policy": _bounds(),
     }
