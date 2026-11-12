@@ -262,3 +262,17 @@ def test_unobserved_quote_and_future_provider_update_are_held():
     )
     assert refs == []
     assert history.CAN_EXECUTE is False
+
+
+def test_capture_exactly_at_kickoff_cannot_be_claimed_as_pregame_open_or_close():
+    quote = _row(key="start-equal", odds=-110, updated="2026-09-24T18:00:00Z")
+    assert history.derive_captured_reference_rows(
+        [quote], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    ) == []
+
+
+def test_reference_not_materialized_before_its_first_seen_capture_time():
+    future = _row(key="future", odds=-120, updated="2026-09-24T17:30:00Z")
+    assert history.derive_captured_reference_rows(
+        [future], now=datetime(2026, 9, 24, 17, 0, tzinfo=timezone.utc)
+    ) == []
