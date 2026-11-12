@@ -94,7 +94,10 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
             raise SourceCandidateHold("SOURCE_ARCHIVE_LICENSE_MISSING_OR_AMBIGUOUS")
         if not games:
             raise SourceCandidateHold("SOURCE_ARCHIVE_NO_MATCHES")
-        license_bytes = archive.read(licenses[0])
+        try:
+            license_bytes = archive.read(licenses[0])
+        except (RuntimeError, NotImplementedError, zipfile.BadZipFile, EOFError, OSError) as exc:
+            raise SourceCandidateHold("SOURCE_ARCHIVE_LICENSE_READ_FAILED") from exc
         license_text = license_bytes.decode("utf-8", errors="replace").lower()
         if not ("attribution" in license_text and
                 ("open data commons" in license_text or "odc-by" in license_text)):
@@ -111,10 +114,14 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
             selected_match_ids.add(stem)
             try:
                 obj = json.loads(archive.read(member))
-            except (ValueError, UnicodeDecodeError, RuntimeError, zipfile.BadZipFile) as exc:
+            except (ValueError, UnicodeDecodeError, RuntimeError, NotImplementedError,
+                    zipfile.BadZipFile, EOFError, OSError) as exc:
                 raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_JSON_INVALID") from exc
             info = obj.get("info") if isinstance(obj, dict) else None
-            if not isinstance(info, dict) or info.get("match_type") not in {"T20", "IT20"}:
+            if not isinstance(info, dict):
+                raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_TYPE_UNVERIFIED")
+            match_type = info.get("match_type")
+            if not isinstance(match_type, str) or match_type not in {"T20", "IT20"}:
                 raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_TYPE_UNVERIFIED")
             teams = info.get("teams")
             dates = info.get("dates")
@@ -132,11 +139,14 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
             if not isinstance(outcome, dict):
                 raise SourceCandidateHold("SOURCE_ARCHIVE_OUTCOME_MISSING")
             winner = outcome.get("winner")
+            result = outcome.get("result")
+            if "winner" in outcome and "result" in outcome:
+                raise SourceCandidateHold("SOURCE_ARCHIVE_OUTCOME_CONTRADICTORY")
             if winner is not None:
-                if winner not in teams:
+                if not isinstance(winner, str) or winner not in teams:
                     raise SourceCandidateHold("SOURCE_ARCHIVE_SETTLEMENT_TEAM_MISMATCH")
                 settled += 1
-            elif outcome.get("result") in {"tie", "no result", "draw"}:
+            elif isinstance(result, str) and result in {"tie", "no result", "draw"}:
                 tie_or_no_result += 1
             else:
                 raise SourceCandidateHold("SOURCE_ARCHIVE_OUTCOME_UNRESOLVED")
@@ -203,12 +213,26 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raw = acquire_published_t20_archive()
     receipt = audit_t20_archive(raw, expected_sha256=args.expected_sha256)
-    if args.quarantine_archive is not None:
-        with args.quarantine_archive.open("xb") as handle:
-            handle.write(raw)
-    with args.receipt.open("x", encoding="utf-8") as handle:
-        json.dump(receipt, handle, sort_keys=True, indent=2)
-        handle.write("\n")
+    # Reserve receipt first. If a subsequent exclusive archive create/write or
+    # receipt write fails, remove only paths created by this invocation.
+    # Existing files are never replaced, and no unreceipted archive is stranded.
+    created: list[Path] = []
+    try:
+        with args.receipt.open("x", encoding="utf-8") as handle:
+            created.append(args.receipt)
+            if args.quarantine_archive is not None:
+                with args.quarantine_archive.open("xb") as archive_handle:
+                    created.append(args.quarantine_archive)
+                    archive_handle.write(raw)
+            json.dump(receipt, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+    except BaseException:
+        for created_path in reversed(created):
+            try:
+                created_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
     print(json.dumps({"status": receipt["status"], "receipt": str(args.receipt),
                       "can_execute": False}, sort_keys=True))
     return 0
