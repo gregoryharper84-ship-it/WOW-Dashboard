@@ -775,3 +775,18 @@ Older release assets from 2021–2024 have public byte-size metadata but no **pu
 | `NFL_PROP_ROSTER_TWO_READ_DRIFT` | SECURITY | Two consecutive public-source reads differ even though expected size matches; retain HOLD and reject all candidate pairs. | No |
 | `HOLD_HISTORICAL_ROSTER_UNPUBLISHED_DIGEST` | RESEARCH_HOLD | Two matching source reads supply only provisional PFR/GSIS candidate evidence, with no upstream-published digest or independent semantic sign-off. | No |
 | `HOLD_HISTORICAL_ROSTER_SOURCE_UNAVAILABLE` | RESEARCH_HOLD | Source could not be read and validated twice; output failure evidence, never substitute a name/position guessed player identity. | No |
+
+
+## Offline FTN 2025 offensive play-participation research (2026-11-12)
+
+Owned by NFL_PROP_SOURCE_RESEARCH on C-class PR #2605 only. Source: **FTN Data via nflverse**, CC-BY-SA-4.0; file pbp_participation_2025.csv, 49,094,943 bytes, official SHA-256 59069adfee7b0f464befba8a5e8be331e523633cc6a7ab403d37bcbcdfbe66ac. No stat zero or settled target is established by offensive-player presence/absence; no fitting, rank or production grant.
+
+| Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE | TRANSIENT | Approved public release could not be reached; preserve HOLD; bounded retry only for transient failure. | No |
+| NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED | SECURITY | Download endpoint resolved outside official HTTPS release hosts; refuse content. | No |
+| NFL_PROP_FTN_PARTICIPATION_DIGEST_MISMATCH | SOURCE | Size or SHA-256 differs from published 2025 FTN asset; reject before parsing; never re-pin automatically. | No |
+| NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID | INPUT | Required game/play/offense-list invalid, missing, ambiguous, malformed GSIS IDs, or empty source; no inferred zero. | No |
+| HOLD_FTN_OFFENSE_PRESENCE_RESEARCH_ONLY | RESEARCH_HOLD | Exact GSIS player-on-play is not an exact count-target settlement or license approval. | No |
+| HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY | RESEARCH_HOLD | Source/crosswalk reconciliation incomplete; preserve unknown labels and no inferred ID. | No |
+| HOLD_FTN_OFFENSE_PRESENCE_ONLY | RESEARCH_HOLD | Observational 2025 comparison unapproved for model training or fitted certification. | No |

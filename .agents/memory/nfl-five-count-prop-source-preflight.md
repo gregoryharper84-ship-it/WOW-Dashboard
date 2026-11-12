@@ -351,3 +351,16 @@
 - **links:** https://github.com/nflverse/nflverse-pbp/blob/master/R/update_stats.R ; https://github.com/nflverse/nflfastR/blob/f367d0a4ba7d3a472351865467eba3a9c53a14f6/R/calculate_stats.R ; https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **independent_review_pending:** nflverse-players upstream PFR mapping is name-based with internal unknown-rights input and its manual override file does not list any of the four missing PFR IDs; not an approved substitute. Rights, identity, player participation and 2025 holdout labels remain unresolved.
 - **production_evidence:** none; can_execute=false, terminal=V17_TERMINAL_REDUCER, no new model certification or source rights clearance.
+
+
+## Verified FTN 2025 player-on-play source alternative — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** HOLD_FTN_OFFENSE_PRESENCE_ONLY; input errors registered in docs/failure_codes.md.
+- **mechanism:** PBP ball actor fields identify only credited passing/rushing/receiving events. FTN via nflverse participation lists GSIS IDs on offensive plays. On-field evidence can identify a narrower missing weekly-stat coverage class, but cannot prove absent count values are zero.
+- **detection_point:** 2025 source-observation reconciliation, before any model label, calibration or source identity promotion.
+- **fix:** SHA-256/size-pinned FTN file reader in existing PBP research audit with CC-BY-SA-4.0 attribution, source schema and HTTPS-host validation. PR #2605 rapid-run-only research compares verified 2025 weekly stats, snap counts and replacement players shadow against exact on-field play participation. No new production workflow, collector, source registry, zero imputation, model or threshold.
+- **prevention_artifact:** tests/test_nfl_count_prop_pbp_presence.py synthetic digest, malformed game/role, redirect and identity-negative tests; tests/test_acquire_nfl_count_prop_sources.py PR-scoped pinned-source observation. CI and actual data outcome UNVERIFIED at entry.
+- **source/license:** https://github.com/nflverse/nflverse-data/releases/tag/pbp_participation ; https://nflreadr.nflverse.com/reference/load_participation.html ; CC-BY-SA-4.0 FTN Data via nflverse; 2025 published digest 59069adfee7b0f464befba8a5e8be331e523633cc6a7ab403d37bcbcdfbe66ac. Independent data adaptation/training rights signoff still required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** Not verified; source research only, can_execute=false, V17_TERMINAL_REDUCER.
