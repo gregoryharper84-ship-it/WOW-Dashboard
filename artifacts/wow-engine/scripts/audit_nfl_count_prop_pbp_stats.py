@@ -34,6 +34,16 @@ SOURCE_ROLES = {
 }
 
 
+def add_quality_totals(
+    total: dict[str, dict[str, int]], observed: dict[str, dict[str, int]],
+) -> None:
+    """Accumulate every verified quality dimension without a fixed-key schema."""
+    for dimension, metrics in observed.items():
+        bucket = total.setdefault(dimension, {})
+        for metric, count in metrics.items():
+            bucket[metric] = bucket.get(metric, 0) + int(count)
+
+
 def read_pinned_pbp_signals(
     path: Path, season: int,
 ) -> tuple[dict[str, Counter], set[str], dict[str, int]]:

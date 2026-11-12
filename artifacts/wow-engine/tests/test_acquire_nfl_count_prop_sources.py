@@ -282,7 +282,7 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     if note.get("pbp_status") == "HOLD_PBP_PRESENCE_ONLY":
         from audit_nfl_count_prop_pbp_stats import (
             read_pinned_pbp_signals, compare_weekly_source_to_pbp_signals,
-            SOURCE_ROLES,
+            add_quality_totals, SOURCE_ROLES,
         )
         from collections import Counter
         candidates = {name: Counter() for name in SOURCE_ROLES}
@@ -295,10 +295,7 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
                 for name in SOURCE_ROLES:
                     candidates[name].update(year_signals[name])
                 stat_games.update(year_games)
-                for dimension, values in issues.items():
-                    for field, count in values.items():
-                        aggregate = source_issues[dimension]
-                        aggregate[field] = aggregate.get(field, 0) + count
+                add_quality_totals(source_issues, issues)
             fidelity = compare_weekly_source_to_pbp_signals(
                 stats, candidates, stat_games,
             )

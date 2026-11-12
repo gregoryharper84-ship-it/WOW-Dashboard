@@ -152,3 +152,20 @@ def test_negative_weekly_count_rejected():
             weekly, {name: Counter() for name in mod.SOURCE_ROLES},
             {"2024_01_BAL_KC"},
         )
+
+
+def test_quality_aggregation_retains_new_administrative_play_dimensions():
+    """Regression: real source receipt must not HOLD on new quality keys."""
+    aggregate = {"flag_nulls": {}, "unattributed": {}}
+    mod.add_quality_totals(aggregate, {
+        "flag_nulls": {"pass_attempt": 0},
+        "administrative_play_rows": {"qb_spike_rows": 1, "qb_kneel_rows": 2},
+    })
+    mod.add_quality_totals(aggregate, {
+        "administrative_play_rows": {"qb_spike_rows": 4, "qb_kneel_rows": 3},
+        "unattributed": {"targets": 2},
+    })
+    assert aggregate["administrative_play_rows"] == {
+        "qb_spike_rows": 5, "qb_kneel_rows": 5,
+    }
+    assert aggregate["unattributed"]["targets"] == 2

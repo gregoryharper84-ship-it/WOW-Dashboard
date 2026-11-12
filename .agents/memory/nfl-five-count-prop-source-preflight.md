@@ -161,3 +161,14 @@
 - **prevention_artifact:** tests/test_nfl_count_prop_pbp_stats.py synthetic QB spike/kneel positive regressions, plus existing exact-head hosted real-source skip comparison. Not a model or settlement rule certification.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; source-research only, can_execute=false and V17_TERMINAL_REDUCER.
+
+## Source-quality diagnostic dimension registration failure (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_PBP_STAT_EVIDENCE_INCOMPLETE
+- **mechanism:** Exact-head hosted rapid run 43126220596 passed 690 tests and verified all 16 PBP/original assets, but PBP source comparison returned `KeyError:'administrative_play_rows'`: newly added spike/kneel evidence keyed a third quality dimension while the receipt aggregator accepted only two. This predicts one missing dictionary key and an otherwise healthy source parse, not model or source unavailability.
+- **detection_point:** First real-source skip receipt after introducing a new diagnostic quality dimension, before comparing administrative-play deltas.
+- **fix:** Aggregate observed quality dimensions dynamically in the existing research receipt, preserving all totals without changing data/label logic.
+- **prevention_artifact:** `test_quality_aggregation_retains_new_administrative_play_dimensions` protects newly observed dimensions across multiple pinned source files; hosted exact-head replay required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None, research-only; can_execute=false, V17_TERMINAL_REDUCER.
