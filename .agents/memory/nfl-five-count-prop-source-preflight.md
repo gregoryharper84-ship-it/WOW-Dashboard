@@ -183,3 +183,14 @@
 - **prevention_artifact:** tests/test_nfl_count_prop_pbp_stats.py actorless flagged and no_play controls, whitespace duplicate, nonnumeric and missing play-type rejection. Hosted exact-head replay pending; no direct probability/threshold changes.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. Research-only P/C; no merge, deploy, certification or execution. can_execute=false; V17_TERMINAL_REDUCER.
+
+## Residual per-stat source forensic receipt and missing-ID quarantine evidence (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED; NFL_PROP_SOURCE_IDENTITY_INVALID
+- **mechanism:** After 345 verified spikes and 2,085 verified kneels restored the correct candidate counting semantics, two positive weekly source rows still diverged by exactly one event: 2025_02_SEA_PIT QB passer `00-0023459` attempts 33 vs PBP candidate 32, and 2024_15_MIA_HOU rusher `00-0033854` carries 1 vs PBP 0. Their cause cannot be inferred from aggregate parity. Separately, the trainer quarantines source rows with absent IDs; the exact per-year real-source exception count must be visible before a nonauthor semantic reviewer can assess it.
+- **detection_point:** Real pinned PBP-vs-weekly six-count comparison and CodeRabbit source-identity review, before offline label reconstruction.
+- **fix:** Add a bounded read-only exact-event review for the two residuals, recording original play-type distributions and excluded flagged candidate plays without replacing missing events. Publish frozen source unattributed-identity quarantine counts and examples, while explicitly marking independent semantic approval false.
+- **prevention_artifact:** tests/test_nfl_count_prop_pbp_stats.py residual no_play exclusion and unsupported-stat negative checks; existing PR-only official-source receipt. New exact-head hosted validation required.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None, no fitted candidate accepted or production serving route; can_execute=false, V17_TERMINAL_REDUCER.

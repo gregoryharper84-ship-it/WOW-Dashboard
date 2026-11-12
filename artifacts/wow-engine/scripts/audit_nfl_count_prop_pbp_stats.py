@@ -182,6 +182,69 @@ def read_pinned_pbp_signals(
                            "administrative_play_rows": special}
 
 
+def inspect_pinned_residual_actor_plays(
+    path: Path, season: int, game_id: str, player_id: str, stat: str,
+) -> dict[str, object]:
+    """Bounded source-forensics receipt, never a corrected or inferred stat."""
+    if stat not in ("attempts", "carries"):
+        raise ValueError("NFL_PROP_PBP_STAT_COLUMNS_MISSING")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("NFL_PROP_PBP_SOURCE_MISSING:" + str(season))
+    blob = path.read_bytes()
+    if (len(blob) != OFFICIAL_SIZE_BYTES["pbp"][season]
+            or hashlib.sha256(blob).hexdigest() != PBP_GZ_SHA256[season]):
+        raise ValueError("NFL_PROP_PBP_SOURCE_DIGEST_MISMATCH:" + str(season))
+    field = "passer_player_id" if stat == "attempts" else "rusher_player_id"
+    flag = "pass_attempt" if stat == "attempts" else "rush_attempt"
+    types = Counter()
+    flagged = 0
+    excluded = Counter()
+    examples = []
+    columns = ("game_id", "season_type", "play_id", "play_type", field,
+               flag, "sack", "qb_spike", "two_point_attempt")
+    with gzip.GzipFile(fileobj=io.BytesIO(blob)) as source:
+        try:
+            chunks = pd.read_csv(source, usecols=list(dict.fromkeys(columns)),
+                                 dtype=str, chunksize=50000, low_memory=False)
+            for frame in chunks:
+                selected = frame.loc[
+                    frame["season_type"].eq("REG")
+                    & frame["game_id"].astype(str).str.strip().eq(game_id)
+                    & frame[field].astype(str).str.strip().eq(player_id)
+                ]
+                for row in selected.to_dict("records"):
+                    play_type = str(row["play_type"]).strip()
+                    types[play_type] += 1
+                    flagged_play = pd.to_numeric(row[flag], errors="coerce") == 1
+                    if not flagged_play:
+                        continue
+                    flagged += 1
+                    eligible = (play_type in ("pass", "qb_spike")
+                                if stat == "attempts"
+                                else play_type in ("run", "qb_kneel"))
+                    if not eligible:
+                        excluded[play_type] += 1
+                        if len(examples) < 5:
+                            examples.append({
+                                "play_id": str(row["play_id"]),
+                                "play_type": play_type,
+                                "sack": row["sack"],
+                                "qb_spike": row["qb_spike"],
+                                "two_point_attempt": row["two_point_attempt"],
+                            })
+        except (ValueError, OSError, EOFError, pd.errors.ParserError) as exc:
+            raise ValueError("NFL_PROP_PBP_SOURCE_UNREADABLE:" + str(season)) from exc
+    return {
+        "game_id": game_id, "gsis_id": player_id, "stat": stat,
+        "actor_play_type_counts": dict(sorted(types.items())),
+        "actor_flagged_event_rows": flagged,
+        "flagged_unmatched_play_types": dict(sorted(excluded.items())),
+        "flagged_excluded_examples": examples,
+        "status": "HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED",
+        "missing_play_imputed": False, "can_execute": False,
+    }
+
+
 def compare_weekly_source_to_pbp_signals(
     weekly: pd.DataFrame, signals: dict[str, Counter], games: set[str],
 ) -> dict[str, object]:

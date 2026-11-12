@@ -200,3 +200,28 @@ def test_whitespace_equivalent_event_ids_are_rejected_as_duplicates(
     source = _synthetic(tmp_path, monkeypatch, pd.DataFrame(rows))
     with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_DUPLICATE"):
         mod.read_pinned_pbp_signals(source, 2024)
+
+
+def test_residual_play_type_evidence_never_corrects_weekly_counts(
+    tmp_path, monkeypatch,
+):
+    row = _play(play_id=45, play_type="no_play", pass_attempt=1,
+                complete_pass=0)
+    source = _synthetic(tmp_path, monkeypatch, pd.DataFrame([row]))
+    result = mod.inspect_pinned_residual_actor_plays(
+        source, 2024, "2024_01_BAL_KC", "00-0032222", "attempts",
+    )
+    assert result["actor_play_type_counts"] == {"no_play": 1}
+    assert result["actor_flagged_event_rows"] == 1
+    assert result["flagged_unmatched_play_types"] == {"no_play": 1}
+    assert result["status"] == "HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED"
+    assert result["missing_play_imputed"] is False
+    assert result["can_execute"] is False
+
+
+def test_residual_evidence_rejects_unapproved_stat(tmp_path):
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_STAT_COLUMNS_MISSING"):
+        mod.inspect_pinned_residual_actor_plays(
+            tmp_path / "does-not-matter.gz", 2024,
+            "2024_01_BAL_KC", "00-0032222", "passing_tds",
+        )

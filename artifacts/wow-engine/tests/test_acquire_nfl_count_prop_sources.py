@@ -231,6 +231,19 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             "source_bytes_sha_verified": sum(item["size_bytes"] for item in downloaded),
             "source_provenance_hash": provenance.get("bundle_sha256"),
             "participation_status": result["status"],
+            "unattributed_identity_quarantine_count": len(
+                provenance["unattributed_identity_quarantine"]
+            ),
+            "unattributed_identity_quarantine_by_season": {
+                str(year): sum(
+                    row["source_season"] == year
+                    for row in provenance["unattributed_identity_quarantine"]
+                )
+                for year in SEASONS
+            },
+            "source_identity_quarantine_independently_reviewed": False,
+            "unattributed_identity_quarantine_examples":
+                provenance["unattributed_identity_quarantine"][:3],
             "offensive_participant_games": result["offensive_participant_games"],
             "missing_player_games": result["missing_player_games"],
             "unmapped_pfr_player_games": result["unmapped_pfr_player_games"],
@@ -301,6 +314,18 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
             )
             note["pbp_stat_signal_status"] = fidelity["status"]
             note["pbp_stat_signal_comparison"] = fidelity["by_source_stat"]
+            from audit_nfl_count_prop_pbp_stats import (
+                inspect_pinned_residual_actor_plays,
+            )
+            residuals = []
+            for target in ("attempts", "carries"):
+                for example in fidelity["by_source_stat"][target]["examples"][:2]:
+                    season = int(example["game_id"].split("_", 1)[0])
+                    residuals.append(inspect_pinned_residual_actor_plays(
+                        tmp_path / "pbp" / f"play_by_play_{season}.csv.gz",
+                        season, example["game_id"], example["player_id"], target,
+                    ))
+            note["pbp_stat_residual_event_evidence"] = residuals
             note["pbp_stat_flag_quality"] = source_issues
         except (ValueError, OSError, KeyError) as exc:
             note["pbp_stat_signal_status"] = "HOLD_PBP_STAT_EVIDENCE_INCOMPLETE"

@@ -739,3 +739,5 @@ Produced only by `scripts/audit_nfl_count_prop_pbp_stats.py`, owned by WOW_PROP_
 | `NFL_PROP_PBP_STAT_COLUMNS_MISSING` | INPUT | Weekly frozen stats lack declared target/identity fields; reject comparison. | No |
 | `HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT` | RESEARCH_HOLD | Event signal counts have not been independently reconciled to NFL stat/scoring rules or source semantics; no model-certification authority. | No |
 | `HOLD_PBP_STAT_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | Pinned PBP event flags are absent/inconsistent, parsing failed or required identity checks failed; preserve source HOLD. | No |
+
+| `HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED` | RESEARCH_HOLD | A positive weekly count differs from the independently pinned PBP actor event flags. Preserve exact event/play type examples, never manufacture an extra event or correct a stat without independent source authority. | No |
