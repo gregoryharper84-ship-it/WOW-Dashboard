@@ -161,6 +161,76 @@ def load_source_files(
     return validate_frame(pd.concat(frames, ignore_index=True, sort=False)), provenance
 
 
+
+def observe_anonymous_weekly_source_shape(
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    """Describe verified-source anonymous group shape without approving labels.
+
+    The original weekly generator groups by season/week/player_id and may
+    collapse absent player IDs into a single group. A matching shape is not
+    evidence that those rows identify real player-games or have usable labels.
+    This observation cannot activate a source, fitted model or execution.
+    """
+    invalid = "NFL_PROP_SOURCE_IDENTITY_INVALID:anonymous_group_provenance"
+    if not isinstance(provenance, dict) or provenance.get("release_hashes_verified") is not True:
+        raise ValueError(invalid)
+    assets = provenance.get("assets")
+    if not isinstance(assets, dict) or set(assets) != {str(y) for y in SEASONS}:
+        raise ValueError(invalid)
+    for year in SEASONS:
+        asset = assets[str(year)]
+        if (not isinstance(asset, dict)
+                or asset.get("sha256") != EXPECTED_RELEASE_SHA256[str(year)]):
+            raise ValueError(invalid)
+    quarantined = provenance.get("unattributed_identity_quarantine")
+    if not isinstance(quarantined, list):
+        raise ValueError(invalid)
+
+    by_season = {str(y): 0 for y in SEASONS}
+    weeks = {str(y): [] for y in SEASONS}
+    keys = {
+        "source_line", "source_season", "game_id", "week",
+        "position_token", "count_fields_all_zero",
+        "source_identity_unresolved", "audit_sha256",
+    }
+    for row in quarantined:
+        if not isinstance(row, dict) or set(row) != keys:
+            raise ValueError(invalid)
+        evidence = {k: v for k, v in row.items() if k != "audit_sha256"}
+        if row["audit_sha256"] != _json_digest(evidence):
+            raise ValueError(invalid)
+        year, week = row["source_season"], row["week"]
+        if (type(row["source_line"]) is not int or row["source_line"] < 2
+                or type(year) is not int or year not in SEASONS
+                or type(week) is not int or not 1 <= week <= 18
+                or not isinstance(row["position_token"], str)
+                or row["position_token"] in {"QB", "RB", "WR", "TE"}
+                or row["count_fields_all_zero"] is not True
+                or row["source_identity_unresolved"] is not True
+                or not isinstance(row["game_id"], str)
+                or not re.fullmatch(
+                    rf"{year}_{week:02d}_[A-Z0-9]+_[A-Z0-9]+",
+                    row["game_id"],
+                )):
+            raise ValueError(invalid)
+        by_season[str(year)] += 1
+        weeks[str(year)].append(week)
+    shape = all(len(weeks[str(y)]) == 18 and
+                set(weeks[str(y)]) == set(range(1, 19)) for y in SEASONS)
+    return {
+        "status": "HOLD_ANONYMOUS_WEEKLY_SOURCE_SEMANTICS",
+        "unattributed_rows": len(quarantined),
+        "by_season": by_season,
+        "one_unattributed_group_per_week_shape": shape,
+        "source_generator_equivalence_proven": False,
+        "individual_player_outcomes_verified": False,
+        "source_rights_independently_approved": False,
+        "fitted_training_authorized": False,
+        "can_execute": False,
+    }
+
+
 def validate_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """Never turn a missing/nonfinite real stat into an observed zero."""
     missing = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
