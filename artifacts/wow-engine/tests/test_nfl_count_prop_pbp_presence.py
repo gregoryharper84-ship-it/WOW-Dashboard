@@ -110,6 +110,9 @@ def test_pbp_truncated_compressed_input_rejects_after_hash(tmp_path, monkeypatch
 @pytest.mark.parametrize("change,expected", [
     ({"week": 19}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:2024:week"),
     ({"season": 2023}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:2024:season"),
+    ({"week": 2}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:2024:game_id"),
+    ({"game_id": "2024_02_BAL_KC"}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:2024:game_id"),
+    ({"game_id": "2023_01_BAL_KC"}, "NFL_PROP_PBP_EVENT_SCHEMA_INVALID:2024:game_id"),
 ])
 def test_pbp_bad_scope_is_fail_closed(tmp_path, monkeypatch, change, expected):
     path = _verified_synthetic_gzip(tmp_path, monkeypatch, _pbp_rows(**change))
@@ -204,3 +207,20 @@ def test_invalid_positive_opportunity_count_rejects_without_zero_imputation(sour
         mod.classify_missing_pbp_presence(
             stats, snaps, players, {"2024_01_BAL_KC"}, set(),
         )
+
+
+def test_pbp_all_zero_weekly_opportunities_do_not_prove_identity_alignment(source_cohort):
+    """Zero-opportunity actor presence must not activate the positive control."""
+    stats, snaps, players = source_cohort
+    stats = stats.copy()
+    stats[["attempts", "targets", "carries"]] = 0
+    game = "2024_01_BAL_KC"
+    result = mod.classify_missing_pbp_presence(
+        stats, snaps, players, {game}, {(game, "00-0032222")},
+    )
+    assert result["pbp_matched_positive_control"]["pbp_actor_observed"] == 1
+    assert result["pbp_positive_opportunity_control"]["pbp_actor_observed"] == 0
+    assert result["pbp_actor_id_alignment_observed"] is False
+    assert result["status"] == "HOLD_PBP_PRESENCE_ONLY"
+    assert result["missing_actor_means_zero"] is False
+    assert result["can_execute"] is False

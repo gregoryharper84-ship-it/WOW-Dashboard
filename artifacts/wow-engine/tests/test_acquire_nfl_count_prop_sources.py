@@ -254,11 +254,13 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
     try:
         for relative, digest, size in pbp_assets():
             receipt = acquire_one(relative, digest, size, tmp_path, timeout=20)
+            # Acquired and SHA-verified bytes remain proven if the parser
+            # subsequently rejects this archived event schema.
+            pbp_receipts.append(receipt)
             season = int(relative.split("_")[-1].split(".")[0])
             games, actors = read_verified_pbp_presence(tmp_path / relative, season)
             pbp_games.update(games)
             pbp_actors.update(actors)
-            pbp_receipts.append(receipt)
         pbp_result = classify_missing_pbp_presence(
             stats, snaps, players, pbp_games, pbp_actors,
         )

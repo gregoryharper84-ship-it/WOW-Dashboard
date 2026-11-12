@@ -85,6 +85,18 @@ def read_verified_pbp_presence(
                 if (week.isna().any() or not week.between(1, 18).all()
                         or (week % 1 != 0).any()):
                     raise ValueError(f"NFL_PROP_PBP_EVENT_SCHEMA_INVALID:{season}:week")
+                # A game identity must refer to the same season/week as
+                # its own event row; a bare game_id join otherwise mislabels
+                # a different week's player as observed.
+                parsed = regular["game_id"].astype(str).str.strip().str.extract(
+                    r"^(20[0-9]{2})_([0-9]{2})_[A-Z0-9]+_[A-Z0-9]+$"
+                )
+                if (parsed.isna().any().any()
+                        or not parsed[0].eq(str(season)).all()
+                        or not pd.to_numeric(parsed[1], errors="coerce").eq(week).all()):
+                    raise ValueError(
+                        f"NFL_PROP_PBP_EVENT_SCHEMA_INVALID:{season}:game_id"
+                    )
                 games.update(regular["game_id"].astype(str).str.strip())
                 for field in ACTOR_FIELDS:
                     pairs = regular.loc[
@@ -219,7 +231,10 @@ def classify_missing_pbp_presence(
         "pbp_presence_counts": counts,
         "pbp_matched_positive_control": control,
         "pbp_positive_opportunity_control": positive_control,
-        "pbp_actor_id_alignment_observed": control["pbp_actor_observed"] > 0,
+        "pbp_actor_id_alignment_observed": (
+            positive_control is not None
+            and positive_control["pbp_actor_observed"] > 0
+        ),
         "pbp_examples": examples,
         "missing_actor_means_zero": False,
         "fitted_specialist_certified": False,
@@ -247,9 +262,8 @@ def analyze_source_root(root: Path, *, download_pbp: bool = False) -> dict[str, 
         if download_pbp:
             receipts.append(acquire_one(relative, digest, size, root, timeout=20))
         else:
-            # Same digest, size, symlink and content checks as the downloader.
-            from acquire_nfl_count_prop_sources import verify_file
-            verify_file(root / relative, digest, size)
+            # The parser performs the original PBP-specific symlink, SHA and
+            # byte-size validation itself; don't mask it with acquisition codes.
             receipts.append({"file": relative, "sha256": digest, "size_bytes": size})
         year = int(relative.split("_")[-1].split(".")[0])
         one_games, one_actors = read_verified_pbp_presence(root / relative, year)

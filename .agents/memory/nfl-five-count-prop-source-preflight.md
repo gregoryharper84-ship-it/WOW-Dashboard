@@ -128,3 +128,14 @@
 - **prevention_artifact:** scripts/audit_nfl_count_prop_pbp_presence.py, tests/test_nfl_count_prop_pbp_presence.py negative/positive controls, existing PR-only source receipt, exact-head hosted replay pending.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; no specialist certified, registry activated, or protected merge/deploy. can_execute=false and V17_TERMINAL_REDUCER.
+
+## PBP source semantics: exact event identity and receipt precision (2026-11-11)
+
+- **date:** 2026-11-11
+- **typed_reason:** NFL_PROP_PBP_EVENT_SCHEMA_INVALID; NFL_PROP_PBP_SOURCE_MISSING; NFL_PROP_PBP_SOURCE_DIGEST_MISMATCH; HOLD_PBP_EVIDENCE_INCOMPLETE
+- **mechanism:** In the first PBP verification, game IDs were joined without requiring the embedded season/week to agree with the row; a mismatched week could create a false actor match. A duplicate default-path verification helper emitted generic acquisition codes before PBP-specific source failures. A successful download followed by schema rejection understated already-verified bytes. Finally, all-zero weekly-stat players could set the observed actor-ID alignment flag without positive modeled opportunities.
+- **detection_point:** CodeRabbit exact-head source review, before treating an absent actor as source evidence or sharing a PBP hold receipt.
+- **fix:** Require the event game_id season/week to equal row season/week before adding actor evidence; rely on the parser's existing independent digest/symlink checks on default path; record the acquired digest receipt before parsing; require a confirmed positive-opportunity actor for an alignment-observed status.
+- **prevention_artifact:** tests/test_nfl_count_prop_pbp_presence.py mismatched week/game ID and all-zero opportunity negatives; test_acquire_nfl_count_prop_sources.py PR-only receipt. Hosted CI at next exact head required, no new workflow.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None, all outcomes research-only. can_execute=false, V17_TERMINAL_REDUCER.
