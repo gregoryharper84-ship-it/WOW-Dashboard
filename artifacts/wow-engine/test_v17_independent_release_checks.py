@@ -2275,3 +2275,89 @@ def test_real_gather_includes_pr_body_for_required_incident_gate():
     routes[f"repos/{REPO}/pulls/7"][1]["body"] = "Parent: #1688"
     bad = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
     assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(bad)
+
+
+
+# --- Lean V5: isolate optional main-scoped admission failures from deployment ---
+@pytest.mark.parametrize(
+    ("workflow_path", "job_name", "target_step", "hold_step"),
+    [
+        (QA_WF, "qa", "Resolve one exact-head QA target",
+         "Preserve automatic QA target resolution HOLD"),
+        (REL_WF, "admit-release", "Resolve authenticated exact-PR release lane",
+         "Preserve automatic Release target admission HOLD"),
+    ],
+)
+def test_automatic_main_callback_is_nonblocking_only_on_workflow_run(
+    workflow_path, job_name, target_step, hold_step
+):
+    """A failed source read never generates a fake required App check.
+
+    Manual exact-head dispatch remains a hard failure; automatic workflow_run
+    source-read failures remain a typed HOLD but cannot poison main checksPass.
+    """
+    workflow = yaml.load(workflow_path.read_text(), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"][job_name]["steps"]}
+    admission = steps[target_step]
+    assert admission["continue-on-error"] == "${{ github.event_name == 'workflow_run' }}"
+    assert admission["id"] == "target"
+    typed_hold = steps[hold_step]
+    assert typed_hold["if"] == (
+        "always() && github.event_name == 'workflow_run' && "
+        "steps.target.outcome == 'failure'"
+    )
+    assert "no exact-head" in typed_hold["run"]
+    assert "can_execute=false" in typed_hold["run"]
+    if job_name == "qa":
+        assert steps["Mint checks-only App token"]["if"] == (
+            "steps.target.outputs.pr_number != ''"
+        )
+        assert steps["Publish exact-head check"]["if"] == (
+            "always() && steps.target.outputs.pr_number != ''"
+        )
+    else:
+        assert "applicable=false" in admission["run"]
+        release = workflow["jobs"]["release"]
+        assert release["needs"] == "admit-release"
+        assert "needs.admit-release.outputs.applicable == 'true'" in release["if"]
+
+
+def test_qa_workflow_run_pr_403_is_hold_without_app_check(fake_gh):
+    # Source GitHub 403 must not be treated as proof the event was irrelevant
+    # or converted into QA_PASS. The step fails, the main-scoped observer
+    # handles it, and the exact-head required QA App check remains absent.
+    pr_source = json.dumps([
+        {"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}
+    ])
+    (fake_gh / "routes.json").write_text(
+        json.dumps({f"repos/{REPO}/pulls/7": [403, {"message": "Forbidden"}]})
+    )
+    out = fake_gh / "out"
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT,
+        env=dict(
+            os.environ,
+            PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+            FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+            GITHUB_REPOSITORY=REPO,
+            GITHUB_OUTPUT=str(out),
+            GH_TOKEN="read-only",
+            EVENT="workflow_run",
+            INPUT_PR="",
+            INPUT_HEAD_SHA="",
+            WR_PRS=pr_source,
+        ),
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "QA_TARGETS_UNRESOLVED" in proc.stdout
+    assert "TARGET_PR_UNREADABLE" in proc.stdout
+    assert not out.exists() or "pr_number=" not in out.read_text()
+    assert _qa_target_output_enables_publish("") is False
+    workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
+    resolver = next(
+        step for step in workflow["jobs"]["qa"]["steps"]
+        if step["name"] == "Resolve one exact-head QA target"
+    )
+    assert resolver["continue-on-error"] == "${{ github.event_name == 'workflow_run' }}"
