@@ -290,3 +290,27 @@ def test_manual_override_unhashable_foreign_pfr_is_typed_schema_hold():
 def test_manual_override_nondict_record_is_rejected():
     with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
         mod.inspect_manual_pfr_overrides([None], ["CartNa00"])
+
+
+def test_two_distinct_pfr_aliases_to_same_gsis_fail_closed():
+    """One GSIS player must not be admitted under two different PFR codes."""
+    roster = pd.DataFrame([
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333", "season": "2025",
+         "position": "RB", "team": "ATL"},
+        {"pfr_id": "WhitCo05", "gsis_id": "00-0033333", "season": "2025",
+         "position": "WR", "team": "ATL"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_CROSSWALK_CONFLICT"):
+        mod.inspect_roster_id_candidates(roster, ["CartNa00", "WhitCo05"])
+
+
+def test_candidate_gsis_collision_with_unrequested_pfr_also_fails_closed():
+    """Unrequested source aliases must not make a target look unambiguous."""
+    roster = pd.DataFrame([
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333", "season": "2025",
+         "position": "RB", "team": "ATL"},
+        {"pfr_id": "Other000", "gsis_id": "00-0033333", "season": "2025",
+         "position": "RB", "team": "ATL"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_CROSSWALK_CONFLICT"):
+        mod.inspect_roster_id_candidates(roster, ["CartNa00"])
