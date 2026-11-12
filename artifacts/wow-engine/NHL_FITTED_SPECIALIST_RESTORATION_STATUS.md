@@ -307,3 +307,5 @@ wired end to end, but NHL certification remains on hold. No probability may be
 published and no event may be ranked as an official winner until an NHL
 certification receipt, a bound-producing calibrator, a complete 2026-27
 settled timeline, and independent review all exist.
+
+<!-- qa-incident-body-reentry 2026-11-12T17:07Z -->
