@@ -227,3 +227,66 @@ def test_historical_roster_direct_inspector_rejects_wrong_season():
         mod.inspect_roster_id_candidates(
             frame, ["WhitCo05"], expected_season=2024,
         )
+
+
+def test_manual_overrides_do_not_establish_absence_for_four_unmapped_ids():
+    targets = ["CartNa00", "ShenJo00", "WhitCo05", "WillRo08"]
+    result = mod.inspect_manual_pfr_overrides(
+        [{"gsis_id": "00-0012345", "pfr_id": "Other00"},
+         {"gsis_id": "00-0088888", "espn_id": "0001"}],
+        targets,
+    )
+    assert result["target_pfr_count"] == 4
+    assert result["target_exact_override_count"] == 0
+    assert all(not x["gsis_candidates"] for x in result["targets"])
+    assert result["manual_overrides_are_not_full_player_universe"] is True
+    assert result["no_exact_override_does_not_prove_no_player"] is True
+    assert result["status"] == "HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW"
+    assert result["candidate_crosswalk_applied"] is False
+    assert result["source_rights_independently_approved"] is False
+    assert result["fitted_specialist_certified"] is False
+    assert result["can_execute"] is False
+
+
+def test_manual_override_exact_id_remains_review_candidate_only():
+    records = [{"pfr_id": "WhitCo05", "gsis_id": "00-0044444"},
+               {"pfr_id": "WhitCo05", "gsis_id": "00-0044444"}]
+    result = mod.inspect_manual_pfr_overrides(records, ["WhitCo05"])
+    assert result["target_exact_override_count"] == 1
+    assert result["targets"][0]["manual_override_rows"] == 2
+    assert result["targets"][0]["gsis_candidates"] == ["00-0044444"]
+    assert result["candidate_crosswalk_applied"] is False
+    assert result["can_execute"] is False
+
+
+def test_manual_override_conflicting_pair_fails_closed():
+    records = [{"pfr_id": "CartNa00", "gsis_id": "00-0001111"},
+               {"pfr_id": "CartNa00", "gsis_id": "00-0002222"}]
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_CROSSWALK_CONFLICT"):
+        mod.inspect_manual_pfr_overrides(records, ["CartNa00"])
+
+
+@pytest.mark.parametrize("invalid", [None, "", "abc", 123])
+def test_manual_override_invalid_target_rejected(invalid):
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_TARGET_INVALID"):
+        mod.inspect_manual_pfr_overrides([], [invalid])
+
+
+@pytest.mark.parametrize("invalid", [None, "", 17, "bad-value", []])
+def test_manual_override_target_gsis_requires_exact_source_identity(invalid):
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_manual_pfr_overrides(
+            [{"pfr_id": "ShenJo00", "gsis_id": invalid}], ["ShenJo00"],
+        )
+
+
+def test_manual_override_unhashable_foreign_pfr_is_typed_schema_hold():
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_manual_pfr_overrides(
+            [{"pfr_id": ["CartNa00"], "gsis_id": "00-0012345"}], ["CartNa00"],
+        )
+
+
+def test_manual_override_nondict_record_is_rejected():
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_manual_pfr_overrides([None], ["CartNa00"])
