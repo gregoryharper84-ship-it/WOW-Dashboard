@@ -111,3 +111,49 @@ def test_required_merge_gates_are_not_blanket_suppressed() -> None:
             assert any(step.get("continue-on-error") is not True for step in steps), (
                 f"{gate}:{job} fully suppresses failures and can no longer gate a merge"
             )
+
+
+def test_keepalive_requires_successful_curl_exit_and_http_status() -> None:
+    """An HTTP 200 with truncated transfer must not emit a false-green receipt."""
+    steps = _workflow("wow-v17-action-origin-keepalive.yml")["jobs"]["keepalive"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Keep V17 Action origin warm")
+    assert 'curl_status=0' in script
+    assert '|| curl_status=$?' in script
+    assert 'if [ "$curl_status" -ne 0 ] || [ "$code" != "200" ]; then' in script
+    assert "ACTION_ORIGIN_KEEPALIVE_UNREACHABLE" in script
+
+
+def test_weather_wake_probe_has_global_deadline_and_fail_receipt() -> None:
+    """Slow trickle responses must not consume the entire bounded job window."""
+    job = _workflow("kalshi-weather-external-wake.yml")["jobs"]["heartbeat"]
+    scripts = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert job["timeout-minutes"] == 8
+    assert "WAKE_HEARTBEAT_DEADLINE_EPOCH" in scripts
+    assert "timeout --signal=TERM --kill-after=5s" in scripts
+    assert "deadline_exceeded=true" in scripts
+    assert "KALSHI_WEATHER_WAKE_PROBE_FAILED" in scripts
+
+
+def test_golden_contract_failure_survives_optional_step_isolation() -> None:
+    """Receipt and summary must disclose the raw pytest failure outcome."""
+    job = _workflow("wow-v17-golden-product-acceptance.yml")["jobs"]["product-acceptance"]
+    steps = job["steps"]
+    contracts = next(step for step in steps if step.get("id") == "contract_tests")
+    assert contracts["continue-on-error"] is True
+    for name in ("Enforce false-green boundary", "Record product-acceptance receipt"):
+        step = next(item for item in steps if item.get("name") == name)
+        assert step["env"]["CONTRACT_TEST_OUTCOME"] == "${{ steps.contract_tests.outcome }}"
+        assert "CONTRACT_TEST_OUTCOME" in step["run"]
+    receipt = next(item["run"] for item in steps if item.get("name") == "Record product-acceptance receipt")
+    assert "contract_tests_outcome:$contract_tests_outcome" in receipt
+
+
+def test_observer_audit_does_not_attribute_postfix_counts_to_base_sha() -> None:
+    text = (
+        ROOT
+        / "artifacts/wow-engine/v17/engineering-fixes"
+        / "AUDIT-2026-11-11-001__main-scoped-check-exposure.md"
+    ).read_text(encoding="utf-8")
+    assert "Post-fix worktree count" in text
+    assert "not** a measurement" in text
+    assert "Historical unisolated-optional-job candidate inventory" in text
