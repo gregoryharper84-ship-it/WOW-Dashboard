@@ -13,8 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from acquire_nfl_count_prop_sources import (
-    ARCHIVE_OBSERVATION, frozen_assets, acquire_one,
-    verify_official_release_metadata, observe_official_archive_metadata,
+    ARCHIVE_OBSERVATION, frozen_assets, acquire_one, _trusted_release_urlopen,
+    RELEASE_HOSTS, verify_official_release_metadata, observe_official_archive_metadata,
 )
 
 
@@ -167,6 +167,56 @@ def test_pr2605_official_archive_is_a_read_only_provenance_observation():
     assert observation["source_bytes_sha256_verified"] is False
     assert observation["probability_publishable"] is False
     assert observation["can_execute"] is False
+
+
+
+@pytest.mark.parametrize("asset", ["players.rds", "pfr_rosters.rds"])
+def test_pr2605_official_archive_bytes_match_pinned_rds(asset):
+    """Verify old official RDS bytes without parsing, exporting or adopting IDs."""
+    import os
+    from urllib.parse import urlparse
+
+    if (os.environ.get("GITHUB_WORKFLOW") != "wow-v17-rapid-repair"
+            or os.environ.get("GITHUB_HEAD_REF")
+            != "engineering/nfl-five-count-candidates-20261111"):
+        pytest.skip("NFL_PROP_ARCHIVE_BYTES_PR2605_OBSERVER_ONLY")
+
+    _, expected_size, expected_sha = ARCHIVE_OBSERVATION["assets"][asset]
+    url = ("https://github.com/nflverse/nflverse-data-archives/releases/download/"
+           "archive-2026-11-05/" + asset)
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "WOW-V17-public-source-research/1.0",
+        "Accept": "application/octet-stream",
+    })
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        with _trusted_release_urlopen(request, timeout=30) as response:
+            final = urlparse(response.geturl())
+            if final.scheme != "https" or final.hostname not in RELEASE_HOSTS:
+                raise ValueError("NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED:archive_rds")
+            for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                count += len(chunk)
+                if count > expected_size:
+                    raise ValueError("NFL_PROP_ACQUIRE_DIGEST_MISMATCH:archive:" + asset)
+                digest.update(chunk)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        pytest.skip("NFL_PROP_ARCHIVE_BYTES_NETWORK_HOLD:" + type(exc).__name__)
+    except ValueError as exc:
+        pytest.skip("NFL_PROP_ARCHIVE_BYTES_SOURCE_HOLD:" + str(exc)[:140])
+    if count != expected_size or digest.hexdigest() != expected_sha:
+        pytest.skip("NFL_PROP_ARCHIVE_BYTES_SOURCE_HOLD:NFL_PROP_ACQUIRE_DIGEST_MISMATCH:"
+                    + asset)
+    print("NFL_PROP_ARCHIVE_BYTES_VERIFIED_RESEARCH_ONLY:"
+          + asset + ":" + str(count) + ":" + expected_sha)
+    assert count == expected_size
+    assert digest.hexdigest() == expected_sha
+    assert all(name != asset for name, _, _ in frozen_assets())
+    # Research-only source evidence, not CSV equivalence, rights or fitting.
+    assert observe_official_archive_metadata(_synthetic_dated_archive_release())[
+        "training_authorized"
+    ] is False
+
 
 def test_good_download_then_verified_existing(tmp_path):
     blob = b"gsis_id,pfr_id\nQ1,P1\n"
