@@ -29,7 +29,7 @@ def fixture(tmp_path):
 
 
 def metrics(**changes):
-    baseline = dict(zip(m._METRICS, (4, 4, 0, 0, 0, 0, 0, 2, 0)))
+    baseline = dict(zip(m._METRICS, (4, 4, 0, 0, 0, 0, 0, 0, 2, 0)))
     baseline.update(changes)
     return baseline
 
@@ -45,7 +45,11 @@ def test_valid_inputs_only_produce_a_non_authorizing_receipt(tmp_path):
     out = m.audit(manifest_path, root, scanner=scanner)
     assert out["status"] == "DATA_PREFLIGHT_PASS_ONLY"
     assert out["metrics"]["quoted_rows"] == 2
-    assert seen == [([str(child)], "NBA", 2025)]
+    assert len(seen) == 1
+    paths, sport, season = seen[0]
+    assert (sport, season) == ("NBA", 2025)
+    assert paths != [str(child)]
+    assert Path(paths[0]).name == "part-00000.parquet"
     for flag in ("training_authorized", "model_fitted", "certification_eligible",
                  "probability_publishable", "can_execute"):
         assert out[flag] is False
@@ -59,6 +63,7 @@ def test_valid_inputs_only_produce_a_non_authorizing_receipt(tmp_path):
     {"missing_feature_time": 1},
     {"features_after_start": 1},
     {"invalid_quote_time": 1},
+    {"invalid_market_flag": 1},
 ])
 def test_fail_closed_for_duplicate_identity_or_point_in_time_leak(tmp_path, mutated):
     root, _, manifest_path, _ = fixture(tmp_path)
@@ -157,6 +162,7 @@ def test_real_duckdb_parquet_scan_when_research_dependency_present(tmp_path, fut
                   2025::INTEGER AS season, 'nba-1' AS observation_id,
                   'game-1' AS event_id, 1730000000::BIGINT AS event_start_epoch,
                   ?::BIGINT AS feature_available_epoch,
+                  TRUE::BOOLEAN AS is_market_observation,
                   1729999000::BIGINT AS quote_captured_epoch""", [feature_epoch])
         con.execute(f"COPY frozen TO '{parquet}' (FORMAT PARQUET)")
     finally:
@@ -186,3 +192,77 @@ def test_source_mutated_between_hash_check_and_scan_fails_closed(tmp_path):
 
     with pytest.raises(m.PreflightHold, match="COLUMNAR_SOURCE_HASH_MISMATCH"):
         m.audit(manifest_path, root, scanner=malicious_or_racing_scan)
+
+
+@pytest.mark.parametrize("char", ["*", "?", "[", "]"])
+def test_globacters_are_rejected_before_any_scan(tmp_path, char):
+    root, _, manifest_path, manifest = fixture(tmp_path)
+    manifest["files"][0]["path"] = f"rows{char}.parquet"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_MANIFEST_INVALID"):
+        m.audit(manifest_path, root, scanner=lambda *_: metrics())
+
+
+def test_temporary_source_change_and_restore_cannot_taint_snapshot(tmp_path):
+    root, child, manifest_path, _ = fixture(tmp_path)
+    frozen = child.read_bytes()
+
+    def scan_pinned_bytes(paths, *_):
+        assert paths != [str(child)]
+        assert Path(paths[0]).read_bytes() == frozen
+        child.write_bytes(b"out-of-snapshot mutation")
+        assert Path(paths[0]).read_bytes() == frozen
+        child.write_bytes(frozen)
+        return metrics()
+
+    result = m.audit(manifest_path, root, scanner=scan_pinned_bytes)
+    assert result["status"] == "DATA_PREFLIGHT_PASS_ONLY"
+    assert result["can_execute"] is False
+
+
+def test_snapshot_integrity_failure_is_not_reported_as_pass(tmp_path):
+    root, _, manifest_path, _ = fixture(tmp_path)
+
+    def corrupt_snapshot(paths, *_):
+        path = Path(paths[0])
+        path.chmod(0o600)
+        path.write_bytes(b"mutated private source")
+        return metrics()
+
+    with pytest.raises(m.PreflightHold, match="COLUMNAR_SOURCE_HASH_MISMATCH"):
+        m.audit(manifest_path, root, scanner=corrupt_snapshot)
+
+
+@pytest.mark.parametrize("is_market,quote_epoch,holds", [
+    (True, "NULL::BIGINT", True),
+    (False, "NULL::BIGINT", False),
+    (True, "1729999000::BIGINT", False),
+])
+def test_market_quote_times_are_required_only_for_market_rows(tmp_path, is_market, quote_epoch, holds):
+    duckdb = pytest.importorskip("duckdb")
+    root = tmp_path / "corpus"
+    root.mkdir()
+    parquet = root / "NBA.parquet"
+    con = duckdb.connect(database=":memory:")
+    try:
+        flag = "TRUE" if is_market else "FALSE"
+        con.execute(f"""CREATE TABLE facts AS SELECT
+            'NBA' AS sport, 2025::INTEGER AS season, 'obs-1' AS observation_id,
+            'game-1' AS event_id, 1730000000::BIGINT AS event_start_epoch,
+            1729999900::BIGINT AS feature_available_epoch,
+            {flag}::BOOLEAN AS is_market_observation,
+            {quote_epoch} AS quote_captured_epoch""")
+        con.execute(f"COPY facts TO '{parquet}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    manifest = {"schema": m.SCHEMA, "can_execute": False,
+                "dataset_id": "nba_frozen", "sport": "NBA", "season": 2025,
+                "files": [{"path": parquet.name,
+                           "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest()}]}
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    if holds:
+        with pytest.raises(m.PreflightHold, match="COLUMNAR_INTEGRITY_HOLD"):
+            m.audit(manifest_path, root)
+    else:
+        assert m.audit(manifest_path, root)["status"] == "DATA_PREFLIGHT_PASS_ONLY"
