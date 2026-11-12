@@ -341,3 +341,22 @@ def test_reused_pregame_receipt_across_different_games_blocks_both():
     r = audit([event(), event('NBA', 'b')], [a, b])
     assert r['card_complete'] is False
     assert all('PREGAME_RECEIPT_UNVERIFIED_OR_REUSED' in x['blockers'] for x in r['rows'])
+
+
+@pytest.mark.parametrize('flag,bad', [
+    ('deciding_match_tiebreak', 1), ('deciding_match_tiebreak', 'true'),
+    ('deciding_match_tiebreak', None),
+])
+def test_invalid_tennis_exception_flag_is_held(flag, bad):
+    f = final('TENNIS', home_games=14, away_games=10, **{flag: bad})
+    r = audit([event('TENNIS')], [pick('TENNIS', line=-1.5)], [f])
+    assert r['rows'][0]['grade_status'] == 'HELD'
+    assert 'EXCEPTION_FORMAT_FLAG_INVALID' in r['rows'][0]['blockers']
+
+
+@pytest.mark.parametrize('bad', [1, 'true', None])
+def test_invalid_mlb_shortened_flag_is_held(bad):
+    f = final('MLB', hs=5, aws=2, shortened_game=bad)
+    r = audit([event('MLB')], [pick('MLB', line=-1.5)], [f])
+    assert r['rows'][0]['grade_status'] == 'HELD'
+    assert 'EXCEPTION_FORMAT_FLAG_INVALID' in r['rows'][0]['blockers']
