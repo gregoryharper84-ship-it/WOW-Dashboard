@@ -165,3 +165,11 @@ def test_installer_respects_kill_switch(monkeypatch):
 def test_grader_defaults_to_free_espn_close_source(monkeypatch):
     monkeypatch.delenv("WOW_CLOSING_LINE_PROVIDER", raising=False)
     assert grading.close_provider() == "ESPN"
+
+
+def test_espn_automatic_collection_is_off_unless_explicitly_opted_in(monkeypatch):
+    """No permission or license is inferred from free public endpoint access."""
+    monkeypatch.delenv("WOW_ESPN_MARKET_HISTORY_ENABLED", raising=False)
+    assert espn_history.enabled() is False
+    monkeypatch.setenv("WOW_ESPN_MARKET_HISTORY_ENABLED", "true")
+    assert espn_history.enabled() is True

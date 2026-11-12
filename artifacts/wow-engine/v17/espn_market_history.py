@@ -33,7 +33,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def enabled() -> bool:
-    return os.getenv("WOW_ESPN_MARKET_HISTORY_ENABLED", "true").strip().lower() == "true"
+    return os.getenv("WOW_ESPN_MARKET_HISTORY_ENABLED", "false").strip().lower() == "true"
 
 
 def interval_seconds() -> int:
