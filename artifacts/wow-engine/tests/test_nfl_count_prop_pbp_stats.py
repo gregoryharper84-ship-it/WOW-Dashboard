@@ -356,3 +356,24 @@ def test_held_sample_rejects_missing_pbp_game():
     signals = {name: Counter() for name in mod.SOURCE_ROLES}
     with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_SCHEMA_INVALID:review_game_absent"):
         mod.summarize_held_sample_event_signals(sample, signals, set())
+
+
+@pytest.mark.parametrize("metadata", [
+    {"season": 2024, "week": 3},
+    {"season": 2025, "week": 4},
+    {"season": 2025, "week": True},
+    {"season": 2025, "week": 19},
+])
+def test_held_sample_rejects_conflicting_event_metadata(metadata):
+    """A correct-looking game ID cannot conceal contradictory sample metadata."""
+    from collections import Counter
+    sample = [{
+        "game_id": "2025_03_NYJ_TB", "gsis_id": "00-0038129",
+        "position": "TE", "research_presence": "on_field",
+        "source_count_label": "UNKNOWN", **metadata,
+    }]
+    with pytest.raises(ValueError, match="NFL_PROP_PBP_EVENT_SCHEMA_INVALID:review_identity"):
+        mod.summarize_held_sample_event_signals(
+            sample, {stat: Counter() for stat in mod.SOURCE_ROLES},
+            {"2025_03_NYJ_TB"},
+        )
