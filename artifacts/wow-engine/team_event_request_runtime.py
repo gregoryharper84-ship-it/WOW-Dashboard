@@ -93,7 +93,12 @@ def _strict_probability(value: Any) -> float | None:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except OverflowError:
+        # Oversized integers (e.g. 10**400) must become MODEL_OUTPUT_INVALID
+        # for the row, not abort the batch outside the scorer exception path.
+        return None
     return parsed if isfinite(parsed) and 0.0 < parsed < 1.0 else None
 
 

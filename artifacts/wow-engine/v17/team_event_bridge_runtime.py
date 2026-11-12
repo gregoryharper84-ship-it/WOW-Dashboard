@@ -214,7 +214,10 @@ def missing_bridge_inputs(req: Any, registration: TeamEventBridgeRegistration) -
 def _finite_probability(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except OverflowError:
+        return False
     return isfinite(parsed) and 0.0 <= parsed <= 1.0
 
 

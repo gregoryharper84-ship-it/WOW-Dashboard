@@ -345,6 +345,10 @@ def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
     method = str(calibrator.get("method") or "")
     if method not in {IDENTITY_CALIBRATION_METHOD, EMPIRICAL_CALIBRATION_METHOD}:
         blockers.append("NHL_FITTED_CALIBRATOR_METHOD_UNSUPPORTED")
+    # Reject unversioned calibrators during candidate selection so an older
+    # valid candidate can be chosen. Do not invent a selection_version later.
+    if not str(calibrator.get("selection_version") or "").strip():
+        blockers.append("NHL_FITTED_CALIBRATOR_SELECTION_VERSION_MISSING")
     calibration_n = calibrator.get("training_n")
     if type(calibration_n) is not int or calibration_n < 30:
         blockers.append("NHL_FITTED_CALIBRATOR_SAMPLE_INSUFFICIENT")

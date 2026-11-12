@@ -277,6 +277,16 @@ def test_registered_package_rejects_invalid_point_estimate(invalid):
     assert held["can_execute"] is False
 
 
+def test_registered_package_rejects_overflowing_integer_probability():
+    # Oversized ints raise OverflowError on float(); must HOLD the row, not abort.
+    held = _completed_registered(
+        _row("NHL"), _registered_package(calibrated_probability=10**400)
+    )
+    assert held["terminal_status"] == "HELD"
+    assert held["code"] == "MODEL_OUTPUT_INVALID"
+    assert held["can_execute"] is False
+
+
 def test_nfl_explicit_rank_ineligibility_is_preserved():
     outcome = _completed_nfl(_row("NFL"), _nfl_package(rank_eligible=False))
     assert outcome["terminal_status"] == "COMPLETED"

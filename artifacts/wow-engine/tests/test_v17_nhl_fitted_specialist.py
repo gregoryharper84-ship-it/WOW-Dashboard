@@ -1322,6 +1322,7 @@ def test_registered_nhl_path_applies_reducer_and_publication_guard(monkeypatch):
             "probability_publishable": False,
             "rank_eligible": False,
             "can_execute": False,
+            "code": "MODEL_INPUTS_INSUFFICIENT",
             "blockers": ["NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE"],
         },
     )
@@ -1362,3 +1363,95 @@ def test_registered_nhl_path_applies_reducer_and_publication_guard(monkeypatch):
     assert result["can_execute"] is False
     assert "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in result["blockers"]
     assert "OFFICIAL_PUBLICATION_NOT_CERTIFIED" in result["blockers"]
+    # Specialist model-failure code must survive governance / publication HOLD.
+    assert result["code"] == "MODEL_INPUTS_INSUFFICIENT"
+
+
+def test_registered_nhl_path_preserves_pass_then_denies_official_publication(monkeypatch):
+    import v17.multisport_team_event_bridges as bridges
+
+    def _reduce(_req, package):
+        return {
+            "status": "PASS",
+            "terminal_label": bridges.FINAL_APPROVED,
+            "terminal_ceiling": bridges.FINAL_APPROVED,
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "global_terminal_reducer": bridges.GLOBAL_TERMINAL_REDUCER,
+            "blockers": [],
+            "can_execute": False,
+        }
+
+    monkeypatch.setitem(
+        bridges.MODEL_SCORERS,
+        "NHL",
+        lambda _req: {
+            "fitted_registry_scoring": True,
+            "selected_participant": "BOS",
+            "raw_probability": 0.55,
+            "calibrated_probability": 0.55,
+            "calibrated_lower_bound": 0.40,
+            "calibrated_upper_bound": 0.70,
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "can_execute": False,
+            "code": "GOVERNED_PROBABILITY_PUBLISHED",
+            "blockers": [],
+        },
+    )
+    monkeypatch.setattr(
+        bridges,
+        "_route_contract",
+        lambda _req: SimpleNamespace(
+            requester_host_identity="test-requester-host",
+            candidate_family="NHL",
+        ),
+    )
+    monkeypatch.setattr(
+        bridges.base_runtime,
+        "_run_mandatory_scout_research",
+        lambda _req: {"status": "PASS"},
+    )
+    monkeypatch.setattr(bridges, "reduce_multisport_team_event", _reduce)
+    monkeypatch.setattr(
+        bridges,
+        "evaluate_team_event_official_publication",
+        lambda _result: {
+            "official_publication_allowed": False,
+            "blockers": ["OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
+        },
+    )
+
+    result = bridges._score_one(
+        "NHL",
+        SimpleNamespace(
+            sport="NHL",
+            league="NHL",
+            event_key="NHL:2026029001",
+            requester_host_identity="test-requester-host",
+            candidate_family="NHL",
+        ),
+        event_api=None,
+    )
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert result["terminal_ceiling"] == "MODEL_QUALIFIED_HOLD"
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert "OFFICIAL_PUBLICATION_NOT_CERTIFIED" in result["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_unversioned_calibrator_is_rejected_during_candidate_selection():
+    malformed = _candidate_row()
+    calibrator = dict(malformed["calibrator_payload"])
+    calibrator.pop("selection_version", None)
+    malformed["calibrator_payload"] = calibrator
+    valid = _candidate_row()
+    valid["created_at"] = "2026-11-17T00:00:00+00:00"
+    malformed["created_at"] = "2026-11-18T00:00:00+00:00"
+
+    candidate = nhl.load_nhl_fitted_candidate(
+        _DB(candidates=[malformed, valid]), as_of_utc=NOW
+    )
+    assert candidate.model_version == "NHL_RS_LOGISTIC_V1-5528ab8891df79fd-372bef19a04a"

@@ -379,6 +379,25 @@ def _score_one(
         and governance.get("global_terminal_reducer") == GLOBAL_TERMINAL_REDUCER
         and governance.get("can_execute") is False
     )
+    # Preserve exact model-failure codes from the controlling specialist.
+    # Governance disposition may add blockers / ceilings but must not erase
+    # MODEL_INPUTS_INSUFFICIENT / MODEL_SCORER_FAILED / MODEL_OUTPUT_INVALID /
+    # MODEL_UNAVAILABLE into a generic LLP governance label.
+    _model_failure_codes = frozenset(
+        {
+            "MODEL_UNAVAILABLE",
+            "MODEL_INPUTS_INSUFFICIENT",
+            "MODEL_SCORER_FAILED",
+            "MODEL_OUTPUT_INVALID",
+        }
+    )
+    upstream_code = str(package.get("code") or "").strip()
+    if passed:
+        disposition_code = "GOVERNED_PROBABILITY_PUBLISHED"
+    elif upstream_code in _model_failure_codes:
+        disposition_code = upstream_code
+    else:
+        disposition_code = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
     result = {
         **package,
         "requester_host_identity": route.requester_host_identity,
@@ -393,11 +412,7 @@ def _score_one(
         "terminal_ceiling": governance.get("terminal_ceiling"),
         "probability_publishable": passed,
         "rank_eligible": passed,
-        "code": (
-            "GOVERNED_PROBABILITY_PUBLISHED"
-            if passed
-            else "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
-        ),
+        "code": disposition_code,
         # Preserve every upstream typed blocker; governance may add, never erase.
         "blockers": list(
             dict.fromkeys(
@@ -419,7 +434,8 @@ def _score_one(
         result["rank_eligible"] = False
         result["terminal_label"] = "MODEL_QUALIFIED_HOLD"
         result["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
-        result["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+        if result.get("code") not in _model_failure_codes:
+            result["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
         result["blockers"] = list(
             dict.fromkeys(
                 [
