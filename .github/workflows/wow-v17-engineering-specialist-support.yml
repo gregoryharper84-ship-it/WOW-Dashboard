@@ -157,6 +157,11 @@ jobs:
           head_sha=""
           check_state="NOT_APPLICABLE"
           action="NO_ACTION"
+          source_repository=""
+          head_repository=""
+          base_branch=""
+          pr_state=""
+          source_kind="DURABLE_LEDGER_INCIDENT"
 
           if [ -z "$pr_number" ]; then
             pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
@@ -167,13 +172,32 @@ jobs:
             action="SUPPORT_PR"
             pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
             head_sha=$(jq -r '.head.sha' <<<"$pr")
-            if [ -z "$incident" ]; then
-              incident=$(jq -r '.body // ""' <<<"$pr" | sed -n 's/^Incident: `\([^`]*\)`.*/\1/p' | head -n 1)
+            source_repository=$(jq -r '.base.repo.full_name // ""' <<<"$pr")
+            head_repository=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
+            base_branch=$(jq -r '.base.ref // ""' <<<"$pr")
+            pr_state=$(jq -r '.state // ""' <<<"$pr")
+            source_kind="GITHUB_PR_EXACT_HEAD"
+            # Reuse strict incident identity across the repo; reject ambiguous IDs.
+            if ! source_incident=$(
+              jq -r '.body // ""' <<<"$pr" |
+                python artifacts/wow-engine/v17/engineering_incident_identity.py
+            ); then
+              echo "::error::SUPPORT_PARENT_INCIDENT_UNPROVEN"
+              exit 1
             fi
-            [ -n "$incident" ] || incident="PR-${pr_number}"
+            # Explicit incident input must agree with exact PR-source identity.
+            if [ -n "$incident" ] && [ "$incident" != "$source_incident" ]; then
+              echo "::error::SUPPORT_PARENT_INCIDENT_MISMATCH"
+              exit 1
+            fi
+            incident="$source_incident"
 
+            # Each paginated response is a separate JSON document. Flatten
+            # every genuine page into ONE array before row counts/admission.
+            # Do not validate only the first 100 checks or accept concatenated
+            # JSON arrays as a single support-state document.
             checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" \
-              -H 'Accept: application/vnd.github+json' --jq '.check_runs')
+              -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
             pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$checks")
             failed=$(jq '[.[] | select(.status == "completed") | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"$checks")
             total=$(jq 'length' <<<"$checks")
@@ -217,7 +241,13 @@ jobs:
             --arg typed_failure "$typed_failure" \
             --arg subsystem "$subsystem" \
             --arg check_state "$check_state" \
-            '{action:$action,incident_id:$incident,pr_number:$pr_number,head_sha:$head_sha,wait_state:$wait_state,typed_failure:$typed_failure,primary_subsystem:$subsystem,check_state:$check_state,implementation_lease:false,support_only:true,can_execute:false}' \
+            --arg expected_repository "$GITHUB_REPOSITORY" \
+            --arg source_repository "$source_repository" \
+            --arg pr_head_repository "$head_repository" \
+            --arg base_branch "$base_branch" \
+            --arg pr_state "$pr_state" \
+            --arg source_kind "$source_kind" \
+            '{action:$action,incident_id:$incident,pr_number:$pr_number,head_sha:$head_sha,wait_state:$wait_state,typed_failure:$typed_failure,primary_subsystem:$subsystem,check_state:$check_state,implementation_lease:false,support_only:true,can_execute:false,terminal_authority:"V17_TERMINAL_REDUCER",expected_repository:$expected_repository,source_repository:$source_repository,pr_head_repository:$pr_head_repository,base_branch:$base_branch,pr_state:$pr_state,source_kind:$source_kind}' \
             | tee artifacts/wow-engine/v17/.agent-handoff/support-context.json
 
           echo "action=$action" >> "$GITHUB_OUTPUT"
@@ -225,6 +255,15 @@ jobs:
           echo "wait_state=$wait_state" >> "$GITHUB_OUTPUT"
           echo "typed_failure=$typed_failure" >> "$GITHUB_OUTPUT"
           echo "subsystem=$subsystem" >> "$GITHUB_OUTPUT"
+
+      - name: Validate bounded specialist handoff
+        if: steps.target.outputs.action != 'NO_ACTION'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_phase12_delegation.py validate-support-packet \
+            --packet-file artifacts/wow-engine/v17/.agent-handoff/support-context.json \
+            | tee artifacts/wow-engine/v17/.agent-handoff/admission-receipt.json
 
       - name: Route specialist subagent
         id: route
