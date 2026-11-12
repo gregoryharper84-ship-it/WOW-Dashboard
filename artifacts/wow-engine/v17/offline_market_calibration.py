@@ -135,6 +135,12 @@ def evaluate_binary_market_baseline(rows: Sequence[Mapping[str, Any]], *,
 
     identity_counts = Counter(key for row in rows if isinstance(row, Mapping)
                               if (key := _identity(row)) is not None)
+    prediction_receipt_counts = Counter(
+        row.get("immutable_prediction_id") for row in rows
+        if isinstance(row, Mapping)
+        and isinstance(row.get("immutable_prediction_id"), str)
+        and row["immutable_prediction_id"].strip()
+    )
     # Event identity is shared across selections; reject contradictory team
     # contexts for the *whole* event, not just duplicate selection keys.
     event_contexts: dict[tuple[str, str], set[tuple[str, str]]] = {}
@@ -159,12 +165,19 @@ def evaluate_binary_market_baseline(rows: Sequence[Mapping[str, Any]], *,
                 reason = "REPLAY_NOT_HOLDOUT"
             elif not isinstance(row.get("immutable_prediction_id"), str) or not row["immutable_prediction_id"].strip():
                 reason = "REPLAY_MISSING_IMMUTABLE_RECEIPT"
+            elif prediction_receipt_counts[row["immutable_prediction_id"]] > 1:
+                reason = "REPLAY_PREDICTION_RECEIPT_REUSED"
             elif not _digest(row.get("model_artifact_checksum")):
                 reason = "REPLAY_FITTED_CHECKSUM_MISSING_OR_INVALID"
-            elif not _digest(row.get("quote_source_sha256")) or not row.get("quote_book"):
+            elif (not _digest(row.get("quote_source_sha256"))
+                  or not isinstance(row.get("quote_book"), str)
+                  or not row["quote_book"].strip()
+                  or row["quote_book"] != row["quote_book"].strip()):
                 reason = "REPLAY_MARKET_QUOTE_INVALID"
             elif (not _digest(row.get("opposite_quote_source_sha256"))
-                  or not row.get("opposite_quote_book")
+                  or not isinstance(row.get("opposite_quote_book"), str)
+                  or not row["opposite_quote_book"].strip()
+                  or row["opposite_quote_book"] != row["opposite_quote_book"].strip()
                   or row.get("opposite_quote_book") != row.get("quote_book")
                   or row.get("opposite_quote_event_id") != row["event_id"]
                   or row.get("opposite_quote_market") != row["market"]
