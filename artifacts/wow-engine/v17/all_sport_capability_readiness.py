@@ -102,6 +102,7 @@ def _readiness(
     sport: str,
     health: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Compute operational readiness fields for one sport from bridge health."""
     normalized = str(sport or "").upper()
     registered = bool(health.get("registered"))
     scorer = bool(health.get("scorer_resolvable"))
@@ -209,19 +210,44 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
     original_health = bridges.team_event_bridge_health
     original_state_for = parity._state_for
 
+    def _merge_bridge_blockers(
+        row: dict[str, Any],
+        readiness: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep bridge-native HOLDs (e.g. NBA hydration) visible under readiness."""
+        bridge_blockers = [
+            str(code).strip()
+            for code in (row.get("readiness_blockers") or [])
+            if str(code or "").strip()
+        ]
+        merged = list(dict.fromkeys([*bridge_blockers, *readiness["readiness_blockers"]]))
+        readiness["readiness_blockers"] = merged
+        if bridge_blockers:
+            readiness["request_scoring_path_ready"] = False
+            readiness["model_capability_ready"] = False
+            if readiness.get("operational_readiness_status") in {
+                "READY",
+                "CERTIFIED_REQUEST_DEPENDENT",
+            }:
+                readiness["operational_readiness_status"] = "REGISTERED_NOT_READY"
+        return readiness
+
     def readiness_health() -> dict[str, dict[str, Any]]:
+        """Annotate bridge health with operational readiness without enabling execute."""
         base = original_health()
         out: dict[str, dict[str, Any]] = {}
         for sport in EXPECTED_TEAM_EVENT_SPORTS:
             row = dict(base.get(sport) or {})
             if sport == "NFL" and row.get("registered"):
                 row.update(_nfl_runtime_champion_probe())
-            row.update(_readiness(sport, row))
+            readiness = _merge_bridge_blockers(row, _readiness(sport, row))
+            row.update(readiness)
             out[sport] = row
         for sport, value in base.items():
             if sport not in out:
                 row = dict(value)
-                row.update(_readiness(sport, row))
+                readiness = _merge_bridge_blockers(row, _readiness(sport, row))
+                row.update(readiness)
                 out[sport] = row
         return out
 
@@ -229,9 +255,18 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
         sport: str,
         bridge_health: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Build parity readiness; skip re-merge when health is already overlaid."""
         health = dict(bridge_health or {})
         state = dict(original_state_for(sport, health))
-        readiness = _readiness(str(sport or "").upper(), health)
+        # Health from readiness_health() is already overlay-complete. Re-merging
+        # would treat overlay diagnostic blockers as bridge-native and wrongly
+        # downgrade CERTIFIED_REQUEST_DEPENDENT sports during parity capture.
+        if str(health.get("readiness_contract_version") or "") == READINESS_CONTRACT_VERSION:
+            readiness = health
+        else:
+            readiness = _merge_bridge_blockers(
+                health, _readiness(str(sport or "").upper(), health)
+            )
         state.update(
             {
                 "model_capability_ready": readiness["model_capability_ready"],
@@ -246,7 +281,7 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
                     "operational_certification_status"
                 ],
                 "operational_readiness_status": readiness["operational_readiness_status"],
-                "readiness_blockers": readiness["readiness_blockers"],
+                "readiness_blockers": list(readiness.get("readiness_blockers") or []),
                 "calibration_dependency_satisfied": readiness[
                     "calibration_dependency_satisfied"
                 ],
