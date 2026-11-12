@@ -118,7 +118,7 @@ def nflverse_close_proxy(row: Mapping[str, Any]) -> HistoricalCloseProxy:
     # independently supplied participant fields before attaching a close
     # proxy to the held-out event. Legacy synthetic fixture IDs remain
     # accepted by this research-only normalizer.
-    encoded = re.fullmatch(r"\\d{4}_\\d{2}_([A-Z]{2,4})_([A-Z]{2,4})", event_id)
+    encoded = re.fullmatch(r"\d{4}_\d{2}_([A-Z]{2,4})_([A-Z]{2,4})", event_id)
     if home == away or (encoded is not None and (away, home) != encoded.groups()):
         raise SpreadChallengerUnavailable(
             "SPREAD_NFLVERSE_CLOSE_PROXY_TEAM_IDENTITY_MISMATCH",
