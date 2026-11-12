@@ -75,6 +75,15 @@ jobs:
           gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
             --jq '.[] | select(.pull_request == null)' | jq -s '.' \
             > "$RUNNER_TEMP/engineering-issues.json"
+          # READ-ONLY shadow must use the same protected manifest admission
+          # as the live selector, or it can falsely report unapproved BUILD.
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py validate \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json > /dev/null
+          jq --slurpfile manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json '
+            [($manifest[0].restoration + $manifest[0].acceleration)[].issue_number] as $approved |
+            [.[] | select(.number as $n | ($approved | index($n)) != null)]
+          ' "$RUNNER_TEMP/engineering-issues.json" > "$RUNNER_TEMP/approved-issues.json"
+          mv "$RUNNER_TEMP/approved-issues.json" "$RUNNER_TEMP/engineering-issues.json"
           gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
           # Authenticated workflow-run history is denial evidence only.
