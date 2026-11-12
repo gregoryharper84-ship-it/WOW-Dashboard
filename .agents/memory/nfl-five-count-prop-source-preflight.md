@@ -389,3 +389,15 @@
 - **verification:** Exact-head hosted regression and independent source semantics still pending at the time of this entry. No model fit, no data-rights clearance, no source repin or P/C merge.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. `can_execute=false`; `V17_TERMINAL_REDUCER`; model coverage/qualification delta +0.
+
+## Correlated PBP absence and independent on-field source — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** `HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT` (existing typed code; no new failure classification).
+- **mechanism:** The 2025 weekly nflverse stat file and candidate PBP play flags share nflfastR processing. Their simultaneous absence is **not independent corroboration** of zero statistical opportunities. A separate FTN on-field source shows the held players participated; the source PBP can still lack attributed receiver targets (749 flagged 2025 candidates without receiver IDs), so silence is not a settled zero.
+- **detection_point:** At entire missing-stat cohort audit, before converting any absent weekly player-game to a source label or pregame L10 feature.
+- **observed_artifact:** PR #2605 rapid regression [#43279265915](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/43279265915), exact SHA `63aa9b92ad770030cefc57af099ff9bf2da6c311`: **800 tests passed, 12 skipped, zero failed**. SHA-verified FTN participation 2025 includes 689/689 of 689 mapped positive-snap missing-weekly-stat player-games; separate SHA-verified 2025 PBP returns 0 positive flags for 10 missing QB cases (attempts, completions, passing TDs), 0 for 679 missing RB/WR/TE cases (receptions, targets), and 0 for all 689 on carries. Route groups overlap and cannot be summed.
+- **fix/prevention artifact:** Existing research-only PBP presence classifier optionally compares all missing rows to the pinned PBP positive counters per role and emits explicit `without_positive_pbp_flags_STILL_UNKNOWN`, `missing_count_labels_promoted=0`. Permanent positive/negative/absent-game synthetic tests protect the no-zero outcome. 2025 held cases remain UNKNOWN until independently licensed settlement semantics establish any true zero.
+- **license/rights:** FTN participation is CC BY-SA 4.0 (FTN Data via nflverse). nflverse publisher says derived models/apps must honor share-alike. NFL gamebooks restrict reuse outside media without permission. No official gamebook data was ingested, scraped into training or promoted.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605 ; https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1563
+- **production_evidence:** No new fitted specialist, qualified pick, deployment, Supabase row or live-route check. `V17_TERMINAL_REDUCER`, `can_execute=false`, `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`.
