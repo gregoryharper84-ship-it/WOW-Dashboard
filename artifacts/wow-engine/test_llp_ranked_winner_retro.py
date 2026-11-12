@@ -56,6 +56,7 @@ def audit(picks, finals, **kw):
                     ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc",
                      "selected_side", "pregame_receipt_id", "frozen_at_utc",
                      "settlement_basis", "available_to_user_at_utc")}
+                    | ({"confidence_label": p["confidence_label"]} if "confidence_label" in p else {})
                     for p in picks],
         cohort_verified=True, cohort_receipt_id="independent-card-snapshot",
         cohort_kind="RANKED_SUBSET", **kw)
@@ -370,3 +371,85 @@ def test_original_user_visibility_must_match_frozen_cohort():
         cohort_verified=True, cohort_receipt_id="original-visibility")
     assert r["cohort_complete"] is False
     assert r["rows"][0]["selection_grade"] == "HELD"
+
+
+def test_frozen_high_medium_low_confidence_diagnostic_is_not_calibration():
+    predictions = [
+        pick("NCAAB", "high-win", confidence_label="HIGH"),
+        pick("NCAAF", "high-loss", confidence_label="High"),
+        pick("NHL", "medium-win", confidence_label="MEDIUM"),
+        pick("NBA", "low-loss", confidence_label="LOW"),
+    ]
+    finals = [
+        final("NCAAB", "high-win", "HOME"),
+        final("NCAAF", "high-loss", "AWAY"),
+        final("NHL", "medium-win", "HOME"),
+        final("NBA", "low-loss", "AWAY"),
+    ]
+    report = audit(predictions, finals)
+    groups = {g["label"]: g for g in report["confidence_cohorts"]}
+    assert report["cohort_complete"] is True
+    assert (report["cohort_selected"], report["cohort_verified_graded"], report["cohort_held"]) == (4, 4, 0)
+    assert groups["HIGH"]["selected"] == 2
+    assert groups["HIGH"]["verified_wins"] == groups["HIGH"]["verified_losses"] == 1
+    assert groups["HIGH"]["accuracy"] == 0.5
+    assert groups["HIGH"]["incremental_correct_vs_market"] == 0
+    assert groups["MEDIUM"]["accuracy"] == 1
+    assert groups["LOW"]["accuracy"] == 0
+    assert all(g["calibration_proven"] is False and g["fitted_model_credit"] is False for g in groups.values())
+    assert report["confidence_labels_are_calibrated"] is False
+    assert report["fitted_model_samples_added"] == 0
+
+
+def test_retro_cannot_upgrade_original_medium_pick_to_high():
+    original = pick(confidence_label="MEDIUM")
+    frozen = {k: original[k] for k in (
+        "sport", "official_event_id", "home_team", "away_team",
+        "event_start_time_utc", "selected_side", "pregame_receipt_id",
+        "frozen_at_utc", "settlement_basis", "available_to_user_at_utc",
+        "confidence_label",
+    )}
+    changed = deepcopy(original)
+    changed["confidence_label"] = "HIGH"
+    report = audit_ranked_winner_retro(
+        [changed], [final()], ranked_cohort=[frozen],
+        cohort_verified=True, cohort_receipt_id="original-confidence-label",
+    )
+    assert report["cohort_complete"] is False
+    assert report["subset_accuracy"] is None
+    assert report["confidence_cohorts"][0]["accuracy"] is None
+    assert "RANKED_COHORT_NOT_INDEPENDENTLY_RECONCILED" in report["rows"][0]["selection_blockers"]
+
+
+@pytest.mark.parametrize("invalid", [0.9, True, "CERTIFIED_HIGH", "", None])
+def test_invalid_confidence_cannot_enter_high_confidence_grades(invalid):
+    report = audit([pick(confidence_label=invalid)], [final()])
+    assert report["cohort_complete"] is False
+    assert report["cohort_verified_graded"] == 0
+    assert report["cohort_held"] == 1
+    assert report["confidence_cohorts"][0]["label"] == "INVALID"
+    assert "RESEARCH_CONFIDENCE_LABEL_INVALID" in report["rows"][0]["selection_blockers"]
+
+
+def test_missing_final_remains_held_and_no_high_confidence_headline():
+    report = audit([pick(confidence_label="HIGH")], [])
+    assert report["cohort_selected"] == 1
+    assert report["cohort_verified_graded"] == 0
+    assert report["cohort_held"] == 1
+    assert report["confidence_cohorts"][0]["verified_wins"] == 0
+    assert report["confidence_cohorts"][0]["accuracy"] is None
+    assert report["rows"][0]["settlement_verification_state"] == "PENDING_OR_MISSING_FINAL"
+    assert report["subset_accuracy"] is None
+
+
+def test_valid_high_win_without_sametime_market_has_no_market_edge_claim():
+    p = pick(confidence_label="HIGH")
+    p["market"]["as_of_utc"] = "2026-11-10T11:00:00Z"
+    r = audit([p], [final()])
+    assert r["cohort_complete"] is True
+    assert r["cohort_verified_graded"] == 1
+    assert r["market_baseline_complete"] is False
+    assert r["confidence_cohorts"][0]["accuracy"] == 1
+    assert r["confidence_cohorts"][0]["market_favorite_correct"] is None
+    assert r["confidence_cohorts"][0]["incremental_correct_vs_market"] is None
+    assert r["market_edge_established"] is False
