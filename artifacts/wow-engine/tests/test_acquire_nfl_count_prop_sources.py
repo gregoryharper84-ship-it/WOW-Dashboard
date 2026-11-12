@@ -551,3 +551,98 @@ def test_pr2605_observe_official_source_reconciliation(tmp_path):
         + ":fitted_model_certified=false:can_execute=false"
     )
 
+
+
+def test_pr2605_scrape_ftn_2025_offense_presence_shadow(tmp_path):
+    """Actual digest-verified 2025 FTN player-on-field observation, never a fit.
+
+    PR rapid only. These records carry CC-BY-SA attribution; no adaptation or
+    target-zero imputation is imported to the model or source registry.
+    """
+    import json
+    import os
+    import pandas as pd
+    from acquire_nfl_count_prop_sources import OFFICIAL_SIZE_BYTES
+    from audit_nfl_count_prop_participation import SNAP_SHA256
+    from audit_nfl_count_prop_pbp_presence import (
+        classify_missing_pbp_presence, read_verified_ftn_2025_offense_presence,
+    )
+    from train_nfl_missing_prop_candidates import (
+        EXPECTED_RELEASE_SHA256, _quarantine_unattributed_zero_stat_rows,
+        validate_frame,
+    )
+
+    if (os.environ.get("GITHUB_WORKFLOW") != "wow-v17-rapid-repair"
+            or os.environ.get("GITHUB_HEAD_REF")
+            != "engineering/nfl-five-count-candidates-20261111"):
+        pytest.skip("NFL_PROP_FTN_OBSERVATION_NOT_PR2605_RAPID_RUNNER")
+
+    # Four source bytesets: 2025 stats and snaps from their original frozen
+    # digest, a newly published players master as a NON-SERVING shadow, and
+    # the 2025 FTN play-level file at its published SHA. No old source repin.
+    files = (
+        ("stats_player/stats_player_week_2025.csv",
+         EXPECTED_RELEASE_SHA256["2025"], OFFICIAL_SIZE_BYTES["stats_player"][2025]),
+        ("snap_counts/snap_counts_2025.csv",
+         SNAP_SHA256["2025"], OFFICIAL_SIZE_BYTES["snap_counts"][2025]),
+        ("players/players.csv",
+         "f90a9d0009b8e5d50353b0013971b466534b25cc2f98b7ad14d39361356975d7",
+         7308461),
+    )
+    observations = []
+    try:
+        for relative, digest, length in files:
+            observations.append(acquire_one(relative, digest, length, tmp_path, timeout=25))
+        raw_stats = pd.read_csv(
+            tmp_path / files[0][0], low_memory=False,
+        )
+        eligible, quarantined = _quarantine_unattributed_zero_stat_rows(raw_stats, 2025)
+        stats = validate_frame(eligible)
+        snaps = pd.read_csv(tmp_path / files[1][0], low_memory=False)
+        players = pd.read_csv(
+            tmp_path / files[2][0], dtype={"gsis_id": str, "pfr_id": str},
+            low_memory=False,
+        )
+        games, offense, source = read_verified_ftn_2025_offense_presence(timeout=45)
+        # Reuse the tested exact canonical GSIS/event reconciliation machinery.
+        # Its legacy "actor" result keys describe observed player/field pairs
+        # here, *not* ball-related actor signals or zeros.
+        observed = classify_missing_pbp_presence(
+            stats, snaps, players, games, offense,
+        )
+    except (ValueError, OSError, TimeoutError, KeyError, TypeError) as exc:
+        pytest.skip(
+            "HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY:"
+            + type(exc).__name__ + ":" + str(exc)[:220]
+            + ":fitted_model_certified=false:can_execute=false"
+        )
+    report = {
+        "status": "HOLD_FTN_OFFENSE_PRESENCE_ONLY",
+        "season": 2025,
+        "source_file": source["file"],
+        "source_sha256_verified": source["source_sha256_verified"],
+        "source_bytes_verified": source["bytes_verified"],
+        "license": "CC-BY-SA-4.0",
+        "attribution": "FTN Data via nflverse",
+        "mapped_missing_player_games_2025": observed["mapped_missing_player_games"],
+        "unmapped_pfr_player_games_2025": observed["unmapped_pfr_player_games"],
+        "missing_weekly_offense_player_on_play": observed["pbp_presence_counts"]["pbp_actor_observed"],
+        "missing_weekly_not_observed_on_offense": observed["pbp_presence_counts"]["pbp_actor_not_observed"],
+        "missing_weekly_game_absent_in_participation": observed["pbp_presence_counts"]["pbp_game_absent"],
+        "source_blank_offense_play_rows": source["blank_offense_play_rows"],
+        "player_game_participant_pairs": source["offense_player_games_seen"],
+        "source_files_verified": len(observations) + 1,
+        "missing_offense_presence_means_stat_zero": False,
+        "source_rights_independently_approved": False,
+        "training_labels_cleared": False,
+        "crosswalk_promoted": False,
+        "fitted_specialist_certified": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+    assert (report["missing_weekly_offense_player_on_play"]
+            + report["missing_weekly_not_observed_on_offense"]
+            + report["missing_weekly_game_absent_in_participation"]
+            == report["mapped_missing_player_games_2025"])
+    pytest.skip("HOLD_FTN_OFFENSE_PRESENCE_ONLY:"
+                + json.dumps(report, sort_keys=True, separators=(",", ":")))
