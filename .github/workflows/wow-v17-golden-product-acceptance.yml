@@ -20,6 +20,7 @@ jobs:
 
     steps:
       - name: Checkout protected main
+        id: checkout_main
         continue-on-error: true
         uses: actions/checkout@v6
         with:
@@ -31,8 +32,15 @@ jobs:
         id: checkout_sha
         continue-on-error: true
         shell: bash
+        env:
+          CHECKOUT_MAIN_OUTCOME: ${{ steps.checkout_main.outcome }}
         run: |
           set -euo pipefail
+          if [ "$CHECKOUT_MAIN_OUTCOME" != "success" ]; then
+            echo "::error::GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED: main checkout action did not succeed."
+            echo "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           checked_out_sha="$(git rev-parse HEAD)"
           if [[ ! "$checked_out_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED: checkout did not produce a valid SHA."
@@ -143,13 +151,14 @@ jobs:
           PRODUCT_STATUS: ${{ steps.health.outputs.status }}
           HEALTH_READ_OUTCOME: ${{ steps.health.outcome }}
           CHECKED_OUT_SHA: ${{ steps.checkout_sha.outputs.sha }}
+          CHECKOUT_MAIN_OUTCOME: ${{ steps.checkout_main.outcome }}
           CHECKOUT_SHA_OUTCOME: ${{ steps.checkout_sha.outcome }}
           BACKEND_STATUS: ${{ steps.backend.outputs.status }}
           CONTRACT_TEST_OUTCOME: ${{ steps.contract_tests.outcome }}
         run: |
           set -euo pipefail
           checked_out_sha="${CHECKED_OUT_SHA:-}"
-          if [[ ! "$checked_out_sha" =~ ^[0-9a-f]{40}$ ]]; then
+          if [ "$CHECKOUT_MAIN_OUTCOME" != "success" ] || [ "$CHECKOUT_SHA_OUTCOME" != "success" ] || [[ ! "$checked_out_sha" =~ ^[0-9a-f]{40}$ ]]; then
             checked_out_sha="UNVERIFIED"
             echo "::error::GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED: receipt cannot identify checked-out source."
             echo "GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED can_execute=false" >> "$GITHUB_STEP_SUMMARY"
@@ -160,7 +169,8 @@ jobs:
             --arg backend_status "$BACKEND_STATUS" \
             --arg contract_tests_outcome "$CONTRACT_TEST_OUTCOME" \
             --arg health_read_outcome "$HEALTH_READ_OUTCOME" \
+            --arg checkout_main_outcome "$CHECKOUT_MAIN_OUTCOME" \
             --arg checkout_sha_outcome "$CHECKOUT_SHA_OUTCOME" \
             --arg sha "$checked_out_sha" \
-            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,health_read_outcome:$health_read_outcome,checkout_sha_outcome:$checkout_sha_outcome,backend_liveness:$backend_status,contract_tests_outcome:$contract_tests_outcome,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
+            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,health_read_outcome:$health_read_outcome,checkout_main_outcome:$checkout_main_outcome,checkout_sha_outcome:$checkout_sha_outcome,backend_liveness:$backend_status,contract_tests_outcome:$contract_tests_outcome,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
             | tee "$RUNNER_TEMP/golden-product-acceptance.json"
