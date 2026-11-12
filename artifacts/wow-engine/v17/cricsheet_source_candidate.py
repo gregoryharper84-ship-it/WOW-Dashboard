@@ -124,6 +124,11 @@ def audit_t20_archive(data: bytes, *, expected_sha256: str | None = None) -> dic
             match_type = info.get("match_type")
             if not isinstance(match_type, str) or match_type not in {"T20", "IT20"}:
                 raise SourceCandidateHold("SOURCE_ARCHIVE_MATCH_TYPE_UNVERIFIED")
+            # A local --archive is not authenticated merely by the CLI URL.
+            # Cricsheet's required team_type establishes per-row international
+            # scope; domestic/club T20 records must be held instead of mislabeled.
+            if info.get("team_type") != "international":
+                raise SourceCandidateHold("SOURCE_ARCHIVE_INTERNATIONAL_SCOPE_UNVERIFIED")
             teams = info.get("teams")
             dates = info.get("dates")
             outcome = info.get("outcome")
