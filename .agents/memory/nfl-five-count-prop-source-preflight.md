@@ -401,3 +401,14 @@
 - **license/rights:** FTN participation is CC BY-SA 4.0 (FTN Data via nflverse). nflverse publisher says derived models/apps must honor share-alike. NFL gamebooks restrict reuse outside media without permission. No official gamebook data was ingested, scraped into training or promoted.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605 ; https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1563
 - **production_evidence:** No new fitted specialist, qualified pick, deployment, Supabase row or live-route check. `V17_TERMINAL_REDUCER`, `can_execute=false`, `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`.
+
+## Anonymous weekly source game-id chronology guard — 2026-11-12
+
+- **date:** 2026-11-12
+- **typed_reason:** NFL_PROP_SOURCE_IDENTITY_INVALID (existing canonical source-identity failure).
+- **mechanism:** The all-zero anonymous-row quarantine checked only that `game_id` was nonempty while validating `season` and `week` independently. An all-zero row with `2022_01_BAL_KC` in a 2021 Week 1 CSV, or a malformed `2021_01_UNATTR`, was silently classified as a harmless anonymous source artifact. This predicts a misleading quarantine evidence ledger and an unreviewable source-lineage exclusion.
+- **detection_point:** Frozen weekly-source preflight before source-row quarantine, not after a model is fitted.
+- **fix:** Restrict quarantinable anonymous REG entries to the exact canonical `YYYY_WW_AWAY_HOME` pattern matching the named source season and row week. Fail closed with existing `NFL_PROP_SOURCE_IDENTITY_INVALID:game_id` on malformed/contradictory identities. Never assign an anonymous player, infer a zero from missing weekly data, or change publication flags.
+- **prevention_artifact:** `tests/test_nfl_missing_prop_candidates.py::test_unattributed_possible_participant_fails_closed` now includes four malformed/stale event-id negative variants and a valid canonical event fixture. Synthetic original-branch guard accepted all four malformed examples (RED); local proposed regex 5/5 synthetic controls PASS (GREEN). Exact-head hosted CI and independent semantic acceptance remain separate/unverified at authoring.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; no model, source-rights authorization, P/C merge, certified route or deployment. `can_execute=false`, `V17_TERMINAL_REDUCER`.
