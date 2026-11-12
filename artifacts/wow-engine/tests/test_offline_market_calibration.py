@@ -231,3 +231,33 @@ def test_whitespace_book_claim_cannot_be_a_same_book_quote():
     report = evaluate_binary_market_baseline([sample(quote_book=" ", opposite_quote_book=" ")])
     assert report["eligible_unattested"] == 0
     assert report["rows"][0]["status"] == "REPLAY_MARKET_QUOTE_INVALID"
+
+
+def test_extreme_valid_probability_uses_real_log_loss_without_clipping():
+    """Clipping a valid 1e-100 fitted output would understate loss by ~203 nats."""
+    import math
+    r = evaluate_binary_market_baseline([sample(model_probability="1e-100", outcome="1")])
+    assert r["eligible_unattested"] == 1
+    assert r["model_log_loss_unattested"] == pytest.approx(-math.log(1e-100))
+    assert r["model_brier_unattested"] == pytest.approx(1.0)
+
+
+def test_underflowing_utc_conversion_holds_only_affected_row():
+    """A valid local year-1 datetime can overflow during UTC adjustment."""
+    r = evaluate_binary_market_baseline([sample(quote_asof_utc="0001-01-01T00:00:00+01:00",
+                                                opposite_quote_asof_utc="0001-01-01T00:00:00+01:00")])
+    assert r["eligible_unattested"] == 0 and r["held"] == 1
+    assert r["rows"][0]["status"] == "REPLAY_MARKET_QUOTE_PAIR_MISMATCH"
+
+
+@pytest.mark.parametrize("patch", [
+    {"opposite_quote_selection": "AWAY", "opposite_quote_direction": "LOSE"},
+    {"market": "SPREAD", "quote_market": "SPREAD", "settled_market": "SPREAD",
+     "opposite_quote_market": "SPREAD"},
+    {"opposite_quote_selection": "HOME", "opposite_quote_direction": "LOSE"},
+])
+def test_unsupported_quote_complement_never_becomes_market_baseline(patch):
+    """Only two proven opposite moneyline WIN sides are in this pilot contract."""
+    r = evaluate_binary_market_baseline([sample(**patch)])
+    assert r["eligible_unattested"] == 0
+    assert r["rows"][0]["status"] == "REPLAY_MARKET_QUOTE_PAIR_MISMATCH"
