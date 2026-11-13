@@ -144,3 +144,42 @@ def test_lineup_evidence_at_tipoff_is_outside_prelock():
     rejected = verify_nba_lineup_evidence(corroboration_at_lock, **kwargs)
     assert rejected["ok"] is False
     assert "NBA_LINEUP_AS_OF_AFTER_LOCK" in rejected["blockers"]
+
+
+def test_missing_lineup_status_fails_closed_before_review():
+    feature = "2026-01-01T18:00:00Z"
+    missing_status = verify_nba_lineup_freshness(feature, {})
+    assert missing_status["ok"] is False
+    assert "NBA_LINEUP_EVIDENCE_MISSING" in missing_status["blockers"]
+
+    full = {
+        "official_event_ids": ["g1"],
+        "source_id": "OFFICIAL_LINEUP_SOURCE",
+        "evidence_as_of": "2026-01-01T16:30:00Z",
+        "corroboration": {
+            "source_id": "SECOND_INDEPENDENT_SOURCE",
+            "evidence_as_of": "2026-01-01T16:30:00Z",
+            "rotation_changed": False,
+        },
+    }
+    kwargs = {
+        "expected_ids": ["g1"],
+        "source_snapshot_ts": "2026-01-01T16:00:00Z",
+        "feature_ts": feature,
+        "tipoff_ts": "2026-01-02T00:00:00Z",
+    }
+    missing_primary = verify_nba_lineup_evidence(full, **kwargs)
+    assert missing_primary["ok"] is False
+    assert "NBA_LINEUP_EVIDENCE_MISSING" in missing_primary["blockers"]
+
+    complete = {**full, "rotation_changed": False}
+    assert verify_nba_lineup_evidence(complete, **kwargs)["ok"] is True
+    missing_corroboration = {
+        **complete, "corroboration": {
+            "source_id": "SECOND_INDEPENDENT_SOURCE",
+            "evidence_as_of": "2026-01-01T16:30:00Z",
+        },
+    }
+    decision = verify_nba_lineup_evidence(missing_corroboration, **kwargs)
+    assert decision["ok"] is False
+    assert "NBA_LINEUP_CORROBORATION_MISSING" in decision["blockers"]
