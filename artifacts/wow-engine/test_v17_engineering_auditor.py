@@ -437,3 +437,22 @@ def test_lifecycle_audit_reads_live_exact_head_metadata_not_stale_event():
     assert 'git diff --name-only HEAD^1 HEAD^2' in text
     assert 'pull_request:' in text
     assert 'permission-checks: write' not in text
+
+
+def test_claude_audit_to_engineering_handoff_contract():
+    """Regression: audit/duplicate must not become a no-repair terminal answer."""
+    claude = (ROOT / "CLAUDE.md").read_text()
+    auditor = SKILL.read_text()
+    supervisor = (ROOT / ".agents/skills/wow-dots-engineering-orchestrator/SKILL.md").read_text()
+    assert "## 11. Repair-first execution and canonical handoff" in claude
+    assert "Do not ask the operator to choose a specific issue" in claude
+    assert "DUPLICATE" in claude and "not a completed fix" in claude
+    assert "writer-lease admission" in claude
+    assert "existing** Engineering worker/dispatcher" in claude
+    assert "No new controller, lease issuer" in claude
+    assert "## Mandatory repair handoff after audit" in auditor
+    assert "The auditor does not write code" in auditor
+    assert "existing** Engineering dispatcher" in auditor
+    assert "DUPLICATE is a relationship, not a completed repair" in supervisor
+    assert "exact open canonical issue/PR" in supervisor
+    assert "can_execute=false" in claude and "V17_TERMINAL_REDUCER" in auditor
