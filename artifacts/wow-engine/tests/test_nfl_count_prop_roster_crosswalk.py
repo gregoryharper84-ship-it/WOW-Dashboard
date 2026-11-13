@@ -89,6 +89,21 @@ def test_name_team_or_position_without_exact_id_is_not_a_mapping():
     assert result["candidate_crosswalk_applied"] is False
 
 
+
+@pytest.mark.parametrize("bad_id", [None, "", "NA", "wrong-id", "00-123"])
+def test_target_valid_and_invalid_gsis_rows_fail_closed(bad_id):
+    """One valid pair must not hide a corrupt row for the same target PFR."""
+    roster = pd.DataFrame([
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333", "season": "2025",
+         "position": "RB", "team": "ATL"},
+        {"pfr_id": "CartNa00", "gsis_id": bad_id, "season": "2025",
+         "position": "RB", "team": "ATL"},
+    ])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID"):
+        mod.inspect_roster_id_candidates(roster, ["CartNa00"])
+
+
+
 def test_duplicate_same_exact_source_pair_is_one_candidate():
     roster = pd.DataFrame([
         {"pfr_id": "WhitCo05", "gsis_id": "00-0032222", "season": "2025",
