@@ -133,7 +133,7 @@ def _row_evidence(
              and all(isinstance(lane, str) and lane in TARGETS for lane in target)
              and len(set(target)) == len(target),
              "SOURCE_BRIDGE_TARGET_INVALID")
-    source_key = (url, rid)
+    source_key = (sid, rid)
     _require(source_key not in seen, "SOURCE_BRIDGE_DUPLICATE_SOURCE_ROW")
     seen.add(source_key)
     ref = hashlib.sha256(f"{url}|{rid}".encode()).hexdigest()
