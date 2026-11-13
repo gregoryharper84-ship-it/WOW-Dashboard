@@ -491,3 +491,14 @@
 - **prevention_artifact:** `tests/test_nfl_missing_prop_candidates.py::test_textual_null_identity_tokens_fail_closed_before_feature_building` covers four token/field pairs. A locally executed pandas-condition reproduction showed existing=accept and revised=reject in 4/4 cases. Hosted exact-head pytest remains to be read independently, and no production result is asserted.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None; candidate branch remains unmerged and non-serving. No source repin, anonymous-row imputation, candidate fitting authorization, certified model, probability publication or execution. `V17_TERMINAL_REDUCER` and `can_execute=false` unchanged.
+
+## Mixed valid and malformed GSIS rows for the same PFR — 2026-11-13
+
+- **date:** 2026-11-13
+- **typed_reason:** NFL_PROP_ROSTER_SCHEMA_INVALID:target_gsis (existing SOURCE/IDENTITY HOLD, research-only; do not relabel MODEL_UNAVAILABLE).
+- **mechanism:** `inspect_roster_id_candidates` previously filtered malformed GSIS rows before checking target identity uniqueness. A target PFR with one valid and one invalid GSIS mapping could therefore appear as an unambiguous exact candidate. This predicts false confidence in a partial crosswalk and invalidates the prefit identity audit.
+- **detection_point:** Exact PFR/GSIS source preflight, before any candidate crosswalk result is emitted, not at certification or production inference.
+- **fix:** Reuse the already-computed GSIS validity mask to reject all targeted PFR source rows unless every GSIS value is well-formed. Leave unrelated rows and existing reciprocal-collision checks intact.
+- **prevention_artifact:** `tests/test_nfl_count_prop_roster_crosswalk.py::test_target_valid_and_invalid_gsis_rows_fail_closed` includes five malformed identity cases (None, empty string, NA, wrong-id, partial GSIS). Locally reproduced the old candidate-selection behavior with pandas; exact-hosted test-first RED and repaired GREEN must be confirmed from workflow logs at their respective SHAs before claiming full acceptance.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. `nflreadpy.load_players()` reads mutable current nflverse players data; it may support a candidate cross-check only and does not replace the frozen Nov-05 RDS or the missing player-game labels. No training admission, probability, artifact promotion, new registry, signing authority, deploy or execution. `V17_TERMINAL_REDUCER`, `can_execute=false`, `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true` unchanged.
