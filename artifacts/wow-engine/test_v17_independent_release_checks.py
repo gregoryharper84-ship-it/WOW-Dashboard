@@ -494,6 +494,29 @@ def test_pending_required_regression_is_only_classified_for_latest_trusted_exact
     assert m.pending_required_regressions(ev) == []
 
 
+def test_pending_change_impact_check_deferred_only_while_authenticated_active():
+    # A genuine in-flight change-impact gate must defer automatic QA,
+    # never emit a premature QA_EVIDENCE_MISSING check.
+    now = datetime.now(timezone.utc).isoformat()
+    active = run_(m.CHANGE_IMPACT_CHECK, app=GHA, rid=900)
+    active.update(status="in_progress", conclusion=None, created_at=now)
+    ev = evidence()
+    ev["check_runs"].append(active)
+    assert m.pending_required_regressions(ev) == [m.CHANGE_IMPACT_CHECK]
+
+    # A finished, stale, expired or foreign check must never defer the gate.
+    expired = (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat()
+    for changes in (
+        {"status": "completed", "conclusion": "failure"},
+        {"head_sha": OLD},
+        {"app_id": REL_APP},
+        {"created_at": expired},
+    ):
+        invalid = evidence()
+        invalid["check_runs"].append({**active, **changes})
+        assert m.pending_required_regressions(invalid) == []
+
+
 @pytest.mark.parametrize("pr_changes", [
     {"head_sha": OLD},
     {"state": "closed"},
