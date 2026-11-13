@@ -182,7 +182,7 @@ class _Query:
         return self
 
     def eq(self, field, value):
-        if field == self.filter_field:
+        if self.filter_field is not None:
             self.rows = [row for row in self.rows if row.get(field) == value]
         return self
 
@@ -190,6 +190,10 @@ class _Query:
         return self
 
     def limit(self, *_a):
+        return self
+
+    def range(self, start, end):
+        self.rows = self.rows[start:end + 1]
         return self
 
     def execute(self):
@@ -201,6 +205,8 @@ class _CertifiedDb:
         self.model = {
             "active": True, "promoted": True,
             "probability_publishable": approved,
+            "artifact_checksum": "sha256-fixture-model-bundle",
+            "model_artifact_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
         }
         self.health = {
             "schema_version": health_schema,
@@ -216,6 +222,17 @@ class _CertifiedDb:
             {
                 "official_event_id": f"nfl-game-{i}",
                 "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+                "model_artifact_id": "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+                "event_prediction_id": f"prediction-{i}",
+                "event_start_time_utc": "2026-01-02T12:00:00Z",
+                "prediction_created_at": "2026-01-01T12:00:00Z",
+                "selected_participant": "H", "calibrated_probability": .7,
+                "calibrated_lower_bound": .6, "calibrated_upper_bound": .8,
+                "outcome": int(i % 10 < 7),
+                "brier": (.7 - int(i % 10 < 7)) ** 2,
+                "log_loss": -math.log(.7 if i % 10 < 7 else .3),
+                "source_game_id": f"nfl-game-{i}",
+                "schema_version": "NFL_FORWARD_SHADOW_GRADE_V1", "can_execute": False,
             }
             for i in range(count)
         ]

@@ -157,7 +157,7 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     """Independent cohort and champion certification, never automatic promotion."""
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
-            "artifact_id,active,promoted,probability_publishable"
+            "artifact_id,artifact_checksum,model_artifact_version,active,promoted,probability_publishable"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
             "schema_version,graded_n,minimum_forward_required,status,certification_recommendation,blockers"
@@ -176,20 +176,41 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     if not isinstance(minimum, int) or minimum < 100:
         return False
     try:
-        grade_result = (
-            db.table("wow_nfl_forward_verified_grades")
-            .select("official_event_id")
-            .eq("model_version", str(row["model_version"]))
-            .limit(minimum * 2)
-            .execute()
-        )
-        grades = grade_result.data
-        if not isinstance(grades, list):
+        from v17.nfl_forward_shadow import ForwardGrade, calibration_health
+        saved_checksum = (row.get("model_output_snapshot") or {}).get("artifact_checksum")
+        if (not saved_checksum or model.get("artifact_checksum") != saved_checksum
+            or model.get("model_artifact_version") != row["model_version"]):
             return False
-        unique_games = {
-            str(g.get("official_event_id"))
-            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
-        }
+        # Recompute the unchanged health thresholds on the complete reconciled
+        # cohort for this exact artifact and version. Global PASS is diagnostic
+        # context; it cannot lend calibration quality to a failing specialist.
+        cohort = []
+        seen = set()
+        page_size = 500
+        for page in range(100):
+            batch = (db.table("wow_nfl_forward_verified_grades").select("*")
+                     .eq("model_version", str(row["model_version"]))
+                     .eq("model_artifact_id", str(row["model_artifact_id"]))
+                     .order("official_event_id").range(page * page_size, (page + 1) * page_size - 1)
+                     .execute().data)
+            if not isinstance(batch, list) or len(batch) > page_size:
+                return False
+            for grade in batch:
+                event_id = grade.get("official_event_id")
+                if (not event_id or event_id in seen
+                    or grade.get("model_version") != row["model_version"]
+                    or str(grade.get("model_artifact_id")) != str(row["model_artifact_id"])):
+                    return False
+                seen.add(event_id)
+                cohort.append(ForwardGrade(**{field: grade[field] for field in ForwardGrade.__dataclass_fields__}))
+            if len(batch) < page_size:
+                break
+        else:
+            return False  # No truncation may authorize a fitted model.
+        exact_health = calibration_health(cohort, min_forward=minimum)
+        if exact_health.get("status") != "PASS":
+            return False
+        unique_games = seen
     except Exception:
         return False
     return bool(

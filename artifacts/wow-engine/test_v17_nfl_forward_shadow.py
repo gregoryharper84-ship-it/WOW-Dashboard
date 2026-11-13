@@ -505,6 +505,10 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
         def limit(self, *_a):
             return self
 
+        def range(self, start, end):
+            self.rows = self.rows[start:end + 1]
+            return self
+
         def execute(self):
             return SimpleNamespace(data=self.rows)
 
@@ -515,7 +519,7 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
 
         def table(self, name):
             if name == "wow_nfl_event_fitted_model_artifacts":
-                return Query([{"active": True, "promoted": True, "probability_publishable": True}])
+                return Query([{"active": True, "promoted": True, "probability_publishable": True, "artifact_checksum": "test-checksum", "model_artifact_version": "fitted-nfl-test"}])
             if name == "wow_nfl_forward_calibration_health":
                 return Query([{
                     "schema_version": self.health_version,
@@ -528,10 +532,16 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
             if name == "wow_nfl_forward_verified_grades":
                 if self.verified is None:
                     raise RuntimeError("migration not applied")
-                return Query([{"official_event_id": f"event-{i}"} for i in range(self.verified)])
+                from dataclasses import asdict
+                predictions = [_prediction(event_id=f"event-{i}", p=.7, lower=.6, upper=.8, index=i) for i in range(self.verified)]
+                outcomes = [{"game_id": p.official_event_id, "home_score": 24 if i % 10 < 7 else 17,
+                             "away_score": 17 if i % 10 < 7 else 24, "home_win": i % 10 < 7, "tie": False}
+                            for i, p in enumerate(predictions)]
+                return Query([{**asdict(g), "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test"}
+                              for g in grade_forward_predictions(predictions, outcomes)])
             raise AssertionError(name)
 
-    row = {"model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test"}
+    row = {"model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test", "model_output_snapshot": {"artifact_checksum": "test-checksum"}}
     assert not _forward_certification_proven(Db(99), row)
     assert not _forward_certification_proven(Db(100, "NFL_FORWARD_CALIBRATION_HEALTH_V1"), row)
     assert not _forward_certification_proven(Db(None), row)

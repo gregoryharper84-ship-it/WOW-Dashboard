@@ -84,7 +84,7 @@ def test_sql_view_excludes_actual_corrupt_historical_grade_shapes():
           model_probability_publishable integer, can_execute integer,
           calibrated_selection_probability real,
           calibrated_selection_lower_bound real,
-          calibrated_selection_upper_bound real
+          calibrated_selection_upper_bound real, model_artifact_id text
         )
     """)
     db.execute("""
@@ -104,9 +104,9 @@ def test_sql_view_excludes_actual_corrupt_historical_grade_shapes():
         log_loss = -math.log(clipped if grade_outcome else 1 - clipped)
         brier = (probability - grade_outcome) ** 2 if brier_override is None else brier_override
         db.execute(
-            "insert into public.wow_nfl_event_predictions values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "insert into public.wow_nfl_event_predictions values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (pid, event, "NFL_FITTED", "H", "H", "A", created, kickoff,
-             1, 1, 1, 0, probability, lower, upper),
+             1, 1, 1, 0, probability, lower, upper, "artifact"),
         )
         db.execute(
             "insert into public.wow_nfl_training_games values(?,?,?,?,?,?)",

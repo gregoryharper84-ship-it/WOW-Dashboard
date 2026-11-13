@@ -6,7 +6,11 @@
 create or replace view public.wow_nfl_forward_verified_grades
 with (security_invoker = true, security_barrier = true)
 as
-select g.official_event_id, g.model_version
+select g.official_event_id, g.model_version,
+       p.model_artifact_id, g.event_prediction_id, g.event_start_time_utc,
+       g.prediction_created_at, g.selected_participant, g.calibrated_probability,
+       g.calibrated_lower_bound, g.calibrated_upper_bound, g.outcome,
+       g.brier, g.log_loss, g.source_game_id, g.schema_version, g.can_execute
 from public.wow_nfl_forward_shadow_grades as g
 join public.wow_nfl_event_predictions as p
   on p.event_prediction_id = g.event_prediction_id
