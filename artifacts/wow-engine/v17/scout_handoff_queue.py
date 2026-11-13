@@ -549,19 +549,41 @@ def process_claimed_job(
 
 
 
+_READ_PAGE_SIZE = 1000  # PostgREST caps one response at 1,000 rows; never read a run unpaginated.
+
+
+def _read_all_rows(build_query: Any) -> list[dict[str, Any]]:
+    """Read every row of a run, paging with a deterministic order.
+
+    ``build_query`` returns a fresh query already ordered by (created_at, unique id). An unpaginated
+    read silently truncates at the server row cap, hiding later-stage state events and making a
+    terminal run look unproven.
+    """
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        page = (
+            build_query().range(start, start + _READ_PAGE_SIZE - 1).execute()
+        )
+        batch = [dict(row) for row in (getattr(page, "data", None) or [])]
+        rows.extend(batch)
+        if len(batch) < _READ_PAGE_SIZE:
+            return rows
+        start += _READ_PAGE_SIZE
+
+
 def read_run_status(db: Any, source_run_id: str) -> dict[str, Any]:
     """Read a lightweight terminal/progress receipt without large row payloads."""
-    result = (
-        db.table("wow_scout_handoff_jobs")
+    rows = _read_all_rows(
+        lambda: db.table("wow_scout_handoff_jobs")
         .select(
-            "research_run_id,candidate_id,target_lane,research_priority,"
+            "job_id,research_run_id,candidate_id,target_lane,research_priority,"
             "current_state,terminal,last_error_code,can_execute,created_at"
         )
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("job_id")
     )
-    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
     priority_counts: dict[str, dict[str, int]] = {}
@@ -605,22 +627,20 @@ def read_run_status(db: Any, source_run_id: str) -> dict[str, Any]:
 
 
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
-    result = (
-        db.table("wow_scout_handoff_jobs")
+    rows = _read_all_rows(
+        lambda: db.table("wow_scout_handoff_jobs")
         .select("*")
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("job_id")
     )
-    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
-    event_result = (
-        db.table("wow_scout_handoff_state_events")
-        .select("candidate_id,target_lane,state,code,can_execute,created_at")
+    events = _read_all_rows(
+        lambda: db.table("wow_scout_handoff_state_events")
+        .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
         .eq("source_run_id", source_run_id)
         .order("created_at")
-        .execute()
+        .order("event_id")
     )
-    events = [dict(row) for row in (getattr(event_result, "data", None) or [])]
 
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
