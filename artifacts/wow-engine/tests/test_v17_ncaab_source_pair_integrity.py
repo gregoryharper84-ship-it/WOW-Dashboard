@@ -10,7 +10,7 @@ def row(side, team, source="a" * 64, season="2026", score="74", gid="401"):
 
 
 def test_complete_unambiguous_pair_is_accepted():
-    home, away = validated_team_box_pair("401", [row("home", "H"), row("away", "A")])
+    home, away = validated_team_box_pair("401", [row("home", "H"), row("away", "A", score="70")])
     assert home["team_id"] == "H" and away["team_id"] == "A"
 
 
@@ -78,7 +78,7 @@ def test_collector_rejects_duplicate_game_rows_before_training(monkeypatch):
 def test_collector_preserves_unique_two_team_game(monkeypatch):
     from v17 import ncaab_sportsdataverse_candidate as collector
 
-    data = _source_csv([row("home", "H"), row("away", "A")])
+    data = _source_csv([row("home", "H"), row("away", "A", score="70")])
     class Reply:
         status_code = 200
         content = data
@@ -100,3 +100,32 @@ def test_two_rows_both_home_must_not_be_treated_as_unique_pair():
 def test_two_rows_both_away_must_not_be_treated_as_unique_pair():
     with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
         validated_team_box_pair("401", [row("away", "H"), row("away", "A")])
+
+
+@pytest.mark.parametrize("bad_score", ["unknown", " ", "NaN", "Infinity", "-1", "74.5", "1e9999"])
+def test_invalid_settlement_score_never_becomes_zero_score(bad_score):
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_SCORE_INVALID"):
+        validated_team_box_pair("401", [row("home", "H", score=bad_score), row("away", "A", score="70")])
+
+
+def test_tied_score_does_not_create_binary_winner_label():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_SCORE_TIE_UNSETTLED"):
+        validated_team_box_pair("401", [row("home", "H", score="74"), row("away", "A", score="74")])
+
+
+def test_integer_like_decimal_source_scores_are_accepted():
+    home, away = validated_team_box_pair("401", [row("home", "H", score="74.0"), row("away", "A", score="70.0")])
+    assert home["team_score"] == "74.0" and away["team_score"] == "70.0"
+
+
+@pytest.mark.parametrize("bad_score,code", [("unknown", "NCAAB_SOURCE_SCORE_INVALID"), ("74", "NCAAB_SOURCE_SCORE_TIE_UNSETTLED")])
+def test_collector_preserves_invalid_settlement_as_typed_hold(monkeypatch, bad_score, code):
+    from v17 import ncaab_sportsdataverse_candidate as collector
+    data = _source_csv([row("home", "H", score="74"), row("away", "A", score=bad_score)])
+    class Reply:
+        status_code = 200
+        content = data
+    monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
+    with pytest.raises(collector.NCAABCandidateUnavailable) as caught:
+        collector.fetch_games(seasons=(2026,))
+    assert caught.value.code == code
