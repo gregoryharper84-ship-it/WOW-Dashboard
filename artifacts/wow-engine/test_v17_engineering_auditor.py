@@ -452,7 +452,7 @@ def test_claude_audit_to_engineering_handoff_contract():
     assert "No new controller, lease issuer" in claude
     assert "## Mandatory repair handoff after audit" in auditor
     assert "The auditor does not write code" in auditor
-    assert "existing** Engineering dispatcher" in auditor
+    assert "Engineering dispatcher performs authenticated task admission" in auditor
     assert "DUPLICATE is a relationship, not a completed repair" in supervisor
     assert "exact open canonical issue/PR" in supervisor
     assert "can_execute=false" in claude and "V17_TERMINAL_REDUCER" in auditor
