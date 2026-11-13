@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import copy
 
 import pytest
-from v17.nba_tipoff_backfill import classify, run
+from v17.nba_tipoff_backfill import classify, run, BackfillIntegrityError
 
 
 def fixture():
@@ -64,7 +64,10 @@ def test_missing_and_naive_times_remain_unverified():
 def test_wrong_et_day_and_after_observation_blocked():
     old,source=fixture(); source["scheduled_start_utc"]="2026-11-12T00:00:00+00:00"
     assert classify(old,source)=="CHRONOLOGY_CONFLICT"
-    source["scheduled_start_utc"]="2026-11-11T20:00:00+00:00"
+    old["source_retrieved_at"]="2026-11-10T18:00:00+00:00"
+    source["scheduled_start_utc"]="2026-11-10T20:00:00+00:00"
+    assert classify(old,source)=="CHRONOLOGY_CONFLICT"
+    source["scheduled_start_utc"]="2026-11-10T18:00:00+00:00"
     assert classify(old,source)=="CHRONOLOGY_CONFLICT"
 
 
@@ -82,9 +85,17 @@ def test_dry_run_does_not_write_and_apply_changes_only_start():
 
 def test_max_updates_is_bounded():
     old,src=fixture(); db=DB(old)
-    result=run(db,source_rows={src["game_id"]:src},apply=True,max_updates=1)
+    second={**old, "game_id":"espn-124"}
+    src2={**src, "game_id":"espn-124"}
+    db.rows.append(copy.deepcopy(second))
+    source_rows={src["game_id"]:src, src2["game_id"]:src2}
+    result=run(db,source_rows=source_rows,apply=True,max_updates=1)
+    assert result["eligible"]==2
     assert result["updated"]==1
-    with pytest.raises(ValueError):run(db,source_rows={src["game_id"]:src},max_updates=0)
+    assert result["unattempted_eligible"]==1
+    assert sum(r["scheduled_start_utc"] is not None for r in db.rows)==1
+    assert db.rows[1]["scheduled_start_utc"] is None
+    with pytest.raises(ValueError):run(db,source_rows=source_rows,max_updates=0)
 
 
 def test_hash_conflict_keeps_row_untouched():
@@ -93,3 +104,66 @@ def test_hash_conflict_keeps_row_untouched():
     assert result["updated"]==0
     assert result["reason_counts"]["SOURCE_IDENTITY_OR_HASH_CONFLICT"]==1
     assert db.rows[0]==old
+
+def test_other_provider_or_unmatched_stays_untouched():
+    old,src=fixture(); db=DB(old)
+    assert classify(old,None)=="CANONICAL_GAME_NOT_FOUND"
+    assert run(db,source_rows={},apply=True)["updated"]==0
+    old["source_provider"]="ESPN_SCOREBOARD"
+    assert classify(old,src)=="OTHER_PROVIDER"
+
+
+def test_existing_timestamp_is_never_modified():
+    old,src=fixture(); old["scheduled_start_utc"]="2026-11-11T00:00:00+00:00"
+    db=DB(old)
+    assert run(db,source_rows={src["game_id"]:src},apply=True)["updated"]==0
+    assert db.rows[0]==old
+
+
+def test_source_fetch_failure_precedes_any_write(monkeypatch):
+    old,src=fixture(); db=DB(old)
+    def fail(_): raise RuntimeError("source-down")
+    monkeypatch.setattr("v17.nba_tipoff_backfill._fetch_normalized_sources",fail)
+    with pytest.raises(RuntimeError,match="source-down"):
+        run(db)
+    assert db.rows[0]==old
+
+
+def test_duplicate_stored_id_rejected():
+    old,src=fixture(); db=DB(old); db.rows.append(copy.deepcopy(old))
+    with pytest.raises(BackfillIntegrityError,match="DUPLICATE_STORED_ID"):
+        run(db,source_rows={src["game_id"]:src})
+
+
+def test_empty_season_inventory_fails_closed():
+    old,src=fixture(); old["season"]=None; db=DB(old)
+    with pytest.raises(BackfillIntegrityError,match="NO_SEASONS"):
+        run(db,source_rows={src["game_id"]:src})
+
+
+def test_pagination_501_exact_ids():
+    old,src=fixture(); db=DB(old)
+    db.rows = [{**old,"game_id":f"espn-{i}"} for i in range(501)]
+    result=run(db,source_rows={})
+    assert result["rows_read"]==501
+    assert result["reason_counts"]["CANONICAL_GAME_NOT_FOUND"]==501
+
+
+def test_absent_record_during_apply_fails_without_a_new_insert():
+    old,src=fixture()
+    calls=[0]
+    class DeletingDB(DB):
+        def table(self, name):
+            calls[0]+=1
+            if calls[0]==2:
+                self.rows=[]
+            return super().table(name)
+    racing=DeletingDB(old)
+    with pytest.raises(BackfillIntegrityError,match="WRITE_READBACK_INVALID"):
+        run(racing,source_rows={src["game_id"]:src},apply=True)
+    assert racing.rows==[]
+
+
+def test_prior_observation_must_be_timezone_aware():
+    old,src=fixture(); old["source_retrieved_at"]="2026-11-11T19:00:00"
+    assert classify(old,src)=="CHRONOLOGY_UNVERIFIED"
