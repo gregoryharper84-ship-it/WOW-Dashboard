@@ -100,3 +100,17 @@ def test_elo_week_is_supported_but_other_ratings_do_not_invent_week(monkeypatch)
 
     assert calls[0][1] == {"year": 2025, "week": 4}
     assert calls[1][1] == {"year": 2025}
+
+
+def test_venues_request_is_allowlisted(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, headers, timeout):
+        captured["url"] = url
+        return SimpleNamespace(status_code=200, json=lambda: [{"id": 1, "latitude": 30.0, "longitude": -97.0}])
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    response = cfbd.CFBDClient(api_key="secret").venues()
+    assert captured["url"] == "https://api.collegefootballdata.com/venues"
+    assert response.endpoint == "/venues"
+    assert response.rows[0]["id"] == 1

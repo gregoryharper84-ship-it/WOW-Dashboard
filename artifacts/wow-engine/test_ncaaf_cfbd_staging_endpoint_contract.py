@@ -26,9 +26,12 @@ def test_cfbd_player_stats_route_matches_staging_sql_contract():
 def test_staging_retains_research_only_security():
     sql = STAGING.read_text(encoding="utf-8").lower()
     assert "enable row level security" in sql
-    assert "revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated" in sql
+    assert "revoke all on table public.wow_ncaaf_source_snapshots from public, anon, authenticated, service_role" in sql
     assert "constraint wow_ncaaf_source_never_execute check (can_execute = false)" in sql
-    assert "grant all on table public.wow_ncaaf_source_snapshots to service_role" in sql
+    assert "grant select, insert on table public.wow_ncaaf_source_snapshots to service_role" in sql
+    assert "grant all on table public.wow_ncaaf_source_snapshots to service_role" not in sql
+    assert "before truncate" in sql
     for route in ("/games", "/games/players", "/ratings/core", "/ratings/sp",
-                  "/ratings/srs", "/ratings/elo", "/ratings/fpi"):
+                  "/ratings/srs", "/ratings/elo", "/ratings/fpi", "/venues"):
         assert "'" + route + "'" in sql
+    assert sql.count("'/venues'") == 2
