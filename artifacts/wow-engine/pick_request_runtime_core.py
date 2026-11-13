@@ -1305,6 +1305,10 @@ def install_pick_request_routes(
                 if reacquisition_reason is not None and row.evidence is not None
                 else None
             )
+            prior_ruled_out = (
+                prior_availability is not None
+                and prior_availability.status == AVAILABILITY_UNAVAILABLE
+            )
             if row.evidence is None or reacquisition_reason is not None:
                 try:
                     raw = auto_hydrate_prop_evidence(
@@ -1366,9 +1370,22 @@ def install_pick_request_routes(
                     outcomes.append(
                         _terminal(
                             row_key,
-                            "HELD" if _auto_hydration_hold(exc.code) else "REJECTED",
-                            exc.code,
-                            detail={**exc.detail, "message": str(exc), "specialist_invoked": False},
+                            "REJECTED" if prior_ruled_out else (
+                                "HELD" if _auto_hydration_hold(exc.code) else "REJECTED"
+                            ),
+                            PLAYER_RULED_OUT if prior_ruled_out else exc.code,
+                            detail={
+                                **exc.detail,
+                                "message": str(exc),
+                                "specialist_invoked": False,
+                                **({
+                                    "blocker": PLAYER_RULED_OUT,
+                                    "terminal_label": PLAYER_RULED_OUT,
+                                    "designation": prior_availability.designation,
+                                    "concurrent_acquisition_error": exc.code,
+                                    "model_evaluated": False,
+                                } if prior_ruled_out else {}),
+                            },
                             acquisition=acquisition,
                         )
                     )
@@ -1386,9 +1403,19 @@ def install_pick_request_routes(
                     outcomes.append(
                         _terminal(
                             row_key,
-                            "HELD",
-                            "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
-                            detail={"error_type": type(exc).__name__, "specialist_invoked": False},
+                            "REJECTED" if prior_ruled_out else "HELD",
+                            PLAYER_RULED_OUT if prior_ruled_out else "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
+                            detail={
+                                "error_type": type(exc).__name__,
+                                "specialist_invoked": False,
+                                **({
+                                    "blocker": PLAYER_RULED_OUT,
+                                    "terminal_label": PLAYER_RULED_OUT,
+                                    "designation": prior_availability.designation,
+                                    "concurrent_acquisition_error": "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
+                                    "model_evaluated": False,
+                                } if prior_ruled_out else {}),
+                            },
                             acquisition=acquisition,
                         )
                     )
