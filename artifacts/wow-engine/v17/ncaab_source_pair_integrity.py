@@ -48,8 +48,13 @@ def validated_team_box_pair(
     # to zero; validate final scores before it can manufacture settlement.
     scores = []
     for side in (home, away):
+        score_text = str(side["team_score"]).strip()
+        # Decimal accepts underscores in locations rejected by downstream float().
+        # Never normalize a value that would otherwise become a fabricated zero.
+        if "_" in score_text:
+            raise NCAABSourcePairError("NCAAB_SOURCE_SCORE_INVALID")
         try:
-            score = Decimal(str(side["team_score"]).strip())
+            score = Decimal(score_text)
         except (InvalidOperation, ValueError, TypeError) as exc:
             raise NCAABSourcePairError("NCAAB_SOURCE_SCORE_INVALID") from exc
         if (not score.is_finite() or score < 0 or score > 999
