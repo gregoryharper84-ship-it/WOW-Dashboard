@@ -40,8 +40,10 @@ class GradedRow:
             ("forecast", self.forecast),
             ("lower_bound", self.lower_bound),
         ):
-            if not isinstance(value, (int, float)) or not 0.0 < float(value) < 1.0:
-                raise ValueError(f"{name} must be strictly inside (0, 1)")
+            if not isinstance(value, (int, float)) or not (
+                (0.0 < float(value) < 1.0) if name == "forecast" else (0.0 <= float(value) <= 1.0)
+            ):
+                raise ValueError(f"{name} out of probability bounds")
         if float(self.lower_bound) > float(self.forecast):
             raise ValueError("lower_bound must not exceed forecast")
 
