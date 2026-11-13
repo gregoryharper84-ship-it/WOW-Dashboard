@@ -158,13 +158,31 @@ def test_rule_out_can_only_be_replaced_by_fresh_verified_clearance(monkeypatch):
     assert len(scored) == 1
 
 
+
+def _assert_reacquisition_identity(kwargs, row):
+    """Even a failing source call must target the exact event and discard stale capture."""
+    assert kwargs["sport"] == "NFL"
+    assert kwargs["player"] == row["player"]
+    assert kwargs["stat_type"] == "RECEIVING_YARDS"
+    assert kwargs["opponent"] == row["opponent"]
+    assert kwargs["canonical_event_id"] == row["event_id"]
+    assert kwargs["event_start_time"] == row["event_start_time"]
+    assert kwargs["source_capture_timestamp"] is None
+    assert kwargs["source_label"] == (
+        f"{row.get('source_type', 'NORMALIZED')}:{row.get('platform') or 'UNKNOWN'}"
+    )
+
+
 def test_rule_out_survives_nfl_reacquisition_provider_error(monkeypatch):
     """An official OUT cannot be replaced by source failure; keep both causes."""
     client, persisted, _routed, scored = _build(monkeypatch)
     row = _manual_nfl_row("out-provider-error")
     row["evidence"]["role_status"]["availability"]["designation"] = "OUT"
+    row["source_capture_timestamp"] = row["evidence"]["captured_at"]
+    seen = []
 
-    def source_down(**_kwargs):
+    def source_down(**kwargs):
+        seen.append(kwargs)
         raise PropAutoHydrationError("NFL_PROP_SOURCE_UNAVAILABLE", "source down")
 
     monkeypatch.setattr(facade, "auto_hydrate_prop_evidence", source_down)
@@ -179,6 +197,8 @@ def test_rule_out_survives_nfl_reacquisition_provider_error(monkeypatch):
     assert terminal["acquisition"]["status"] == "FAILED"
     assert terminal["model_evaluated"] is False
     assert terminal["can_execute"] is False
+    assert len(seen) == 1
+    _assert_reacquisition_identity(seen[0], row)
     assert persisted == []
     assert scored == []
 
@@ -188,8 +208,11 @@ def test_rule_out_survives_nfl_reacquisition_internal_error(monkeypatch):
     client, persisted, _routed, scored = _build(monkeypatch)
     row = _manual_nfl_row("out-internal-error")
     row["evidence"]["role_status"]["availability"]["designation"] = "OUT"
+    row["source_capture_timestamp"] = row["evidence"]["captured_at"]
+    seen = []
 
-    def broken_source(**_kwargs):
+    def broken_source(**kwargs):
+        seen.append(kwargs)
         raise RuntimeError("provider parsing failed")
 
     monkeypatch.setattr(facade, "auto_hydrate_prop_evidence", broken_source)
@@ -204,5 +227,7 @@ def test_rule_out_survives_nfl_reacquisition_internal_error(monkeypatch):
     assert terminal["acquisition"]["status"] == "FAILED"
     assert terminal["model_evaluated"] is False
     assert terminal["can_execute"] is False
+    assert len(seen) == 1
+    _assert_reacquisition_identity(seen[0], row)
     assert persisted == []
     assert scored == []
