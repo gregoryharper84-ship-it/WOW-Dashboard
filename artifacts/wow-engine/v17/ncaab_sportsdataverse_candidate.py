@@ -20,6 +20,7 @@ from typing import Any
 import requests
 
 from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
+from v17.ncaab_source_pair_integrity import NCAABSourcePairError, validated_team_box_pair
 
 CAN_EXECUTE = False
 SPORT = LEAGUE = "NCAAB"
@@ -105,12 +106,15 @@ def fetch_games(*, seasons: tuple[int, ...] = SEASONS) -> tuple[list[dict[str, A
 
     games: list[dict[str, Any]] = []
     for game_id, team_rows in grouped.items():
-        home = next((row for row in team_rows if str(row.get("team_home_away") or "").lower() == "home"), None)
-        away = next((row for row in team_rows if str(row.get("team_home_away") or "").lower() == "away"), None)
-        if not home or not away:
+        try:
+            pair = validated_team_box_pair(game_id, team_rows)
+        except NCAABSourcePairError as exc:
+            # A contradictory game would corrupt chronology and its training label.
+            # Quarantine the source cohort; never select the first matching row.
+            raise NCAABCandidateUnavailable(str(exc), f"game_id={game_id}") from exc
+        if pair is None:
             continue
-        if home.get("team_score") in (None, "") or away.get("team_score") in (None, ""):
-            continue
+        home, away = pair
         games.append({
             "game_id": game_id, "event_start": _event_time(home), "season": int(_float(home.get("season"))),
             "home_team_id": str(home.get("team_id") or home.get("team_display_name") or "").strip(),
