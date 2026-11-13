@@ -32,16 +32,22 @@ def _name(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _weekly_run_matches(run: Any, season: int, week: int) -> bool:
+def _weekly_run_matches(run: Any, season: int, week: int, expected_game_count: int) -> bool:
     if not isinstance(run, Mapping):
         return False
     request = run.get("request_payload")
+    # The authenticated producer's whole-week selector contains an empty
+    # date list and an explicit game count. A partial/date-scoped request
+    # cannot satisfy the independent exact-week conservation audit.
     return (
         isinstance(request, Mapping)
         and type(request.get("requested_season")) is int
         and type(request.get("requested_week")) is int
         and request["requested_season"] == season
         and request["requested_week"] == week
+        and type(request.get("expected_game_count")) is int
+        and request["expected_game_count"] == expected_game_count
+        and request.get("requested_slate_dates") == []
         and run.get("can_execute") is False
         and _name(run.get("run_id")) is not None
     )
@@ -181,7 +187,7 @@ def audit_weekly_receipts(
             "can_execute": False,
         })
 
-    matching_runs = [row for row in run_rows if _weekly_run_matches(row, season, week)]
+    matching_runs = [row for row in run_rows if _weekly_run_matches(row, season, week, expected_game_count)]
     completed_runs = [row for row in matching_runs if row.get("run_status") == "COMPLETED"]
     if not matching_runs:
         hold("PICKEM_WEEKLY_RUN_NOT_OBSERVED")
