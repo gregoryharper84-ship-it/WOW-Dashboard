@@ -69,8 +69,10 @@ def test_collector_rejects_duplicate_game_rows_before_training(monkeypatch):
         status_code = 200
         content = data
     monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
-    with pytest.raises(collector.NCAABCandidateUnavailable, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+    with pytest.raises(collector.NCAABCandidateUnavailable) as caught:
         collector.fetch_games(seasons=(2026,))
+    assert caught.value.code == "NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"
+    assert str(caught.value) == "game_id=401"
 
 
 def test_collector_preserves_unique_two_team_game(monkeypatch):
