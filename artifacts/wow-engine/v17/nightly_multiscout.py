@@ -101,6 +101,10 @@ SPORT_GAME_SCRIPTS = {
     "icehockey": ("GOALIE_DOMINANCE", "GOALIE_FAILURE", "EMPTY_NET_EXTENSION", "POWER_PLAY_HEAVY", "LOW_EVENT_FIVE_ON_FIVE", "HIGH_EVENT_FIVE_ON_FIVE", "OVERTIME"),
     "soccer": ("EARLY_FAVORITE_GOAL", "EARLY_UNDERDOG_GOAL", "LEVEL_LATE", "RED_CARD_FAVORITE", "RED_CARD_UNDERDOG", "LOW_BLOCK", "OPEN_TRANSITION_GAME", "DRAW_SCRIPT"),
     "tennis": ("STRAIGHT_SETS_FAVORITE", "STRAIGHT_SETS_UNDERDOG", "DECIDING_SET", "TIEBREAK_HEAVY", "BREAK_HEAVY", "SERVE_DOMINANCE", "FATIGUE_OR_MEDICAL_LIMITATION"),
+    "golf": ("WEATHER_WAVE_ADVANTAGE", "COURSE_FIT_ADVANTAGE", "EARLY_ROUND_VOLATILITY", "PUTTING_VARIANCE", "MISSED_CUT_RISK", "SUNDAY_COMEBACK"),
+    "mma": ("EARLY_FINISH", "LATE_FINISH", "WRESTLING_CONTROL", "STRIKING_VOLUME", "CARDIO_FADE", "JUDGES_DECISION"),
+    "boxing": ("EARLY_STOPPAGE", "LATE_STOPPAGE", "VOLUME_BOXING", "KNOCKDOWN_RECOVERY", "LATE_ROUND_FATIGUE", "JUDGES_DECISION"),
+    "cricket": ("TOSS_BATTING_FIRST", "TOSS_CHASING", "POWERPLAY_WICKETS", "MIDDLE_OVER_SPIN_PRESSURE", "BATTING_COLLAPSE", "DEATH_OVERS_RUN_RATE", "CHASE_PRESSURE"),
 }
 
 
@@ -216,7 +220,19 @@ def sport_family(key: str) -> str:
 
 
 def game_scripts(key: str) -> list[str]:
-    return sorted(set(GENERIC_GAME_SCRIPTS + SPORT_GAME_SCRIPTS.get(sport_family(key), ())))
+    family = sport_family(key)
+    specific = SPORT_GAME_SCRIPTS.get(family, ())
+    if family in {"tennis", "golf", "mma", "boxing", "cricket"}:
+        # Do not attach football-style blowout/OT assumptions to these sports.
+        return sorted(set(specific))
+    return sorted(set(GENERIC_GAME_SCRIPTS + specific))
+
+
+def game_script_evidence_status(key: str) -> str:
+    """Scenario names are discoverable; conditional win rates are not fitted."""
+    return ("HYPOTHESES_ONLY_FREQUENCIES_UNFITTED"
+            if sport_family(key) in SPORT_GAME_SCRIPTS
+            else "NO_SPORT_SPECIFIC_GAME_SCRIPTS")
 
 
 def chunked(items: list[str], size: int) -> list[list[str]]:
@@ -336,6 +352,10 @@ def _team_event_candidate(
         "upset_evaluation_requested": True,
         "game_script_hypotheses": scripts,
         "game_scripts_are_evidence_only": True,
+        "game_script_evaluation_required": True,
+        "game_script_evaluation_status": game_script_evidence_status(str(event_identity.get("sport_key") or "")),
+        "game_script_frequency_estimated": False,
+        "script_probability_publishable": False,
         "scout_team": list(SCOUT_TEAM),
         "market_evidence": team_market_rows,
         "market_evidence_status": market_status,
@@ -497,6 +517,10 @@ def run() -> dict[str, Any]:
                     "market_evidence_status": "AVAILABLE",
                     "game_script_hypotheses": scripts,
                     "game_scripts_are_evidence_only": True,
+                    "game_script_evaluation_required": True,
+                    "game_script_evaluation_status": game_script_evidence_status(key),
+                    "game_script_frequency_estimated": False,
+                    "script_probability_publishable": False,
                     "scout_team": list(SCOUT_TEAM),
                     "contrarian_review_required": True,
                     "canonicalization_required": True,
