@@ -123,15 +123,19 @@ def audit_weekly_receipts(
                 hold("PICKEM_PREDICTION_IDENTITY_INVALID")
             continue
         start = events_by_id[official_id]["start"]
+        receipt_id = _name(row.get("event_prediction_id"))
+        # Register identity reuse even when this observation cannot qualify
+        # as a pregame receipt. An immutable ID cannot belong to two games.
+        if receipt_id:
+            receipt_events.setdefault(receipt_id, set()).add(official_id)
         created_at = _utc(row.get("created_at"))
         prediction_start = _utc(row.get("event_start_time_utc"))
-        if (not _name(row.get("event_prediction_id")) or created_at is None
+        if (receipt_id is None or created_at is None
                 or prediction_start != start or created_at >= start
                 or row.get("can_execute") is not False):
             # An invalid/after-kickoff observation cannot supply pregame proof.
             continue
         grouped.setdefault(official_id, []).append((created_at, row))
-        receipt_events.setdefault(str(row["event_prediction_id"]), set()).add(official_id)
 
     # One immutable prediction cannot satisfy two different official events.
     # Reject every use of a reused ID, rather than selecting an arbitrary side.
@@ -147,8 +151,21 @@ def audit_weekly_receipts(
     for event in sorted(events_by_id.values(), key=lambda x: (x["start"], x["official_event_id"])):
         official_id = event["official_event_id"]
         candidates = grouped.get(official_id, [])
-        candidates.sort(key=lambda item: (item[0], str(item[1]["event_prediction_id"])))
-        chosen = candidates[-1][1] if candidates else None
+        # A UUID is an identity, not a source ordering sequence. Two distinct
+        # receipts at the same timestamp have no proven latest observation.
+        candidates.sort(key=lambda item: item[0])
+        if candidates:
+            last_created_at = candidates[-1][0]
+            tied = [row for created_at, row in candidates if created_at == last_created_at]
+            distinct_ids = {row["event_prediction_id"] for row in tied}
+            distinct_flags = {row.get("model_probability_publishable") is True for row in tied}
+            if len(distinct_ids) > 1 or len(distinct_flags) > 1:
+                hold("PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS")
+                chosen = None
+            else:
+                chosen = tied[0]
+        else:
+            chosen = None
         if chosen is None:
             missing.append(official_id)
             hold("PICKEM_PREGAME_PREDICTION_MISSING")
