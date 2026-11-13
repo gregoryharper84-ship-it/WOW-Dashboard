@@ -149,7 +149,7 @@ def audit_weekly_receipts(
     if reused_ids:
         hold("PICKEM_REUSED_IMMUTABLE_PREDICTION_ID")
         for official_id, candidates in grouped.items():
-            grouped[official_id] = [item for item in candidates if str(item[1]["event_prediction_id"]) not in reused_ids]
+            grouped[official_id] = [item for item in candidates if _name(item[1]["event_prediction_id"]) not in reused_ids]
 
     events: list[dict[str, Any]] = []
     missing: list[str] = []
