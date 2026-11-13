@@ -30,7 +30,7 @@ event_identity_collisions AS (
   -- One official game ID with incompatible date, start, or participants
   -- cannot count as two independent fitted holdout games.
   SELECT official_event_id
-  FROM scored
+  FROM public.wow_mlb_forward_shadow_events
   GROUP BY official_event_id
   HAVING COUNT(DISTINCT official_date) > 1
       OR COUNT(DISTINCT event_start_time) > 1
