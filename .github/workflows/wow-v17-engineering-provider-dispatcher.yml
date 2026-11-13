@@ -87,7 +87,10 @@ jobs:
   provider-control:
     name: WOW V17 engineering provider control plane
     # Schedule/workflow_run use protected main; reject unmerged manual dispatch.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main' &&
+      vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -998,7 +1001,7 @@ jobs:
 
   independent-provider:
     needs: provider-control
-    if: always() && (
+    if: always() && vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true' && (
       needs.provider-control.outputs.cursor_dispatch == 'true' ||
       (needs.provider-control.outputs.fallback_required == 'true' &&
        needs.provider-control.outputs.provider != 'cursor')
