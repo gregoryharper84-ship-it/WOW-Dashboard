@@ -86,3 +86,17 @@ def test_collector_preserves_unique_two_team_game(monkeypatch):
     games, sources = collector.fetch_games(seasons=(2026,))
     assert len(games) == 1 and len(sources) == 1
     assert games[0]["home_team_id"] == "H" and games[0]["away_team_id"] == "A"
+
+
+def test_empty_source_group_is_not_a_game():
+    assert validated_team_box_pair("401", []) is None
+
+
+def test_two_rows_both_home_must_not_be_treated_as_unique_pair():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+        validated_team_box_pair("401", [row("home", "H"), row("home", "A")])
+
+
+def test_two_rows_both_away_must_not_be_treated_as_unique_pair():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+        validated_team_box_pair("401", [row("away", "H"), row("away", "A")])
