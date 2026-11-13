@@ -125,7 +125,29 @@ def evaluate_historical_ingestion_readiness(
             "sport and provider are required",
         )
 
-    entries = tuple(manifest_entries or load_source_manifest(default_manifest_path()))
+    entries = tuple(
+        load_source_manifest(default_manifest_path())
+        if manifest_entries is None else manifest_entries
+    )
+    # Caller-supplied entries bypass load_source_manifest's enum coercion.
+    # Refuse malformed rights/domain values before classifying source readiness.
+    if any(
+        not isinstance(item, SourceManifestEntry)
+        or not isinstance(item.sport, str)
+        or not item.sport.strip()
+        or not isinstance(item.provider, str)
+        or not item.provider.strip()
+        or not isinstance(item.evidence_domain, EvidenceDomain)
+        or not isinstance(item.rights_state, SourceRightsState)
+        or type(item.credential_required) is not bool
+        or item.grants_model_capability is not False
+        for item in entries
+    ):
+        raise HistoricalDataContractError(
+            "HISTORICAL_SOURCE_MANIFEST_ENTRY_INVALID",
+            "source entries require typed domain and rights, boolean credential "
+            "requirements, and no model capability grants",
+        )
     entry = _find_entry(sport=sport, provider=provider, entries=entries)
     if entry is None:
         return _result(
