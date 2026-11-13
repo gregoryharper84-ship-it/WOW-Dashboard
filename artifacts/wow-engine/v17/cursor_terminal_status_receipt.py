@@ -293,7 +293,12 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     import re
 
     head, base = pr.get("head"), pr.get("base")
-    if (pr.get("number") != target["pr_number"] or pr.get("state") != "open"
+    failed_launch = target.get("reservation_status") == "CURSOR_LAUNCH_RESERVED"
+    # A closed PR cannot strand a failed launch's shared-writer lease, but only
+    # when its original reservation binds the branch and negative-agent proof.
+    branch_bound = isinstance(target.get("reservation_branch"), str) and bool(target["reservation_branch"].strip())
+    allowed_states = {"open", "closed"} if failed_launch and branch_bound else {"open"}
+    if (pr.get("number") != target["pr_number"] or pr.get("state") not in allowed_states
             or not isinstance(head, dict) or not isinstance(base, dict)
             or not isinstance(head.get("repo"), dict)
             or not isinstance(base.get("repo"), dict)
@@ -303,7 +308,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
             or not isinstance(head.get("sha"), str)
             or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])):
         raise ReceiptBlocked("CURSOR_SOURCE_PR_IDENTITY_INVALID")
-    failed_launch = target.get("reservation_status") == "CURSOR_LAUNCH_RESERVED"
+    pr_state = pr["state"]
     live_ref = head.get("ref")
     if failed_launch:
         if (not isinstance(live_ref, str) or not live_ref.strip()
@@ -337,7 +342,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     again = _require_object(api(url, token=github_token),
                             "CURSOR_SOURCE_PR_RECHECK_FAILED")
     if (again.get("number") != target["pr_number"]
-            or again.get("state") != "open"
+            or again.get("state") != pr_state
             or not isinstance(again.get("head"), dict)
             or again["head"].get("sha") != latest
             or (failed_launch and again["head"].get("ref") != live_ref)
@@ -464,6 +469,7 @@ def collect_receipt(
             "negative_launch_proof": negative_proof,
             "repository": REPOSITORY,
             "pr_number": pr_number,
+            "pr_state": pr["state"],
             "base_ref": pr["base"]["ref"],
             "head_sha": pr["head"]["sha"],
             "changed_files": changed_files,
