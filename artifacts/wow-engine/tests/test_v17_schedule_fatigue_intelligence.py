@@ -239,3 +239,27 @@ def test_missing_road_role_cannot_claim_full_context():
                                              history_completeness={"A": True, "B": True})
     assert result["per_participant"]["B"]["consecutive_road_events_including_target"] is None
     assert result["status"] == "SCHEDULE_CONTEXT_INCOMPLETE"
+
+
+def test_unplayed_intervening_fixture_holds_rest_and_changes_receipt():
+    a = prior(-3, "a-final", loads={"A": {"value": 34, "unit": "minutes"}})
+    b = prior(-4, "b-final", teams=("B",), role="home",
+              loads={"B": {"value": 31, "unit": "minutes"}})
+    tar = target()
+    tar["as_of_utc"] = t(-1)
+    tar["source_available_at"] = t(-2)
+    before = build_schedule_matchup_context(target=tar, history=[a, b],
+                                             history_completeness={"A": True, "B": True})
+    incoming = {"official_event_id": "intervening", "sport": "NBA",
+                "event_start_utc": t(0, -12), "participants": ["A"],
+                "status": "SCHEDULED", "source_uri": "https://official.example/events",
+                "source_payload_sha256": "b" * 64, "source_available_at": t(-2)}
+    after = build_schedule_matchup_context(target=tar, history=[a, b, incoming],
+                                            history_completeness={"A": True, "B": True})
+    assert before["status"] == "RESEARCH_CONTEXT_ONLY"
+    assert after["status"] == "SCHEDULE_CONTEXT_INCOMPLETE"
+    assert after["per_participant"]["A"]["rest_hours"] is None
+    assert after["per_participant"]["A"]["back_to_back"] is None
+    assert after["per_participant"]["A"]["history_completeness_attested"] is False
+    assert after["unresolved_prior_event_ids"] == ["intervening"]
+    assert after["evidence_sha256"] != before["evidence_sha256"]
