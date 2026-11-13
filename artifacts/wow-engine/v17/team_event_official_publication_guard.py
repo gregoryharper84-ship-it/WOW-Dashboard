@@ -17,6 +17,7 @@ from math import isfinite
 from typing import Any
 
 from v17.cross_sport_evidence_integrity import evaluate_scored_cross_sport_evidence
+from v17.model_evidence_boundary import triad_required, verify_sealed_report
 
 V17_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 FINAL_APPROVED = "FINAL_APPROVED"
@@ -256,6 +257,27 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
         evidence_audit["evidence_status"] != "PASS"
     ):
         blockers.append("TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED")
+
+    # The triad requirement comes from the governed lane configuration, not from
+    # a caller-supplied flag: a payload naming a governed team/event sport is
+    # held even if it omits or clears evidence_triad_required. Completeness is
+    # accepted only from a report sealed at the scoring boundary; a report that
+    # was assembled or edited downstream cannot elevate itself.
+    triad_mandatory = triad_required(
+        sport=payload.get("sport"), candidate_family=payload.get("candidate_family")
+    ) or payload.get("evidence_triad_required") is True
+    triad = payload.get("model_evidence_triad") or {}
+    report_sport = triad.get("sport") if isinstance(triad, dict) else None
+    sport_matches = not payload.get("sport") or str(payload["sport"]).strip().upper() == str(report_sport).strip().upper()
+    if triad_mandatory and (not sport_matches or not verify_sealed_report(
+        payload.get("model_evidence_triad"),
+        sport=report_sport,
+        official_event_id=payload.get("official_event_id"),
+        model_artifact_version=(
+            payload.get("model_artifact_version") or payload.get("model_version")
+        ),
+    )):
+        blockers.append("TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN")
 
     blockers = list(dict.fromkeys(blockers))
     allowed = not blockers

@@ -144,8 +144,28 @@ from gate_engine.daily_run_lifecycle import (
     ensure_manifest_ready,
     start_manifest_reaper,
 )
+
+
+def _startup_side_effects_disabled() -> bool:
+    """Deterministic CI owns the database lifecycle, not background daemons.
+
+    The manifest schema gate below stays fail-closed: the service must never
+    accept runs without it. The daemons, however, open libpq connections on
+    their own threads while pytest may be rewriting os.environ inside
+    mock.patch.dict (services/tests/test_100k_quota_failover.py). That race
+    killed the required-three services shard with a native psycopg2
+    segmentation fault (exit 139) inside _run_startup_warmup, which no test
+    can report. Setting WOW_DISABLE_STARTUP_SIDE_EFFECTS=1 keeps the schema
+    gate and skips only the threads. Production never sets it.
+    """
+    return os.environ.get(
+        "WOW_DISABLE_STARTUP_SIDE_EFFECTS", ""
+    ).strip().lower() in {"1", "true", "yes"}
+
+
 ensure_manifest_ready()
-start_manifest_reaper()
+if not _startup_side_effects_disabled():
+    start_manifest_reaper()
 _bt("flask app created — registering routes")
 
 BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"
@@ -22198,7 +22218,10 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+if not _startup_side_effects_disabled():
+    _threading.Thread(
+        target=_run_startup_warmup, daemon=True, name="startup-warmup"
+    ).start()
 _bt("startup daemon spawned — app fully ready")
 
 

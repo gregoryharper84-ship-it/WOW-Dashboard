@@ -337,8 +337,9 @@ def _score_one(
     *,
     event_api: Any,
     canonical_hydration_required: bool = False,
+    defer_publication: bool = False,
 ) -> dict[str, Any]:
-    del event_api, canonical_hydration_required
+    del canonical_hydration_required
     route = _route_contract(req)
     scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
     scorer = MODEL_SCORERS[sport]
@@ -388,26 +389,34 @@ def _score_one(
         "can_execute": False,
     }
 
+    if defer_publication:
+        result["_official_publication_guard_required"] = True
+        return result
+
+    # Use the runtime's evidence boundary before official publication checks,
+    # including when this bridge is called directly.
+    result = bridges.apply_evidence_triad_gate(
+        result, bridges.evaluate_served_model_evidence(
+            result, req, sport=sport, db=bridges.evidence_db_client(event_api)))
+    return finalize_official_publication(result)
+
+
+def finalize_official_publication(result: dict[str, Any]) -> dict[str, Any]:
     official = evaluate_team_event_official_publication(result)
     result["official_publication_guard"] = official
     if official.get("official_publication_allowed") is not True:
+        from v17.model_evidence_boundary import _strictest_terminal
         result["probability_publishable"] = False
         result["rank_eligible"] = False
-        result["terminal_label"] = "MODEL_QUALIFIED_HOLD"
-        result["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+        for field in ("terminal_label", "terminal_ceiling"):
+            result[field] = _strictest_terminal(result.get(field), "MODEL_QUALIFIED_HOLD")
         result["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
-        result["blockers"] = list(
-            dict.fromkeys(
-                [
-                    *result.get("blockers", []),
-                    *(official.get("blockers") or []),
-                ]
-            )
-        )
+        result["blockers"] = list(dict.fromkeys([
+            *result.get("blockers", []), *(official.get("blockers") or [])]))
     return result
 
 
-def _make_scorer(sport: str) -> Callable[..., dict[str, Any]]:
+def _make_scorer(sport: str, *, defer_publication: bool = False) -> Callable[..., dict[str, Any]]:
     def scorer(
         req: Any,
         *,
@@ -418,6 +427,7 @@ def _make_scorer(sport: str) -> Callable[..., dict[str, Any]]:
             sport,
             req,
             event_api=event_api,
+            defer_publication=defer_publication,
             canonical_hydration_required=canonical_hydration_required,
         )
 
@@ -472,7 +482,7 @@ def install_multisport_team_event_bridges() -> dict[str, Any]:
                 sport,
                 adapter_name=f"V17_{sport}_TEAM_EVENT_BRIDGE",
                 controlling_specialist=spec["specialist"],
-                scorer=scorer,
+                scorer=_make_scorer(sport, defer_publication=True),
                 required_inputs=required,
                 standard_package_validation=True,
             )

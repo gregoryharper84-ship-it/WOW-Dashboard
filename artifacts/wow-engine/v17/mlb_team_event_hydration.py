@@ -23,6 +23,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from v17.mlb_pregame_evidence_slate import run_slate_pregame_evidence
+
 _REQUIRED_CANONICAL_FIELDS = ("venue_name", "home_probable_pitcher", "away_probable_pitcher")
 _DIAGNOSTIC_REQUIRED_FIELDS = (*_REQUIRED_CANONICAL_FIELDS, "snapshot_id", "snapshot_timestamp")
 _CALLER_REQUIRED_FIELDS = ("venue", "home_starting_pitcher", "away_starting_pitcher")
@@ -179,11 +181,32 @@ def _capture_requested_slate(req: Any, *, client: Any) -> dict[str, Any]:
         hydration = client.rpc("wow_mlb_forward_auto_hydrate_pregame", {}).execute().data
     except Exception as exc:
         return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_FAILED", "error_type": type(exc).__name__}
+    # The hydration loop above freezes the slate's source and feature rows. Turn
+    # those frozen rows into the event-specific prelock evidence the model
+    # evidence triad reads, so one slate run leaves governed evidence behind.
+    # A failure here is reported, never swallowed and never allowed to erase the
+    # hydration result or the upstream blockers.
+    try:
+        pregame_evidence: dict[str, Any] = run_slate_pregame_evidence(
+            client, slate_date=slate_date
+        )
+    except Exception as exc:  # noqa: BLE001 - evidence write must not break hydration
+        pregame_evidence = {
+            "status": "FAILED",
+            "slate_date": slate_date,
+            "blockers": [
+                f"MLB_PREGAME_EVIDENCE_SLATE_FAILED:{type(exc).__name__}"
+            ],
+            "probability_written": False,
+            "can_execute": False,
+        }
+
     return {
         "ok": True,
         "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_ATTEMPTED",
         "capture": capture if isinstance(capture, dict) else {"status": "UNKNOWN"},
         "hydration": hydration if isinstance(hydration, dict) else {"status": "UNKNOWN"},
+        "pregame_evidence": pregame_evidence,
         "can_execute": False,
     }
 

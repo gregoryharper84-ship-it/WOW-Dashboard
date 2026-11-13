@@ -56,8 +56,14 @@ class Market:
 class Event: pass
 
 
-def governed_team_result():
-    return {
+def governed_team_result(
+    *,
+    triad=None,
+    official_event_id="1",
+    sport="MLB",
+    model_artifact_version="MLB_TEAM_EVENT_V1",
+):
+    result = {
         "code":"FINAL_APPROVED",
         "terminal_label":"FINAL_APPROVED",
         "probability_publishable":True,
@@ -79,7 +85,61 @@ def governed_team_result():
             "final_gates_status":"PASS",
             "terminal_label":"FINAL_APPROVED",
         },
+        "sport": sport,
+        "official_event_id": official_event_id,
+        "model_artifact_version": model_artifact_version,
     }
+    if triad is not None:
+        result["model_evidence_triad"] = triad
+    return result
+
+
+def _sealed_team_event_triad(
+    monkeypatch,
+    *,
+    official_event_id="1",
+    sport="MLB",
+    model_artifact_version="MLB_TEAM_EVENT_V1",
+):
+    """A triad sealed at the boundary for exactly this event and model.
+
+    A lawful COMPLETED row now requires a boundary-sealed evidence report, so
+    this fixture builds and seals one instead of hand-writing an approval. The
+    assembled bundle is injected through the acceptance seam; no governed
+    database row is fabricated.
+    """
+    from v17 import model_evidence_boundary as boundary
+
+    monkeypatch.setattr(
+        boundary,
+        "EVIDENCE_ASSESSOR",
+        lambda _db, _scope: {
+            "bundle_complete": True,
+            "blockers": [],
+            "component_sources": {},
+            "missing_component_fields": {},
+        },
+    )
+    sealed = boundary.seal_report(
+        boundary.evaluate_market_evidence_triad(
+            model_kind="TEAM_EVENT",
+            sport=sport,
+            official_event_id=official_event_id,
+            event_start_time=FUTURE,
+            prediction_timestamp=FUTURE,
+            model_family="MLB_TEAM_EVENT_V1",
+            model_artifact_version=model_artifact_version,
+            feature_schema_version="MLB_FEATURES_V1",
+            db=DB(),
+        )
+    )
+    assert boundary.verify_sealed_report(
+        sealed,
+        sport=sport,
+        official_event_id=official_event_id,
+        model_artifact_version=model_artifact_version,
+    )
+    return sealed
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
@@ -107,11 +167,18 @@ def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatc
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert result["run_status"]=="COMPLETED"
     assert len(result["rows"])==2
+    # The mocked legacy scorer has no event/model-bound triad receipt. It
+    # must not become a COMPLETED row merely from FINAL_APPROVED booleans.
     assert result["reconciliation"] == {
-        "rows_in":2,"rows_completed":1,"rows_held":1,"rows_rejected":0,
+        "rows_in":2,"rows_completed":0,"rows_held":2,"rows_rejected":0,
         "rows_purged":0,"rows_invalid":0,"rows_unclassified":0,"balanced":True,
     }
-    assert result["rows"][1]["result"]["official_publication_guard"]["status"]=="PASS"
+    moneyline = result["rows"][1]
+    assert moneyline["row_status"] == "HELD"
+    assert moneyline["result"]["official_publication_guard"]["status"] == "HELD"
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in (
+        moneyline["result"]["official_publication_guard"]["blockers"]
+    )
 
 
 def test_moneyline_normal_hold_is_not_completed(monkeypatch):
@@ -170,9 +237,38 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     def score(*_args,**kwargs):
         seen.update(kwargs); return governed_team_result()
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",score)
-    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
+    # FULL response preserves the inline terminal evidence; the default
+    # compact transport moves it to durable row-detail storage instead.
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"],response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert seen["canonical_hydration_required"] is True
-    assert result["rows"][0]["row_status"]=="COMPLETED"
+    # Server-owned hydration is still required, but hydration alone cannot
+    # substitute for fitted artifact, calibrator and pregame-corpus receipts.
+    assert result["rows"][0]["row_status"] == "HELD"
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in (
+        result["rows"][0]["result"]["official_publication_guard"]["blockers"]
+    )
+
+
+def test_a_boundary_sealed_triad_permits_one_completed_moneyline_row(monkeypatch):
+    # Mirror of the hold above: when the served event and fitted version really
+    # do have a boundary-sealed triad, the same payload must complete instead of
+    # being held by an unconditionally closed gate.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    triad = _sealed_team_event_triad(monkeypatch)
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: governed_team_result(triad=triad),
+    )
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"],response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
+    row = result["rows"][0]
+    assert row["row_status"] == "COMPLETED"
+    assert row["result"]["official_publication_guard"]["status"] == "PASS"
+    assert row["result"]["official_publication_guard"]["blockers"] == []
+    assert row["probability_publishable"] is True
+    assert row["can_execute"] is False
+    assert result["reconciliation"]["rows_completed"] == 1
+    assert result["reconciliation"]["rows_held"] == 0
+    assert result["reconciliation"]["balanced"] is True
 
 
 def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
@@ -653,3 +749,20 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_daily_rejects_unsealed_or_foreign_triad(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    for triad in (
+        {"bundle_complete": True, "status": "COMPLETE"},
+        _sealed_team_event_triad(monkeypatch, official_event_id="other"),
+        _sealed_team_event_triad(monkeypatch, model_artifact_version="other"),
+    ):
+        monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",
+                            lambda *args, **kwargs: governed_team_result(triad=triad))
+        result = run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago", lanes=["MONEYLINE"], response_mode="FULL"),
+            db=DB(), market_api=Market(), event_api=Event())
+        row = result["rows"][0]
+        assert row["row_status"] == "HELD"
+        assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in row["result"]["official_publication_guard"]["blockers"]

@@ -16,15 +16,30 @@ from v17.team_event_bridge_runtime import (
     verified_three_team_parlay_status,
 )
 from v17.team_event_capability_manifest import TEAM_EVENT_INPUT_CONTRACTS
+from v17 import model_evidence_boundary as evidence_boundary
 
 
 @pytest.fixture(autouse=True)
 def isolated_bridge_registry():
+    """Isolate bridges and declare a verified registry for package-path tests.
+
+    These tests exercise governed-package scoring, not registry evidence.
+    Withholding for an unverified triad is covered by
+    tests/test_v17_model_evidence_boundary.py.
+    """
     original = dict(TEAM_EVENT_BRIDGES)
+    original_assessor = evidence_boundary.EVIDENCE_ASSESSOR
     TEAM_EVENT_BRIDGES.clear()
+    evidence_boundary.EVIDENCE_ASSESSOR = lambda _db, _scope: {
+        "bundle_complete": True,
+        "blockers": [],
+        "component_sources": {},
+        "missing_component_fields": {},
+    }
     try:
         yield
     finally:
+        evidence_boundary.EVIDENCE_ASSESSOR = original_assessor
         TEAM_EVENT_BRIDGES.clear()
         TEAM_EVENT_BRIDGES.update(original)
 
@@ -38,6 +53,7 @@ def _request(sport: str, *, complete: bool = True):
         "sport": sport,
         "league": sport,
         "official_event_id": "event-1",
+        "event_start_time_utc": "2026-11-12T19:00:00+00:00",
         "home_team": "Alpha",
         "away_team": "Beta",
         "settlement_basis": "FULL_GAME",
@@ -62,6 +78,8 @@ def _valid_package(candidate_id: str = "candidate-1"):
         "source_snapshot_timestamp": "2026-09-09T16:55:00+00:00",
         "outcome_space": "TWO_WAY_WINNER",
         "model_version": "fake-certified-v1",
+        "model_family": "TEST_TEAM_EVENT_FAMILY_V1",
+        "feature_schema_version": "TEST_TEAM_EVENT_FEATURES_V1",
         "event_status": "PREGAME",
         "probability_publishable": True,
         "rank_eligible": True,
@@ -183,6 +201,7 @@ def test_declared_feature_receipt_does_not_change_probability_or_publication():
         sport="WNBA",
         league="WNBA",
         official_event_id="event-feature-1",
+        event_start_time_utc="2026-11-12T19:00:00+00:00",
         home_team="Alpha",
         away_team="Beta",
         sport_specific_evidence={
@@ -362,6 +381,7 @@ def test_full_enrolled_backend_verified_wnba_evidence_preserves_governed_probabi
         sport="WNBA",
         league="WNBA",
         official_event_id="event-1",
+        event_start_time_utc="2026-09-09T19:00:00+00:00",
         sport_specific_evidence={
             "home_win_pct": 0.62,
             "away_win_pct": 0.48,

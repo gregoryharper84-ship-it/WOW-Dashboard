@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from v17.model_evidence_boundary import COMPLETE, seal_report
 from v17.team_event_probability_preservation import (
     _annotate_probability_visibility,
     _apply_official_publication_guard,
@@ -53,9 +54,26 @@ def test_low_bound_winner_is_depublished_but_probability_remains_visible():
     assert visible["can_execute"] is False
 
 
-def test_winner_watch_floor_remains_publishable_when_other_governance_passes():
+def test_winner_watch_floor_remains_publishable_when_all_governance_and_triad_pass():
     req = SimpleNamespace(decision_intent="WINNER")
     result = _governed_home_away_result(home_probability=0.61, home_lower=0.56)
+    # This is a test-only boundary-issued complete report, not a production
+    # certification or substitute for a fitted registry verification receipt.
+    result["sport"] = "MLB"
+    result["official_event_id"] = "test-winner-event-1"
+    result["model_artifact_version"] = "TEST_FITTED_ARTIFACT_V1"
+    result["model_evidence_triad"] = seal_report({
+        "status": COMPLETE,
+        "bundle_complete": True,
+        "model_kind": "TEAM_EVENT",
+        "sport": "MLB",
+        "official_event_id": "test-winner-event-1",
+        "model_family": "TEST_FITTED_MODEL",
+        "model_artifact_version": "TEST_FITTED_ARTIFACT_V1",
+        "feature_schema_version": "TEST_FEATURE_SCHEMA_V1",
+        "blockers": [],
+        "can_execute": False,
+    })
 
     guarded = _apply_official_publication_guard(req, result)
     visible = _annotate_probability_visibility(guarded)
@@ -64,4 +82,20 @@ def test_winner_watch_floor_remains_publishable_when_other_governance_passes():
     assert visible["rank_eligible"] is True
     assert visible["probability_visibility_status"] == "OFFICIAL_QUALIFIED"
     assert visible["probability_tier"] == "WINNER_WATCH"
+    assert visible["can_execute"] is False
+
+
+def test_winner_watch_floor_is_held_without_verified_evidence_triad():
+    req = SimpleNamespace(decision_intent="WINNER")
+    result = _governed_home_away_result(home_probability=0.61, home_lower=0.56)
+    result["sport"] = "MLB"
+    guarded = _apply_official_publication_guard(req, result)
+    visible = _annotate_probability_visibility(guarded)
+
+    assert visible["probability_publishable"] is False
+    assert visible["rank_eligible"] is False
+    assert visible["probability_visibility_status"] == "MODELED_HELD"
+    assert visible["calibrated_home_probability"] == 0.61
+    assert visible["calibrated_home_lower_bound"] == 0.56
+    assert "TEAM_EVENT_MODEL_EVIDENCE_TRIAD_NOT_PROVEN" in visible["blockers"]
     assert visible["can_execute"] is False

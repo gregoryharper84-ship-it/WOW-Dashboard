@@ -28,6 +28,11 @@ from v17.llp_governed_package_scoring import (
     PASS,
     validate_governed_scoring_package,
 )
+from v17.model_evidence_boundary import (
+    apply_evidence_triad_gate,
+    evaluate_served_model_evidence,
+    evidence_db_client,
+)
 from v17.team_event_capability_manifest import (
     CERTIFIED_TEAM_EVENT_SPORTS,
     EXPECTED_TEAM_EVENT_SPORTS,
@@ -399,6 +404,22 @@ def score_registered_team_event_request(
     else:
         result = dict(result)
         result["can_execute"] = False
+    # Every registered scorer passes the same evidence-triad gate. A scored
+    # package that cannot prove its exact artifact/calibrator/pregame triad is
+    # preserved for diagnosis but cannot claim publication, ranking or an
+    # approved terminal ceiling.
+    result = apply_evidence_triad_gate(
+        result,
+        evaluate_served_model_evidence(
+            result,
+            req,
+            sport=sport,
+            db=evidence_db_client(event_api),
+        ),
+    )
+    if result.pop("_official_publication_guard_required", False):
+        from v17.multisport_team_event_bridges import finalize_official_publication
+        result = finalize_official_publication(result)
     return _attach_feature_consumption_receipt(req, registration, result)
 
 

@@ -6,6 +6,8 @@ from typing import Any, Mapping
 
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence
 
+from v17.model_evidence_boundary import evaluate_market_evidence_triad, seal_report
+
 GLOBAL_TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 LOCAL_WEATHER_AUTHORITY = "KALSHI_WEATHER_MARKET_EXPERT"
 CAPABILITY_KEY = "KALSHI_WEATHER_PROBABILITY"
@@ -211,7 +213,7 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
 
     # V17 publication is a view over immutable rows. Historical decision-time
     # weather/model evidence is never mutated after the fact.
-    return {
+    result = {
         "status": status,
         "code": code,
         "prediction_id": prediction_id,
@@ -256,6 +258,48 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
         "row_reconciliation_verified": True,
         "can_execute": False,
     }
+    # The weather specialist owns the probability, but publication additionally
+    # requires the fitted artifact, station/lane calibrator and pregame corpus
+    # triad. No weather lane declares those readers yet, so publication is
+    # withheld with a typed blocker instead of being assumed.
+    triad = seal_report(
+        evaluate_market_evidence_triad(
+            model_kind="WEATHER_CONTRACT", sport="WEATHER", db=client,
+            station_id=prediction.get("station_id"), contract_id=prediction.get("contract_id"),
+            market_family=prediction.get("market_family"),
+            official_event_id=prediction.get("official_event_id"),
+            event_start_time=prediction.get("event_start_time"),
+            prediction_timestamp=prediction.get("model_timestamp"),
+            model_family=prediction.get("model_family"),
+            model_artifact_version=prediction.get("model_artifact_version"),
+            feature_schema_version=prediction.get("feature_schema_version"),
+        )
+    )
+    result["model_evidence_triad"] = triad
+    result["evidence_triad_required"] = True
+    result["evidence_triad_status"] = triad.get("status")
+    if triad.get("bundle_complete") is not True:
+        # Preserve market/fee reconciliation as evidence, but never expose a
+        # publishable edge or QUALIFIED_EDGE terminal-style status when the
+        # controlling fitted weather probability lacks its model triad.
+        # The weather specialist still owns p_yes/p_no and calibrated bounds.
+        result["pre_triad_market_edge_status"] = result["status"]
+        result["pre_triad_market_edge_code"] = result["code"]
+        result["market_edge_evidence_publishable"] = result["edge_publishable"]
+        result["probability_publishable"] = False
+        result["edge_publishable"] = False
+        result["rank_eligible"] = False
+        result["status"] = "WATCH"
+        result["code"] = "V17_WEATHER_MODEL_EVIDENCE_TRIAD_HELD"
+        result["probability_blockers"] = list(dict.fromkeys([
+            *result["probability_blockers"],
+            *(triad.get("blockers") or ()),
+        ]))
+        result["edge_blockers"] = list(dict.fromkeys([
+            *result["edge_blockers"],
+            "WEATHER_MODEL_EVIDENCE_TRIAD_NOT_PROVEN_FOR_EDGE",
+        ]))
+    return result
 
 
 def governance_snapshot(*, client) -> Mapping[str, Any]:
