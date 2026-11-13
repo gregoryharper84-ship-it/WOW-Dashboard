@@ -23,7 +23,7 @@ import numpy as np
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 
-from v17.team_state_intelligence import FEATURE_FAMILY_VERSION, build_team_state, paired_matchup_features
+from v17.team_state_intelligence import FEATURE_FAMILY_VERSION, NCAAF_EXPECTED_SEASON_GAMES, build_team_state, paired_matchup_features
 
 CAN_EXECUTE = False
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = True
@@ -42,7 +42,10 @@ SUPPORTED_SPORTS = ("NFL", "NBA", "NCAAF", "NCAAB", "WNBA")
 SPORT_CONFIG: dict[str, dict[str, Any]] = {
     "NFL": {"expected_season_games": 17, "large_spread": 7.0, "line_min": -21.0, "line_max": 21.0},
     "NBA": {"expected_season_games": 82, "large_spread": 7.0, "line_min": -15.0, "line_max": 15.0},
-    "NCAAF": {"expected_season_games": 12, "large_spread": 10.0, "line_min": -28.0, "line_max": 28.0},
+    # Maintain parity with the immutable NCAAF dynamic team-state ledger built
+    # by both scoped and aggregate candidate maintenance using 13 games. This is
+    # Class C shadow research input parity, never retrospective certification.
+    "NCAAF": {"expected_season_games": NCAAF_EXPECTED_SEASON_GAMES, "large_spread": 10.0, "line_min": -28.0, "line_max": 28.0},
     "NCAAB": {"expected_season_games": 31, "large_spread": 8.0, "line_min": -20.0, "line_max": 20.0},
     "WNBA": {"expected_season_games": 44, "large_spread": 7.0, "line_min": -15.0, "line_max": 15.0},
 }
