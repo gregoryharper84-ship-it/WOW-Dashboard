@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v17.nfl_weekly_receipt_conservation import audit_weekly_receipts
@@ -169,3 +170,21 @@ def test_malformed_inputs_hold_without_crash():
     report=audit(rows,predictions(rows[:1]),runs=[run()],expected=1)
     assert "PICKEM_SCHEDULE_EVENT_IDENTITY_INVALID" in report["blockers"]
     assert report["status"]=="HOLD"
+
+
+def test_equal_timestamp_conflicting_publishable_receipts_hold():
+    rows = schedule(1)
+    first = predictions(rows)[0]
+    conflict = {**first, "event_prediction_id": "different-immutable-id",
+                "model_probability_publishable": True}
+    report = audit(rows, [first, conflict], runs=[run()], expected=1)
+    assert report["status"] == "HOLD"
+    assert "PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS" in report["blockers"]
+    assert report["pregame_receipt_count"] == 0
+    assert report["events"][0]["latest_prediction_id"] is None
+
+
+def test_invalid_expected_count_rejects_request():
+    rows = schedule(1)
+    with pytest.raises(ValueError, match="PICKEM_AUDIT_REQUEST_INVALID"):
+        audit(rows, predictions(rows), runs=[run()], expected=0)
