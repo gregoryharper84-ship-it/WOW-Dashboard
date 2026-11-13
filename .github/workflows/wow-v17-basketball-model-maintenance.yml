@@ -15,6 +15,13 @@ on:
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/basketball_team_event_specialist.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/nba_team_event_verification.py"
+      - "artifacts/wow-engine/v17/nba_verification_wiring.py"
+      - "artifacts/wow-engine/test_v17_nba_verification_wiring.py"
+      - "artifacts/wow-engine/test_v17_nba_verification_prerequisites_postgres.py"
+      - "artifacts/wow-engine/test_v17_nba_verification_prerequisites_postgrest.py"
+      - "artifacts/wow-engine/tests/test_v17_nba_team_event_verification.py"
+      - "artifacts/wow-engine/migrations/20261110_v17_independent_verification_receipts.sql"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
@@ -33,6 +40,13 @@ on:
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/basketball_team_event_specialist.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/nba_team_event_verification.py"
+      - "artifacts/wow-engine/v17/nba_verification_wiring.py"
+      - "artifacts/wow-engine/test_v17_nba_verification_wiring.py"
+      - "artifacts/wow-engine/test_v17_nba_verification_prerequisites_postgres.py"
+      - "artifacts/wow-engine/test_v17_nba_verification_prerequisites_postgrest.py"
+      - "artifacts/wow-engine/tests/test_v17_nba_team_event_verification.py"
+      - "artifacts/wow-engine/migrations/20261110_v17_independent_verification_receipts.sql"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
@@ -78,6 +92,118 @@ jobs:
           test_v17_team_state_scoped_maintenance.py
           test_v17_github_oidc.py
           test_v17_maintenance_terminal_truth.py
+          test_v17_nba_verification_wiring.py
+          tests/test_v17_nba_team_event_verification.py
+
+  verification-prerequisites:
+    # The probe's 42P01/42703 classification is proven against a real PostgreSQL
+    # and a real PostgREST, not assumed. Both are ephemeral: nothing here reads
+    # production credentials, the project's Supabase endpoint, or its schema.
+    name: Prove verification prerequisites against real PostgreSQL + PostgREST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_verification_ci
+          POSTGRES_PASSWORD: wow_verification_ci
+          POSTGRES_DB: wow_verification_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_verification_ci -d wow_verification_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # PostgREST is fetched rather than run as a service so it starts after
+      # PostgreSQL is healthy, and so the pinned version is asserted instead of
+      # trusted. 12.2.3 matches the tag pinned in wow-engine-verify.yml.
+      - name: Fetch the pinned PostgREST binary
+        run: |
+          set -euo pipefail
+          version=12.2.3
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/postgrest.tar.xz" \
+            "https://github.com/PostgREST/postgrest/releases/download/v${version}/postgrest-v${version}-linux-static-x64.tar.xz"
+          tar -xJf "$RUNNER_TEMP/postgrest.tar.xz" -C "$RUNNER_TEMP"
+          grep -qF "${version}" < <("$RUNNER_TEMP/postgrest" --version)
+          "$RUNNER_TEMP/postgrest" --version
+
+      - name: Provision isolated databases
+        run: |
+          python - <<'PY'
+          import psycopg
+
+          admin = "postgresql://wow_verification_ci:wow_verification_ci@127.0.0.1:5432/wow_verification_ci"
+          with psycopg.connect(admin, autocommit=True) as conn:
+              for name in ("wow_verification_pg", "wow_verification_rest"):
+                  exists = conn.execute(
+                      "select 1 from pg_database where datname = %s", (name,)
+                  ).fetchone()
+                  if not exists:
+                      conn.execute(f'create database "{name}"')
+          print("databases ready")
+          PY
+
+      - name: Run prerequisite and verification checks
+        env:
+          PGRST_DB_URI: postgresql://wow_verification_ci:wow_verification_ci@127.0.0.1:5432/wow_verification_rest
+          PGRST_DB_SCHEMAS: public
+          PGRST_DB_ANON_ROLE: wow_verification_ci
+          PGRST_JWT_SECRET: wow-verification-ci-only-jwt-secret-not-a-real-secret-32
+          PGRST_SERVER_HOST: 127.0.0.1
+          PGRST_SERVER_PORT: "3000"
+          PGRST_LOG_LEVEL: error
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/postgrest" > "$RUNNER_TEMP/postgrest.log" 2>&1 &
+          POSTGREST_PID=$!
+          trap 'kill "$POSTGREST_PID" 2>/dev/null || true; cat "$RUNNER_TEMP/postgrest.log" || true' EXIT
+          for _ in $(seq 1 120); do
+            curl -fsS -o /dev/null "http://127.0.0.1:3000/" 2>/dev/null && break
+            sleep 0.5
+          done
+          curl -fsS -o /dev/null "http://127.0.0.1:3000/" \
+            || { echo "::error::PostgREST did not become ready"; exit 1; }
+
+          # A skipped integration check is not a passing one: the proof must
+          # actually run, so a skip fails the job.
+          run_checks() {
+            local output
+            if ! output=$(python -m pytest -q "$@" 2>&1); then
+              echo "$output"
+              return 1
+            fi
+            echo "$output"
+            if grep -Eq '[0-9]+ skipped' <<<"$output"; then
+              echo "::error::prerequisite checks were skipped; they must run here"
+              return 1
+            fi
+          }
+
+          run_checks test_v17_nba_verification_wiring.py
+          WOW_TEST_POSTGRES_DSN=postgresql://wow_verification_ci:wow_verification_ci@127.0.0.1:5432/wow_verification_pg \
+            run_checks test_v17_nba_verification_prerequisites_postgres.py
+          WOW_TEST_POSTGRES_DSN=postgresql://wow_verification_ci:wow_verification_ci@127.0.0.1:5432/wow_verification_rest \
+          WOW_TEST_POSTGREST_URL=http://127.0.0.1:3000 \
+            run_checks test_v17_nba_verification_prerequisites_postgrest.py
+          echo "can_execute=false"
+          echo "independent_verification_prerequisites=PROVEN"
 
   maintain:
     name: Hydrate basketball then fit NBA/WNBA challengers
@@ -171,6 +297,10 @@ jobs:
               "rows_updated": basketball.get("rows_updated"),
               "rows_fresh_acquisition_degraded": basketball.get("rows_fresh_acquisition_degraded"),
               "challenger_statuses": {k:v.get("status") for k,v in challengers.items()},
+              "independent_verification": {
+                  row.get("sport"): (row.get("independent_verification") or {}).get("status")
+                  for row in basketball.get("rows", [])
+              },
               "can_execute": False,
           }, sort_keys=True))
           PY

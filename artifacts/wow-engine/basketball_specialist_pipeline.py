@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import date, datetime, timezone
+import hashlib
 import json
 import os
 from typing import Any
@@ -24,6 +25,7 @@ from basketball_team_event_specialist import (
     MODEL_FAMILY,
     TrainingGame,
     build_pregame_features,
+    calibration_fingerprint,
     certification_decision,
     train_specialist,
     _fit_logistic,
@@ -238,6 +240,31 @@ def fit_and_persist(
         provenance_complete=bool(provenance_complete),
     )
     calibrator_version = f"{sport}_TEAM_EVENT_PLATT_V1_{version_stamp}"
+    calibration_method = calibration_status or "PLATT_TIME_SPLIT_V1_BLOCKED"
+    # Independent verification cannot identify a calibrator that carries no
+    # digest and no cutoff. Both are derived here from values already in hand
+    # so a reviewer can recompute them from the persisted row alone.
+    calibration_fit_end = datetime.combine(
+        max(row.game_date for row in calibration_train), datetime.min.time()
+    ).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+    calibration_sha256 = calibration_fingerprint(
+        {
+            "sport": sport,
+            "calibrator_version": calibrator_version,
+            "model_artifact_version": model_version,
+            "calibration_method": calibration_method,
+            "coefficients": {
+                "a": calibration.coefficients.a,
+                "b": calibration.coefficients.b,
+            },
+            "calibration_row_count": len(raw),
+            "brier": calibration.metrics.brier,
+            "log_loss": calibration.metrics.log_loss,
+            "ece": calibration.metrics.ece,
+            "calibration_bias": calibration.metrics.calibration_bias,
+            "calibration_fit_end": calibration_fit_end.isoformat(),
+        }
+    )
 
     artifact_payload = asdict(artifact)
     client.table("wow_basketball_team_event_model_artifacts").insert({
@@ -260,13 +287,15 @@ def fit_and_persist(
     client.table("wow_basketball_team_event_calibrators").insert({
         "sport": sport, "calibrator_version": calibrator_version,
         "model_artifact_version": model_version,
-        "calibration_method": calibration_status or "PLATT_TIME_SPLIT_V1_BLOCKED",
+        "calibration_method": calibration_method,
         "coefficients": {"a": calibration.coefficients.a, "b": calibration.coefficients.b},
         "calibration_row_count": len(raw),
         "brier": calibration.metrics.brier,
         "log_loss": calibration.metrics.log_loss,
         "ece": calibration.metrics.ece,
         "calibration_bias": calibration.metrics.calibration_bias,
+        "calibration_sha256": calibration_sha256,
+        "calibration_fit_end": calibration_fit_end.isoformat(),
         "promoted": False, "active": False,
     }).execute()
 
@@ -296,6 +325,8 @@ def fit_and_persist(
         "model_artifact_version": model_version, "calibrator_version": calibrator_version,
         "holdout_brier": artifact.holdout_brier, "holdout_log_loss": artifact.holdout_log_loss,
         "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
+        "calibration_sha256": calibration_sha256,
+        "calibration_fit_end": calibration_fit_end.isoformat(),
         "calibration_status": calibration_status, "fit_decision": asdict(decision),
         "calibration_training_cutoff": artifact.train_end_date,
         "calibration_training_rows": len(calibration_train),

@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wow.internal/schemas/WOW_V17_TEAM_EVENT_INDEPENDENT_VERIFICATION_V1.json",
+  "title": "WOW V17 team-event independent verification receipt",
+  "description": "PROPOSED. Attests reproducibility of a fitted team-event artifact and its calibrator. This receipt never authorizes publication and never changes can_execute. It is stored in wow_team_event_specialist_certifications.verification_receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "verification_id",
+    "sport",
+    "league_scope",
+    "controlling_specialist",
+    "model_family",
+    "model_version",
+    "model_artifact_id",
+    "model_artifact_sha256",
+    "calibration_artifact_id",
+    "calibration_sha256",
+    "feature_schema_version",
+    "input_contract_version",
+    "independent_verifier",
+    "implementation_owner",
+    "verification_owner",
+    "independent_verification_status",
+    "method",
+    "checks",
+    "verdict",
+    "can_execute",
+    "terminal_authority",
+    "created_at_utc"
+  ],
+  "properties": {
+    "schema_version": { "const": "WOW_V17_TEAM_EVENT_INDEPENDENT_VERIFICATION_V1" },
+    "verification_id": { "type": "string", "format": "uuid" },
+    "sport": { "const": "NBA" },
+    "league_scope": { "const": "NBA" },
+    "controlling_specialist": { "type": "string", "minLength": 1 },
+    "model_family": { "const": "BASKETBALL_TEAM_EVENT_LOGISTIC_V1" },
+    "model_version": { "type": "string", "minLength": 1 },
+    "model_artifact_id": { "type": "string", "minLength": 1 },
+    "model_artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "calibration_artifact_id": { "type": "string", "minLength": 1 },
+    "calibration_sha256": { "$ref": "#/$defs/sha256" },
+    "feature_schema_version": { "const": "BASKETBALL_TEAM_EVENT_FEATURES_V2" },
+    "input_contract_version": { "type": "string", "minLength": 1 },
+    "certification_id_attested": {
+      "type": ["string", "null"],
+      "description": "Set when attesting an existing certification row; null when issued before the row exists."
+    },
+    "independent_verifier": { "type": "string", "minLength": 1 },
+    "implementation_owner": { "type": "string", "minLength": 1 },
+    "verification_owner": { "type": "string", "minLength": 1 },
+    "independent_verification_status": { "enum": ["PASS", "FAIL"] },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "code_sha", "environment", "run_started_at_utc", "run_completed_at_utc"],
+      "properties": {
+        "harness": { "type": "string", "minLength": 1 },
+        "code_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "environment": { "type": "string", "minLength": 1 },
+        "run_started_at_utc": { "type": "string", "format": "date-time" },
+        "run_completed_at_utc": { "type": "string", "format": "date-time" },
+        "replay_command": { "type": "string", "minLength": 1 }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "status", "observed", "blockers"],
+        "properties": {
+          "check_id": {
+            "enum": ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12"]
+          },
+          "status": { "enum": ["PASS", "FAIL", "NOT_APPLICABLE"] },
+          "observed": { "type": "object" },
+          "blockers": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "training_rows",
+        "holdout_rows",
+        "calibration_rows",
+        "holdout_brier",
+        "holdout_log_loss",
+        "holdout_accuracy",
+        "calibration_brier",
+        "calibration_error_ece",
+        "calibration_bias",
+        "platt_a",
+        "platt_b",
+        "calibration_fit_end"
+      ],
+      "properties": {
+        "training_rows": { "type": "integer", "minimum": 1 },
+        "holdout_rows": { "type": "integer", "minimum": 1 },
+        "calibration_rows": { "type": "integer", "minimum": 1 },
+        "holdout_brier": { "type": "number", "minimum": 0 },
+        "holdout_log_loss": { "type": "number", "minimum": 0 },
+        "holdout_accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+        "calibration_brier": { "type": "number", "minimum": 0 },
+        "calibration_error_ece": { "type": "number", "minimum": 0 },
+        "calibration_bias": { "type": "number" },
+        "platt_a": { "type": "number" },
+        "platt_b": { "type": "number" },
+        "calibration_fit_end": { "type": "string", "format": "date-time" }
+      }
+    },
+    "source_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_replay_status", "timestamp_attestation", "dataset_id"],
+      "properties": {
+        "source_replay_status": {
+          "enum": ["RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS", "NOT_INDEPENDENTLY_ATTESTED"]
+        },
+        "timestamp_attestation": { "enum": ["VERIFIED", "NOT_VERIFIED"] },
+        "dataset_id": { "type": "string", "minLength": 1 },
+        "sample_snapshot_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 20 }
+      }
+    },
+    "evidence_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "corpus_evidence_ref",
+        "artifact_evidence_ref",
+        "calibration_evidence_ref",
+        "replay_evidence_ref",
+        "independent_verification_evidence_ref"
+      ],
+      "properties": {
+        "corpus_evidence_ref": { "type": "string", "minLength": 1 },
+        "artifact_evidence_ref": { "type": "string", "minLength": 1 },
+        "calibration_evidence_ref": { "type": "string", "minLength": 1 },
+        "replay_evidence_ref": { "type": "string", "minLength": 1 },
+        "independent_verification_evidence_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publishable_scope", "certification_eligible", "blockers"],
+      "properties": {
+        "publishable_scope": { "const": "NONE" },
+        "certification_eligible": { "type": "boolean" },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "can_execute": { "const": false },
+    "terminal_authority": { "const": "V17_TERMINAL_REDUCER" },
+    "created_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "independent_verification_status": { "const": "PASS" } }, "required": ["independent_verification_status"] },
+      "then": {
+        "required": ["metrics", "source_attestation", "evidence_refs"],
+        "properties": {
+          "verdict": {
+            "properties": { "certification_eligible": { "const": true }, "blockers": { "maxItems": 0 } }
+          },
+          "checks": {
+            "items": {
+              "properties": { "blockers": { "maxItems": 0 } },
+              "not": { "properties": { "status": { "const": "FAIL" } }, "required": ["status"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "independent_verification_status": { "const": "FAIL" } }, "required": ["independent_verification_status"] },
+      "then": {
+        "properties": {
+          "verdict": {
+            "properties": {
+              "certification_eligible": { "const": false },
+              "blockers": { "minItems": 1 }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "Identity inequality (implementation_owner != verification_owner), exactly-one-of-each check_id, and limitations coverage for NOT_APPLICABLE checks cannot be expressed in JSON Schema and are enforced by the verification harness.",
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
