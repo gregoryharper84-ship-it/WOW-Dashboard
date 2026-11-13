@@ -156,3 +156,53 @@ def test_rule_out_can_only_be_replaced_by_fresh_verified_clearance(monkeypatch):
     assert terminal["can_execute"] is False
     assert len(persisted) == 1
     assert len(scored) == 1
+
+
+def test_rule_out_survives_nfl_reacquisition_provider_error(monkeypatch):
+    """An official OUT cannot be replaced by source failure; keep both causes."""
+    client, persisted, _routed, scored = _build(monkeypatch)
+    row = _manual_nfl_row("out-provider-error")
+    row["evidence"]["role_status"]["availability"]["designation"] = "OUT"
+
+    def source_down(**_kwargs):
+        raise PropAutoHydrationError("NFL_PROP_SOURCE_UNAVAILABLE", "source down")
+
+    monkeypatch.setattr(facade, "auto_hydrate_prop_evidence", source_down)
+    response = client.post("/score-pick-request", json={"rows": [row]})
+    assert response.status_code == 200
+    terminal = response.json()["rows"][0]
+    assert terminal["code"] == "PLAYER_RULED_OUT"
+    assert terminal["terminal_label"] == "PLAYER_RULED_OUT"
+    assert terminal["terminal_status"] == "REJECTED"
+    assert "PLAYER_RULED_OUT" in terminal["blockers"]
+    assert terminal["detail"]["concurrent_acquisition_error"] == "NFL_PROP_SOURCE_UNAVAILABLE"
+    assert terminal["acquisition"]["status"] == "FAILED"
+    assert terminal["model_evaluated"] is False
+    assert terminal["can_execute"] is False
+    assert persisted == []
+    assert scored == []
+
+
+def test_rule_out_survives_nfl_reacquisition_internal_error(monkeypatch):
+    """An unexpected exception likewise must not erase the upstream OUT."""
+    client, persisted, _routed, scored = _build(monkeypatch)
+    row = _manual_nfl_row("out-internal-error")
+    row["evidence"]["role_status"]["availability"]["designation"] = "OUT"
+
+    def broken_source(**_kwargs):
+        raise RuntimeError("provider parsing failed")
+
+    monkeypatch.setattr(facade, "auto_hydrate_prop_evidence", broken_source)
+    response = client.post("/score-pick-request", json={"rows": [row]})
+    assert response.status_code == 200
+    terminal = response.json()["rows"][0]
+    assert terminal["code"] == "PLAYER_RULED_OUT"
+    assert terminal["terminal_label"] == "PLAYER_RULED_OUT"
+    assert terminal["terminal_status"] == "REJECTED"
+    assert "PLAYER_RULED_OUT" in terminal["blockers"]
+    assert terminal["detail"]["concurrent_acquisition_error"] == "PROP_AUTO_HYDRATION_INTERNAL_ERROR"
+    assert terminal["acquisition"]["status"] == "FAILED"
+    assert terminal["model_evaluated"] is False
+    assert terminal["can_execute"] is False
+    assert persisted == []
+    assert scored == []
