@@ -7,5 +7,5 @@
 - fix: Add a time-correct, source-hashed, read-only schedule matchup context for all 13 cataloged sports through the existing team-state owner. Preserve unknowns, reject late/contradictory evidence, expose no probability.
 - prevention_artifact: artifacts/wow-engine/tests/test_v17_schedule_fatigue_intelligence.py (synthetic red-to-green chronology, duplicate, venue, workload, hash and safety checks).
 - link: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2076
-- scope: R research-only; fitted model, CI certification, production deployment and verified provider hydration remain separate.
+- scope: P protected by diff (.agents/memory trust-root); implemented runtime behavior is research-only. Fitted model, independent CI/reviewer authorization, production deployment and verified provider hydration remain separate.
 - product_scoreboard_delta: coverage=0 observed, qualified=0 observed, production_fidelity=unverified; research evidence capability only.
