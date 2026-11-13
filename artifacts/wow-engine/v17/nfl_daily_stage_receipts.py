@@ -157,10 +157,10 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     """Independent cohort and champion certification, never automatic promotion."""
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
-            "artifact_id,active,promoted,probability_publishable"
+            "artifact_id,artifact_checksum,model_artifact_version,active,promoted,probability_publishable"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
-            "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
+            "schema_version,graded_n,minimum_forward_required,status,certification_recommendation,blockers"
         ).order("generated_at", desc=True).limit(1).execute().data
     except Exception:
         return False
@@ -171,27 +171,49 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     # Health is a global snapshot. Verify that its cohort actually contains
     # enough unique prospective grades for this prediction's exact model version.
     # A different champion's 100 games can never authorize this model.
+    # Legacy V1 health predates historical-grade revalidation. Require a
+    # newly computed V2 PASS after the private verified-grade view is deployed.
     if not isinstance(minimum, int) or minimum < 100:
         return False
     try:
-        grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
-            .select("official_event_id")
-            .eq("model_version", str(row["model_version"]))
-            .limit(minimum * 2)
-            .execute()
-        )
-        grades = grade_result.data
-        if not isinstance(grades, list):
+        from v17.nfl_forward_shadow import ForwardGrade, calibration_health
+        saved_checksum = (row.get("model_output_snapshot") or {}).get("artifact_checksum")
+        if (not saved_checksum or model.get("artifact_checksum") != saved_checksum
+            or model.get("model_artifact_version") != row["model_version"]):
             return False
-        unique_games = {
-            str(g.get("official_event_id"))
-            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
-        }
+        # Recompute the unchanged health thresholds on the complete reconciled
+        # cohort for this exact artifact and version. Global PASS is diagnostic
+        # context; it cannot lend calibration quality to a failing specialist.
+        cohort = []
+        seen = set()
+        # One database snapshot, with an exact server count. A configured
+        # PostgREST row cap must produce HOLD rather than a healthy prefix.
+        result = (db.table("wow_nfl_forward_verified_grades").select("*", count="exact")
+                  .eq("model_version", str(row["model_version"]))
+                  .eq("model_artifact_id", str(row["model_artifact_id"]))
+                  .order("official_event_id").execute())
+        batch = result.data
+        if (not isinstance(batch, list) or type(result.count) is not int
+            or result.count != len(batch)):
+            return False
+        for grade in batch:
+            event_id = grade.get("official_event_id")
+            if (not event_id or event_id in seen
+                or grade.get("model_version") != row["model_version"]
+                or str(grade.get("model_artifact_id")) != str(row["model_artifact_id"])
+                or grade.get("artifact_checksum") != saved_checksum):
+                return False
+            seen.add(event_id)
+            cohort.append(ForwardGrade(**{field: grade[field] for field in ForwardGrade.__dataclass_fields__}))
+        exact_health = calibration_health(cohort, min_forward=minimum)
+        if exact_health.get("status") != "PASS":
+            return False
+        unique_games = seen
     except Exception:
         return False
     return bool(
         len(unique_games) >= minimum
+        and assessment.get("schema_version") == "NFL_FORWARD_CALIBRATION_HEALTH_V2"
         and model.get("active") is True
         and model.get("promoted") is True
         and model.get("probability_publishable") is True

@@ -178,11 +178,11 @@ class _Query:
         self.rows = rows
         self.filter_field = filter_field
 
-    def select(self, *_a):
+    def select(self, *_a, **_kw):
         return self
 
     def eq(self, field, value):
-        if field == self.filter_field:
+        if self.filter_field is not None:
             self.rows = [row for row in self.rows if row.get(field) == value]
         return self
 
@@ -192,27 +192,48 @@ class _Query:
     def limit(self, *_a):
         return self
 
+    def range(self, start, end):
+        self.rows = self.rows[start:end + 1]
+        return self
+
     def execute(self):
-        return SimpleNamespace(data=self.rows)
+        return SimpleNamespace(data=self.rows, count=len(self.rows))
 
 
 class _CertifiedDb:
-    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None):
+    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None, *, verified_games=None, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V2", view_present=True):
         self.model = {
             "active": True, "promoted": True,
             "probability_publishable": approved,
+            "artifact_checksum": "sha256-fixture-model-bundle",
+            "model_artifact_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
         }
         self.health = {
+            "schema_version": health_schema,
             "graded_n": graded, "minimum_forward_required": 100,
             "status": status,
             "certification_recommendation": "FORWARD_EVIDENCE_PASS",
             "blockers": [],
         }
         count = graded if unique_games is None else unique_games
+        self.view_present = view_present
+        self.verified_games = verified_games
         self.grades = [
             {
                 "official_event_id": f"nfl-game-{i}",
                 "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+                "model_artifact_id": "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+                "artifact_checksum": "sha256-fixture-model-bundle",
+                "event_prediction_id": f"prediction-{i}",
+                "event_start_time_utc": "2026-01-02T12:00:00Z",
+                "prediction_created_at": "2026-01-01T12:00:00Z",
+                "selected_participant": "H", "calibrated_probability": .7,
+                "calibrated_lower_bound": .6, "calibrated_upper_bound": .8,
+                "outcome": int(i % 10 < 7),
+                "brier": (.7 - int(i % 10 < 7)) ** 2,
+                "log_loss": -math.log(.7 if i % 10 < 7 else .3),
+                "source_game_id": f"nfl-game-{i}",
+                "schema_version": "NFL_FORWARD_SHADOW_GRADE_V1", "can_execute": False,
             }
             for i in range(count)
         ]
@@ -222,8 +243,10 @@ class _CertifiedDb:
             return _Query([self.model])
         if name == "wow_nfl_forward_calibration_health":
             return _Query([self.health])
-        if name == "wow_nfl_forward_shadow_grades":
-            return _Query(self.grades, filter_field="model_version")
+        if name == "wow_nfl_forward_verified_grades":
+            if not self.view_present:
+                raise RuntimeError("private reconciliation view not yet installed")
+            return _Query(self.grades if self.verified_games is None else self.grades[:self.verified_games], filter_field="model_version")
         raise AssertionError(name)
 
 
@@ -237,6 +260,13 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     assert _forward_certification_proven(_CertifiedDb(False, 100), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100, "FAIL"), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100), row) is True
+    # Previously immutable but inconsistent rows must not inflate the cohort:
+    # the source ledger may contain 100, while the verified private view returns 99.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, verified_games=99), row) is False
+    # A historical PASS predating reconciliation cannot authorize admission.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, health_schema="NFL_FORWARD_CALIBRATION_HEALTH_V1"), row) is False
+    # Missing/unapplied view or absent SELECT privilege must fail closed.
+    assert _forward_certification_proven(_CertifiedDb(True, 100, view_present=False), row) is False
     # Never borrow a global PASS from another fitted model's settled events.
     assert _forward_certification_proven(
         _CertifiedDb(True, 100, grade_version="NFL_OTHER_MODEL_VERSION"), row

@@ -442,3 +442,107 @@ def test_forward_insert_dedupes_grade_on_second_page():
     assert db.orders == [(table, "grade_id"), (table, "grade_id")]
     assert all("grade_id" in projection and "official_event_id" in projection
                for name, projection in db.selections if name == table)
+@pytest.mark.parametrize("tie,home_win", [(False, False), (None, False), (False, True)])
+def test_forward_tie_score_overrides_corrupt_tie_flag_and_home_win(tie, home_win):
+    """The dedicated NFL forward CI must run this red-before/green-after test."""
+    p = _prediction(event_id="2026_05_NYG_WAS", p=0.65, lower=0.55, upper=0.75, index=7)
+    grades = grade_forward_predictions([p], [{
+        "game_id": p.official_event_id,
+        "home_score": 27,
+        "away_score": 27,
+        "home_win": home_win,
+        "tie": tie,
+    }])
+    assert grades == []
+
+
+@pytest.mark.parametrize("home_score,away_score,home_win", [
+    (27, 17, False),
+    (17, 27, True),
+])
+def test_forward_grade_excludes_score_winner_flag_conflict(home_score, away_score, home_win):
+    p = _prediction(event_id="2026_05_NYG_WAS", p=0.65, lower=0.55, upper=0.75, index=8)
+    assert grade_forward_predictions([p], [{
+        "game_id": p.official_event_id,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_win": home_win,
+        "tie": False,
+    }]) == []
+
+
+def test_p0_verification_view_sql_and_adversarial_history_run_in_nfl_workflow():
+    """The dedicated NFL workflow selects this file; run the actual new SQL tests.
+
+    Keeping the native workflow selection unchanged avoids a second P0 CI lane
+    while ensuring migration predicates and synthetic conflict cases execute.
+    """
+    import test_v17_nfl_forward_verified_grade_migration as safety
+
+    safety.test_verified_grade_view_reconciles_original_prediction_and_current_outcome()
+    safety.test_reconciliation_preserves_immutable_grade_ledger_and_private_rls()
+    safety.test_sql_view_excludes_actual_corrupt_historical_grade_shapes()
+
+
+def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
+    """A legacy grade can stay immutable without authorizing a 100th outcome."""
+    from types import SimpleNamespace
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = list(rows)
+
+        def select(self, *_a, **_kw):
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def order(self, *_a, **_kw):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def range(self, start, end):
+            self.rows = self.rows[start:end + 1]
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=self.rows, count=len(self.rows))
+
+    class Db:
+        def __init__(self, verified, health_version="NFL_FORWARD_CALIBRATION_HEALTH_V2"):
+            self.verified = verified
+            self.health_version = health_version
+
+        def table(self, name):
+            if name == "wow_nfl_event_fitted_model_artifacts":
+                return Query([{"active": True, "promoted": True, "probability_publishable": True, "artifact_checksum": "test-checksum", "model_artifact_version": "fitted-nfl-test"}])
+            if name == "wow_nfl_forward_calibration_health":
+                return Query([{
+                    "schema_version": self.health_version,
+                    "graded_n": 100,
+                    "minimum_forward_required": 100,
+                    "status": "PASS",
+                    "certification_recommendation": "FORWARD_EVIDENCE_PASS",
+                    "blockers": [],
+                }])
+            if name == "wow_nfl_forward_verified_grades":
+                if self.verified is None:
+                    raise RuntimeError("migration not applied")
+                from dataclasses import asdict
+                predictions = [_prediction(event_id=f"event-{i}", p=.7, lower=.6, upper=.8, index=i) for i in range(self.verified)]
+                outcomes = [{"game_id": p.official_event_id, "home_score": 24 if i % 10 < 7 else 17,
+                             "away_score": 17 if i % 10 < 7 else 24, "home_win": i % 10 < 7, "tie": False}
+                            for i, p in enumerate(predictions)]
+                return Query([{**asdict(g), "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test", "artifact_checksum": "test-checksum"}
+                              for g in grade_forward_predictions(predictions, outcomes)])
+            raise AssertionError(name)
+
+    row = {"model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test", "model_output_snapshot": {"artifact_checksum": "test-checksum"}}
+    assert not _forward_certification_proven(Db(99), row)
+    assert not _forward_certification_proven(Db(100, "NFL_FORWARD_CALIBRATION_HEALTH_V1"), row)
+    assert not _forward_certification_proven(Db(None), row)
+    assert _forward_certification_proven(Db(100), row)
