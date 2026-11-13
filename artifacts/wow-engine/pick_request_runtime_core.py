@@ -40,7 +40,7 @@ from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
 from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS, PropAutoHydrationError
-from prop_auto_hydration_router import auto_hydrate_prop_evidence, recheck_provisional_participation
+from prop_auto_hydration_router import auto_hydrate_prop_evidence, provider_for_sport, recheck_provisional_participation
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
 from v17.player_availability_gate import (
@@ -528,6 +528,27 @@ def _auto_hydration_hold(code: str) -> bool:
         "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
         "MLB_STARTER_STATUS_UNRESOLVED",
     }
+
+
+# Only already-fitted NFL yards/TD routes have a trusted automatic opportunity
+# provider. This is a data-reacquisition boundary, never a way to trust a
+# caller's NOT_READY ledger or promote an unavailable fitted specialist.
+_NFL_OPPORTUNITY_REACQUISITION_STATS = frozenset({
+    "PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS", "ANYTIME_TD",
+})
+
+
+def _nfl_opportunity_reacquisition_reason(row: PickRequestRow, canonical_stat: str) -> str | None:
+    """Prefer a fresh, independently validated NFL source over incomplete raw opportunity claims."""
+    if (
+        str(row.sport).strip().upper() != "NFL"
+        or canonical_stat not in _NFL_OPPORTUNITY_REACQUISITION_STATS
+        or row.evidence is None
+    ):
+        return None
+    ledger = row.evidence.opportunity_ledger
+    status = str(ledger.get("status") or ledger.get("gate_label") or "").strip().upper()
+    return "OPPORTUNITY_LEDGER_NOT_READY" if status not in {"PASS", "COMPLETE", "READY"} else None
 
 
 def _completed_scored_outcome(
@@ -1271,32 +1292,77 @@ def install_pick_request_routes(
                 continue
 
             acquisition: dict[str, Any]
-            if row.evidence is None:
+            # If an NFL caller supplies L10 results but not a ready opportunity
+            # ledger, fetch a new, authenticated source bundle. Do not mutate
+            # the rejected input's readiness flags, invent targets, or retry
+            # its immutable row ID. A fresh request produces a new fingerprint.
+            reacquisition_reason = _nfl_opportunity_reacquisition_reason(row, canonical_stat)
+            # Never downgrade a caller's official ruled-out designation to
+            # UNVERIFIED merely because reacquisition omits the injury ruling.
+            # Only a verified fresh availability decision can clear it.
+            prior_availability = (
+                evaluate_player_availability(row.evidence.role_status)
+                if reacquisition_reason is not None and row.evidence is not None
+                else None
+            )
+            prior_ruled_out = (
+                prior_availability is not None
+                and prior_availability.status == AVAILABILITY_UNAVAILABLE
+            )
+            if row.evidence is None or reacquisition_reason is not None:
                 try:
                     raw = auto_hydrate_prop_evidence(
                         sport=sport,
                         player=row.player,
                         stat_type=canonical_stat,
                         event_start_time=row.event_start_time,
-                        source_capture_timestamp=row.source_capture_timestamp,
+                        source_capture_timestamp=(
+                            None if reacquisition_reason is not None else row.source_capture_timestamp
+                        ),
                         source_label=f"{row.source_type}:{row.platform or 'UNKNOWN'}",
+                        opponent=row.opponent,
+                        canonical_event_id=row.event_id,
                     )
-                    row = row.model_copy(
-                        update={"evidence": RawPropEvidence.model_validate(raw)}
-                    )
+                    fresh_evidence = RawPropEvidence.model_validate(raw)
                     acquisition = {
                         "mode": "AUTO_HYDRATION",
                         "status": "PASS",
-                        "provider": "MLB_STATS_API_OFFICIAL_V1",
+                        "provider": provider_for_sport(sport, canonical_stat),
+                        "reacquisition_reason": reacquisition_reason,
                         "source_type": row.source_type,
                         "platform": row.platform,
                         "can_execute": False,
                     }
+                    if (
+                        prior_availability is not None
+                        and prior_availability.status == AVAILABILITY_UNAVAILABLE
+                        and evaluate_player_availability(fresh_evidence.role_status).status
+                        != AVAILABILITY_AVAILABLE
+                    ):
+                        acquisition["status"] = "FAILED_VALIDATION"
+                        outcomes.append(
+                            _terminal(
+                                row_key,
+                                "REJECTED",
+                                PLAYER_RULED_OUT,
+                                detail={
+                                    "blocker": PLAYER_RULED_OUT,
+                                    "terminal_label": PLAYER_RULED_OUT,
+                                    "designation": prior_availability.designation,
+                                    "model_evaluated": False,
+                                    "specialist_invoked": False,
+                                },
+                                acquisition=acquisition,
+                            )
+                        )
+                        continue
+                    row = row.model_copy(update={"evidence": fresh_evidence})
                 except PropAutoHydrationError as exc:
                     acquisition = {
                         "mode": "AUTO_HYDRATION",
                         "status": "FAILED",
-                        "provider": "MLB_STATS_API_OFFICIAL_V1",
+                        "provider": provider_for_sport(sport, canonical_stat),
+                        "reacquisition_reason": reacquisition_reason,
                         "source_type": row.source_type,
                         "platform": row.platform,
                         "can_execute": False,
@@ -1304,9 +1370,22 @@ def install_pick_request_routes(
                     outcomes.append(
                         _terminal(
                             row_key,
-                            "HELD" if _auto_hydration_hold(exc.code) else "REJECTED",
-                            exc.code,
-                            detail={**exc.detail, "message": str(exc), "specialist_invoked": False},
+                            "REJECTED" if prior_ruled_out else (
+                                "HELD" if _auto_hydration_hold(exc.code) else "REJECTED"
+                            ),
+                            PLAYER_RULED_OUT if prior_ruled_out else exc.code,
+                            detail={
+                                **exc.detail,
+                                "message": str(exc),
+                                "specialist_invoked": False,
+                                **({
+                                    "blocker": PLAYER_RULED_OUT,
+                                    "terminal_label": PLAYER_RULED_OUT,
+                                    "designation": prior_availability.designation,
+                                    "concurrent_acquisition_error": exc.code,
+                                    "model_evaluated": False,
+                                } if prior_ruled_out else {}),
+                            },
                             acquisition=acquisition,
                         )
                     )
@@ -1315,7 +1394,8 @@ def install_pick_request_routes(
                     acquisition = {
                         "mode": "AUTO_HYDRATION",
                         "status": "FAILED",
-                        "provider": "MLB_STATS_API_OFFICIAL_V1",
+                        "provider": provider_for_sport(sport, canonical_stat),
+                        "reacquisition_reason": reacquisition_reason,
                         "source_type": row.source_type,
                         "platform": row.platform,
                         "can_execute": False,
@@ -1323,9 +1403,19 @@ def install_pick_request_routes(
                     outcomes.append(
                         _terminal(
                             row_key,
-                            "HELD",
-                            "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
-                            detail={"error_type": type(exc).__name__, "specialist_invoked": False},
+                            "REJECTED" if prior_ruled_out else "HELD",
+                            PLAYER_RULED_OUT if prior_ruled_out else "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
+                            detail={
+                                "error_type": type(exc).__name__,
+                                "specialist_invoked": False,
+                                **({
+                                    "blocker": PLAYER_RULED_OUT,
+                                    "terminal_label": PLAYER_RULED_OUT,
+                                    "designation": prior_availability.designation,
+                                    "concurrent_acquisition_error": "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
+                                    "model_evaluated": False,
+                                } if prior_ruled_out else {}),
+                            },
                             acquisition=acquisition,
                         )
                     )

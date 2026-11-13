@@ -8,6 +8,8 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `OPPORTUNITY_LEDGER_NOT_READY` | NFL manual prop acquisition / opportunity validation | Caller-supplied opportunity status is not independently ready. For registered fitted NFL stats, reacquire a fresh ESPN identity + nflverse weekly opportunity bundle, then run the existing validator; a provider failure keeps the row held. Never change a NOT_READY flag to PASS by assertion. **Recovery class:** SOURCE_EVIDENCE_REACQUISITION. | No |
+| `NFL_PROP_SOURCE_UNAVAILABLE` | NFL source-backed prop evidence hydrator | ESPN/nflverse acquisition unavailable or invalid; preserve a source-specific pre-model failure, no probability, no caller-ledger fallback or model-capability mislabel. **Recovery class:** SOURCE_RETRIEVAL_DIAGNOSIS. | No |
 | `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
 | `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
 | `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
