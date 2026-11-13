@@ -71,7 +71,11 @@ def test_missing_official_nfl_history_fails_closed_and_never_scores(monkeypatch)
     assert response.status_code == 200
     terminal = response.json()["rows"][0]
     assert terminal["code"] == "NFL_PROP_SOURCE_UNAVAILABLE"
-    assert terminal["terminal_status"] in {"HELD", "REJECTED"}
+    assert terminal["terminal_status"] == "HELD"
+    assert terminal["pick_rejected"] is False
+    assert terminal["terminal_label"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert terminal["verdict_class"] == "ACQUISITION_BLOCKED"
+    assert terminal["infrastructure_blocked"] is True
     assert terminal["acquisition"]["status"] == "FAILED"
     assert terminal["acquisition"]["reacquisition_reason"] == "OPPORTUNITY_LEDGER_NOT_READY"
     assert terminal["probability_publishable"] is False
@@ -109,3 +113,46 @@ def test_model_unavailable_prevents_reacquisition_even_with_missing_ledger(monke
     assert terminal["can_execute"] is False
     assert called == []
     assert persisted == routed == scored == []
+
+
+
+def test_rule_out_is_not_lost_when_fresh_evidence_is_unverified(monkeypatch):
+    client, persisted, _routed, scored = _build(monkeypatch)
+    row = _manual_nfl_row("ruled-out")
+    row["evidence"]["role_status"]["availability"]["designation"] = "OUT"
+
+    def fresh_without_clearance(**_kwargs):
+        fresh = _evidence()
+        fresh["role_status"]["availability"]["status"] = "UNVERIFIED"
+        fresh["role_status"]["availability"]["designation"] = None
+        return fresh
+
+    monkeypatch.setattr(facade, "auto_hydrate_prop_evidence", fresh_without_clearance)
+    response = client.post("/score-pick-request", json={"rows": [row]})
+    assert response.status_code == 200
+    terminal = response.json()["rows"][0]
+    assert terminal["terminal_status"] == "REJECTED"
+    assert terminal["code"] == "PLAYER_RULED_OUT"
+    assert terminal["terminal_label"] == "PLAYER_RULED_OUT"
+    assert terminal["model_evaluated"] is False
+    assert terminal["pick_rejected"] is True
+    assert terminal["can_execute"] is False
+    assert persisted == []
+    assert scored == []
+
+
+def test_rule_out_can_only_be_replaced_by_fresh_verified_clearance(monkeypatch):
+    client, persisted, _routed, scored = _build(monkeypatch)
+    row = _manual_nfl_row("fresh-clearance")
+    row["evidence"]["role_status"]["availability"]["designation"] = "OUT"
+
+    monkeypatch.setattr(
+        facade, "auto_hydrate_prop_evidence", lambda **_kwargs: _evidence()
+    )
+    response = client.post("/score-pick-request", json={"rows": [row]})
+    assert response.status_code == 200
+    terminal = response.json()["rows"][0]
+    assert terminal["code"] != "PLAYER_RULED_OUT"
+    assert terminal["can_execute"] is False
+    assert len(persisted) == 1
+    assert len(scored) == 1
