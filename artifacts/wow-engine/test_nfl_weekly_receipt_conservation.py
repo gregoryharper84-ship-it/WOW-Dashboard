@@ -43,9 +43,10 @@ def predictions(schedule_rows):
     return result
 
 
-def run():
+def run(expected=14):
     return {"run_id":"week-10-authenticated-observed", "request_payload":
-            {"requested_season":2026,"requested_week":10},
+            {"requested_season":2026,"requested_week":10,
+             "requested_slate_dates":[], "expected_game_count":expected},
             "run_status":"COMPLETED", "can_execute":False}
 
 
@@ -188,3 +189,23 @@ def test_invalid_expected_count_rejects_request():
     rows = schedule(1)
     with pytest.raises(ValueError, match="PICKEM_AUDIT_REQUEST_INVALID"):
         audit(rows, predictions(rows), runs=[run()], expected=0)
+
+
+def test_partial_date_only_scope_cannot_satisfy_full_week_run():
+    rows = schedule()
+    malformed_scope = {**run(), "request_payload":
+                       {**run()["request_payload"], "requested_slate_dates": ["2026-11-12"]}}
+    report = audit(rows, predictions(rows), runs=[malformed_scope])
+    assert report["status"] == "HOLD"
+    assert report["observed_matching_completed_runs"] == 0
+    assert "PICKEM_WEEKLY_RUN_NOT_OBSERVED" in report["blockers"]
+
+
+def test_wrong_game_count_scope_cannot_satisfy_full_week_run():
+    rows = schedule()
+    partial = {**run(), "request_payload":
+               {**run()["request_payload"], "expected_game_count": 1}}
+    report = audit(rows, predictions(rows), runs=[partial])
+    assert report["status"] == "HOLD"
+    assert report["observed_matching_completed_runs"] == 0
+    assert "PICKEM_WEEKLY_RUN_NOT_OBSERVED" in report["blockers"]
