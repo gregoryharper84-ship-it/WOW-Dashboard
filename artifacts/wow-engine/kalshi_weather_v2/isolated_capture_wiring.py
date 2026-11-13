@@ -1,9 +1,10 @@
-"""Opt-in attachment of the existing bounded Kalshi Weather cohort controller.
+"""Opt-in attachment of the isolated Kalshi Weather dispatch consumer.
 
-This is NOT a second collector, writer lease, or evidence authority. The shared
-WOW API keeps its own collector disabled. The isolated runtime must explicitly
-claim ownership before this code installs an inbound trigger or startup task.
-The deploy controller must verify singleton ownership before setting the flag.
+The shared WOW API keeps its collector disabled. The dedicated runtime must
+explicitly claim ownership before installing either the durable queue consumer
+or the legacy in-process loop. The preferred queue path is fenced by an atomic
+service-role claim using FOR UPDATE SKIP LOCKED; both scheduler modes cannot be
+enabled at once.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from typing import Any
 
 OWNER_FLAG = "WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER"
 STARTUP_FLAG = "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED"
+DISPATCH_QUEUE_FLAG = "WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_QUEUE_ENABLED"
 
 
 def install_isolated_capture_if_owned(
@@ -22,32 +24,38 @@ def install_isolated_capture_if_owned(
     installer: Callable[..., None],
     env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    """Attach the *existing* controller, only with explicit isolated ownership.
-
-    This guard does not claim distributed fencing. Owner configuration is a
-    deployment prerequisite; production activation needs a separate readback
-    establishing that no other live service has an active collector.
-    """
+    """Attach exactly one isolated collection scheduler when ownership is explicit."""
     env = os.environ if env is None else env
     owner = env.get(OWNER_FLAG, "0") == "1"
     startup_requested = env.get(STARTUP_FLAG, "0") == "1"
-    if not owner:
-        # A global capture-on flag accidentally copied from the shared service
-        # must not start a second writer on this dedicated deployment.
-        return {
-            "status": "ISOLATED_COLLECTOR_NOT_OWNER",
-            "trigger_installed": False,
-            "startup_requested": startup_requested,
-            "startup_enabled": False,
-            "probability_publishable": False,
-            "can_execute": False,
-        }
-    installer(app, db_client_fn=db_client_fn)
-    return {
-        "status": "EXISTING_COLLECTOR_ATTACHED_NOT_PRODUCTION_VERIFIED",
-        "trigger_installed": True,
+    queue_requested = env.get(DISPATCH_QUEUE_FLAG, "0") == "1"
+
+    base = {
+        "trigger_installed": False,
+        "dispatch_queue_worker_installed": False,
+        "dispatch_queue_requested": queue_requested,
+        "dispatch_queue_enabled": False,
         "startup_requested": startup_requested,
-        "startup_enabled": startup_requested,
+        "startup_enabled": False,
         "probability_publishable": False,
         "can_execute": False,
+    }
+    if not owner:
+        return {
+            **base,
+            "status": "ISOLATED_COLLECTOR_NOT_OWNER",
+        }
+    if queue_requested and startup_requested:
+        return {
+            **base,
+            "status": "MULTIPLE_SCHEDULERS_BLOCKED",
+        }
+
+    installer(app, db_client_fn=db_client_fn)
+    return {
+        **base,
+        "status": "EXISTING_COLLECTOR_ATTACHED_NOT_PRODUCTION_VERIFIED",
+        "dispatch_queue_worker_installed": queue_requested,
+        "dispatch_queue_enabled": queue_requested,
+        "startup_enabled": startup_requested,
     }
