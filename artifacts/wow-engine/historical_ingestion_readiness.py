@@ -125,7 +125,10 @@ def evaluate_historical_ingestion_readiness(
             "sport and provider are required",
         )
 
-    entries = tuple(manifest_entries or load_source_manifest(default_manifest_path()))
+    entries = tuple(
+        load_source_manifest(default_manifest_path())
+        if manifest_entries is None else manifest_entries
+    )
     entry = _find_entry(sport=sport, provider=provider, entries=entries)
     if entry is None:
         return _result(
