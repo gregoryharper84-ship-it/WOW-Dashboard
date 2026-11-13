@@ -554,7 +554,7 @@ def pending_required_regressions(ev: dict) -> list[str]:
     if not isinstance(runs, list):
         return []
     pending: list[str] = []
-    for name in REQUIRED_REGRESSION_CHECKS:
+    for name in QA_EVIDENCE_CHECKS:
         matches = [
             run for run in runs
             if isinstance(run, dict)
