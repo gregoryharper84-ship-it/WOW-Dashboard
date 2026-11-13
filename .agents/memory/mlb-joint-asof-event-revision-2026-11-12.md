@@ -1,0 +1,11 @@
+# MLB joint replay: official event revision conflict at holdout selection
+
+- date: 2026-11-12
+- typed_reason: `EVENT_IDENTITY_UNRESOLVED` (existing canonical unresolved-event family; this research-only SQL emits counts rather than a new runtime code)
+- mechanism: immutable MLB forward shadow score rows can reference the same official game ID with distinct scheduled dates and start times. If a research join treats `(official_event_id, official_date, event_start_time)` as independent games, a rescheduled event can be double counted in a holdout. Official game `849817` appears twice, with two different dates and starts. The conflicting records may be legitimate historical schedule revisions, not fraudulent identities.
+- detection_point: SELECT-only as-of lineage preflight, before fitting, holdout selection, grading or any market threshold.
+- observed_red: initial query returned 34 post-fix score snapshots and 31 distinct official games but included two score snapshots for game `849817` with conflicting date/start. The original preliminary count of 32 distinct game/date/start tuples was not a count of independent games.
+- fix: in `mlb_joint_asof_replay_preflight_readonly.sql`, group by official ID; detect conflicting official date, start, home team or away team and remove those IDs from distinct aligned candidate counts. After correction, 2 post-fix rows / 1 official game conflict; 30 distinct nonconflicting aligned games remain. Preserve both immutable historical rows; do not choose a "preferred" snapshot without authoritative event-revision evidence.
+- prevention_artifact: `artifacts/wow-engine/v17/sql/mlb_joint_asof_replay_preflight_readonly.sql` is a SELECT-only repeatable preflight and `artifacts/wow-engine/tests/test_v17_joint_mlb_shadow_integration.py::test_mlb_joint_replay_preflight_stays_select_only_and_fail_closed` pins conflict detection, as-of timestamps, final-label proof, and nonpublication. Validation DB readback completed 2026-11-12.
+- link: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2639 ; existing SIRT lane https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2204
+- release_state: research-only PR, independent Class C signoff and exact-head checks still required. No model promotion, production write, scoreboard increase, wager, order or execution capability.
