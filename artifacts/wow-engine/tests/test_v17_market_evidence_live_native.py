@@ -178,6 +178,49 @@ def test_rundown_observed_participant_line_nesting_translates():
     }
 
 
+
+def test_rundown_native_full_name_prevents_same_city_identity_collapse():
+    event = _rundown_live_event()
+    event["event_id"] = "rd-new-york"
+    event["event_date"] = "2026-10-06T23:30:00Z"
+    event["teams_normalized"] = [
+        {"name": "New York", "full_name": "New York Rangers", "is_home": True},
+        {"name": "New York", "full_name": "New York Islanders", "is_away": True},
+    ]
+    event["markets"][0]["participants"] = [
+        {
+            "id": 101,
+            "name": "New York",
+            "full_name": "New York Rangers",
+            "type": "home",
+            "lines": [{"value": 0, "prices": {"25": {"price": -135}}}],
+        },
+        {
+            "id": 102,
+            "name": "New York",
+            "full_name": "New York Islanders",
+            "type": "away",
+            "lines": [{"value": 0, "prices": {"25": {"price": 115}}}],
+        },
+    ]
+    built = live.rundown_v2_event_to_odds_api_v4(event, sport_key="icehockey_nhl")
+    assert built is not None
+    assert built["home_team"] == "New York Rangers"
+    assert built["away_team"] == "New York Islanders"
+    assert built["home_team"] != built["away_team"]
+    h2h = next(
+        market
+        for book in built["bookmakers"]
+        for market in book["markets"]
+        if market["key"] == "h2h"
+    )
+    assert {row["name"] for row in h2h["outcomes"]} == {
+        "New York Rangers",
+        "New York Islanders",
+    }
+    assert "probability" not in repr(built).lower()
+
+
 def test_rundown_off_board_sentinel_is_not_a_price():
     event = _rundown_live_event()
     event["markets"][0]["participants"][0]["lines"][0]["prices"] = {
