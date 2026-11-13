@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from gate_engine.moneyline.game_state_sim import (
+    SimulationResult,
     can_execute,
     run_game_state_simulation,
 )
@@ -89,3 +90,39 @@ def test_invalid_probability_fails_closed(p):
 
 def test_execution_remains_unconditionally_disabled():
     assert can_execute is False
+
+
+def test_soccer_1x2_fitted_output_ignores_heuristic_script_probability(monkeypatch):
+    """An extreme script estimate cannot rewrite the 1X2 sporting model."""
+    from gate_engine.moneyline import pipeline
+
+    row = {
+        "sport": "SOCCER", "team": "Home FC", "opponent": "Away FC",
+        "slate_date": "2026-08-08", "market_type": "h2h",
+        "home_away": "HOME", "outcome": "draw",
+    }
+    evidence = {
+        "home_win_pct": 0.55, "away_win_pct": 0.45,
+        "status_freshness_hours": 0.5, "event_status": "SCHEDULED",
+        "lineup_confirmed": True, "starter_confirmed": True,
+        "player_status": "ACTIVE",
+        "game_log": [{"result": "W"}, {"result": "L"}, {"result": "W"}],
+    }
+    original = pipeline.run_moneyline_pipeline(row, evidence, n_sims=200, seed=1)
+    assert original.outputs.independent_probability is not None
+
+    def fake_script(*_args, **_kwargs):
+        return SimulationResult(
+            adjusted_prob=0.999, base_prob=0.55,
+            regime_distribution={"attacking": 1.0},
+            n_sims=200, sport="SOCCER",
+            three_way_probabilities={"home": 0.999, "draw": 0.0005, "away": 0.0005},
+        )
+
+    monkeypatch.setattr(pipeline, "run_game_state_simulation", fake_script)
+    rerun = pipeline.run_moneyline_pipeline(row, evidence, n_sims=200, seed=1)
+    assert rerun.outputs.independent_probability == pytest.approx(
+        original.outputs.independent_probability
+    )
+    assert rerun.three_state_1x2 == original.three_state_1x2
+    assert rerun.simulation["script_probability_publishable"] is False
