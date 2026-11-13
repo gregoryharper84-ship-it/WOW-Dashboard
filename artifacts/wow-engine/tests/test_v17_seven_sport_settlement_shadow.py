@@ -147,3 +147,25 @@ def test_unsupported_undecidable_sport_and_untyped_tennis_inputs_hold():
         settle_seven_sport_shadow(sport="CRICKET", settlement_basis="REGULATION", projection=packet())
     with pytest.raises(ValueError, match="TENNIS_SCORE_UNIT_INVALID"):
         settle_seven_sport_shadow(sport="TENNIS", settlement_basis=settlement("TENNIS"), projection=packet("TENNIS"))
+
+
+def test_real_joint_shadow_output_integrates_without_changing_probability():
+    from v17.joint_game_state_shadow import project_joint_shadow, MIN_SIMULATION_DRAWS
+
+    home = [80, 72, 69, 70] * (MIN_SIMULATION_DRAWS // 4)
+    away = [75, 76, 70, 68] * (MIN_SIMULATION_DRAWS // 4)
+    projection = project_joint_shadow(
+        event_id="ncaab-verified-fixture", fitted_source_model_id="fixture-unverified",
+        fitted_artifact_sha256="c" * 64,
+        captured_at=START - timedelta(minutes=15), event_start_at=START,
+        home_scores=home, away_scores=away, home_spread=-2.5, game_total=150.5,
+        moneyline_tie_rule="NO_TIES", simulation_seed=17,
+    )
+    actual = settle_seven_sport_shadow(
+        sport="NCAAB", settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        projection=projection,
+    )
+    assert actual["winner"] == {"home": .5, "away": .5, "draw": 0, "tie_settlement": "NO_TIES"}
+    assert actual["spread"]["p_cover"] == projection["home_spread"]["more"] == .25
+    assert actual["total"]["p_over"] == projection["game_total"]["more"] == .25
+    assert actual["model_certified"] is False and actual["can_execute"] is False
