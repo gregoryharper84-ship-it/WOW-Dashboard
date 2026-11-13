@@ -74,6 +74,9 @@ class Test24x7(unittest.TestCase):
             "SIRT: alerting verification fails in production",
             "[P0 SIRT] worker failure after deployment",
             "SIRT: runtime pipeline outage under verification",
+            "[SIRT] production audit log failure",
+            "SIRT: pipeline audit logs failed",
+            "SIRT: production audit logging regression",
         ):
             with self.subTest(title=title):
                 repair = issue(1527, "P1", title=title)
@@ -87,6 +90,8 @@ class Test24x7(unittest.TestCase):
             "SIRT: review production regression",
             "SIRT: intake of production outage",
             "SIRT: audit production failure",
+            "SIRT: independent review of production audit log failure",
+            "SIRT: production security audit failure",
         ):
             with self.subTest(title=title):
                 review = issue(2469, "P1", title=title)
