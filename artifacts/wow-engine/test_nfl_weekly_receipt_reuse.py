@@ -25,3 +25,17 @@ def test_postkickoff_reuse_invalidates_other_game():
     assert "PICKEM_REUSED_IMMUTABLE_PREDICTION_ID" in report["blockers"]
     assert report["pregame_receipt_count"] == 1
     assert report["missing_prediction_event_ids"] == [rows[0]["official_event_id"]]
+
+
+def test_whitespace_alias_reuse_invalidates_every_receipt():
+    rows = schedule(2)
+    preds = predictions(rows)
+    preds[0]["event_prediction_id"] = "  same-id  "
+    preds[1]["event_prediction_id"] = "same-id"
+    report = audit(rows, preds, runs=[run(expected=2)], expected=2)
+    assert report["status"] == "HOLD"
+    assert "PICKEM_REUSED_IMMUTABLE_PREDICTION_ID" in report["blockers"]
+    assert report["pregame_receipt_count"] == 0
+    assert sorted(report["missing_prediction_event_ids"]) == sorted(
+        row["official_event_id"] for row in rows
+    )
