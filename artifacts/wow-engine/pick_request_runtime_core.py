@@ -1297,6 +1297,14 @@ def install_pick_request_routes(
             # the rejected input's readiness flags, invent targets, or retry
             # its immutable row ID. A fresh request produces a new fingerprint.
             reacquisition_reason = _nfl_opportunity_reacquisition_reason(row, canonical_stat)
+            # Never downgrade a caller's official ruled-out designation to
+            # UNVERIFIED merely because reacquisition omits the injury ruling.
+            # Only a verified fresh availability decision can clear it.
+            prior_availability = (
+                evaluate_player_availability(row.evidence.role_status)
+                if reacquisition_reason is not None and row.evidence is not None
+                else None
+            )
             if row.evidence is None or reacquisition_reason is not None:
                 try:
                     raw = auto_hydrate_prop_evidence(
@@ -1311,9 +1319,7 @@ def install_pick_request_routes(
                         opponent=row.opponent,
                         canonical_event_id=row.event_id,
                     )
-                    row = row.model_copy(
-                        update={"evidence": RawPropEvidence.model_validate(raw)}
-                    )
+                    fresh_evidence = RawPropEvidence.model_validate(raw)
                     acquisition = {
                         "mode": "AUTO_HYDRATION",
                         "status": "PASS",
@@ -1323,6 +1329,30 @@ def install_pick_request_routes(
                         "platform": row.platform,
                         "can_execute": False,
                     }
+                    if (
+                        prior_availability is not None
+                        and prior_availability.status == AVAILABILITY_UNAVAILABLE
+                        and evaluate_player_availability(fresh_evidence.role_status).status
+                        != AVAILABILITY_AVAILABLE
+                    ):
+                        acquisition["status"] = "FAILED_VALIDATION"
+                        outcomes.append(
+                            _terminal(
+                                row_key,
+                                "REJECTED",
+                                PLAYER_RULED_OUT,
+                                detail={
+                                    "blocker": PLAYER_RULED_OUT,
+                                    "terminal_label": PLAYER_RULED_OUT,
+                                    "designation": prior_availability.designation,
+                                    "model_evaluated": False,
+                                    "specialist_invoked": False,
+                                },
+                                acquisition=acquisition,
+                            )
+                        )
+                        continue
+                    row = row.model_copy(update={"evidence": fresh_evidence})
                 except PropAutoHydrationError as exc:
                     acquisition = {
                         "mode": "AUTO_HYDRATION",
