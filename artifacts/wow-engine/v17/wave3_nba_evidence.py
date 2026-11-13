@@ -181,7 +181,9 @@ def verify_nba_lineup_freshness(
         feature = _parse_utc(feature_ts)
     except (ValueError, TypeError):
         return {"ok": False, "blockers": ["NBA_EVENT_TIME_INVALID"]}
-    changed = bool(lineup_evidence.get("rotation_changed", False))
+    if not isinstance(lineup_evidence, Mapping) or type(lineup_evidence.get("rotation_changed")) is not bool:
+        return {"ok": False, "blockers": ["NBA_LINEUP_EVIDENCE_MISSING"]}
+    changed = lineup_evidence["rotation_changed"]
     if not changed:
         return {"ok": True, "blockers": []}
     update_raw = lineup_evidence.get("latest_material_update_ts")
@@ -256,6 +258,8 @@ def verify_nba_lineup_evidence(
     blockers: list[str] = []
     if not isinstance(lineup_evidence, Mapping) or not lineup_evidence:
         return {"ok": False, "blockers": ["NBA_LINEUP_EVIDENCE_MISSING"]}
+    if type(lineup_evidence.get("rotation_changed")) is not bool:
+        blockers.append("NBA_LINEUP_EVIDENCE_MISSING")
     bound_ids = lineup_evidence.get("official_event_ids")
     if not isinstance(bound_ids, list) or not bound_ids:
         blockers.append("NBA_LINEUP_EVENT_BINDING_MISSING")
@@ -294,6 +298,8 @@ def verify_nba_lineup_evidence(
     if not isinstance(corroboration, Mapping) or not corroboration:
         blockers.append("NBA_LINEUP_CORROBORATION_MISSING")
     else:
+        if type(corroboration.get("rotation_changed")) is not bool:
+            blockers.append("NBA_LINEUP_CORROBORATION_MISSING")
         corroborating_source = corroboration.get("source_id")
         if not _is_official_id(corroborating_source):
             blockers.append("NBA_LINEUP_CORROBORATION_SOURCE_MISSING")
