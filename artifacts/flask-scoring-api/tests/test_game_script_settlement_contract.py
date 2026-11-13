@@ -125,4 +125,5 @@ def test_soccer_1x2_fitted_output_ignores_heuristic_script_probability(monkeypat
         original.outputs.independent_probability
     )
     assert rerun.three_state_1x2 == original.three_state_1x2
+    assert rerun.classification == original.classification
     assert rerun.simulation["script_probability_publishable"] is False
