@@ -7,6 +7,7 @@ from v17.wave3_nba_evidence import (
     nba_hard_negative,
     verify_nba_event_orientations,
     verify_nba_lineup_freshness,
+    verify_nba_lineup_evidence,
     verify_nba_snapshot_order,
 )
 
@@ -104,3 +105,42 @@ def test_unknown_negative_kind_stays_open_with_typed_blocker():
         "held_closed": False,
         "blockers": ["UNKNOWN_NEGATIVE_KIND"],
     }
+
+
+def test_lineup_evidence_at_tipoff_is_outside_prelock():
+    # Exactly at tipoff is no longer pregame, for either independent source.
+    record = {
+        "official_event_ids": ["g1"],
+        "source_id": "OFFICIAL_LINEUP_SOURCE",
+        "evidence_as_of": "2026-01-02T00:00:00Z",
+        "rotation_changed": False,
+        "corroboration": {
+            "source_id": "SECOND_INDEPENDENT_SOURCE",
+            "evidence_as_of": "2026-01-01T16:30:00Z",
+            "rotation_changed": False,
+        },
+    }
+    kwargs = {
+        "expected_ids": ["g1"],
+        "source_snapshot_ts": "2026-01-01T16:00:00Z",
+        "feature_ts": "2026-01-01T18:00:00Z",
+        "tipoff_ts": "2026-01-02T00:00:00Z",
+    }
+    at_lock = verify_nba_lineup_evidence(record, **kwargs)
+    assert at_lock["ok"] is False
+    assert "NBA_LINEUP_AS_OF_AFTER_LOCK" in at_lock["blockers"]
+    valid = {
+        **record,
+        "evidence_as_of": "2026-01-01T16:30:00Z",
+    }
+    assert verify_nba_lineup_evidence(valid, **kwargs)["ok"] is True
+    corroboration_at_lock = {
+        **valid,
+        "corroboration": {
+            **valid["corroboration"],
+            "evidence_as_of": "2026-01-02T00:00:00Z",
+        },
+    }
+    rejected = verify_nba_lineup_evidence(corroboration_at_lock, **kwargs)
+    assert rejected["ok"] is False
+    assert "NBA_LINEUP_AS_OF_AFTER_LOCK" in rejected["blockers"]
