@@ -174,14 +174,14 @@ jobs:
           existing=""
           for candidate in $candidates; do
             provenance=$(gh api graphql \
-              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body lastEditedAt author{login}}}}' \
+              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body lastEditedAt author{login __typename}}}}' \
               -f owner="$trusted_owner" -f name="${GITHUB_REPOSITORY#*/}" \
               -F number="$candidate")
             if jq -e --arg m "$marker" --arg incident "$INCIDENT" \
               --arg pr "$PR" --arg sha "$SHA" '
                 .data.repository.issue | select(
                   has("lastEditedAt") and .lastEditedAt == null and
-                  (.author.login == "github-actions[bot]") and
+                  (.author.login == "github-actions" and .author.__typename == "Bot") and
                   ((.body // "") | contains("<!-- " + $m + " -->")) and
                   ((.body // "") | contains("## Independent SIRT intake — NOT verification approval")) and
                   ((.body // "") | contains("- Engineering incident: #" + $incident + "\n")) and
@@ -195,9 +195,9 @@ jobs:
           done
           # Cross-links can fail independently after issue creation. Repair
           # only missing authenticated links without duplicating review issues.
-          prior_pr_comments=$(gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" | jq 'add // []')
           if [ -n "$existing" ]; then
+            prior_pr_comments=$(gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" | jq 'add // []')
             existing_url="https://github.com/$GITHUB_REPOSITORY/issues/$existing"
             existing_link="Independent SIRT intake created: $existing_url. Exact head: $SHA"
             linked=$(jq -r --arg link "$existing_link" --arg owner "$trusted_owner" '
