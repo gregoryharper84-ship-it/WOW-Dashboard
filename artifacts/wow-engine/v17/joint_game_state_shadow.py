@@ -68,6 +68,9 @@ def project_joint_shadow(
     moneyline_tie_rule: str,
     simulation_seed: int,
     player_props: Mapping[str, tuple[float, Sequence[float]]] | None = None,
+    source_sport: str | None = None,
+    source_settlement_basis: str | None = None,
+    source_score_unit: str | None = None,
 ) -> dict:
     """Summarize *existing* aligned draws without granting probability authority.
 
@@ -76,6 +79,15 @@ def project_joint_shadow(
     ``exact`` mass is retained for integer lines; consumers must apply their
     own approved, sport-and-market-specific settlement policy.
     """
+    # These describe the caller's source-score contract, not third-party
+    # certification. They are optional for legacy shadow consumers; downstream
+    # seven-sport settlement refuses to accept their absence.
+    source_fields = (source_sport, source_settlement_basis, source_score_unit)
+    if any(v is not None for v in source_fields):
+        if not all(isinstance(v, str) and v.strip() for v in source_fields):
+            raise ValueError("source sport, settlement basis and score unit must be bound together")
+        if source_score_unit not in {"FINAL_SCORE", "MATCH_GAMES"}:
+            raise ValueError("source score unit unsupported")
     if not isinstance(event_id, str) or not event_id.strip():
         raise ValueError("event_id must be explicit")
     if not isinstance(fitted_source_model_id, str) or not fitted_source_model_id.strip():
@@ -122,6 +134,9 @@ def project_joint_shadow(
             exact = sum(x == line for x in numeric)
             props[prop_id] = {"line": line, **_fractions(more=more, exact=exact, less=count - more - exact, count=count)}
     return {
+        "source_sport": source_sport,
+        "source_settlement_basis": source_settlement_basis,
+        "source_score_unit": source_score_unit,
         "event_id": event_id,
         "fitted_source_model_id": fitted_source_model_id,
         "fitted_artifact_sha256": fitted_artifact_sha256,
