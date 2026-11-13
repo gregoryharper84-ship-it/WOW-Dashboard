@@ -480,3 +480,14 @@
 - **prevention_artifact:** `tests/test_nfl_count_prop_participation_audit.py` adds three synthetic tests for disparity, unmapped crosswalk numerator and inconsistent totals; hosted RED [rapid 43306542900](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/43306542900) recorded exactly 3 targeted failures (817 pass, 4 source SKIPs); hosted GREEN [rapid 43307167942](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/43307167942) 820 pass, 4 intentional source SKIPs, zero fail at `7f3d4b1a`. Failure status added in `artifacts/wow-engine/docs/failure_codes.md`; independent source review remains open.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605#issuecomment-6835992546
 - **production_evidence:** None; PR remains protected and unmerged. No data repin, label imputation, source-rights approval, model fit/certification or publishable route; `V17_TERMINAL_REDUCER`, `can_execute=false`, `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true` preserved.
+
+## Textual null sentinels in regular-player identity validation — 2026-11-13
+
+- **date:** 2026-11-13
+- **typed_reason:** NFL_PROP_SOURCE_IDENTITY_INVALID (existing typed source-integrity HOLD, not MODEL_UNAVAILABLE).
+- **mechanism:** The regular-player `validate_frame` path rejected pandas nulls and empty strings but accepted textual missing-value markers (NA/NAN/NONE/NULL) as player, position, name, or game identities. This predicts spurious player histories and misleading fitted labels when a caller constructs a DataFrame without pandas CSV NA conversion.
+- **detection_point:** Before L10/L5 feature assembly, after source-row normalization; not at certification or model promotion.
+- **fix:** Reuse the existing `_is_missing_identity` predicate for all four regular-player identity fields, retaining every date, source hash, role, label, training and publication gate.
+- **prevention_artifact:** `tests/test_nfl_missing_prop_candidates.py::test_textual_null_identity_tokens_fail_closed_before_feature_building` covers four token/field pairs. A locally executed pandas-condition reproduction showed existing=accept and revised=reject in 4/4 cases. Hosted exact-head pytest remains to be read independently, and no production result is asserted.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None; candidate branch remains unmerged and non-serving. No source repin, anonymous-row imputation, candidate fitting authorization, certified model, probability publication or execution. `V17_TERMINAL_REDUCER` and `can_execute=false` unchanged.
