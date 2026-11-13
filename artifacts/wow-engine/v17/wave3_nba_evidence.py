@@ -280,7 +280,7 @@ def verify_nba_lineup_evidence(
         if tipoff is None:
             blockers.append("NBA_PRELOCK_LINEAGE_REQUIRED")
         else:
-            if as_of > tipoff:
+            if as_of >= tipoff:
                 blockers.append("NBA_LINEUP_AS_OF_AFTER_LOCK")
             if snapshot is not None and as_of < snapshot:
                 blockers.append("NBA_LINEUP_AS_OF_BEFORE_SOURCE_SNAPSHOT")
@@ -313,7 +313,7 @@ def verify_nba_lineup_evidence(
             try:
                 tipoff = _parse_utc(str(tipoff_ts))
                 snapshot = _parse_utc(str(source_snapshot_ts))
-                if corroborated_as_of > tipoff:
+                if corroborated_as_of >= tipoff:
                     blockers.append("NBA_LINEUP_AS_OF_AFTER_LOCK")
                 if corroborated_as_of < snapshot:
                     blockers.append("NBA_LINEUP_AS_OF_BEFORE_SOURCE_SNAPSHOT")
