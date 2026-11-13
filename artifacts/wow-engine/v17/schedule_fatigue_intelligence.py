@@ -79,6 +79,8 @@ def _ids(event: Mapping[str, Any]) -> tuple[str, ...]:
     values = event.get("participants")
     if not isinstance(values, (list, tuple)) or not values:
         _invalid("event participants required")
+    if any(not isinstance(v, (str, int)) or isinstance(v, bool) for v in values):
+        _invalid("participant ID must be a non-null string or integer")
     ids = tuple(str(value).strip() for value in values)
     if any(not value for value in ids) or len(ids) != len(set(ids)):
         _invalid("missing/duplicate participant identity")
@@ -99,10 +101,14 @@ def _profile(pid: str, target: Mapping[str, Any], games: Sequence[Mapping[str, A
     at_venue = target["_venue"]
     relevant = sorted((g for g in games if pid in g["_participants"]),
                       key=lambda g: (g["_start"], g["official_event_id"]))
+    for earlier, later in zip(relevant, relevant[1:]):
+        if later["_start"] < earlier["_end"]:
+            _invalid("overlapping completed events for participant")
     previous = relevant[-1] if relevant else None
     target_role = target["roles"].get(pid)
-    if target_role not in {"home", "away", "neutral"}:
-        target_role = None
+    if target_role is not None and (not isinstance(target_role, str) or
+                                    target_role not in {"home", "away", "neutral"}):
+        _invalid("invalid target role")
     basis_zone = at_venue[2] if at_venue else timezone.utc
     target_date = start.astimezone(basis_zone).date()
 
@@ -124,6 +130,8 @@ def _profile(pid: str, target: Mapping[str, Any], games: Sequence[Mapping[str, A
                 if role is None:
                     road = None
                     break
+                if not isinstance(role, str) or role not in {"home", "away", "neutral"}:
+                    _invalid("invalid history role")
                 if role != "away":
                     break
                 road += 1
@@ -207,6 +215,7 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
     normalized_target = {**target, "_start": start, "_venue": target_venue}
     normalized: list[dict[str, Any]] = []
     by_id: dict[str, str] = {}
+    shared_identities: dict[str, str] = {}
     unresolved_participants: set[str] = set()
     unresolved_ids: set[str] = set()
     for raw in history:
@@ -220,6 +229,10 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
         if g_start >= start:
             _invalid("future event in completed historical input")
         _source(raw, freeze)
+        shared = json.dumps([sport, g_start.isoformat(), sorted(rids)], sort_keys=True)
+        if eid in shared_identities and shared_identities[eid] != shared:
+            raise ScheduleContextError("SCHEDULE_IDENTITY_CONFLICT", eid)
+        shared_identities[eid] = shared
         status = str(raw.get("status") or "").upper()
         if status not in {"FINAL", "CANCELLED", "POSTPONED", "SCHEDULED"}:
             _invalid("unrecognized event status")
@@ -236,6 +249,10 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
         roles = raw.get("roles")
         if not isinstance(roles, Mapping):
             _invalid("historical roles required")
+        if any(roles.get(pid) is not None and
+               (not isinstance(roles.get(pid), str) or
+                roles[pid] not in {"home", "away", "neutral"}) for pid in rids):
+            _invalid("invalid historical role")
         payload = {**raw, "_start": g_start, "_end": end,
                    "_venue": _venue(raw.get("venue")), "_participants": rids}
         identity = json.dumps([sport, g_start.isoformat(), end.isoformat(), sorted(rids),
@@ -251,8 +268,8 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
                          history_completeness.get(pid) is True and pid not in unresolved_participants)
            for pid in ids}
     missing = {pid: tuple(k for k in ("rest_hours", "back_to_back", "games_in_4_days_including_target",
-                                     "last_trip_miles", "consecutive_road_events_including_target",
-                                     "workload_7d") if data[k] is None)
+                                     "last_trip_miles", "travel_miles_last_7d",
+                                     "consecutive_road_events_including_target", "workload_7d") if data[k] is None)
                for pid, data in per.items()}
     differences: dict[str, float | None] = {}
     if len(ids) == 2:
