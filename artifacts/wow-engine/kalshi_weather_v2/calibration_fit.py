@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from statistics import mean, stdev
 from typing import Iterable
 
@@ -59,12 +60,12 @@ def fit_candidate_calibration_profile(
         if not row.forecast_as_of or not row.settlement_time:
             blockers.append("CALIBRATION_TEMPORAL_PROVENANCE_MISSING")
             continue
-        # ISO strings are required upstream. Lexical comparison is valid only
-        # for normalized UTC timestamps; upstream acceptance must enforce UTC.
-        if not (row.forecast_as_of.endswith("Z") and row.settlement_time.endswith("Z")):
+        forecast_as_of = _parse_utc_instant(row.forecast_as_of)
+        settlement_time = _parse_utc_instant(row.settlement_time)
+        if forecast_as_of is None or settlement_time is None:
             blockers.append("CALIBRATION_TIMESTAMP_NOT_NORMALIZED_UTC")
             continue
-        if row.forecast_as_of >= row.settlement_time:
+        if forecast_as_of >= settlement_time:
             blockers.append("CALIBRATION_LOOKAHEAD_LEAKAGE")
             continue
         valid_residuals.append(row.residual_f)
@@ -112,3 +113,17 @@ def fit_candidate_calibration_profile(
         can_publish=False,
         can_execute=False,
     )
+
+
+def _parse_utc_instant(value: str) -> datetime | None:
+    """Parse a normalized UTC Z timestamp as an instant, not a string."""
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        return None
+    return parsed.astimezone(timezone.utc)
+
