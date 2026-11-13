@@ -69,3 +69,73 @@ def test_late_lineup_cannot_qualify_but_valid_pregame_lineup_does():
     with _connection() as db:
         rows = dict(db.execute(query).fetchall())
     assert rows == {"late": 0, "valid": 1}
+
+
+def test_actual_evidence_join_and_final_count_exclude_conflicting_event():
+    """Exercise the production collision CTE, join, and aggregate filter.
+
+    An unscored archived revision conflicts with an otherwise eligible
+    scored event; a legitimate scored event must remain counted. Both a
+    late-lineup case and a valid pregame control ensure no false green.
+    """
+    sql = SQL.read_text(encoding="utf-8")
+    collision = re.search(
+        r"event_identity_collisions AS \((.*?)\),\s*official_schedule_final AS",
+        sql, re.S,
+    )
+    lineup = re.search(
+        r"(EXISTS \(\s*SELECT 1\s*FROM public\.wow_mlb_forward_lineup_snapshots l.*?\)) AS confirmed_lineup_captured_asof",
+        sql, re.S,
+    )
+    evidence_join = re.search(
+        r"FROM scored s\s+LEFT JOIN event_identity_collisions conflicted\s+ON conflicted\.official_event_id = s\.official_event_id",
+        sql, re.S,
+    )
+    final_filter = re.search(
+        r"count\(\*\) FILTER \(\s*(WHERE confirmed_lineup_captured_asof AND both_features_captured_asof\s+AND NOT event_identity_conflict)\s*\) AS aligned_pregame_source_candidates",
+        sql, re.S,
+    )
+    assert all((collision, lineup, evidence_join, final_filter)), (
+        "The test must use the real SQL collision, join, and eligibility predicate"
+    )
+    with _connection() as db:
+        db.execute(
+            "INSERT INTO public.wow_mlb_forward_lineup_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("collision-scored", "COLLIDE", 5, 6, "CONFIRMED", 1, 0, 0, 200, 0,
+             "2026-10-03T18:59:00Z"),
+        )
+        fixture_ctes = (
+            "WITH scored AS ("
+            "SELECT * FROM public.wow_mlb_forward_shadow_events "
+            "WHERE shadow_event_id != 'collision-unscored'), "
+            "event_identity_collisions AS (" + collision.group(1) + "), "
+            "evidence AS ("
+            "SELECT s.*, "
+            "(conflicted.official_event_id IS NOT NULL) AS event_identity_conflict, "
+            + lineup.group(1) + " AS confirmed_lineup_captured_asof, "
+            "1 AS both_features_captured_asof "
+            + evidence_join.group(0) + ") "
+        )
+        def evidence_counts(condition):
+            query = (
+                fixture_ctes
+                + "SELECT count(*) FILTER (" + condition + "), "
+                "group_concat(shadow_event_id) FILTER (" + condition + "), "
+                "count(*) FILTER (WHERE event_identity_conflict) FROM evidence"
+            )
+            return db.execute(query).fetchone()
+
+        predicate = final_filter.group(1)
+        assert evidence_counts(predicate) == (1, "valid", 1)
+        # Mutation controls: dropping the final collision exclusion or
+        # breaking the join must result in two incorrectly eligible rows.
+        assert evidence_counts(
+            predicate.replace("AND NOT event_identity_conflict", "")
+        )[0] == 2
+        broken_ctes = fixture_ctes.replace(
+            "ON conflicted.official_event_id = s.official_event_id",
+            "ON conflicted.official_event_id = 'IMPOSSIBLE_GAME_ID'",
+        )
+        assert db.execute(
+            broken_ctes + "SELECT count(*) FILTER (" + predicate + ") FROM evidence"
+        ).fetchone()[0] == 2
