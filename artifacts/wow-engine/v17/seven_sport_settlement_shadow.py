@@ -129,11 +129,11 @@ def settle_seven_sport_shadow(
         raise ValueError("PREGAME_CAPTURE_INVALID")
 
     money = _distribution(projection.get("moneyline"), labels=("home_win", "away_win", "draw"))
-    if sport in {"NBA", "NCAAB", "NHL"}:
+    if sport in {"NBA", "NCAAB", "NHL", "NCAAF"}:
         tie_rule = "NO_TIES"
     elif sport == "SOCCER":
         tie_rule = "THREE_WAY"
-    elif sport in {"NFL", "NCAAF"}:
+    elif sport == "NFL":
         tie_rule = "PUSH" if projection.get("moneyline_tie_rule") == "PUSH" else "THREE_WAY"
     else:
         tie_rule = "NO_WINNER_FROM_GAME_COUNTS"
