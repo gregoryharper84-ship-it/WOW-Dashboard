@@ -144,17 +144,19 @@ def _profile(pid: str, target: Mapping[str, Any], games: Sequence[Mapping[str, A
 
     workload = None
     unit = None
-    if r7 and all(isinstance(g.get("workloads", {}).get(pid), Mapping) for g in r7):
+    if r7 and all(isinstance(g.get("workloads"), Mapping) and
+                  isinstance(g["workloads"].get(pid), Mapping) for g in r7):
         items = [g["workloads"][pid] for g in r7]
-        units = {i.get("unit") for i in items}
+        unit_values = [i.get("unit") for i in items]
         values = [i.get("value") for i in items]
-        if len(units) == 1 and next(iter(units)) in {"minutes", "pitches", "balls", "rounds", "hours", "innings"}:
+        if (unit_values and all(isinstance(u, str) and u == unit_values[0] for u in unit_values)
+                and unit_values[0] in {"minutes", "pitches", "balls", "rounds", "hours", "innings"}):
             try:
                 parsed = [float(v) for v in values]
             except (ValueError, TypeError):
                 parsed = []
             if parsed and all(math.isfinite(v) and 0 <= v <= 10000 for v in parsed):
-                workload, unit = round(sum(parsed), 2), next(iter(units))
+                workload, unit = round(sum(parsed), 2), unit_values[0]
 
     result = {
         "rest_hours": round(rest_hours, 2) if rest_hours is not None and complete else None,
@@ -243,7 +245,8 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
     per = {pid: _profile(pid, normalized_target, normalized, history_completeness.get(pid) is True)
            for pid in ids}
     missing = {pid: tuple(k for k in ("rest_hours", "back_to_back", "games_in_4_days_including_target",
-                                     "last_trip_miles", "workload_7d") if data[k] is None)
+                                     "last_trip_miles", "consecutive_road_events_including_target",
+                                     "workload_7d") if data[k] is None)
                for pid, data in per.items()}
     differences: dict[str, float | None] = {}
     if len(ids) == 2:
