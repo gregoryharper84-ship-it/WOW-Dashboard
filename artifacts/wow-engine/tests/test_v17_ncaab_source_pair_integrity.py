@@ -39,3 +39,48 @@ def test_incomplete_or_unsettled_game_is_skipped_without_label():
 def test_mismatched_row_identity_is_rejected():
     with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_ID_CONFLICT"):
         validated_team_box_pair("401", [row("home", "H"), row("away", "A", gid="402")])
+
+
+def _source_csv(team_rows):
+    import csv
+    import io
+    out = io.StringIO()
+    fields = ["game_id", "team_home_away", "team_id", "season", "team_score", "game_date_time", "game_date"]
+    writer = csv.DictWriter(out, fieldnames=fields)
+    writer.writeheader()
+    for t in team_rows:
+        writer.writerow({
+            "game_id": t["game_id"],
+            "team_home_away": t["team_home_away"],
+            "team_id": t["team_id"],
+            "season": t["season"],
+            "team_score": t["team_score"],
+            "game_date_time": "2026-02-01T18:00:00Z",
+            "game_date": "2026-02-01",
+        })
+    return out.getvalue().encode()
+
+
+def test_collector_rejects_duplicate_game_rows_before_training(monkeypatch):
+    from v17 import ncaab_sportsdataverse_candidate as collector
+
+    data = _source_csv([row("home", "H"), row("home", "X"), row("away", "A")])
+    class Reply:
+        status_code = 200
+        content = data
+    monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
+    with pytest.raises(collector.NCAABCandidateUnavailable, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+        collector.fetch_games(seasons=(2026,))
+
+
+def test_collector_preserves_unique_two_team_game(monkeypatch):
+    from v17 import ncaab_sportsdataverse_candidate as collector
+
+    data = _source_csv([row("home", "H"), row("away", "A")])
+    class Reply:
+        status_code = 200
+        content = data
+    monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
+    games, sources = collector.fetch_games(seasons=(2026,))
+    assert len(games) == 1 and len(sources) == 1
+    assert games[0]["home_team_id"] == "H" and games[0]["away_team_id"] == "A"
