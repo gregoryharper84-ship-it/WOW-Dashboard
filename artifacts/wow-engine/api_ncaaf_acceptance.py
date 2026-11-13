@@ -42,6 +42,9 @@ from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
 from v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
+from v17.fitted_model_certification_service import (
+    install_fitted_model_certification_promotion_routes,
+)
 from v17.team_event_probability_preservation import (
     install_team_event_routes as install_v17_team_event_routes,
     score_team_event_request as score_v17_team_event_request,
@@ -239,6 +242,15 @@ if V17_ACTIVE:
             auth_dependency=_auth,
             get_client_fn=_db_client,
         )
+
+    # Certification replay and promotion decisions are audit-only. They write
+    # append-only receipts and a dry-run apply packet; they never promote,
+    # publish, rank, or execute. Mounted only on the active V17 production app.
+    install_fitted_model_certification_promotion_routes(
+        app,
+        auth_dependency=_auth,
+        db_client_fn=_db_client,
+    )
 
     # Core Intelligence is separately gated so migrations can land before route
     # exposure and rollback remains one environment-variable change. Its route
