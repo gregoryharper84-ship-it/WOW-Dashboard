@@ -10,6 +10,8 @@ START = datetime(2026, 11, 14, 1, tzinfo=timezone.utc)
 
 def packet(sport="NCAAF", *, home_spread=-3, game_total=49.5, draw=0.1):
     return {
+        "source_sport": sport, "source_settlement_basis": settlement(sport),
+        "source_score_unit": "MATCH_GAMES" if sport == "TENNIS" else "FINAL_SCORE",
         "event_id": f"fixture:{sport}:17", "fitted_source_model_id": "research-fitted-source",
         "fitted_artifact_sha256": "a" * 64, "captured_at": (START - timedelta(hours=1)).isoformat(),
         "event_start_at": START.isoformat(), "simulation_seed": 42, "draw_count": 50000,
@@ -160,6 +162,7 @@ def test_real_joint_shadow_output_integrates_without_changing_probability():
         captured_at=START - timedelta(minutes=15), event_start_at=START,
         home_scores=home, away_scores=away, home_spread=-2.5, game_total=150.5,
         moneyline_tie_rule="NO_TIES", simulation_seed=17,
+        source_sport="NCAAB", source_settlement_basis="FULL_GAME_INCLUDING_OVERTIME", source_score_unit="FINAL_SCORE",
     )
     actual = settle_seven_sport_shadow(
         sport="NCAAB", settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
@@ -169,3 +172,26 @@ def test_real_joint_shadow_output_integrates_without_changing_probability():
     assert actual["spread"]["p_cover"] == projection["home_spread"]["more"] == .25
     assert actual["total"]["p_over"] == projection["game_total"]["more"] == .25
     assert actual["model_certified"] is False and actual["can_execute"] is False
+
+
+def test_source_sport_and_period_cannot_be_relabelled():
+    p = packet("NCAAB", home_spread=-2.5, draw=0)
+    with pytest.raises(ValueError, match="SOURCE_SPORT_OR_SETTLEMENT_MISMATCH"):
+        settle_seven_sport_shadow(sport="NHL", settlement_basis=settlement("NHL"), projection=p)
+    p["source_sport"] = "NCAAB"
+    p["source_settlement_basis"] = settlement("NCAAB")
+    p["source_score_unit"] = "FINAL_SCORE"
+    with pytest.raises(ValueError, match="SOURCE_SPORT_OR_SETTLEMENT_MISMATCH"):
+        settle_seven_sport_shadow(sport="NHL", settlement_basis=settlement("NHL"), projection=p)
+    p["source_settlement_basis"] = "REGULATION"
+    with pytest.raises(ValueError, match="SOURCE_SPORT_OR_SETTLEMENT_MISMATCH"):
+        settle_seven_sport_shadow(sport="NCAAB", settlement_basis=settlement("NCAAB"), projection=p)
+
+
+def test_zero_handicap_rejects_incoherent_winner_and_cover_distribution():
+    p = packet("NCAAF", home_spread=0)
+    with pytest.raises(ValueError, match="ZERO_HANDICAP_WINNER_SPREAD_MISMATCH"):
+        settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=p)
+    p["home_spread"].update(more=.5, exact=.1, less=.4)
+    result = settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=p)
+    assert result["spread"]["p_push"] == result["winner"]["draw"] == .1
