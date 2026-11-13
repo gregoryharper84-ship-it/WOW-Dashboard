@@ -4,6 +4,7 @@ Pure source preflight: cannot authorize fitted probabilities or publication.
 """
 from __future__ import annotations
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -42,4 +43,19 @@ def validated_team_box_pair(
         raise NCAABSourcePairError("NCAAB_SOURCE_PARTICIPANT_COLLISION")
     if home.get("team_score") in (None, "") or away.get("team_score") in (None, ""):
         return None
+
+    # _float() in the downstream collector defaults malformed numeric values
+    # to zero; validate final scores before it can manufacture settlement.
+    scores = []
+    for side in (home, away):
+        try:
+            score = Decimal(str(side["team_score"]).strip())
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise NCAABSourcePairError("NCAAB_SOURCE_SCORE_INVALID") from exc
+        if (not score.is_finite() or score < 0 or score > 999
+                or score != score.to_integral_value()):
+            raise NCAABSourcePairError("NCAAB_SOURCE_SCORE_INVALID")
+        scores.append(int(score))
+    if scores[0] == scores[1]:
+        raise NCAABSourcePairError("NCAAB_SOURCE_SCORE_TIE_UNSETTLED")
     return home, away
