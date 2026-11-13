@@ -39,3 +39,22 @@ def test_whitespace_alias_reuse_invalidates_every_receipt():
     assert sorted(report["missing_prediction_event_ids"]) == sorted(
         row["official_event_id"] for row in rows
     )
+
+
+def test_cross_week_reused_prediction_uuid_fails_closed():
+    # The same immutable receipt ID cannot belong to a Week 10 game AND
+    # an unrelated October Week 4 event that is outside this schedule.
+    # Unknown rows stay listed, but ID collisions must poison both uses.
+    rows = schedule(1)
+    pregame = predictions(rows)
+    week4_alias = {
+        **pregame[0],
+        "official_event_id": "2026_04_ATL_NO",
+        "event_key": "NFL:2026-10-05:ATL@NO:401872979",
+    }
+    report = audit(rows, [*pregame, week4_alias], runs=[run(expected=1)], expected=1)
+    assert "PICKEM_REUSED_IMMUTABLE_PREDICTION_ID" in report["blockers"]
+    assert report["status"] == "HOLD"
+    assert report["pregame_receipt_count"] == 0
+    assert report["missing_prediction_event_ids"] == [rows[0]["official_event_id"]]
+    assert report["unmatched_prediction_event_ids"] == ["2026_04_ATL_NO"]
