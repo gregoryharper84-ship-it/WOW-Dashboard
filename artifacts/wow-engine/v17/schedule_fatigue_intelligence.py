@@ -207,6 +207,9 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
     normalized_target = {**target, "_start": start, "_venue": target_venue}
     normalized: list[dict[str, Any]] = []
     by_id: dict[str, str] = {}
+    unresolved_participants: set[str] = set()
+    unresolved_ids: set[str] = set()
+    excluded_history: list[dict[str, Any]] = []
     for raw in history:
         if not isinstance(raw, Mapping) or str(raw.get("sport") or "").upper() != sport:
             _invalid("mixed/unknown sport in history")
@@ -222,6 +225,10 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
         if status not in {"FINAL", "CANCELLED", "POSTPONED", "SCHEDULED"}:
             _invalid("unrecognized event status")
         if status != "FINAL":
+            excluded_history.append(dict(raw))
+            if status == "SCHEDULED":
+                unresolved_ids.add(eid)
+                unresolved_participants.update(rids)
             continue
         end = _time(raw.get("event_end_utc"))
         if not g_start < end <= freeze:
@@ -242,7 +249,8 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
             continue  # identical multi-provider or schedule-mirror event, counted only once
         by_id[eid] = identity
         normalized.append(payload)
-    per = {pid: _profile(pid, normalized_target, normalized, history_completeness.get(pid) is True)
+    per = {pid: _profile(pid, normalized_target, normalized,
+                         history_completeness.get(pid) is True and pid not in unresolved_participants)
            for pid in ids}
     missing = {pid: tuple(k for k in ("rest_hours", "back_to_back", "games_in_4_days_including_target",
                                      "last_trip_miles", "consecutive_road_events_including_target",
@@ -268,6 +276,8 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
     receipt = {"family": FEATURE_FAMILY_VERSION, "sport": sport, "target": audit_event(target),
                "freeze": freeze.isoformat(),
                "histories": [audit_event(r) for r in sorted(normalized, key=lambda r: (r["_start"], r["official_event_id"]))],
+               "excluded_history": [audit_event(r) for r in sorted(excluded_history,
+                     key=lambda r: (str(r["event_start_utc"]), str(r["official_event_id"])))],
                "completeness": {pid: history_completeness.get(pid) is True for pid in ids}}
     fingerprint = hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(",", ":"),
                                           default=str).encode("utf-8")).hexdigest()
@@ -275,6 +285,7 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
             "official_event_id": tid, "as_of_utc": freeze.isoformat(),
             "status": "SCHEDULE_CONTEXT_INCOMPLETE" if any(missing.values()) else "RESEARCH_CONTEXT_ONLY",
             "per_participant": per, "matchup_differences": differences,
+            "unresolved_prior_event_ids": sorted(unresolved_ids),
             "missing_fields": missing, "evidence_sha256": fingerprint,
             "source_authenticity_independently_verified": False,
             "probabilities": None, "probability_publishable": False,
