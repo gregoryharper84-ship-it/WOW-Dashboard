@@ -208,3 +208,34 @@ def test_bad_source_or_unknown_timezone_fails_closed():
     with pytest.raises(ScheduleContextError) as e:
         build_schedule_matchup_context(target=t1, history=(), history_completeness={})
     assert e.value.code == "SCHEDULE_EVIDENCE_INVALID"
+
+
+def test_two_complete_attestations_produce_research_only_comparison():
+    a = prior(-1, "a-game", loads={"A": {"value": 36, "unit": "minutes"}})
+    b = prior(-3, "b-game", teams=("B",), role="home", loads={"B": {"value": 31, "unit": "minutes"}})
+    result = run([a, b])
+    assert result["status"] == "RESEARCH_CONTEXT_ONLY"
+    assert result["matchup_differences"]["workload_7d_first_minus_second"] == 5
+    assert result["source_authenticity_independently_verified"] is False
+    assert result["model_feature_consumption_verified"] is False
+
+
+def test_malformed_workloads_never_crash_or_become_fake_zero():
+    p = prior(-2, "bad-workload")
+    p["workloads"] = [123]
+    result = run([p])
+    assert result["per_participant"]["A"]["workload_7d"] is None
+    p["workloads"] = {"A": {"value": 30, "unit": ["minutes"]}}
+    result = run([p])
+    assert result["per_participant"]["A"]["workload_7d"] is None
+
+
+def test_missing_road_role_cannot_claim_full_context():
+    a = prior(-1, "a-game", loads={"A": {"value": 36, "unit": "minutes"}})
+    b = prior(-3, "b-game", teams=("B",), role="home", loads={"B": {"value": 31, "unit": "minutes"}})
+    tar = target()
+    tar["roles"] = {"A": "away"}
+    result = build_schedule_matchup_context(target=tar, history=[a, b],
+                                             history_completeness={"A": True, "B": True})
+    assert result["per_participant"]["B"]["consecutive_road_events_including_target"] is None
+    assert result["status"] == "SCHEDULE_CONTEXT_INCOMPLETE"
