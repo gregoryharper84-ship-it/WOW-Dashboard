@@ -1,5 +1,9 @@
 """Offline negative and prioritization tests for 24x7 engineering intake."""
 import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,6 +36,149 @@ class Test24x7(unittest.TestCase):
     def test_production_priority_preempts_improvement(self):
         result = mod.plan([issue(8, "approved-improvement"), issue(9, "P0")], [])
         self.assertEqual((result["action"], result["incident"]), ("BUILD", 9))
+
+    def test_sirt_owned_review_issues_are_not_coding_work(self):
+        sirt_issues = [
+            issue(2467, "P0", "RESTORATION_SURGE",
+                  title="[SIRT Intake][P0] Independent semantic acceptance"),
+            issue(2469, "P0", "RESTORATION_SURGE",
+                  title="[SIRT Intake][P0 NBA] Independent Class C acceptance"),
+            issue(2484, "P1", title="[SIRT Intake][P1] Senior reviewer acceptance"),
+            issue(1563, "P0", "RESTORATION_SURGE",
+                  title="P0 SIRT — Independent ML/spread/prop capability assurance"),
+            issue(1922, "P0", title="[P0 SIRT] Independent security acceptance"),
+            issue(2175, "P0", title="[SIRT / Security Review] Independent bootstrap assessment"),
+            issue(1883, "P2", title="[P2 CRM / SIRT + QA] Independent certification"),
+            issue(1521, "P0", title="SIRT Class A: NFL Pick'em accuracy assurance"),
+            issue(1514, "P1", title="SIRT P1: independently verify sentinel deployment"),
+            issue(1936, "P0", title="[P0 SIRT] Independent security decision"),
+        ]
+        self.assertEqual(mod.plan(sirt_issues, [])["action"], "IDLE")
+        # Normalize whitespace/case, but don't suppress ordinary engineering work.
+        for title in (" [SIRT Intake][P0] Review", "[sIrT iNtAkE][P0] Review"):
+            with self.subTest(title=title):
+                self.assertEqual(mod.plan([issue(2469, "P0", title=title)], [])["action"], "IDLE")
+        for title in (
+            "P1: autonomous same-PR CI/SIRT failure remediation",
+            "SIRT: restore production alerting",
+            "SIRT: fix verification script timeout",
+            "[SIRT] audit log repair",
+        ):
+            with self.subTest(title=title):
+                engineering = issue(1527, "P1", title=title)
+                result = mod.plan([engineering], [])
+                self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
+
+    def test_sirt_production_failures_still_admit_repairs_without_review_bypass(self):
+        for title in (
+            "SIRT: alerting verification fails in production",
+            "[P0 SIRT] worker failure after deployment",
+            "SIRT: runtime pipeline outage under verification",
+            "[SIRT] production audit log failure",
+            "SIRT: pipeline audit logs failed",
+            "SIRT: production audit logging regression",
+        ):
+            with self.subTest(title=title):
+                repair = issue(1527, "P1", title=title)
+                result = mod.plan([repair], [], target=1527)
+                self.assertEqual((result["action"], result["incident"]), ("BUILD", 1527))
+                self.assertFalse(result["can_execute"])
+        # Explicit targeting must not convert independent assurance into coding.
+        for title in (
+            "SIRT: independent verification failed in production",
+            "SIRT: independently verify production worker failure",
+            "SIRT: review production regression",
+            "SIRT: intake of production outage",
+            "SIRT: audit production failure",
+            "SIRT: independent review of production audit log failure",
+            "SIRT: production security audit failure",
+        ):
+            with self.subTest(title=title):
+                review = issue(2469, "P1", title=title)
+                self.assertEqual(mod.plan([review], [], target=2469)["action"], "IDLE")
+
+    def test_cli_explicit_null_manifest_does_not_fall_back_to_global(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "issues.json").write_text(json.dumps([issue(1527, "P1")]), encoding="utf-8")
+            (base / "prs.json").write_text("[]", encoding="utf-8")
+            (base / "manifest.json").write_text("null", encoding="utf-8")
+            output = base / "result.json"
+            completed = subprocess.run(
+                [
+                    sys.executable, str(FILE),
+                    "--issues", str(base / "issues.json"),
+                    "--prs", str(base / "prs.json"),
+                    "--manifest", str(base / "manifest.json"),
+                    "--output", str(output),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("dispatch manifest invalid", completed.stderr)
+            self.assertFalse(output.exists())
+
+    def test_p0_requires_manifest_domain_lease_and_p1_uses_global(self):
+        manifest = {
+            "restoration": [
+                {"issue_number": 823, "severity": "P0", "lease_group": "P0_LLP_RESTORE"},
+                {"issue_number": 1950, "severity": "P0", "lease_group": "P0_NBA_RESTORE"},
+                {"issue_number": 1952, "severity": "P0", "lease_group": "P0_NHL_RESTORE"},
+                {"issue_number": 1951, "severity": "P0", "lease_group": "P0_NCAAF_RESTORE"},
+                {"issue_number": 1527, "severity": "P1"},
+            ]
+        }
+        result = mod.plan([
+            issue(1767, "P0", updated_at="2026-11-03T03:57:26Z"),
+            issue(1950, "P0", updated_at="2026-11-05T10:00:00Z"),
+            issue(823, "P0", updated_at="2026-11-06T21:06:38Z"),
+        ], [], manifest=manifest)
+        self.assertEqual((result["incident"], result["lease_group"]),
+                         (823, "P0_LLP_RESTORE"))
+        # Every supported P0 sport/lane receives its exact domain lease.
+        for incident, group in (
+            (823, "P0_LLP_RESTORE"),
+            (1950, "P0_NBA_RESTORE"),
+            (1952, "P0_NHL_RESTORE"),
+            (1951, "P0_NCAAF_RESTORE"),
+        ):
+            with self.subTest(incident=incident):
+                routed = mod.plan([issue(incident, "P0")], [],
+                                  target=incident, manifest=manifest)
+                self.assertEqual((routed["action"], routed["lease_group"]),
+                                 ("BUILD", group))
+        # An exact P0 target absent from the approved lease manifest is held.
+        held = mod.plan([issue(1767, "P0")], [], target=1767, manifest=manifest)
+        self.assertEqual((held["action"], held["reason"]),
+                         ("IDLE", "NO_ELIGIBLE_ISSUE_OR_EXPLICIT_TARGET"))
+        # Standard P1 engineering work is routed through the global lease.
+        p1 = mod.plan([issue(1527, "P1")], [], target=1527, manifest=manifest)
+        self.assertEqual((p1["action"], p1["lease_group"]), ("BUILD", "GLOBAL"))
+
+    def test_existing_p0_pr_remains_read_only_resumable_if_lease_disappears(self):
+        manifest = {"restoration": []}
+        resume = mod.plan([issue(823, "P0")], [pr(3001, 823)], manifest=manifest)
+        self.assertEqual((resume["action"], resume["pr"]), ("RESUME_PR", 3001))
+        self.assertIsNone(resume["lease_group"])
+        self.assertFalse(resume["can_execute"])
+        # The same incident without a PR still may not acquire a new BUILD lease.
+        held = mod.plan([issue(823, "P0")], [], manifest=manifest)
+        self.assertEqual(held["action"], "IDLE")
+
+    def test_p0_global_or_invalid_manifest_lease_is_denied(self):
+        for group in ("GLOBAL", "not-valid!"):
+            with self.subTest(group=group):
+                manifest = {"restoration": [
+                    {"issue_number": 823, "severity": "P0", "lease_group": group}
+                ]}
+                result = mod.plan([issue(823, "P0")], [], manifest=manifest)
+                self.assertEqual(result["action"], "IDLE")
+        duplicate = {"restoration": [
+            {"issue_number": 823, "severity": "P0", "lease_group": "P0_LLP_RESTORE"},
+            {"issue_number": 823, "severity": "P0", "lease_group": "P0_NBA_RESTORE"},
+        ]}
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            mod.plan([issue(823, "P0")], [], manifest=duplicate)
 
     def test_resume_same_incident_without_duplicate(self):
         result = mod.plan([issue(9, "P0")], [pr(40, 9)])
@@ -213,6 +360,19 @@ class Test24x7(unittest.TestCase):
         self.assertEqual(wf.count(' | test('), 2)
         self.assertNotIn("contains($tag)", wf)
         self.assertIn("DISPATCH_NOT_OBSERVED", wf)
+        self.assertEqual(wf.count("--manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json"), 3)
+        self.assertIn('LEASE_GROUP: ${{ needs.select.outputs.lease_group }}', wf)
+        self.assertIn('-f lease_group="$LEASE_GROUP"', wf)
+        self.assertNotIn("-f lease_group=GLOBAL", wf)
+        root = Path(__file__).resolve().parents[2]
+        for legacy in (
+            "wow-v17-engineering-provider-dispatcher.yml",
+            "wow-v17-engineering-specialist-support.yml",
+            "wow-v17-24h-engineering-closure-loop.yml",
+        ):
+            legacy_workflow = (root / ".github" / "workflows" / legacy).read_text(encoding="utf-8")
+            self.assertIn("vars.WOW_24X7_ACTIVE != 'true'", legacy_workflow)
+            self.assertIn("vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'", legacy_workflow)
         self.assertIn("DUPLICATE_DISPATCH_OBSERVED", wf)
 
     def test_run_for_different_issue_does_not_block(self):

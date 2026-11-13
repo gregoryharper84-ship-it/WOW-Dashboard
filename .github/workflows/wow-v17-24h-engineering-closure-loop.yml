@@ -20,6 +20,7 @@ concurrency:
 jobs:
   advance-one-stage:
     name: Advance highest-priority WOW work
+    if: vars.WOW_24X7_ACTIVE != 'true' || vars.WOW_24X7_LEGACY_ROUTES_OFF != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
