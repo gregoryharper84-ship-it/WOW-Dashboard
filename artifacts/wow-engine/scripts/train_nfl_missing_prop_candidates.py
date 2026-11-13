@@ -255,7 +255,7 @@ def validate_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if not result["season"].isin(SEASONS).all() or not result["week"].between(1, 18).all():
         raise ValueError("NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE")
     for field in ("player_id", "game_id", "position", "player_display_name"):
-        if result[field].isna().any() or (result[field].astype(str).str.strip() == "").any():
+        if result[field].map(_is_missing_identity).any():
             raise ValueError(f"NFL_PROP_SOURCE_IDENTITY_INVALID:{field}")
         result[field] = result[field].astype(str).str.strip()
     result["position"] = result["position"].str.upper()
