@@ -102,7 +102,7 @@ def test_two_rows_both_away_must_not_be_treated_as_unique_pair():
         validated_team_box_pair("401", [row("away", "H"), row("away", "A")])
 
 
-@pytest.mark.parametrize("bad_score", ["unknown", " ", "NaN", "Infinity", "-1", "74.5", "1e9999"])
+@pytest.mark.parametrize("bad_score", ["unknown", " ", "NaN", "Infinity", "-1", "74.5", "1e9999", "7__4"])
 def test_invalid_settlement_score_never_becomes_zero_score(bad_score):
     with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_SCORE_INVALID"):
         validated_team_box_pair("401", [row("home", "H", score=bad_score), row("away", "A", score="70")])
@@ -118,7 +118,7 @@ def test_integer_like_decimal_source_scores_are_accepted():
     assert home["team_score"] == "74.0" and away["team_score"] == "70.0"
 
 
-@pytest.mark.parametrize("bad_score,code", [("unknown", "NCAAB_SOURCE_SCORE_INVALID"), ("74", "NCAAB_SOURCE_SCORE_TIE_UNSETTLED")])
+@pytest.mark.parametrize("bad_score,code", [("unknown", "NCAAB_SOURCE_SCORE_INVALID"), ("7__4", "NCAAB_SOURCE_SCORE_INVALID"), ("74", "NCAAB_SOURCE_SCORE_TIE_UNSETTLED")])
 def test_collector_preserves_invalid_settlement_as_typed_hold(monkeypatch, bad_score, code):
     from v17 import ncaab_sportsdataverse_candidate as collector
     data = _source_csv([row("home", "H", score="74"), row("away", "A", score=bad_score)])
