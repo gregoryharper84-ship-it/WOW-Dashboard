@@ -19,7 +19,7 @@
 
 1. **TDD RED:** Create 12 tests for missing Monday game, false Week 4 prefix collision, 13-vs-14 official count, stale historical `true` flag, duplicate schedule event, postkickoff-only prediction, kickoff mismatch, missing source snapshot ID, wrong-week async run, valid-but-uncertified full coverage, wrong-week event ID, malformed/unhashable source fields. Initial RED 12 failure cases with `NotImplementedError`.
 2. **GREEN:** Implement pure `audit_weekly_receipts(schedule_rows,prediction_rows,run_rows,season,week,expected_game_count,schedule_snapshot_id)`. Return per-event deterministic receipts and global typed blockers; preserve `V17_TERMINAL_REDUCER`, `probability_publishable=false`, `rank_eligible=false`, `can_execute=false`.
-3. **Local check:** `cd artifacts/wow-engine && python -m pytest -q test_nfl_weekly_receipt_conservation.py` → `12 passed` in isolated source tree; `python -m py_compile v17/nfl_weekly_receipt_conservation.py`.
+3. **Local check:** `cd artifacts/wow-engine && python -m pytest -q test_nfl_weekly_receipt_conservation.py test_nfl_weekly_receipt_reuse.py` (16 expected tests after adversarial extensions); `python -m py_compile v17/nfl_weekly_receipt_conservation.py`. Keep the initial 12-pass observation as historical only; new exact-head hosted evidence is required.
 4. **Hosted acceptance:** Push to dedicated PR. Run exact-head `wow-engine-verify`, `wow-verify`, rapid regression, CodeQL and protected App checks where classified. Independent SIRT adversarial review must reject source authentication and model publication claims, and examine any cross-sport ID false positives.
 5. **Integration later (separate owner):** The existing authenticated runtime producer / Week10 owner may consume this offline auditor for readback if its proof and source identity survive independent review. **Do not wire an extra scheduler** or invoke an Action without verified authorization.
 
@@ -28,3 +28,9 @@
 The only positive status is `COVERAGE_OBSERVED_NOT_CERTIFIED`, requiring an externally supplied exact week schedule of the expected size, one immutable matched pregame prediction per event, and an observed completed async run bearing the requested season/week. Even this status does **not** establish source authentication, certified model output, a calibrated probability or production authorization. Missing Monday is typed and preserved; other Week 4 records cannot enter the denominator.
 
 **Owners:** ChatGPT isolated code/test PR; AMRT/Engineering potential runtime integration; SIRT independent model-governance challenge; Release Authority protected merge. **Status:** review-only, not merged/deployed/certified.
+
+## Adversarial review follow-up (2026-11-12)
+
+- Reproduction tests added **before** the implementation repair: a same-timestamp conflicting publication flag and an after-kickoff reuse of a different game's immutable ID. Invalid request rejection is also asserted. The test-only SHA is `462d2bb13f4ed11b25155649998665481688b11b`; hosted RED confirmation and final GREEN results must be recorded from actual workflow logs rather than assumed.
+- Fix: register all canonical event/ID mappings before pregame eligibility filtering; select latest only from trusted pregame `created_at`. A tied latest timestamp with distinct immutable IDs or conflicting flags produces `PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS` and no selected receipt. No publication inference.
+- All new `PICKEM_*` typed codes are registered in the existing `artifacts/wow-engine/docs/failure_codes.md` table. SIRT and the authentic protected Apps still own independent Class P acceptance; do not merge from an author's local tests or routine green CI.
