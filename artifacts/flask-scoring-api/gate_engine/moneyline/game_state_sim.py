@@ -455,7 +455,9 @@ def run_game_state_simulation(
     except (TypeError, ValueError, OverflowError):
         base_prob = float("nan")
     if not math.isfinite(base_prob) or not (0.0 < base_prob < 1.0):
-        return SimulationResult(base_prob, base_prob, {}, 0, "UNKNOWN",
+        # Do not serialize NaN/Infinity into JSON readback.
+        safe = base_prob if math.isfinite(base_prob) else 0.0
+        return SimulationResult(safe, safe, {}, 0, "UNKNOWN",
                                 ["INVALID_BASE_PROB:simulation_skipped"], False)
     if isinstance(n_sims, bool) or not isinstance(n_sims, int) or not 1 <= n_sims <= 50000:
         return SimulationResult(base_prob, base_prob, {}, 0, "UNKNOWN",
