@@ -191,3 +191,27 @@ def test_lineup_corroboration_conflict_fails():
 def test_corroborated_lineup_passes():
     result = verify_nba_lineup_evidence(_lineup(), **_lineup_kwargs())
     assert result == {"ok": True, "blockers": []}
+
+
+def test_corroboration_must_bind_same_official_events():
+    # Source independence alone does not make an unrelated game's report valid.
+    valid = _lineup()
+    valid["corroboration"]["official_event_ids"] = ["g1", "g2", "g3"]
+    assert verify_nba_lineup_evidence(valid, **_lineup_kwargs()) == {"ok": True, "blockers": []}
+
+    missing = _lineup()
+    result = verify_nba_lineup_evidence(missing, **_lineup_kwargs())
+    assert result["ok"] is False
+    assert "NBA_LINEUP_EVENT_BINDING_MISSING" in result["blockers"]
+
+    unrelated = _lineup()
+    unrelated["corroboration"]["official_event_ids"] = ["other_game"]
+    result = verify_nba_lineup_evidence(unrelated, **_lineup_kwargs())
+    assert result["ok"] is False
+    assert "NBA_LINEUP_EVENT_BINDING_MISMATCH" in result["blockers"]
+
+    duplicate = _lineup()
+    duplicate["corroboration"]["official_event_ids"] = ["g1", "g1", "g3"]
+    result = verify_nba_lineup_evidence(duplicate, **_lineup_kwargs())
+    assert result["ok"] is False
+    assert "NBA_LINEUP_EVENT_BINDING_MISMATCH" in result["blockers"]
