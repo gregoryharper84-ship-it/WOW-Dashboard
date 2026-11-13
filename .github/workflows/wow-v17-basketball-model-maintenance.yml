@@ -188,6 +188,17 @@ jobs:
                   "new_settled_games": new_count,
               }
 
+          # The source receipt must survive a later challenger failure.
+          print(json.dumps({
+              "stage": "BASKETBALL_SOURCE_ACQUISITION_READBACK",
+              "basketball_status": basketball.get("status"),
+              "rows_no_new_settlements": basketball.get("rows_no_new_settlements"),
+              "rows_fresh_acquisition_degraded": basketball.get("rows_fresh_acquisition_degraded"),
+              "rows_fresh_acquisition_unverified": basketball.get("rows_fresh_acquisition_unverified"),
+              "source_summary": source_summary,
+              "can_execute": False,
+          }, sort_keys=True))
+
           challengers = {}
           for sport in ("NBA", "WNBA"):
               challenger_payload = post(f"/internal/v17/team-state-challenger-maintenance/{sport}", attempts=8, timeout=300)
