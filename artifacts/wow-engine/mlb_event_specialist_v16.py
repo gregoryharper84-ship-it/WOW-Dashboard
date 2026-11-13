@@ -129,7 +129,11 @@ def _required_numeric_inputs(row: dict[str, Any], fields: tuple[str, ...], *, so
             invalid.append(field)
             continue
         try:
-            values[field] = float(value)
+            parsed = float(value)
+            if not math.isfinite(parsed):
+                invalid.append(field)
+                continue
+            values[field] = parsed
         except (TypeError, ValueError):
             invalid.append(field)
     if invalid:
