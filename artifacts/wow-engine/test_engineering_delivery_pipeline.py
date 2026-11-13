@@ -20,14 +20,28 @@ def pr(**overrides):
 
 
 def check(name, app, status="completed", conclusion="success"):
-    row = {"name": name, "app": {"id": app},
+    row = {"name": name, "app": {"id": app}, "head_sha": SHA,
            "status": status, "conclusion": conclusion}
     if name == mod.QA_CHECK and conclusion == "success":
         row["output"] = {"title": "PASS — independent semantic source review"}
     return row
 
 
+def native_regressions():
+    return [check(name, mod.ACTIONS_APP_ID)
+            for name in mod.NATIVE_REGRESSION_CHECKS]
+
+
 class DeliveryTests(unittest.TestCase):
+    def test_live_resume_does_not_dispatch_retired_manual_reviewer(self):
+        workflow = (MODULE.parents[3] / ".github/workflows/wow-engineering-24x7.yml"
+                    ).read_text(encoding="utf-8")
+        assert "gh workflow run wow-v17-simple-security-review.yml" not in workflow
+        assert "three Actions App regressions" in workflow
+        assert "Independent QA App" in workflow
+        assert "Release Authority App" in workflow
+        assert "Binding signed REJECT" in workflow
+
     def test_no_check_requires_real_review_evidence(self):
         r = mod.reduce_pr(pr(), [], SHA)
         self.assertEqual(r["decision"], "EVIDENCE_PENDING")
@@ -51,12 +65,14 @@ class DeliveryTests(unittest.TestCase):
 
     def test_release_hold_is_not_pass(self):
         r = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+                          *native_regressions(),
                           check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
                           check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID, conclusion="failure")], SHA)
         self.assertEqual(r["decision"], "RELEASE_NOT_ACCEPTED")
 
     def test_both_apps_success_still_need_owner_review(self):
         r = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+                          *native_regressions(),
                           check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
                           check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)], SHA)
         self.assertEqual(r["decision"], "REVIEW_STAGE_ACCEPTED")
@@ -65,16 +81,126 @@ class DeliveryTests(unittest.TestCase):
 
     def test_distinct_qa_gate_cannot_be_replaced_by_release_app(self):
         x = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+                                 *native_regressions(),
                                  check(mod.INDEPENDENT_QA_CHECK, mod.RELEASE_APP_ID),
                                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)], SHA)
-        self.assertEqual(x["decision"], "QA_GATE_NOT_ACCEPTED")
+        self.assertEqual(x["decision"], "PROTECTED_CHECK_IDENTITY_INVALID")
         self.assertFalse(x["merge_authorized"])
 
     def test_release_app_name_must_match_exact_required_check(self):
         x = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+                                 *native_regressions(),
                                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
                                  check("Another Release App Task", mod.RELEASE_APP_ID)], SHA)
         self.assertEqual(x["decision"], "RELEASE_EVIDENCE_PENDING")
+
+    def test_red_case_current_five_app_checks_pass_without_retired_review(self):
+        """The previous reducer incorrectly returned EVIDENCE_PENDING here."""
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "REVIEW_STAGE_ACCEPTED")
+        self.assertFalse(x["merge_authorized"])
+        self.assertFalse(x["review_approved"])
+        self.assertFalse(x["can_execute"])
+
+    def test_historical_semantic_hold_not_a_sixth_required_check(self):
+        legacy = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        legacy["output"] = {"title": "HOLD — retired manual review",
+                            "summary": "reason PROVIDER_CREDIT_EXHAUSTED"}
+        checks = [legacy, *native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "REVIEW_STAGE_ACCEPTED")
+        self.assertFalse(x["merge_authorized"])
+
+    def test_signed_semantic_reject_remains_binding_on_same_sha(self):
+        old = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        old["output"] = {"title": "REJECT — binding independent semantic finding"}
+        checks = [old, *native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "SEMANTIC_REJECT_SAME_SHA")
+
+    def test_native_regression_missing_does_not_false_accept(self):
+        checks = [*native_regressions()[:-1],
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "NATIVE_REGRESSION_PENDING")
+        self.assertFalse(x["merge_authorized"])
+
+    def test_native_regression_failed_does_not_false_accept(self):
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        checks[0]["conclusion"] = "failure"
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "NATIVE_REGRESSION_NOT_ACCEPTED")
+
+    def test_native_regression_pending_does_not_false_accept(self):
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        checks[0]["status"] = "in_progress"
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "NATIVE_REGRESSION_PENDING")
+
+    def test_foreign_pinned_check_fails_closed_even_with_valid_newer(self):
+        checks = [check(mod.NATIVE_REGRESSION_CHECKS[0], 123),
+                  *native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        checks[0]["id"] = 10
+        checks[1]["id"] = 11
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "PROTECTED_CHECK_IDENTITY_INVALID")
+
+    def test_cross_sha_pinned_check_fails_closed(self):
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        checks[1]["head_sha"] = "b" * 40
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "PROTECTED_CHECK_IDENTITY_INVALID")
+
+    def test_missing_pinned_check_head_sha_denied(self):
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        checks[0].pop("head_sha")
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "PROTECTED_CHECK_IDENTITY_INVALID")
+        self.assertFalse(x["merge_authorized"])
+
+    def test_independent_qa_missing_failed_or_in_progress_denied(self):
+        cases = (
+            (None, "QA_GATE_PENDING"),
+            (check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID,
+                   conclusion="failure"), "QA_GATE_NOT_ACCEPTED"),
+            (check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID,
+                   status="in_progress", conclusion=None), "QA_GATE_NOT_ACCEPTED"),
+        )
+        for qa, expected in cases:
+            with self.subTest(expected=expected):
+                checks = [*native_regressions(),
+                          check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+                if qa is not None:
+                    checks.append(qa)
+                x = mod.reduce_pr(pr(), checks, SHA)
+                self.assertEqual(x["decision"], expected)
+                self.assertFalse(x["merge_authorized"])
+
+    def test_historical_only_pass_does_not_replace_required_native_regressions(self):
+        checks = [check(mod.QA_CHECK, mod.QA_APP_ID),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        x = mod.reduce_pr(pr(), checks, SHA)
+        self.assertEqual(x["decision"], "NATIVE_REGRESSION_PENDING")
+        self.assertFalse(x["merge_authorized"])
 
     def test_security_success_with_hold_title_is_not_accepted(self):
         x = check(mod.QA_CHECK, mod.QA_APP_ID)
@@ -91,6 +217,32 @@ class DeliveryTests(unittest.TestCase):
 
     def test_draft_pr_rejected(self):
         self.assertEqual(mod.reduce_pr(pr(draft=True), [], SHA)["decision"], "SOURCE_HEAD_UNSTABLE")
+
+    def test_missing_or_nonstrict_draft_flag_denied(self):
+        """Only an authenticated literal false draft flag is eligible."""
+        checks = [*native_regressions(),
+                  check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                  check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)]
+        candidates = [pr(draft=None), pr(draft=0), pr(draft="false"),
+                      pr(draft=[])]
+        absent = pr()
+        absent.pop("draft")
+        candidates.append(absent)
+        for candidate in candidates:
+            with self.subTest(draft=candidate.get("draft", "ABSENT")):
+                decision = mod.reduce_pr(candidate, checks, SHA)
+                self.assertEqual(decision["decision"], "SOURCE_HEAD_UNSTABLE")
+                self.assertFalse(decision["merge_authorized"])
+
+    def test_malformed_pr_head_base_metadata_fails_closed(self):
+        """Untrusted, truncated PR JSON must emit a typed hold, not crash."""
+        for key in ("head", "base"):
+            for malformed in ("malformed", [], 12, {"repo": "wrong-type"}):
+                with self.subTest(key=key, malformed=malformed):
+                    candidate = pr(**{key: malformed})
+                    decision = mod.reduce_pr(candidate, [], SHA)
+                    self.assertEqual(decision["decision"], "SOURCE_HEAD_UNSTABLE")
+                    self.assertFalse(decision["merge_authorized"])
 
     def test_bad_inventory_rejected(self):
         with self.assertRaises(ValueError):
