@@ -97,9 +97,36 @@ def test_100_balanced_cohort_passes_but_never_self_certifies():
     rows = [GradedRow(forecast=0.70, outcome=1 if i < 70 else 0, lower_bound=0.60) for i in range(100)]
     ledger = build_readiness_ledger(rows)
     assert ledger.missing_to_100 == 0
+    assert ledger.decision == "FORWARD_EVIDENCE_PASS"
     package = certification_package(ledger)
+    assert package["certification_decision"] == "CERTIFICATION_EVIDENCE_READY_FOR_INDEPENDENT_REVIEW"
     assert package["certified"] is False
     assert package["probability_publishable"] is False
+
+
+def test_100_with_bad_metrics_stays_held_and_never_certifies():
+    # Size alone cannot bypass poor predictive performance.
+    rows = [GradedRow(forecast=0.90, outcome=1 if i < 30 else 0, lower_bound=0.70) for i in range(100)]
+    ledger = build_readiness_ledger(rows)
+    package = certification_package(ledger)
+    assert ledger.valid_n == 100
+    assert ledger.missing_to_100 == 0
+    assert ledger.decision == "DO_NOT_CERTIFY_YET"
+    assert ledger.blockers
+    assert package["certification_decision"] == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED"
+    assert package["certified"] is False
+    assert package["probability_publishable"] is False
+    assert package["can_execute"] is False
+
+
+def test_forward_lower_bound_accepts_zero_but_never_exceeds_forecast():
+    # A calibrated lower bound may be zero; it may not exceed its forecast.
+    row = GradedRow(forecast=0.70, outcome=1, lower_bound=0.0)
+    assert row.lower_bound == 0.0
+    with pytest.raises(ValueError, match="lower_bound must not exceed forecast"):
+        GradedRow(forecast=0.70, outcome=1, lower_bound=0.72)
+    with pytest.raises(ValueError, match="lower_bound"):
+        GradedRow(forecast=0.70, outcome=1, lower_bound=-0.01)
 
 
 def test_triad_rejects_missing_stale_and_cross_sport():
