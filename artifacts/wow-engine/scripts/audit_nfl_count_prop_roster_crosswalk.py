@@ -187,6 +187,10 @@ def inspect_roster_id_candidates(
     out = []
     for pfr in targets:
         rows = selected.loc[selected["pfr_id"].eq(pfr)]
+        # A valid GSIS row cannot mask an invalid row for the same PFR ID.
+        # Keep source inconsistency as a typed HOLD before constructing candidates.
+        if not valid_gsis.loc[rows.index].all():
+            raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:target_gsis")
         valid = rows.loc[
             rows["gsis_id"].notna()
             & rows["gsis_id"].astype("string").str.fullmatch(r"00-[0-9]{7}").fillna(False)
