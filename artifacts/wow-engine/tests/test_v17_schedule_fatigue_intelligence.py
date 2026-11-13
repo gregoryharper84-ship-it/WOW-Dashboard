@@ -263,3 +263,16 @@ def test_unplayed_intervening_fixture_holds_rest_and_changes_receipt():
     assert after["per_participant"]["A"]["history_completeness_attested"] is False
     assert after["unresolved_prior_event_ids"] == ["intervening"]
     assert after["evidence_sha256"] != before["evidence_sha256"]
+
+
+def test_duplicate_source_mirrors_deduplicate_counts_and_hash_independent_of_order():
+    p = prior(-1, "same-official-event", loads={"A": {"value": 30, "unit": "minutes"}})
+    mirror = dict(p)
+    mirror["source_uri"] = "https://mirror.example/official"
+    mirror["source_payload_sha256"] = "c" * 64
+    first = run([p, mirror])
+    second = run([mirror, p])
+    assert first["per_participant"]["A"]["games_observed"] == 1
+    assert first["per_participant"]["A"]["games_in_4_days_including_target"] == 2
+    assert first["evidence_sha256"] == second["evidence_sha256"]
+    assert first["evidence_sha256"] != run([p])["evidence_sha256"]
