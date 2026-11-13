@@ -104,6 +104,36 @@ def test_target_valid_and_invalid_gsis_rows_fail_closed(bad_id):
 
 
 
+
+def test_duplicate_index_label_unrelated_bad_gsis_does_not_block_target():
+    """An unrelated invalid row may share an index label with a valid target."""
+    roster = pd.DataFrame([
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333", "season": "2025",
+         "position": "RB", "team": "ATL"},
+        {"pfr_id": "Other000", "gsis_id": None, "season": "2025",
+         "position": "WR", "team": "BUF"},
+    ], index=[0, 0])
+    result = mod.inspect_roster_id_candidates(roster, ["CartNa00"])
+    assert result["targets"][0]["gsis_candidates"] == ["00-0033333"]
+    assert result["source_exact_pair_candidate_count"] == 1
+    assert result["status"] == "HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW"
+    assert result["candidate_crosswalk_applied"] is False
+    assert result["can_execute"] is False
+
+
+def test_duplicate_index_label_invalid_target_still_fails_closed():
+    """An invalid target row is rejected even when index labels repeat."""
+    roster = pd.DataFrame([
+        {"pfr_id": "CartNa00", "gsis_id": "00-0033333", "season": "2025",
+         "position": "RB", "team": "ATL"},
+        {"pfr_id": "CartNa00", "gsis_id": None, "season": "2025",
+         "position": "RB", "team": "ATL"},
+    ], index=[0, 0])
+    with pytest.raises(ValueError, match="NFL_PROP_ROSTER_SCHEMA_INVALID:target_gsis"):
+        mod.inspect_roster_id_candidates(roster, ["CartNa00"])
+
+
+
 def test_duplicate_same_exact_source_pair_is_one_candidate():
     roster = pd.DataFrame([
         {"pfr_id": "WhitCo05", "gsis_id": "00-0032222", "season": "2025",
