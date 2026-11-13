@@ -7,7 +7,12 @@ unless an independent exact-market source is actually present in the saved row.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from os import environ
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
+from unicodedata import category
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
 
@@ -17,6 +22,7 @@ from v17.daily_response_contract import (
     read_row_detail_page,
 )
 from v17.llp_team_intelligence_bundle import build_llp_team_intelligence_bundle
+from v17.multisport_event_receipt_verifier import verify_multisport_event_receipt
 
 CAN_EXECUTE = False
 ROUTE_PATH = "/v17/llp-team-intelligence/{run_id}/events"
@@ -26,14 +32,17 @@ _SUPPORTED = frozenset({"NFL", "NBA", "NHL"})
 
 
 def _token(value: Any) -> str:
+    """Normalize string identifiers without accepting other identifier types."""
     return str(value or "").strip()
 
 
 def _data(value: Any) -> Mapping[str, Any]:
+    """Read mappings without coercing malformed source values."""
     return value if isinstance(value, Mapping) else {}
 
 
 def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Extract canonical identity from the persisted detail row."""
     identity = _data(row.get("identity"))
     detail = _data(row.get("detail"))
     original = _data(detail.get("identity"))
@@ -41,6 +50,7 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     # Stored Daily records are heterogeneous: canonical MLB rows use
     # event_start_time, while broad discovery uses commence_time_utc.
     def get(*names: str) -> Any:
+        """Read the first nonempty persisted identity alias."""
         for name in names:
             for source in (identity, original, result):
                 value = source.get(name)
@@ -60,6 +70,71 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
             "event_start_time_utc", "commence_time_utc", "event_start_time"
         ),
     }
+
+
+def _saved_research_identity_conflict(
+    row: Mapping[str, Any], event: Mapping[str, Any],
+) -> bool:
+    """Fail closed if persisted identities disagree about a researched event.
+
+    The Daily projection coalesces missing identity keys from several locations.
+    That fallback is valid only when *present* values do not contradict one
+    another. In particular, a result receipt with another official_event_id
+    must not appear as valid research for the outer row's event.
+    """
+    detail = _data(row.get("detail"))
+    sources = (
+        _data(row.get("identity")),
+        _data(detail.get("identity")),
+        _data(detail.get("result")),
+    )
+    for source in sources:
+        # 'league' is a supported alias of 'sport' in persisted Daily rows.
+        # A contradictory alias in the *same* source or a nested source must
+        # not launder the research context onto the wrong event.
+        for field in ("official_event_id", "sport", "league", "home_team", "away_team"):
+            actual = source.get(field)
+            if actual in (None, ""):
+                continue
+            expected = event.get("sport") if field == "league" else event.get(field)
+            if field == "league":
+                # Explicit source-family aliases, not an arbitrary wildcard:
+                # reject conflicting NBA/NHL/NFL labels and unsupported
+                # WNBA/other leagues rather than laundering another fixture.
+                aliases = {
+                    "NFL": {"NFL", "NATIONAL FOOTBALL LEAGUE", "AMERICANFOOTBALL_NFL"},
+                    "NBA": {"NBA", "NATIONAL BASKETBALL ASSOCIATION", "BASKETBALL_NBA"},
+                    "NHL": {"NHL", "NATIONAL HOCKEY LEAGUE", "ICEHOCKEY_NHL"},
+                }
+                league_token = _token(actual).upper()
+                sport_token = _token(event.get("sport")).upper()
+                if league_token not in aliases.get(sport_token, {sport_token}):
+                    return True
+                continue
+            if field == "official_event_id":
+                if _token(actual) != _token(expected):
+                    return True
+            elif _token(actual).upper() != _token(expected).upper():
+                return True
+        # Distinct same-teams fixtures cannot share research just because
+        # their canonical game IDs were omitted in one persisted source.
+        for key in ("event_start_time_utc", "commence_time_utc", "event_start_time"):
+            raw = source.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                stored = datetime.fromisoformat(_token(raw).replace("Z", "+00:00"))
+                start = datetime.fromisoformat(
+                    _token(event.get("event_start_time_utc")).replace("Z", "+00:00")
+                )
+                if (
+                    stored.tzinfo is None or start.tzinfo is None
+                    or stored.astimezone(timezone.utc) != start.astimezone(timezone.utc)
+                ):
+                    return True
+            except (ValueError, TypeError, OverflowError):
+                return True
+    return False
 
 
 def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -101,6 +176,7 @@ def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract saved winner claims while preserving source and identity holds."""
     detail = _data(row.get("detail"))
     result = _data(detail.get("result"))
     home = _token(event.get("home_team")).upper()
@@ -132,6 +208,13 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         # No canonical producer-side receipt_id is present on legacy Daily
         # discovery rows. Never synthesize it from event/snapshot/run IDs.
         "source_receipt_id": result.get("source_receipt_id"),
+        "score_snapshot_id": result.get("score_snapshot_id"),
+        "reducer_receipt_id": result.get("reducer_receipt_id"),
+        "reducer_receipt_sha256": result.get("reducer_receipt_sha256"),
+        "model_artifact_id": result.get("model_artifact_id"),
+        "model_artifact_sha256": result.get("model_artifact_sha256"),
+        "calibration_artifact_id": result.get("calibration_artifact_id"),
+        "calibration_artifact_sha256": result.get("calibration_artifact_sha256"),
         "probability_publishable": (
             row.get("row_status") == "COMPLETED"
             and detail.get("probability_publishable") is True
@@ -147,13 +230,171 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         "calibration_version": result.get("calibration_version"),
         "model_timestamp": result.get("model_timestamp"),
         "source_snapshot_timestamp": result.get("source_snapshot_timestamp"),
+        "source_snapshot_id": result.get("source_snapshot_id"),
         "calibrated_probability": point,
         "calibrated_probability_lower_bound": lower,
         "calibrated_probability_upper_bound": upper,
         "can_execute": result.get("can_execute"),
     }
 
-def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
+# This is the existing persisted *event* prediction ledger, not the prop
+# wow_predictions table and never a new research-side evidence registry.
+_EVENT_PREDICTION_TABLE = "wow_event_predictions"
+_EVENT_PREDICTION_COLUMNS = ",".join((
+    "event_prediction_id", "created_at", "official_event_id",
+    "event_start_time", "sport", "market_family", "settlement_basis", "home_team", "away_team",
+    "selected_participant", "model_version", "calibration_version",
+    "model_timestamp", "source_snapshot_timestamp", "source_snapshot_id",
+    "calibrated_home_probability", "calibrated_home_lower_bound",
+    "calibrated_home_upper_bound", "calibrated_away_probability",
+    "calibrated_away_lower_bound", "calibrated_away_upper_bound",
+    "rank_eligible", "probability_publishable", "locked_at",
+    "terminal_reduced_at", "can_execute",
+))
+
+
+def _utc(value: Any) -> datetime | None:
+    """Parse aware instants into UTC and hold malformed or overflowing values."""
+    if not isinstance(value, (str, datetime)):
+        return None
+    try:
+        parsed = (
+            value if isinstance(value, datetime)
+            else datetime.fromisoformat(value.replace("Z", "+00:00"))
+        )
+        return (
+            parsed.astimezone(timezone.utc)
+            if parsed.tzinfo is not None else None
+        )
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _decimal(value: Any) -> Decimal | None:
+    """Parse exact finite receipt numbers while rejecting booleans."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        num = Decimal(str(value))
+        return num if num.is_finite() else None
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _verify_governed_event_prediction(
+    db: Any, *, event: Mapping[str, Any], winner: Mapping[str, Any],
+) -> str | None:
+    """Return typed hold reason, or None only on exact immutable ledger proof.
+
+    A Daily detail row's strings/booleans are merely claims. Never use those
+    claims as their own receipt verification. Query the independently written
+    event prediction ledger by its genuine UUID and compare immutable fields.
+    On unavailable/ambiguous/missing/mismatched proof, withhold visibility.
+    """
+    raw_receipt_id = winner.get("source_receipt_id")
+    if isinstance(raw_receipt_id, str) and any(category(char) == "Cc" for char in raw_receipt_id):
+        return "LLP_EVENT_PREDICTION_ID_UNVERIFIED"
+    receipt_id = _token(raw_receipt_id)
+    try:
+        canonical_id = str(UUID(receipt_id))
+        if canonical_id != receipt_id.lower():
+            return "LLP_EVENT_PREDICTION_ID_UNVERIFIED"
+    except (ValueError, TypeError, AttributeError):
+        return "LLP_EVENT_PREDICTION_ID_UNVERIFIED"
+    # Multisport ledger stays OFF until genuine terminal RPC + admission + migration.
+    # Default path retains existing typed holds and never alters the MLB ledger.
+    if environ.get("WOW_V17_MULTISPORT_RECEIPT_READBACK_ENABLED") == "1":
+        return verify_multisport_event_receipt(db, event=event, winner=winner)
+    if db is None:
+        return "LLP_EVENT_PREDICTION_LOOKUP_NOT_PERFORMED"
+    try:
+        result = (
+            db.table(_EVENT_PREDICTION_TABLE)
+            .select(_EVENT_PREDICTION_COLUMNS)
+            .eq("event_prediction_id", canonical_id)
+            .limit(2)
+            .execute()
+        )
+        rows = getattr(result, "data", None)
+        if not isinstance(rows, list):
+            return "LLP_EVENT_PREDICTION_LOOKUP_UNAVAILABLE"
+    except Exception:
+        return "LLP_EVENT_PREDICTION_LOOKUP_UNAVAILABLE"
+    if len(rows) != 1 or not isinstance(rows[0], Mapping):
+        return "LLP_EVENT_PREDICTION_NOT_EXACTLY_ONE"
+    saved = rows[0]
+    start = _utc(event.get("event_start_time_utc"))
+    model_at = _utc(winner.get("model_timestamp"))
+    snapshot_at = _utc(winner.get("source_snapshot_timestamp"))
+    locked_at = _utc(saved.get("locked_at"))
+    created_at = _utc(saved.get("created_at"))
+    reduced_at = _utc(saved.get("terminal_reduced_at"))
+    home = _token(event.get("home_team")).upper()
+    away = _token(event.get("away_team")).upper()
+    side = _token(winner.get("side")).upper()
+    saved_side = _token(saved.get("selected_participant")).upper()
+    # Match the exact specialist outcome/settlement contract. A regulation-
+    # only NHL three-way prediction must never masquerade as an inclusive
+    # full-game moneyline just because its selected club also appears.
+    required_basis = {
+        "NFL": "FULL_GAME_INCLUDING_OVERTIME",
+        "NBA": "FULL_GAME_INCLUDING_OVERTIME",
+        "NHL": "FULL_GAME_MONEYLINE_INCLUDING_OVERTIME_SHOOTOUT",
+    }.get(_token(event.get("sport")).upper())
+    if saved_side == "HOME":
+        saved_side = home
+    elif saved_side == "AWAY":
+        saved_side = away
+    if (
+        start is None or model_at is None or snapshot_at is None
+        or locked_at is None or created_at is None or reduced_at is None
+        or not (snapshot_at <= model_at <= locked_at < start)
+        or not (created_at <= locked_at and created_at <= reduced_at < start)
+        or model_at > reduced_at
+        or _utc(saved.get("event_start_time")) != start
+        or _utc(saved.get("model_timestamp")) != model_at
+        or _utc(saved.get("source_snapshot_timestamp")) != snapshot_at
+        or _token(saved.get("event_prediction_id")).lower() != canonical_id
+        or _token(saved.get("official_event_id")) != _token(event.get("official_event_id"))
+        or _token(saved.get("sport")).upper() != _token(event.get("sport")).upper()
+        or _token(saved.get("market_family")).upper() != "OUTRIGHT_WINNER"
+        or not required_basis
+        or _token(saved.get("settlement_basis")).upper() != required_basis
+        or _token(saved.get("home_team")).upper() != home
+        or _token(saved.get("away_team")).upper() != away
+        or saved_side != side or side not in {home, away}
+        or _token(saved.get("model_version")) != _token(winner.get("model_version"))
+        or _token(saved.get("calibration_version")) != _token(winner.get("calibration_version"))
+        or not _token(saved.get("source_snapshot_id"))
+        or _token(saved.get("source_snapshot_id")).lower() != _token(winner.get("source_snapshot_id")).lower()
+        or saved.get("rank_eligible") is not True
+        or saved.get("probability_publishable") is not True
+        or saved.get("can_execute") is not False
+    ):
+        return "LLP_EVENT_PREDICTION_RECEIPT_MISMATCH"
+    prefix = "home" if side == home else "away"
+    probabilities: list[Decimal] = []
+    for saved_field, winner_field in (
+        (f"calibrated_{prefix}_probability", "calibrated_probability"),
+        (f"calibrated_{prefix}_lower_bound", "calibrated_probability_lower_bound"),
+        (f"calibrated_{prefix}_upper_bound", "calibrated_probability_upper_bound"),
+    ):
+        left = _decimal(saved.get(saved_field))
+        right = _decimal(winner.get(winner_field))
+        if left is None or right is None or left != right:
+            return "LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH"
+        probabilities.append(left)
+    point, lower, upper = probabilities
+    # Match the bundle's existing strictly interior calibrated-bound contract.
+    # Equality with a corrupted immutable row cannot make invalid numbers proof.
+    if not Decimal(0) < lower <= point <= upper < Decimal(1):
+        return "LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH"
+    return None
+
+
+def project_llp_intelligence_page(
+    page: Mapping[str, Any], *, db: Any = None,
+) -> dict[str, Any]:
     """Page-preserving, read-only projection. Missing proof stays HELD.
 
     Only existing canonical Daily MONEYLINE rows are projected; this never
@@ -194,11 +435,44 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
             duplicate_ids.add(event_id)
         seen_ids.add(event_id)
         try:
+            research = result.get("llp_deep_research_context")
+            # Core saved-event identity safety is independent of the OPTIONAL
+            # research context. A conflicting result cannot publish a winner
+            # with or without research, and a missing/invalid research context
+            # cannot by itself change a valid winner's visibility.
+            conflict = (
+                event["sport"] in {"NFL", "NBA", "NHL"}
+                and _saved_research_identity_conflict(row, event)
+            )
+            winner = _winner_receipt_from_row(row, event)
+            ledger_hold = _verify_governed_event_prediction(
+                db, event=event, winner=winner
+            )
+            if ledger_hold is not None or conflict:
+                # Core immutable Action/ledger truth never comes from optional
+                # analyst research or forged fields inside Daily row details.
+                winner["probability_publishable"] = False
+                winner["rank_eligible"] = False
+                if conflict and research is not None:
+                    research = {"persisted_event_identity_conflict": True}
             bundle = build_llp_team_intelligence_bundle(
-                event=event, receipts=[_winner_receipt_from_row(row, event)]
+                event=event, receipts=[winner],
+                deep_research_context=research,
             )
             bundle["daily_row_index"] = row.get("row_index")
             bundle["source_diagnostics"] = _source_failure_context(row)
+            if conflict:
+                bundle["source_diagnostics"]["source_reason_codes"].append(
+                    "LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT"
+                )
+            if ledger_hold is not None:
+                bundle["source_diagnostics"]["source_reason_codes"].append(
+                    ledger_hold
+                )
+                bundle["markets"][0]["reason_codes"].append(ledger_hold)
+            bundle["source_diagnostics"]["event_prediction_receipt_verified"] = (
+                ledger_hold is None and not conflict
+            )
             # Daily's underlying data has winner rows, not certified
             # independent spread/game-total scorer packages.
             bundle["market_coverage"] = {
@@ -234,6 +508,7 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
 def read_llp_team_intelligence_page(
     db: Any, *, run_id: str, offset: int = 0, limit: int = DETAIL_PAGE_DEFAULT_LIMIT,
 ) -> dict[str, Any]:
+    """Validate pagination and project a read-only page with independent ledger proof."""
     if not _token(run_id) or len(_token(run_id)) > 128:
         raise ValueError("LLP_DAILY_RUN_ID_INVALID")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -241,7 +516,7 @@ def read_llp_team_intelligence_page(
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= DETAIL_PAGE_MAX_LIMIT:
         raise ValueError("LLP_DAILY_LIMIT_INVALID")
     page = read_row_detail_page(db, run_id=run_id, offset=offset, limit=limit)
-    return project_llp_intelligence_page(page)
+    return project_llp_intelligence_page(page, db=db)
 
 
 def install_llp_team_intelligence_readback(
@@ -258,6 +533,7 @@ def install_llp_team_intelligence_readback(
     def llp_team_intelligence_events(
         run_id: str, offset: int = 0, limit: int = DETAIL_PAGE_DEFAULT_LIMIT,
     ):
+        """Serve authenticated readback with typed invalid-request responses."""
         try:
             return read_llp_team_intelligence_page(
                 db_client_fn(), run_id=run_id, offset=offset, limit=limit,
