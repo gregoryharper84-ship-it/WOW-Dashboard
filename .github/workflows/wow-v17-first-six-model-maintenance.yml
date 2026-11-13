@@ -25,6 +25,8 @@ on:
       - "artifacts/wow-engine/v17/ncaab_sportsdataverse_candidate.py"
       - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
       - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
+      - "artifacts/wow-engine/v17/tennis_calibration_shadow.py"
+      - "artifacts/wow-engine/test_v17_tennis_calibration_shadow.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
       - "artifacts/wow-engine/basketball_event_hydration_runtime.py"
@@ -58,6 +60,8 @@ on:
       - "artifacts/wow-engine/v17/ncaab_sportsdataverse_candidate.py"
       - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
       - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
+      - "artifacts/wow-engine/v17/tennis_calibration_shadow.py"
+      - "artifacts/wow-engine/test_v17_tennis_calibration_shadow.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
       - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_team_event_certification_replay.py"
@@ -114,6 +118,7 @@ jobs:
           test_v17_basketball_model_maintenance.py
           test_v17_team_state_intelligence.py
           test_v17_team_state_challenger_training.py
+          test_v17_tennis_calibration_shadow.py
           test_v17_team_state_scoped_maintenance.py
           test_v17_nfl_event_context_challenger.py
           test_v17_github_oidc.py
