@@ -122,6 +122,12 @@ def audit_weekly_receipts(
             hold("PICKEM_PREDICTION_ROW_INVALID")
             continue
         official_id = _name(row.get("official_event_id"))
+        receipt_id = _name(row.get("event_prediction_id"))
+        # An immutable ID must belong to exactly one event across every
+        # supplied source row, including rows outside the requested slate.
+        # Filtered-out events cannot silently conceal cross-game ID reuse.
+        if official_id and receipt_id:
+            receipt_events.setdefault(receipt_id, set()).add(official_id)
         if official_id not in events_by_id:
             if official_id:
                 unmatched.add(official_id)
@@ -129,11 +135,6 @@ def audit_weekly_receipts(
                 hold("PICKEM_PREDICTION_IDENTITY_INVALID")
             continue
         start = events_by_id[official_id]["start"]
-        receipt_id = _name(row.get("event_prediction_id"))
-        # Register identity reuse even when this observation cannot qualify
-        # as a pregame receipt. An immutable ID cannot belong to two games.
-        if receipt_id:
-            receipt_events.setdefault(receipt_id, set()).add(official_id)
         created_at = _utc(row.get("created_at"))
         prediction_start = _utc(row.get("event_start_time_utc"))
         if (receipt_id is None or created_at is None
