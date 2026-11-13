@@ -502,3 +502,14 @@
 - **prevention_artifact:** `tests/test_nfl_count_prop_roster_crosswalk.py::test_target_valid_and_invalid_gsis_rows_fail_closed` includes five malformed identity cases (None, empty string, NA, wrong-id, partial GSIS). Locally reproduced the old candidate-selection behavior with pandas; exact-hosted test-first RED and repaired GREEN must be confirmed from workflow logs at their respective SHAs before claiming full acceptance.
 - **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
 - **production_evidence:** None. `nflreadpy.load_players()` reads mutable current nflverse players data; it may support a candidate cross-check only and does not replace the frozen Nov-05 RDS or the missing player-game labels. No training admission, probability, artifact promotion, new registry, signing authority, deploy or execution. `V17_TERMINAL_REDUCER`, `can_execute=false`, `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true` unchanged.
+
+## Duplicate pandas index labels expanded target GSIS validity mask — 2026-11-13
+
+- **date:** 2026-11-13
+- **typed_reason:** NFL_PROP_ROSTER_SCHEMA_INVALID:target_gsis (existing SOURCE-identity HOLD).
+- **mechanism:** A prior source-integrity hardening fix used `valid_gsis.loc[rows.index]` to validate selected PFR target records. Pandas label-based selection returns *all* records with those labels when the source index is duplicated. Thus an unrelated invalid GSIS row incorrectly caused a valid target pair to fail. This predicts false `NFL_PROP_ROSTER_SCHEMA_INVALID:target_gsis` when two PFRs share index label 0.
+- **detection_point:** At roster crosswalk preflight, before returning research-only PFR/GSIS candidates.
+- **fix:** Compute validity directly from `rows["gsis_id"]` rather than selecting the global validity mask by index label; unchanged failure code and reciprocal-collision checks; no conversion of an invalid target into a candidate.
+- **prevention_artifact:** `tests/test_nfl_count_prop_roster_crosswalk.py::test_duplicate_index_label_unrelated_bad_gsis_does_not_block_target` and `::test_duplicate_index_label_invalid_target_still_fails_closed`. Locally reproduced RED with pandas 2.2.3: selected target count 1, original mask included unrelated bad row and returned false. Revised target-row mask true. Test-first commit c2c490d1 and source repair bf91761c; hosted RED was not observed, exact-head workflow GREEN still requires readback.
+- **link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2605
+- **production_evidence:** None. No source repin, identification/rights approval, fitted model, certification, publishing, production deploy, or execution; `V17_TERMINAL_REDUCER` and `can_execute=false` preserved.
