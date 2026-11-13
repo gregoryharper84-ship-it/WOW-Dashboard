@@ -583,7 +583,12 @@ def run_moneyline_pipeline(
     fp_result = integrate_failure_paths(
         base_win_prob=independent_prob_post_sim,
         failure_path_matrix=fp_matrix,
-        simulation_regimes=sim_result.regime_distribution,
+        # Heuristic soccer 1X2 scripts (and unsupported generic fallbacks)
+        # are observability only; do not feed binary failure-path classification.
+        simulation_regimes=(
+            sim_result.regime_distribution
+            if not is_soccer and sim_result.simulation_ran else {}
+        ),
     )
     result.failure_path = fp_result.to_dict()
 
