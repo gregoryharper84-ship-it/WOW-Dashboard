@@ -53,6 +53,7 @@ def create_run(
     requested_as_of: str,
     user_timezone: str,
     governance_version: str,
+    request_payload: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
     """Returns (run_row, reused). Idempotent: a repeated call with the same
     (idempotency_key, request_hash) returns the existing run rather than
@@ -74,6 +75,7 @@ def create_run(
                 "status": "CREATED",
                 "stage": "INTAKE",
                 "governance_version": governance_version,
+                "request_payload": request_payload or {},
             })
             .execute()
         )
@@ -442,6 +444,51 @@ def record_audit_event(client: Any, *, event_type: str, actor: str, run_id: Opti
         "candidate_id": candidate_id, "job_id": job_id,
         "detail_redacted": detail_redacted or {},
     }).execute()
+
+
+BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT = "BETTING_INTELLIGENCE_PRODUCT_TRUTH"
+BETTING_INTELLIGENCE_ACTOR = "wow.betting-intelligence-control-plane"
+
+
+def record_product_truth_snapshot(
+    client: Any,
+    *,
+    run_id: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Append one immutable Betting Intelligence product-truth snapshot."""
+    if snapshot.get("can_execute") is not False:
+        raise ValueError("product truth snapshot must preserve can_execute=false")
+    snapshot_run_id = str(snapshot.get("run_id") or "")
+    if snapshot_run_id and snapshot_run_id != str(run_id):
+        raise ValueError("product truth snapshot run_id mismatch")
+    record_audit_event(
+        client,
+        event_type=BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT,
+        actor=BETTING_INTELLIGENCE_ACTOR,
+        run_id=run_id,
+        detail_redacted=snapshot,
+    )
+
+
+def get_latest_product_truth_snapshot(
+    client: Any,
+    run_id: str,
+) -> Optional[dict[str, Any]]:
+    """Read the newest persisted product-truth snapshot for one durable run."""
+    result = (
+        client.table("wow_agent_audit_events")
+        .select("*")
+        .eq("run_id", run_id)
+        .eq("event_type", BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        return None
+    latest = max(rows, key=lambda row: str(row.get("created_at") or ""))
+    detail = latest.get("detail_redacted")
+    return dict(detail) if isinstance(detail, dict) else None
 
 
 def record_terminal_decision(
