@@ -201,6 +201,7 @@ def test_corroboration_must_bind_same_official_events():
     assert verify_nba_lineup_evidence(valid, **_lineup_kwargs()) == {"ok": True, "blockers": []}
 
     missing = _lineup()
+    missing["corroboration"].pop("official_event_ids")
     result = verify_nba_lineup_evidence(missing, **_lineup_kwargs())
     assert result["ok"] is False
     assert "NBA_LINEUP_EVENT_BINDING_MISSING" in result["blockers"]
