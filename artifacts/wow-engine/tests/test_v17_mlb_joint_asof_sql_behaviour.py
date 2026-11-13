@@ -87,6 +87,10 @@ def test_actual_evidence_join_and_final_count_exclude_conflicting_event():
         r"(EXISTS \(\s*SELECT 1\s*FROM public\.wow_mlb_forward_lineup_snapshots l.*?\)) AS confirmed_lineup_captured_asof",
         sql, re.S,
     )
+    conflict_flag = re.search(
+        r"evidence AS \(\s*SELECT\s+s\.\*,\s*(.*?)\s+AS event_identity_conflict\b",
+        sql, re.S,
+    )
     evidence_join = re.search(
         r"FROM scored s\s+LEFT JOIN event_identity_collisions conflicted\s+ON conflicted\.official_event_id = s\.official_event_id",
         sql, re.S,
@@ -95,8 +99,8 @@ def test_actual_evidence_join_and_final_count_exclude_conflicting_event():
         r"count\(\*\) FILTER \(\s*(WHERE confirmed_lineup_captured_asof AND both_features_captured_asof\s+AND NOT event_identity_conflict)\s*\) AS aligned_pregame_source_candidates",
         sql, re.S,
     )
-    assert all((collision, lineup, evidence_join, final_filter)), (
-        "The test must use the real SQL collision, join, and eligibility predicate"
+    assert all((collision, lineup, conflict_flag, evidence_join, final_filter)), (
+        "The test must use the real SQL collision, flag, join, and eligibility predicate"
     )
     with _connection() as db:
         db.execute(
@@ -111,7 +115,7 @@ def test_actual_evidence_join_and_final_count_exclude_conflicting_event():
             "event_identity_collisions AS (" + collision.group(1) + "), "
             "evidence AS ("
             "SELECT s.*, "
-            "(conflicted.official_event_id IS NOT NULL) AS event_identity_conflict, "
+            + conflict_flag.group(1) + " AS event_identity_conflict, "
             + lineup.group(1) + " AS confirmed_lineup_captured_asof, "
             "1 AS both_features_captured_asof "
             + evidence_join.group(0) + ") "
