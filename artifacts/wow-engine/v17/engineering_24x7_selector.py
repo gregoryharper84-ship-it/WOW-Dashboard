@@ -39,10 +39,12 @@ SIRT_REPAIR_TITLE = re.compile(
     r"[\s:—-]*(?:fix|repair|restore|recover|debug|resolve|rebuild|implement|audit\s+log\s+repair)\b",
     re.IGNORECASE,
 )
-# Classify explicit assurance language centrally rather than re-implementing
-# partial word exceptions in each operational-failure rule.
+# Assurance language excludes coding tasks; an "audit log" is an
+# operational subsystem, not a request for independent audit review.
+# Keep explicit "independent", "review", and other assurance words binding.
 SIRT_ASSURANCE_TERMS = re.compile(
-    r"\b(?:independent\w*|review|intake|assurance|acceptance|certification|audit)\b",
+    r"\b(?:independent\w*|review|intake|assurance|acceptance|certification|"
+    r"audit(?![\s_-]+log(?:s|ging)?\b))\b",
     re.IGNORECASE,
 )
 # A production malfunction is implementation work even when its noun is
