@@ -347,3 +347,22 @@ def test_excluded_cancelled_receipt_changes_evidence_hash():
     changed = dict(c)
     changed["source_payload_sha256"] = "d" * 64
     assert out["evidence_sha256"] != run([changed])["evidence_sha256"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_scheduled_event_resolved_by_pre_freeze_final(reverse):
+    a = prior(-1, "same-game", loads={"A": {"value": 35, "unit": "minutes"}})
+    b = prior(-4, "b-game", teams=("B",), role="home",
+              loads={"B": {"value": 30, "unit": "minutes"}})
+    scheduled = {"official_event_id": "same-game", "sport": "NBA",
+                 "event_start_utc": a["event_start_utc"], "participants": ["A"],
+                 "status": "SCHEDULED", "source_uri": "https://official.example/events",
+                 "source_payload_sha256": "c" * 64, "source_available_at": t(-2)}
+    rows = [a, b, scheduled]
+    if reverse:
+        rows.reverse()
+    out = run(rows)
+    assert out["status"] == "RESEARCH_CONTEXT_ONLY"
+    assert out["unresolved_prior_event_ids"] == []
+    assert out["per_participant"]["A"]["rest_hours"] is not None
+    assert out["per_participant"]["A"]["history_completeness_attested"] is True
