@@ -115,6 +115,7 @@ def test_lineup_evidence_at_tipoff_is_outside_prelock():
         "evidence_as_of": "2026-01-02T00:00:00Z",
         "rotation_changed": False,
         "corroboration": {
+            "official_event_ids": ["g1"],
             "source_id": "SECOND_INDEPENDENT_SOURCE",
             "evidence_as_of": "2026-01-01T16:30:00Z",
             "rotation_changed": False,
@@ -157,6 +158,7 @@ def test_missing_lineup_status_fails_closed_before_review():
         "source_id": "OFFICIAL_LINEUP_SOURCE",
         "evidence_as_of": "2026-01-01T16:30:00Z",
         "corroboration": {
+            "official_event_ids": ["g1"],
             "source_id": "SECOND_INDEPENDENT_SOURCE",
             "evidence_as_of": "2026-01-01T16:30:00Z",
             "rotation_changed": False,

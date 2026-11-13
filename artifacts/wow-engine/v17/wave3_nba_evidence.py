@@ -300,6 +300,19 @@ def verify_nba_lineup_evidence(
     else:
         if type(corroboration.get("rotation_changed")) is not bool:
             blockers.append("NBA_LINEUP_CORROBORATION_MISSING")
+        corroborating_ids = corroboration.get("official_event_ids")
+        if (
+            not isinstance(corroborating_ids, list)
+            or not corroborating_ids
+            or any(not _is_official_id(value) for value in corroborating_ids)
+        ):
+            blockers.append("NBA_LINEUP_EVENT_BINDING_MISSING")
+        elif (
+            len(corroborating_ids) != len(expected_ids)
+            or len(set(corroborating_ids)) != len(corroborating_ids)
+            or sorted(corroborating_ids) != sorted(str(value) for value in expected_ids)
+        ):
+            blockers.append("NBA_LINEUP_EVENT_BINDING_MISMATCH")
         corroborating_source = corroboration.get("source_id")
         if not _is_official_id(corroborating_source):
             blockers.append("NBA_LINEUP_CORROBORATION_SOURCE_MISSING")

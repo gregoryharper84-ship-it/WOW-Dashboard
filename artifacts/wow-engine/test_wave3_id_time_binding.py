@@ -145,6 +145,7 @@ def _lineup(**overrides):
         "source_id": "nba-official-injury-report",
         "evidence_as_of": "2026-01-01T11:00:00Z",
         "corroboration": {
+            "official_event_ids": ["g1", "g2", "g3"],
             "source_id": "nba-team-pr-wire",
             "evidence_as_of": "2026-01-01T11:30:00Z",
             "rotation_changed": False,
