@@ -209,7 +209,6 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
     by_id: dict[str, str] = {}
     unresolved_participants: set[str] = set()
     unresolved_ids: set[str] = set()
-    excluded_history: list[dict[str, Any]] = []
     for raw in history:
         if not isinstance(raw, Mapping) or str(raw.get("sport") or "").upper() != sport:
             _invalid("mixed/unknown sport in history")
@@ -225,7 +224,6 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
         if status not in {"FINAL", "CANCELLED", "POSTPONED", "SCHEDULED"}:
             _invalid("unrecognized event status")
         if status != "FINAL":
-            excluded_history.append(dict(raw))
             if status == "SCHEDULED":
                 unresolved_ids.add(eid)
                 unresolved_participants.update(rids)
@@ -275,9 +273,10 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
 
     receipt = {"family": FEATURE_FAMILY_VERSION, "sport": sport, "target": audit_event(target),
                "freeze": freeze.isoformat(),
-               "histories": [audit_event(r) for r in sorted(normalized, key=lambda r: (r["_start"], r["official_event_id"]))],
-               "excluded_history": [audit_event(r) for r in sorted(excluded_history,
-                     key=lambda r: (str(r["event_start_utc"]), str(r["official_event_id"])))],
+               # All source observations, including identical identity mirrors and
+               # excluded fixtures, are preserved in an order-independent receipt.
+               "histories": sorted((audit_event(r) for r in history),
+                                    key=lambda r: json.dumps(r, sort_keys=True, default=str)),
                "completeness": {pid: history_completeness.get(pid) is True for pid in ids}}
     fingerprint = hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(",", ":"),
                                           default=str).encode("utf-8")).hexdigest()
