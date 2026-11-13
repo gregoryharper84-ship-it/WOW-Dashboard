@@ -216,8 +216,7 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
     normalized: list[dict[str, Any]] = []
     by_id: dict[str, str] = {}
     shared_identities: dict[str, str] = {}
-    unresolved_participants: set[str] = set()
-    unresolved_ids: set[str] = set()
+    scheduled_participants: dict[str, set[str]] = {}
     for raw in history:
         if not isinstance(raw, Mapping) or str(raw.get("sport") or "").upper() != sport:
             _invalid("mixed/unknown sport in history")
@@ -238,8 +237,7 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
             _invalid("unrecognized event status")
         if status != "FINAL":
             if status == "SCHEDULED":
-                unresolved_ids.add(eid)
-                unresolved_participants.update(rids)
+                scheduled_participants.setdefault(eid, set()).update(rids)
             continue
         end = _time(raw.get("event_end_utc"))
         if not g_start < end <= freeze:
@@ -264,6 +262,9 @@ def build_schedule_matchup_context(*, target: Mapping[str, Any],
             continue  # identical multi-provider or schedule-mirror event, counted only once
         by_id[eid] = identity
         normalized.append(payload)
+    # Only never-finalized scheduled records hold the frozen schedule context.
+    unresolved_ids = set(scheduled_participants) - set(by_id)
+    unresolved_participants = {pid for eid in unresolved_ids for pid in scheduled_participants[eid]}
     per = {pid: _profile(pid, normalized_target, normalized,
                          history_completeness.get(pid) is True and pid not in unresolved_participants)
            for pid in ids}
