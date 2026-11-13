@@ -125,7 +125,7 @@ def test_source_fetch_failure_precedes_any_write(monkeypatch):
     def fail(_): raise RuntimeError("source-down")
     monkeypatch.setattr("v17.nba_tipoff_backfill._fetch_normalized_sources",fail)
     with pytest.raises(RuntimeError,match="source-down"):
-        run(db)
+        run(db, apply=True)
     assert db.rows[0]==old
 
 
