@@ -128,7 +128,7 @@ def test_ncaaf_compiler_sample_logging_executes_with_strict_bounds(capsys):
         assert all(len(value) <= 80 for value in sample["blockers"])
 
 
-def test_basketball_workflow_reports_real_ingestion_separate_from_shadow_replay():
+def test_basketball_workflow_reports_real_ingestion_separate_from_shadow_replay(capsys):
     text = _workflow("wow-v17-basketball-model-maintenance.yml")
     assert '"rows_no_new_settlements": basketball.get("rows_no_new_settlements")' in text
     assert '"rows_fresh_acquisition_unverified": basketball.get("rows_fresh_acquisition_unverified")' in text
@@ -167,9 +167,13 @@ def test_basketball_workflow_reports_real_ingestion_separate_from_shadow_replay(
             },
         ],
     }
-    values = {"payload": payload}
+    values = {"payload": payload, "basketball": payload, "json": json}
     exec(compile(script, "<nba-source-watermark>", "exec"), values)
     summary = values["source_summary"]
+    early_receipt = json.loads(capsys.readouterr().out)
+    assert early_receipt["stage"] == "BASKETBALL_SOURCE_ACQUISITION_READBACK"
+    assert early_receipt["source_summary"] == summary
+    assert early_receipt["rows_no_new_settlements"] is None
     assert set(summary) == {"NBA", "WNBA"}
     assert summary["NBA"] == {
         "status": "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS",
@@ -187,7 +191,7 @@ def test_basketball_workflow_unknown_source_readback_fails_to_verified_summary()
     payload = {"rows": [{"sport": "NBA", "hydration_status": "INVALID_UNTRUSTED_STATE",
                         "hydration": {"latest_game_date_after": "not-a-date",
                                       "fresh_acquisition_new_settled_games": True}}]}
-    values = {"payload": payload}
+    values = {"payload": payload, "basketball": payload, "json": json}
     exec(compile(script, "<nba-source-unknown>", "exec"), values)
     assert values["source_summary"]["NBA"] == {
         "status": "FRESH_ACQUISITION_NOT_VERIFIED",
