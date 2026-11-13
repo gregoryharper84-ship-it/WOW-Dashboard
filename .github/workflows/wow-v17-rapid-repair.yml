@@ -31,6 +31,10 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v5
+        # Keep the optional cache restore from consuming the rapid gate's 12-minute budget.
+        # On timeout setup-python treats the cache as unavailable and pip installs dependencies normally.
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
         with:
           python-version: '3.11'
           cache: pip
