@@ -100,6 +100,13 @@ def settle_seven_sport_shadow(
         raise ValueError("SCORE_UNIT_INVALID")
     if not isinstance(projection, Mapping):
         raise ValueError("SOURCE_PROVENANCE_MISSING")
+    # Bind the adapter to the source projector’s explicit sport/period/unit
+    # claim. These are structural research claims, not authenticated receipts.
+    required_source_unit = "MATCH_GAMES" if sport == "TENNIS" else "FINAL_SCORE"
+    if (projection.get("source_sport") != sport
+            or projection.get("source_settlement_basis") != settlement_basis
+            or projection.get("source_score_unit") != required_source_unit):
+        raise ValueError("SOURCE_SPORT_OR_SETTLEMENT_MISMATCH")
     if (projection.get("probability_publishable") is not False
             or projection.get("automatic_certification") is not False
             or projection.get("shadow_only") is not True):
@@ -147,6 +154,12 @@ def settle_seven_sport_shadow(
     if ((round(spread_line * 2) % 2 and spread["exact"] > 1e-12)
             or (round(total_line * 2) % 2 and total["exact"] > 1e-12)):
         raise ValueError("HALF_POINT_PUSH_MASS_INVALID")
+
+    if sport != "TENNIS" and spread_line == 0 and not all(
+        isclose(spread[key], money[comparison], rel_tol=0.0, abs_tol=1e-9)
+        for key, comparison in (("more", "home_win"), ("exact", "draw"), ("less", "away_win"))
+    ):
+        raise ValueError("ZERO_HANDICAP_WINNER_SPREAD_MISMATCH")
 
     winner: dict[str, float | str] | None = None
     reasons: list[str] = []
