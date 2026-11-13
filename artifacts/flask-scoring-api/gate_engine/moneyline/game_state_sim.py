@@ -12,7 +12,7 @@ Supported sports:
   NFL  : QB-efficiency × trench × weather × game-script
   NHL  : goalie × special-teams × OT
   SOCCER/EPL/MLS: tactical draw-preserving three-outcome Poisson
-  DEFAULT : Gaussian noise only (wider uncertainty)
+  DEFAULT : no fitted regime; no probability change
 
 can_execute=False unconditional.
 """
@@ -456,7 +456,7 @@ def run_game_state_simulation(
         base_prob = float("nan")
     if not math.isfinite(base_prob) or not (0.0 < base_prob < 1.0):
         # Do not serialize NaN/Infinity into JSON readback.
-        safe = base_prob if math.isfinite(base_prob) else 0.0
+        safe = base_prob if math.isfinite(base_prob) and 0.0 <= base_prob <= 1.0 else 0.0
         return SimulationResult(safe, safe, {}, 0, "UNKNOWN",
                                 ["INVALID_BASE_PROB:simulation_skipped"], False)
     if isinstance(n_sims, bool) or not isinstance(n_sims, int) or not 1 <= n_sims <= 50000:
