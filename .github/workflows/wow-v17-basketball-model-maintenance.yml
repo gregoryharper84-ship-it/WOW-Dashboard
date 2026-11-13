@@ -157,6 +157,7 @@ jobs:
           # settled game evidence. Summarize only trusted, bounded scalars;
           # never log raw provider payloads or authentication data.
           source_summary = {}
+          from datetime import date as _date
           allowed_states = {
               "FRESH_ACQUISITION_UPDATED",
               "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS",
@@ -169,14 +170,14 @@ jobs:
                   continue
               hydration = row.get("hydration") if isinstance(row.get("hydration"), dict) else {}
               status = row.get("hydration_status")
-              if status not in allowed_states:
+              if not isinstance(status, str) or status not in allowed_states:
                   status = "FRESH_ACQUISITION_NOT_VERIFIED"
               latest = hydration.get("latest_game_date_after")
-              if not (
-                  isinstance(latest, str) and len(latest) == 10
-                  and latest[4] == "-" and latest[7] == "-"
-                  and (latest[:4] + latest[5:7] + latest[8:]).isdigit()
-              ):
+              try:
+                  if not isinstance(latest, str):
+                      raise ValueError("source date missing")
+                  latest = _date.fromisoformat(latest).isoformat()
+              except ValueError:
                   latest = None
               new_count = hydration.get("fresh_acquisition_new_settled_games")
               if type(new_count) is not int or new_count < 0:
