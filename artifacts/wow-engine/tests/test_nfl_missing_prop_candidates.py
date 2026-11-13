@@ -56,6 +56,22 @@ def test_five_distinct_exact_count_routes():
     assert set(spec["model_kind"] for spec in ROUTES.values()) == {"POISSON_COUNT_CANDIDATE_V1"}
 
 
+
+@pytest.mark.parametrize("field,token", [
+    ("player_id", "NONE"),
+    ("player_display_name", "NULL"),
+    ("position", "NAN"),
+    ("game_id", "NA"),
+])
+def test_textual_null_identity_tokens_fail_closed_before_feature_building(weekly_frame, field, token):
+    """Text sentinels are absent identities, not valid player-game labels."""
+    altered = weekly_frame.copy()
+    altered.loc[0, field] = token
+    with pytest.raises(ValueError, match=f"NFL_PROP_SOURCE_IDENTITY_INVALID:{field}"):
+        validate_frame(altered)
+
+
+
 def test_untrusted_missing_columns_fail_closed(weekly_frame):
     """Regression: untrusted missing columns fail closed."""
     with pytest.raises(ValueError, match="NFL_PROP_SOURCE_COLUMNS_MISSING:completions"):
