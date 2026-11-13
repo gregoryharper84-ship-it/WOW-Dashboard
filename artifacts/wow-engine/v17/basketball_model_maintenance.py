@@ -33,6 +33,15 @@ from basketball_event_hydration_runtime import (
 )
 from basketball_training_replay import run_training_replay
 from github_actions_oidc import scout_route_auth_dependency
+from v17.nba_team_event_verification import VerificationContextError
+from v17.nba_verification_wiring import (
+    DEFERRED_GOVERNANCE_BLOCKERS,
+    VERIFICATION_NOT_APPLICABLE,
+    VerificationArchiveError,
+    VerificationIdentity,
+    verification_prerequisites,
+    verify_and_archive,
+)
 from v17.team_event_model_development_manifest import development_lane
 
 CAN_EXECUTE = False
@@ -359,6 +368,107 @@ def _nba_current_season_data_gap(
     }
 
 
+def _verification_outcome(
+    status: str,
+    *,
+    blocked_code: str | None = None,
+    **detail: Any,
+) -> dict[str, Any]:
+    """Build one verification report without granting model or execution authority."""
+    payload: dict[str, Any] = {
+        "status": status,
+        "promotion_attempted": False,
+        "probability_publishable": False,
+        "can_execute": False,
+        **detail,
+    }
+    return {"payload": payload, "blocked_code": blocked_code}
+
+
+def _verify_replayed_fit(sport: str, db: Any, replay: Any) -> dict[str, Any]:
+    """Verify and archive the artifact this fitting run just persisted.
+
+    A run only reports success once a receipt exists, is archived, and passes.
+    Two blockers attest governance states a nightly fit cannot self-issue - the
+    artifact is not yet CERTIFIED (V10) and the maintenance lane holds no
+    independent source-event attestation (V11) - so those are deferred
+    explicitly. Every other failure blocks the sport's maintenance row.
+    """
+    if sport != "NBA":
+        # The harness verifies NBA only; issuing a WNBA receipt would require a
+        # substitute for evidence that does not exist.
+        return _verification_outcome(
+            VERIFICATION_NOT_APPLICABLE, reason="HARNESS_SUPPORTS_NBA_ONLY"
+        )
+    version = ""
+    if isinstance(replay, dict):
+        version = str(replay.get("model_artifact_version") or "").strip()
+    if not version:
+        # NBA maintenance cannot claim an updated fitted artifact without an
+        # exact version bound to a stored independent verification receipt.
+        # NOT_APPLICABLE is reserved for genuinely unsupported WNBA harnesses.
+        return _verification_outcome(
+            "INCOMPLETE",
+            blocked_code="NBA_VERIFICATION_EVIDENCE_INCOMPLETE",
+            reason="REPLAY_DID_NOT_RETURN_ARTIFACT_VERSION",
+        )
+    try:
+        result = verify_and_archive(
+            db,
+            model_artifact_version=version,
+            identity=VerificationIdentity(),
+            defer=DEFERRED_GOVERNANCE_BLOCKERS,
+        )
+    except VerificationContextError as exc:
+        return _verification_outcome(
+            "INCOMPLETE",
+            blocked_code="NBA_VERIFICATION_EVIDENCE_INCOMPLETE",
+            code=exc.code,
+            model_artifact_version=version,
+        )
+    except VerificationArchiveError as exc:
+        return _verification_outcome(
+            "UNARCHIVED",
+            blocked_code="NBA_VERIFICATION_ARCHIVE_UNAVAILABLE",
+            code=exc.code,
+            model_artifact_version=version,
+        )
+    except Exception as exc:  # noqa: BLE001 - typed hold, never a soft pass
+        return _verification_outcome(
+            "ERROR",
+            blocked_code="NBA_INDEPENDENT_VERIFICATION_FAILED",
+            code="NBA_INDEPENDENT_VERIFICATION_ERROR",
+            error_type=type(exc).__name__,
+            model_artifact_version=version,
+        )
+    gate_open = result.get("gate_open") is True
+    receipt_status = str(result.get("verification_status") or "").strip().upper()
+    hard_blockers = list(result.get("hard_blockers") or [])
+    deferred_blockers = list(result.get("deferred_blockers") or [])
+    # A FAIL receipt with only explicitly deferred governance checks can
+    # update SHADOW evidence, but must never be relabelled as a PASS receipt.
+    verified_pass = gate_open and receipt_status == "PASS" and not hard_blockers and not deferred_blockers
+    governance_deferred = (
+        gate_open and receipt_status == "FAIL"
+        and not hard_blockers and bool(deferred_blockers)
+        and set(deferred_blockers).issubset(DEFERRED_GOVERNANCE_BLOCKERS)
+    )
+    status = "PASS" if verified_pass else "GOVERNANCE_DEFERRED" if governance_deferred else "FAIL"
+    return _verification_outcome(
+        status,
+        blocked_code=(
+            None if verified_pass or governance_deferred
+            else "NBA_INDEPENDENT_VERIFICATION_FAILED"
+        ),
+        model_artifact_version=version,
+        verification_id=(result.get("receipt") or {}).get("verification_id"),
+        receipt_digest=result.get("receipt_digest"),
+        verification_receipt_status=receipt_status or "MISSING",
+        hard_blockers=hard_blockers,
+        deferred_blockers=deferred_blockers,
+    )
+
+
 def run_basketball_model_maintenance(
     db: Any,
     *,
@@ -374,11 +484,25 @@ def run_basketball_model_maintenance(
     reported_base_seasons = explicit_seasons or default_seasons(now=clock)
     seasons_by_sport: dict[str, list[int]] = {}
     results: list[dict[str, Any]] = []
+    requested_sports = [str(value or "").strip().upper() for value in sports]
 
-    for raw_sport in sports:
-        sport = str(raw_sport or "").strip().upper()
+    # Probe verification storage before any NBA fit. A receipt that cannot be
+    # archived must not leave a freshly persisted artifact behind, and an
+    # unapplied migration must name itself instead of surfacing later as a
+    # generic archive failure.
+    prerequisites: dict[str, Any] | None = (
+        verification_prerequisites(db) if "NBA" in requested_sports else None
+    )
+
+    for sport in requested_sports:
         if sport not in SUPPORTED_SPORTS:
             results.append(_blocked(sport or "UNKNOWN", "BASKETBALL_SPORT_UNSUPPORTED"))
+            continue
+        if sport == "NBA" and prerequisites is not None and not prerequisites["ready"]:
+            blocked = _blocked(sport, str(prerequisites["code"]))
+            blocked["verification_prerequisites"] = prerequisites
+            blocked["replay_attempted"] = False
+            results.append(blocked)
             continue
 
         season_values = explicit_seasons if explicit_seasons is not None else default_seasons(now=clock, sport=sport)
@@ -491,6 +615,23 @@ def run_basketball_model_maintenance(
         try:
             replay = run_training_replay(sport, client=db)
             lane = development_lane(sport)
+            verification = _verify_replayed_fit(sport, db, replay)
+            if verification["blocked_code"]:
+                blocked = _blocked(
+                    sport,
+                    verification["blocked_code"],
+                    hydration_blocker=hydration_blocker,
+                )
+                blocked["independent_verification"] = verification["payload"]
+                blocked["training_replay"] = replay
+                # A verification hold must not erase real hydration/source
+                # status; keep each failure classified in its own lane.
+                blocked["hydration"] = hydration
+                blocked["hydration_status"] = _fresh_acquisition_status(
+                    hydration, hydration_blocker,
+                )
+                results.append(blocked)
+                continue
             row: dict[str, Any] = {
                 "sport": sport,
                 "status": "SHADOW_EVIDENCE_UPDATED",
@@ -498,6 +639,7 @@ def run_basketball_model_maintenance(
                 "hydration_status": _fresh_acquisition_status(hydration, hydration_blocker),
                 "hydration_blocker": hydration_blocker,
                 "training_replay": replay,
+                "independent_verification": verification["payload"],
                 "model_development": lane.as_dict() if lane is not None else None,
                 "promotion_attempted": False,
                 "probability_publishable": False,
@@ -550,6 +692,7 @@ def run_basketball_model_maintenance(
         "rows_fresh_acquisition_degraded": degraded,
         "rows_no_new_settlements": no_new,
         "rows_fresh_acquisition_unverified": unverified,
+        "verification_prerequisites": prerequisites,
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": False,

@@ -14,7 +14,7 @@ from itertools import groupby
 import hashlib
 import json
 import math
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -41,6 +41,20 @@ FEATURE_NAMES = (
 
 class BasketballSpecialistError(ValueError):
     pass
+
+
+def calibration_fingerprint(payload: Mapping[str, Any]) -> str:
+    """Stable digest of a calibration identity payload.
+
+    The persisted calibrator row must let a reviewer recompute this digest from
+    stored values alone, so the construction is canonical JSON with sorted keys
+    and stringified timestamps. It is deliberately independent of the artifact
+    checksum: an artifact can be re-used with a re-fitted calibration.
+    """
+    canonical = json.dumps(
+        dict(payload), sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
