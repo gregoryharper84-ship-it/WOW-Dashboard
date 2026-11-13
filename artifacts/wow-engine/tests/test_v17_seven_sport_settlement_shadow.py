@@ -8,7 +8,9 @@ from v17.seven_sport_settlement_shadow import settle_seven_sport_shadow
 START = datetime(2026, 11, 14, 1, tzinfo=timezone.utc)
 
 
-def packet(sport="NCAAF", *, home_spread=-3, game_total=49.5, draw=0.1):
+def packet(sport="NCAAF", *, home_spread=-3, game_total=49.5, draw=None):
+    if draw is None:
+        draw = .1 if sport in {"NFL", "SOCCER"} else 0
     return {
         "source_sport": sport, "source_settlement_basis": settlement(sport),
         "source_score_unit": "MATCH_GAMES" if sport == "TENNIS" else "FINAL_SCORE",
@@ -16,7 +18,7 @@ def packet(sport="NCAAF", *, home_spread=-3, game_total=49.5, draw=0.1):
         "fitted_artifact_sha256": "a" * 64, "captured_at": (START - timedelta(hours=1)).isoformat(),
         "event_start_at": START.isoformat(), "simulation_seed": 42, "draw_count": 50000,
         "moneyline_tie_rule": "THREE_WAY" if sport == "SOCCER" else (
-            "PUSH" if sport in {"NFL", "NCAAF"} else "NO_TIES"),
+            "PUSH" if sport == "NFL" else "NO_TIES"),
         "moneyline": {"home_win": 0.5, "away_win": 0.5 - draw, "draw": draw},
         "home_spread": {"line": home_spread, "more": 0.3, "exact": 0.2 if home_spread == int(home_spread) else 0, "less": 0.5 if home_spread == int(home_spread) else 0.7},
         "game_total": {"line": game_total, "more": 0.4, "exact": 0.1 if game_total == int(game_total) else 0, "less": 0.5 if game_total == int(game_total) else 0.6},
@@ -38,7 +40,7 @@ def settlement(sport):
 def test_ncaaf_key_number_push_and_total_normalization():
     r = settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=packet())
     assert r["status"] == "RESEARCH_ONLY"
-    assert r["winner"] == {"home": .5, "away": .4, "draw": .1, "tie_settlement": "PUSH"}
+    assert r["winner"] == {"home": .5, "away": .5, "draw": 0, "tie_settlement": "NO_TIES"}
     assert r["spread"] == {"signed_home_line": -3.0, "p_cover": .3, "p_push": .2, "p_not_cover": .5}
     assert r["total"] == {"line": 49.5, "p_over": .4, "p_push": 0, "p_under": .6}
     assert r["probability_publishable"] is False and r["rank_eligible"] is False
@@ -47,7 +49,7 @@ def test_ncaaf_key_number_push_and_total_normalization():
 
 @pytest.mark.parametrize("sport", ["NFL", "NCAAF", "NBA", "NCAAB", "NHL", "SOCCER"])
 def test_six_team_sports_validated_and_independently_settled(sport):
-    p = packet(sport, home_spread=-2.5, game_total=49.5, draw=.1 if sport in {"NFL", "NCAAF", "SOCCER"} else 0)
+    p = packet(sport, home_spread=-2.5, game_total=49.5, draw=.1 if sport in {"NFL", "SOCCER"} else 0)
     if sport == "NHL":
         p["home_spread"]["line"] = -1.5
     r = settle_seven_sport_shadow(sport=sport, settlement_basis=settlement(sport), projection=p)
@@ -89,8 +91,8 @@ def test_soccer_requires_three_way_draw_and_cannot_use_push_rule():
         settle_seven_sport_shadow(sport="SOCCER", settlement_basis=settlement("SOCCER"), projection=p)
 
 
-def test_nfl_ncaaf_ties_cannot_disappear_via_no_ties_rule():
-    for sport in ("NFL", "NCAAF"):
+def test_nfl_ties_cannot_disappear_via_no_ties_rule():
+    for sport in ("NFL",):
         p = packet(sport, draw=0)
         p["moneyline_tie_rule"] = "NO_TIES"
         with pytest.raises(ValueError, match="TIE_RULE_OR_DRAW_MASS_INVALID"):
@@ -189,9 +191,19 @@ def test_source_sport_and_period_cannot_be_relabelled():
 
 
 def test_zero_handicap_rejects_incoherent_winner_and_cover_distribution():
-    p = packet("NCAAF", home_spread=0)
+    p = packet("NFL", home_spread=0)
     with pytest.raises(ValueError, match="ZERO_HANDICAP_WINNER_SPREAD_MISMATCH"):
-        settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=p)
+        settle_seven_sport_shadow(sport="NFL", settlement_basis=settlement("NFL"), projection=p)
     p["home_spread"].update(more=.5, exact=.1, less=.4)
-    result = settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=p)
+    result = settle_seven_sport_shadow(sport="NFL", settlement_basis=settlement("NFL"), projection=p)
     assert result["spread"]["p_push"] == result["winner"]["draw"] == .1
+
+
+def test_ncaaf_overtime_cannot_end_in_a_tie():
+    p = packet("NCAAF", draw=.1)
+    with pytest.raises(ValueError, match="TIE_RULE_OR_DRAW_MASS_INVALID"):
+        settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=p)
+    p = packet("NCAAF", draw=0)
+    p["moneyline_tie_rule"] = "PUSH"
+    with pytest.raises(ValueError, match="TIE_RULE_OR_DRAW_MASS_INVALID"):
+        settle_seven_sport_shadow(sport="NCAAF", settlement_basis=settlement("NCAAF"), projection=p)
