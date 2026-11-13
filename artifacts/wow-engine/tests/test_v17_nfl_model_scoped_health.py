@@ -19,7 +19,7 @@ def test_exact_model_cannot_borrow_passing_health_from_mixed_models():
     row['model_version']='A'
     db=_CertifiedDb(True,100,grade_version='A')
     db.health=mixed
-    db.grades=[{**asdict(g),"model_artifact_id":row["model_artifact_id"]} for g in cohorts[0]]
+    db.grades=[{**asdict(g),"model_artifact_id":row["model_artifact_id"], "artifact_checksum":"sha256-fixture-model-bundle"} for g in cohorts[0]]
     assert _forward_certification_proven(db,row) is False
 
 def test_current_artifact_checksum_mismatch_cannot_authorize_scoped_health():
@@ -49,7 +49,7 @@ def test_other_artifact_cohort_cannot_supply_exact_model_health():
     assert not _forward_certification_proven(db,row)
 
 
-def test_complete_multi_page_exact_cohort_is_used():
+def test_complete_large_exact_cohort_is_used():
     _,row,_=_bound_evidence()
     db=_CertifiedDb(True,1000)
     assert _forward_certification_proven(db,row)
@@ -60,11 +60,58 @@ def test_artifact_version_mismatch_cannot_authorize_exact_cohort():
     db.model['model_artifact_version']='different-version'
     assert not _forward_certification_proven(db,row)
 
-def test_adverse_later_page_cannot_be_truncated_out_of_health():
+def test_adverse_tail_cannot_be_truncated_out_of_health():
     _,row,_=_bound_evidence()
     db=_CertifiedDb(True,1000)
     for grade in db.grades[500:]:
         grade['outcome']=0
         grade['brier']=.7 ** 2
         grade['log_loss']=-math.log(.3)
+    assert not _forward_certification_proven(db,row)
+
+def test_server_capped_healthy_prefix_cannot_hide_failing_cohort():
+    _,row,_=_bound_evidence()
+    db=_CertifiedDb(True,1000)
+    for grade in db.grades[100:]:
+        grade['outcome']=0
+        grade['brier']=.7 ** 2
+        grade['log_loss']=-math.log(.3)
+    original=db.table
+    def table(name):
+        query=original(name)
+        if name=='wow_nfl_forward_verified_grades':
+            execute=query.execute
+            def capped():
+                result=execute()
+                result.count=1000
+                result.data=result.data[:100]
+                return result
+            query.execute=capped
+        return query
+    db.table=table
+    assert not _forward_certification_proven(db,row)
+
+
+def test_historical_artifact_checksum_cannot_borrow_current_lineage():
+    _,row,_=_bound_evidence()
+    db=_CertifiedDb(True,100)
+    for grade in db.grades:
+        grade['artifact_checksum']='historical-other-content'
+    assert not _forward_certification_proven(db,row)
+
+def test_missing_exact_count_cannot_authorize_incomplete_snapshot():
+    _,row,_=_bound_evidence()
+    db=_CertifiedDb(True,100)
+    original=db.table
+    def table(name):
+        query=original(name)
+        if name=='wow_nfl_forward_verified_grades':
+            execute=query.execute
+            def without_count():
+                result=execute()
+                result.count=None
+                return result
+            query.execute=without_count
+        return query
+    db.table=table
     assert not _forward_certification_proven(db,row)

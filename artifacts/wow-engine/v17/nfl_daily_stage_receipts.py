@@ -186,27 +186,25 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         # context; it cannot lend calibration quality to a failing specialist.
         cohort = []
         seen = set()
-        page_size = 500
-        for page in range(100):
-            batch = (db.table("wow_nfl_forward_verified_grades").select("*")
-                     .eq("model_version", str(row["model_version"]))
-                     .eq("model_artifact_id", str(row["model_artifact_id"]))
-                     .order("official_event_id").range(page * page_size, (page + 1) * page_size - 1)
-                     .execute().data)
-            if not isinstance(batch, list) or len(batch) > page_size:
+        # One database snapshot, with an exact server count. A configured
+        # PostgREST row cap must produce HOLD rather than a healthy prefix.
+        result = (db.table("wow_nfl_forward_verified_grades").select("*", count="exact")
+                  .eq("model_version", str(row["model_version"]))
+                  .eq("model_artifact_id", str(row["model_artifact_id"]))
+                  .order("official_event_id").execute())
+        batch = result.data
+        if (not isinstance(batch, list) or type(result.count) is not int
+            or result.count != len(batch)):
+            return False
+        for grade in batch:
+            event_id = grade.get("official_event_id")
+            if (not event_id or event_id in seen
+                or grade.get("model_version") != row["model_version"]
+                or str(grade.get("model_artifact_id")) != str(row["model_artifact_id"])
+                or grade.get("artifact_checksum") != saved_checksum):
                 return False
-            for grade in batch:
-                event_id = grade.get("official_event_id")
-                if (not event_id or event_id in seen
-                    or grade.get("model_version") != row["model_version"]
-                    or str(grade.get("model_artifact_id")) != str(row["model_artifact_id"])):
-                    return False
-                seen.add(event_id)
-                cohort.append(ForwardGrade(**{field: grade[field] for field in ForwardGrade.__dataclass_fields__}))
-            if len(batch) < page_size:
-                break
-        else:
-            return False  # No truncation may authorize a fitted model.
+            seen.add(event_id)
+            cohort.append(ForwardGrade(**{field: grade[field] for field in ForwardGrade.__dataclass_fields__}))
         exact_health = calibration_health(cohort, min_forward=minimum)
         if exact_health.get("status") != "PASS":
             return False

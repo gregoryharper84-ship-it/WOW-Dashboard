@@ -10,7 +10,8 @@ select g.official_event_id, g.model_version,
        p.model_artifact_id, g.event_prediction_id, g.event_start_time_utc,
        g.prediction_created_at, g.selected_participant, g.calibrated_probability,
        g.calibrated_lower_bound, g.calibrated_upper_bound, g.outcome,
-       g.brier, g.log_loss, g.source_game_id, g.schema_version, g.can_execute
+       g.brier, g.log_loss, g.source_game_id, g.schema_version, g.can_execute,
+       p.model_output_snapshot->>'artifact_checksum' as artifact_checksum
 from public.wow_nfl_forward_shadow_grades as g
 join public.wow_nfl_event_predictions as p
   on p.event_prediction_id = g.event_prediction_id

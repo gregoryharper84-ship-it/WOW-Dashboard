@@ -178,7 +178,7 @@ class _Query:
         self.rows = rows
         self.filter_field = filter_field
 
-    def select(self, *_a):
+    def select(self, *_a, **_kw):
         return self
 
     def eq(self, field, value):
@@ -197,7 +197,7 @@ class _Query:
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self.rows)
+        return SimpleNamespace(data=self.rows, count=len(self.rows))
 
 
 class _CertifiedDb:
@@ -223,6 +223,7 @@ class _CertifiedDb:
                 "official_event_id": f"nfl-game-{i}",
                 "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
                 "model_artifact_id": "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+                "artifact_checksum": "sha256-fixture-model-bundle",
                 "event_prediction_id": f"prediction-{i}",
                 "event_start_time_utc": "2026-01-02T12:00:00Z",
                 "prediction_created_at": "2026-01-01T12:00:00Z",

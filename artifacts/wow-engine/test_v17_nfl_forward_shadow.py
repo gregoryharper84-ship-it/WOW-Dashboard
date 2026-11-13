@@ -493,7 +493,7 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
         def __init__(self, rows):
             self.rows = list(rows)
 
-        def select(self, *_a):
+        def select(self, *_a, **_kw):
             return self
 
         def eq(self, *_a):
@@ -510,7 +510,7 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
             return self
 
         def execute(self):
-            return SimpleNamespace(data=self.rows)
+            return SimpleNamespace(data=self.rows, count=len(self.rows))
 
     class Db:
         def __init__(self, verified, health_version="NFL_FORWARD_CALIBRATION_HEALTH_V2"):
@@ -537,7 +537,7 @@ def test_p0_admission_counts_verified_not_immutable_unreconciled_history():
                 outcomes = [{"game_id": p.official_event_id, "home_score": 24 if i % 10 < 7 else 17,
                              "away_score": 17 if i % 10 < 7 else 24, "home_win": i % 10 < 7, "tie": False}
                             for i, p in enumerate(predictions)]
-                return Query([{**asdict(g), "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test"}
+                return Query([{**asdict(g), "model_artifact_id": "fitted-test", "model_version": "fitted-nfl-test", "artifact_checksum": "test-checksum"}
                               for g in grade_forward_predictions(predictions, outcomes)])
             raise AssertionError(name)
 
