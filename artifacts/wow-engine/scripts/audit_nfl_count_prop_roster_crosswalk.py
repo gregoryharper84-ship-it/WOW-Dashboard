@@ -187,14 +187,15 @@ def inspect_roster_id_candidates(
     out = []
     for pfr in targets:
         rows = selected.loc[selected["pfr_id"].eq(pfr)]
-        # A valid GSIS row cannot mask an invalid row for the same PFR ID.
-        # Keep source inconsistency as a typed HOLD before constructing candidates.
-        if not valid_gsis.loc[rows.index].all():
+        # Validate the selected target values directly. Index-label lookups
+        # can also select unrelated rows if the source has duplicate indices.
+        target_gsis_valid = (
+            rows["gsis_id"].astype("string")
+            .str.fullmatch(r"00-[0-9]{7}").fillna(False)
+        )
+        if not target_gsis_valid.all():
             raise ValueError("NFL_PROP_ROSTER_SCHEMA_INVALID:target_gsis")
-        valid = rows.loc[
-            rows["gsis_id"].notna()
-            & rows["gsis_id"].astype("string").str.fullmatch(r"00-[0-9]{7}").fillna(False)
-        ]
+        valid = rows
         ids = sorted(set(valid["gsis_id"].astype(str)))
         if len(ids) > 1 or any(source_pfr_by_gsis.get(gsis, 0) > 1 for gsis in ids):
             raise ValueError("NFL_PROP_ROSTER_CROSSWALK_CONFLICT:" + pfr)
