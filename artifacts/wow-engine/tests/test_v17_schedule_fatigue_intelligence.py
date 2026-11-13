@@ -276,3 +276,74 @@ def test_duplicate_source_mirrors_deduplicate_counts_and_hash_independent_of_ord
     assert first["per_participant"]["A"]["games_in_4_days_including_target"] == 2
     assert first["evidence_sha256"] == second["evidence_sha256"]
     assert first["evidence_sha256"] != run([p])["evidence_sha256"]
+
+
+@pytest.mark.parametrize("bad", [None, [], {}, "", "  ", True, 2.2])
+def test_target_participant_identity_rejects_null_or_non_scalar(bad):
+    tar = target()
+    tar["participants"] = [bad]
+    with pytest.raises(ScheduleContextError) as e:
+        build_schedule_matchup_context(target=tar, history=(), history_completeness={})
+    assert e.value.code == "SCHEDULE_EVIDENCE_INVALID"
+
+
+def test_history_participant_identity_rejects_containers():
+    p = prior(-2, "identity-unknown")
+    p["participants"] = [["A"]]
+    with pytest.raises(ScheduleContextError) as e:
+        run([p])
+    assert e.value.code == "SCHEDULE_EVIDENCE_INVALID"
+
+
+def test_overlapping_prior_events_for_one_participant_rejected():
+    older = prior(-3, "long-game", loads={"A": {"value": 50, "unit": "minutes"}})
+    older["event_end_utc"] = t(-1, 4)
+    older["source_available_at"] = t(-1, 5)
+    newer = prior(-1, "short-game", loads={"A": {"value": 32, "unit": "minutes"}})
+    with pytest.raises(ScheduleContextError) as e:
+        run([older, newer])
+    assert e.value.code == "SCHEDULE_EVIDENCE_INVALID"
+
+
+def test_invalid_target_and_historical_roles_fail_typed():
+    tar = target()
+    tar["roles"]["A"] = []
+    with pytest.raises(ScheduleContextError) as e:
+        build_schedule_matchup_context(target=tar, history=(), history_completeness={})
+    assert e.value.code == "SCHEDULE_EVIDENCE_INVALID"
+    p = prior(-1, "unknown-role", loads={"A": {"value": 33, "unit": "minutes"}})
+    p["roles"] = {"A": "unknown"}
+    with pytest.raises(ScheduleContextError) as e:
+        run([p])
+    assert e.value.code == "SCHEDULE_EVIDENCE_INVALID"
+
+
+def test_conflicting_nonfinal_identity_same_event_id_rejected():
+    p = prior(-3, "mixed-status", loads={"A": {"value": 35, "unit": "minutes"}})
+    c = dict(p)
+    c["status"] = "CANCELLED"
+    c["participants"] = ["B"]
+    with pytest.raises(ScheduleContextError) as e:
+        run([p, c])
+    assert e.value.code == "SCHEDULE_IDENTITY_CONFLICT"
+
+
+def test_missing_non_latest_week_venue_holds_complete_context():
+    a_old = prior(-3, "a-old", loads={"A": {"value": 24, "unit": "minutes"}})
+    a_old["venue"] = None
+    a_new = prior(-1, "a-new", loads={"A": {"value": 34, "unit": "minutes"}})
+    b = prior(-4, "b-old", teams=("B",), role="home",
+              loads={"B": {"value": 28, "unit": "minutes"}})
+    result = run([a_old, a_new, b])
+    assert result["per_participant"]["A"]["last_trip_miles"] is not None
+    assert result["per_participant"]["A"]["travel_miles_last_7d"] is None
+    assert result["status"] == "SCHEDULE_CONTEXT_INCOMPLETE"
+
+
+def test_excluded_cancelled_receipt_changes_evidence_hash():
+    c = prior(-2, "cancelled")
+    c["status"] = "CANCELLED"
+    out = run([c])
+    changed = dict(c)
+    changed["source_payload_sha256"] = "d" * 64
+    assert out["evidence_sha256"] != run([changed])["evidence_sha256"]
