@@ -1,12 +1,9 @@
 """Research-only game-script contract: 1X2 mass, missingness and no promotions."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from gate_engine.moneyline.game_state_sim import (
-    SimulationResult,
     can_execute,
     run_game_state_simulation,
 )
