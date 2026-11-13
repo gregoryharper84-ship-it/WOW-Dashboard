@@ -214,7 +214,7 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "elif args[:2]==['api','graphql']:\n"
         "  number=int(args[args.index('-F')+1].split('=')[1])\n"
         "  issue=next(i for i in json.loads(issues.read_text()) if i['number']==number)\n"
-        "  issue=dict(issue,author={'login':issue['author']['login'].replace('app/github-actions','github-actions'),'__typename':os.environ.get('FAKE_GQL_TYPE','Bot')})\n"
+        "  issue=dict(issue,author={'login':issue['author']['login'].replace('app/github-actions','github-actions').replace('github-actions[bot]','github-actions'),'__typename':os.environ.get('FAKE_GQL_TYPE','Bot')})\n"
         "  print(json.dumps({'data':{'repository':{'issue':issue}}}))\n"
         "elif args[0]=='api' and any('issues/2547/comments' in a for a in args):\n"
         "  if os.environ.get('FAKE_FAIL_COMMENTS') == '1': print('comments unavailable',file=sys.stderr);sys.exit(49)\n"
@@ -255,7 +255,7 @@ def test_forged_marker_from_untrusted_creator_cannot_suppress_sirt_intake(tmp_pa
     forged = _matching_issue(77, "untrusted-issue-writer")
     run, calls, issues, _ = _run_writer(tmp_path, initial_issues=[forged])
     assert run.returncode == 0, run.stderr
-    assert calls == ["api:comments", "issue:create", "pr:comment"]
+    assert calls == ["issue:create", "pr:comment"]
     assert len(issues) == 2
     assert issues[-1]["author"]["login"] == "app/github-actions"
 
@@ -276,8 +276,8 @@ def test_two_admitted_routes_same_head_create_exactly_one_intake_and_crosslink(t
     second, second_calls, issues, _ = _run_writer(tmp_path,
                                                    source_id="labeled-pr-2")
     assert first.returncode == second.returncode == 0
-    assert first_calls == ["api:comments", "issue:create", "pr:comment"]
-    assert second_calls == ["api:comments", "issue:create", "pr:comment", "api:comments"]
+    assert first_calls == ["issue:create", "pr:comment"]
+    assert second_calls == ["issue:create", "pr:comment", "api:comments"]
     assert len(issues) == 1
 
 
@@ -309,7 +309,7 @@ def test_reuse_wrong_incident_must_create_new_matching_intake(tmp_path):
     stale = _matching_issue(75, "app/github-actions", incident="2020")
     proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[stale])
     assert proc.returncode == 0, proc.stderr
-    assert calls == ["api:comments", "issue:create", "pr:comment"]
+    assert calls == ["issue:create", "pr:comment"]
     assert len(issues) == 2
     assert "- Engineering incident: #2076" in issues[-1]["body"]
 
