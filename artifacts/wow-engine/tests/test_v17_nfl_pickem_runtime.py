@@ -61,6 +61,57 @@ def test_pregame_detection_does_not_treat_numeric_zero_as_missing_score():
     assert runtime._pregame_schedule_row({"home_score": "0", "away_score": "0"}) is False
 
 
+class _Db:
+    pass
+
+
+def _inventory(monkeypatch, rows, fetched_at):
+    snapshot = {"snapshot_id": "snap", "fetched_at": fetched_at}
+    monkeypatch.setattr(runtime, "_load_latest_schedule_snapshot", lambda db: (snapshot, rows))
+    return runtime._canonical_inventory(
+        _Db(), requested_dates=("2026-10-04",)
+    )
+
+
+def _row(**overrides):
+    row = {
+        "game_id": "2026_04_NE_BUF", "gameday": "2026-10-04", "gametime": "13:00",
+        "away_team": "NE", "home_team": "BUF", "season": "2026", "week": "4",
+        "game_type": "REG", "home_score": None, "away_score": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_inventory_admits_future_kickoff_with_null_scores(monkeypatch):
+    _, events, blocked = _inventory(monkeypatch, [_row()], "2026-10-04T12:00:00+00:00")
+    assert [e["official_event_id"] for e in events] == ["2026_04_NE_BUF"]
+    assert blocked == []
+
+
+def test_inventory_blocks_started_game_with_null_scores(monkeypatch):
+    _, events, blocked = _inventory(monkeypatch, [_row()], "2026-10-04T18:00:00+00:00")
+    assert events == []
+    assert blocked[0]["code"] == "PICKEM_EVENT_ALREADY_STARTED_OR_COMPLETED"
+
+
+def test_inventory_blocks_started_zero_zero_and_missing_as_of(monkeypatch):
+    _, events, blocked = _inventory(
+        monkeypatch, [_row(home_score=0, away_score=0)], "2026-10-04T12:00:00+00:00"
+    )
+    assert events == [] and blocked[0]["code"] == "PICKEM_EVENT_ALREADY_STARTED_OR_COMPLETED"
+    for bad in ("", "not-a-date", "2026-10-04T12:00:00"):
+        _, events, blocked = _inventory(monkeypatch, [_row()], bad)
+        assert events == [] and blocked[0]["code"] == "MODEL_INPUTS_INSUFFICIENT"
+
+
+def test_inventory_blocks_invalid_kickoff(monkeypatch):
+    _, events, blocked = _inventory(
+        monkeypatch, [_row(gametime="bogus")], "2026-10-04T12:00:00+00:00"
+    )
+    assert events == [] and blocked[0]["code"] == "MODEL_INPUTS_INSUFFICIENT"
+
+
 def _governed_result(req, *, hold: bool = False):
     event_id = str(req.official_event_id)
     index = next(i for i, row in enumerate(_schedule_rows(), 1) if row["game_id"] == event_id)
