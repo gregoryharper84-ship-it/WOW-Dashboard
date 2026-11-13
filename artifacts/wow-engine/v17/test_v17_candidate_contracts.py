@@ -1,4 +1,8 @@
+import json
 import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -302,6 +306,71 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
     assert "can_execute: false" in source
     assert "TARGET + upstreamPath" in source
     assert "req.headers" not in source.split('headers.set("user-agent"')[1]
+
+
+def test_wow_prop_action_stays_on_render_and_llp_gateways_do_not_forward_it():
+    """Keep prop scoring on Render and verify both LLP gateway boundaries."""
+    wow = yaml.safe_load(WOW_SCHEMA.read_text(encoding="utf-8"))
+    edge = LLP_GATEWAY.read_text(encoding="utf-8")
+    vercel_dir = HERE / "vercel/llp-action-gateway"
+    vercel_config = json.loads((vercel_dir / "vercel.json").read_text(encoding="utf-8"))
+    vercel_sources = [rewrite["source"] for rewrite in vercel_config["rewrites"]]
+
+    assert wow["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
+    prop = wow["paths"]["/score-pick-request"]["post"]
+    assert prop["operationId"] == "scoreWowPickRequest"
+    assert prop["security"] == [{"actionBearer": []}]
+
+    # Evaluate the actual Supabase route regexes; a broad pattern must fail this.
+    route_block = edge.split("const ROUTES: Route[] = [", 1)[1].split("];", 1)[0]
+    route_entries = []
+    for line in route_block.splitlines():
+        method_match = re.search(r'method:\s*"(GET|POST)"', line)
+        if method_match and "pattern: /" in line:
+            pattern = line.split("pattern: /", 1)[1].rsplit("/, auth:", 1)[0]
+            route_entries.append((method_match.group(1), pattern.replace("\\/", "/")))
+    assert route_entries
+    assert len(route_entries) == route_block.count("pattern: /")
+    for prop_path in ("/score-pick-request", "/score-prop"):
+        assert not any(
+            method == "POST" and re.fullmatch(pattern, prop_path)
+            for method, pattern in route_entries
+        )
+
+    # Vercel's public rewrites are a separate boundary from its handler map.
+    def vercel_source_matches(source, request_path):
+        pieces = []
+        for segment in source.split("/"):
+            if segment.startswith(":"):
+                pieces.append(".*" if segment.endswith("*") else "[^/]+")
+            else:
+                pieces.append(re.escape(segment))
+        return re.fullmatch("/".join(pieces), request_path) is not None
+
+    for public_path in (
+        "/functions/v1/wow-llp-action-gateway/score-pick-request",
+        "/functions/v1/wow-llp-action-gateway/score-prop",
+    ):
+        assert not any(vercel_source_matches(source, public_path) for source in vercel_sources)
+
+    # Exercise the Vercel handler directly with authenticated requests. Its
+    # handler-only 404 fingerprint must be returned without any upstream fetch.
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for the Vercel gateway handler contract test"
+    subprocess.run(
+        [node, "--test", str(vercel_dir / "gateway.test.mjs")],
+        cwd=vercel_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert '"x-wow-gateway": "supabase-edge"' in edge
+    assert '"x-wow-request-id": requestId' in edge
+    assert 'return jsonResponse(404, "LLP_GATEWAY_PATH_NOT_ALLOWED", requestId);' in edge
+    assert edge.index("if (pathMatches.length === 0)") < edge.index('gatewayLog("UPSTREAM_DISPATCH"')
+
+
 
 
 def test_llp_gateway_supabase_platform_jwt_check_is_disabled_for_wow_bearer():
