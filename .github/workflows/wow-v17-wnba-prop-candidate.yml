@@ -205,6 +205,13 @@ jobs:
           with urllib.request.urlopen(request, timeout=120) as response:
               payload = json.load(response)
 
+          # Typed-failure observability (#2660): surface the non-secret status
+          # fields before the unchanged fail-closed assertions below.
+          print("registration_status=%r reason_code=%r registered_n=%r" % (
+              payload.get("status"),
+              payload.get("reason_code") or payload.get("failure_code"),
+              payload.get("registered_n"),
+          ))
           assert payload.get("status") == "CANDIDATE_REGISTRATION_COMPLETE"
           assert payload.get("registered_n") == 4
           assert payload.get("automatic_certification") is False
