@@ -8,6 +8,10 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| \`SCHEDULE_EVIDENCE_INVALID\` | V17 team-event schedule research | Missing/invalid identity, event chronology, role, source URI/hash or venue/time zone. Recovery: repair time-correct primary-source evidence, never synthesize rest/travel or fit. | No |
+| \`SCHEDULE_EVIDENCE_AFTER_FREEZE\` | V17 team-event schedule research | Source record first available after event pregame freeze. Recovery: use an earlier source observation or hold; never backfill post-lock evidence. | No |
+| \`SCHEDULE_IDENTITY_CONFLICT\` | V17 team-event schedule research | Same official event ID maps to inconsistent participants, roles, venue or workload. Recovery: reconcile canonical event identity and source payload. | No |
+| \`SCHEDULE_CONTEXT_INCOMPLETE\` | V17 team-event schedule research | No attested complete schedule, previous event/rest record, venue travel or compatible measured workload. Recovery: acquire official histories and observed workloads; context remains research-only. | No |
 | `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
 | `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
 | `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
