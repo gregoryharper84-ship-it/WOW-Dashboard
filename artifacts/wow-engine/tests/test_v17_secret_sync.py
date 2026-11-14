@@ -450,3 +450,25 @@ def test_summary_never_contains_secret_values(manifest, tmp_path):
     assert "render-control" not in encoded
     assert summary.as_dict()["secret_values_exposed"] is False
     assert summary.as_dict()["can_execute"] is False
+
+
+
+def test_nonmanual_secret_sync_is_read_only_and_manual_mode_stays_explicit():
+    """A scheduled/push audit must never mutate Render/GitHub under auto-deploy."""
+    workflow = (REPO_ROOT / ".github/workflows/wow-v17-secret-sync.yml").read_text(
+        encoding="utf-8"
+    )
+    reconcile = workflow.split("      - name: Reconcile explicitly owned secrets", 1)[1].split(
+        "      - name: Detect durable secret-change request", 1
+    )[0]
+    assert 'if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then' in reconcile
+    assert 'dry_run="true"' in reconcile
+    assert 'if [ "$dry_run" = "true" ]; then' in reconcile
+    assert 'args+=(--dry-run)' in reconcile
+    assert 'mode="${{ inputs.mode }}"' in reconcile
+    assert 'dry_run="${{ inputs.dry_run }}"' in reconcile
+    # Actual mutation still uses the existing Render autoDeploy fail-closed preflight.
+    code = (REPO_ROOT / "artifacts/wow-engine/v17/secret_sync.py").read_text(
+        encoding="utf-8"
+    )
+    assert "render.assert_auto_deploy_disabled()" in code
