@@ -181,7 +181,7 @@ def _matching_issue(number, author, incident="2076", generated=True, edited_at=N
 
 
 def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
-                source_id="dispatch-1"):
+                source_id="dispatch-1", current_pr=None, source_event="workflow_dispatch"):
     """Execute the writer against a persistent fake issue and PR-comment API."""
     issues_file = tmp_path / "issues.json"
     if initial_issues is not None:
@@ -201,7 +201,9 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "comments=Path(os.environ['FAKE_COMMENTS_FILE'])\n"
         "calls=Path(os.environ['FAKE_CALLS_FILE'])\n"
         "args=sys.argv[1:]\n"
-        "if args[:2]==['issue','list']:\n"
+        "if args[:2]==['api','repos/'+os.environ['GITHUB_REPOSITORY']+'/pulls/2547']:\n"
+        "  print(os.environ['FAKE_CURRENT_PR_JSON'])\n"
+        "elif args[:2]==['issue','list']:\n"
         "  print(issues.read_text())\n"
         "elif args[:2]==['issue','create']:\n"
         "  data=json.loads(issues.read_text())\n"
@@ -240,8 +242,10 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
            "GITHUB_STEP_SUMMARY": str(summary), "GH_TOKEN": "test-only",
            "RUNNER_TEMP": str(tmp_path), "PR": "2547", "SHA": SHA,
            "INCIDENT": "2076", "SOURCE_ID": source_id,
+           "SOURCE_EVENT": source_event,
            "SOURCE_ATTEMPT": "1", "SOURCE_CONCLUSION": "INTAKE_ONLY_NOT_A_REVIEW_VERDICT",
            "FAKE_ISSUES_FILE": str(issues_file),
+           "FAKE_CURRENT_PR_JSON": json.dumps(current_pr if current_pr is not None else _fake_pr()),
            "FAKE_COMMENTS_FILE": str(comments_file),
            "FAKE_CALLS_FILE": str(calls_file)}
     process = subprocess.run(["bash", "-e", "-c", _writer()],
@@ -399,3 +403,40 @@ def test_claimed_actions_login_with_nonbot_graphql_type_cannot_suppress_intake(t
     assert proc.returncode == 0, proc.stderr
     assert len(issues) == 2
     assert "issue:create" in calls
+
+
+@pytest.mark.parametrize("changed", [
+    {"head": {"sha": OLD_SHA, "repo": {"full_name": REPO}}},
+    {"number": 2548},
+    {"state": "closed"},
+    {"draft": True},
+    {"base": {"ref": "main", "repo": {"full_name": "elsewhere/repo"}}},
+    {"head": {"sha": SHA, "repo": {"full_name": "untrusted/fork"}}},
+    {"body": "Incident: #2020"},
+    {"body": "Incident: #2076\nIncident: #2020"},
+])
+def test_writer_revalidates_cached_target_before_any_issue_or_link_mutation(tmp_path, changed):
+    # Drift after resolution must not create or reuse an intake for stale identity.
+    proc, calls, issues, _ = _run_writer(tmp_path, current_pr=_fake_pr(**changed))
+    assert proc.returncode != 0
+    assert "SIRT_TARGET_CHANGED_BEFORE_WRITE" in proc.stdout
+    assert calls == []
+    assert issues == []
+
+
+def test_existing_intake_comment_api_outage_preserves_issue_without_mutation(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL_COMMENTS", "1")
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=[_matching_issue(75, "app/github-actions")])
+    assert proc.returncode != 0
+    assert calls == []
+    assert len(issues) == 1
+
+
+def test_writer_preserves_worker_origin_backtick_incident(tmp_path):
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, source_event="workflow_run",
+        current_pr=_fake_pr(body="Pre-PR agent gates: PASS\nIncident: `#2076`"))
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 1

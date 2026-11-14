@@ -141,12 +141,32 @@ jobs:
           PR: ${{ steps.resolve.outputs.pr }}
           SHA: ${{ steps.resolve.outputs.sha }}
           INCIDENT: ${{ steps.resolve.outputs.incident }}
+          SOURCE_EVENT: ${{ github.event_name }}
           SOURCE_ID: ${{ github.event.workflow_run.id || github.run_id }}
           SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt || github.run_attempt }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || 'INTAKE_ONLY_NOT_A_REVIEW_VERDICT' }}
         shell: bash
         run: |
           set -euo pipefail
+          # Re-read at the mutation boundary: the PR may advance after resolve.
+          # Treat remote content as data; no PR code is checked out or executed.
+          current_pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$SHA" --argjson pr "$PR" '
+            .number == $pr and .state == "open" and .draft == false and
+            .head.sha == $sha and .head.repo.full_name == $repo and
+            .base.repo.full_name == $repo and .base.ref == "main"
+          ' <<<"$current_pr" >/dev/null || {
+            echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
+          }
+          current_body=$(jq -r '.body // ""' <<<"$current_pr")
+          if [ "$SOURCE_EVENT" = "workflow_run" ]; then
+            current_incident=$(sed -nE 's/^Incident: .?#?([0-9]+).?$/\1/p' <<<"$current_body")
+          else
+            current_incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\1/p' <<<"$current_body")
+          fi
+          [ "$current_incident" = "$INCIDENT" ] || {
+            echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
+          }
           short="${SHA:0:12}"
           marker="WOW_SIRT_INTAKE_PR_${PR}_HEAD_${SHA}"
           # Public bodies and creator identity alone cannot authenticate a marker.
