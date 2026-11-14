@@ -137,7 +137,7 @@ def test_post_deploy_native_trigger_and_all_lane_admission_require_direct_readba
     assert "RENDER_API_KEY" in job["env"]
     step = next(s for s in job["steps"] if s.get("id") == "readback")
     assert "lean_production_readback.py" in step["run"]
-    assert step["continue-on-error"] == "true"
+    assert "continue-on-error" not in step
     assert step["if"] == "steps.source_identity.outcome == 'success'"
     assert job["outputs"]["readback_outcome"] == "${{ steps.readback.outcome }}"
     for name in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
@@ -272,28 +272,20 @@ def test_pending_flag_cannot_hide_missing_lanes_once_deploy_is_live(tmp_path):
     assert _run_receipt(tmp_path, DEPLOY_PENDING="")[0] == 1
 
 
-def test_post_deploy_main_scoped_jobs_preserve_holds_without_failing_checks_pass():
-    """Observer check must not become Render's own dependency or a release gate."""
+def test_post_deploy_required_observations_fail_closed_at_job_level():
+    """A failed SHA, identity, matrix, or final readback must fail its job."""
     jobs = _load()["jobs"]
     for jobname in ("deployment-readback", "acceptance-receipts"):
         for step in jobs[jobname]["steps"]:
-            assert step.get("continue-on-error") == "true", (
-                f"{jobname}: {step.get('name')!r} could fail the main commit check"
+            assert "continue-on-error" not in step, (
+                f"{jobname}: {step.get('name')!r} masks a required observation"
             )
-    readback = jobs["deployment-readback"]
-    steps = readback["steps"]
-    checkout = next(step for step in steps if step.get("id") == "source_checkout")
-    identity = next(step for step in steps if step.get("id") == "source_identity")
-    assert identity["if"] == "steps.source_checkout.outcome == 'success'"
-    assert checkout["continue-on-error"] == "true"
-    assert "POST_DEPLOY_READBACK_HOLD" in WORKFLOW.read_text(encoding="utf-8")
-    assert "production_verified=false" in WORKFLOW.read_text(encoding="utf-8")
-    assert 'WOW_CAN_EXECUTE: "false"' in WORKFLOW.read_text(encoding="utf-8")
     for lane in ("spread-forward", "spread-certification", "priority-props", "golden-full-slate"):
         expr = jobs[lane]["if"]
+        assert "needs.deployment-readback.result == 'success'" in expr
         assert "needs.deployment-readback.outputs.source_identity_outcome == 'success'" in expr
         assert "needs.deployment-readback.outputs.readback_outcome == 'success'" in expr
-        assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in expr
+    assert 'WOW_CAN_EXECUTE: "false"' in WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_stale_sha_hold_cannot_run_lanes_or_advance_acceptance_when_job_is_green(tmp_path):
@@ -315,7 +307,7 @@ def test_stale_sha_hold_cannot_run_lanes_or_advance_acceptance_when_job_is_green
     receipt = _load()["jobs"]["acceptance-receipts"]
     matrix = next(step for step in receipt["steps"] if step.get("id") == "receipt_matrix")
     checkout = next(step for step in receipt["steps"] if step.get("id") == "receipt_checkout")
-    assert matrix["continue-on-error"] == "true"
+    assert "continue-on-error" not in matrix
     assert "steps.receipt_matrix.outcome == 'success'" in checkout["if"]
     assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in checkout["if"]
     final_readback = next(step for step in receipt["steps"] if step.get("id") == "final-readback")
@@ -415,7 +407,7 @@ def test_final_readback_pending_cannot_claim_acceptance(tmp_path, final_pending,
     summary_step = next(s for s in job["steps"]
                         if s.get("name") == "Preserve nonauthoritative post-deploy observer status")
     assert summary_step["env"]["FINAL_DEPLOY_PENDING"] == "$" + "{{ steps.final-readback.outputs.deploy_pending }}"
-    assert summary_step["continue-on-error"] == "true"
+    assert "continue-on-error" not in summary_step
     summary = tmp_path / "status.txt"
     env = {
         **os.environ,
