@@ -226,3 +226,32 @@ def test_missing_entire_cohort_must_remain_visible_and_unscored():
     assert cohort["cohort"] == "ML_TOP10"
     assert cohort["manifest_missing_selection_ids"] == ["locked-pick-id"]
     assert cohort["headline_accuracy"] is None
+
+
+def test_mixed_market_same_cohort_cannot_publish_hit_rate():
+    ml = pick(cohort="COMBINED")
+    spread = pick(market="SPREAD", side="HOME", line=-7.5, cohort="COMBINED")
+    report = grade([ml, spread], [final()], **verified_manifest(ml, spread))
+    assert all(r["grade_status"] == "HELD" for r in report["rows"])
+    assert all("MIXED_MARKET_COHORT_INVALID" in r["blockers"]
+               for r in report["rows"])
+    assert report["by_cohort"][0]["headline_accuracy"] is None
+
+
+def test_official_prematch_void_can_settle_before_scheduled_start():
+    row = pick("TENNIS", "andreeva-muchova")
+    outcome = final("TENNIS", "andreeva-muchova",
+                    final_status="VOID_PREMATCH_WITHDRAWAL",
+                    void_reason="PREMATCH_WITHDRAWAL",
+                    settled_at_utc="2026-11-13T18:30:00Z")
+    report = grade([row], [outcome], **verified_manifest(row))
+    assert report["rows"][0]["grade_status"] == "VOID"
+    outcome["settled_at_utc"] = "2026-11-13T16:30:00Z"
+    assert grade([row], [outcome])["rows"][0]["grade_status"] == "HELD"
+
+
+def test_invalid_manifest_payload_does_not_crash_or_award_accuracy():
+    row = pick()
+    report = grade([row], [final()], cohort_manifest={"ML_TOP10": [["bad-nested-id"]]},
+                   cohort_manifest_verified=True, cohort_manifest_receipt_id="manifest")
+    assert report["by_cohort"][0]["headline_accuracy"] is None
