@@ -191,7 +191,7 @@ def _matching_issue(number, author, incident="2076", generated=True, edited_at=N
 def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
                 source_id="dispatch-1", current_pr=None, source_event="workflow_dispatch",
                 drift_after=None, drift_pr=None, indexed_issues=None,
-                inventory_response=None):
+                inventory_response=None, inventory_fail_page=None):
     """Execute the writer against a persistent fake issue and PR-comment API."""
     issues_file = tmp_path / "issues.json"
     if initial_issues is not None:
@@ -234,6 +234,8 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  query=parse_qs(urlsplit(args[-1]).query)\n"
         "  assert query.get('creator')==['github-actions[bot]']\n"
         "  page=int(query.get('page',['1'])[0]);size=int(query['per_page'][0])\n"
+        "  Path(os.environ['RUNNER_TEMP'],'inventory-pages.log').open('a').write(str(page)+'\\n')\n"
+        "  if str(page)==os.environ.get('FAKE_INVENTORY_FAIL_PAGE'): sys.exit(49)\n"
         "  data=[i for i in json.loads(issues.read_text()) if i['author']['login'] in ('app/github-actions','github-actions[bot]')]\n"
         "  data=[dict({k:v for k,v in i.items() if k!='author'},user={'login':'github-actions[bot]','type':'Bot'}) for i in data]\n"
         "  print(json.dumps(data[(page-1)*size:page*size]))\n"
@@ -281,6 +283,7 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
            "FAKE_ISSUES_FILE": str(issues_file),
            "FAKE_INDEXED_ISSUES_FILE": str(indexed_file),
            "FAKE_INVENTORY_RESPONSE": inventory_response or "",
+           "FAKE_INVENTORY_FAIL_PAGE": str(inventory_fail_page or ""),
            "FAKE_CURRENT_PR_FILE": str(current_file),
            "FAKE_DRIFT_AFTER": drift_after or "",
            "FAKE_DRIFT_PR_JSON": json.dumps(drift_pr),
@@ -578,14 +581,28 @@ def test_delayed_search_index_cannot_duplicate_directly_stored_intake(tmp_path):
     assert len(issues) == 1
 
 
-def test_incomplete_direct_inventory_fails_closed_without_mutation(tmp_path):
+@pytest.mark.parametrize("matching_first", [False, True])
+def test_large_direct_inventory_is_read_to_completion_before_reuse(tmp_path, matching_first):
+    prior = [_matching_issue(i + 1, "app/github-actions", generated=False) for i in range(1000)]
+    existing = [_matching_issue(1175, "app/github-actions")]
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=existing + prior if matching_first else prior + existing)
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments", "pr:comment"]
+    assert len(issues) == 1001
+    assert (tmp_path / "inventory-pages.log").read_text().splitlines()[-1] == "11"
+
+
+def test_unreadable_later_page_holds_even_with_authentic_match_on_first_page(tmp_path):
     prior = [_matching_issue(i + 1, "app/github-actions", generated=False) for i in range(1000)]
     proc, calls, issues, _ = _run_writer(
-        tmp_path, initial_issues=prior + [_matching_issue(1175, "app/github-actions")])
+        tmp_path, initial_issues=[_matching_issue(1175, "app/github-actions")] + prior,
+        inventory_fail_page=11)
     assert proc.returncode != 0
-    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY_LIMIT" in proc.stdout
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY" in proc.stdout
     assert calls == []
     assert len(issues) == 1001
+    assert (tmp_path / "inventory-pages.log").read_text().splitlines()[-1] == "11"
 
 
 @pytest.mark.parametrize("kwargs", [

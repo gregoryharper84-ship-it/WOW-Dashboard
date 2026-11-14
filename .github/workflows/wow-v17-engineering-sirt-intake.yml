@@ -204,9 +204,11 @@ jobs:
           # a later trusted edit cannot prove who originally inserted a marker.
           # Search indexing can lag a successful issue create. Read the direct
           # creator-filtered issue collection before concluding an intake is absent.
+          # The job timeout bounds this read-only phase. Never mutate before
+          # completion, including when a later page fails or the job times out.
           inventory='[]'
-          inventory_complete=false
-          for page in $(seq 1 10); do
+          page=1
+          while :; do
             if ! batch=$(gh api "repos/$GITHUB_REPOSITORY/issues?creator=github-actions%5Bbot%5D&state=all&per_page=100&page=$page"); then
               echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY"; exit 1
             fi
@@ -227,13 +229,10 @@ jobs:
             inventory=$(printf '%s\n%s\n' "$inventory" "$batch" | jq -cs \
               '.[0] + (.[1] | map(. + {author: {login: .user.login}}))')
             if [ "$(jq 'length' <<<"$batch")" -lt 100 ]; then
-              inventory_complete=true
               break
             fi
+            page=$((page + 1))
           done
-          [ "$inventory_complete" = "true" ] || {
-            echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY_LIMIT"; exit 1
-          }
           candidates=$(jq -r \
               --arg m "$marker" --arg owner "$trusted_owner" \
               --arg incident "$INCIDENT" --arg pr "$PR" --arg sha "$SHA" '
