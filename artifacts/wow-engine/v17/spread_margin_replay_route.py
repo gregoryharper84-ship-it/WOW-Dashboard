@@ -1,6 +1,9 @@
 """OIDC-protected, research-only spread and run-line challenger surfaces."""
 from __future__ import annotations
 
+import hashlib
+import logging
+from time import monotonic
 from typing import Any, Literal
 
 from fastapi import FastAPI
@@ -192,15 +195,61 @@ def execute_spread_market_evidence_collection(db: Any, request: SpreadMarketEvid
     return {**result, "provider_collection_status": result.get("status"), "status": "EVIDENCE_CAPTURED" if rows_written > 0 else "EVIDENCE_EMPTY", "code": "SPREAD_MARKET_EVIDENCE_CAPTURED" if rows_written > 0 else "SPREAD_MARKET_EVIDENCE_EMPTY", **_evidence_governance_fields(rows_written=rows_written)}
 
 
+# Class-B diagnostic only. Do not log exception messages/tracebacks: the
+# underlying DB transport can embed endpoint URLs or credentials in its errors.
+# Only fixed, allowlisted code-stage names may leave the scorer boundary.
+_NCAAF_FORWARD_STAGE_BY_FUNCTION = {
+    "_execute_read_with_retry": "PERSISTED_READ",
+    "_load_ncaaf_persisted_feature_rows": "PERSISTED_READ",
+    "_load_ncaaf_persisted_game_rows": "PERSISTED_READ",
+    "_ncaaf_forward_source_fingerprint": "PERSISTED_FINGERPRINT",
+    "adapt_ncaaf_persisted_rows": "ROW_ADAPTATION",
+    "_assert_ncaaf_persisted_feature_freshness": "FEATURE_FRESHNESS",
+    "_cached_forward_context": "CONTEXT_BUILD",
+    "fit_margin_distribution_artifact": "ARTIFACT_FIT",
+    "build_forward_matchup_features": "MATCHUP_FEATURES",
+    "build_team_state": "MATCHUP_FEATURES",
+    "paired_matchup_features": "MATCHUP_FEATURES",
+    "score_home_spread": "COVER_DISTRIBUTION",
+}
+
+
+def _ncaaf_forward_error_stage(exc: Exception) -> str:
+    frames: list[str] = []
+    tb = exc.__traceback__
+    while tb is not None:
+        frames.append(tb.tb_frame.f_code.co_name)
+        tb = tb.tb_next
+    # Choose the innermost known stage, not the generic forward entrypoint.
+    for function in reversed(frames):
+        stage = _NCAAF_FORWARD_STAGE_BY_FUNCTION.get(function)
+        if stage is not None:
+            return stage
+    return "UNCLASSIFIED"
+
+
 def _execute_forward(sport: str, event_id: str, fn: Any) -> dict[str, Any]:
     from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
+    started = monotonic()
     try:
         result = fn()
     except SpreadChallengerUnavailable as exc:
         return {"status": "BLOCKED", "code": exc.code, "sport": sport, "event_id": event_id, "detail": str(exc), **_governance_fields()}
     except Exception as exc:  # noqa: BLE001
-        return {"status": "BLOCKED", "code": f"{sport}_SPREAD_FORWARD_SHADOW_RUNTIME_FAILED", "sport": sport, "event_id": event_id, "error_type": type(exc).__name__, **_governance_fields()}
+        response = {"status": "BLOCKED", "code": f"{sport}_SPREAD_FORWARD_SHADOW_RUNTIME_FAILED", "sport": sport, "event_id": event_id, "error_type": type(exc).__name__, **_governance_fields()}
+        if sport == "NCAAF":
+            stage = _ncaaf_forward_error_stage(exc)
+            elapsed_ms = max(0, round((monotonic() - started) * 1000))
+            response.update({"error_stage": stage, "elapsed_ms": elapsed_ms})
+            # Official event identity is pseudonymized in logs. The Action
+            # response retains event_id for normal exact-row reconciliation.
+            event_hash = hashlib.sha256(str(event_id).encode("utf-8")).hexdigest()[:12]
+            logging.getLogger(__name__).error(
+                "WOW_NCAAF_SPREAD_FORWARD_RUNTIME_FAILED event_hash=%s error_type=%s error_stage=%s elapsed_ms=%s",
+                event_hash, type(exc).__name__, stage, elapsed_ms,
+            )
+        return response
     return {**result, **_governance_fields()}
 
 

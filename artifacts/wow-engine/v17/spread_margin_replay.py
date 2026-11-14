@@ -361,7 +361,14 @@ def adapt_ncaaf_persisted_rows(
 
 
 def _is_read_timeout(exc: Exception) -> bool:
-    return type(exc).__name__ == "ReadTimeout"
+    if type(exc).__name__ == "ReadTimeout":
+        return True
+    # PostgREST wraps PostgreSQL statement_timeout (SQLSTATE 57014) in an
+    # APIError and HTTP 500, rather than httpx.ReadTimeout. This is the
+    # observed 2026-10-27 NCAAF forward-fingerprint failure (#1059).
+    # Restrict recovery to exactly this SQLSTATE on a read-only query;
+    # unrelated API/data/permission failures must still propagate unchanged.
+    return type(exc).__name__ == "APIError" and str(getattr(exc, "code", "")) == "57014"
 
 
 def _execute_read_with_retry(build_query: Any, *, retries: int = 0) -> Any:
