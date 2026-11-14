@@ -112,6 +112,12 @@ def audit_multimarket_retro(
         raise ValueError("RESEARCH_RETRO_RECORD_INVALID")
     final_count = Counter(_key(r) for r in finals)
     final_by_event = {_key(r): r for r in finals}
+    settlement_receipts = Counter(_text(r.get("settlement_receipt_id")) for r in finals
+                                  if _text(r.get("settlement_receipt_id")))
+    cohort_market_counts = Counter(
+        (_text(p.get("cohort")), *_key(p), _text(p.get("market_family")).upper())
+        for p in picks
+    )
     receipt_count = Counter(_text(p.get("pregame_receipt_id")) for p in picks
                             if _text(p.get("pregame_receipt_id")))
     pick_ids = Counter(_text(p.get("selection_id")) for p in picks if _text(p.get("selection_id")))
@@ -126,6 +132,8 @@ def audit_multimarket_retro(
         issues = []
         if sport not in BASIS or not event or not cohort or market not in MARKETS:
             issues.append("RESEARCH_SELECTION_IDENTITY_OR_MARKET_INVALID")
+        if cohort_market_counts[(cohort, sport, event, market)] != 1:
+            issues.append("DUPLICATE_COHORT_EVENT_MARKET")
         if (not selection_id or pick_ids[selection_id] != 1
                 or not _text(p.get("pregame_receipt_id"))
                 or receipt_count[_text(p.get("pregame_receipt_id"))] != 1
@@ -153,6 +161,9 @@ def audit_multimarket_retro(
         result = final_by_event.get((sport, event))
         if final_count[(sport, event)] != 1:
             issues.append("OFFICIAL_FINAL_MISSING_OR_DUPLICATE")
+        if (result is not None and
+                settlement_receipts[_text(result.get("settlement_receipt_id"))] > 1):
+            issues.append("DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT")
         issues.extend(_result_valid(p, result))
         grade = "HELD"
         if not issues and result is not None:
@@ -192,7 +203,8 @@ def audit_multimarket_retro(
         rows.append(row)
         groups.setdefault(cohort, []).append(row)
     summaries = []
-    for cohort, group in sorted(groups.items()):
+    for cohort in sorted(set(groups) | set(cohort_manifest or {})):
+        group = groups.get(cohort, [])
         counts = Counter(r["grade_status"] for r in group)
         provided_ids = [r["selection_id"] for r in group]
         expected_ids = (cohort_manifest or {}).get(cohort)
@@ -201,12 +213,17 @@ def audit_multimarket_retro(
                        and all(isinstance(i, str) and i for i in expected_ids)
                        and len(expected_ids) == len(set(expected_ids))
                        and Counter(provided_ids) == Counter(expected_ids))
+        missing = (list((Counter(expected_ids) - Counter(provided_ids)).elements())
+                   if isinstance(expected_ids, (list, tuple)) else [])
+        extra = (list((Counter(provided_ids) - Counter(expected_ids)).elements())
+                 if isinstance(expected_ids, (list, tuple)) else [])
         eligible = bool(manifest_ok and counts["HELD"] == 0)
         graded = counts["WIN"] + counts["LOSS"]
         summaries.append({
             "cohort": cohort, "win": counts["WIN"], "loss": counts["LOSS"],
             "push": counts["PUSH"], "void": counts["VOID"], "held": counts["HELD"],
-            "graded": graded,
+            "graded": graded, "manifest_missing_selection_ids": sorted(missing),
+            "manifest_extra_selection_ids": sorted(extra),
             "headline_accuracy": (counts["WIN"] / graded if eligible and graded else None),
             "headline_eligible": eligible,
         })
