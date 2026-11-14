@@ -185,9 +185,16 @@ jobs:
           # First match the canonical incident/head header, then authenticate the
           # current body through GitHub's edit metadata. Edited bodies fail closed:
           # a later trusted edit cannot prove who originally inserted a marker.
-          candidates=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
-            --search "$marker in:body" --limit 100 \
-            --json number,body,author | jq -r \
+          inventory=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
+            --search "$marker in:body author:app/github-actions" --limit 100 \
+            --json number,body,author)
+          # Exclude public forged authors before the server applies its limit.
+          # A saturated trusted inventory cannot establish absence; never create
+          # a duplicate merely because the genuine intake may be beyond the cap.
+          if [ "$(jq 'length' <<<"$inventory")" -ge 100 ]; then
+            echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_SEARCH_LIMIT"; exit 1
+          fi
+          candidates=$(jq -r \
               --arg m "$marker" --arg owner "$trusted_owner" \
               --arg incident "$INCIDENT" --arg pr "$PR" --arg sha "$SHA" '
               [.[] | select(
@@ -201,7 +208,7 @@ jobs:
                  (.author.login // "") == "github-actions[bot]" or
                  (.author.login // "") == "app/github-actions")
               )][].number
-            ')
+            ' <<<"$inventory")
           existing=""
           for candidate in $candidates; do
             provenance=$(gh api graphql \

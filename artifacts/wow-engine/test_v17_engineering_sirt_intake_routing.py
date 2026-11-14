@@ -212,7 +212,10 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  print(current.read_text())\n"
         "elif args[:2]==['issue','list']:\n"
         "  drift('issue_list')\n"
-        "  print(issues.read_text())\n"
+        "  search=args[args.index('--search')+1]\n"
+        "  data=[i for i in json.loads(issues.read_text()) if search.split()[0] in i.get('body','')]\n"
+        "  if 'author:app/github-actions' in search: data=[i for i in data if i['author']['login'] in ('app/github-actions','github-actions[bot]')]\n"
+        "  print(json.dumps(data[:int(args[args.index('--limit')+1])]))\n"
         "elif args[:2]==['issue','create']:\n"
         "  data=json.loads(issues.read_text())\n"
         "  ix=args.index('--body-file')\n"
@@ -522,3 +525,23 @@ def test_existing_intake_reuse_rechecks_label_after_comment_lookup(tmp_path):
     assert proc.returncode != 0
     assert calls == ["api:comments"]
     assert len(issues) == 1
+
+
+def test_untrusted_issue_matches_cannot_hide_authentic_intake_past_search_limit(tmp_path):
+    forged = [_matching_issue(i + 1, "untrusted-issue-writer") for i in range(100)]
+    existing = _matching_issue(175, "app/github-actions")
+    proc, calls, issues, summary = _run_writer(tmp_path, initial_issues=forged + [existing])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments", "pr:comment"]
+    assert len(issues) == 101
+    assert "Existing SIRT intake #175" in summary
+
+
+def test_saturated_authenticated_issue_search_holds_without_duplicate_intake(tmp_path):
+    forged = [_matching_issue(i + 1, "app/github-actions", generated=False) for i in range(100)]
+    existing = _matching_issue(175, "app/github-actions")
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=forged + [existing])
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_SEARCH_LIMIT" in proc.stdout
+    assert calls == []
+    assert len(issues) == 101
