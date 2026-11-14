@@ -2374,14 +2374,52 @@ def test_qa_workflow_run_pr_403_is_hold_without_app_check(fake_gh):
         ),
         capture_output=True, text=True,
     )
-    assert proc.returncode != 0
-    assert "QA_TARGETS_UNRESOLVED" in proc.stdout
-    assert "TARGET_PR_UNREADABLE:7:403" in proc.stdout
+    assert proc.returncode != 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "QA_TARGETS_UNRESOLVED" in combined
+    assert "TARGET_PR_UNREADABLE:7:403" in combined
+    assert "403" in combined
     assert not out.exists() or "pr_number=" not in out.read_text()
     assert _qa_target_output_enables_publish("") is False
+    assert not (fake_gh / "gh.log").exists()
     workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
     resolver = next(
         step for step in workflow["jobs"]["qa"]["steps"]
         if step["name"] == "Resolve one exact-head QA target"
     )
     assert resolver["continue-on-error"] == "${{ github.event_name == 'workflow_run' }}"
+
+
+@pytest.mark.parametrize(
+    ("workflow_path", "job_name", "target_step", "hold_step"),
+    [
+        (QA_WF, "qa", "Resolve one exact-head QA target",
+         "Preserve automatic QA target resolution HOLD"),
+        (REL_WF, "admit-release", "Resolve authenticated exact-PR release lane",
+         "Preserve automatic Release target admission HOLD"),
+    ],
+)
+def test_manual_dispatch_keeps_hard_fail_and_hold_never_mints_app_check(
+    workflow_path, job_name, target_step, hold_step
+):
+    """workflow_dispatch must remain strict; HOLD steps never publish App checks."""
+    workflow = yaml.load(workflow_path.read_text(), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"][job_name]["steps"]}
+    admission = steps[target_step]
+    # Not a bare true — only automatic callbacks may continue-on-error.
+    assert admission["continue-on-error"] != "true"
+    assert "workflow_run" in admission["continue-on-error"]
+    hold = steps[hold_step]
+    assert "workflow_dispatch" not in hold["if"]
+    assert "workflow_run" in hold["if"]
+    assert "gh api" not in hold["run"]
+    assert "checks" not in hold["run"].lower() or "no exact-head" in hold["run"]
+    assert "PASS" not in hold["run"] or "no exact-head" in hold["run"]
+    if job_name == "qa":
+        mint = steps["Mint checks-only App token"]
+        publish = steps["Publish exact-head check"]
+        assert "pr_number" in mint["if"]
+        assert "pr_number" in publish["if"]
+    else:
+        release = workflow["jobs"]["release"]
+        assert "applicable == 'true'" in release["if"]
