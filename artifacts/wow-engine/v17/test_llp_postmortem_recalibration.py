@@ -332,3 +332,55 @@ def test_complete_report_never_mutates_predictions_or_authorizes_execution():
     assert report["automatic_parameter_mutation"] is False
     assert report["terminal_authority"] == "V17_TERMINAL_REDUCER"
     assert report["can_execute"] is False
+
+
+def test_research_card_retro_is_separate_from_fitted_calibration_and_not_automatic():
+    official = _row("fitted-1", p=0.70, result="WIN", sport="NFL")
+    baseline = build_llp_learning_report([official])
+    research = {
+        "sport": "NFL", "official_event_id": "fixture-nfl-01",
+        "home_team": "Home", "away_team": "Away",
+        "event_start_time_utc": "2026-11-08T22:00:00Z",
+        "selected_side": "Home", "selection_role": "PREFERRED",
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
+        "immutable_pregame": True, "pregame_receipt_verified": True,
+        "pregame_receipt_id": "independent-research-only-receipt",
+        "frozen_at_utc": "2026-11-08T15:00:00Z",
+        "available_to_user_at_utc": "2026-11-08T15:00:00Z",
+        "source_as_of_utc": "2026-11-08T14:00:00Z",
+        "research_inputs": [
+            {"factor": "TEAM_AVAILABILITY", "available_to_user_at_utc": "2026-11-08T14:00:00Z"},
+        ],
+    }
+    settled = {
+        "sport": "NFL", "official_event_id": "fixture-nfl-01",
+        "home_team": "Home", "away_team": "Away",
+        "event_start_time_utc": "2026-11-08T22:00:00Z",
+        "winning_side": "Away", "final_status": "FINAL",
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
+        "independently_verified": True, "settlement_receipt_id": "official-final-fixture",
+        "settlement_source": "OFFICIAL_LEAGUE", "settled_at_utc": "2026-11-09T02:00:00Z",
+    }
+    report = build_llp_learning_report(
+        [official], research_card_picks=[research], research_card_finals=[settled],
+        research_card_official_slate=[{
+            key: research[key] for key in (
+                "sport", "official_event_id", "home_team", "away_team",
+                "event_start_time_utc",
+            )
+        }],
+        research_card_official_slate_verified=True,
+        research_card_official_slate_receipt_id="test-fixture-official-manifest",
+    )
+    assert report["calibration"] == baseline["calibration"]
+    assert report["research_card"]["preferred"]["incorrect"] == 1
+    assert report["research_card"]["fitted_model_samples_added"] == 0
+    assert report["research_card"]["model_certification_impact"] is False
+    assert report["automatic_parameter_mutation"] is False
+
+
+def test_learning_report_requires_both_research_card_and_final_records():
+    with pytest.raises(ValueError, match="RESEARCH_CARD_INPUT_PAIR_REQUIRED"):
+        build_llp_learning_report(
+            [], research_card_picks=[{"sport": "NFL"}],
+        )

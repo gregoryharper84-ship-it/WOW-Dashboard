@@ -67,6 +67,24 @@ Use when a PrizePicks board/PDF/screenshots/pasted board is supplied and the use
 5. Preserve individual sporting probabilities exactly. Card-level independence estimates are portfolio math only and must never be relabeled governed sporting probability.
 6. Shrink the card rather than add filler or unresolved dependent legs.
 
+## Explicit full-slate game-winner card (NFL/NBA/NHL)
+
+When the user requests all NFL, NBA and NHL game winners rather than a shortlist or cash singles, discover and independently verify every official scheduled playable event and use the existing LLP team/event synthesis owner. Present exactly **one researched winner per playable event**. No discretionary PASS for weak evidence, conflicting sources or missing certified probability: deepen injury, QB/goalie, rotation, volatility, scenario and current market reconciliation. Keep qualitative uncertainty visible, without asserting certified Full Model provenance.
+
+Add a concise game-script finding beside each full-game research winner: expected winning path, opponent's realistic upset path, and the named swing factors. Preserve a source/as-of time and do not substitute the outcome actually observed after kickoff. Absent or late game scripts raise research-quality warnings, not an automatic PASS; numeric script weights remain unavailable unless separately fitted and certified.
+
+Run read-only v17.llp_research_winner_card.audit_research_winner_card as the research user-card coverage preflight. Report its board_complete separately from research_evidence_fully_reconciled and from qualified fitted-model coverage. An unverified slate or incomplete/late/duplicate selection is an actual incomplete result, never silently filled by the validator. Model/terminal HOLD is preserved. Keep upset watch, fitted probabilities, research winners and submitted NFL Pick'em entries separated. Never mutate the shared Sheet, wager or automatically submit an entry.
+
+## Multi-sport winner media brief and scenario sensitivity
+
+For explicit all-game NFL/NBA/NHL winner cards, accompany every selected research winner with linked pregame media headlines (publisher and publication time), a source-supported central storyline, an opposing/counter storyline and the team's plausible game-script paths. Require expected, adverse and stress cases with qualitative script sensitivity and swing factors. Use authentic researched URLs and time-aware source evidence; never make up headlines, news, reporter quotes or calibrated scenario odds. The validator retains all game picks with research-quality warnings when coverage is missing and cannot promote them into Full Model. Keep narrative claims, confirmed personnel facts and market movement as distinguishable evidence classes.
+
+## Retrospective research winner-card discipline
+
+When reviewing yesterday's NFL/NBA/NHL research-only preferred winner card, run the read-only `v17.llp_research_card_retro.audit_research_card` contract with authentic frozen pregame receipts, an independently verified official slate, and independent settled results. Report `PREFERRED` and `UPSET_WATCH` cohorts separately; show missing receipts/results as HELD, and do not show an overall headline accuracy when slate reconciliation fails.
+
+The optional `build_llp_learning_report(..., research_card_picks=..., research_card_finals=...)` integration keeps those descriptive grades outside certified fitted-model Brier/log-loss and calibration. Every realized miss produces an unvalidated sport-specific review hypothesis (NFL QB/turnover, NBA availability/replacement/offensive volatility, NHL goalie/rest/travel/special-teams/late-game). No automatic probability edit, upset flip, model promotion, historical pick rewrite, or Pick'em sheet mutation is permitted. Independent forward replay must demonstrate an improvement before release.
+
 ## Universal V17 rules
 - WOW_BETTING_ENGINE owns player/scalar/prop rows.
 - LLP_TEAM_BETTING_ENGINE owns team/event winner, favorite, underdog, upset, match-winner, and fight-winner rows.
@@ -111,3 +129,11 @@ Return the strongest 3–5 independent plays, or fewer when fewer genuinely qual
 
 ## Diagnostic appendix
 Unsupported or incomplete candidates may be summarized separately with exact typed statuses such as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, OOD/rejection, acquisition blockers, Action/transport failures, `REJECT_NO_EDGE`, or unresolved cash-promotion evidence. They must never be mixed into the official qualified cash pool.
+
+## Ranked cross-sport winner lists and retrospective baseline (research-only)
+
+When GH requests an across-sports top-N research winner list (including college football, college basketball or women's soccer), provide one selected winner for each chosen event and state that the ranked sample is not a complete official slate. Frozen pregame identity, side, time, independent research and opposing game scripts remain necessary. College basketball research should check opponent quality, half-court defense, shooting variance and neutral court; college football should check rush matchup, QB and turnovers; soccer should check starting XI/rotation, finishing variance and the **draw** as an explicit third outcome. Keep headlines and plausible narratives separate from verified factors; no post-result causal attribution.
+
+For its postmortem, use the additive read-only `v17.llp_ranked_winner_retro.audit_ranked_winner_retro` for a separately verified ranked cohort. Snapshot the selected team as HOME/AWAY, unique pregame receipt, user-visible freeze, exact league event ID, and independently sourced official final. Match *the same-time* full-game two-way market favorite, or three-way **regulation** soccer favorite (HOME/DRAW/AWAY), with independently verified event-specific source/visibility receipts; a soccer draw is a lost pick for either team winner. When market evidence is missing, report baseline unavailable rather than inferring an edge. Present research correctness, market-favorite correctness and incremental correct as separate quantities; a single-day winning record or parity with market favorites is not fitted-model validation. Grade verified signed spreads separately from outright results and never infer a cover pick from a winner pick. Research causal stories remain hypotheses pending frozen out-of-time tests.
+
+This additive ranked subset audit must not be used to claim complete NFL/NBA/NHL slate coverage, GH submitted-card success, calibrated V17 probabilities, model learning, or live editor/deploy sync. Existing official full-slate and fitted-model grading paths remain controlling, `V17_TERMINAL_REDUCER` remains sole terminal authority, and `can_execute=false`.
