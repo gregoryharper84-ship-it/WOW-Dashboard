@@ -157,6 +157,27 @@ def _safe_odds_diagnostics(payload: Any) -> dict[str, Any]:
 ROUTER_PASSTHROUGH_NON_JSON = "ODDS_PROVIDER_NON_JSON"
 PROXY_UPSTREAM_NON_JSON = "ODDS_API_UPSTREAM_NON_JSON"
 ODDS_PROVIDER_RATE_LIMITED_CODE = "ODDS_PROVIDER_HTTP_429"
+ODDS_API_UPSTREAM_DEACTIVATED_KEY = "DEACTIVATED_KEY"
+ODDS_API_KEY_DEACTIVATED_CODE = "ODDS_API_KEY_DEACTIVATED"
+
+
+def _typed_deactivated_key_code(code: Any, http_status: Any, *payloads: Any) -> Any:
+    """Type a provider 401 DEACTIVATED_KEY as a credential failure (#823).
+
+    The key is a persistent provider-side credential problem, not a rate limit
+    or a non-JSON payload. Only the exact upstream reason token on an HTTP 401
+    is re-typed; generic 401/403 and caller-auth codes are left untouched. The
+    upstream body is never copied into the result.
+    """
+    if http_status != 401 or str(code or "").startswith(("ODDS_PROXY_AUTH_", "ODDS_ROUTER_AUTH_")):
+        return code
+    for payload in payloads:
+        if isinstance(payload, dict) and ODDS_API_UPSTREAM_DEACTIVATED_KEY in (
+            payload.get("code"),
+            payload.get("error_code"),
+        ):
+            return ODDS_API_KEY_DEACTIVATED_CODE
+    return code
 
 
 def _typed_non_json_code(code: Any, http_status: Any, diagnostics: dict[str, Any]) -> Any:
@@ -201,6 +222,7 @@ def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
         diagnostics_source = detail if isinstance(detail, dict) and detail else payload
         diagnostics = _safe_odds_diagnostics(diagnostics_source)
         code = _typed_non_json_code(code, exc.code, diagnostics)
+        code = _typed_deactivated_key_code(code, exc.code, payload, detail)
         return FetchResult(
             False,
             status=exc.code,
