@@ -66,6 +66,91 @@ def test_stale_or_failed_receipt_does_not_count():
         assert lane["probability_publishable"] is False
 
 
+class _Page:
+    def __init__(self, data):
+        self.data = data
+
+
+class _Query:
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self._filters = []
+        self._lte = []
+        self._range = (0, 10**9)
+        self.ordered = False
+
+    def select(self, *_):
+        return self
+
+    def eq(self, column, value):
+        self._filters.append((column, value))
+        return self
+
+    def lte(self, column, value):
+        self._lte.append((column, value))
+        return self
+
+    def order(self, *_args, **_kwargs):
+        self.ordered = True
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
+    def execute(self):
+        assert self.ordered, "paged reads must be deterministically ordered"
+        out = [r for r in self._rows if all(r.get(c) == v for c, v in self._filters)]
+        out = [r for r in out if all(evidence._iso(r[c]) <= evidence._iso(v) for c, v in self._lte)]
+        out.sort(key=lambda r: r["training_row_id"])
+        start, end = self._range
+        return _Page(out[start : end + 1])
+
+
+class _Db:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, _name):
+        return _Query(self.rows)
+
+
+def _training_row(row_id, event_id, created_at, manifest_sha):
+    return {
+        "training_row_id": row_id,
+        "created_at": created_at,
+        "sport": "NCAAF",
+        "league": "NCAAF",
+        "model_family": "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2",
+        "feature_schema_version": "NCAAF_DYNAMIC_TEAM_STATE_FEATURES_V2",
+        "official_event_id": event_id,
+        "event_start_time": f"2025-10-0{event_id}T18:00:00+00:00",
+        "source_manifest_sha256": manifest_sha,
+    }
+
+
+def test_replay_pool_is_bound_to_candidate_creation_and_latest_row_per_event():
+    candidate = _candidate(
+        created_at="2026-09-26T12:00:00+00:00",
+        feature_schema_version="NCAAF_DYNAMIC_TEAM_STATE_FEATURES_V2",
+    )
+    db = _Db(
+        [
+            _training_row("r1", "1", "2026-09-20T00:00:00+00:00", "old1"),
+            _training_row("r2", "1", "2026-09-26T11:59:00+00:00", "run1"),
+            _training_row("r3", "2", "2026-09-26T11:59:00+00:00", "run2"),
+            # appended by later maintenance runs; must not leak into the pool
+            _training_row("r4", "1", "2026-10-09T00:00:00+00:00", "later1"),
+            _training_row("r5", "3", "2026-10-09T00:00:00+00:00", "later3"),
+        ]
+    )
+    rows = evidence._all_rows(db, candidate)
+    assert [(r["official_event_id"], r["source_manifest_sha256"]) for r in rows] == [
+        ("1", "run1"),
+        ("2", "run2"),
+    ]
+
+
 def test_candidate_evidence_route_install_is_idempotent():
     app = FastAPI()
     evidence.install_candidate_certification_evidence_route(app, auth_dependency=lambda: None, db_client_fn=lambda: None)
