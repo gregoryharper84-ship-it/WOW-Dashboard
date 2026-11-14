@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "30 12 * * *"
   workflow_dispatch:
+    inputs:
+      expected_slate_games:
+        description: Expected NFL games on the current US/Eastern slate (optional)
+        required: false
+        type: number
   push:
     branches:
       - main
@@ -12,10 +17,12 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nfl_forward_shadow.py"
       - "artifacts/wow-engine/v17/nfl_forward_settlement_refresh.py"
+      - "artifacts/wow-engine/v17/nfl_forward_cohort_preflight.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_settlement_refresh.py"
+      - "artifacts/wow-engine/test_v17_nfl_forward_cohort_preflight.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_basketball_training_freshness.py"
   pull_request:
@@ -24,10 +31,12 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nfl_forward_shadow.py"
       - "artifacts/wow-engine/v17/nfl_forward_settlement_refresh.py"
+      - "artifacts/wow-engine/v17/nfl_forward_cohort_preflight.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_settlement_refresh.py"
+      - "artifacts/wow-engine/test_v17_nfl_forward_cohort_preflight.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_basketball_training_freshness.py"
 
@@ -55,10 +64,11 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run forward-shadow, settlement-refresh, OIDC, and basketball freshness regressions
+      - name: Run forward-shadow, cohort-preflight, settlement-refresh, OIDC, and basketball freshness regressions
         run: >-
           python -m pytest -q
           test_v17_nfl_forward_shadow.py
+          test_v17_nfl_forward_cohort_preflight.py
           test_v17_nfl_forward_settlement_refresh.py
           test_v17_github_oidc.py
           test_basketball_training_freshness.py
@@ -141,4 +151,151 @@ jobs:
               "certification_recommendation": health.get("certification_recommendation"),
               "can_execute": False,
           }, sort_keys=True))
+          PY
+
+      - name: Report per-slate NFL forward-cohort readiness
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_SLATE_GAMES: ${{ inputs.expected_slate_games }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          # This run precedes every NFL kickoff on a gameday. The slate is the
+          # current US/Eastern date, so a Sunday-night kickoff after midnight UTC
+          # is attributed to Sunday rather than dropped.
+          slate_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+          def write_summary(lines):
+              if summary_path:
+                  with open(summary_path, "a", encoding="utf-8") as handle:
+                      handle.write("\n".join(lines) + "\n")
+
+          def oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in oidc_url else "?"
+              oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              oidc_request = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(oidc_request, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          body = {"slate_date": slate_date}
+          expected = (os.environ.get("EXPECTED_SLATE_GAMES") or "").strip()
+          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/nfl-forward-cohort-preflight"
+
+          # Readiness reporting must never fail an already completed grading run.
+          # Before this route is deployed it answers 404, and a transport failure
+          # says nothing about the cohort, so record an explicit unavailable/HOLD
+          # summary and warn instead of failing the step.
+          try:
+              # workflow_dispatch number inputs may be fractional; never fail
+              # completed grading just because an optional count is malformed.
+              if expected:
+                  if not expected.isascii() or not expected.isdecimal() or int(expected) <= 0:
+                      raise ValueError("expected_slate_games must be an exact positive integer")
+                  body["expected_slate_games"] = int(expected)
+              request = urllib.request.Request(
+                  endpoint,
+                  data=json.dumps(body).encode("utf-8"),
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {oidc_token()}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  payload = json.load(response)
+          except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
+              write_summary([
+                  f"## NFL forward cohort — slate {slate_date}",
+                  "",
+                  "- readiness report: **UNAVAILABLE / HOLD_COHORT_READINESS_UNOBSERVED**",
+                  f"- endpoint: `{endpoint}`",
+                  f"- error: {type(exc).__name__}: {str(exc)[:200]}",
+                  "",
+                  "The cohort projection could not be read, so this slate's readiness "
+                  "is unknown rather than passing. Re-run the workflow or query "
+                  "`wow_nfl_forward_calibration_health` directly.",
+              ])
+              print(
+                  f"::warning::NFL forward cohort readiness for {slate_date} is "
+                  f"UNAVAILABLE (HOLD_COHORT_READINESS_UNOBSERVED): {type(exc).__name__}"
+              )
+              sys.exit(0)
+
+          # A projection is readiness evidence only. It never certifies, never
+          # promotes and never authorizes execution, and it is not a gate that
+          # can be satisfied by lowering MIN_FORWARD_GRADED.
+          assert payload.get("can_execute") is False
+          assert payload.get("projection_is_certification_evidence") is False
+          assert payload.get("certification_recommendation") == "DO_NOT_CERTIFY_YET"
+
+          games = payload.get("slate_events") or []
+          eligible = [game for game in games if game.get("status") == "ELIGIBLE_PREGAME"]
+          cannot_grade = [game for game in games if game.get("status") == "CANNOT_GRADE"]
+          blockers = payload.get("blockers") or []
+          print(json.dumps({
+              "slate_date": payload.get("slate_date"),
+              "graded_n": payload.get("graded_n"),
+              "minimum_forward_required": payload.get("minimum_forward_required"),
+              "expected_slate_games": payload.get("expected_slate_games"),
+              "observed_slate_games": payload.get("observed_slate_games"),
+              "unobserved_slate_games": payload.get("unobserved_slate_games"),
+              "slate_coverage_verified": payload.get("slate_coverage_verified"),
+              "eligible_pregame_n": payload.get("eligible_pregame_n"),
+              "cannot_grade_n": len(cannot_grade),
+              "projected_graded_n": payload.get("projected_graded_n"),
+              "status": payload.get("status"),
+              "blockers": blockers,
+              "can_execute": False,
+          }, sort_keys=True))
+
+          lines = [
+              f"## NFL forward cohort — slate {payload.get('slate_date')}",
+              "",
+              f"- graded now: **{payload.get('graded_n')}** / {payload.get('minimum_forward_required')}",
+              f"- projected after this slate: **{payload.get('projected_graded_n')}** ({payload.get('status')})",
+              f"- slate coverage: expected {payload.get('expected_slate_games')},"
+              f" observed {payload.get('observed_slate_games')},"
+              f" unobserved {payload.get('unobserved_slate_games')},"
+              f" verified {payload.get('slate_coverage_verified')}",
+              f"- pregame-eligible games: {len(eligible)}"
+              f" (a grade also needs a settled non-tie outcome with `home_win`),"
+              f" cannot grade: {len(cannot_grade)}",
+          ]
+          if cannot_grade:
+              lines.extend([
+                  "",
+                  "| event | cannot-grade reason |",
+                  "| --- | --- |",
+              ])
+              lines.extend(
+                  f"| `{game.get('official_event_id')}` | {game.get('cannot_grade_reason')} |"
+                  for game in cannot_grade
+              )
+          if blockers:
+              lines.extend(["", "Blockers:"])
+              lines.extend(f"- `{blocker}`" for blocker in blockers)
+          write_summary(lines)
+          # Warn on any blocker, including a projection that still reaches the
+          # minimum while slate coverage or the prediction ledger is unverified.
+          if payload.get("status") != "PROJECTED_TO_REACH_MINIMUM" or blockers:
+              print(
+                  f"::warning::NFL forward cohort projection for {payload.get('slate_date')} is "
+                  f"{payload.get('status')} at {payload.get('projected_graded_n')} of "
+                  f"{payload.get('minimum_forward_required')} "
+                  f"({', '.join(blockers) if blockers else 'no blockers listed'})"
+              )
           PY

@@ -6,7 +6,7 @@ import os
 from typing import Any, Literal, Optional
 
 from fastapi import Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from github_actions_oidc import scout_route_auth_dependency
 from nfl_event_hydration_runtime import install_nfl_hydration_startup
@@ -14,6 +14,7 @@ from nfl_event_model_startup import install_nfl_model_startup
 from v17 import team_event_request_runtime as v17_team_event_base
 from v17.basketball_model_maintenance import install_basketball_model_maintenance_route
 from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
+from v17.nfl_forward_cohort_preflight import current_slate_date, project_forward_cohort
 from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 from v17.interactive_latency_telemetry import annotate_request, stage_timer
@@ -470,6 +471,28 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
     }
 
 
+class NflForwardCohortPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    slate_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    expected_slate_games: int | None = Field(default=None, gt=0)
+
+    @field_validator("slate_date")
+    @classmethod
+    def _reject_impossible_calendar_date(cls, value: str | None) -> str | None:
+        """Reject format-valid dates that do not exist, e.g. 2026-02-31.
+
+        Left to ``slate_window``, an impossible date surfaces as a 503 route
+        failure that reads like a service fault instead of bad input.
+        """
+        if value is None:
+            return None
+        try:
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("slate_date must be a real calendar date") from exc
+        return value
+
+
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
     install_nfl_model_startup(app, db_client_fn=db_client_fn)
@@ -486,6 +509,24 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                     raise
                 except Exception as exc:
                     raise HTTPException(status_code=503, detail={"code": "NFL_FORWARD_SHADOW_RUN_FAILED", "error_type": type(exc).__name__, "automatic_certification": False, "automatic_promotion": False, "probability_publishable": False, "can_execute": False}) from exc
+        if not any(getattr(r, "path", None) == "/internal/v17/nfl-forward-cohort-preflight" for r in app.router.routes):
+            @app.post("/internal/v17/nfl-forward-cohort-preflight", dependencies=[scout_route_auth_dependency(auth_dependency)], operation_id="runWowV17NflForwardCohortPreflight")
+            def run_nfl_forward_cohort_preflight(payload: NflForwardCohortPreflightRequest | None = None):
+                # Read-only projection only: never grades, never certifies and
+                # never authorizes execution. It exists so a cohort gap is
+                # visible before kickoff, when a missing prediction is still
+                # recoverable.
+                request = payload or NflForwardCohortPreflightRequest()
+                try:
+                    return project_forward_cohort(
+                        db_client_fn(),
+                        slate_date=request.slate_date or current_slate_date().isoformat(),
+                        expected_slate_games=request.expected_slate_games,
+                    )
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(status_code=503, detail={"code": "NFL_FORWARD_COHORT_PREFLIGHT_FAILED", "error_type": type(exc).__name__, "projection_is_certification_evidence": False, "certification_recommendation": "DO_NOT_CERTIFY_YET", "can_execute": False}) from exc
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
         return
 
