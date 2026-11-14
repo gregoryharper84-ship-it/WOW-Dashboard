@@ -307,3 +307,42 @@ def test_daily_run_reports_incomplete_board_and_per_sport_receipt(monkeypatch, m
     if mode == "FULL":
         assert payload["rows"][0]["result"]["calibrated_probability"] == 0.62
     assert payload["can_execute"] is False
+
+
+# --- DEACTIVATED_KEY is a distinct typed entitlement failure (#823) --------
+
+@pytest.mark.parametrize("status", [401, 403, None])
+def test_deactivated_key_is_secondary_eligible_by_exact_code_only(status) -> None:
+    keyed = scout.FetchResult(False, status=status, code="DEACTIVATED_KEY")
+    assert scout_oidc._eligible_for_secondary(keyed) is True
+
+
+@pytest.mark.parametrize("code", [None, "", "ODDS_ROUTER_AUTH_INVALID", "ODDS_PROXY_AUTH_REQUIRED",
+                                  "GITHUB_ACTIONS_OIDC_MINT_FAILED"])
+@pytest.mark.parametrize("status", [401, 403])
+def test_generic_auth_failures_stay_fail_closed(status, code) -> None:
+    assert scout_oidc._eligible_for_secondary(scout.FetchResult(False, status=status, code=code)) is False
+
+
+def test_secondary_deactivated_key_keeps_primary_failure_in_detail(monkeypatch) -> None:
+    monkeypatch.delenv("WOW_ODDS_PROXY_ACTION_KEY", raising=False)
+    monkeypatch.setattr(scout_oidc, "mint_github_actions_oidc", lambda: "tok")
+    monkeypatch.setattr(scout_oidc, "_retry_attempts", lambda: 1)
+    monkeypatch.setattr(scout, "proxy_get", lambda *_a, **_k: scout.FetchResult(
+        False, status=429, code="ODDS_PROVIDER_HTTP_429", upstream_status=429))
+
+    def failed(code):
+        return type("R", (), {"ok": False, "data": None, "status": 401, "code": code, "provider": "TEST"})()
+
+    monkeypatch.setattr(scout_oidc, "secondary_for_request", lambda *_a, **_k: failed("DEACTIVATED_KEY"))
+    monkeypatch.setattr(scout_oidc, "market_evidence_for_request", lambda *_a, **_k: failed("PROVIDER_FAILED"))
+    monkeypatch.setattr(scout, "bookmaker_rows", scout.bookmaker_rows)
+    scout_oidc.install_refreshable_oidc_proxy_auth()
+    result = scout.proxy_get("/odds-api/v4/sports", {})
+    assert result.ok is False
+    assert result.code == "ODDS_PROVIDER_HTTP_429"
+    assert result.data["primary_reason_code"] == "ODDS_PROVIDER_HTTP_429"
+    assert result.data["secondary_reason_code"] == "DEACTIVATED_KEY"
+    assert result.data["secondary_entitlement_failure"] is True
+    assert result.data["primary_entitlement_failure"] is False
+    assert "MODEL_UNAVAILABLE" not in json.dumps(result.data)
