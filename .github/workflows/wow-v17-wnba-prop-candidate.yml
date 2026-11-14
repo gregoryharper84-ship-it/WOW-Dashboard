@@ -218,8 +218,25 @@ jobs:
           assert payload.get("automatic_promotion") is False
           assert payload.get("probability_publishable") is False
           assert payload.get("can_execute") is False
-          for row in payload.get("registered", []):
-              assert row.get("lifecycle_state") == "CANDIDATE"
+          registered = payload.get("registered")
+          assert isinstance(registered, list) and len(registered) == len(artifacts)
+          expected = {artifact["stat_type"]: artifact for artifact in artifacts}
+          seen = set()
+          for row in registered:
+              assert isinstance(row, dict)
+              stat = row.get("stat_type")
+              assert stat in expected and stat not in seen
+              seen.add(stat)
+              assert row.get("artifact_id")
+              assert row.get("model_artifact_version") == expected[stat]["model_artifact_version"]
+              assert row.get("artifact_checksum") == expected[stat]["artifact_checksum"]
+              if row.get("status") == "CANDIDATE_REGISTERED":
+                  assert row.get("lifecycle_state") == "CANDIDATE"
+              else:
+                  # Idempotent replay never rewrites or demotes a stored row.
+                  # Its existing lifecycle is evidence, not new certification.
+                  assert row.get("status") == "ALREADY_REGISTERED_IDENTICAL"
+                  assert row.get("lifecycle_state") in {"CANDIDATE", "PROSPECTIVE_CERTIFIED", "CHAMPION"}
           print(json.dumps({
               "status": payload.get("status"),
               "registered_n": payload.get("registered_n"),
