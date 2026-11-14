@@ -9,7 +9,7 @@ until independent source review and prospective evidence are complete.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -20,6 +20,11 @@ import requests
 
 from v17.binary_candidate_lifecycle import BinaryCandidate, BinaryTrainingRow, train_binary_candidate
 from v17.model_source_entitlements import source_readiness
+from v17.nhl_provenance import (
+    SOURCE_PAYLOAD_HASH_SCOPE,
+    SOURCE_PROVENANCE_VERSION,
+    provenance_envelope_hash,
+)
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -74,8 +79,12 @@ class NHLGame:
     source_retrieved_at: str
     source_payload_sha256: str
     game_type: int = 2
+    game_state: str = "FINAL"
     historical_reconstruction: bool = True
     can_execute: bool = False
+    # Preserve the raw upstream value so re-ingest can reject coerced evidence.
+    # It is metadata, not part of the game's identity or hash.
+    neutral_site_evidence: Any = field(default=None, compare=False)
 
 
 @dataclass
@@ -93,6 +102,7 @@ def _utcnow() -> datetime:
 
 
 def _aware(value: Any) -> datetime:
+    """Parse an aware ISO timestamp and normalize it to UTC."""
     parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     if parsed.utcoffset() is None:
         raise NHLCandidateError("NHL_EVENT_TIME_INVALID", str(value))
@@ -105,7 +115,27 @@ def _hash_payload(value: Any) -> str:
     ).hexdigest()
 
 
+def _exact_nonneg_int(value: Any) -> int | None:
+    """Accept only exact non-negative integer scores; never truncate fractions."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return None
+    text = str(value or "").strip()
+    # Require ASCII digits: Unicode Nd (e.g. "²") can pass isdigit() while int()
+    # raises, and other Nd forms can convert silently to a different numeral.
+    if not text or not text.isascii() or not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def season_id(start_year: int) -> int:
+    """Encode an NHL season as the official YYYYZZZZ integer label."""
     year = int(start_year)
     if year < 2000 or year > 2100:
         raise ValueError("invalid NHL season start year")
@@ -130,15 +160,42 @@ def teams_for_start_year(start_year: int) -> tuple[str, ...]:
     return tuple(sorted(teams))
 
 
-def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str) -> NHLGame | None:
-    if int(raw.get("gameType") or 0) != 2:
+def normalize_game(
+    raw: Mapping[str, Any],
+    *,
+    source_uri: str,
+    retrieved_at: str,
+    strict: bool = False,
+) -> NHLGame | None:
+    """Normalize one official game.
+
+    Non-strict mode preserves the training acquisition behavior of dropping
+    malformed rows. Strict mode is used by append-only re-ingest so an eligible
+    game cannot disappear before reconciliation.
+    """
+    def _drop(code: str, detail: str = "") -> None:
+        """Raise in strict re-ingest; otherwise drop the malformed row."""
+        if strict:
+            raise NHLCandidateError(code, detail)
         return None
-    if str(raw.get("gameState") or "").upper() not in {"FINAL", "OFF"}:
+
+    raw_game_type = raw.get("gameType")
+    if raw_game_type in (None, ""):
+        return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
+    game_type = _exact_nonneg_int(raw_game_type)
+    if game_type is None:
+        return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
+    game_state = str(raw.get("gameState") or "").strip().upper()
+    if game_type != 2:
+        return None
+    if not game_state:
+        return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", "gameState")
+    if game_state not in {"FINAL", "OFF"}:
         return None
     home = raw.get("homeTeam")
     away = raw.get("awayTeam")
     if not isinstance(home, Mapping) or not isinstance(away, Mapping):
-        return None
+        return _drop("NHL_SOURCE_TEAM_IDENTITY_INVALID", "team")
     game_id = str(raw.get("id") or "").strip()
     start = str(raw.get("startTimeUTC") or "").strip()
     home_abbrev = str(home.get("abbrev") or "").strip().upper()
@@ -146,16 +203,26 @@ def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str
     hs = home.get("score")
     aws = away.get("score")
     raw_season = raw.get("season")
-    if not game_id or not start or not home_abbrev or not away_abbrev or hs is None or aws is None or raw_season is None:
-        return None
+    if not game_id or not start or not home_abbrev or not away_abbrev or raw_season is None:
+        return _drop("NHL_SOURCE_EVENT_INVALID", "identity")
+    if hs is None or aws is None:
+        return _drop("NHL_SOURCE_SCORE_INVALID", "score")
     try:
-        home_score, away_score = int(hs), int(aws)
-        parsed_season = int(raw_season)
         start_utc = _aware(start)
-    except (TypeError, ValueError, NHLCandidateError):
-        return None
+    except (NHLCandidateError, ValueError):
+        # _aware raises NHLCandidateError for naive timestamps and ValueError
+        # for malformed ones; both are invalid start evidence. Non-strict mode
+        # drops the row, strict re-ingest fails closed as a typed block.
+        return _drop("NHL_SOURCE_EVENT_TIME_INVALID", "startTimeUTC")
+    home_score = _exact_nonneg_int(hs)
+    away_score = _exact_nonneg_int(aws)
+    if home_score is None or away_score is None:
+        return _drop("NHL_SOURCE_SCORE_INVALID", "score")
+    parsed_season = _exact_nonneg_int(raw_season)
+    if parsed_season is None:
+        return _drop("NHL_SOURCE_SEASON_IDENTITY_INVALID", "season")
     if home_score == away_score:
-        return None
+        return _drop("NHL_SOURCE_SCORE_INVALID", "tie")
     return NHLGame(
         game_id=game_id,
         season_id=parsed_season,
@@ -165,19 +232,27 @@ def normalize_game(raw: Mapping[str, Any], *, source_uri: str, retrieved_at: str
         home_score=home_score,
         away_score=away_score,
         neutral_site=bool(raw.get("neutralSite", False)),
+        neutral_site_evidence=raw.get("neutralSite"),
+        game_type=game_type,
+        game_state=game_state,
         source_uri=source_uri,
         source_retrieved_at=retrieved_at,
         source_payload_sha256=_hash_payload(raw),
     )
 
 
-def fetch_team_season_games(
+SETTLED_SCHEDULE_STATES = frozenset({"FINAL", "OFF"})
+UNSETTLED_SCHEDULE_STATES = frozenset({"FUT", "PRE", "SCHED", "LIVE", "CRIT"})
+
+
+def _fetch_team_season_schedule_body(
     team: str,
     start_year: int,
     *,
     session: Any = requests,
     timeout: int = 20,
-) -> list[NHLGame]:
+) -> tuple[str, str, list[Any]]:
+    """Fetch one club-season schedule payload; shared by settled and coverage paths."""
     readiness = source_readiness(SOURCE_ID)
     if not readiness.ready_for_candidate_training:
         raise NHLCandidateError("NHL_SOURCE_NOT_READY", ",".join(readiness.blockers))
@@ -203,13 +278,75 @@ def fetch_team_season_games(
     games = body.get("games") if isinstance(body, Mapping) else None
     if not isinstance(games, list):
         raise NHLCandidateError("NHL_SOURCE_SCHEMA_DRIFT", "games array missing")
-    retrieved_at = _utcnow().isoformat()
-    normalized = [
-        game
-        for raw in games
-        if isinstance(raw, Mapping)
-        if (game := normalize_game(raw, source_uri=url, retrieved_at=retrieved_at)) is not None
-    ]
+    return url, _utcnow().isoformat(), games
+
+
+def normalize_schedule_event(
+    raw: Mapping[str, Any],
+    *,
+    strict: bool = False,
+) -> dict[str, Any] | None:
+    """Normalize one regular-season schedule row, including unsettled states."""
+    def _drop(code: str, detail: str = "") -> None:
+        if strict:
+            raise NHLCandidateError(code, detail)
+        return None
+
+    raw_game_type = raw.get("gameType")
+    if raw_game_type in (None, ""):
+        return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
+    game_type = _exact_nonneg_int(raw_game_type)
+    if game_type is None:
+        return _drop("NHL_SOURCE_GAME_TYPE_INVALID", "gameType")
+    if game_type != 2:
+        return None
+    game_state = str(raw.get("gameState") or "").strip().upper()
+    if not game_state:
+        return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", "gameState")
+    if game_state not in SETTLED_SCHEDULE_STATES | UNSETTLED_SCHEDULE_STATES:
+        return None
+    game_id = str(raw.get("id") or "").strip()
+    start = str(raw.get("startTimeUTC") or "").strip()
+    if not game_id or not start:
+        return _drop("NHL_SOURCE_EVENT_INVALID", "identity")
+    try:
+        start_utc = _aware(start)
+    except (NHLCandidateError, ValueError):
+        return _drop("NHL_SOURCE_EVENT_TIME_INVALID", "startTimeUTC")
+    return {
+        "official_event_id": game_id,
+        "event_start_time": start_utc.isoformat(),
+        "game_state": game_state,
+        "game_type": game_type,
+    }
+
+
+def fetch_team_season_games(
+    team: str,
+    start_year: int,
+    *,
+    session: Any = requests,
+    timeout: int = 20,
+    strict: bool = False,
+) -> list[NHLGame]:
+    """Fetch and normalize one team's settled regular-season games for a season."""
+    url, retrieved_at, games = _fetch_team_season_schedule_body(
+        team, start_year, session=session, timeout=timeout
+    )
+    normalized: list[NHLGame] = []
+    for raw in games:
+        if not isinstance(raw, Mapping):
+            if strict:
+                raise NHLCandidateError("NHL_SOURCE_EVENT_INVALID", "non-object game")
+            continue
+        game = normalize_game(
+            raw,
+            source_uri=url,
+            retrieved_at=retrieved_at,
+            strict=strict,
+        )
+        if game is not None:
+            normalized.append(game)
     expected_sid = season_id(start_year)
     mismatched = [game.game_id for game in normalized if game.season_id != expected_sid]
     if mismatched:
@@ -217,18 +354,144 @@ def fetch_team_season_games(
     return normalized
 
 
+def fetch_team_season_schedule_events(
+    team: str,
+    start_year: int,
+    *,
+    session: Any = requests,
+    timeout: int = 20,
+    strict: bool = False,
+) -> tuple[list[dict[str, Any]], str]:
+    """Fetch settled and unsettled regular-season schedule events for one club."""
+    _url, retrieved_at, games = _fetch_team_season_schedule_body(
+        team, start_year, session=session, timeout=timeout
+    )
+    normalized: list[dict[str, Any]] = []
+    for raw in games:
+        if not isinstance(raw, Mapping):
+            if strict:
+                raise NHLCandidateError("NHL_SOURCE_EVENT_INVALID", "non-object game")
+            continue
+        event = normalize_schedule_event(raw, strict=strict)
+        if event is not None:
+            normalized.append(event)
+    return normalized, retrieved_at
+
+
+def fetch_season_schedule_events(
+    start_year: int,
+    *,
+    teams: Sequence[str] | None = None,
+    session: Any = requests,
+    strict: bool = False,
+) -> tuple[list[dict[str, Any]], str]:
+    """Acquire deduplicated season schedule events including unsettled games."""
+    by_id: dict[str, dict[str, Any]] = {}
+    retrieved_at = _utcnow().isoformat()
+    season_teams = tuple(teams) if teams is not None else teams_for_start_year(start_year)
+    for team in season_teams:
+        events, stamp = fetch_team_season_schedule_events(
+            team, start_year, session=session, strict=strict
+        )
+        retrieved_at = stamp
+        for event in events:
+            event_id = event["official_event_id"]
+            existing = by_id.get(event_id)
+            if existing is not None and existing != event:
+                raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
+            by_id[event_id] = event
+    ordered = sorted(
+        by_id.values(),
+        key=lambda row: (row["event_start_time"], row["official_event_id"]),
+    )
+    return ordered, retrieved_at
+
+
+def fetch_season_reingest_corpus(
+    start_year: int,
+    *,
+    teams: Sequence[str] | None = None,
+    session: Any = requests,
+    strict: bool = False,
+) -> tuple[list[NHLGame], list[dict[str, Any]], str]:
+    """One-pass season acquisition for settled games plus schedule coverage."""
+    settled_by_id: dict[str, NHLGame] = {}
+    schedule_by_id: dict[str, dict[str, Any]] = {}
+    retrieved_at = _utcnow().isoformat()
+    season_teams = tuple(teams) if teams is not None else teams_for_start_year(start_year)
+    for team in season_teams:
+        url, stamp, games = _fetch_team_season_schedule_body(
+            team, start_year, session=session
+        )
+        retrieved_at = stamp
+        for raw in games:
+            if not isinstance(raw, Mapping):
+                if strict:
+                    raise NHLCandidateError("NHL_SOURCE_EVENT_INVALID", "non-object game")
+                continue
+            event = normalize_schedule_event(raw, strict=strict)
+            if event is not None:
+                event_id = event["official_event_id"]
+                existing_event = schedule_by_id.get(event_id)
+                if existing_event is not None and existing_event != event:
+                    raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
+                schedule_by_id[event_id] = event
+            game = normalize_game(
+                raw,
+                source_uri=url,
+                retrieved_at=stamp,
+                strict=strict,
+            )
+            if game is None:
+                continue
+            current = settled_by_id.get(game.game_id)
+            if current is not None:
+                identity = (
+                    game.season_id,
+                    game.event_start_time,
+                    game.home_team,
+                    game.away_team,
+                    game.home_score,
+                    game.away_score,
+                )
+                other = (
+                    current.season_id,
+                    current.event_start_time,
+                    current.home_team,
+                    current.away_team,
+                    current.home_score,
+                    current.away_score,
+                )
+                if identity != other:
+                    raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", game.game_id)
+                continue
+            settled_by_id[game.game_id] = game
+    settled = sorted(
+        settled_by_id.values(), key=lambda row: (row.event_start_time, row.game_id)
+    )
+    schedule_events = sorted(
+        schedule_by_id.values(),
+        key=lambda row: (row["event_start_time"], row["official_event_id"]),
+    )
+    return settled, schedule_events, retrieved_at
+
+
 def fetch_historical_games(
     start_years: Iterable[int],
     *,
     teams: Sequence[str] | None = None,
     session: Any = requests,
+    strict: bool = False,
 ) -> list[NHLGame]:
+    """Acquire the deduplicated chronological training corpus across seasons."""
     by_id: dict[str, NHLGame] = {}
     explicit_teams = tuple(teams) if teams is not None else None
     for year in sorted({int(v) for v in start_years}):
         season_teams = explicit_teams or teams_for_start_year(year)
         for team in season_teams:
-            for game in fetch_team_season_games(team, year, session=session):
+            for game in fetch_team_season_games(
+                team, year, session=session, strict=strict
+            ):
                 current = by_id.get(game.game_id)
                 if current is not None:
                     identity = (
@@ -267,6 +530,7 @@ def _state(team: str, season: int) -> _TeamState:
 
 
 def _recent_metrics(state: _TeamState) -> tuple[float, float, float, float]:
+    """Derive recent win rate and scoring differentials from prior games only."""
     if not state.recent:
         raise NHLCandidateError("NHL_RECENT_HISTORY_EMPTY", "prior games required")
     n = len(state.recent)
@@ -277,6 +541,7 @@ def _recent_metrics(state: _TeamState) -> tuple[float, float, float, float]:
 
 
 def _rest_days(state: _TeamState, start: datetime) -> float:
+    """Compute capped rest days from the team's previous game start."""
     if state.last_start is None:
         raise NHLCandidateError("NHL_REST_HISTORY_EMPTY", "prior game required")
     value = (start - state.last_start).total_seconds() / 86400.0
@@ -286,6 +551,7 @@ def _rest_days(state: _TeamState, start: datetime) -> float:
 
 
 def reconstruct_training_rows(games: Sequence[NHLGame]) -> tuple[list[BinaryTrainingRow], list[dict[str, Any]]]:
+    """Rebuild chronological pregame features without look-ahead leakage."""
     ordered = sorted(games, key=lambda row: (row.event_start_time, row.game_id))
     if list(games) != ordered:
         raise NHLCandidateError("NHL_GAMES_NOT_CHRONOLOGICAL", "games must be sorted")
@@ -389,6 +655,7 @@ def reconstruct_training_rows(games: Sequence[NHLGame]) -> tuple[list[BinaryTrai
 
 
 def fit_nhl_candidate(games: Sequence[NHLGame]) -> tuple[BinaryCandidate, list[dict[str, Any]]]:
+    """Fit the research-only NHL logistic candidate on reconstructed rows."""
     rows, feature_records = reconstruct_training_rows(games)
     try:
         candidate = train_binary_candidate(
@@ -427,6 +694,7 @@ def game_record(game: NHLGame) -> dict[str, Any]:
 
 
 def candidate_record(candidate: BinaryCandidate, *, training_code_sha: str) -> dict[str, Any]:
+    """Serialize an inert CANDIDATE artifact with auditable training provenance."""
     sha = str(training_code_sha or "").strip()
     if len(sha) < 7:
         raise NHLCandidateError("NHL_TRAINING_CODE_SHA_REQUIRED", "auditable code SHA required")
@@ -473,6 +741,7 @@ def candidate_record(candidate: BinaryCandidate, *, training_code_sha: str) -> d
 
 
 def build_candidate(start_years: Iterable[int], *, training_code_sha: str, session: Any = requests) -> dict[str, Any]:
+    """Acquire, fit, and package an NHL research candidate without promotion."""
     games = fetch_historical_games(start_years, session=session)
     candidate, features = fit_nhl_candidate(games)
     return {
@@ -499,14 +768,23 @@ __all__ = [
     "NHLCandidateError",
     "NHLGame",
     "SOURCE_ID",
+    "SOURCE_PAYLOAD_HASH_SCOPE",
+    "SOURCE_PROVENANCE_VERSION",
     "TEAM_ABBREVIATIONS",
+    "provenance_envelope_hash",
+    "SETTLED_SCHEDULE_STATES",
+    "UNSETTLED_SCHEDULE_STATES",
     "build_candidate",
     "candidate_record",
     "fetch_historical_games",
+    "fetch_season_reingest_corpus",
+    "fetch_season_schedule_events",
     "fetch_team_season_games",
+    "fetch_team_season_schedule_events",
     "fit_nhl_candidate",
     "game_record",
     "normalize_game",
+    "normalize_schedule_event",
     "reconstruct_training_rows",
     "season_id",
     "teams_for_start_year",

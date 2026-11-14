@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from math import isfinite
 import os
 from typing import Any, Literal, Optional
 
@@ -17,6 +18,7 @@ from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
 from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 from v17.interactive_latency_telemetry import annotate_request, stage_timer
+from v17.nhl_fitted_specialist import install_nhl_fitted_registry_provider
 from v17.team_event_probability_preservation import score_team_event_request as score_v17_team_event_request
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
@@ -81,6 +83,44 @@ def _aware(value: Any) -> datetime | None:
     if parsed.utcoffset() is None:
         return None
     return parsed.astimezone(timezone.utc)
+
+
+def _strict_probability(value: Any) -> float | None:
+    """Return a strictly in-domain probability, else None.
+
+    ENGINE_ALIGNMENT_CONTRACT requires 0 < p < 1. A present-but-out-of-range
+    value is a model output defect, not a publishable package.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        parsed = float(value)
+    except OverflowError:
+        # Oversized integers (e.g. 10**400) must become MODEL_OUTPUT_INVALID
+        # for the row, not abort the batch outside the scorer exception path.
+        return None
+    return parsed if isfinite(parsed) and 0.0 < parsed < 1.0 else None
+
+
+def _governed_package_blocker(
+    scored: dict[str, Any],
+    bounds: tuple[tuple[str, str, str], ...],
+) -> str | None:
+    """Validate the strict probability domain and lower <= point <= upper.
+
+    This does not change any model probability. It only refuses to promote a
+    numerically invalid package to COMPLETED or rank eligibility.
+    """
+    for probability_field, lower_field, upper_field in bounds:
+        probability = _strict_probability(scored.get(probability_field))
+        lower = _strict_probability(scored.get(lower_field))
+        upper = _strict_probability(scored.get(upper_field))
+        if probability is None or lower is None or upper is None:
+            inheritance = [str(value) for value in (scored.get("blockers") or [])]
+            return inheritance[0] if inheritance else "GOVERNED_PROBABILITY_FIELDS_INVALID"
+        if not lower <= probability <= upper:
+            return "GOVERNED_PROBABILITY_BOUNDS_INCONSISTENT"
+    return None
 
 
 def _norm_team(value: Any) -> str:
@@ -342,6 +382,12 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         if code == "REAL_FITTED_MODEL_PATH_PROVEN":
             code = "MODEL_INPUTS_INSUFFICIENT"
         return _held(row, code, blocker, scored)
+    invalid = _governed_package_blocker(scored, (
+        ("calibrated_home_probability", "calibrated_home_lower_bound", "calibrated_home_upper_bound"),
+        ("calibrated_away_probability", "calibrated_away_lower_bound", "calibrated_away_upper_bound"),
+    ))
+    if invalid:
+        return _held(row, "MODEL_OUTPUT_INVALID", invalid, scored)
     home = float(scored["calibrated_home_lower_bound"]) >= float(scored["calibrated_away_lower_bound"])
     side = "home" if home else "away"
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
@@ -404,12 +450,23 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
     elif selected.casefold() == away.casefold(): side = "away"
     else: return _held(row, "MODEL_OUTPUT_INVALID", "NFL_SELECTED_PARTICIPANT_IDENTITY_INVALID", scored)
     probability = scored.get("calibrated_selection_probability")
-    lower = scored.get("rank_calibrated_lower_bound", scored.get("ranked_probability")); upper = scored.get(f"calibrated_{side}_upper_bound")
+    # A calibrated lower bound must be an explicit bound field. `ranked_probability`
+    # is not accepted as a substitute: a point estimate is not a lower bound.
+    lower = scored.get("rank_calibrated_lower_bound")
+    if lower is None:
+        lower = scored.get("calibrated_selection_lower_bound")
+    upper = scored.get(f"calibrated_{side}_upper_bound")
     if not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (probability, lower, upper)):
         return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
+    if any(_strict_probability(value) is None for value in (probability, lower, upper)):
+        return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_DOMAIN_INVALID", scored)
+    if not float(lower) <= float(probability) <= float(upper):
+        return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_BOUNDS_INCONSISTENT", scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
-    probability_rank_eligible = bool(scored.get("rank_eligible", True))
+    # Missing ranking evidence must not be interpreted as an affirmative pass.
+    # The controlling NFL publication bridge supplies an explicit boolean.
+    probability_rank_eligible = scored.get("rank_eligible") is True
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,
@@ -437,9 +494,63 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
     if not all(isinstance(scored.get(k), (int, float)) and not isinstance(scored.get(k), bool) for k in keys):
         blockers = [str(value) for value in (scored.get("blockers") or [])]
         return _held(row, str(scored.get("code") or "MODEL_OUTPUT_INVALID"), blockers[0] if blockers else "GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
+    invalid = _governed_package_blocker(scored, (
+        ("calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound"),
+    ))
+    if invalid:
+        return _held(row, "MODEL_OUTPUT_INVALID", invalid, scored)
     selected = str(scored.get("selected_participant") or scored.get("selected_team") or scored.get("selection") or "").strip()
     if not selected:
         return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_MISSING", scored)
+    # Generic calibrated_* fields are home-oriented in the multisport package
+    # (see v17.multisport_team_event_models._base_package). Resolve the selected
+    # side explicitly so an away selection can never publish the home number.
+    # Prefer the specialist's canonical event participants, then fall back to
+    # the request identity. NHL aliases are resolved to official club
+    # abbreviations so a full club name and its abbreviation are one identity.
+    home_team = str(scored.get("home_team") or row.home_team or "").strip()
+    away_team = str(scored.get("away_team") or row.away_team or "").strip()
+    sport = str(row.sport or "").strip().upper()
+
+    def _participant_keys(value: str) -> set[str]:
+        text = str(value or "").strip()
+        keys = {text.casefold()} if text else set()
+        if sport == "NHL" and text:
+            from v17.nhl_event_identity import team_abbreviation
+            abbreviation = team_abbreviation(text)
+            if abbreviation:
+                keys.add(str(abbreviation).casefold())
+        return {key for key in keys if key}
+
+    # Only the two exact identified participants may inherit a side-specific
+    # winner package. Draw is a separate three-way outcome and cannot borrow
+    # the home-oriented generic probability triple.
+    home_keys = _participant_keys(home_team)
+    away_keys = _participant_keys(away_team)
+    selected_keys = _participant_keys(selected)
+    if not home_keys or not away_keys or home_keys & away_keys:
+        return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_OPPONENT_IDENTITY_INVALID", scored)
+    if selected_keys.isdisjoint(home_keys | away_keys):
+        return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_INVALID", scored)
+    is_away = selected_keys.isdisjoint(home_keys) and not selected_keys.isdisjoint(away_keys)
+    probability_key, lower_key, upper_key = (
+        "calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound")
+    if is_away:
+        probability_key, lower_key, upper_key = (
+            "calibrated_away_probability",
+            "calibrated_away_lower_bound",
+            "calibrated_away_upper_bound",
+        )
+        if not all(
+            isinstance(scored.get(key), (int, float)) and not isinstance(scored.get(key), bool)
+            for key in (probability_key, lower_key, upper_key)
+        ):
+            return _held(
+                row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_SELECTED_SIDE_PROBABILITY_MISSING", scored
+            )
+        side_invalid = _governed_package_blocker(scored, ((probability_key, lower_key, upper_key),))
+        if side_invalid:
+            return _held(row, "MODEL_OUTPUT_INVALID", side_invalid, scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
     inherited_blockers = [str(value) for value in (scored.get("blockers") or [])]
     blockers = list(dict.fromkeys([*inherited_blockers, *(["MARKET_DATA_UNOBTAINABLE"] if market_needed else [])]))
@@ -451,9 +562,9 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
         "terminal_status": "COMPLETED",
         "code": "SPORTING_PROBABILITY_COMPLETED",
         "selected_team": selected,
-        "calibrated_probability": float(scored["calibrated_probability"]),
-        "calibrated_lower_bound": float(scored["calibrated_lower_bound"]),
-        "calibrated_upper_bound": float(scored["calibrated_upper_bound"]),
+        "calibrated_probability": float(scored[probability_key]),
+        "calibrated_lower_bound": float(scored[lower_key]),
+        "calibrated_upper_bound": float(scored[upper_key]),
         "audit_result": "PARTIAL" if blockers else "PASS",
         "event_decision": scored.get("event_decision") or scored.get("llp_event_decision") or "GOVERNED_PROBABILITY_COMPLETE",
         "blockers": blockers,
@@ -473,6 +584,10 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
     install_nfl_model_startup(app, db_client_fn=db_client_fn)
+    # The fitted NHL specialist resolves its exact governed artifact from the
+    # shared candidate registry. A request may never supply coefficients or a
+    # calibrator, so the trusted db client is bound once at startup.
+    install_nhl_fitted_registry_provider(db_client_fn)
     if os.getenv("WOW_V17_ACTIVE", "0") == "1":
         install_nfl_team_event_publication(v17_team_event_base)
         install_basketball_model_maintenance_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)

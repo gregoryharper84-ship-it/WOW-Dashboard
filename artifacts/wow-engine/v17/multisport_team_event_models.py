@@ -7,7 +7,8 @@ for missing model inputs.
 
 Numerical families:
 - WNBA: Bradley-Terry season-strength specialist.
-- NHL: Elo baseline + goalie/special-teams/OT simulation.
+- NHL: server-resolved fitted chronological logistic specialist. The Elo /
+  goalie / special-teams simulation remains only as an unregistered fallback.
 - Soccer: draw-preserving independent-Poisson 1X2 model.
 - Tennis: surface/form -> Elo -> hold-rate -> H2H hierarchy.
 - MMA: internally fitted Elo ratings from a frozen chronological fight ledger.
@@ -21,6 +22,8 @@ import hashlib
 import math
 import random
 from typing import Any, Iterable, Mapping
+
+from v17.nhl_fitted_specialist import score_nhl_fitted_team_event
 
 CAN_EXECUTE = False
 CALIBRATION_METHOD = "V17_DYNAMIC_CANDIDATE_UNCERTAINTY"
@@ -685,7 +688,9 @@ def score_mma_team_event(req: Any) -> dict[str, Any]:
 
 MODEL_SCORERS = {
     "WNBA": score_wnba_team_event,
-    "NHL": score_nhl_team_event,
+    # NHL must use the fitted, server-resolved candidate. The request wrapper in
+    # multisport_team_event_bridges keeps route/Scout/reducer/publication guards.
+    "NHL": score_nhl_fitted_team_event,
     "SOCCER": score_soccer_team_event,
     "TENNIS": score_tennis_team_event,
     "MMA": score_mma_team_event,
