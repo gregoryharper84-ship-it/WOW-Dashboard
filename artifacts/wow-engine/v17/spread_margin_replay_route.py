@@ -1,6 +1,8 @@
 """OIDC-protected, research-only spread and run-line challenger surfaces."""
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Literal
 
 from fastapi import FastAPI
@@ -21,6 +23,17 @@ PROBABILITY_PUBLISHABLE = False
 DATABASE_MUTATED = False
 PRODUCTION_REGISTRY_MUTATED = False
 GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
+_LOG = logging.getLogger(__name__)
+_REDACT = re.compile(r"(?i)(bearer\s+\S+|eyJ[\w-]+(?:\.[\w-]+)*|(?:apikey|api_key|token|secret|password|key)[\"']?\s*[=:]\s*(?:\"[^\"]*\"|'[^']*'|\S+))")
+
+
+def _runtime_diagnostics(exc: BaseException) -> dict[str, Any]:
+    """Bounded, redacted exception detail so a BLOCKED runtime failure is diagnosable (observability only)."""
+    message = _REDACT.sub("[REDACTED]", str(exc))[:300]
+    code = getattr(exc, "code", None)
+    return {"error_type": type(exc).__name__, "error_code": None if code is None else str(code)[:64], "error_message": message}
+
+
 ReplaySport = Literal["NFL", "NBA", "WNBA", "NCAAF", "NCAAB"]
 
 
@@ -200,7 +213,9 @@ def _execute_forward(sport: str, event_id: str, fn: Any) -> dict[str, Any]:
     except SpreadChallengerUnavailable as exc:
         return {"status": "BLOCKED", "code": exc.code, "sport": sport, "event_id": event_id, "detail": str(exc), **_governance_fields()}
     except Exception as exc:  # noqa: BLE001
-        return {"status": "BLOCKED", "code": f"{sport}_SPREAD_FORWARD_SHADOW_RUNTIME_FAILED", "sport": sport, "event_id": event_id, "error_type": type(exc).__name__, **_governance_fields()}
+        diag = _runtime_diagnostics(exc)
+        _LOG.error("spread_forward_shadow_runtime_failed sport=%s event_id=%s %s", sport, event_id, diag)
+        return {"status": "BLOCKED", "code": f"{sport}_SPREAD_FORWARD_SHADOW_RUNTIME_FAILED", "sport": sport, "event_id": event_id, **diag, **_governance_fields()}
     return {**result, **_governance_fields()}
 
 
