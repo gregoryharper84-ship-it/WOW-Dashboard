@@ -239,7 +239,7 @@ jobs:
                   # Idempotent replay never rewrites or demotes a stored row.
                   # Its existing lifecycle is evidence, not new certification.
                   assert row.get("status") == "ALREADY_REGISTERED_IDENTICAL"
-                  assert row.get("lifecycle_state") in {"CANDIDATE", "PROSPECTIVE_CERTIFIED", "CHAMPION"}
+                  assert row.get("lifecycle_state") in {"CANDIDATE", "SHADOW", "PROSPECTIVE_CERTIFIED", "CHAMPION", "RETIRED"}
           print(json.dumps({
               "status": payload.get("status"),
               "registered_n": payload.get("registered_n"),

@@ -210,13 +210,14 @@ def test_duplicate_stat_route_in_one_batch_blocks():
     assert caught.value.detail["code"] == "WNBA_PROP_DUPLICATE_STAT_ROUTE"
 
 
-def _frozen_registration_replay():
+def _frozen_registration_replay(lifecycle="PROSPECTIVE_CERTIFIED"):
     # Same immutable versions/checksums observed in Supabase on 2026-11-14.
     path = Path(__file__).resolve().parent / "data/wow_wnba_prop_artifacts_v1.json"
     artifacts = json.loads(path.read_text())
     existing = [dict(validate_candidate(WNBAPropCandidateArtifact(**a)),
-                     artifact_id=f"existing-{i}", lifecycle_state="PROSPECTIVE_CERTIFIED",
-                     active=True, promoted=True)
+                     artifact_id=f"existing-{i}", lifecycle_state=lifecycle,
+                     active=lifecycle in {"PROSPECTIVE_CERTIFIED", "CHAMPION"},
+                     promoted=lifecycle in {"PROSPECTIVE_CERTIFIED", "CHAMPION"})
                 for i, a in enumerate(artifacts)]
     db = FakeDB(existing)
     before = json.dumps(db.rows, sort_keys=True)
@@ -255,12 +256,16 @@ def _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt):
     exec(compile(python, str(root / ".github/workflows/wow-v17-wnba-prop-candidate.yml"), "exec"), {})
 
 
-def test_workflow_accepts_identical_replay_without_demoting_existing_lifecycle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("lifecycle", [
+    "CANDIDATE", "SHADOW", "PROSPECTIVE_CERTIFIED", "CHAMPION", "RETIRED",
+])
+def test_workflow_accepts_identical_replay_without_demoting_existing_lifecycle(tmp_path, monkeypatch, lifecycle):
     # The Nov 9 failure's line 56 demands CANDIDATE even for identical replay.
-    artifacts, receipt = _frozen_registration_replay()
+    artifacts, receipt = _frozen_registration_replay(lifecycle)
     assert receipt["status"] == "CANDIDATE_REGISTRATION_COMPLETE"
     assert receipt["registered_n"] == 4
     assert all(r["status"] == "ALREADY_REGISTERED_IDENTICAL" for r in receipt["registered"])
+    assert all(r["lifecycle_state"] == lifecycle for r in receipt["registered"])
     _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt)
 
 
