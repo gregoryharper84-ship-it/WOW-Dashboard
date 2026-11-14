@@ -145,6 +145,49 @@ def test_durable_duplicate_pr_never_selected(monkeypatch):
     assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
 
 
+def test_discovery_reads_fifth_page_of_426_open_prs(monkeypatch):
+    """Full source inventory is required; 426 rows must not be truncated at 400."""
+    foreign = {"user": {"login": "non-owner"}, "state": "open"}
+    visited = []
+    prefix = "pulls?state=open&base=main&per_page=100&page="
+
+    def fetch(path):
+        if path == "pulls?state=open&base=main&per_page=100":
+            return [foreign] * 100
+        if path.startswith(prefix):
+            page = int(path.removeprefix(prefix))
+            visited.append(page)
+            return [foreign] * (26 if page == 5 else 100) if page <= 5 else []
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result == {"status": "NO_ELIGIBLE_SOURCE",
+                      "detail": "NO_ELIGIBLE_SOURCE", "can_execute": False}
+    assert visited == [1, 2, 3, 4, 5]
+
+
+def test_discovery_still_holds_when_six_pages_are_saturated(monkeypatch):
+    """Raise the bounded capacity, not the requirement for complete inventory."""
+    foreign = {"user": {"login": "non-owner"}, "state": "open"}
+    visited = []
+    prefix = "pulls?state=open&base=main&per_page=100&page="
+
+    def fetch(path):
+        if path == "pulls?state=open&base=main&per_page=100":
+            return [foreign] * 100
+        if path.startswith(prefix):
+            page = int(path.removeprefix(prefix))
+            visited.append(page)
+            return [foreign] * 100
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result == {"status": "NO_ELIGIBLE_SOURCE",
+                      "detail": "SOURCE_PR_INVENTORY_PAGE_CAP", "can_execute": False}
+    assert visited == [1, 2, 3, 4, 5, 6]
+
 def test_global_review_wip_limit_prevents_pr_flood(monkeypatch):
     app_open = [
         {"user": {"login": adoption.APP_AUTHOR},
