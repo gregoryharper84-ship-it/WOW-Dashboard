@@ -148,24 +148,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Re-read at the mutation boundary: the PR may advance after resolve.
-          # Treat remote content as data; no PR code is checked out or executed.
-          current_pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
-          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$SHA" --argjson pr "$PR" '
-            .number == $pr and .state == "open" and .draft == false and
-            .head.sha == $sha and .head.repo.full_name == $repo and
-            .base.repo.full_name == $repo and .base.ref == "main"
-          ' <<<"$current_pr" >/dev/null || {
-            echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
-          }
-          current_body=$(jq -r '.body // ""' <<<"$current_pr")
-          if [ "$SOURCE_EVENT" = "workflow_run" ]; then
-            current_incident=$(sed -nE 's/^Incident: .?#?([0-9]+).?$/\1/p' <<<"$current_body")
-          else
-            current_incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\1/p' <<<"$current_body")
-          fi
-          [ "$current_incident" = "$INCIDENT" ] || {
-            echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
+          # Lookups can be slow. Check live admission after lookup and again
+          # immediately before each write; remote PR content remains data.
+          revalidate_target() {
+            current_pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$SHA" --argjson pr "$PR" '
+              .number == $pr and .state == "open" and .draft == false and
+              .head.sha == $sha and .head.repo.full_name == $repo and
+              .base.repo.full_name == $repo and .base.ref == "main"
+            ' <<<"$current_pr" >/dev/null || {
+              echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
+            }
+            current_body=$(jq -r '.body // ""' <<<"$current_pr")
+            if [ "$SOURCE_EVENT" = "workflow_run" ]; then
+              grep -Eq '^Pre-PR agent gates: .?PASS.?\s*$' <<<"$current_body" || {
+                echo "::error::SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS"; exit 1
+              }
+              current_incident=$(sed -nE 's/^Incident: .?#?([0-9]+).?$/\1/p' <<<"$current_body")
+            else
+              if [ "$SOURCE_EVENT" = "pull_request_target" ]; then
+                jq -e '.labels | type == "array" and any(.[]; .name == "sirt-review-required")' \
+                  <<<"$current_pr" >/dev/null || {
+                  echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
+                }
+              fi
+              current_incident=$(sed -nE 's/^Incident: #([1-9][0-9]*)[[:space:]]*$/\1/p' <<<"$current_body")
+            fi
+            [ "$current_incident" = "$INCIDENT" ] || {
+              echo "::error::SIRT_TARGET_CHANGED_BEFORE_WRITE"; exit 1
+            }
           }
           short="${SHA:0:12}"
           marker="WOW_SIRT_INTAKE_PR_${PR}_HEAD_${SHA}"
@@ -213,6 +224,7 @@ jobs:
               break
             fi
           done
+          revalidate_target
           # Cross-links can fail independently after issue creation. Repair
           # only missing authenticated links without duplicating review issues.
           if [ -n "$existing" ]; then
@@ -228,6 +240,7 @@ jobs:
                  (.user.login // "") == "app/github-actions")
               )] | length
             ' <<<"$prior_pr_comments")
+            revalidate_target
             if [ "$linked" -eq 0 ]; then
               gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
                 --body "Independent SIRT intake created: $existing_url. Exact head: $SHA. SIRT and Independent Verification still pending; not a merge or deployment approval."
@@ -263,9 +276,11 @@ jobs:
           No self-approval, protected merge override, or deployment authorization.
           can_execute=false; terminal_authority=V17_TERMINAL_REDUCER.
           EOF
+          revalidate_target
           url=$(gh issue create --repo "$GITHUB_REPOSITORY" \
             --title "[SIRT Intake] PR #$PR head $short (incident #$INCIDENT)" \
             --body-file "$RUNNER_TEMP/sirt-intake.md")
+          revalidate_target
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
             --body "Independent SIRT intake created: $url. Exact head: $SHA. SIRT and Independent Verification still pending; not a merge or deployment approval."
           echo "SIRT intake: $url" >> "$GITHUB_STEP_SUMMARY"

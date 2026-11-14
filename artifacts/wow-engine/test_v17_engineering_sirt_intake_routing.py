@@ -36,6 +36,7 @@ def _fake_pr(**over):
     pr = {
         "number": 2547, "state": "open", "draft": False,
         "body": "Incident: #2076",
+        "labels": [{"name": "sirt-review-required"}],
         "head": {"sha": SHA, "repo": {"full_name": REPO}},
         "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
@@ -181,7 +182,8 @@ def _matching_issue(number, author, incident="2076", generated=True, edited_at=N
 
 
 def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
-                source_id="dispatch-1", current_pr=None, source_event="workflow_dispatch"):
+                source_id="dispatch-1", current_pr=None, source_event="workflow_dispatch",
+                drift_after=None, drift_pr=None):
     """Execute the writer against a persistent fake issue and PR-comment API."""
     issues_file = tmp_path / "issues.json"
     if initial_issues is not None:
@@ -194,16 +196,22 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
     elif not comments_file.exists():
         comments_file.write_text("[]")
     calls_file = tmp_path / "calls.log"
+    current_file = tmp_path / "current-pr.json"
+    current_file.write_text(json.dumps(current_pr if current_pr is not None else _fake_pr()))
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n"
         "issues=Path(os.environ['FAKE_ISSUES_FILE'])\n"
         "comments=Path(os.environ['FAKE_COMMENTS_FILE'])\n"
         "calls=Path(os.environ['FAKE_CALLS_FILE'])\n"
+        "current=Path(os.environ['FAKE_CURRENT_PR_FILE'])\n"
+        "def drift(stage):\n"
+        "  if os.environ.get('FAKE_DRIFT_AFTER') == stage: current.write_text(os.environ['FAKE_DRIFT_PR_JSON'])\n"
         "args=sys.argv[1:]\n"
         "if args[:2]==['api','repos/'+os.environ['GITHUB_REPOSITORY']+'/pulls/2547']:\n"
-        "  print(os.environ['FAKE_CURRENT_PR_JSON'])\n"
+        "  print(current.read_text())\n"
         "elif args[:2]==['issue','list']:\n"
+        "  drift('issue_list')\n"
         "  print(issues.read_text())\n"
         "elif args[:2]==['issue','create']:\n"
         "  data=json.loads(issues.read_text())\n"
@@ -212,6 +220,7 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  data.append({'number':9000,'body':content,'author':{'login':'app/github-actions'},'lastEditedAt':None})\n"
         "  issues.write_text(json.dumps(data))\n"
         "  calls.open('a').write('issue:create\\n')\n"
+        "  drift('issue_create')\n"
         "  print('https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/issues/9000')\n"
         "elif args[:2]==['api','graphql']:\n"
         "  number=int(args[args.index('-F')+1].split('=')[1])\n"
@@ -222,6 +231,7 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  if os.environ.get('FAKE_FAIL_COMMENTS') == '1': print('comments unavailable',file=sys.stderr);sys.exit(49)\n"
         "  calls.open('a').write('api:comments\\n')\n"
         "  data=json.loads(comments.read_text())\n"
+        "  drift('comments')\n"
         "  pages=[data[i:i+100] for i in range(0,len(data),100)] or [[]]\n"
         "  print(json.dumps(pages if '--paginate' in args and '--slurp' in args else pages[0]))\n"
         "elif args[:2]==['pr','comment']:\n"
@@ -245,7 +255,9 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
            "SOURCE_EVENT": source_event,
            "SOURCE_ATTEMPT": "1", "SOURCE_CONCLUSION": "INTAKE_ONLY_NOT_A_REVIEW_VERDICT",
            "FAKE_ISSUES_FILE": str(issues_file),
-           "FAKE_CURRENT_PR_JSON": json.dumps(current_pr if current_pr is not None else _fake_pr()),
+           "FAKE_CURRENT_PR_FILE": str(current_file),
+           "FAKE_DRIFT_AFTER": drift_after or "",
+           "FAKE_DRIFT_PR_JSON": json.dumps(drift_pr),
            "FAKE_COMMENTS_FILE": str(comments_file),
            "FAKE_CALLS_FILE": str(calls_file)}
     process = subprocess.run(["bash", "-e", "-c", _writer()],
@@ -439,4 +451,74 @@ def test_writer_preserves_worker_origin_backtick_incident(tmp_path):
         current_pr=_fake_pr(body="Pre-PR agent gates: PASS\nIncident: `#2076`"))
     assert proc.returncode == 0, proc.stderr
     assert calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 1
+
+
+@pytest.mark.parametrize("changed", [
+    {"head": {"sha": OLD_SHA, "repo": {"full_name": REPO}}},
+    {"state": "closed"}, {"body": "Incident: #2020"},
+])
+def test_target_drift_during_issue_lookup_blocks_issue_creation(tmp_path, changed):
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, drift_after="issue_list", drift_pr=_fake_pr(**changed))
+    assert proc.returncode != 0
+    assert calls == []
+    assert issues == []
+
+
+def test_target_drift_during_comment_lookup_blocks_link_repair(tmp_path):
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=[_matching_issue(75, "app/github-actions")],
+        drift_after="comments", drift_pr=_fake_pr(state="closed"))
+    assert proc.returncode != 0
+    assert calls == ["api:comments"]
+    assert len(issues) == 1
+
+
+def test_target_drift_after_issue_creation_blocks_stale_crosslink(tmp_path):
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, drift_after="issue_create", drift_pr=_fake_pr(body="Incident: #2020"))
+    assert proc.returncode != 0
+    assert calls == ["issue:create"]
+    assert len(issues) == 1
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_current_label_removal_blocks_queued_or_lookup_delayed_intake(tmp_path, late):
+    changed = _fake_pr(labels=[])
+    kwargs = {"drift_after": "issue_list", "drift_pr": changed} if late else {"current_pr": changed}
+    proc, calls, issues, _ = _run_writer(tmp_path, source_event="pull_request_target", **kwargs)
+    assert proc.returncode != 0
+    assert calls == []
+    assert issues == []
+
+
+@pytest.mark.parametrize("gate", ["HOLD", "FAIL", "REJECT", None])
+@pytest.mark.parametrize("late", [False, True])
+def test_current_worker_gate_must_remain_pass_before_writes(tmp_path, gate, late):
+    good = _fake_pr(body="Pre-PR agent gates: PASS\nIncident: `#2076`")
+    changed = _fake_pr(body=(f"Pre-PR agent gates: {gate}\n" if gate else "") + "Incident: `#2076`")
+    kwargs = {"current_pr": good, "drift_after": "issue_list", "drift_pr": changed} if late else {"current_pr": changed}
+    proc, calls, issues, _ = _run_writer(tmp_path, source_event="workflow_run", **kwargs)
+    assert proc.returncode != 0
+    assert calls == []
+    assert issues == []
+
+
+def test_writer_accepts_current_labeled_target(tmp_path):
+    proc, calls, issues, _ = _run_writer(tmp_path, source_event="pull_request_target")
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 1
+
+
+def test_existing_intake_reuse_rechecks_label_after_comment_lookup(tmp_path):
+    link = f"Independent SIRT intake created: https://github.com/{REPO}/issues/75. Exact head: {SHA}"
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, source_event="pull_request_target",
+        initial_issues=[_matching_issue(75, "app/github-actions")],
+        initial_comments=[{"body": link, "user": {"login": "app/github-actions"}}],
+        drift_after="comments", drift_pr=_fake_pr(labels=[]))
+    assert proc.returncode != 0
+    assert calls == ["api:comments"]
     assert len(issues) == 1
