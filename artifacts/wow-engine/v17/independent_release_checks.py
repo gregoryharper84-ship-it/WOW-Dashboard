@@ -333,6 +333,21 @@ def gather(
 MAX_TARGETS = 20
 
 
+def _event_repo_is(side: Any, repo: str) -> bool:
+    """True only if a workflow_run pull_requests head/base repo is exactly ``repo``.
+
+    GitHub's workflow_run payload carries ``{id, name, url}`` (no full_name), so
+    accept an exact ``full_name`` or the exact API url. Missing, non-dict,
+    malformed or foreign values are never accepted.
+    """
+    ref = side.get("repo") if isinstance(side, dict) else None
+    if not isinstance(ref, dict):
+        return False
+    if ref.get("full_name") == repo:
+        return True
+    return ref.get("url") == f"https://api.github.com/repos/{repo}"
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None,
             neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
@@ -364,7 +379,9 @@ def targets(repo: str, *, pr: str | None = None,
             head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
             base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
             same_origin = (
-                live.get("number") == number
+                _event_repo_is(item.get("head"), repo)
+                and _event_repo_is(item.get("base"), repo)
+                and live.get("number") == number
                 and head_repo.get("full_name") == repo
                 and base.get("ref") == "main"
                 and base_repo.get("full_name") == repo
