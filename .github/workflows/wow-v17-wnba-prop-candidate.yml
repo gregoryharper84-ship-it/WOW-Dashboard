@@ -222,12 +222,15 @@ jobs:
           assert isinstance(registered, list) and len(registered) == len(artifacts)
           expected = {artifact["stat_type"]: artifact for artifact in artifacts}
           seen = set()
+          seen_ids = set()
           for row in registered:
               assert isinstance(row, dict)
               stat = row.get("stat_type")
               assert stat in expected and stat not in seen
               seen.add(stat)
-              assert row.get("artifact_id")
+              artifact_id = row.get("artifact_id")
+              assert isinstance(artifact_id, str) and artifact_id.strip() and artifact_id not in seen_ids
+              seen_ids.add(artifact_id)
               assert row.get("model_artifact_version") == expected[stat]["model_artifact_version"]
               assert row.get("artifact_checksum") == expected[stat]["artifact_checksum"]
               if row.get("status") == "CANDIDATE_REGISTERED":

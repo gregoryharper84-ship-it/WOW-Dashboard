@@ -283,7 +283,7 @@ def test_workflow_accepts_only_candidate_lifecycle_for_new_registration(tmp_path
 @pytest.mark.parametrize("bad", [
     "checksum", "version", "foreign_stat", "duplicate_stat", "missing_row",
     "missing_id", "unknown_status", "unknown_lifecycle", "new_non_candidate",
-    "executable", "non_object_row",
+    "executable", "non_object_row", "duplicate_id", "non_string_id",
 ])
 def test_workflow_rejects_incomplete_or_mismatched_registration_receipt(tmp_path, monkeypatch, bad):
     artifacts, receipt = _frozen_registration_replay()
@@ -299,5 +299,7 @@ def test_workflow_rejects_incomplete_or_mismatched_registration_receipt(tmp_path
     elif bad == "new_non_candidate": row["status"] = "CANDIDATE_REGISTERED"
     elif bad == "executable": receipt["can_execute"] = True
     elif bad == "non_object_row": receipt["registered"][0] = None
+    elif bad == "duplicate_id": receipt["registered"][1]["artifact_id"] = row["artifact_id"]
+    elif bad == "non_string_id": row["artifact_id"] = {"unverified": "id"}
     with pytest.raises(AssertionError):
         _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt)
