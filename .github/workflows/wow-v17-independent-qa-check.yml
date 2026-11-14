@@ -85,6 +85,11 @@ jobs:
 
       - name: Resolve one exact-head QA target
         id: target
+        # This workflow_run is attached to protected main, not the PR head.
+        # If GitHub temporarily returns 403 for the target PR, the exact-head
+        # required QA App check must stay ABSENT; a red main callback must not
+        # block Render checksPass. Explicit manual dispatch still fails hard.
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,6 +130,13 @@ jobs:
           echo "pr_number=$(jq -r .pr <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
+
+      - name: Preserve automatic QA target resolution HOLD
+        if: always() && github.event_name == 'workflow_run' && steps.target.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::QA_AUTOMATIC_TARGET_HOLD: PR source unreadable or invalid; no independent QA App check published."
+          echo "QA_AUTOMATIC_TARGET_HOLD production_verified=false can_execute=false (no exact-head QA PASS)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mint checks-only App token
         id: app_token
