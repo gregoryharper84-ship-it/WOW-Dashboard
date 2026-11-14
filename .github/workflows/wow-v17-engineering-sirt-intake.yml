@@ -251,10 +251,26 @@ jobs:
             ' <<<"$inventory")
           existing=""
           for candidate in $candidates; do
-            provenance=$(gh api graphql \
+            if ! provenance=$(gh api graphql \
               -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body lastEditedAt author{login __typename}}}}' \
               -f owner="$trusted_owner" -f name="${GITHUB_REPOSITORY#*/}" \
-              -F number="$candidate")
+              -F number="$candidate"); then
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_PROVENANCE"; exit 1
+            fi
+            # Unknown evidence is not proof that a matching issue is forged.
+            # Validate the full requested shape before applying trust rules.
+            jq -e 'type == "object" and
+              ((has("errors") | not) or (.errors | type == "array" and length == 0)) and
+              (.data.repository.issue |
+                type == "object" and has("body") and
+                (.body == null or (.body | type) == "string") and
+                has("lastEditedAt") and
+                (.lastEditedAt == null or (.lastEditedAt | type) == "string") and
+                (.author.login | type) == "string" and
+                (.author.__typename | type) == "string")' \
+              <<<"$provenance" >/dev/null || {
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_PROVENANCE"; exit 1
+            }
             if jq -e --arg m "$marker" --arg incident "$INCIDENT" \
               --arg pr "$PR" --arg sha "$SHA" '
                 .data.repository.issue | select(
@@ -275,8 +291,19 @@ jobs:
           # Cross-links can fail independently after issue creation. Repair
           # only missing authenticated links without duplicating review issues.
           if [ -n "$existing" ]; then
-            prior_pr_comments=$(gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" | jq 'add // []')
+            if ! comment_pages=$(gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100"); then
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_COMMENTS"; exit 1
+            fi
+            jq -e 'type == "array" and length > 0 and all(.[];
+              type == "array" and all(.[];
+                type == "object" and has("body") and
+                (.body == null or (.body | type) == "string") and
+                (.user.login | type) == "string"))' \
+              <<<"$comment_pages" >/dev/null || {
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_COMMENTS"; exit 1
+            }
+            prior_pr_comments=$(jq 'add' <<<"$comment_pages")
             existing_url="https://github.com/$GITHUB_REPOSITORY/issues/$existing"
             existing_link="Independent SIRT intake created: $existing_url. Exact head: $SHA"
             linked=$(jq -r --arg link "$existing_link" --arg owner "$trusted_owner" '

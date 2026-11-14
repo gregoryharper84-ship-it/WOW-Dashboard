@@ -191,7 +191,8 @@ def _matching_issue(number, author, incident="2076", generated=True, edited_at=N
 def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
                 source_id="dispatch-1", current_pr=None, source_event="workflow_dispatch",
                 drift_after=None, drift_pr=None, indexed_issues=None,
-                inventory_response=None, inventory_fail_page=None):
+                inventory_response=None, inventory_fail_page=None,
+                provenance_response=None, comments_response=None):
     """Execute the writer against a persistent fake issue and PR-comment API."""
     issues_file = tmp_path / "issues.json"
     if initial_issues is not None:
@@ -249,6 +250,9 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "  drift('issue_create')\n"
         "  print('https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/issues/9000')\n"
         "elif args[:2]==['api','graphql']:\n"
+        "  response=os.environ.get('FAKE_PROVENANCE_RESPONSE','')\n"
+        "  if response=='UNAVAILABLE': sys.exit(49)\n"
+        "  if response: print(response);sys.exit(0)\n"
         "  number=int(args[args.index('-F')+1].split('=')[1])\n"
         "  issue=next(i for i in json.loads(issues.read_text()) if i['number']==number)\n"
         "  issue=dict(issue,author={'login':issue['author']['login'].replace('app/github-actions','github-actions').replace('github-actions[bot]','github-actions'),'__typename':os.environ.get('FAKE_GQL_TYPE','Bot')})\n"
@@ -256,6 +260,8 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "elif args[0]=='api' and any('issues/2547/comments' in a for a in args):\n"
         "  if os.environ.get('FAKE_FAIL_COMMENTS') == '1': print('comments unavailable',file=sys.stderr);sys.exit(49)\n"
         "  calls.open('a').write('api:comments\\n')\n"
+        "  response=os.environ.get('FAKE_COMMENTS_RESPONSE','')\n"
+        "  if response: print(response);sys.exit(0)\n"
         "  data=json.loads(comments.read_text())\n"
         "  drift('comments')\n"
         "  pages=[data[i:i+100] for i in range(0,len(data),100)] or [[]]\n"
@@ -284,6 +290,8 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
            "FAKE_INDEXED_ISSUES_FILE": str(indexed_file),
            "FAKE_INVENTORY_RESPONSE": inventory_response or "",
            "FAKE_INVENTORY_FAIL_PAGE": str(inventory_fail_page or ""),
+           "FAKE_PROVENANCE_RESPONSE": provenance_response or "",
+           "FAKE_COMMENTS_RESPONSE": comments_response or "",
            "FAKE_CURRENT_PR_FILE": str(current_file),
            "FAKE_DRIFT_AFTER": drift_after or "",
            "FAKE_DRIFT_PR_JSON": json.dumps(drift_pr),
@@ -664,3 +672,46 @@ def test_complete_issue_with_explicit_null_body_is_a_valid_empty_issue(tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert calls == ["issue:create", "pr:comment"]
     assert len(issues) == 2
+
+
+@pytest.mark.parametrize("failure", [
+    "unavailable", "malformed", "null_issue", "missing_body",
+    "missing_edit_metadata", "missing_author", "graphql_errors",
+])
+def test_unreadable_provenance_cannot_turn_existing_intake_into_absence(tmp_path, failure):
+    issue = _matching_issue(75, "app/github-actions")
+    row = dict(issue, author={"login": "github-actions", "__typename": "Bot"})
+    payload = {"data": {"repository": {"issue": row}}}
+    if failure == "null_issue":
+        payload["data"]["repository"]["issue"] = None
+    elif failure == "missing_body":
+        del row["body"]
+    elif failure == "missing_edit_metadata":
+        del row["lastEditedAt"]
+    elif failure == "missing_author":
+        del row["author"]
+    elif failure == "graphql_errors":
+        payload["errors"] = [{"message": "provenance incomplete"}]
+    response = {"unavailable": "UNAVAILABLE", "malformed": "not-json"}.get(
+        failure, json.dumps(payload))
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=[issue], provenance_response=response)
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_PROVENANCE" in proc.stdout
+    assert calls == []
+    assert issues == [issue]
+
+
+@pytest.mark.parametrize("response", [
+    "null", "[]", '[null]',
+    '[[{"user":{"login":"github-actions[bot]"}}]]',
+    '[[{"body":"unreadable author"}]]',
+])
+def test_incomplete_comment_pages_cannot_justify_duplicate_crosslink(tmp_path, response):
+    issue = _matching_issue(75, "app/github-actions")
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=[issue], comments_response=response)
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_COMMENTS" in proc.stdout
+    assert calls == ["api:comments"]
+    assert issues == [issue]
