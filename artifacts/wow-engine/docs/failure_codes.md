@@ -4,6 +4,9 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+Successful and informational NHL dispositions are catalogued separately in
+`docs/nhl_status_registry.md`; they are not failure codes and grant no authority.
+
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
@@ -23,7 +26,6 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `KALSHI_WEATHER_WAKE_PROBE_FAILED` | optional read-only Kalshi weather shadow wake observer | Isolated API/DB-read/collector-readiness probe could not prove prerequisites before bounded deadline; current error and can_execute=false must remain visible despite observer CI isolation. **Recovery class:** PROVIDER_CONFIGURATION_OR_READINESS; inspect actual readiness rather than retrying a known configuration failure. | No |
 | `ACTION_ORIGIN_KEEPALIVE_UNREACHABLE` | optional read-only Action origin keepalive | HTTP liveness check failed due to curl transport failure or non-200 response, including incomplete response with 200 status. **Recovery class:** RUNTIME_HEALTH_UNVERIFIED; not proof of fitted scoring failure. | No |
 | `NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE` | optional read-only nightly engineering scan | Production health/governance probe could not return usable read-only evidence; preserve typed observer result and no product PASS inference. **Recovery class:** RUNTIME_EVIDENCE_PENDING; inspect source logs and live service SHA before rechecking. | No |
-| `RELEASE_WORKER_SHA_UNVERIFIED` | protected release / independent production readback | Public web health and governance report the protected-main SHA, but no independent LIVE worker SHA, matching release receipt and SIRT acceptance are attached. **Recovery class:** EVIDENCE_PENDING; read exact Render web/worker deployment IDs and SHAs, then independently verify; never publish PRODUCTION_VERIFIED from web-only evidence. | No |
 | `PROP_LATEST_SNAPSHOT_AMBIGUOUS` | governed prop evidence latest-snapshot read | The two newest exact-identity observations have equal capture instants (including equivalent timezone offsets), or the maximum timestamp cannot be verified. Source UUID ordering is not evidence chronology. Reject any attempt to select an arbitrary clean snapshot, keep the row nonpublishable, and investigate authoritative source ordering/dedupe. **Recovery class:** SOURCE_AUTHORITY_CONFLICT, no retry without new official evidence or corrected immutable lineage. | No |
 | `NFL_FORWARD_PAGINATION_INVALID` | NFL prospective forward grading and calibration health | PostgREST page reads lacked stable primary-key order or contained missing/duplicate prediction, settled-game or existing-grade identities. Fail the entire shadow-grading run before appending misleading calibration results; not a fitted-model capability error. | No |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
@@ -509,18 +511,18 @@ These are synthetic-layout research contracts until verified against distinct re
 
 These typed errors belong to the offline `nhl_player_box_outcome_research` adapter. They do not imply model capability or replace governing specialist failures.
 
-| Code | Exact research condition | Model unavailable? |
-| --- | --- | --- |
-| `NHL_PLAYER_BOX_SCHEMA_INVALID` | Required official boxscore/side/player array missing | No |
-| `NHL_PLAYER_BOX_IDENTITY_MISMATCH` | Official event ID, team identity or supplied schedule start conflicts | No |
-| `NHL_PLAYER_BOX_NOT_FINAL_REGULAR_SEASON` | No final regular-season game / incorrect NHL season | No |
-| `NHL_PLAYER_BOX_TIMESTAMP_INVALID` | Missing, invalid or timezone-naive source/capture time | No |
-| `NHL_PLAYER_BOX_NOT_POSTGAME` | Source capture precedes claimed game start | No |
-| `NHL_PLAYER_BOX_PLAYER_ID_INVALID` | Official player ID missing or nonpositive | No |
-| `NHL_PLAYER_BOX_DUPLICATE_PLAYER` | A player occurs in more than one boxscore position/side | No |
-| `NHL_PLAYER_BOX_STAT_INVALID` | Missing, negative, non-integer or excessive stat count | No |
-| `NHL_PLAYER_BOX_STAT_CONTRADICTION` | Points differ from goals plus assists or saves exceed shots against | No |
-| `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
+| Code | Exact research condition | Emitting module | Also emitted by | Model unavailable? |
+|---|---|---|---|---|
+| `NHL_PLAYER_BOX_SCHEMA_INVALID` | Required official boxscore/side/player array missing | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_IDENTITY_MISMATCH` | Official event ID, team identity or supplied schedule start conflicts | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_NOT_FINAL_REGULAR_SEASON` | No final regular-season game / incorrect NHL season | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_TIMESTAMP_INVALID` | Missing, invalid or timezone-naive source/capture time | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_NOT_POSTGAME` | Source capture precedes claimed game start | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_PLAYER_ID_INVALID` | Official player ID missing or nonpositive | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_DUPLICATE_PLAYER` | A player occurs in more than one boxscore position/side | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_STAT_INVALID` | Missing, negative, non-integer or excessive stat count | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_STAT_CONTRADICTION` | Points differ from goals plus assists or saves exceed shots against | `v17/nhl_player_box_outcome_research.py` | — | No |
+| `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | `v17/nhl_player_box_outcome_research.py` | — | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
 
@@ -677,15 +679,1612 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 | `RESEARCH_TRACKING_OVERLAPS_OUTPUT` | V17 research telemetry / local receipt preflight | Local tracking and report trees nest recursively. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
 | `RESEARCH_OUTPUT_ROOT_NOT_EMPTY` | V17 research telemetry / local receipt preflight | Report destination contains previous or unrelated files. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
 | `RESEARCH_MLFLOW_OR_EVIDENTLY_NOT_INSTALLED` | V17 research telemetry / local receipt preflight | Optional reporting dependency unavailable; no receipt generated. Recovery: `PROVIDER_CONFIGURATION`; investigate the exact files/environment, then use a new distinct output directory. | No |
-| `NHL_STARTER_RECEIPTS_INCOMPLETE` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Provider receipts are not exactly two, or a receipt lacks identity, snapshot id, 64-hex payload hash, timezone-aware times or required fields. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-acquire both official receipts server-side. Not a fitted-model capability error. | No |
-| `NHL_STARTER_SOURCE_NOT_OFFICIAL` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A starting-goalie receipt does not carry official source authority. Aggregators and caller-supplied strings cannot confirm a starter. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | No |
-| `NHL_STARTER_PROVIDERS_NOT_INDEPENDENT` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The two receipts share a source id, provider family, snapshot id or payload hash; syndicated or duplicated evidence is one provider. Recovery: `SOURCE_AUTHORITY_CONFLICT`; obtain a genuinely independent official provider. Not a fitted-model capability error. | No |
-| `NHL_STARTER_EVENT_IDENTITY_MISMATCH` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Official event id, home team or away team differs between the two receipts. No neighboring-event substitution. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | No |
-| `NHL_STARTER_START_TIME_DISAGREEMENT` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Scheduled start times differ by more than 60 seconds. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-read the official schedule. Not a fitted-model capability error. | No |
-| `NHL_STARTER_VERIFICATION_WINDOW` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Evidence is not strictly before scheduled start, is older than 90 minutes before start, or evaluation is at or after start. Recovery: `WAIT_FOR_EVIDENCE`; re-collect inside the pregame window. Not a fitted-model capability error. | No |
-| `NHL_STARTER_EVIDENCE_STALE` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Evidence is older than 24 hours at evaluation time or timestamped in the future. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
-| `NHL_STARTER_GOALIE_CONFLICT` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The two official providers name different goalie identities for the same side. HOLD; never choose a provider to resolve. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | No |
-| `NHL_STARTER_GOALIE_MISSING` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A receipt lacks a goalie identity for home or away. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
-| `NHL_STARTING_GOALIE_NOT_CONFIRMED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A provider reports the goalie as projected, expected, participating, or otherwise not a confirmed starter. Gamecenter participation is not starting confirmation. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
-| `NHL_STARTER_SOURCE_NOT_TRUSTED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt's provider is absent from the server-owned trusted-provider registry, is not registered as OFFICIAL, or the receipt's declared provider family disagrees with the registry. Authority is never read from receipt fields. Recovery: `WAIT_FOR_EVIDENCE` / source-rights decision. Not a fitted-model capability error. | No |
-| `NHL_STARTER_ATTESTATION_INVALID` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt lacks a valid server attestation (HMAC-SHA256 under the server-held key), was edited after signing, or the attestation key is unavailable. Recovery: `WAIT_FOR_EVIDENCE` through the server-owned acquisition path. Not a fitted-model capability error. | No |
+
+## NHL pregame starter-goalie evidence pipeline (November 2026)
+
+Research-only evidence chain: two server-owned official starter feeds, an
+independent confirmation contract, the pregame evidence gate, and the
+collect → persist → gate orchestration. None of these codes is
+`MODEL_UNAVAILABLE`: a feed, timestamp, identity or persistence failure never
+proves fitted-model absence. A passing gate still means only input completeness.
+`can_execute=false` and `probability_publishable=false` remain invariant.
+
+### Starter-feed adapters (`v17/nhl_starter_feed_adapters.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_STARTER_FEED_ENDPOINT_UNCONFIGURED` | Neither an explicit endpoint nor the provider deployment variable is set. Adapter construction fails closed before any request. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_ENDPOINT_NOT_ALLOWLISTED` | Endpoint is not HTTPS, its host is outside the provider allowlist, or it carries userinfo/a fragment. Rejected before any request. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TRANSPORT_FAILED` | Timeout, connection, DNS or other transport exception during collection. Acquisition failure only; never a model failure. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_REDIRECT_REJECTED` | Upstream returned a 3xx response. Redirects are never followed. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_HTTP_STATUS` | Non-200 response (including 401/403/429/5xx) or a response URL that differs from the requested allowlisted URL. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_PAYLOAD_INVALID` | Empty body or bytes that are not valid JSON. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_PAYLOAD_TOO_LARGE` | Response body exceeds the bounded 512 KiB adapter cap. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_SCHEMA_DRIFT` | JSON root is not an object, a required contract field/shape is missing, or the event ID is malformed. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_EVENT_MISMATCH` | Receipt event ID differs from the server-owned canonical identity. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_START_TIME_MISMATCH` | Receipt kickoff differs from the canonical start by more than 60 seconds. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TEAM_MISMATCH` | Receipt home/away abbreviations differ from the canonical identity. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TEAM_NOT_IN_EVENT` | League roster feed designates a starter for a team outside this event. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TIMESTAMP_MISSING` | The payload supplies no timezone-aware observation timestamp. An HTTP `Date` header is not accepted as observation evidence. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_TIMESTAMP_IN_FUTURE` | Observation time is later than the run instant. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_AFTER_KICKOFF` | Observation time is at or after the official start. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_STALE` | Observation is older than the 90-minute pregame confirmation window. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_GOALIE_MISSING` | A side has no numeric starting-goalie identity, or the league feed has no `STARTER` for a team. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_GOALIE_AMBIGUOUS` | The same goalie is claimed for both sides, or a team has more than one `STARTER`. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_STATUS_MISSING` | Starter status is absent on a side. | `v17/nhl_starter_feed_adapters.py` | — | No |
+| `NHL_STARTER_FEED_STATUS_DIVERGENT` | Home and away starter statuses differ, so one aggregate status cannot be claimed. | `v17/nhl_starter_feed_adapters.py` | — | No |
+
+### Pregame Gamecenter source capture (`v17/nhl_pregame_gamecenter_capture.py`)
+
+This adapter captures an official pregame boxscore under the canonical identity
+gate. A pregame boxscore proves roster/participation, never who starts in goal,
+so a fully successful capture still terminates as a HOLD. All outcomes keep
+`probability_publishable=false`, `rank_eligible=false`, `can_execute=false`.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_GAMECENTER_EVENT_ID_INVALID` | Supplied event ID is not exactly 10 ASCII digits. Rejected before identity validation or any fetch. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_SOURCE_UNOBTAINABLE` | Transport exception, non-200 response, or a response URL that differs from the requested allowlisted Gamecenter URL. No payload is accepted. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_RATE_LIMITED` | Upstream returned HTTP 429. Acquisition failure only, never a model failure. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_REDIRECT_REJECTED` | Upstream returned a 3xx response. Redirects are never followed. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_PAYLOAD_INVALID` | Body is empty, exceeds the 2 MiB capture cap, or is not valid JSON. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_OFFICIAL_GAMECENTER_SCHEMA_DRIFT` | Decoded JSON root is not an object. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_GAMECENTER_CANONICAL_IDENTITY_MISMATCH` | Payload event ID or home/away abbreviations differ from the canonical identity receipt. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_GAMECENTER_START_TIME_MISMATCH` | Payload kickoff is missing or differs from the canonical start by more than 30 minutes. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+| `NHL_GOALIE_STARTER_CONFIRMATION_REQUIRED` | Capture, identity, timestamp and `gameState=FUT` checks all passed, but the payload is only a pregame boxscore. It cannot establish the starting goalie, so the result is HELD with `goalie_status=UNVERIFIED`, `goalie_confirmation_status=NOT_ESTABLISHED`, and the source hash retained. Research-only; never certification. | `v17/nhl_pregame_gamecenter_capture.py` | — | No |
+
+The capture also emits `NHL_CANONICAL_IDENTITY_RECEIPT_MISSING`,
+`NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH` and `NHL_EVENT_NOT_PREGAME`, which are
+registered once under the gate/confirmation tables above.
+
+### Independent confirmation (`v17/nhl_starter_goalie_confirmation.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_STARTER_RECEIPTS_INCOMPLETE` | Provider receipts are not exactly two, or a receipt lacks identity, snapshot id, 64-hex payload hash, timezone-aware times or required fields. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-acquire both official receipts server-side. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_SOURCE_NOT_OFFICIAL` | A starting-goalie receipt does not carry official source authority. Aggregators and caller-supplied strings cannot confirm a starter. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_SOURCE_NOT_TRUSTED` | The receipt's provider is absent from the server-owned trusted-provider registry, is not registered as OFFICIAL, or the receipt's declared provider family disagrees with the registry. Authority is never read from receipt fields. Recovery: `WAIT_FOR_EVIDENCE` / source-rights decision. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_ATTESTATION_INVALID` | The receipt lacks a valid server attestation (HMAC-SHA256 under the server-held key), was edited after signing, or the attestation key is unavailable. Recovery: `WAIT_FOR_EVIDENCE` through the server-owned acquisition path. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_PROVIDERS_NOT_INDEPENDENT` | The two receipts share a source id, provider family, snapshot id or payload hash; syndicated or duplicated evidence is one provider. Recovery: `SOURCE_AUTHORITY_CONFLICT`; obtain a genuinely independent official provider. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_EVENT_IDENTITY_MISMATCH` | Official event id, home team or away team differs between the two receipts. No neighboring-event substitution. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_START_TIME_DISAGREEMENT` | Scheduled start times differ by more than 60 seconds. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-read the official schedule. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_VERIFICATION_WINDOW` | Evidence is not strictly before scheduled start, is older than 90 minutes before start, or evaluation is at or after start. Recovery: `WAIT_FOR_EVIDENCE`; re-collect inside the pregame window. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_EVIDENCE_STALE` | Evidence is older than 24 hours at evaluation time or timestamped in the future. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_GOALIE_CONFLICT` | The two official providers name different goalie identities for the same side. HOLD; never choose a provider to resolve. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_STARTER_GOALIE_MISSING` | A receipt lacks a goalie identity for home or away. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_PREGAME_ADAPTER_PROVIDER_MISSING` | An adapter was registered without a provider id or provider family. Configuration error, never a sport result. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_UNATTESTED` | A collected receipt could not be signed under the server-held attestation key, so it is never persisted as evidence. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_CANONICAL_IDENTITY_RECEIPT_MISSING` | No server-owned canonical identity receipt was supplied. A caller field is not authoritative identity. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH` | Identity provider/source/event/start/teams/flags/staleness fail validation. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_EVENT_NOT_PREGAME` | The canonical start is not in the future. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_STARTING_GOALIE_NOT_CONFIRMED` | Source status is not `CONFIRMED` (for example `PROJECTED`). | `v17/nhl_starter_goalie_confirmation.py` | — | No |
+| `NHL_GOALIE_IDENTITY_INVALID` | Home and away starting-goalie identities are identical. | `v17/nhl_candidate_preflight.py` | — | No |
+
+### Pregame evidence gate (`v17/nhl_pregame_evidence_boundary.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TEAM_IDENTITY_UNVERIFIED` | `home_team`/`away_team` cannot be normalized to a recognized NHL abbreviation. Alias text is not canonical team identity. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_DUPLICATE_OPPONENT_IDENTITY` | Normalized home and away team identities are the same team. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_EVENT_IDENTITY_UNVERIFIED` | `official_event_id` is not a 10-character ASCII digit string. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_SETTLEMENT_BASIS_UNVERIFIED` | `settlement_basis` is not `HOME_AWAY_INCLUDING_OT_SO`, so a 60-minute or partial-game market could be mixed with a full-game result. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_STATUS_UNVERIFIED` | Evidence `goalie_status` is not `CONFIRMED`. This is the pre-existing evidence-side label check; it is necessary but never sufficient without the independent receipt below. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_STATUS_STALE` | `goalie_status_observed_at` is missing, unparseable, in the future, or older than `max_status_age_minutes` (default 60). | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_NUMERIC_FEATURE_INVALID` | An Elo value is missing/non-finite, or a save/PP/PK rate is missing, boolean, non-finite or outside `0..1`. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_SOURCE_SNAPSHOT_MISSING` | `source_snapshot_id` is absent or blank. A payload hash is not a persisted snapshot receipt. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_RECEIPT_MISSING` | The gate was called without an independent confirmation receipt; a caller `CONFIRMED` label is not proof. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED` | Receipt status/code/event/goalie-status are wrong, or the receipt already carries blockers. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_SOURCES_NOT_INDEPENDENT` | Receipt reports fewer than two independent sources or a non-integer source count. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_IDENTITY_SNAPSHOT_MISMATCH` | Receipt snapshot identity differs from the evidence row's snapshot identity. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_TIME_MISMATCH` | Receipt and evidence observation instants differ. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_IDENTITY_UNVERIFIED` | Goalie identities are missing, blank or identical; also the pre-existing required-input check. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+| `NHL_GOALIE_CONFIRMATION_AUTHORITY_INVALID` | Receipt claims `probability_publishable`, `rank_eligible` or `can_execute`. | `v17/nhl_pregame_evidence_boundary.py` | — | No |
+
+The eight identity, settlement, feature, goalie-status and snapshot rows above
+predate the independent confirmation contract and remain emitted by the same
+validator. The receipt adds independent proof; it does not replace these checks.
+
+### Orchestration and receipt persistence (`v17/nhl_pregame_orchestration.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_PREGAME_ADAPTER_NOT_A_STARTER_SOURCE` | Adapter registration used a Gamecenter participation, projection or last-start-inference kind. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ADAPTER_SOURCE_KIND_UNSUPPORTED` | Adapter registration used a kind outside the approved starter kinds. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ADAPTER_COLLECT_NOT_CALLABLE` | Adapter registration supplied a non-callable collector. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_ORCHESTRATION_ADAPTERS_INSUFFICIENT` | Fewer than two adapters, or fewer than two distinct official providers. Nothing is fetched or persisted. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_STARTER_SOURCE_UNOBTAINABLE:<provider>:<code>` | An adapter raised during collection. The suffix names the provider and its typed adapter/transport code. Acquisition only. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_STARTER_SOURCE_INVALID:<provider>` | An adapter returned a non-mapping receipt. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_PROVIDER_MISMATCH:<provider>` | A receipt claimed a different provider or source kind than its adapter. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_PERSISTENCE_FAILED` | The immutable receipt ledger write failed, so the evidence gate was not invoked. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_RECEIPT_PERSISTENCE_ERROR:<TYPE>` | Suffix names the persistence exception class for the failed ledger write. | `v17/nhl_pregame_orchestration.py` | — | No |
+| `NHL_PREGAME_GATE_NOT_PASSED` | Aggregate gate HOLD after persistence and confirmation; nested blockers identify the exact cause. | `v17/nhl_pregame_orchestration.py` | — | No |
+
+### NHL candidate preflight and promotion-stage maintenance (`v17/nhl_candidate_preflight.py`, `v17/nhl_model_maintenance.py`)
+
+This is the candidate-training lane, not the pregame evidence lane. Governed
+maintenance runs in one fixed stage order:
+
+```text
+CONFIGURATION -> CANDIDATE_TRAINING -> NHL_ACQUISITION_OR_TRAINING
+-> CANDIDATE_PREFLIGHT -> NHL_RECONCILIATION -> CANDIDATE_PERSISTENCE
+```
+
+A fully successful run terminates at `CANDIDATE_EVIDENCE_UPDATED`, which still
+carries `automatic_certification=false`, `automatic_promotion=false`,
+`probability_publishable=false` and `can_execute=false`. No code below can
+certify, promote, activate, publish, rank or execute; a preflight pass means only
+that evidence is fit to persist as a candidate. None of these is
+`MODEL_UNAVAILABLE` or `MODEL_INPUTS_INSUFFICIENT`.
+
+#### Candidate source acquisition and reconstruction (`nhl_candidate_pipeline.py`)
+
+This upstream lane fetches official club-season schedules and rebuilds features
+chronologically from prior settled games only; sportsbook prices never enter a
+feature. Rows remain historical reconstructions, not archived pregame snapshots,
+and the fitted output stays `lifecycle_state=CANDIDATE` with
+`probability_publishable=false`, `promoted=false` and `can_execute=false`.
+`CANDIDATE_BUILT` and the `NHL_REGULAR_SEASON_LOGISTIC_V1` /
+`NHL_REGULAR_SEASON_FEATURES_V1` / `NHL_PRIOR_SETTLED_RECONSTRUCTION_V1` /
+`NHL_RS_LOGISTIC_V1` labels are identifiers, not failure codes. This module also
+raises `NHL_EVENT_TIME_INVALID`, registered once under the event-identity section.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_SOURCE_NOT_READY` | The model-source entitlement registry does not admit `NHL_PUBLIC_WEB_API` for candidate training; detail lists its blockers. Raised before any team request. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_TEAM_UNSUPPORTED` | The requested team is not in the known NHL abbreviation universe, including historical ARI/UTA. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_TEAM_NOT_ACTIVE_IN_SEASON` | The team is known but not active in the requested season (for example SEA before 2021, ARI after 2023, UTA before 2024); detail is `abbr:year`. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_TRANSPORT_FAILED` | A club-season request raised; detail is the exception type. Acquisition failure only, never a model verdict. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_RATE_LIMITED` | The club-season endpoint returned HTTP 429; detail is the team. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_HTTP_<status>` | The club-season endpoint returned a non-200, non-429 status; the suffix is the status and detail is the team. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_RESPONSE_INVALID` | The response body could not be decoded as JSON; detail is the exception type. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_SCHEMA_DRIFT` | The decoded body is not a mapping or lacks a `games` list. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_SOURCE_SEASON_IDENTITY_DRIFT` | A normalized game's season differs from the season requested for that team schedule; detail is the first mismatched game ID. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_DUPLICATE_GAME_CONFLICT` | The same game ID observed through two team mirrors disagrees on season, start, teams or scores. Identical duplicates are merged without error. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_RECENT_HISTORY_EMPTY` | Recent-form metrics were requested for a team with no prior games in its window. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_REST_HISTORY_EMPTY` | Rest days were requested before the team had any prior game. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_CHRONOLOGY_INVALID` | The computed rest interval is non-positive, so the prior start is not strictly earlier than the current fixture. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_GAMES_NOT_CHRONOLOGICAL` | Reconstruction received games that were not sorted by start and game ID. Sorting is mandatory so no later result can enter an earlier feature row. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_CANDIDATE_TRAINING_FAILED` | Wrapper for any non-`NHLCandidateError` raised by `train_binary_candidate`. An embedded typed code is preserved; otherwise this code names the untyped failure. | `nhl_candidate_pipeline.py` | — | No |
+| `NHL_TRAINING_CODE_SHA_REQUIRED` | `training_code_sha` is shorter than 7 characters, so the artifact version could not be tied to deployed code. | `nhl_candidate_pipeline.py` | — | No |
+
+#### Candidate package and dataset preflight (stage `CANDIDATE_PREFLIGHT`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_CANDIDATE_PACKAGE_INCOMPLETE` | Package lacks a non-empty `games` list, a non-empty `feature_rows` list, or a `candidate` mapping. Nothing is validated further. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_IDENTITY_MISMATCH` | Candidate sport/league, model family, source policy or feature-schema version differs from the governed NHL family. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_EVENT_TIME_INVALID` | `event_start_time` or `feature_as_of` is missing, unparseable or timezone-naive. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_FEATURE_SCHEMA_MISMATCH` | Artifact `feature_names` or a training row's feature key set differs from the governed `FEATURE_NAMES`. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_FEATURE_INVALID` | A training feature is boolean, non-numeric or non-finite. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_OUTCOME_MISSING` | `positive_outcome` is not a bool. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_MANIFEST_INVALID` | Row manifest is not a mapping, its SHA is invalid or mismatched, source/schema/reconstruction identity is wrong, an archived pregame snapshot is claimed, or market features / `can_execute` are not false. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_GOVERNANCE_FLAGS_INVALID` | Candidate or package is not research-only: lifecycle is not `CANDIDATE`, or promoted/active/automatic-certification/automatic-promotion/publishable/execute flags are not false. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ARTIFACT_CHECKSUM_MISMATCH` | `artifact_checksum` is not 64-hex or does not equal the canonical hash of the artifact payload. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_PARTITIONS_INVALID` | `validation_metrics` is not a mapping. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_MARKET_FEATURES_FORBIDDEN` | Validation metrics admit market-derived inputs as model features. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_PARTITION_MISMATCH` | Stored or fitted train/calibration/test counts are not positive integers, disagree with each other, or do not sum to the feature-row count. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ARTIFACT_IDENTITY_MISMATCH` | Embedded artifact model family differs from the governed family. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ARTIFACT_SPLIT_MISMATCH` | Embedded split policy is not `CHRONOLOGICAL_60_20_20`, or its boundary indices differ from the fitted cumulative counts. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_EVENT_INVALID` | A source game entry is not a mapping. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_PIN_MISSING` | A source game fails provider, payload-hash, official URI-prefix, retrieved-time, historical-reconstruction or `can_execute` pinning. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_DUPLICATE_IDENTITY` | Empty or duplicate event ID, a repeated (season, start, home, away) identity, or a feature row with no matching source game. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_FEATURE_ROW_INVALID` | A feature row is not a mapping. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_SOURCE_IDENTITY_MISMATCH` | Feature-row flags, start/outcome, or manifest game hash disagree with its source game. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_TEMPORAL_LEAKAGE` | `feature_as_of` is at or after the event start, so pregame features would contain outcome-adjacent information. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_ROWS_NOT_CHRONOLOGICAL` | Feature rows are not in non-decreasing event-start order. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_CANDIDATE_DATASET_HASH_MISMATCH` | `training_dataset_hash` is invalid or differs from the recomputed canonical dataset hash. | `v17/nhl_candidate_preflight.py` | — | No |
+
+#### Frozen → current goalie-status handoff (`validate_nhl_goalie_status_handoff`)
+
+This comparison is evidence reconciliation only. It does not qualify a scorer,
+invoke one, or certify a probability.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_GOALIE_EVENT_IDENTITY_MISMATCH` | Frozen and current snapshots do not both carry the same non-empty official event ID. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_KICKOFF_INVALID` | Either snapshot's kickoff is missing, unparseable or timezone-naive. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_AS_OF_INVALID` | Either snapshot's `as_of` is missing, unparseable or timezone-naive. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_KICKOFF_MISMATCH` | Frozen and current kickoffs differ. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_EVIDENCE_AFTER_KICKOFF` | Either snapshot was observed at or after its kickoff. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_CURRENT_RECEIPT_STALE` | The current observation does not postdate the frozen one, or kickoff is more than 4 hours after the current observation. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_SOURCE_PIN_MISSING` | Either snapshot lacks the governed source ID, a snapshot ID, or a 64-hex payload hash. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_SOURCE_NOT_REFRESHED` | Snapshot ID and payload hash are both unchanged; a newer timestamp alone is not a refreshed immutable receipt. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_MISSING` | A side lacks a goalie mapping or goalie ID in either snapshot. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_STARTING_GOALIE_CHANGED` | The starting-goalie ID changed between the frozen and current snapshots. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_GOALIE_STATUS_MISSING` | Starting status is blank on a side in either snapshot. | `v17/nhl_candidate_preflight.py` | — | No |
+| `NHL_STARTING_STATUS_CHANGED` | Starting status differs between the snapshots even though both are confirmed statuses. | `v17/nhl_candidate_preflight.py` | — | No |
+
+This handoff also emits `NHL_STARTING_GOALIE_NOT_CONFIRMED` and
+`NHL_GOALIE_IDENTITY_INVALID`, registered once under the confirmation table above.
+
+#### Promotion stages and blocked dispositions (`v17/nhl_model_maintenance.py`)
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_MAINTENANCE_RANGE_EMPTY` | Stage `CONFIGURATION`: no start years remain after normalization. Nothing is acquired or trained. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_TRAINING_CODE_SHA_UNAVAILABLE` | Stage `CANDIDATE_TRAINING`: no training-code SHA was supplied and `RENDER_GIT_COMMIT` is unset, so evidence could not be tied to deployed code. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_CANDIDATE_PREFLIGHT_BLOCKED` | Stage `CANDIDATE_PREFLIGHT`: wrapper emitted only after candidate preflight rejects the package; nested `detail.code` names the specific preflight code above. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_MODEL_MAINTENANCE_FAILED` | Stage `NHL_ACQUISITION_OR_TRAINING`: an untyped exception escaped acquisition/training; only the exception type is recorded. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_TRAINING_OUTCOME_NOT_RECONCILED` | Stage `NHL_RECONCILIATION`: a feature-row event ID has no settled source-game outcome. | `v17/nhl_model_maintenance.py` | — | No |
+| `NHL_CANDIDATE_PERSISTENCE_FAILED` | Stage `CANDIDATE_PERSISTENCE`: an untyped failure occurred while writing the immutable candidate package; only the exception type is recorded. | `v17/nhl_model_maintenance.py` | — | No |
+
+Success status `NHL_PREGAME_GATE_INPUTS_COMPLETE` is not a failure code and grants
+no probability, rank or execution authority.
+
+## NHL official event identity and source resolution (November 2026)
+
+First-party resolver (`v17/nhl_event_identity.py`). Provider discovery IDs (for
+example ESPN IDs) remain aliases; canonical event identity is assigned only
+after an exact participant plus start-time match against the NHL-owned club
+season schedule endpoint, within a 30-minute tolerance. The resolver returns
+`identity_provider=NHL_PUBLIC_WEB_API`, `market_features_used=false`,
+`prediction_authority=false` and `can_execute=false`; it grants no probability,
+ranking, certification or execution authority. None of these codes is
+`MODEL_UNAVAILABLE`: they describe identity or acquisition state, not the
+absence of a fitted model.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_EVENT_TIME_INVALID` | Supplied event start is missing, not parseable as ISO-8601, or timezone-naive. Raised before any source fetch, so no provider aliasing occurs. | `v17/nhl_event_identity.py` | `nhl_candidate_pipeline.py` | No |
+| `NHL_EVENT_PARTICIPANT_IDENTITY_UNRESOLVED` | Home or away cannot be normalized to a recognized NHL abbreviation, or both normalize to the same team. Raised before any source fetch. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_TRANSPORT_FAILED` | The club-season schedule request raised (timeout, DNS, connection, TLS). Acquisition failure only; carries the exception type, never a model verdict. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_RATE_LIMITED` | The official schedule endpoint returned HTTP 429. Acquisition failure only. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_HTTP_<status>` | The official schedule endpoint returned any other non-200 status. The suffix is the provider status code, or `UNKNOWN` when absent. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_RESPONSE_INVALID` | The response body could not be decoded as JSON. The detail records the exception type only. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_OFFICIAL_SOURCE_SCHEMA_DRIFT` | Decoded payload is not a mapping, or its `games` member is not a list. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_CANONICAL_EVENT_NOT_FOUND` | No scheduled game matched both normalized participants and a start within the 30-minute tolerance, so no canonical official event ID exists. | `v17/nhl_event_identity.py` | — | No |
+| `NHL_CANONICAL_EVENT_AMBIGUOUS` | More than one distinct official event ID matched the same participants and start window. No arbitrary winner is chosen. | `v17/nhl_event_identity.py` | — | No |
+
+## NHL total-goals research lane (November 2026)
+
+Research challengers only (`v17/nhl_total_goals_*`). Every artifact and receipt in
+this lane sets `probability_publishable=false`, `rank_eligible=false`,
+`can_execute=false`; the regime-mixture module additionally sets
+`automatic_certification=false` and `automatic_promotion=false`. Features are
+retrospectively reconstructed from prior settled games only and are explicitly
+**not** archived pregame snapshots. A passing disposition means the research
+evidence reconciled; it never certifies a probability or registers a serving
+specialist. None of these codes is `MODEL_UNAVAILABLE`. Information-bearing
+dispositions are not failure codes: `NHL_TOTALS_OFFICIAL_HISTORICAL_PROJECTION_VERIFIED`,
+`NHL_TOTALS_REAL_SOURCE_RESEARCH_FEATURES_READY`,
+`NHL_TOTALS_REGIME_FIT_INPUTS_RECONCILED_RESEARCH_ONLY`,
+`NHL_TOTALS_RETROSPECTIVE_SOURCE_LABELS_RECONCILED`,
+`NHL_TOTALS_OFFICIAL_REGIME_COHORT_RECONCILED`,
+`NHL_TOTALS_OFFICIAL_REGIME_PARTIAL_RESEARCH_ONLY`,
+`NHL_TOTALS_PARTIAL_RESEARCH_NO_FIT`,
+`NHL_TOTALS_REAL_5SEASON_REGIME_REPLAY_RESEARCH_ONLY` and
+`NHL_TOTALS_RESEARCH_MODEL_REPLAY_COMPLETED_NOT_CERTIFIED`. Their stage meanings
+are recorded in `docs/nhl_status_registry.md`.
+
+### Source admission and cohort reconstruction
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_SOURCE_ROWS_EMPTY` | No D1 or official source records were supplied, so no research row can be reconstructed. | `v17/nhl_total_goals_source_adapter.py` | `v17/nhl_total_goals_challenger.py` | No |
+| `NHL_TOTALS_SOURCE_ROW_INVALID` | A source row fails sport/source, historical-reconstruction, `can_execute`, season identity, event/team identity, 64-hex hash, regular-season (`gameType` 2) or final-score (non-negative, non-tie) admission. Detail is the underlying validation text. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_EVENT_TIME_INVALID` | A source timestamp is missing, unparseable, or timezone-naive. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_SOURCE_IDENTITY_CONFLICT` | The same season/event appears with different start, teams or scores; no source version is chosen implicitly. | `v17/nhl_total_goals_source_adapter.py` | `v17/nhl_total_goals_challenger.py` | No |
+| `NHL_TOTALS_DUPLICATE_EVENT` | The same event identity appears twice with identical content. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_OVERLAPPING_TEAM_EVENT` | Within one scheduled instant a team appears in more than one fixture, so its prior-game history would be ambiguous. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_CHRONOLOGY_INVALID` | A history entry used to build features is timestamped at or after the fixture being featurized. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_FEATURE_INVALID` | A reconstructed prior-10 feature is non-finite or negative. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PERSISTED_ROW_INVALID` | A persisted D1 row fails season/event/score/team/source/governance/hash admission; detail is the validation text. | `v17/nhl_total_goals_source_adapter.py` | — | No |
+| `NHL_TOTALS_SOURCE_VERSION_REVIEW_REQUIRED` | One event has multiple source payload versions or instances. The explicit research-only override `allow_matching_source_versions=True` is required after review, and the audit ledger retains every hash. | `v17/nhl_total_goals_source_adapter.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_ROW_INVALID` | An official schedule game row is not a mapping, or its event ID, season, start, teams, scores or period fail admission, including OT/SO one-goal-margin and odd-parity rules. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_SCHEMA_INVALID` | A club schedule payload is not a mapping or lacks a `games` list. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_TEAM_INVALID` | The requested schedule team is not a 3-letter abbreviation. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_IDENTITY_DRIFT` | A schedule row's season differs from the requested season, or the requested team is not a participant. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_SCHEDULE_DUPLICATE_EVENT` | One club schedule contains the same event ID twice. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_SOURCE_TYPE_INVALID` | Reconciliation received a row that is not an `NHLOfficialRegimeResult`. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_GOVERNANCE_INVALID` | A regime row admits execution/publication or is not marked historically reconstructed. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_SOURCE_EMPTY` | No completed regular-season games remained after normalization. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_MIRROR_CONFLICT` | Two team-mirror views of the same event disagree on start, teams, score, period or goal-count definition. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_COHORT_EMPTY` | Either the D1 event cohort or the official regime cohort is empty; a one-sided join is never attempted. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_TYPE_INVALID` | A regime-side join input is not an `NHLOfficialRegimeResult`. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_DUPLICATE` | A season/event key is duplicated in either cohort. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_COHORT_MISSING` | A D1 event has no official regime label, or an official label was never matched; detail counts the unmatched side and no partial join is accepted. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_IDENTITY_CONFLICT` | D1 start, teams or scores disagree with the official settled result. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_REGIME_D1_ROW_INVALID` | A D1 row lacks required fields or contains invalid ones during the retrospective join. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_SEASONS_INVALID` | No seasons, non-integer seasons, or seasons outside the fully historical 2021–2025 range were requested. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_SOURCE_NOT_READY` | The source entitlement registry does not admit `NHL_PUBLIC_WEB_API` for candidate training; detail lists its blockers. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_TEAMS_INVALID` | The requested team set is empty, duplicated, or contains a team outside the official season team list. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_TRANSPORT_FAILED` | A club-schedule request raised; detail records the team and exception type. Acquisition failure only. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_HTTP_<status>` | A club-schedule request returned non-200; the suffix is the HTTP status and detail is the team. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_RESPONSE_INVALID` | A club-schedule response could not be decoded as JSON; detail is the team. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_COHORT_COVERAGE_INCOMPLETE` | A supposedly complete season did not reconcile to 1,312 unique games, 2,624 mirror instances, and exactly two instances per event. | `v17/nhl_total_goals_regime_source.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_SEASON_INVALID` | The fixture year is not an integer in the approved 2021–2025 set. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_ARCHIVE_INVALID` | Base64, gzip or JSON decoding failed, or the compressed (>100 KB) or expanded (>2 MB) bound was exceeded. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_PROVENANCE_INVALID` | Fixture season, URL template, historical-reconstruction flags, projection-not-raw-payload marker, or mirror-instance count is wrong. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_COVERAGE_INCOMPLETE` | A season does not contain exactly 1,312 admitted games. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_GAME_PROJECTION_INVALID` | A projected game fails event-ID/season prefix, final-state, team, score, two-mirror or final-period admission. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_TEAM_COVERAGE_INVALID` | The season does not cover all 32 teams at 82 games each. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_DUPLICATE_EVENT` | A game ID repeats within a season, or the same event appears across seasons during reconstruction. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_SOURCE_FINGERPRINT_MISMATCH` | The recomputed identity or REG/OT/SO label digest differs from the pinned per-season checksum. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_SEASON_SET_INVALID` | Reconstruction received no seasons or duplicate years. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_ROW_UNVERIFIED` | A reconstruction input is not an `OfficialProjection` or carries the wrong season tag. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_MODEL_JOIN_MISMATCH` | A reconstructed row's total, source hash or start disagrees with its admitted official projection. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_OFFICIAL_FIXTURE_MISSING` | The checked-in compressed fixture for a requested season is absent; there is no network fallback. | `v17/nhl_total_goals_official_fixture.py` | — | No |
+| `NHL_TOTALS_LANDING_SOURCE_INVALID` | The gamecenter landing payload is not a mapping. | `v17/nhl_total_goals_score_regimes.py` | — | No |
+| `NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH` | Landing reconciliation failed: identity, final state, period order/completeness, per-goal side/team, shootout award, or official-versus-reconstructed total. Detail names the specific internal check. | `v17/nhl_total_goals_score_regimes.py` | — | No |
+
+### Feature reconstruction and regime-label bridge
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_BRIDGE_TIME_INVALID` | Bridge timestamp is missing, unparseable or timezone-naive. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_SOURCE_HASH_INVALID` | A D1 or official digest is not 64 lowercase hexadecimal characters. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_RECEIPT_INVALID` | The joined-label receipt status, reconstruction flags, publish/execute flags, `model_probability` or `calibrated_lower_bound` are unsafe for a research join. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LABELS_INVALID` | Labels are not a non-empty list, `count` is not an int equal to the list length, or a label is not a mapping. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LABEL_DUPLICATE` | A label event ID is not 10 decimal digits or is duplicated. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LABEL_UNVERIFIED` | A label is not historical, claims an archived pregame snapshot, or admits publication/execution. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_FEATURES_EMPTY` | No reconstructed total rows were supplied. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_FEATURE_UNVERIFIED` | A feature row is not a `TotalRow` or is not marked historically reconstructed. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_DUPLICATE_FEATURE` | Duplicate feature event ID. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_MISSING_REGIME` | No official regime label exists for a feature event. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_IDENTITY_CONFLICT` | Season ID, final total, D1 payload hash or kickoff disagrees between the feature row and its label. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_LEAKAGE` | `reconstructed_as_of` is at or after kickoff. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_FEATURE_WIDTH` | The feature tuple is not the governed width of 6. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_REGIME_CONFLICT` | Terminal regime is not REG/OT/SO, or a non-REG total is even. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_TOTALS_BRIDGE_ROW_INVALID` | A required label field is missing or mistyped while constructing the research row. | `v17/nhl_total_goals_model_bridge.py` | — | No |
+| `NHL_REGIME_TIME_INVALID` | Mixture timestamp is missing, unparseable or timezone-naive. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_ROWS_EMPTY` | No regime research rows were supplied. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_ROW_TYPE_INVALID` | Row is not a `RegimeResearchRow`. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DUPLICATE_EVENT` | Duplicate event ID in the regime cohort. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_FEATURE_CHRONOLOGY_INVALID` | `feature_as_of` is at or after kickoff, the row is not historical, or it claims an archived pregame snapshot. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_OUTCOME_INVALID` | Regime is not REG/OT/SO, the total is not a positive int, or a non-REG total is even. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_FEATURES_INVALID` | Feature count differs from 6 or a value is non-finite. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_SOURCE_HASH_INVALID` | A D1 or regime digest is not 64 hexadecimal characters. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_SEASON_UNSUPPORTED` | Season is outside the 2021–2025 research cohorts. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Fitting and chronological splits
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_NONFINITE_DATA` | The feature or outcome matrix contains non-finite values before fitting. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_HOLDOUT_INSUFFICIENT` | Train, calibration or validation rows are below the 300/120/120 minimums. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_SPLIT_OVERLAP` | An event appears in more than one cohort (train, calibration, validation or forward reserve). | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_REGIME_HOLDOUT_INSUFFICIENT` | Train, calibration or development rows are below the 300/120/120 minimums. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_CLASS_HISTORY_INSUFFICIENT` | A terminal regime has fewer than 30 training or 15 calibration rows. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_CLASSES_MISSING` | Fitted logistic classes are not exactly REG/OT/SO. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Calibration
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_CALIBRATION_INVALID` | The empirical calibration mean multiplier is non-finite, non-positive, or outside 0.25–4. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_CALIBRATION_INSUFFICIENT` | The parity calibration cohort is below 120 rows or contains duplicate events. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_CALIBRATION_DEGENERATE` | The odd-total share is not strictly between 0 and 1. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_REGIME_CLASS_CALIBRATION_INVALID` | A class-weight factor is non-finite or outside 0.20–5. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_COUNT_CALIBRATION_INVALID` | A per-class count mean factor is non-finite or outside 0.20–5. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Validation and distribution integrity
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_MEAN_INVALID` | Fitted logits are non-finite or beyond ±80, or a supplied mean is non-finite or non-positive. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_VALIDATION_INVALID` | Validation length mismatch, non-finite predictions, or non-positive predicted means. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_DIRECTION_INVALID` | Side is not UNDER/OVER. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_LINE_UNSUPPORTED` | Line is not finite, is negative, or is not a half-integer. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PROBABILITY_INVALID` | Win plus push plus loss mass does not equal 1 within 1e-8. | `v17/nhl_total_goals_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_PARAMETERS_INVALID` | Mean is outside 0.1–30, or the odd share is non-finite or outside (0,1). | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_LINE_UNSUPPORTED` | Parity line is not finite, is outside 0–20.5, or is not a half-integer. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_DIRECTION_UNRESOLVED` | Parity side is not UNDER/OVER. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_TOTALS_PARITY_MASS_INVALID` | Parity under/push/over mass is out of range or inconsistent. | `v17/nhl_total_goals_parity_challenger.py` | — | No |
+| `NHL_REGIME_SCORING_FEATURES_INVALID` | The scoring feature vector has the wrong width or a non-finite value. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DISTRIBUTION_INVALID` | Component probabilities or means are non-finite, a mean is <= 0, or a mean exceeds 40. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_GOAL_COUNT_INVALID` | The requested goal count is not a non-negative integer. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_LINE_UNSUPPORTED` | Regime line is not finite, is outside 0–30, or is not a half-integer. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DIRECTION_INVALID` | Regime side is not UNDER/OVER. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_MASS_INVALID` | The exact CDF/complement mass fails normalization. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+| `NHL_REGIME_DEV_DENSITY_INVALID` | The development likelihood of an observed total is non-positive. | `v17/nhl_total_goals_regime_mixture_research.py` | — | No |
+
+### Replay and corpus reproduction
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_TOTALS_HISTORICAL_DUPLICATE_EVENT` | The five-season replay encountered the same event ID in more than one season fixture. | `v17/nhl_total_goals_official_fitted_replay.py` | — | No |
+| `NHL_TOTALS_EXPERIMENT_COMPARISON_COHORT_MISMATCH` | Mixture and Poisson models were not fitted on identical train/calibration/development counts, or the admitted corpus is not 6,560 games. | `v17/nhl_total_goals_official_fitted_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_SEASON_COHORT_INCOMPLETE` | A complete-corpus replay is missing one of the five required historical seasons. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_SCHEDULE_INPUT_INVALID` | A schedule export record is not a mapping or lacks season, team or payload. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_SCHEDULE_MISSING` | No official schedule exports were supplied. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+| `NHL_TOTALS_REPLAY_COVERAGE_INCOMPLETE` | Full-corpus invariants failed: not 6,560 games on each side, 13,120 mirror instances, 6,560 mirrored events, or a ledger event without exactly two instances. | `v17/nhl_total_goals_offline_replay.py` | — | No |
+
+## NHL goalie/shot/special-teams research challenger (November 2026)
+
+Research-only side-by-side comparison (`v17/nhl_goalie_shot_challenger.py`,
+`v17/nhl_goalie_shot_runner.py`). V1 and V2 are refit on the identical
+boxscore-complete intersection with the same chronological 60/20/20 partitions;
+the added features are prior-settled-game reconstructions with a projected
+goalie policy (`LAST_START_OR_B2B_ALTERNATE_V1`, `goalie_status=PROJECTED`), so
+no pregame starter confirmation is claimed. The current game's settled boxscore
+is excluded from every feature-row manifest. The report is
+`ADVISORY_RESEARCH_ONLY` with `automatic_promotion_allowed=false`,
+`probability_publishable=false` and `can_execute=false`; even a passing research
+gate only requires forward shadow and governed review. The CI runner holds no
+secrets and writes no database rows. None of these codes is `MODEL_UNAVAILABLE`.
+
+### Boxscore acquisition and paired-row construction
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_BOX_SCHEMA_DRIFT` | Official boxscore structure or numeric data is unusable: a count is boolean, negative or non-integer, a team/player array or goalie list is missing, saves exceed shots against, a required field is absent, or the decoded payload is not a mapping. Detail names the field or exception type; no default is substituted. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_IDENTITY_MISMATCH` | Boxscore ID/season, a team abbreviation, or the parsed box season/home/away disagrees with the scheduled game. Detail appends the side when only one team conflicts. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_NOT_FINAL` | `gameState` is not `FINAL`/`OFF`, or `gameType` is not 2 (regular season). A non-final boxscore is never admitted as a settled outcome. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_STARTER_AMBIGUOUS` | A side's goalie list has zero or more than one entry with `starter: true`, so the starting goalie cannot be identified without guessing. The CI runner may exclude this event as a documented coverage gap. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_TRANSPORT_FAILED` | A boxscore request raised `requests.RequestException` on the final of four attempts (backoff 1s, 2s, 4s, capped at 8s). | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_HTTP_<status>` | Non-200 response: immediately for non-retryable statuses such as 404, or after the final attempt for 429/500/502/503/504. The suffix is the HTTP status and detail is the game ID. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_RETRIES_EXHAUSTED` | The retry loop ended without a classified response or exception, which happens when the retry budget is non-positive. Defensive terminal; it reports no provider result. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_JSON_INVALID` | The boxscore response body could not be decoded as JSON. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_BOX_GAME_RECONCILIATION_FAILED` | Schedule game IDs are duplicated, or a supplied boxscore key is not in the schedule universe. No box is silently dropped or invented. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_GAME_ID_DUPLICATE` | The fetched historical schedule contains a duplicate official game ID, in either replay entry point. | `v17/nhl_goalie_shot_challenger.py` | `v17/nhl_goalie_shot_runner.py` | No |
+| `NHL_V1_IDENTITY_DUPLICATE` | The reconstructed V1 baseline rows contain a duplicate event ID, so the side-by-side comparison would not hold one row per game. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_GAME_TIME_CONFLICT` | A team appears twice at the same scheduled instant, or its prior history entry is timestamped at or after the current fixture. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+| `NHL_COMPARISON_INTERSECTION_INCOMPLETE` | Fewer than 300 events remain in the boxscore-complete V1/V2 intersection, so the paired comparison is not fitted. | `v17/nhl_goalie_shot_challenger.py` | — | No |
+
+### Cached replay driver
+
+The runner excludes an event only for the three documented coverage failures
+(`NHL_BOX_HTTP_404`, `NHL_BOX_STARTER_AMBIGUOUS`, `NHL_BOX_SCHEMA_DRIFT`).
+Transport, rate-limit and identity failures remain blocking.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---:|
+| `NHL_CACHE_IDENTITY_CONFLICT` | A cached box's event ID, season, home or away team differs from the schedule row. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_CACHE_HASH_INVALID` | A cached box's `source_hash` is not 64 characters. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_CACHE_INVALID` | A cached file is unreadable, mistyped, missing keys, or failed its identity/hash check. The run fails closed instead of trusting the row or silently refetching it. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_BOX_COVERAGE_BELOW_98_PERCENT` | More than 2% of scheduled games were excluded for documented coverage reasons, so the research corpus is too incomplete to replay. | `v17/nhl_goalie_shot_runner.py` | — | No |
+| `NHL_RESEARCH_REPLAY_FAILED` | The CI driver caught an exception with no typed `code` attribute. The block is still rendered typed, with `exception_type`, `can_execute=false` and a non-zero exit. | `v17/nhl_goalie_shot_runner.py` | — | No |
+
+`NHL_REPLAY_BLOCKED:<code>:<type>` is the CI stderr marker for a typed block, not
+a distinct failure code; the underlying code is always one of the rows above.
+
+<!-- sport-failure-registry:NFL:begin -->
+## NFL failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing NFL code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `NFL_ACTIVE_CALIBRATOR_NOT_AVAILABLE` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_ARTIFACT_DIMENSION_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_ARTIFACT_INVALID_SCALER` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_ARTIFACT_NONFINITE_PARAMETERS` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_ATD_EXACT_ROUTE_REQUIRED` | No inline message; terminal code raised in `verify_anytime_td_gamebook`. | `v17/nfl_atd_gamebook_evidence.py` | — | No |
+| `NFL_BOUNDS_MARGIN_INVALID` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_CANONICAL_EVENT_IDENTITY_MISMATCH` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CANONICAL_EVENT_ID_AMBIGUOUS` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CANONICAL_EVENT_ID_MISMATCH` | No inline message; terminal code raised in `resolve_nfl_event_identity`. | `v17/nfl_prop_boundary_integrity.py` | — | No |
+| `NFL_CANONICAL_EVENT_METADATA_INVALID` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CANONICAL_EVENT_PLAYER_IDENTITY_REQUIRED` | No inline message; terminal code raised in `settle_nfl_scalar`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_CANONICAL_GAME_ROW_MISSING` | No inline message; terminal code raised in `settle_nfl_scalar`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_CANONICAL_NFLVERSE_PLAYER_STATS` | No inline message; terminal code raised in `module scope`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_CANONICAL_PLAYER_GAME_ROW_REQUIRED` | No inline message; terminal code raised in `settle_nfl_scalar`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_CANONICAL_PLAYER_STATS_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `settle_nfl_scalar`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_CANONICAL_PREGAME_FEATURE_ROW` | No inline message; terminal code raised in `_attach_nfl_feature_consumption_metadata`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_CANONICAL_SCHEDULE_BYTES_UNAVAILABLE` | No inline message; terminal code raised in `_load_latest_schedule_snapshot`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CANONICAL_SCHEDULE_EMPTY` | No inline message; terminal code raised in `_load_latest_schedule_snapshot`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CANONICAL_SCHEDULE_REQUERY` | No inline message; terminal code raised in `_final_refresh_proven`. | `v17/nfl_daily_stage_receipts.py` | `v17/nfl_team_event_publication.py` | No |
+| `NFL_CANONICAL_SCHEDULE_SNAPSHOT_UNAVAILABLE` | No inline message; terminal code raised in `_load_latest_schedule_snapshot`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CANONICAL_STADIUM_UNAVAILABLE` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_CERTIFIED_FULL_GAME_TOTAL_MODEL_NOT_REGISTERED` | No inline message; terminal code raised in `tiebreaker_capability`. | `v17/nfl_pickem_pool_optimizer.py` | — | No |
+| `NFL_CHALLENGER_BOOTSTRAP_EMPTY` | No inline message; terminal code raised in `empirical_lower`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_BOOTSTRAP_PROBABILITY_INVALID` | No inline message; terminal code raised in `empirical_lower`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_BOOTSTRAP_QUANTILE_INVALID` | No inline message; terminal code raised in `empirical_lower`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_FORWARD_IDENTITY_MISSING` | No inline message; terminal code raised in `build_forward_shadow_record`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_LOCAL_CALIBRATION_EMPTY` | No inline message; terminal code raised in `wilson_lower`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_LOCAL_CALIBRATION_SUCCESS_COUNT_INVALID` | No inline message; terminal code raised in `wilson_lower`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_LOWER_BOUND_POINT_MISMATCH` | No inline message; terminal code raised in `build_forward_shadow_record`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHALLENGER_SELECTED_PROBABILITY_OUT_OF_RANGE` | No inline message; terminal code raised in `nearest_local_lower`. | `v17/nfl_ml_challenger_v2.py` | — | No |
+| `NFL_CHAMPION_ARTIFACT_NOT_AVAILABLE` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_CHAMPION_CALIBRATOR_ID_MISSING` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_CURRENT_SEASON_PBP_ASSET_UNAVAILABLE` | No inline message; terminal code raised in `_pbp_asset`. | `v17/nfl_current_season_summary_refresh.py` | — | No |
+| `NFL_CURRENT_SEASON_TRAINING_GAMES_UNAVAILABLE` | No inline message; terminal code raised in `_load_season_training_games`. | `v17/nfl_current_season_summary_refresh.py` | — | No |
+| `NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_actual_producer_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_INVALID` | No inline message; terminal code raised in `_actual_producer_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_MISSING` | No inline message; terminal code raised in `_actual_producer_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_NUMERIC_MISMATCH` | No inline message; terminal code raised in `_actual_producer_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_TIMESTAMP_MISMATCH` | No inline message; terminal code raised in `_actual_producer_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_ESPN_EVENT_ID_REQUIRED` | No inline message; terminal code raised in `_nfl_event_finality`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_EVENT_CALIBRATOR_UNAVAILABLE` | No inline message; terminal code raised in `p0_readiness`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_EVENT_CONTEXT_CALIBRATION_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_CHAMPION_METRICS_INCOMPLETE` | No inline message; terminal code raised in `_champion_comparison`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_CHAMPION_UNAVAILABLE` | No inline message; terminal code raised in `_active_champion`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_CLASS_DEGENERATE` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_METADATA_MISMATCH` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_METRICS_INVALID` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_ROWS_EMPTY` | No inline message; terminal code raised in `build_rows`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_SPLIT_INVALID` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_TRAIN_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_CONTEXT_VALIDATION_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `_train_season_split_candidate`. | `v17/nfl_event_context_challenger.py` | — | No |
+| `NFL_EVENT_FEATURE_PACKET_MISSING` | No inline message; terminal code raised in `validate_feature_packet`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_EVENT_IDENTITY_BOUNDARY` | No inline message; terminal code raised in `_merge_response`. | `v17/nfl_prop_identity_boundary.py` | — | No |
+| `NFL_EVENT_IDENTITY_RESOLUTION` | No inline message; terminal code raised in `_blocked_identity_outcome`. | `v17/nfl_prop_identity_boundary.py` | — | No |
+| `NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE` | No inline message; terminal code raised in `score_nfl_team_event_request`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_EVENT_MARKET_UNSUPPORTED` | No inline message; terminal code raised in `validate_candidate_identity`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_EVENT_PERIOD_UNSUPPORTED` | No inline message; terminal code raised in `validate_candidate_identity`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_EVENT_PROBABILITY_CAPABILITY_UNAVAILABLE` | No inline message; terminal code raised in `p0_readiness`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_EVENT_SPORT_MISMATCH` | No inline message; terminal code raised in `validate_candidate_identity`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_EVENT_START_SLATE_DATE_MISMATCH` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_EVENT_START_TIME_INVALID` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_EVENT_STATUS_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `_nfl_event_finality`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_FEATURE_ASSEMBLY_FAILED` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_FEATURE_ORDER_ARTIFACT_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_ORDER_HASH_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_ORDER_INPUT_MISMATCH` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_SCHEMA_ARTIFACT_MISMATCH` | No inline message; terminal code raised in `load_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_SCHEMA_INPUT_MISMATCH` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_VECTOR_DIMENSION_MISMATCH` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_VECTOR_NONFINITE` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FEATURE_VECTOR_NONNUMERIC` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_FINAL_REFRESH_NOW_MUST_BE_TIMEZONE_AWARE` | No inline message; terminal code raised in `_nfl_final_refresh`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_FINAL_REFRESH_SOURCE_PROOF_UNPROVEN` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_FITTED_MODEL_ARTIFACT_UNAVAILABLE` | No inline message; terminal code raised in `p0_readiness`. | `nfl_event_model_contract.py` | — | No |
+| `NFL_FITTED_SCORER_FAILED` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_FORWARD_CERTIFICATION_UNPROVEN` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_GOVERNED_PROBABILITY_PACKAGE_INVALID` | No inline message; terminal code raised in `_govern`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_GOVERNED_PUBLICATION_NOT_PROVEN` | No inline message; terminal code raised in `_govern`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_GSIS_URL_NOT_CANONICAL` | No inline message; terminal code raised in `verify_anytime_td_gamebook`. | `v17/nfl_atd_gamebook_evidence.py` | — | No |
+| `NFL_HISTORICAL_FEATURE_CONTEXT_UNAVAILABLE` | No inline message; terminal code raised in `_load_history`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_IMMUTABLE_PREDICTION_IDENTITY_AMBIGUOUS` | No inline message; terminal code raised in `_load_existing_prediction`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_IMMUTABLE_PREDICTION_IDENTITY_LOOKUP_FAILED` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_IMMUTABLE_PREDICTION_PERSISTENCE_FAILED` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_IMMUTABLE_PREDICTION_PERSISTENCE_NO_ROW` | No inline message; terminal code raised in `score_nfl_team_event`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_IMMUTABLE_PREDICTION_REUSE_SNAPSHOT_MISSING` | No inline message; terminal code raised in `_reused_prediction_result`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_IMMUTABLE_PREGAME_PREDICTION_READBACK` | No inline message; terminal code raised in `module scope`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_MODEL_CERTIFICATION_BLOCKED` | No inline message; terminal code raised in `score_nfl_team_event_request`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_MODEL_CONSUMED_VECTOR_MISMATCH` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_MODEL_PROMOTION_INVALID_RESPONSE` | No inline message; terminal code raised in `ensure_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_PICKEM_ASYNC_IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST` | No inline message; terminal code raised in `_submit`. | `v17/nfl_pickem_async_runtime.py` | — | No |
+| `NFL_PICKEM_ASYNC_RUN_NOT_FOUND` | No inline message; terminal code raised in `get_nfl_pickem_run`. | `v17/nfl_pickem_async_runtime.py` | — | No |
+| `NFL_PICKEM_ASYNC_STATUS_UNAVAILABLE` | No inline message; terminal code raised in `get_nfl_pickem_run`. | `v17/nfl_pickem_async_runtime.py` | — | No |
+| `NFL_PICKEM_ASYNC_SUBMISSION_PERSISTENCE_FAILED` | No inline message; terminal code raised in `submit_nfl_pickem`. | `v17/nfl_pickem_async_runtime.py` | — | No |
+| `NFL_PRIOR_GAMES_ABLATION_FEATURE_ORDER_INVALID` | No inline message; terminal code raised in `challenger_feature_order`. | `v17/nfl_ml_prior_games_ablation.py` | — | No |
+| `NFL_PRIOR_GAMES_ABLATION_NONFINITE_INPUT` | No inline message; terminal code raised in `_project_row`. | `v17/nfl_ml_prior_games_ablation.py` | — | No |
+| `NFL_PRIOR_GAMES_ABLATION_SOURCE_ORDER_MISMATCH` | No inline message; terminal code raised in `_project_row`. | `v17/nfl_ml_prior_games_ablation.py` | — | No |
+| `NFL_PRIOR_GAMES_ABLATION_SOURCE_VECTOR_INVALID` | No inline message; terminal code raised in `_project_row`. | `v17/nfl_ml_prior_games_ablation.py` | — | No |
+| `NFL_PROBABILITY_PACKAGE_NONFINITE_OR_OUT_OF_RANGE` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_PROBABILITY_PAIR_NOT_NORMALIZED` | No inline message; terminal code raised in `score_feature_row`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_PROP_BOX_SCORE_INVALID` | No inline message; terminal code raised in `history_pairs`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_FEATURE_VECTOR_OOD` | No inline message; terminal code raised in `nfl_prop_rolling_fitted_v1_adapter`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_HISTORY_CHRONOLOGY_UNVERIFIED` | No inline message; terminal code raised in `_history_unverified`. | `nfl_prop_auto_hydration.py` | — | No |
+| `NFL_PROP_HISTORY_EMPTY` | nflverse season payload was empty | `nfl_prop_auto_hydration.py` | `v17/nfl_prop_memory_safety.py` | No |
+| `NFL_PROP_HISTORY_INSUFFICIENT` | No inline message; terminal code raised in `_vector_from_pairs`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_HISTORY_INVALID` | No inline message; terminal code raised in `_finite`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_HISTORY_MISALIGNED` | No inline message; terminal code raised in `history_pairs`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_HISTORY_MISSING` | No inline message; terminal code raised in `history_pairs`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_LINEAR_PREDICTOR_INVALID` | No inline message; terminal code raised in `expected_value`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_OPPORTUNITY_INVALID` | No inline message; terminal code raised in `history_pairs`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_PMF_INVALID` | No inline message; terminal code raised in `distribution_for_vector`. | `nfl_prop_model_adapter.py` | — | No |
+| `NFL_PROP_SOURCE_UNAVAILABLE` | required NFL evidence source could not be retrieved | `nfl_prop_auto_hydration.py` | — | No |
+| `NFL_PROVIDER_EVENT_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_AMBIGUOUS` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_NOT_FOUND` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_PROVIDER_EVENT_ID_NOT_EXACTLY_RESOLVED` | No inline message; terminal code raised in `_nfl_event_finality`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_PROVIDER_EVENT_TEAM_IDENTITY_CONFLICT` | No inline message; terminal code raised in `_nfl_event_finality`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_PROVIDER_TEAM_IDENTITY_REQUIRED` | No inline message; terminal code raised in `_nfl_event_finality`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_RECENT_GAMES_INSUFFICIENT` | fewer than ten prior relevant NFL games were available from nflverse | `nfl_prop_auto_hydration.py` | — | No |
+| `NFL_REQUESTED_SLATE_DATE_INVALID` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_REQUESTED_TIMEZONE_INVALID` | No inline message; terminal code raised in `resolve_nfl_team_event_evidence`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_SCHEDULE_RAW_OBJECT_PATH_MISSING` | No inline message; terminal code raised in `_raw_object_path`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_SCHEDULE_RAW_OBJECT_URI_INVALID` | No inline message; terminal code raised in `_raw_object_path`. | `v17/nfl_team_event_specialist.py` | — | No |
+| `NFL_SCORE_SNAPSHOT_ID_MISSING` | No inline message; terminal code raised in `_govern`. | `v17/nfl_team_event_publication.py` | — | No |
+| `NFL_SOURCE_SNAPSHOT_INSERT_RETURNED_NO_ID` | No inline message; terminal code raised in `_snapshot_id`. | `nfl_event_hydration_runtime.py` | — | No |
+| `NFL_SPREAD_CONTEXT_NONFINITE_INPUT` | No inline message; terminal code raised in `_matrix`. | `v17/nfl_spread_context_challenger.py` | — | No |
+| `NFL_SPREAD_CONTEXT_RESIDUALS_INVALID` | No inline message; terminal code raised in `train_candidate`. | `v17/nfl_spread_context_challenger.py` | — | No |
+| `NFL_SPREAD_CONTEXT_ROWS_EMPTY` | No inline message; terminal code raised in `build_margin_rows`. | `v17/nfl_spread_context_challenger.py` | — | No |
+| `NFL_SPREAD_CONTEXT_SEASON_HOLDOUT_INSUFFICIENT` | train={len(train)} calibration={len(calibration)} validation={len(validation)} | `v17/nfl_spread_context_challenger.py` | — | No |
+| `NFL_SPREAD_V3_CALIBRATION_SPLIT_INSUFFICIENT` | need >= {MIN_RESIDUAL_FIT_N + MIN_SCALE_TUNE_N} 2024 rows, got {len(ordered)} | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_CALIBRATION_TIME_BLOCK_SPLIT_INSUFFICIENT` | residual_fit={len(fit_rows)} scale_tune={len(tune_rows)} | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_CRPS_INPUT_INVALID` | CRPS requires finite empirical samples and outcome | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_FORWARD_RESERVE_MISMATCH` | V2 fit and V3 partitions disagree on forward reserve | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_RESIDUALS_INVALID` | V3 residual distribution is unavailable or non-finite | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_RESIDUAL_FIT_INVALID` | valid residual_fit_n={len(residuals)} | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_RESIDUAL_SCALE_INVALID` | residual scale must be positive and finite, got {scale!r} | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_VALIDATION_EXACT_LINE_COVERAGE_INCOMPLETE` | No inline message; terminal code raised in `run_nfl_context_v3_scale_calibrated_replay`. | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_SPREAD_V3_VALIDATION_IDENTITY_MISMATCH` | V2 fit and V3 partitions disagree on untouched validation identity | `v17/nfl_spread_scale_calibrated_challenger.py` | — | No |
+| `NFL_STAGE_PROOF_*` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_CALIBRATED_BOUNDS_INVALID` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_DYNAMIC_CALIBRATION_UNPROVEN` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_EXACT_ROW_UNAVAILABLE` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_MODEL_PACKAGE_NOT_CERTIFIED` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_PREDICTION_ID_MISSING` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_READBACK_FAILED` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_STALE_MODEL` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAGE_PROOF_UNPROVEN` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_STAT_SETTLEMENT_UNSUPPORTED` | No inline message; terminal code raised in `settle_nfl_scalar`. | `v17/nfl_prop_settlement_overlay.py` | — | No |
+| `NFL_TARGET_EVENT_IDENTITY_INVALID` | No inline message; terminal code raised in `build_prediction_feature_row`. | `nfl_event_prediction_features.py` | — | No |
+| `NFL_TEMPORAL_SPLIT_CLASS_IMBALANCE` | No inline message; terminal code raised in `fit_candidate`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_TOTAL_POINTS_ALPHA_GRID_EMPTY` | No inline message; terminal code raised in `train_candidate`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_ARTIFACT_INVALID` | No inline message; terminal code raised in `artifact_from_json`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_ARTIFACT_SEASON_UNSUPPORTED` | No inline message; terminal code raised in `score_tiebreaker`. | `v17/nfl_total_points_tiebreaker_specialist.py` | — | No |
+| `NFL_TOTAL_POINTS_CALIBRATION_RESIDUALS_INVALID` | No inline message; terminal code raised in `train_candidate`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_EVENT_IDENTITY_INVALID` | No inline message; terminal code raised in `score_tiebreaker`. | `v17/nfl_total_points_challenger.py` | `v17/nfl_total_points_tiebreaker_specialist.py` | No |
+| `NFL_TOTAL_POINTS_NONFINITE_FEATURE` | No inline message; terminal code raised in `build_rows`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_NONFINITE_INPUT` | No inline message; terminal code raised in `_matrix`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_PREDICTION_NONFINITE` | No inline message; terminal code raised in `_predict`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_PREGAME_HISTORY_INSUFFICIENT` | No inline message; terminal code raised in `score_tiebreaker`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_PROJECTION_INVALID` | No inline message; terminal code raised in `score_tiebreaker`. | `v17/nfl_total_points_tiebreaker_specialist.py` | — | No |
+| `NFL_TOTAL_POINTS_REPLAY_LENGTH_INVALID` | No inline message; terminal code raised in `replay_metrics`. | `v17/nfl_total_points_tiebreaker_specialist.py` | — | No |
+| `NFL_TOTAL_POINTS_ROWS_EMPTY` | No inline message; terminal code raised in `build_rows`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TOTAL_POINTS_SEASON_HOLDOUT_INSUFFICIENT` | No inline message; terminal code raised in `train_candidate`. | `v17/nfl_total_points_challenger.py` | — | No |
+| `NFL_TRAINING_FEATURE_ROWS_EMPTY` | No inline message; terminal code raised in `ensure_champion_model`. | `nfl_event_model_v17.py` | — | No |
+| `NFL_UPSTREAM_TERMINAL_UNPROVEN` | No inline message; terminal code raised in `attach_nfl_daily_stage_receipt`. | `v17/nfl_daily_stage_receipts.py` | — | No |
+| `NFL_WEEK_AUTHENTICATED_TRANSPORT_REQUIRED` | No inline message; terminal code raised in `execute_nfl_week_snapshot_preflight`. | `v17/nfl_multiday_snapshot_adapter.py` | — | No |
+| `NFL_WEEK_BATCH_LIMIT` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DAILY_AUTH_OR_TERMINAL_INVALID` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DAILY_EVENT_MISMATCH` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DAILY_ROWS_INVALID` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DAILY_ROW_IDENTITY_INVALID` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DAILY_RUN_ID_INVALID_OR_DUPLICATE` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DATE_COVERAGE_MISMATCH` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_DATE_REQUEST_BUDGET_INVALID` | No inline message; terminal code raised in `execute_nfl_week_snapshot_preflight`. | `v17/nfl_multiday_snapshot_adapter.py` | — | No |
+| `NFL_WEEK_EVENT_IDS_INVALID` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_EXACT_ONCE_MISMATCH` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_FIXTURE_MISMATCH` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_FIXTURE_NOT_VERIFIED_PREGAME` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_IDENTITY_UNVERIFIED` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_KICKOFF_NOT_FUTURE` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_NOT_ELIGIBLE` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_PLAN_NOT_READY` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_RECONCILIATION_FAILED` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_RESPONSE_DATE_MISMATCH` | No inline message; terminal code raised in `execute_nfl_week_snapshot_preflight`. | `v17/nfl_multiday_snapshot_adapter.py` | — | No |
+| `NFL_WEEK_ROW_INVALID_OR_EXHAUSTED` | No inline message; terminal code raised in `reconcile_nfl_week_snapshots`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_SNAPSHOT_TRANSPORT_UNVERIFIED` | No inline message; terminal code raised in `execute_nfl_week_snapshot_preflight`. | `v17/nfl_multiday_snapshot_adapter.py` | — | No |
+| `NFL_WEEK_SOURCE_STALE_OR_FUTURE` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_SOURCE_TIME_UNVERIFIED` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_SOURCE_UNVERIFIED` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_THRESHOLD_INVALID` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+| `NFL_WEEK_TRUSTED_CLOCK_REQUIRED` | No inline message; terminal code raised in `plan_nfl_week_dates`. | `v17/nfl_multiday_acceptance_preflight.py` | — | No |
+
+<!-- sport-failure-registry:NFL:end -->
+
+<!-- sport-failure-registry:NBA:begin -->
+## NBA failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing NBA code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `NBA_CALIBRATOR_PAYLOAD_RESOLVER_UNAVAILABLE` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CALIBRATOR_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CANONICAL_EVENT_AMBIGUOUS` | No inline message; terminal code raised in `resolve_nba_current_event_identity`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_CANONICAL_EVENT_NOT_FOUND` | No inline message; terminal code raised in `resolve_nba_current_event_identity`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_CANONICAL_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CANONICAL_IDENTITY_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFICATION_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFICATION_SPECIALIST_SCOPE_OR_MODEL_MISMATCH` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_CALIBRATOR_INVALID` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_MODEL_ARTIFACT_CERTIFICATION_MISMATCH` | No inline message; terminal code raised in `resolve_nba_champion_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_MODEL_ARTIFACT_LOOKUP_FAILED` | No inline message; terminal code raised in `resolve_nba_champion_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND` | No inline message; terminal code raised in `resolve_nba_champion_artifact`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_INVALID` | No inline message; terminal code raised in `_research_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_MISMATCH` | No inline message; terminal code raised in `_research_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CERTIFIED_MODEL_OUTPUT_INVALID` | No inline message; terminal code raised in `_research_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CHAMPION_ARTIFACT_RESOLUTION_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CHANGED_STARTERS_RECEIPT_UNVERIFIED` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CONTROLLING_SPECIALIST_NOT_CERTIFIED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CURRENT_FEATURES_INCOMPLETE` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CURRENT_FEATURES_INVALID` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CURRENT_PREGAME_FEATURES_NOT_READY` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_CURRENT_ROSTER_ACTIVE_SOURCE_VERIFIED_ROLE_NOT_PROVEN` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_EVENT_TIME_INVALID` | No inline message; terminal code raised in `_aware`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_FEATURE_AS_OF_AFTER_CUTOFF` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_AS_OF_INVALID` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_DATASET_ID_MISSING` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_EVENT_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_EVENT_TIME_MISMATCH` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_LINEAGE_MISSING` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_SCHEMA_MISMATCH` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_SPORT_MISMATCH` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_TEAM_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_TIMESTAMP_INVALID_FOR_PREGAME` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FEATURE_TIMESTAMP_MISSING` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FITTED_RESEARCH_SCORER_FAILED` | No inline message; terminal code raised in `prepare_nba_current_pregame_scorer_receipt`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_FORWARD_SHADOW_DUPLICATE_GAME_ID` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_IDENTITY_INVALID` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_IDENTITY_MISSING` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_NOT_PREGAME` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_PRIOR_GAMES_INSUFFICIENT` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_SETTLEMENT_TIME_PREDATES_GAME` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_SETTLEMENT_TIME_UNVERIFIABLE` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_SOURCE_AFTER_FEATURE` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_TIED_SETTLED_SCORE` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_FORWARD_SHADOW_TIMESTAMP_INVALID` | No inline message; terminal code raised in `hydrate_nba_current_pregame_features`. | `v17/nba_forward_shadow_features.py` | — | No |
+| `NBA_HISTORY_BOX_GAME_ID_MISMATCH` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_BOX_PLAYER_ID_MISSING_OR_DUPLICATE` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_BOX_SCORE_SCHEMA_INVALID` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_BOX_TIME_CONTRADICTION` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_DUPLICATE_GAME_CONTRADICTION` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_EVENT_NOT_PREGAME` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_GAMELOG_SCHEMA_INVALID` | No inline message; terminal code raised in `_gamelog_rows`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_GAME_DATE_INVALID` | No inline message; terminal code raised in `_date`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_GAME_ID_INVALID` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_GAME_NOT_FINAL` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_L10_INSUFFICIENT` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_L10_VERIFIED_NO_CURRENT_ROLE_OR_LINE` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_PLAYER_ID_INVALID` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_PLAYER_ID_MISMATCH` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_POINTS_DISAGREE_WITH_BOX` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_POINTS_INVALID` | No inline message; terminal code raised in `_points`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_SEASON_SCOPE_INVALID` | No inline message; terminal code raised in `acquire_nba_points_l10`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_SOURCE_HTTP_FAILURE` | No inline message; terminal code raised in `_get`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_SOURCE_INVALID` | No inline message; terminal code raised in `_get`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `_get`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_TIME_INVALID` | No inline message; terminal code raised in `_utc`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_HISTORY_TIME_NAIVE` | No inline message; terminal code raised in `_utc`. | `v17/nba_points_official_history.py` | — | No |
+| `NBA_INJURY_REPORT_NOT_CURRENT` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_LINEUP_EVIDENCE_MISSING` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_LINEUP_UPDATE_TIMESTAMP_MISSING` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_POINTS_ADJACENT_LINE_NOT_EXACT` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_CANONICAL_EVENT_UNRESOLVED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_CANONICAL_EVENT_UNVERIFIED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_CANONICAL_EVIDENCE_REJECTED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_CANONICAL_TEAM_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_CAPTURE_NOT_PREGAME` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_DIRECTION_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_EVENT_NOT_PREGAME` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_EXACT_LINE_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_GAME_BOX_SCORE_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_L10_EVIDENCE_INCOMPLETE` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_LINE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_LINE_UNSUPPORTED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_NOW_NAIVE` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_PERIOD_UNSUPPORTED` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_PLAYER_AVAILABILITY_HOLD` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_PRIOR_GAME_DUPLICATE_OR_TARGET` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_PRIOR_GAME_FUTURE_LEAKAGE` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_PRIOR_GAME_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_PRIOR_GAME_PLAYER_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_ROLE_EVIDENCE_MISSING` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_ROLE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_ROSTER_PLAYER_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_ROSTER_TIMESTAMP_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_SNAPSHOT_IDENTITY_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_SNAPSHOT_LINE_MISMATCH` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_SOURCE_IDENTITY_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_SOURCE_TIMESTAMPS_MISSING` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_SOURCE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_POINTS_TEAM_IDENTITY_CONFLICT` | No inline message; terminal code raised in `build_nba_points_snapshot`. | `v17/nba_points_snapshot_bridge.py` | — | No |
+| `NBA_PROVIDER_TEAM_ALIAS_INVALID` | No inline message; terminal code raised in `resolve_nba_current_event_identity`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_ROSTER_ACTIVE_STATUS_NOT_AFFIRMED` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_CAPTURE_IN_FUTURE` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_CLOCK_INVALID` | No inline message; terminal code raised in `acquire_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_CROSS_PROVIDER_KICKOFF_MISMATCH` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_CROSS_PROVIDER_TEAM_MISMATCH` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_ESPN_COMPETITION_AMBIGUOUS` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_ESPN_COMPETITION_MISMATCH` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_ESPN_EVENT_ID_INVALID` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_ESPN_EVENT_MISMATCH` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_ESPN_HEADER_INVALID` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_ESPN_TEAMS_INVALID` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NBA_GAME_ID_INVALID` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NBA_GAME_ID_MISMATCH` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NBA_GAME_NOT_SCHEDULED` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NBA_PLAYERS_MISSING` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NBA_PLAYER_ID_INVALID` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NBA_PLAYER_SCHEMA_INVALID` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NOT_PLAYING_REASON_PRESENT` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NOT_PREGAME` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_NOW_NAIVE` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_PLAYER_MISSING_OR_AMBIGUOUS` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_PLAYER_NAME_MISSING` | No inline message; terminal code raised in `verify_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_PROVIDER_HTTP_FAILURE` | No inline message; terminal code raised in `acquire_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_PROVIDER_SCHEMA_INVALID` | No inline message; terminal code raised in `acquire_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_PROVIDER_UNAVAILABLE` | No inline message; terminal code raised in `acquire_nba_points_current_roster`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_ROSTER_TEAM_TRICODE_INVALID` | No inline message; terminal code raised in `_team_key`. | `v17/nba_points_pregame_roster.py` | — | No |
+| `NBA_SCALAR_ARTIFACT_VERSION_COLLISION` | No inline message; terminal code raised in `derive_and_register_candidates`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_ARTIFACT_AMBIGUOUS` | Multiple research candidates resolved for NBA {stat} | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_ARTIFACT_FORMAT_UNSUPPORTED` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_ARTIFACT_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_ARTIFACT_NOT_FOUND` | No activated research candidate exists for NBA {stat} | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_ARTIFACT_REGISTRY_UNAVAILABLE` | NBA scalar candidate artifact registry lookup failed | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_AUTHORITY_CONFLICT` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_DERIVATION_FAILED` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_LIFECYCLE_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_NOT_RESEARCH_ACTIVE` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_ROUTE_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_SCORER_EXCEPTION` | NBA scalar candidate scorer threw an unexpected exception | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_SCORER_INVALID` | No inline message; terminal code raised in `score_nba_scalar_candidate_research`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_SPECIALIST_MISMATCH` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_CANDIDATE_UNCALIBRATED` | No inline message; terminal code raised in `score_nba_scalar_candidate_research`. | `v17/nba_scalar_candidate_bridge.py` | `v17/nba_scalar_fitted_candidate.py` | No |
+| `NBA_SCALAR_CANONICAL_ACTION_CANARY_MISSING` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_EVIDENCE_BRIDGE_FAILED` | NBA scalar evidence retrieval failed | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_EVIDENCE_INCOMPLETE` | NBA scalar candidate inputs are incomplete | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_EXACT_LINE_CALIBRATION_MISSING` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_FORWARD_CERTIFICATION_REQUIRED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/nba_scalar_fitted_candidate.py` | — | No |
+| `NBA_SCALAR_FORWARD_COHORT_NOT_CERTIFIED` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_ROUTE_UNSUPPORTED` | No inline message; terminal code raised in `score_nba_scalar_candidate_research`. | `v17/nba_scalar_candidate_bridge.py` | — | No |
+| `NBA_SCALAR_SOURCE_ARTIFACT_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_ARTIFACT_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_CHECKSUM_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_PROVENANCE_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCALAR_SOURCE_PROVIDER_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/nba_scalar_candidate_registry.py` | — | No |
+| `NBA_SCHEDULE_SOURCE_UNAVAILABLE` | No inline message; terminal code raised in `_schedule_rows`. | `v17/nba_event_identity.py` | — | No |
+| `NBA_SOURCE_EVENT_REPLAY_NOT_VERIFIED` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_SOURCE_SNAPSHOT_AFTER_FEATURE` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_SOURCE_SNAPSHOT_AFTER_KICKOFF` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_SOURCE_SNAPSHOT_ID_MISMATCH` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_SOURCE_SNAPSHOT_PROVENANCE_MISSING` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_SOURCE_TIMESTAMP_ATTESTATION_NOT_VERIFIED` | No inline message; terminal code raised in `_feature_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+| `NBA_STARTING_ROTATION_NOT_CONFIRMED` | No inline message; terminal code raised in `_rotation_blocker`. | `v17/nba_current_pregame_scorer.py` | — | No |
+
+<!-- sport-failure-registry:NBA:end -->
+
+<!-- sport-failure-registry:NCAAF:begin -->
+## NCAAF failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing NCAAF code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `NCAAF_25_ROW_CALIBRATION_REVIEW_NOT_PASSED` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_25_SETTLED_REVIEW_NOT_REACHED` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_50_ROW_CONFIRMATION_NOT_PASSED` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_ACTIVE_BANNED_FAILURE_PATTERN` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | `ncaaf_trust_tests.py` | No |
+| `NCAAF_ARTIFACT_NOT_PUBLISHABLE` | Certified registry row has not cleared probability publication governance. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_AVAILABILITY_INGESTION_FAILED` | No inline message; terminal code raised in `ingest_ncaaf_availability_report`. | `ncaaf_raw_availability_runtime.py` | — | No |
+| `NCAAF_AVAILABILITY_NOT_PREGAME` | Availability evidence must be timestamped strictly before kickoff. | `ncaaf_availability_aggregation.py` | `ncaaf_official_availability.py` | No |
+| `NCAAF_AVAILABILITY_PAYLOAD_INVALID` | No inline message; terminal code raised in `build_qb_evidence`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_AVAILABILITY_PHASE_INVALID` | No inline message; terminal code raised in `normalize_player_availability`. | `ncaaf_official_availability.py` | — | No |
+| `NCAAF_AVAILABILITY_PLAYERS_INVALID` | No inline message; terminal code raised in `ingest_ncaaf_availability_report`. | `ncaaf_raw_availability_runtime.py` | — | No |
+| `NCAAF_AVAILABILITY_POLICY_UNVERIFIED` | No verified availability normalization policy is installed for {conference!r}. | `ncaaf_official_availability.py` | — | No |
+| `NCAAF_AVAILABILITY_REQUEST_INCOMPLETE` | No inline message; terminal code raised in `ingest_ncaaf_availability_report`. | `ncaaf_raw_availability_runtime.py` | — | No |
+| `NCAAF_AVAILABILITY_STATUS_UNRECOGNIZED` | Status {normalized_status!r} is not defined by {policy.policy_version} for {phase}. | `ncaaf_official_availability.py` | — | No |
+| `NCAAF_AVAILABILITY_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_aware`. | `ncaaf_official_availability.py` | — | No |
+| `NCAAF_BACKUP_QB_DOWNGRADE_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_BACKUP_QB_DOWNGRADE_UNRESOLVED` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | `ncaaf_trust_tests.py` | No |
+| `NCAAF_BUNDLE_NOT_CERTIFIED` | Resolved NCAAF artifact is not prospectively certified. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_CALIBRATED_PROBABILITY_INVALID` | No inline message; terminal code raised in `apply_static_calibration`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATION_HEALTH_NOT_PASS` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATION_METHOD_UNSUPPORTED` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATION_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | `ncaaf_three_way_trainer.py` | No |
+| `NCAAF_CALIBRATOR_BIN_INVALID` | No inline message; terminal code raised in `apply_static_calibration`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATOR_EMPTY` | No inline message; terminal code raised in `apply_static_calibration`. | `ncaaf_static_calibrator.py` | `ncaaf_three_way_trainer.py` | No |
+| `NCAAF_CALIBRATOR_MODEL_VERSION_MISMATCH` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATOR_PAYLOAD_INVALID` | No inline message; terminal code raised in `apply_static_calibration`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATOR_REGISTRY_INVALID_RESPONSE` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CALIBRATOR_REGISTRY_UNAVAILABLE` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CANDIDATE_ARTIFACT_PERSIST_FAILED` | No inline message; terminal code raised in `train_and_persist_candidate`. | `ncaaf_candidate_training_runner.py` | — | No |
+| `NCAAF_CANDIDATE_TRAINING_FAILED` | No inline message; terminal code raised in `run_ncaaf_model_maintenance`. | `v17/ncaaf_model_maintenance.py` | — | No |
+| `NCAAF_CANONICAL_EVENT_AMBIGUOUS` | No inline message; terminal code raised in `resolve_ncaaf_current_event_identity`. | `v17/ncaaf_event_identity.py` | — | No |
+| `NCAAF_CANONICAL_EVENT_NOT_FOUND` | No inline message; terminal code raised in `resolve_ncaaf_current_event_identity`. | `v17/ncaaf_event_identity.py` | — | No |
+| `NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND` | No inline message; terminal code raised in `resolve_active_calibrator`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_CERTIFIED_DYNAMIC_BOUND_NOT_AVAILABLE` | No inline message; terminal code raised in `score_current_event_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND` | No active certified NCAAF fitted-model artifact exists for this feature schema. | `ncaaf_fitted_provider.py` | `ncaaf_event_feature_handoff.py` | No |
+| `NCAAF_CFBD_COUNT_NEGATIVE` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_RECEIPT_SCOPE_INVALID` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_SAMPLE_COUNT_MISMATCH` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_SAMPLE_DUPLICATE_KEY` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_SAMPLE_HASH_MISMATCH` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_SAMPLE_ROW_INVALID` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_SAMPLE_SIZE_INVALID` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_SOURCE_HASH_INVALID` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CFBD_STAT_INVALID` | No inline message; terminal code raised in `build_read_only_sql`. | `v17/ncaaf_cfbd_exact_sample_sql.py` | — | No |
+| `NCAAF_CLV_PRIMARY_THRESHOLD_NOT_MET` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_CLV_RATE_UNAVAILABLE` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_COMPLETE_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `load_training_rows`. | `ncaaf_candidate_training_runner.py` | — | No |
+| `NCAAF_CROSSWALK_CANDIDATE_STAT_CONFLICT` | No inline message; terminal code raised in `reconcile`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CROSSWALK_FULL_COHORT_EMPTY_OR_COUNT_MISMATCH` | No inline message; terminal code raised in `audit_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CROSSWALK_FULL_COHORT_HASH_MISMATCH` | No inline message; terminal code raised in `audit_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CROSSWALK_NCAA_FILE_INVALID` | No inline message; terminal code raised in `audit_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CROSSWALK_PARQUET_READER_MISSING` | No inline message; terminal code raised in `audit_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CROSSWALK_ROW_LIMIT` | No inline message; terminal code raised in `_index`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CROSSWALK_SOURCE_HASH_INVALID` | No inline message; terminal code raised in `reconcile`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_CURRENT_EVENT_CONTEXT_CHANGED` | No inline message; terminal code raised in `_validate_refreshed_context`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_EVENT_CONTEXT_INCOMPLETE` | No inline message; terminal code raised in `build_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_INVALID` | No inline message; terminal code raised in `_validate_refreshed_context`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED` | No inline message; terminal code raised in `_validate_refreshed_context`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_EVENT_CONTEXT_STALE` | No inline message; terminal code raised in `_validate_refreshed_context`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_SOURCE_RECEIPT_AMBIGUOUS` | No inline message; terminal code raised in `build_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_SOURCE_RECEIPT_INVALID` | No inline message; terminal code raised in `_receipt`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_SOURCE_RECEIPT_MISSING` | No inline message; terminal code raised in `_receipt`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_CURRENT_SOURCE_RECEIPT_UNEXPECTED` | No inline message; terminal code raised in `build_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_ESPN_ARCHIVE_EMPTY` | No inline message; terminal code raised in `_download_espn_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_ESPN_RELEASE_TOO_LARGE` | No inline message; terminal code raised in `_download_espn_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_ESPN_SEASON_INVALID` | No inline message; terminal code raised in `espn_release_url`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_ESPN_SOURCE_FETCH_FAILED` | No inline message; terminal code raised in `_download_espn_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_ESPN_UNAPPROVED_REDIRECT` | No inline message; terminal code raised in `_download_espn_release`. | `v17/ncaaf_sdv_espn_crosswalk.py` | — | No |
+| `NCAAF_EVENT_FEATURE_COHORT_MISMATCH` | No inline message; terminal code raised in `score_current_event_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_FEATURE_SNAPSHOT_IMMUTABLE_INSERT_FAILED` | No inline message; terminal code raised in `persist_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_FEATURE_SNAPSHOT_INVALID` | No inline message; terminal code raised in `persist_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_FEATURE_SNAPSHOT_NOT_FOUND` | No inline message; terminal code raised in `score_current_event_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_FEATURE_SNAPSHOT_READ_FAILED` | No inline message; terminal code raised in `score_current_event_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE` | No inline message; terminal code raised in `_receipt`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `build_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | `ncaaf_evidence_ingestion.py` | No |
+| `NCAAF_EVENT_IDENTITY_MISMATCH` | No inline message; terminal code raised in `logistic_adapter`. | `ncaaf_logistic_adapter.py` | — | No |
+| `NCAAF_EVENT_NOT_PREGAME` | No inline message; terminal code raised in `build_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_START_INVALID` | No inline message; terminal code raised in `_compile_feature_row`. | `ncaaf_feature_compiler.py` | — | No |
+| `NCAAF_EVENT_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_aware`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_EVENT_TIME_INVALID` | No inline message; terminal code raised in `_aware`. | `v17/ncaaf_event_identity.py` | — | No |
+| `NCAAF_EVIDENCE_EXECUTION_FLAG_INVALID` | No inline message; terminal code raised in `persist_normalized_evidence`. | `ncaaf_evidence_ingestion.py` | — | No |
+| `NCAAF_EVIDENCE_KIND_NOT_ALLOWED_BY_INGESTION` | No inline message; terminal code raised in `persist_normalized_evidence`. | `ncaaf_evidence_ingestion.py` | — | No |
+| `NCAAF_EVIDENCE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_value`. | `ncaaf_feature_builder.py` | — | No |
+| `NCAAF_EVIDENCE_PERSIST_FAILED` | No inline message; terminal code raised in `persist_normalized_evidence`. | `ncaaf_evidence_ingestion.py` | — | No |
+| `NCAAF_EVIDENCE_PROVENANCE_INCOMPLETE` | No inline message; terminal code raised in `persist_normalized_evidence`. | `ncaaf_evidence_ingestion.py` | — | No |
+| `NCAAF_EVIDENCE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_parse_ts`. | `ncaaf_feature_builder.py` | — | No |
+| `NCAAF_EVIDENCE_VALUE_INVALID` | No inline message; terminal code raised in `_number`. | `ncaaf_feature_builder.py` | — | No |
+| `NCAAF_FEATURE_COMPILATION_FAILED` | No inline message; terminal code raised in `run_ncaaf_model_maintenance`. | `v17/ncaaf_model_maintenance.py` | — | No |
+| `NCAAF_FEATURE_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `_compile_feature_row`. | `ncaaf_feature_compiler.py` | — | No |
+| `NCAAF_FEATURE_SCHEMA_MISMATCH` | Resolved NCAAF artifact does not match requested feature schema. | `ncaaf_fitted_provider.py` | `ncaaf_logistic_adapter.py` | No |
+| `NCAAF_FEATURE_TEMPORAL_LEAKAGE` | No inline message; terminal code raised in `_compile_feature_row`. | `ncaaf_feature_compiler.py` | — | No |
+| `NCAAF_FEATURE_TIMESTAMP_MISMATCH` | No inline message; terminal code raised in `logistic_adapter`. | `ncaaf_logistic_adapter.py` | — | No |
+| `NCAAF_FEATURE_TRANSFORM_INPUT_INVALID` | No inline message; terminal code raised in `_num`. | `ncaaf_feature_transform.py` | — | No |
+| `NCAAF_FEATURE_TRANSFORM_SCHEMA_DRIFT` | No inline message; terminal code raised in `model_features_from_snapshot`. | `ncaaf_feature_transform.py` | — | No |
+| `NCAAF_FULL_SOURCE_DUPLICATE` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_FULL_SOURCE_HASH_MISMATCH` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_FULL_SOURCE_MANIFEST_INVALID` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_FULL_SOURCE_ORDER_INVALID` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_FULL_SOURCE_PROVENANCE_MISSING` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_FULL_SOURCE_ROW_INVALID` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_FULL_SOURCE_ROW_SCHEMA_INVALID` | No inline message; terminal code raised in `audited_lines`. | `v17/ncaaf_cfbd_full_audit_log.py` | — | No |
+| `NCAAF_HISTORY_HYDRATION_FAILED` | No inline message; terminal code raised in `run_ncaaf_model_maintenance`. | `v17/ncaaf_model_maintenance.py` | — | No |
+| `NCAAF_HOME_AWAY_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_MAINTENANCE_RANGE_EMPTY` | No inline message; terminal code raised in `run_ncaaf_model_maintenance`. | `v17/ncaaf_model_maintenance.py` | — | No |
+| `NCAAF_MARKET_FEATURES_PROHIBITED` | No inline message; terminal code raised in `build_current_event_feature_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_MARKET_PRICE_STALE` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | `ncaaf_trust_tests.py` | No |
+| `NCAAF_MARKET_ROLE_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_MARKET_TIMESTAMP_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_MARKET_TIMESTAMP_IN_FUTURE` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_MODEL_ADAPTER_INVALID_OUTPUT` | NCAAF model-family adapter must return RawNCAAFWinProbability. | `ncaaf_event_feature_handoff.py` | `ncaaf_fitted_provider.py` | No |
+| `NCAAF_MODEL_ARTIFACT_FORMAT_UNSUPPORTED` | No inline message; terminal code raised in `logistic_adapter`. | `ncaaf_logistic_adapter.py` | — | No |
+| `NCAAF_MODEL_ARTIFACT_METADATA_INVALID` | Certified NCAAF artifact metadata is incomplete or malformed. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_MODEL_ARTIFACT_PAYLOAD_INVALID` | Certified NCAAF artifact payload or validation metrics are invalid. | `ncaaf_logistic_adapter.py` | `ncaaf_fitted_provider.py` | No |
+| `NCAAF_MODEL_FAMILY_ADAPTER_UNAVAILABLE` | No reviewed runtime adapter is registered for model family {artifact.model_family!r}. | `ncaaf_event_feature_handoff.py` | `ncaaf_fitted_provider.py` | No |
+| `NCAAF_MODEL_FEATURE_EVIDENCE_INCOMPLETE` | No inline message; terminal code raised in `_compile_feature_row`. | `ncaaf_feature_compiler.py` | — | No |
+| `NCAAF_MODEL_FEATURE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_compile_feature_row`. | `ncaaf_feature_compiler.py` | — | No |
+| `NCAAF_MODEL_OUTPUT_INVALID` | NCAAF model probabilities must be finite and strictly inside (0,1). | `ncaaf_event_feature_handoff.py` | `ncaaf_fitted_provider.py`, `ncaaf_logistic_adapter.py` | No |
+| `NCAAF_MODEL_OUTPUT_NOT_NORMALIZED` | NCAAF home/away probabilities must sum to 1. | `ncaaf_event_feature_handoff.py` | `ncaaf_fitted_provider.py` | No |
+| `NCAAF_MODEL_REGISTRY_INVALID_RESPONSE` | Governed NCAAF model registry returned an invalid response. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_MODEL_REGISTRY_REJECTED` | Governed NCAAF model registry rejected the route. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_MODEL_REGISTRY_UNAVAILABLE` | Could not read the governed NCAAF model registry. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_MODEL_TIMESTAMP_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_MODEL_TIMESTAMP_IN_FUTURE` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_NEUTRAL_SITE_CONFLICT` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_NO_SETTLED_TRAINING_GAMES_MATERIALIZED` | No inline message; terminal code raised in `materialize_training_games`. | `ncaaf_training_materializer.py` | — | No |
+| `NCAAF_NO_VIG_PRICE_MISMATCH` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_NO_VIG_PROBABILITY_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_POSITIVE_ROI_NOT_MET` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_PREGAME_EVIDENCE_INCOMPLETE` | No inline message; terminal code raised in `assess_pregame_evidence`. | `ncaaf_feature_builder.py` | `ncaaf_evidence_readiness.py` | No |
+| `NCAAF_PREGAME_EVIDENCE_ROWS_REJECTED` | No inline message; terminal code raised in `assess_pregame_evidence`. | `ncaaf_evidence_readiness.py` | — | No |
+| `NCAAF_PROP_80P_COVERAGE_OUT_OF_TOLERANCE` | No inline message; terminal code raised in `fit_candidate`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_90P_COVERAGE_OUT_OF_TOLERANCE` | No inline message; terminal code raised in `fit_candidate`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_ARTIFACT_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_assert_inert_candidate`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_ARTIFACT_NOT_CANDIDATE` | No inline message; terminal code raised in `_assert_inert_candidate`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_CAL_HOLDOUT_CHRONOLOGY_INVALID` | No inline message; terminal code raised in `_split`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_CAL_ROWS_BELOW_MINIMUM` | No inline message; terminal code raised in `_split`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_CANDIDATE_PERSIST_FAILED` | No inline message; terminal code raised in `persist_inert_candidates`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_DUPLICATE_PLAYER_STAT` | No inline message; terminal code raised in `_emit`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_FAILS_NAIVE_MAE_GATE` | No inline message; terminal code raised in `fit_candidate`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_FEATURE_ROWS_EMPTY` | No inline message; terminal code raised in `build_feature_rows`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_GAMES_CORPUS_EMPTY` | No inline message; terminal code raised in `run_candidate_replay`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_HISTORY_CACHE_READ_FAILED` | No inline message; terminal code raised in `run_ncaaf_prop_history_maintenance`. | `v17/ncaaf_prop_history_maintenance.py` | — | No |
+| `NCAAF_PROP_HISTORY_CACHE_READ_INVALID` | No inline message; terminal code raised in `_available_snapshot_keys`. | `v17/ncaaf_prop_history_maintenance.py` | — | No |
+| `NCAAF_PROP_HISTORY_PERSISTENCE_FAILED` | No inline message; terminal code raised in `run_ncaaf_prop_history_maintenance`. | `v17/ncaaf_prop_history_maintenance.py` | — | No |
+| `NCAAF_PROP_HISTORY_RANGE_EMPTY` | No inline message; terminal code raised in `run_ncaaf_prop_history_maintenance`. | `v17/ncaaf_prop_history_maintenance.py` | — | No |
+| `NCAAF_PROP_HOLDOUT_ROWS_BELOW_MINIMUM` | No inline message; terminal code raised in `_split`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_NONFINITE_MATRIX` | No inline message; terminal code raised in `_matrix`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_OUTCOME_TIMESTAMP_PREMATURE` | No inline message; terminal code raised in `_emit`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PACKAGE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `persist_inert_candidates`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_PASSING_C_ATT_INVALID` | No inline message; terminal code raised in `_parse_completions_attempts`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_CORPUS_EMPTY` | No inline message; terminal code raised in `run_candidate_replay`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_ATHLETES_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_CATEGORIES_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_IDENTITY_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_REVISION_CONFLICT` | No inline message; terminal code raised in `normalize_player_stats_corpus`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_ROW_INVALID` | No inline message; terminal code raised in `normalize_player_stats_corpus`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_TEAMS_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_TEAM_IDENTITY_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_TEAM_MISMATCH` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_GAME_TYPES_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_IDENTITY_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_PLAYER_STATS_EMPTY` | No inline message; terminal code raised in `profile_cfbd_player_stats`. | `ncaaf_cfbd_hydrator.py` | `v17/ncaaf_prop_history_maintenance.py` | No |
+| `NCAAF_PROP_PLAYER_STATS_NOT_NORMALIZATION_READY` | No inline message; terminal code raised in `run_ncaaf_prop_history_maintenance`. | `v17/ncaaf_prop_history_maintenance.py` | — | No |
+| `NCAAF_PROP_PLAYER_STATS_SCHEMA_INVALID` | No inline message; terminal code raised in `profile_cfbd_player_stats`. | `ncaaf_cfbd_hydrator.py` | — | No |
+| `NCAAF_PROP_RESEARCH_FLAG_INVALID` | No inline message; terminal code raised in `_assert_inert_candidate`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_ROUTE_UNSUPPORTED` | No inline message; terminal code raised in `build_feature_rows`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_SCHEDULE_GAME_UNRESOLVED` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SCHEDULE_IDENTITY_CONFLICT` | No inline message; terminal code raised in `build_schedule_index`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SCHEDULE_IDENTITY_INVALID` | No inline message; terminal code raised in `build_schedule_index`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SCHEDULE_TEAMS_INVALID` | No inline message; terminal code raised in `build_schedule_index`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SCHEDULE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `build_schedule_index`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SCHEDULE_UNRESOLVED` | No inline message; terminal code raised in `build_feature_rows`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_SOURCE_ENDPOINT_INVALID` | No inline message; terminal code raised in `normalize_player_game`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_snapshot_from_row`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_SOURCE_READ_FAILED` | No inline message; terminal code raised in `load_source_snapshots`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_SOURCE_READ_INVALID` | No inline message; terminal code raised in `load_source_snapshots`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_SOURCE_ROWS_INVALID` | No inline message; terminal code raised in `_snapshot_from_row`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_SOURCE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_snapshot_retrieved_at`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_SPORT_IDENTITY_INVALID` | No inline message; terminal code raised in `_assert_inert_candidate`. | `v17/ncaaf_prop_challenger_runner.py` | — | No |
+| `NCAAF_PROP_STAT_COUNT_INVALID` | No inline message; terminal code raised in `_parse_nonnegative_integer_stat`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_STAT_TYPE_UNSUPPORTED` | No inline message; terminal code raised in `_requested_types`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_STAT_VALUE_INVALID` | No inline message; terminal code raised in `_parse_integer_stat`. | `ncaaf_prop_historical_adapter.py` | — | No |
+| `NCAAF_PROP_TARGET_INVALID` | No inline message; terminal code raised in `build_feature_rows`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_TRAIN_CAL_CHRONOLOGY_INVALID` | No inline message; terminal code raised in `_split`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_TRAIN_ROWS_BELOW_MINIMUM` | No inline message; terminal code raised in `_split`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROP_ZERO_OUTCOME_COVERAGE_UNPROVEN` | No inline message; terminal code raised in `build_feature_rows`. | `v17/ncaaf_prop_challenger.py` | — | No |
+| `NCAAF_PROVIDER_IDENTITY_MISMATCH` | Resolved artifact does not belong to WOW_NCAAF_FITTED_MODEL_V1. | `ncaaf_fitted_provider.py` | — | No |
+| `NCAAF_QB_STATUS_UNCONFIRMED` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | `ncaaf_trust_tests.py` | No |
+| `NCAAF_RAW_PROBABILITY_INVALID` | No inline message; terminal code raised in `apply_static_calibration`. | `ncaaf_static_calibrator.py` | — | No |
+| `NCAAF_RECONSTRUCTED_HISTORY_NOT_ARCHIVED_PREGAME` | No inline message; terminal code raised in `module scope`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPEATING_FAILURE_TAG_ACTIVE` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_REPLAY_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_ARTIFACT_SCHEMA_DRIFT` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_CALIBRATOR_CONTRACT_UNSUPPORTED` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_CALIBRATOR_MISMATCH` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_CANDIDATE_CONTRACT_UNSUPPORTED` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_CANDIDATE_NOT_FOUND` | No inline message; terminal code raised in `audit_from_db`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_DATASET_HASH_MISMATCH` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_DATA_READ_FAILED` | No inline message; terminal code raised in `audit_from_db`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_EVENT_ID_MISSING` | No inline message; terminal code raised in `frozen_latest_rows`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_FEATURE_SET_INVALID` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_FITTED_ARTIFACT_MISMATCH` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_FITTED_PACKAGE_MISSING` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_FROZEN_CORPUS_COUNT_MISMATCH` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_FROZEN_ROW_FORK` | No inline message; terminal code raised in `frozen_latest_rows`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_INPUT_SHAPE_INVALID` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_NUMERIC_INVALID` | No inline message; terminal code raised in `_numeric`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_OUTCOME_INVALID` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_RESEARCH_METRICS_MISMATCH` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_RESEARCH_SOURCE_FLAGS_INVALID` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_ROW_EXECUTION_OR_MARKET_INVALID` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_SCORER_EXECUTION_FAILED` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_SOURCE_MANIFEST_HASH_MISMATCH` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_SOURCE_MANIFEST_INVALID` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_SOURCE_REGIME_CHANGED` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_TEMPORAL_ORDER_INVALID` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_iso`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_REPLAY_VERSION_IDENTITY_INVALID` | No inline message; terminal code raised in `_candidate_preflight`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_RESULT_FORM_CANDIDATE_TRAINING_FAILED` | No inline message; terminal code raised in `run_ncaaf_model_maintenance`. | `v17/ncaaf_model_maintenance.py` | — | No |
+| `NCAAF_RESULT_FORM_CODE_SHA_REQUIRED` | No inline message; terminal code raised in `train_and_persist`. | `v17/ncaaf_result_form_candidate.py` | — | No |
+| `NCAAF_RESULT_FORM_DETERMINISTIC_REPLAY_PASS_SOURCE_HOLD` | No inline message; terminal code raised in `audit_candidate`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_RESULT_FORM_EVENT_TIME_MISSING` | No inline message; terminal code raised in `_dt`. | `v17/ncaaf_result_form_candidate.py` | — | No |
+| `NCAAF_RESULT_FORM_GAMES_EMPTY` | No inline message; terminal code raised in `_load_games`. | `v17/ncaaf_result_form_candidate.py` | — | No |
+| `NCAAF_RESULT_FORM_REPLAY_FAILED_OR_BLOCKED` | No inline message; terminal code raised in `_fail`. | `v17/ncaaf_result_form_replay_audit.py` | — | No |
+| `NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `build_training_rows`. | `v17/ncaaf_result_form_candidate.py` | — | No |
+| `NCAAF_ROI_UNAVAILABLE` | No inline message; terminal code raised in `assess_ncaaf_trust`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_ROLE_NOT_PREGAME` | No inline message; terminal code raised in `build_qb_evidence`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_ROLE_SCOPE_INVALID` | No inline message; terminal code raised in `build_qb_evidence`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_ROLE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_ts`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_SDV_ACQUISITION_FAILED` | No inline message; terminal code raised in `acquire_release`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_ARCHIVE_EMPTY` | No inline message; terminal code raised in `acquire_release`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_ARCHIVE_TOO_LARGE` | No inline message; terminal code raised in `acquire_release`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_CAPTURE_TIMESTAMP_INVALID` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_COUNT_NEGATIVE` | No inline message; terminal code raised in `_stat`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_HASH_INVALID` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_NO_USABLE_PLAYER_HISTORY` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_PARQUET_READER_MISSING` | No inline message; terminal code raised in `acquire_release`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_ROW_INVALID` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_ROW_LIMIT_EXCEEDED` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_ROW_SEASON_INVALID` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_ROW_STATS_EMPTY_OR_INVALID` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_SCHEMA_DRIFT` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_SEASON_INVALID` | No inline message; terminal code raised in `release_url`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_SEASON_MISMATCH` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_SOURCE_IDENTITY_OR_CATEGORY_MISSING` | No inline message; terminal code raised in `profile_player_rows`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_STAT_INVALID` | No inline message; terminal code raised in `_stat`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SDV_UNAPPROVED_REDIRECT` | No inline message; terminal code raised in `acquire_release`. | `v17/ncaaf_sdv_player_history_acquisition.py` | — | No |
+| `NCAAF_SKILL_AGGREGATION_INVALID` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_SKILL_PROBABILITY_INVALID` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_SKILL_PROBABILITY_NOT_SOURCE_DEFINED` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_SKILL_PROVIDER_MIXED` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_SKILL_WEIGHTS_INVALID` | No inline message; terminal code raised in `build_skill_availability`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_SOURCE_EMPTY` | No inline message; terminal code raised in `_snapshot`. | `ncaaf_cfbd_hydrator.py` | — | No |
+| `NCAAF_SOURCE_MANIFEST_INVALID` | No inline message; terminal code raised in `_verify_snapshot_manifest`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_SOURCE_MANIFEST_MISMATCH` | No inline message; terminal code raised in `_verify_snapshot_manifest`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_SOURCE_SNAPSHOT_WRITE_ACK_INVALID` | No inline message; terminal code raised in `persist_source_snapshots`. | `ncaaf_cfbd_hydrator.py` | — | No |
+| `NCAAF_STARTER_AVAILABILITY_NOT_PROVEN` | No inline message; terminal code raised in `_raw_for`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_STARTER_IDENTITY_NOT_PROVEN` | No inline message; terminal code raised in `build_qb_evidence`. | `ncaaf_availability_aggregation.py` | — | No |
+| `NCAAF_START_TIME_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_STATIC_CALIBRATION_FAILED` | No inline message; terminal code raised in `score_current_event_snapshot`. | `ncaaf_event_feature_handoff.py` | — | No |
+| `NCAAF_TEAM_IDENTITY_MISMATCH` | No inline message; terminal code raised in `logistic_adapter`. | `ncaaf_logistic_adapter.py` | — | No |
+| `NCAAF_THREE_WAY_PARTITION_INSUFFICIENT` | No inline message; terminal code raised in `train_calibrate_test`. | `ncaaf_three_way_trainer.py` | — | No |
+| `NCAAF_THREE_WAY_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `train_calibrate_test`. | `ncaaf_three_way_trainer.py` | — | No |
+| `NCAAF_TRAINING_CLASS_DEGENERATE` | Both train and validation partitions must contain wins and losses. | `ncaaf_three_way_trainer.py` | `ncaaf_trainer.py` | No |
+| `NCAAF_TRAINING_CODE_SHA_REQUIRED` | No inline message; terminal code raised in `train_and_persist_candidate`. | `ncaaf_candidate_training_runner.py` | — | No |
+| `NCAAF_TRAINING_CODE_SHA_UNAVAILABLE` | No inline message; terminal code raised in `run_ncaaf_model_maintenance`. | `v17/ncaaf_model_maintenance.py` | — | No |
+| `NCAAF_TRAINING_DATA_EMPTY` | No inline message; terminal code raised in `load_training_rows`. | `ncaaf_candidate_training_runner.py` | — | No |
+| `NCAAF_TRAINING_DATA_INVALID` | No inline message; terminal code raised in `_paged`. | `ncaaf_candidate_training_runner.py` | — | No |
+| `NCAAF_TRAINING_DATA_READ_FAILED` | No inline message; terminal code raised in `_paged`. | `ncaaf_candidate_training_runner.py` | — | No |
+| `NCAAF_TRAINING_FEATURE_INVALID` | Required feature {name!r} is not numeric. | `ncaaf_trainer.py` | `ncaaf_three_way_trainer.py` | No |
+| `NCAAF_TRAINING_FEATURE_MISSING` | Required feature {name!r} is missing. | `ncaaf_three_way_trainer.py` | `ncaaf_trainer.py` | No |
+| `NCAAF_TRAINING_GAME_PERSISTENCE_COUNT_MISMATCH` | No inline message; terminal code raised in `materialize_training_games`. | `ncaaf_training_materializer.py` | — | No |
+| `NCAAF_TRAINING_LEAKAGE_DETECTED` | feature_as_of must be strictly before event_start_time for every training row. | `ncaaf_three_way_trainer.py` | `ncaaf_trainer.py` | No |
+| `NCAAF_TRAINING_ROWS_NOT_CHRONOLOGICAL` | Training rows must be provided in ascending event_start_time order. | `ncaaf_three_way_trainer.py` | `ncaaf_trainer.py` | No |
+| `NCAAF_TRAINING_SAMPLE_INSUFFICIENT` | At least {min_rows} settled pregame rows are required; got {len(rows)}. | `ncaaf_trainer.py` | — | No |
+| `NCAAF_TWO_WAY_ML_PRICE_INVALID` | No inline message; terminal code raised in `validate_ncaaf_evidence`. | `ncaaf_trust.py` | — | No |
+| `NCAAF_VALIDATION_SAMPLE_INSUFFICIENT` | At least {min_validation_rows} future validation rows are required; got {len(y_val)}. | `ncaaf_trainer.py` | — | No |
+
+<!-- sport-failure-registry:NCAAF:end -->
+
+<!-- sport-failure-registry:NCAAB:begin -->
+## NCAAB failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing NCAAB code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `NCAAB_CANDIDATE_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `build_training_rows`. | `v17/ncaab_sportsdataverse_candidate.py` | — | No |
+| `NCAAB_EVENT_DATE_MISSING` | No inline message; terminal code raised in `_event_time`. | `v17/ncaab_sportsdataverse_candidate.py` | — | No |
+| `NCAAB_PREGAME_CANONICAL_ID_REQUIRED` | No inline message; terminal code raised in `_identity`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_CURRENT_RESULT_LEAKAGE` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_DUPLICATE_GAME_VERSION` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_EVENT_ID_MISMATCH` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_EVENT_MISSING` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_EVENT_TIME_INVALID` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_EVENT_VERSION_INVALID` | No inline message; terminal code raised in `_positive_version`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_EXECUTION_FLAG_REJECTED` | No inline message; terminal code raised in `_source`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_FEATURE_CONTRACT_MISMATCH` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_FRESHNESS_CONFIG_INVALID` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_FUTURE_SEASON` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_FUTURE_LEAKAGE` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_INVALID` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_NOT_SETTLED` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_SOURCE_TIME_MISSING` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_STAT_INVALID` | No inline message; terminal code raised in `_stats`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_STAT_MISSING` | No inline message; terminal code raised in `_stats`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_HISTORY_TIME_INVALID` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_MANIFEST_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_source`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_MARKET_INPUT_REJECTED` | No inline message; terminal code raised in `_source`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_NEUTRAL_SITE_REVIEW_REQUIRED` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SEASON_INVALID` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SMALL_SAMPLE_HOLD` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SOURCE_MISSING` | No inline message; terminal code raised in `_source`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SOURCE_POLICY_MISMATCH` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SOURCE_STALE` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SOURCE_TAMPERED` | No inline message; terminal code raised in `_source`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_SOURCE_TIME_MISSING` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_TARGET_IN_HISTORY` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_TARGET_NOT_PREGAME` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_TEAM_ID_COLLISION` | No inline message; terminal code raised in `hydrate_pregame`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_PREGAME_TEAM_SIDE_MISMATCH` | No inline message; terminal code raised in `_stats`. | `v17/ncaab_pregame_hydration.py` | — | No |
+| `NCAAB_REPLAY_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CANDIDATE_CREATED_AT_MISSING` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CANDIDATE_GOVERNANCE_VIOLATION` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CANDIDATE_IDENTITY_MISMATCH` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CANDIDATE_ID_MISMATCH` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CANDIDATE_ID_MISSING` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CANDIDATE_MISSING` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_CAN_EXECUTE_VIOLATION` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_DATASET_HASH_MISMATCH` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_DUPLICATE_EVENT` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_EVENT_ID_INVALID` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_EVENT_TIME_INVALID` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_EXPECTED_ARTIFACT_CHECKSUM_INVALID` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_EXPECTED_CANDIDATE_ID_REQUIRED` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_EXPECTED_DATASET_HASH_INVALID` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_FEATURE_INVALID` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_FEATURE_SCHEMA_MISMATCH` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_FEATURE_SET_MISMATCH` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_FROZEN_ROWS_MISSING` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_METRIC_MISMATCH` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_MODEL_FAMILY_MISMATCH` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_OUTCOME_INVALID` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_READ_CREDENTIAL_UNAVAILABLE` | No inline message; terminal code raised in `main`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_READ_ONLY_KEY` | No inline message; terminal code raised in `main`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_REFIT_FAILED` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_ROW_CREATED_AT_MISSING` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_ROW_POST_CANDIDATE` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_SOURCE_MANIFEST_HASH_INVALID` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_SOURCE_MANIFEST_MISSING` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_SOURCE_MANIFEST_TAMPERED` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_SOURCE_READ_FAILED` | No inline message; terminal code raised in `main`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_SPLIT_MISMATCH` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_STORED_ARTIFACT_TAMPERED` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_TEMPORAL_LEAKAGE` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_TRAINING_CODE_SHA_INVALID` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_VERIFIER_SHA_REQUIRED` | No inline message; terminal code raised in `verify_frozen_replay`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_REPLAY_WRONG_SPORT` | No inline message; terminal code raised in `_rows_from_frozen`. | `v17/ncaab_moneyline_replay.py` | — | No |
+| `NCAAB_SOURCE_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_ASSET_COUNT_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_CALIBRATOR_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_DATASET_HASH_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_DUPLICATE_SEASON` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_GOVERNANCE_VIOLATION` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_LICENSE_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_METRIC_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_PIN_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_REPLAY_INPUT_OR_RUNTIME_BLOCKED` | No inline message; terminal code raised in `main`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_ROW_COUNT_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_ROW_PROVENANCE_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_SEASON_MISSING` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_SPECIALIST_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_TOTAL_ROWS_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SOURCE_URL_MISMATCH` | No inline message; terminal code raised in `hold`. | `v17/ncaab_source_pinned_replay.py` | — | No |
+| `NCAAB_SPORTSDATAVERSE_EMPTY` | No inline message; terminal code raised in `fetch_games`. | `v17/ncaab_sportsdataverse_candidate.py` | — | No |
+| `NCAAB_SPORTSDATAVERSE_HTTP_FAILED` | No inline message; terminal code raised in `fetch_games`. | `v17/ncaab_sportsdataverse_candidate.py` | — | No |
+| `NCAAB_TRAINING_CODE_SHA_REQUIRED` | No inline message; terminal code raised in `train_and_persist`. | `v17/ncaab_sportsdataverse_candidate.py` | — | No |
+
+<!-- sport-failure-registry:NCAAB:end -->
+
+<!-- sport-failure-registry:TENNIS:begin -->
+## Tennis failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing Tennis code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `TENNIS_CANDIDATE_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `build_training_rows`. | `v17/tennis_valuebet_candidate.py` | — | No |
+| `TENNIS_MATCH_DATE_MISSING` | No inline message; terminal code raised in `_parse_time`. | `v17/tennis_valuebet_candidate.py` | — | No |
+| `TENNIS_TRAINING_CODE_SHA_REQUIRED` | No inline message; terminal code raised in `train_all`. | `v17/tennis_valuebet_candidate.py` | — | No |
+| `TENNIS_VALUEBET_EMPTY` | No inline message; terminal code raised in `fetch_matches`. | `v17/tennis_valuebet_candidate.py` | — | No |
+| `TENNIS_VALUEBET_HTTP_FAILED` | No inline message; terminal code raised in `fetch_matches`. | `v17/tennis_valuebet_candidate.py` | — | No |
+| `TENNIS_VALUEBET_SCHEMA_INVALID` | No inline message; terminal code raised in `fetch_matches`. | `v17/tennis_valuebet_candidate.py` | — | No |
+
+<!-- sport-failure-registry:TENNIS:end -->
+
+<!-- sport-failure-registry:SOCCER:begin -->
+## Soccer failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing Soccer code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `SOCCER_CANDIDATE_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `build_training_rows`. | `v17/soccer_openfootball_candidate.py` | — | No |
+| `SOCCER_EVENT_DATE_MISSING` | No inline message; terminal code raised in `_event_time`. | `v17/soccer_openfootball_candidate.py` | — | No |
+| `SOCCER_OPENFOOTBALL_EMPTY` | No inline message; terminal code raised in `fetch_competition`. | `v17/soccer_openfootball_candidate.py` | — | No |
+| `SOCCER_OPENFOOTBALL_HTTP_FAILED` | No inline message; terminal code raised in `fetch_competition`. | `v17/soccer_openfootball_candidate.py` | — | No |
+| `SOCCER_OPENFOOTBALL_SCHEMA_INVALID` | No inline message; terminal code raised in `fetch_competition`. | `v17/soccer_openfootball_candidate.py` | — | No |
+| `SOCCER_TRAINING_CODE_SHA_REQUIRED` | No inline message; terminal code raised in `train_all`. | `v17/soccer_openfootball_candidate.py` | — | No |
+
+<!-- sport-failure-registry:SOCCER:end -->
+
+<!-- sport-failure-registry:MLB:begin -->
+## MLB failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing MLB code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `MLB_1IP_ACTIVE_AGGREGATE_ARTIFACT_MISMATCH` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ACTIVE_ARTIFACT_AMBIGUOUS` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ACTIVE_ARTIFACT_GOVERNANCE_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ACTIVE_PAYLOAD_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_ARTIFACT_BUCKETS_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | `mlb_1ip_player_conditioned.py` | No |
+| `MLB_1IP_ARTIFACT_BUCKET_EMPTY` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | `mlb_1ip_player_conditioned.py` | No |
+| `MLB_1IP_ARTIFACT_FORMAT_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_ARTIFACT_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_ARTIFACT_SUPPORT_COUNT_MISMATCH` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_AUTO_HYDRATION_INTERNAL_ERROR` | No inline message; terminal code raised in `score_mlb_1ip_ingress`. | `mlb_1ip_ingress_runtime.py` | — | No |
+| `MLB_1IP_BF_ALPHA_INVALID` | No inline message; terminal code raised in `score_pitcher`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_BUCKET_SUPPORT_INSUFFICIENT` | No inline message; terminal code raised in `fit_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | — | No |
+| `MLB_1IP_BF_COUNTS_EMPTY` | No inline message; terminal code raised in `_normalize_counts`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_BUCKET_INVALID` | No inline message; terminal code raised in `counts_from_buckets`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_COUNT_INVALID` | No inline message; terminal code raised in `score_pitcher`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_EXCEEDS_CERTIFIED_WINDOW` | No inline message; terminal code raised in `score_pitcher`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_HISTORY_INVALID` | No inline message; terminal code raised in `_bucket_counts`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_BF_HISTORY_LIMIT_INVALID` | No inline message; terminal code raised in `history_buckets`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_INVALID` | No inline message; terminal code raised in `bf_bucket`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_METRIC_INPUT_INVALID` | No inline message; terminal code raised in `multiclass_brier`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_BF_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `fit_league_prior`. | `mlb_1ip_bf_model.py` | — | No |
+| `MLB_1IP_CERTIFIED_ARTIFACT_FAMILY_INVALID` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_ARTIFACT_FEATURE_SCHEMA_INVALID` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_ARTIFACT_NOT_READY` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_LINE_SUPPORT_INVALID` | No inline message; terminal code raised in `_certified_lines`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CERTIFIED_LINE_SUPPORT_MISSING` | No inline message; terminal code raised in `_certified_lines`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_CURRENT_LINE_CERTIFICATION_UNEXPECTED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_DIRECTION_INVALID` | No inline message; terminal code raised in `score_empirical_pmf`. | `mlb_1ip_empirical_pmf.py` | `mlb_1ip_player_conditioned.py` | No |
+| `MLB_1IP_EMPIRICAL_VALIDATION_NOT_PASSED` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_EXACT_EVENT_TREE_SETTLEMENT_UNAVAILABLE` | No inline message; terminal code raised in `_settle_mlb_1ip_or_delegate`. | `v17/mlb_1ip_exact_settlement_overlay.py` | — | No |
+| `MLB_1IP_INDEPENDENT_REVIEW_REQUIRED` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_promotion.py` | No |
+| `MLB_1IP_LINE_EXPANSION_ACTIVATION_FAILED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_AGGREGATE_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ARTIFACT_ID_MISSING` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ATTESTATION_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ATTESTATION_MISSING` | No inline message; terminal code raised in `_load_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_ATTESTATION_PURPOSE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_BF_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_EXECUTION_GOVERNANCE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_LINEAGE_HASH_MISSING` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_LINES_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_POST_ACTIVATION_VERIFY_FAILED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_PUBLICATION_GOVERNANCE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_REVIEW_STATE_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_SAMPLE_POLICY_INVALID` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_STAGED_METADATA_INVALID` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_STAGE_INSERT_FAILED` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_TARGET_AMBIGUOUS` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_VALIDATION_NOT_PASSED` | No inline message; terminal code raised in `validate_attestation`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_EXPANSION_VERSION_COLLISION` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_PLAYER_AGGREGATE_ARTIFACT_INVALID` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_AGGREGATE_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_ARTIFACT_FAMILY_INVALID` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_ARTIFACT_FORMAT_INVALID` | No inline message; terminal code raised in `score_player_conditioned_1ip`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_CONDITIONED_ARTIFACT_NOT_ACTIVE` | No inline message; terminal code raised in `run_mlb_1ip_line_expansion_maintenance`. | `v17/mlb_1ip_line_expansion_maintenance.py` | — | No |
+| `MLB_1IP_PLAYER_CONDITIONING_HISTORY_INSUFFICIENT` | No inline message; terminal code raised in `_bucket_counts`. | `mlb_1ip_player_conditioned.py` | — | No |
+| `MLB_1IP_PLAYER_CONDITIONING_INPUTS_INSUFFICIENT` | No inline message; terminal code raised in `score_mlb_1ip_empirical`. | `mlb_1ip_empirical_specialist.py` | — | No |
+| `MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT` | No inline message; terminal code raised in `_acquisition_failure`. | `mlb_1ip_ingress_runtime.py` | `mlb_1ip_live_acquisition.py` | No |
+| `MLB_1IP_PROMOTION_ARTIFACT_CHECKSUM_INVALID` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_ARTIFACT_FORMAT_MISMATCH` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_BRIER_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_CODE_SHA_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_ECE_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_EXPECTED_CHECKSUM_INVALID` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_EXPECTED_SPLIT_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_FEATURE_SCHEMA_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_MODEL_FAMILY_MISMATCH` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SAFETY_INVARIANT_VIOLATION` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SHADOW_STATE_REQUIRED` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SOURCE_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SOURCE_LINEAGE_MISSING` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SPLIT_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_SPLIT_HASH_MISMATCH` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_TRAINING_DATASET_HASH_INVALID` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `_verify_artifact`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATED_LINE_SUPPORT_MISMATCH` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATION_LINEAGE_MISSING` | No inline message; terminal code raised in `build_empirical_promotion_payload`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATION_METRICS_OUT_OF_BOUNDS` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_PROMOTION_VALIDATION_NOT_PASSED` | No inline message; terminal code raised in `build_empirical_shadow_candidate`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REGISTRY_ROW_CERTIFICATION_REQUIRED` | No inline message; terminal code raised in `registry_row_from_promoted`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REGISTRY_ROW_CONTRACT_INVALID` | No inline message; terminal code raised in `registry_row_from_promoted`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REGISTRY_ROW_PROMOTION_REQUIRED` | No inline message; terminal code raised in `registry_row_from_promoted`. | `mlb_1ip_empirical_promotion.py` | — | No |
+| `MLB_1IP_REVIEW_EVIDENCE_INVALID` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_promotion.py` | No |
+| `MLB_1IP_REVIEW_NOT_APPROVED` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_promotion.py` | No |
+| `MLB_1IP_TRAINING_CODE_SHA_INVALID` | No inline message; terminal code raised in `fit_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_TRAINING_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `fit_candidate`. | `mlb_1ip_artifact_pipeline.py` | `mlb_1ip_empirical_pmf.py` | No |
+| `MLB_1IP_VALIDATION_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_LINEAGE_MISSING` | No inline message; terminal code raised in `promote_validated_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_PROBABILITY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_ROWS_INSUFFICIENT` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_SOURCE_LINEAGE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_1IP_VALIDATION_TARGET_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `mlb_1ip_artifact_pipeline.py` | — | No |
+| `MLB_BASELINE_SCORER_BLOCKED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_BASELINE_SCORER_CALL_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_BASELINE_SCORE_LOOKUP_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_BASELINE_SCORE_RELOAD_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_EVENT_MODEL_NOT_AVAILABLE` | No inline message; terminal code raised in `classify_mlb_prospective_failure`. | `v17/mlb_prospective_failure_taxonomy.py` | — | No |
+| `MLB_EVENT_MODEL_NOT_REGISTERED` | No inline message; terminal code raised in `score_event_v17_bridge`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_EVENT_SCORER_RESOLVE_FAILED` | No inline message; terminal code raised in `score_event_v17_bridge`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_DATE_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_DUPLICATE_GAME` | training evidence contains duplicate game keys | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_GAME_KEY_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_HOLDOUT_EMPTY` | No inline message; terminal code raised in `evaluate_extra_inning_margin_candidate`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_HOLDOUT_LEAKAGE` | every holdout game must be strictly after the training cutoff | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_SIDE_SAMPLE_INSUFFICIENT` | need at least 40 winner-conditioned rows per side | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_TRAINING_INSUFFICIENT` | need at least 100 extra-inning games | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_MARGIN_WINNER_INVALID` | No inline message; terminal code raised in `_validate_row`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_SAMPLES_INVALID` | No inline message; terminal code raised in `resolve_tied_nine_inning_samples`. | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_EXTRA_INNING_WIN_PROBABILITY_INVALID` | extra-inning home-win probability must be in [0,1] | `v17/mlb_extra_inning_margin_challenger.py` | — | No |
+| `MLB_FAILURE_REGIME_MIXTURE_V1` | No inline message; terminal code raised in `module scope`. | `mlb_event_specialist_v16.py` | — | No |
+| `MLB_PITCHER_FANTASY_SCORE_HISTORY_INSUFFICIENT` | fewer than ten official prior starts contained every required Pitcher Fantasy Score component | `v17/mlb_pitcher_fantasy_score_hydration.py` | — | No |
+| `MLB_PROSPECTIVE_SCORER_NOT_CALLABLE` | No inline message; terminal code raised in `_resolve_direct_scorer`. | `v17/mlb_event_bridge_repair.py` | `v17/mlb_feature_contract_binding.py` | No |
+| `MLB_RUN_LINE_DISTRIBUTION_UNAVAILABLE` | governed MLB run distribution state is unavailable | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_EVENT_IDENTITY_UNAVAILABLE` | score snapshot is missing its shadow event identity | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_EXECUTION_INVARIANT_VIOLATION` | MLB run-line score snapshot must preserve can_execute=false | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_EXTRA_INNING_WIN_EVIDENCE_UNAVAILABLE` | extra-inning winner evidence is unavailable | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_GOVERNED_EVIDENCE_UNAVAILABLE` | No inline message; terminal code raised in `run_mlb_run_line_forward_shadow`. | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_INVALID` | No inline message; terminal code raised in `score_final_run_line_samples`. | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SAMPLES_INVALID` | home/away final score samples must be non-empty and aligned | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SCORE_SNAPSHOT_NOT_PREGAME_SCORED` | MLB run-line requires a governed pregame-scored snapshot | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SCORE_SNAPSHOT_UNAVAILABLE` | governed MLB forward score snapshot is unavailable | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_RUN_LINE_SIMULATION_COUNT_INSUFFICIENT` | need at least {MIN_SIMULATIONS} simulations | `v17/mlb_run_line_shadow.py` | — | No |
+| `MLB_SCHEDULE_DISCOVERY_FAILED` | No inline message; terminal code raised in `run_live_self_acceptance`. | `mlb_1ip_live_self_acceptance.py` | — | No |
+| `MLB_STARTER_STATUS_UNRESOLVED` | No inline message; terminal code raised in `_acquisition_failure`. | `mlb_1ip_ingress_runtime.py` | — | No |
+| `MLB_TEAM_EVENT_CALLER_EVIDENCE_CONTRADICTS_CANONICAL` | No inline message; terminal code raised in `resolve_mlb_team_event_evidence`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_ACQUISITION_FAILED` | No inline message; terminal code raised in `_capture_requested_slate`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_team_event_hydration.py` | `v17/mlb_event_bridge_repair.py` | No |
+| `MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS` | No inline message; terminal code raised in `_identity_join_rows`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH` | No inline message; terminal code raised in `resolve_mlb_team_event_evidence`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_LINEUP_QUERY_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_team_event_hydration.py` | `v17/mlb_event_bridge_repair.py` | No |
+| `MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE` | No inline message; terminal code raised in `_raw_canonical_diagnostic`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_team_event_hydration.py` | `v17/mlb_event_bridge_repair.py` | No |
+| `MLB_TEAM_EVENT_FROZEN_SPEC_UNAVAILABLE` | No inline message; terminal code raised in `_capture_requested_slate`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_HYDRATION_NOT_READY` | No inline message; terminal code raised in `_raw_canonical_diagnostic`. | `v17/mlb_team_event_hydration.py` | — | No |
+| `MLB_TEAM_EVENT_LINEUP_NOT_YET_AVAILABLE` | No inline message; terminal code raised in `_resolve_bridge_payload`. | `v17/mlb_event_bridge_repair.py` | — | No |
+| `MLB_TEAM_EVENT_REQUESTED_SLATE_DATE_MISSING` | No inline message; terminal code raised in `_capture_requested_slate`. | `v17/mlb_team_event_hydration.py` | — | No |
+
+<!-- sport-failure-registry:MLB:end -->
+
+<!-- sport-failure-registry:WNBA:begin -->
+## WNBA failure-code registry (November 2026)
+
+Derived from production modules by `scripts/sport_failure_registry.py`; run it
+after changing WNBA code. A code that is a model label, table or metric
+name, or a success disposition is catalogued in the tables below rather than
+as a failure. `can_execute=false` and dry-run-only remain invariant.
+
+| Code | Meaning | Emitting module | Also emitted by | Rank eligible? |
+|---|---|---|---|---|
+| `WNBA_CHECKED_ROUTE_SET_INCOMPLETE` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_COMPOSITE_ARTIFACT_VERSION_COLLISION` | No inline message; terminal code raised in `derive_and_register_candidate`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_CALIBRATION_NOT_CERTIFIED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/wnba_composite_fitted_candidate.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_AMBIGUOUS` | Multiple research candidates resolved for WNBA {stat} | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_FORMAT_UNSUPPORTED` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_NOT_FOUND` | No activated research candidate exists for WNBA {stat} | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ARTIFACT_REGISTRY_UNAVAILABLE` | WNBA composite candidate artifact registry lookup failed | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_AUTHORITY_CONFLICT` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_DERIVATION_FAILED` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_LIFECYCLE_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_NOT_CERTIFIED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/wnba_composite_fitted_candidate.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_NOT_RESEARCH_ACTIVE` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_ROUTE_IDENTITY_MISMATCH` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_SCORER_EXCEPTION` | WNBA composite candidate scorer threw an unexpected exception | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_SCORER_INVALID` | No inline message; terminal code raised in `score_wnba_composite_candidate_research`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_SPECIALIST_MISMATCH` | No inline message; terminal code raised in `_candidate_artifact`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANDIDATE_UNCALIBRATED` | No inline message; terminal code raised in `score_wnba_composite_candidate_research`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_CANONICAL_ACTION_CANARY_MISSING` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_EVIDENCE_BRIDGE_FAILED` | WNBA composite evidence retrieval failed | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_EVIDENCE_INCOMPLETE` | WNBA composite candidate inputs are incomplete | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_EXACT_LINE_CALIBRATION_MISSING` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_FORWARD_COHORT_NOT_CERTIFIED` | No inline message; terminal code raised in `build_candidate_rows`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_FULL_MODEL_CONTEXT_NOT_CERTIFIED` | No inline message; terminal code raised in `simulate_exact_line`. | `v17/wnba_composite_fitted_candidate.py` | — | No |
+| `WNBA_COMPOSITE_ROUTE_UNSUPPORTED` | No inline message; terminal code raised in `score_wnba_composite_candidate_research`. | `v17/wnba_composite_candidate_bridge.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_ARTIFACT_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_ARTIFACT_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_CHECKSUM_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_PAYLOAD_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_PROVENANCE_MISSING` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_COMPOSITE_SOURCE_PROVIDER_INVALID` | No inline message; terminal code raised in `_source_row`. | `v17/wnba_composite_candidate_registry.py` | — | No |
+| `WNBA_FROZEN_SOURCE_ASSET_MANIFEST_INCOMPLETE` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_ASSET_MANIFEST_INVALID` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_MANIFEST_INVALID` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_FROZEN_SOURCE_MANIFEST_MISSING` | No inline message; terminal code raised in `_manifest`. | `wnba_training_source.py` | — | No |
+| `WNBA_HISTORY_GAME_DATE_INVALID` | No inline message; terminal code raised in `_game_date`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_MINUTES_INVALID` | No inline message; terminal code raised in `_minutes`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_PERSISTENCE_UNAVAILABLE` | No inline message; terminal code raised in `persist_raw_game_logs`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_REQUIRED_FIELD_MISSING` | No inline message; terminal code raised in `_text`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_ROW_NOT_OBJECT` | No inline message; terminal code raised in `normalize_raw_game_log_row`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_HISTORY_SOURCE_ROWS_REJECTED` | No inline message; terminal code raised in `hydrate_wnba_history`. | `wnba_history_runtime.py` | — | No |
+| `WNBA_HISTORY_STAT_INVALID` | No inline message; terminal code raised in `_int_stat`. | `wnba_history_ingestion.py` | — | No |
+| `WNBA_INJURY_REPORT_EVENT_UNRESOLVED` | fresh official injury report did not contain the target matchup/team | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_NOT_SUBMITTED` | target team has not submitted its official WNBA injury report | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_PLAYER_STATUS_UNRESOLVED` | target player name was empty after normalization | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_SECTION_INCOMPLETE` | opponent section header was not parsed, so the target section cannot be bounded | `wnba_injury_status.py` | — | No |
+| `WNBA_INJURY_REPORT_UNAVAILABLE` | no fresh official WNBA injury report could be retrieved and parsed | `wnba_prop_auto_hydration.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_DATE_MISMATCH` | WNBA liveData scoreboard does not represent the requested slate date | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_GAME_IDENTITY_INVALID` | WNBA liveData scoreboard team identity was missing | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_INVALID` | WNBA liveData response was missing scoreboard | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_LIVEDATA_SCOREBOARD_UNAVAILABLE` | WNBA liveData scoreboard request failed | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_OFFICIAL_GAME_AND_PLAYER_ID_REQUIRED` | No inline message; terminal code raised in `_settle_composite`. | `v17/wnba_composite_settlement_overlay.py` | — | No |
+| `WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY` | official WNBA schedule page did not yield exact game/team identities | `v17/wnba_official_schedule_web_fallback.py` | — | No |
+| `WNBA_OFFICIAL_SOURCE_UNAVAILABLE` | all official WNBA schedule transports were unavailable or invalid | `v17/wnba_prop_evidence_control_plane.py` | `v17/wnba_official_schedule_web_fallback.py`, `wnba_prop_auto_hydration.py` | No |
+| `WNBA_OIDC_SCHEDULE_BRIDGE_INCOMPLETE` | No inline message; terminal code raised in `acquire_wnba_forward_evidence_batch`. | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_OIDC_SCHEDULE_BRIDGE_INVALID` | No inline message; terminal code raised in `acquire_wnba_forward_evidence_batch`. | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID` | OIDC official schedule bridge payload was not an object | `v17/wnba_official_schedule_web_fallback.py` | — | No |
+| `WNBA_OIDC_SCHEDULE_PROVIDER_INVALID` | OIDC schedule bridge provider was not the governed official-CDN bridge | `v17/wnba_official_schedule_web_fallback.py` | — | No |
+| `WNBA_PLAYER_AVAILABILITY_NOT_CLEAR` | player has an explicit current official injury/availability designation; unconditional model adjustment is not certified | `wnba_injury_status.py` | — | No |
+| `WNBA_PLAYER_HISTORY_BELOW_MINIMUM` | No inline message; terminal code raised in `training_readiness`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_PROP_ARTIFACT_CHECKSUM_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_CHECKSUM_MISMATCH` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_FORMAT_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_PAYLOAD_IDENTITY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_ARTIFACT_VERSION_COLLISION` | No inline message; terminal code raised in `register_candidates`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_BOX_SCORE_FIELDS_MISSING` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_CANDIDATE_GOVERNANCE_FLAGS_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_CANDIDATE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_CANDIDATE_LIFECYCLE_REQUIRED` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_DUPLICATE_STAT_ROUTE` | No inline message; terminal code raised in `register_candidates`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_EXPECTED_COUNT_OUTSIDE_SUPPORT` | No inline message; terminal code raised in `wnba_prop_poisson_logglm_v1_adapter`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_FEATURE_SCHEMA_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FEATURE_VECTOR_OOD` | No inline message; terminal code raised in `wnba_prop_poisson_logglm_v1_adapter`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISMATCH` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_GOVERNANCE_INVALID` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_LICENSE_MISMATCH` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_LICENSE_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_METRICS_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_METRICS_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_PROVIDER_MISMATCH` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_FROZEN_SOURCE_PROVIDER_MISSING` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_HISTORY_DATE_DUPLICATE` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_DATE_INVALID` | No inline message; terminal code raised in `_date_key`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_MINUTES_INVALID` | No inline message; terminal code raised in `_minutes`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_MISALIGNED` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_MISSING` | No inline message; terminal code raised in `feature_vector`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_HISTORY_STAT_INVALID` | No inline message; terminal code raised in `_count`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_LINEAR_PREDICTOR_INVALID` | No inline message; terminal code raised in `expected_count`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_MODEL_FAMILY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_NUMERIC_CANONICALIZATION_INVALID` | No inline message; terminal code raised in `_validate_frozen_source_provenance`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_OFFLINE_CERTIFICATION_ELIGIBILITY_NOT_PASS` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_PMF_INVALID` | No inline message; terminal code raised in `poisson_pmf`. | `wnba_prop_model_adapter.py` | — | No |
+| `WNBA_PROP_PROVIDER_IDENTITY_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_SPORT_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_STAT_TYPE_UNSUPPORTED` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_SUPPORTED_LINE_RANGE_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_TRAINING_CODE_SHA_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_TRAINING_DATASET_HASH_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_TRAINING_ROWS_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_VALIDATION_BLOCKERS_PRESENT` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_VALIDATION_GOVERNANCE_FLAGS_INVALID` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_PROP_VALIDATION_NOT_PASS` | No inline message; terminal code raised in `validate_candidate`. | `v17/wnba_prop_candidate_registry.py` | — | No |
+| `WNBA_RECENT_GAMES_INSUFFICIENT` | fewer than ten official prior WNBA games with aligned composite components were available | `v17/wnba_composite_auto_hydration.py` | `wnba_prop_auto_hydration.py` | No |
+| `WNBA_REPLAY_CODE_SHA_NOT_SINGLETON` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_REPLAY_ROUTE_SET_INCOMPLETE` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SCHEDULE_INVALID` | No inline message; terminal code raised in `_schedule_players`. | `v17/wnba_prop_evidence_acquisition.py` | `wnba_prop_auto_hydration.py` | No |
+| `WNBA_SCHEDULE_TEAM_INVALID` | No inline message; terminal code raised in `_team_node`. | `wnba_prop_auto_hydration.py` | — | No |
+| `WNBA_SOURCE_ATTRIBUTION_NOT_ENFORCED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_DOMAIN_NOT_SPORTING` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_LICENSE_NOT_PINNED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_LICENSE_URL_MISSING` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_MANIFEST_EXECUTION_FORBIDDEN` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_MANIFEST_VERSION_INVALID` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_NOT_REGISTERED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_RIGHTS_NOT_APPROVED` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SOURCE_UNEXPECTED_CREDENTIAL_REQUIREMENT` | No inline message; terminal code raised in `audit_wnba_certification_replay`. | `wnba_prop_certification_replay.py` | — | No |
+| `WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND` | No inline message; terminal code raised in `_canonical_official_event_for_espn_alias`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_CANONICAL_IDENTITY_AMBIGUOUS` | No inline message; terminal code raised in `_canonical_official_event_for_espn_alias`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_CANONICAL_SOURCE_UNAVAILABLE` | official WNBA schedule reconciliation failed: {code} | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_ESPN_IDENTITY_REQUIRED` | No inline message; terminal code raised in `resolve_wnba_current_event_identity`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_IDENTITY_AMBIGUOUS` | exact WNBA Stats event identity could not be resolved | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `resolve_wnba_current_event_identity`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_NOT_FOUND` | exact WNBA Stats event identity could not be resolved | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_NOT_PREGAME` | WNBA Stats event is not a future pregame event | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_EVENT_TIME_MISMATCH` | WNBA Stats event start differs from requested start by more than five minutes | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_IDENTITY_SOURCE_INVALID` | No inline message; terminal code raised in `resolve_wnba_current_event_identity`. | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_IDENTITY_SOURCE_UNAVAILABLE` | official WNBA identity re-verification failed: stats={stats_code}; livedata={live_code} | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_STATS_IDENTITY_REQUIRED` | WNBA Stats event identity plus ESPN-keyed team aliases are required | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_TEAM_IDENTITY_MISMATCH` | WNBA Stats event teams do not match requested governed ESPN aliases | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_SPREAD_FORWARD_TEAM_IDENTITY_UNMAPPED` | WNBA Stats team identity is not in the audited ESPN alias registry | `v17/wnba_spread_event_identity.py` | — | No |
+| `WNBA_STATS_BASE_URL_NOT_APPROVED` | No inline message; terminal code raised in `__init__`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_HEADERS_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_HTTP_ERROR` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_INVALID_JSON` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_INVALID_RESPONSE` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_LEAGUE_GAME_LOG_MISSING` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_REQUEST_FAILED` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_RESULT_SET_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_prop_auto_hydration.py` | — | No |
+| `WNBA_STATS_RESULT_SET_MISSING` | No inline message; terminal code raised in `_result_rows`. | `wnba_prop_auto_hydration.py` | `wnba_stats_client.py` | No |
+| `WNBA_STATS_ROWS_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_ROW_SHAPE_INVALID` | No inline message; terminal code raised in `_result_rows`. | `wnba_prop_auto_hydration.py` | `wnba_stats_client.py` | No |
+| `WNBA_STATS_SCOREBOARD_V3_GAME_IDENTITY_INVALID` | WNBA Stats scoreboard team identity was missing | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_STATS_SCOREBOARD_V3_INVALID` | WNBA Stats Scoreboard V3 response was missing scoreboard.games | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE` | WNBA Stats Scoreboard V3 request failed | `v17/wnba_prop_evidence_control_plane.py` | — | No |
+| `WNBA_STATS_SEASON_OUT_OF_RANGE` | Regular Season | `wnba_stats_client.py` | — | No |
+| `WNBA_STATS_SEASON_TYPE_UNSUPPORTED` | No inline message; terminal code raised in `player_game_logs`. | `wnba_stats_client.py` | — | No |
+| `WNBA_TRAINING_GAME_DATE_INVALID` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_IDENTITY_INCOMPLETE` | No inline message; terminal code raised in `_nonempty`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_MINUTES_INVALID` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_ROLE_INVALID` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_ROWS_BELOW_MINIMUM` | No inline message; terminal code raised in `training_readiness`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_SEASONS_EMPTY` | No inline message; terminal code raised in `training_readiness`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_SPORT_MISMATCH` | No inline message; terminal code raised in `normalize_historical_row`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_STAT_INVALID` | No inline message; terminal code raised in `_integer_stat`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_STAT_UNSUPPORTED` | No inline message; terminal code raised in `canonical_stat`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_TIMESTAMP_INVALID` | No inline message; terminal code raised in `_aware_datetime`. | `wnba_prop_training_contract.py` | — | No |
+| `WNBA_TRAINING_TIMESTAMP_TIMEZONE_REQUIRED` | No inline message; terminal code raised in `_aware_datetime`. | `wnba_prop_training_contract.py` | — | No |
+
+<!-- sport-failure-registry:WNBA:end -->

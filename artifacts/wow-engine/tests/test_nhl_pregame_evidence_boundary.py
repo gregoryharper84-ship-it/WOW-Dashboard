@@ -11,7 +11,7 @@ def valid():
         official_event_id="2026020219", home_team="BOS", away_team="NYR",
         event_start_time_utc=(NOW + timedelta(hours=3)).isoformat(),
         goalie_status="CONFIRMED", goalie_status_observed_at=NOW.isoformat(),
-        goalie_identity_snapshot_id="starter-source-1", source_snapshot_id="source-1",
+        goalie_identity_snapshot_id="a" * 64, source_snapshot_id="source-1",
         settlement_basis=FULL_GAME_SETTLEMENT,
         home_elo=1510.0, away_elo=1490.0,
         home_goalie_sv_pct=.91, away_goalie_sv_pct=.92,
@@ -37,9 +37,35 @@ def trusted_identity():
     }
 
 
-def verify(evidence, *, as_of_utc, **kwargs):
+def confirmation_for(evidence):
+    """Synthetic two-source receipt used ONLY as a test fixture."""
+    return {
+        "goalie_status": "CONFIRMED",
+        "goalie_identity_snapshot_id": evidence.get("goalie_identity_snapshot_id"),
+        "official_event_id": evidence.get("official_event_id"),
+        "home_goalie_id": "8478402",
+        "away_goalie_id": "8479318",
+        "verified_at": evidence.get("goalie_status_observed_at"),
+        "provider_receipts": [
+            {"source_id": "NHL_OFFICIAL_CLUB_FEED", "source_snapshot_id": "snap-a",
+             "source_payload_sha256": "a" * 64},
+            {"source_id": "NHL_OFFICIAL_LINEUP_FEED", "source_snapshot_id": "snap-b",
+             "source_payload_sha256": "b" * 64},
+        ],
+        "derived_server_side": True,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def verify(evidence, *, as_of_utc, goalie_confirmation=None, **kwargs):
     return validate_nhl_pregame_evidence(
-        evidence, as_of_utc=as_of_utc, resolved_identity=trusted_identity(), **kwargs
+        evidence, as_of_utc=as_of_utc, resolved_identity=trusted_identity(),
+        goalie_confirmation=(
+            confirmation_for(evidence)
+            if goalie_confirmation is None else goalie_confirmation
+        ),
+        **kwargs,
     )
 
 
@@ -258,7 +284,8 @@ def test_official_and_caller_starts_future_remain_input_only_not_certified():
     receipt = trusted_identity()
     receipt["event_start_time"] = (NOW + timedelta(minutes=5)).isoformat()
     result = validate_nhl_pregame_evidence(
-        evidence, as_of_utc=NOW, resolved_identity=receipt
+        evidence, as_of_utc=NOW, resolved_identity=receipt,
+        goalie_confirmation=confirmation_for(evidence),
     )
     assert result["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION"
     assert result["probability_publishable"] is False
@@ -268,8 +295,10 @@ def test_official_and_caller_starts_future_remain_input_only_not_certified():
 def test_resolver_receipt_allows_only_small_capture_clock_skew():
     receipt = trusted_identity()
     receipt["identity_verified_at"] = (NOW + timedelta(minutes=2)).isoformat()
+    evidence = valid()
     accepted = validate_nhl_pregame_evidence(
-        valid(), as_of_utc=NOW, resolved_identity=receipt
+        evidence, as_of_utc=NOW, resolved_identity=receipt,
+        goalie_confirmation=confirmation_for(evidence),
     )
     assert accepted["status"] == "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION"
     receipt["identity_verified_at"] = (NOW + timedelta(minutes=10)).isoformat()
@@ -278,6 +307,71 @@ def test_resolver_receipt_allows_only_small_capture_clock_skew():
     )
     assert held["status"] == "HELD"
     assert "NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH" in held["blockers"]
+
+
+def test_missing_independent_goalie_receipt_holds_even_with_confirmed_status():
+    evidence = valid()
+    result = validate_nhl_pregame_evidence(
+        evidence, as_of_utc=NOW, resolved_identity=trusted_identity()
+    )
+    assert result["status"] == "HELD"
+    assert "NHL_GOALIE_CONFIRMATION_RECEIPT_MISSING" in result["blockers"]
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_goalie_receipt_must_bind_exact_event_snapshot_and_time():
+    evidence = valid()
+    other_event = confirmation_for(evidence)
+    other_event["official_event_id"] = "0000000000"
+    assert "NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED" in verify(
+        evidence, as_of_utc=NOW, goalie_confirmation=other_event
+    )["blockers"]
+
+    mismatched = confirmation_for(evidence)
+    mismatched["goalie_identity_snapshot_id"] = "b" * 64
+    assert "NHL_GOALIE_IDENTITY_SNAPSHOT_MISMATCH" in verify(
+        evidence, as_of_utc=NOW, goalie_confirmation=mismatched
+    )["blockers"]
+
+    shifted = confirmation_for(evidence)
+    shifted["verified_at"] = (NOW - timedelta(minutes=30)).isoformat()
+    assert "NHL_GOALIE_CONFIRMATION_TIME_MISMATCH" in verify(
+        evidence, as_of_utc=NOW, goalie_confirmation=shifted
+    )["blockers"]
+
+
+def test_goalie_receipt_requires_two_sources_and_confirmed_status():
+    evidence = valid()
+    single = confirmation_for(evidence)
+    single["provider_receipts"] = single["provider_receipts"][:1]
+    assert "NHL_GOALIE_CONFIRMATION_SOURCES_NOT_INDEPENDENT" in verify(
+        evidence, as_of_utc=NOW, goalie_confirmation=single
+    )["blockers"]
+
+    unconfirmed = confirmation_for(evidence)
+    unconfirmed["goalie_status"] = "PROJECTED"
+    assert "NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED" in verify(
+        evidence, as_of_utc=NOW, goalie_confirmation=unconfirmed
+    )["blockers"]
+
+    # A receipt a caller assembled itself is not the server-derived boundary.
+    not_derived = confirmation_for(evidence)
+    not_derived["derived_server_side"] = False
+    assert "NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED" in verify(
+        evidence, as_of_utc=NOW, goalie_confirmation=not_derived
+    )["blockers"]
+
+
+def test_goalie_receipt_cannot_carry_publication_or_execution_authority():
+    evidence = valid()
+    for field in ("probability_publishable", "rank_eligible", "can_execute"):
+        claimed = confirmation_for(evidence)
+        claimed[field] = True
+        result = verify(evidence, as_of_utc=NOW, goalie_confirmation=claimed)
+        assert "NHL_GOALIE_CONFIRMATION_AUTHORITY_INVALID" in result["blockers"]
+        assert result["probability_publishable"] is False
+        assert result["can_execute"] is False
 
 
 def test_numeric_strings_are_not_validated_as_verified_evidence():
