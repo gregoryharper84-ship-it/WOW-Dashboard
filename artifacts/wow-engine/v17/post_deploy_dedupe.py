@@ -96,7 +96,7 @@ def _prior_receipts(repo: str, sha: str, current_run_id: str) -> list[Any]:
                 repo, by_name[expected_final][0],
                 expected_filename="wow-v17-post-deploy-final-readback.json",
             )
-        except (OSError, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile, subprocess.SubprocessError):
             # Unverifiable prior acceptance is not proof to skip new lanes.
             continue
         key = deployment_key(initial)
