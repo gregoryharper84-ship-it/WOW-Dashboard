@@ -161,7 +161,7 @@ def test_acceptance_repeats_exact_sha_readback_after_the_long_running_lanes():
     final_readback = next((s for s in steps if s.get("id") == "final-readback"), None)
     assert final_readback is not None, "a deployment may change while the acceptance lanes run"
     assert "lean_production_readback.py" in final_readback["run"]
-    assert final_readback["continue-on-error"] == "true"
+    assert "continue-on-error" not in final_readback
     assert final_readback["if"] == "steps.receipt_identity.outcome == 'success'"
     assert job["environment"] == "wow-release"
     assert job["env"]["EXPECTED_SHA"] == "${{ inputs.expected_sha || github.event.workflow_run.head_sha }}"
