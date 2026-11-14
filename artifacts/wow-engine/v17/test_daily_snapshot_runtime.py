@@ -18,6 +18,8 @@ class Query:
     def __init__(self, data): self.data = data
     def select(self, *_): return self
     def eq(self, *_): return self
+    def gte(self, *_): return self
+    def lte(self, *_): return self
     def order(self, *_, **__): return self
     def limit(self, *_): return self
     def upsert(self, payload, *_args, **_kwargs):
@@ -35,9 +37,17 @@ class DB:
         # Real row-detail readback must see rows written by a prior Query.
         # This test fake intentionally preserves the upsert across table() calls.
         self.row_detail_rows = []
+        # Append-only exact-spread market ledger observations.
+        self.market_rows = []
+        # Governed per-event certified spread receipts.
+        self.spread_receipts = []
     def table(self, name):
         if name == "wow_v17_daily_run_row_detail":
             return Query(self.row_detail_rows)
+        if name == "wow_market_price_observations":
+            return Query(self.market_rows)
+        if name == "wow_v17_spread_card_receipts":
+            return Query(self.spread_receipts)
         if name == "wow_prop_evidence_snapshots":
             return Query([{"source_snapshot_id":"snap-prop","event_id":"p1","event_start_time":FUTURE,"sport":"MLB","player":"P","stat_type":"strikeouts","line":4.5,"hydration_status":"PASS","blockers":[]}])
         if name == "wow_v17_daily_run_acquisition_detail":
@@ -653,3 +663,264 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_spread_lane_binds_the_ledger_line_and_holds_without_a_model():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    quote_at = (FUTURE_DT - timedelta(hours=1)).isoformat()
+    common = {
+        "provider_event_id": "rd-nfl-7001",
+        "sport_key": "americanfootball_nfl",
+        "event_start_utc": FUTURE,
+        "market_id": "2",
+        "market_name": "spreads",
+        "sportsbook": "Pinnacle",
+        "price_updated_at": quote_at,
+        "fetched_at": quote_at,
+        "is_live": False,
+        "is_main_line": True,
+        "is_available": True,
+    }
+    db = DB()
+    db.market_rows = [
+        {**common, "participant_type": "home", "participant_name": "Dallas Cowboys", "line_value": -6.5},
+        {**common, "participant_type": "away", "participant_name": "Atlanta Falcons", "line_value": 6.5},
+    ]
+    moneyline = [{
+        "lane": "MONEYLINE",
+        "identity": {
+            "official_event_id": "2026_03_ATL_DAL",
+            "sport": "NFL",
+            "home_team": "DAL",
+            "away_team": "ATL",
+            "event_start_time": FUTURE,
+        },
+        "result": {"sport": "NFL"},
+    }]
+    rows = _spread_lane_rows(db, moneyline_rows=moneyline, requested_limit=6)
+    assert len(rows) == 1
+    row = rows[0]
+    payload = row["result"]
+    assert row["lane"] == "SPREAD"
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["rank_eligible"] is False
+    assert row["can_execute"] is False
+    assert payload["exact_signed_spread"] == -6.5
+    assert payload["exact_line_side"] == "HOME"
+    assert payload["line_source"] == "APPEND_ONLY_MARKET_LEDGER"
+    assert payload["sportsbook"] == "Pinnacle"
+    assert payload["settlement_basis"] == "FULL_GAME_INCLUDING_OVERTIME"
+    # The line is real; the selection is not, and no probability is invented.
+    # The governed receipt relation exists but holds nothing for this event.
+    assert payload["reason_codes"] == ["SPREAD_RECEIPT_NOT_PUBLISHED"]
+    for absent in ("p_cover", "p_push", "p_not_cover", "calibrated_probability_lower_bound"):
+        assert absent not in payload
+    assert payload["market_evidence_observed_rows"] == 2
+
+
+def test_spread_lane_persists_rows_for_the_authenticated_readback(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: governed_team_result(),
+    )
+    db = DB()
+    request = DailySnapshotRequest(
+        requested_slate_date=SLATE_DATE,
+        requested_timezone="America/Chicago",
+        lanes=["MONEYLINE", "SPREAD"],
+        response_mode="FULL",
+    )
+    response = run_daily_snapshot(request, db=db, market_api=Market, event_api=Event())
+    spread_rows = [row for row in response["rows"] if row["lane"] == "SPREAD"]
+    assert spread_rows, response["lane_reconciliation"]
+    assert all(row["row_status"] == "HELD" for row in spread_rows)
+    assert all(row["result"]["probability_publishable"] is False for row in spread_rows)
+    assert all(row["result"]["can_execute"] is False for row in spread_rows)
+    # Every spread row carries an explicit reason rather than being omitted.
+    assert all(row["result"]["reason_codes"] for row in spread_rows)
+    assert response["lane_reconciliation"]["SPREAD"]["scored_count"] == len(spread_rows)
+    persisted = [row for row in db.row_detail_rows if row["lane"] == "SPREAD"]
+    assert len(persisted) == len(spread_rows)
+    assert response["can_execute"] is False
+
+
+def _nfl_spread_lane_fixture(db):
+    """Ledger-bound NFL event identity for the spread lane."""
+    quote_at = (FUTURE_DT - timedelta(hours=2)).isoformat()
+    common = {
+        "provider_event_id": "rd-nfl-7001",
+        "sport_key": "americanfootball_nfl",
+        "event_start_utc": FUTURE,
+        "market_id": "2",
+        "market_name": "spreads",
+        "sportsbook": "Pinnacle",
+        "price_updated_at": quote_at,
+        "fetched_at": quote_at,
+        "is_live": False,
+        "is_main_line": True,
+        "is_available": True,
+    }
+    db.market_rows = [
+        {**common, "participant_type": "home", "participant_name": "Dallas Cowboys", "line_value": -6.5},
+        {**common, "participant_type": "away", "participant_name": "Atlanta Falcons", "line_value": 6.5},
+    ]
+    return [{
+        "lane": "MONEYLINE",
+        "identity": {
+            "official_event_id": "2026_03_ATL_DAL",
+            "sport": "NFL",
+            "home_team": "DAL",
+            "away_team": "ATL",
+            "event_start_time": FUTURE,
+        },
+        "result": {"sport": "NFL"},
+    }]
+
+
+def certified_spread_receipt(**overrides):
+    receipt = {
+        "sport": "NFL",
+        "official_event_id": "2026_03_ATL_DAL",
+        "exact_line_side": "HOME",
+        "exact_signed_spread": -6.5,
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
+        "controlling_spread_specialist": "NFL_SPREAD_MARGIN_DISTRIBUTION_CHALLENGER_V1",
+        "model_artifact_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        "model_family": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        "p_cover": 0.54, "p_push": 0.02, "p_not_cover": 0.44,
+        "lower_bound_required": True,
+        "calibrated_lower_bound": 0.47,
+        "calibrated_upper_bound": 0.61,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "model_timestamp": (FUTURE_DT - timedelta(minutes=30)).isoformat(),
+        "event_state": "SCHEDULED",
+        "score_snapshot_status": "PASS",
+        "can_execute": False,
+        "source_receipt_id": "receipt-spread-1",
+        "model_class": "CERTIFIED_FITTED",
+        "model_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+        "calibration_version": "cal-v1",
+        "source_snapshot_timestamp": (FUTURE_DT - timedelta(minutes=40)).isoformat(),
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "controlling_engine_identity": "LLP_TEAM_BETTING_ENGINE",
+        # The governed relation only stores admitted receipts; a row without it
+        # cannot exist, so the fixture mirrors the stored shape.
+        "admission_status": "PASS",
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def test_governed_receipt_completes_the_spread_row():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    rows = _spread_lane_rows(
+        db,
+        moneyline_rows=moneyline,
+        requested_limit=6,
+        receipt_provider=lambda _db, **_kwargs: (certified_spread_receipt(), None),
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    payload = row["result"]
+    assert row["row_status"] == "COMPLETED"
+    assert row["probability_publishable"] is True
+    assert row["rank_eligible"] is True
+    assert row["can_execute"] is False
+    assert payload["spread_admission"]["status"] == "PASS"
+    assert payload["p_cover"] == 0.54
+    assert payload["p_push"] == 0.02
+    assert payload["p_not_cover"] == 0.44
+    assert payload["calibrated_probability_lower_bound"] == 0.47
+    assert payload["selection_status"] == "QUALIFIED"
+    assert payload["reason_codes"] == []
+    assert payload["exact_signed_spread"] == -6.5
+    assert payload["line_source"] == "APPEND_ONLY_MARKET_LEDGER"
+
+
+def test_receipt_at_a_different_line_holds_the_row():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    rows = _spread_lane_rows(
+        db,
+        moneyline_rows=moneyline,
+        requested_limit=6,
+        receipt_provider=lambda _db, **_kwargs: (
+            certified_spread_receipt(exact_signed_spread=-3.5), None
+        ),
+    )
+    payload = rows[0]["result"]
+    assert rows[0]["row_status"] == "HELD"
+    assert rows[0]["probability_publishable"] is False
+    assert "SPREAD_ADMISSION:EXACT_LINE_MISMATCH" in payload["reason_codes"]
+    for absent in ("p_cover", "p_push", "p_not_cover"):
+        assert absent not in payload
+
+
+def test_receipt_for_a_started_event_holds_the_row():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    rows = _spread_lane_rows(
+        db,
+        moneyline_rows=moneyline,
+        requested_limit=6,
+        receipt_provider=lambda _db, **_kwargs: (
+            certified_spread_receipt(event_state="IN_PROGRESS"), None
+        ),
+    )
+    payload = rows[0]["result"]
+    assert rows[0]["row_status"] == "HELD"
+    assert "SPREAD_ADMISSION:EVENT_ALREADY_STARTED_OR_FINAL" in payload["reason_codes"]
+    assert "p_cover" not in payload
+
+
+def test_unavailable_receipt_registry_holds_with_a_typed_reason():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+
+    def unavailable(_db, **_kwargs):
+        raise RuntimeError("relation does not exist")
+
+    rows = _spread_lane_rows(
+        db, moneyline_rows=moneyline, requested_limit=6, receipt_provider=unavailable
+    )
+    payload = rows[0]["result"]
+    assert rows[0]["row_status"] == "HELD"
+    assert payload["reason_codes"][0].startswith("SPREAD_RECEIPT_REGISTRY_UNAVAILABLE")
+    assert "p_cover" not in payload
+
+
+def test_default_registry_read_completes_a_row_from_the_governed_table():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    db.spread_receipts = [certified_spread_receipt()]
+    rows = _spread_lane_rows(db, moneyline_rows=moneyline, requested_limit=6)
+    assert rows[0]["row_status"] == "COMPLETED"
+    assert rows[0]["result"]["p_cover"] == 0.54
+
+
+def test_empty_receipt_registry_keeps_the_row_held_not_published():
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    db.spread_receipts = []
+    rows = _spread_lane_rows(db, moneyline_rows=moneyline, requested_limit=6)
+    payload = rows[0]["result"]
+    assert rows[0]["row_status"] == "HELD"
+    assert payload["reason_codes"] == ["SPREAD_RECEIPT_NOT_PUBLISHED"]
+    assert rows[0]["probability_publishable"] is False
