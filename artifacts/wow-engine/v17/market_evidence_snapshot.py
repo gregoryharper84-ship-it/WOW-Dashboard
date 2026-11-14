@@ -185,6 +185,8 @@ def collect_acceptance(
                 date,
                 capability="events",
                 opener=opener,
+                affiliate_ids=sources.rundown_evidence_affiliate_ids(),
+                main_line=True,
             )
         )
         lanes.append(_lane("RUNDOWN", sport_key, "events", rundown, date))
@@ -368,6 +370,7 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
                 result = _bounded_rate_limit_retry(
                     lambda sport_key=sport_key, date=date, capability=capability: live.rundown_market_evidence(
                         sport_key, date, capability=capability, opener=opener,
+                        affiliate_ids=sources.rundown_evidence_affiliate_ids(), main_line=True,
                     )
                 )
                 lanes.append(_lane("RUNDOWN", sport_key, capability, result, date))
