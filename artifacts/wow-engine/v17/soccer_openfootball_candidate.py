@@ -27,8 +27,8 @@ CAN_EXECUTE = False
 SPORT = "SOCCER"
 MARKET_FAMILY = "OUTRIGHT_WINNER"
 MODEL_FAMILY = "SOCCER_1X2_MULTINOMIAL_LOGIT_V1"
-FEATURE_SCHEMA_VERSION = "SOCCER_RESULT_FORM_1X2_PRIOR_V1"
-SOURCE_POLICY_ID = "OPENFOOTBALL_CC0_RESULTS_V1"
+FEATURE_SCHEMA_VERSION = "SOCCER_RESULT_FORM_1X2_VERIFIED_UTC_V2"
+SOURCE_POLICY_ID = "OPENFOOTBALL_CC0_RESULTS_VERIFIED_START_V2"
 SOURCE_LICENSE = "CC0-1.0"
 BASE_URL = "https://raw.githubusercontent.com/openfootball/football.json/master"
 SEASONS = ("2021-22", "2022-23", "2023-24", "2024-25", "2025-26", "2026-27")
@@ -73,14 +73,33 @@ def _score(match: dict[str, Any]) -> tuple[int, int] | None:
 
 
 def _event_time(match: dict[str, Any]) -> datetime:
-    date_text = str(match.get("date") or "").strip()
-    time_text = str(match.get("time") or "12:00").strip() or "12:00"
-    if not date_text:
-        raise SoccerCandidateUnavailable("SOCCER_EVENT_DATE_MISSING", "match date missing")
+    """A clock string without a zone is not a verifiable pregame instant.
+
+    Only an independently enriched, timezone-aware kickoff with a source receipt
+    can enter fitted research. Neither a date-only row nor a guessed midday/UTC
+    fallback may order features or synthesize model forecast cutoffs.
+    """
+    stamp = match.get("_verified_event_start_utc")
+    receipt = match.get("_verified_start_receipt_id")
+    if not isinstance(receipt, str) or not receipt.strip():
+        raise SoccerCandidateUnavailable(
+            "SOCCER_KICKOFF_UTC_EVIDENCE_MISSING", "independent UTC start receipt missing"
+        )
+    if not isinstance(stamp, str) or not stamp.strip():
+        raise SoccerCandidateUnavailable(
+            "SOCCER_KICKOFF_UTC_EVIDENCE_MISSING", "verified UTC timestamp missing"
+        )
     try:
-        return datetime.fromisoformat(f"{date_text}T{time_text}:00+00:00").astimezone(timezone.utc)
-    except ValueError:
-        return datetime.fromisoformat(f"{date_text}T12:00:00+00:00").astimezone(timezone.utc)
+        instant = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SoccerCandidateUnavailable(
+            "SOCCER_KICKOFF_UTC_INVALID", "verified kickoff timestamp malformed"
+        ) from exc
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise SoccerCandidateUnavailable(
+            "SOCCER_KICKOFF_UTC_INVALID", "naive kickoff is not verifiable UTC"
+        )
+    return instant.astimezone(timezone.utc)
 
 
 def fetch_competition(code: str, *, seasons: tuple[str, ...] = SEASONS) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -102,7 +121,14 @@ def fetch_competition(code: str, *, seasons: tuple[str, ...] = SEASONS) -> tuple
         for raw in season_matches:
             if not isinstance(raw, dict) or _score(raw) is None:
                 continue
-            matches.append({**raw, "_season": season, "_source_sha256": digest, "_source_url": url})
+            # Never copy reserved _verified_* keys from untrusted source JSON;
+            # only a separate authenticated enrichment stage can add them.
+            matches.append({
+                "date": raw.get("date"), "time": raw.get("time"),
+                "team1": raw.get("team1"), "team2": raw.get("team2"),
+                "score": raw.get("score"), "round": raw.get("round"),
+                "_season": season, "_source_sha256": digest, "_source_url": url,
+            })
     if not matches:
         raise SoccerCandidateUnavailable("SOCCER_OPENFOOTBALL_EMPTY", code)
     return matches, sources
@@ -154,6 +180,9 @@ def build_training_rows(matches: list[dict[str, Any]], *, competition: str) -> t
                 "policy": SOURCE_POLICY_ID, "license": SOURCE_LICENSE, "competition": competition,
                 "source_url": match["_source_url"], "source_sha256": match["_source_sha256"],
                 "home_prior_event_ids": hs["prior_event_ids"], "away_prior_event_ids": aws["prior_event_ids"],
+                "verified_start_utc": start.isoformat(),
+                "verified_start_receipt_id": match["_verified_start_receipt_id"],
+                "feature_as_of_kind": "HISTORICALLY_RECONSTRUCTED_NOT_ARCHIVED",
                 "market_features_used": False, "outcome_space": ["HOME", "DRAW", "AWAY"],
             }
             manifest_sha = _hash_json(manifest)
