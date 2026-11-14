@@ -442,3 +442,30 @@ def test_pending_deploy_skips_final_artifact_without_masking_live_failures():
         READBACK_OUTCOME="success", SOURCE_IDENTITY_OUTCOME="success",
     )[0] == 0
 
+
+def test_dedupe_subprocess_failure_on_one_prior_artifact_checks_next_candidate(monkeypatch):
+    import json
+    d = _dedupe()
+    sha = "a" * 40
+    def fake_gh(args):
+        endpoint = args[0]
+        if "/workflows/" in endpoint:
+            return json.dumps({"workflow_runs": [
+                {"id": 101, "run_attempt": 1, "conclusion": "success"},
+                {"id": 102, "run_attempt": 1, "conclusion": "success"},
+            ]}).encode()
+        if "/runs/" in endpoint and "/artifacts?" in endpoint:
+            run = "101" if "/101/" in endpoint else "102"
+            return json.dumps({"artifacts": [
+                {"id": int(run + "1"), "name": f"wow-v17-post-deploy-readback-{run}-1"},
+                {"id": int(run + "2"), "name": f"wow-v17-post-deploy-final-readback-{run}-1"},
+            ]}).encode()
+        raise AssertionError(endpoint)
+    def fake_artifact(_repo, artifact, *, expected_filename):
+        if artifact["id"] in (1011, 1012):
+            raise subprocess.CalledProcessError(1, ["gh", "api"])
+        return _receipt()
+    monkeypatch.setattr(d, "_gh", fake_gh)
+    monkeypatch.setattr(d, "_artifact_readback", fake_artifact)
+    assert d._prior_receipts("owner/repo", sha, "999") == [_receipt()]
+
