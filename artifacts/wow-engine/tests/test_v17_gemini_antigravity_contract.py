@@ -50,5 +50,32 @@ class GeminiAntigravityContractTests(unittest.TestCase):
             self.assertIn(term.lower(), pilot.lower())
 
 
+    def test_existing_engineering_app_accepts_rule_scope_and_rejects_root_bypass(self):
+        import importlib.util
+        adoption_script = ROOT / "artifacts" / "wow-engine" / "v17" / "engineering_authorized_adoption.py"
+        spec = importlib.util.spec_from_file_location("antigravity_source_admission", adoption_script)
+        self.assertIsNotNone(spec)
+        adoption = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(adoption)
+        source_paths = (
+            ".agents/GEMINI.md",
+            ".agents/agents/wow-amrt-recovery/agent.md",
+            ".agents/agents/wow-model-challenger/agent.md",
+            ".agents/agents/wow-scout-evidence/agent.md",
+            ".agents/skills/wow-flint-coding-handoff/SKILL.md",
+            "artifacts/wow-engine/tests/test_v17_antigravity_flint_skill.py",
+            "artifacts/wow-engine/tests/test_v17_gemini_antigravity_contract.py",
+            "artifacts/wow-engine/tests/test_v17_gemini_sidecar_installer.py",
+            "docs/wow/engineering/WOW_GEMINI_ANTIGRAVITY_PILOT.md",
+            "docs/wow/engineering/WOW_GEMINI_AUTONOMY_SETUP.md",
+            "scripts/wow_gemini_sidecar.py",
+        )
+        files = [{"filename": name, "status": "added"} for name in source_paths]
+        self.assertEqual(adoption.source_paths(files), sorted(source_paths))
+        with self.assertRaisesRegex(adoption.AdoptionHold, "SOURCE_CHANGE_SCOPE_OR_RENAME_HOLD"):
+            adoption.source_paths([{"filename": "GEMINI.md", "status": "added"}])
+
+
+
 if __name__ == "__main__":
     unittest.main()
