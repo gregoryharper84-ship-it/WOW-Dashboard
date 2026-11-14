@@ -46,7 +46,8 @@ def _fake_pr(**over):
 
 
 def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
-         labels=None, worker_gate="PASS"):
+         labels=None, worker_gate="PASS", source_path=None, source_sha=SHA,
+         compare_unavailable=False):
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\nimport json,os,sys\n"
@@ -54,6 +55,9 @@ def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
         "  print(os.environ['FAKE_PR_JSON'])\n"
         "elif sys.argv[1:3] == ['pr', 'list']:\n"
         "  print(os.environ['FAKE_PRS_JSON'])\n"
+        "elif sys.argv[1]=='api' and '/compare/' in sys.argv[2]:\n"
+        "  if os.environ['FAKE_COMPARE_UNAVAILABLE']=='1': sys.exit(49)\n"
+        "  print(json.dumps({'merge_base_commit':{'sha':os.environ['FAKE_ANCESTOR_SHA']}}))\n"
         "else:\n"
         "  print('unexpected gh call',sys.argv,file=sys.stderr);sys.exit(41)\n"
     )
@@ -70,6 +74,9 @@ def _run(tmp_path, event="workflow_dispatch", pr=None, requested_sha=SHA,
            "SOURCE_EVENT": event,
            "SOURCE_WORKFLOW": "wow-v17-chatgpt-engineering-worker" if event == "workflow_run" else "",
            "SOURCE_ID": "23456", "SOURCE_ATTEMPT": "1",
+           "SOURCE_PATH": source_path if source_path is not None else ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+           "SOURCE_HEAD_SHA": source_sha, "GITHUB_SHA": SHA, "FAKE_ANCESTOR_SHA": SHA,
+           "FAKE_COMPARE_UNAVAILABLE": "1" if compare_unavailable else "0",
            "INPUT_PR": "2547", "INPUT_HEAD_SHA": requested_sha,
            "LABELS_JSON": json.dumps(labels if labels is not None else
                                       [{"name": "sirt-review-required"}]),
@@ -183,7 +190,8 @@ def _matching_issue(number, author, incident="2076", generated=True, edited_at=N
 
 def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
                 source_id="dispatch-1", current_pr=None, source_event="workflow_dispatch",
-                drift_after=None, drift_pr=None):
+                drift_after=None, drift_pr=None, indexed_issues=None,
+                inventory_response=None):
     """Execute the writer against a persistent fake issue and PR-comment API."""
     issues_file = tmp_path / "issues.json"
     if initial_issues is not None:
@@ -198,9 +206,11 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
     calls_file = tmp_path / "calls.log"
     current_file = tmp_path / "current-pr.json"
     current_file.write_text(json.dumps(current_pr if current_pr is not None else _fake_pr()))
+    indexed_file = tmp_path / "indexed-issues.json"
+    indexed_file.write_text(json.dumps(indexed_issues) if indexed_issues is not None else issues_file.read_text())
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
-        "#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n"
+        "#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\nfrom urllib.parse import parse_qs,urlsplit\n"
         "issues=Path(os.environ['FAKE_ISSUES_FILE'])\n"
         "comments=Path(os.environ['FAKE_COMMENTS_FILE'])\n"
         "calls=Path(os.environ['FAKE_CALLS_FILE'])\n"
@@ -213,9 +223,20 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
         "elif args[:2]==['issue','list']:\n"
         "  drift('issue_list')\n"
         "  search=args[args.index('--search')+1]\n"
-        "  data=[i for i in json.loads(issues.read_text()) if search.split()[0] in i.get('body','')]\n"
+        "  data=[i for i in json.loads(Path(os.environ['FAKE_INDEXED_ISSUES_FILE']).read_text()) if search.split()[0] in i.get('body','')]\n"
         "  if 'author:app/github-actions' in search: data=[i for i in data if i['author']['login'] in ('app/github-actions','github-actions[bot]')]\n"
         "  print(json.dumps(data[:int(args[args.index('--limit')+1])]))\n"
+        "elif args[0]=='api' and args[-1].startswith('repos/'+os.environ['GITHUB_REPOSITORY']+'/issues?'):\n"
+        "  response=os.environ.get('FAKE_INVENTORY_RESPONSE','')\n"
+        "  if response=='UNAVAILABLE': sys.exit(49)\n"
+        "  if response: print(response);sys.exit(0)\n"
+        "  drift('issue_list')\n"
+        "  query=parse_qs(urlsplit(args[-1]).query)\n"
+        "  assert query.get('creator')==['github-actions[bot]']\n"
+        "  page=int(query.get('page',['1'])[0]);size=int(query['per_page'][0])\n"
+        "  data=[i for i in json.loads(issues.read_text()) if i['author']['login'] in ('app/github-actions','github-actions[bot]')]\n"
+        "  data=[dict({k:v for k,v in i.items() if k!='author'},user={'login':'github-actions[bot]','type':'Bot'}) for i in data]\n"
+        "  print(json.dumps(data[(page-1)*size:page*size]))\n"
         "elif args[:2]==['issue','create']:\n"
         "  data=json.loads(issues.read_text())\n"
         "  ix=args.index('--body-file')\n"
@@ -258,6 +279,8 @@ def _run_writer(tmp_path, *, initial_issues=None, initial_comments=None,
            "SOURCE_EVENT": source_event,
            "SOURCE_ATTEMPT": "1", "SOURCE_CONCLUSION": "INTAKE_ONLY_NOT_A_REVIEW_VERDICT",
            "FAKE_ISSUES_FILE": str(issues_file),
+           "FAKE_INDEXED_ISSUES_FILE": str(indexed_file),
+           "FAKE_INVENTORY_RESPONSE": inventory_response or "",
            "FAKE_CURRENT_PR_FILE": str(current_file),
            "FAKE_DRIFT_AFTER": drift_after or "",
            "FAKE_DRIFT_PR_JSON": json.dumps(drift_pr),
@@ -537,11 +560,66 @@ def test_untrusted_issue_matches_cannot_hide_authentic_intake_past_search_limit(
     assert "Existing SIRT intake #175" in summary
 
 
-def test_saturated_authenticated_issue_search_holds_without_duplicate_intake(tmp_path):
+def test_paginated_authenticated_inventory_finds_intake_beyond_first_100(tmp_path):
     forged = [_matching_issue(i + 1, "app/github-actions", generated=False) for i in range(100)]
     existing = _matching_issue(175, "app/github-actions")
     proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=forged + [existing])
-    assert proc.returncode != 0
-    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_SEARCH_LIMIT" in proc.stdout
-    assert calls == []
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments", "pr:comment"]
     assert len(issues) == 101
+
+
+def test_delayed_search_index_cannot_duplicate_directly_stored_intake(tmp_path):
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=[_matching_issue(175, "app/github-actions")],
+        indexed_issues=[])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["api:comments", "pr:comment"]
+    assert len(issues) == 1
+
+
+def test_incomplete_direct_inventory_fails_closed_without_mutation(tmp_path):
+    prior = [_matching_issue(i + 1, "app/github-actions", generated=False) for i in range(1000)]
+    proc, calls, issues, _ = _run_writer(
+        tmp_path, initial_issues=prior + [_matching_issue(1175, "app/github-actions")])
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY_LIMIT" in proc.stdout
+    assert calls == []
+    assert len(issues) == 1001
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"source_path": ".github/workflows/untrusted-worker.yml"},
+    {"source_sha": OLD_SHA},
+])
+def test_worker_name_and_main_label_do_not_authenticate_retargeted_source(tmp_path, kwargs):
+    proc, output = _run(tmp_path, event="workflow_run", **kwargs)
+    assert proc.returncode != 0
+    assert "found=true" not in output
+
+
+def test_unreadable_worker_ancestry_fails_closed(tmp_path):
+    proc, output = _run(tmp_path, event="workflow_run", compare_unavailable=True)
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_WORKER_PROVENANCE" in proc.stdout
+    assert "found=true" not in output
+
+
+@pytest.mark.parametrize("response", [
+    "UNAVAILABLE", "not-json", '{"message":"unavailable"}',
+    '[{"user":{"login":"untrusted","type":"User"}}]',
+])
+def test_unreadable_or_untrusted_direct_inventory_blocks_all_mutations(tmp_path, response):
+    proc, calls, issues, _ = _run_writer(tmp_path, inventory_response=response)
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY" in proc.stdout
+    assert calls == []
+    assert issues == []
+
+
+def test_actions_authored_pr_is_not_an_existing_intake_issue(tmp_path):
+    pr = dict(_matching_issue(75, "app/github-actions"), pull_request={"url": "a-pr"})
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[pr])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 2

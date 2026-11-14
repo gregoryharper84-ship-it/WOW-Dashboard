@@ -55,6 +55,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_EVENT: ${{ github.event_name }}
           SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_PATH: ${{ github.event.workflow_run.path }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           SOURCE_ID: ${{ github.event.workflow_run.id || github.run_id }}
           SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt || github.run_attempt }}
           INPUT_PR: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -70,6 +72,21 @@ jobs:
               wow-v17-claude-engineering-worker) prefix=claude ;;
               *) echo "::error::UNRECOGNIZED_WORKER"; exit 1 ;;
             esac
+            # A matching display name/main label is insufficient when a tag or
+            # alternate workflow is retargeted. Bind the exact reviewed path
+            # and prove the source revision belongs to this protected-main history.
+            [ "$SOURCE_PATH" = ".github/workflows/$SOURCE_WORKFLOW.yml" ] &&
+            [[ "$SOURCE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::UNRECOGNIZED_WORKER: source provenance"; exit 1
+            }
+            if ! ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_HEAD_SHA...$GITHUB_SHA"); then
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_WORKER_PROVENANCE"; exit 1
+            fi
+            jq -e --arg sha "$SOURCE_HEAD_SHA" '.merge_base_commit.sha == $sha' \
+              <<<"$ancestry" >/dev/null || {
+              echo "::error::UNRECOGNIZED_WORKER: untrusted source revision"; exit 1
+            }
             branch="$prefix/engineering/$SOURCE_ID-$SOURCE_ATTEMPT"
             prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all \
               --head "$branch" --json number,title,body,headRefOid,isDraft,state)
@@ -185,19 +202,33 @@ jobs:
           # First match the canonical incident/head header, then authenticate the
           # current body through GitHub's edit metadata. Edited bodies fail closed:
           # a later trusted edit cannot prove who originally inserted a marker.
-          inventory=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
-            --search "$marker in:body author:app/github-actions" --limit 100 \
-            --json number,body,author)
-          # Exclude public forged authors before the server applies its limit.
-          # A saturated trusted inventory cannot establish absence; never create
-          # a duplicate merely because the genuine intake may be beyond the cap.
-          if [ "$(jq 'length' <<<"$inventory")" -ge 100 ]; then
-            echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_SEARCH_LIMIT"; exit 1
-          fi
+          # Search indexing can lag a successful issue create. Read the direct
+          # creator-filtered issue collection before concluding an intake is absent.
+          inventory='[]'
+          inventory_complete=false
+          for page in $(seq 1 10); do
+            if ! batch=$(gh api "repos/$GITHUB_REPOSITORY/issues?creator=github-actions%5Bbot%5D&state=all&per_page=100&page=$page"); then
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY"; exit 1
+            fi
+            jq -e 'type == "array" and all(.[]; .user.login == "github-actions[bot]" and .user.type == "Bot")' \
+              <<<"$batch" >/dev/null || {
+              echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY"; exit 1
+            }
+            inventory=$(printf '%s\n%s\n' "$inventory" "$batch" | jq -cs \
+              '.[0] + (.[1] | map(. + {author: {login: .user.login}}))')
+            if [ "$(jq 'length' <<<"$batch")" -lt 100 ]; then
+              inventory_complete=true
+              break
+            fi
+          done
+          [ "$inventory_complete" = "true" ] || {
+            echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY_LIMIT"; exit 1
+          }
           candidates=$(jq -r \
               --arg m "$marker" --arg owner "$trusted_owner" \
               --arg incident "$INCIDENT" --arg pr "$PR" --arg sha "$SHA" '
               [.[] | select(
+                .pull_request == null and
                 ((.body // "") | contains("<!-- " + $m + " -->")) and
                 ((.body // "") | contains("## Independent SIRT intake — NOT verification approval")) and
                 ((.body // "") | contains("- Engineering incident: #" + $incident + "\n")) and
