@@ -36,6 +36,27 @@ def test_undocumented_first_party_sources_carry_rights_blocker():
     assert sca.B_RIGHTS_UNDOCUMENTED in rows[("MMA", "UFCSTATS_PUBLIC")]["blockers"]
 
 
+def test_claimed_receipt_ids_never_authorize_undocumented_or_unclassified_training():
+    """Evidence-pointer presence cannot override a missing legal source entitlement."""
+    sources = ("NHL_PUBLIC_WEB_API", "UFCSTATS_PUBLIC", "MLB_STATS_API", "NFLVERSE")
+    rows = sca.build_source_matrix(
+        ROOT,
+        live_receipts={source: "unreviewed-live-pointer" for source in sources},
+        license_receipts={source: "unreviewed-terms-pointer" for source in sources},
+    )
+    for source in sources:
+        matches = [row for row in rows if row["source_id"] == source]
+        assert matches, source
+        for row in matches:
+            assert not row["legal_reproducible_fitted_training"]
+            if source in ("NHL_PUBLIC_WEB_API", "UFCSTATS_PUBLIC"):
+                assert sca.B_RIGHTS_UNDOCUMENTED in row["blockers"]
+            else:
+                assert sca.B_UNCLASSIFIED in row["blockers"]
+            assert row["probability_source"] is False
+            assert row["can_execute"] is False
+
+
 def test_catalog_sources_without_registry_entry_are_flagged_unclassified():
     rows = sca.build_source_matrix(ROOT)
     for s in CATALOG:

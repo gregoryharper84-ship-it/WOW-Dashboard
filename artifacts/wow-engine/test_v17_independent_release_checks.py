@@ -2135,6 +2135,7 @@ def test_publish_failure_is_typed(fake_gh):
 
 
 def test_every_phase_c_code_is_registered():
+    # CI retrigger: Phase-C registry scrape stays RELEASE_QA_* only for policy_resolver.
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
     # Release's authenticated QA-policy resolver is a separate protected

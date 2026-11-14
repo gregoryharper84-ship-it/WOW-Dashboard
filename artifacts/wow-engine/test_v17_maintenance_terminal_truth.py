@@ -126,3 +126,75 @@ def test_ncaaf_compiler_sample_logging_executes_with_strict_bounds(capsys):
         assert len(sample["code"]) <= 100
         assert len(sample["blockers"]) == 8
         assert all(len(value) <= 80 for value in sample["blockers"])
+
+
+def test_basketball_workflow_reports_real_ingestion_separate_from_shadow_replay(capsys):
+    text = _workflow("wow-v17-basketball-model-maintenance.yml")
+    assert '"rows_no_new_settlements": basketball.get("rows_no_new_settlements")' in text
+    assert '"rows_fresh_acquisition_unverified": basketball.get("rows_fresh_acquisition_unverified")' in text
+    assert '"source_summary": source_summary' in text
+    start = '          source_summary = {}'
+    end = '          challengers = {}'
+    assert text.count(start) == 1 and text.count(end) == 1
+    script = dedent(start + text.split(start, 1)[1].split(end, 1)[0])
+    payload = {
+        "status": "COMPLETE",
+        "rows_updated": 2,  # two shadow rows, NOT two settled games
+        "rows": [
+            {
+                "sport": "NBA",
+                "status": "SHADOW_EVIDENCE_UPDATED",
+                "hydration_status": "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS",
+                "hydration": {
+                    "fresh_acquisition_new_settled_games": 0,
+                    "latest_game_date_after": "2026-11-11",
+                    "raw_secret": "NEVER_LOG_THIS",
+                },
+            },
+            {
+                "sport": "WNBA",
+                "status": "SHADOW_EVIDENCE_UPDATED",
+                "hydration_status": "FRESH_ACQUISITION_UPDATED",
+                "hydration": {
+                    "fresh_acquisition_new_settled_games": 2,
+                    "latest_game_date_after": "2026-10-15",
+                },
+            },
+            {
+                "sport": "UNKNOWN",
+                "hydration_status": "BAD",
+                "hydration": {"raw_secret": "NEVER_LOG_THIS"},
+            },
+        ],
+    }
+    values = {"payload": payload, "basketball": payload, "json": json}
+    exec(compile(script, "<nba-source-watermark>", "exec"), values)
+    summary = values["source_summary"]
+    early_receipt = json.loads(capsys.readouterr().out)
+    assert early_receipt["stage"] == "BASKETBALL_SOURCE_ACQUISITION_READBACK"
+    assert early_receipt["source_summary"] == summary
+    assert early_receipt["rows_no_new_settlements"] is None
+    assert set(summary) == {"NBA", "WNBA"}
+    assert summary["NBA"] == {
+        "status": "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS",
+        "latest_persisted_settlement_date": "2026-11-11",
+        "new_settled_games": 0,
+    }
+    assert summary["WNBA"]["new_settled_games"] == 2
+    assert "NEVER_LOG_THIS" not in json.dumps(summary)
+
+
+def test_basketball_workflow_unknown_source_readback_fails_to_verified_summary():
+    text = _workflow("wow-v17-basketball-model-maintenance.yml")
+    start, end = '          source_summary = {}', '          challengers = {}'
+    script = dedent(start + text.split(start, 1)[1].split(end, 1)[0])
+    payload = {"rows": [{"sport": "NBA", "hydration_status": "INVALID_UNTRUSTED_STATE",
+                        "hydration": {"latest_game_date_after": "not-a-date",
+                                      "fresh_acquisition_new_settled_games": True}}]}
+    values = {"payload": payload, "basketball": payload, "json": json}
+    exec(compile(script, "<nba-source-unknown>", "exec"), values)
+    assert values["source_summary"]["NBA"] == {
+        "status": "FRESH_ACQUISITION_NOT_VERIFIED",
+        "latest_persisted_settlement_date": None,
+        "new_settled_games": None,
+    }

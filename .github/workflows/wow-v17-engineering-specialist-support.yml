@@ -282,12 +282,39 @@ jobs:
 
       - name: Surface quota-admission hold without invoking Codex
         if: steps.target.outputs.action != 'NO_ACTION' && steps.provider_admission.outputs.admit != 'true'
+        shell: bash
         env:
           PROVIDER_REASON: ${{ steps.provider_admission.outputs.reason }}
         run: |
-          if [[ "$PROVIDER_REASON" == *OPENAI_API_QUOTA_EXCEEDED* ]]; then
-            echo "::error::Quota exceeded: BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
-          else
-            echo "::error::BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
-          fi
-          exit 1
+          # Expected provider-unavailable conditions (missing key, exhausted quota,
+          # persistent or cooldown circuit breaker, listed explicitly) are typed SUPPORT HOLDS: the paid
+          # specialist is not invoked, the exact reason is recorded and annotated, and
+          # this support-only job does not attach a failing check to protected main
+          # (Render After CI Checks Pass blocks on any failed check). Any other
+          # admission reason, such as unverified inventory or unavailable breaker
+          # evidence, is unexpected and still fails closed.
+          case "$PROVIDER_REASON" in
+            OPENAI_API_KEY_MISSING|\
+            CIRCUIT_BREAKER:OPENAI_API_AUTH_FAILED|\
+            CIRCUIT_BREAKER:OPENAI_API_BILLING_REQUIRED|\
+            CIRCUIT_BREAKER:OPENAI_API_KEY_MISSING|\
+            CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED|\
+            CIRCUIT_BREAKER:OPENAI_API_RATE_LIMITED|\
+            CIRCUIT_BREAKER:OPENAI_API_UPSTREAM_UNAVAILABLE)
+              if [[ "$PROVIDER_REASON" == *OPENAI_API_QUOTA_EXCEEDED* ]]; then
+                echo "::warning::SUPPORT_HOLD Quota exceeded: BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
+              else
+                echo "::warning::SUPPORT_HOLD BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
+              fi
+              {
+                echo "- support_hold: true"
+                echo "- blocked_with_exact_reason: ${PROVIDER_REASON}"
+                echo "- paid_retry_attempted: false"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            *)
+              echo "::error::BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
+              exit 1
+              ;;
+          esac

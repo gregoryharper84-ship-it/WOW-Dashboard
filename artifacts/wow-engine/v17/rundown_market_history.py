@@ -191,7 +191,23 @@ def _group_key(row: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _quote_time(row: dict[str, Any]) -> datetime | None:
-    return _parse_dt(row.get("price_updated_at")) or _parse_dt(row.get("fetched_at"))
+    # Provider-update time is not proof that WOW observed a quote pregame.
+    # OPEN/CLOSE research references use only the actual recorded capture time.
+    return _parse_dt(row.get("fetched_at"))
+
+def _valid_pregame_capture(row: dict[str, Any], *, now: datetime) -> bool:
+    """An observed quote must predate kickoff and its own as-of read."""
+    observed = _quote_time(row)
+    kickoff = _parse_dt(row.get("event_start_utc"))
+    provider_updated = _parse_dt(row.get("price_updated_at"))
+    return (
+        row.get("is_live") is not True
+        and observed is not None
+        and kickoff is not None
+        and observed < kickoff
+        and observed <= now
+        and (provider_updated is None or provider_updated <= observed)
+    )
 
 
 def _clone_reference(
@@ -239,18 +255,31 @@ def derive_captured_reference_rows(
 
     derived: list[dict[str, Any]] = []
     for group_rows in grouped.values():
-        kinds = {str(row.get("snapshot_kind") or "").upper() for row in group_rows}
         current_rows = [
             row
             for row in group_rows
             if str(row.get("snapshot_kind") or "").upper() == "CURRENT"
-            and row.get("is_live") is not True
-            and _quote_time(row) is not None
+            and _valid_pregame_capture(row, now=current_now)
         ]
         if not current_rows:
             continue
         current_rows.sort(key=lambda row: _quote_time(row) or current_now)
-        if "OPEN" not in kinds:
+
+        def matches_capture(kind: str, capture: dict[str, Any]) -> bool:
+            # An old reference can be individually pregame but sourced from
+            # the wrong capture under provider-updated-time ordering. Only
+            # the correct first/last observed quote may suppress replacement.
+            return any(
+                str(row.get("snapshot_kind") or "").upper() == kind
+                and _valid_pregame_capture(row, now=current_now)
+                and _quote_time(row) == _quote_time(capture)
+                and row.get("american_odds") == capture.get("american_odds")
+                and row.get("line_value") == capture.get("line_value")
+                and _parse_dt(row.get("event_start_utc")) == _parse_dt(capture.get("event_start_utc"))
+                for row in group_rows
+            )
+
+        if not matches_capture("OPEN", current_rows[0]):
             derived.append(
                 _clone_reference(
                     current_rows[0],
@@ -261,7 +290,7 @@ def derive_captured_reference_rows(
             )
 
         event_start = _parse_dt(current_rows[0].get("event_start_utc"))
-        if event_start is None or event_start > current_now or "CLOSE" in kinds:
+        if event_start is None or event_start > current_now or matches_capture("CLOSE", current_rows[-1]):
             continue
         eligible = [row for row in current_rows if (_quote_time(row) or current_now) <= event_start]
         if not eligible:
@@ -469,7 +498,10 @@ def collect_history_once(
             next_suspend = _iso(current_now + timedelta(hours=24))
         break
 
-    total_references += materialize_reference_backlog(client, now=current_now)
+    # The collection may finish after current_now. Use a post-fetch clock
+    # for real collection, while an injected now remains a frozen replay clock.
+    reference_now = datetime.now(timezone.utc) if now is None else current_now
+    total_references += materialize_reference_backlog(client, now=reference_now)
     status = "COMPLETE" if results and all(row.get("status") == "COMPLETE" for row in results) else "PARTIAL"
     if not results:
         status = "BUDGET_EXHAUSTED"
