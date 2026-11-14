@@ -110,6 +110,8 @@ def audit_multimarket_retro(
     """
     if any(not isinstance(x, Mapping) for x in (*picks, *finals)):
         raise ValueError("RESEARCH_RETRO_RECORD_INVALID")
+    if cohort_manifest is not None and not isinstance(cohort_manifest, Mapping):
+        raise ValueError("COHORT_MANIFEST_NOT_OBJECT")
     final_count = Counter(_key(r) for r in finals)
     final_by_event = {_key(r): r for r in finals}
     settlement_receipts = Counter(_text(r.get("settlement_receipt_id")) for r in finals
@@ -213,10 +215,12 @@ def audit_multimarket_retro(
                        and all(isinstance(i, str) and i for i in expected_ids)
                        and len(expected_ids) == len(set(expected_ids))
                        and Counter(provided_ids) == Counter(expected_ids))
+        safe_ids = (isinstance(expected_ids, (list, tuple))
+                    and all(isinstance(i, str) and i for i in expected_ids))
         missing = (list((Counter(expected_ids) - Counter(provided_ids)).elements())
-                   if isinstance(expected_ids, (list, tuple)) else [])
+                   if safe_ids else [])
         extra = (list((Counter(provided_ids) - Counter(expected_ids)).elements())
-                 if isinstance(expected_ids, (list, tuple)) else [])
+                 if safe_ids else [])
         eligible = bool(manifest_ok and counts["HELD"] == 0)
         graded = counts["WIN"] + counts["LOSS"]
         summaries.append({
