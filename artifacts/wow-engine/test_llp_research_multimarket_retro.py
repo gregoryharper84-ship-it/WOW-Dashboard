@@ -197,3 +197,32 @@ def test_unsupported_quarter_and_nonfinite_lines_hold():
         report = grade([row], [final()])
         assert report["rows"][0]["grade_status"] == "HELD"
         assert "SPREAD_SIDE_OR_LINE_INVALID" in report["rows"][0]["blockers"]
+
+
+def test_same_event_market_cannot_be_counted_twice_in_cohort():
+    a = pick()
+    b = pick(selection_id="independent-extra-choice",
+             pregame_receipt_id="independent-extra-receipt", selected_side="HOME")
+    report = grade([a, b], [final()])
+    assert all(r["grade_status"] == "HELD" for r in report["rows"])
+    assert all("DUPLICATE_COHORT_EVENT_MARKET" in r["blockers"] for r in report["rows"])
+
+
+def test_reused_official_settlement_receipt_cannot_grade_two_events():
+    a = pick()
+    b = pick(event="another")
+    first = final()
+    second = final(event="another", settlement_receipt_id=first["settlement_receipt_id"])
+    report = grade([a, b], [first, second])
+    assert all(r["grade_status"] == "HELD" for r in report["rows"])
+    assert all("DUPLICATE_OFFICIAL_SETTLEMENT_RECEIPT" in r["blockers"]
+               for r in report["rows"])
+
+
+def test_missing_entire_cohort_must_remain_visible_and_unscored():
+    report = grade([], [], cohort_manifest={"ML_TOP10": ["locked-pick-id"]},
+                   cohort_manifest_verified=True, cohort_manifest_receipt_id="manifest")
+    cohort = report["by_cohort"][0]
+    assert cohort["cohort"] == "ML_TOP10"
+    assert cohort["manifest_missing_selection_ids"] == ["locked-pick-id"]
+    assert cohort["headline_accuracy"] is None
