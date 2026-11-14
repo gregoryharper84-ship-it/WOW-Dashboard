@@ -296,3 +296,142 @@ def test_tiebreaker_fails_closed_without_certified_total_points_model():
         "sportsbook_total_substitution_allowed": False,
         "can_execute": False,
     }
+
+
+def _row_with_kickoff() -> dict:
+    row = _row("2026-W4-availability", "JAX", "BAL", 0.60)
+    row["candidate_envelope"]["event_start_time_utc"] = "2026-10-01T12:00:00+00:00"
+    return row
+
+
+def _qb_update(observed_at: str = "2026-09-30T10:00:00+00:00") -> dict:
+    return {
+        "official_event_id": "2026-W4-availability",
+        "observed_at_utc": observed_at,
+        "evidence_receipt_id": "official-qb-source-001",
+        "change_type": "STARTING_QB_CHANGE",
+    }
+
+
+def test_pregame_qb_update_in_model_lineage_preserves_original_pick():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update()]
+    row["model_material_context_receipt_ids"] = ["official-qb-source-001"]
+    before = select_pickem_game(_row_with_kickoff())
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_READY
+    assert out["pool_pick"] == before["pool_pick"] == "BAL"
+    assert out["selected_probability"] == before["selected_probability"] == 0.60
+    assert out["pregame_material_update_status"] == "MODEL_CONTEXT_RECEIPTS_MATCHED"
+    assert out["starting_qb_availability_independently_verified"] is False
+    assert out["can_execute"] is False
+
+
+def test_qb_change_newer_than_model_requires_governed_rerun_not_manual_flip():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update("2026-09-30T13:00:00+00:00")]
+    row["model_material_context_receipt_ids"] = ["official-qb-source-001"]
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert out["source_model_status"] == "STALE_MODEL_OUTPUT"
+    assert "PICKEM_MATERIAL_UPDATE_AFTER_MODEL_RERUN_REQUIRED" in out["blockers"]
+    assert out["pool_pick"] is None
+    assert out["can_execute"] is False
+
+
+def test_model_forecast_at_or_after_kickoff_cannot_be_retroactive_pregame_pick():
+    row = _row_with_kickoff()
+    row["model_timestamp"] = "2026-10-01T12:00:00+00:00"
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MODEL_RECEIPT_NOT_BEFORE_KICKOFF" in out["blockers"]
+
+
+def test_material_change_after_kickoff_is_not_pregame_evidence():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update("2026-10-01T12:01:00+00:00")]
+    row["model_material_context_receipt_ids"] = ["official-qb-source-001"]
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert "PICKEM_POST_KICKOFF_UPDATE_NOT_PREGAME" in out["blockers"]
+
+
+def test_material_change_receipt_must_be_lineage_linked_and_event_specific():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update()]
+    row["model_material_context_receipt_ids"] = []
+    unlinked = select_pickem_game(row)
+    assert unlinked["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPT_UNLINKED" in unlinked["blockers"]
+
+    row["model_material_context_receipt_ids"] = ["official-qb-source-001"]
+    row["material_pregame_updates"][0]["official_event_id"] = "unrelated-event"
+    mismatched = select_pickem_game(row)
+    assert mismatched["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in mismatched["blockers"]
+
+
+def test_naive_timestamps_and_duplicate_qb_receipts_fail_closed():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update("2026-09-30T10:00:00")]
+    row["model_material_context_receipt_ids"] = ["official-qb-source-001"]
+    assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in select_pickem_game(row)["blockers"]
+    row["material_pregame_updates"] = [_qb_update(), _qb_update()]
+    assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in select_pickem_game(row)["blockers"]
+
+
+def test_schedule_refresh_alone_never_poses_as_new_qb_injury():
+    row = _row_with_kickoff()
+    row["source_snapshot_timestamp"] = "2026-09-30T15:00:00+00:00"
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_READY
+    assert out["pregame_material_update_status"] == "NO_MATERIAL_UPDATE_RECEIPTS_SUPPLIED"
+    board = build_pickem_board([row], expected_game_count=1)
+    assert board["material_update_evidence_missing_count"] == 1
+    assert board["can_execute"] is False
+
+
+def test_newer_valid_qb_update_without_model_lineage_still_requires_rerun():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update("2026-09-30T13:00:00+00:00")]
+    row.pop("model_material_context_receipt_ids", None)
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert out["source_model_status"] == "STALE_MODEL_OUTPUT"
+    assert "PICKEM_MATERIAL_UPDATE_AFTER_MODEL_RERUN_REQUIRED" in out["blockers"]
+    assert "PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED" not in out["blockers"]
+
+
+def test_older_valid_qb_update_without_lineage_stays_unproven():
+    row = _row_with_kickoff()
+    row["material_pregame_updates"] = [_qb_update()]
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MODEL_MATERIAL_CONTEXT_RECEIPTS_REQUIRED" in out["blockers"]
+    assert out["source_model_status"] != "STALE_MODEL_OUTPUT"
+
+
+def test_boolean_receipt_id_or_change_type_cannot_pass_lineage_gate():
+    for field in ("evidence_receipt_id", "change_type"):
+        row = _row_with_kickoff()
+        update = _qb_update()
+        update[field] = True
+        row["material_pregame_updates"] = [update]
+        row["model_material_context_receipt_ids"] = ["True", "official-qb-source-001"]
+        out = select_pickem_game(row)
+        assert out["status"] == PICKEM_BLOCKED
+        assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in out["blockers"]
+        assert out["can_execute"] is False
+
+
+def test_invalid_receipt_cannot_be_ignored_because_another_receipt_is_stale():
+    row = _row_with_kickoff()
+    invalid = _qb_update()
+    invalid["evidence_receipt_id"] = False
+    row["material_pregame_updates"] = [
+        _qb_update("2026-09-30T13:00:00+00:00"),
+        invalid,
+    ]
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_BLOCKED
+    assert "PICKEM_MATERIAL_UPDATE_RECEIPT_INVALID" in out["blockers"]

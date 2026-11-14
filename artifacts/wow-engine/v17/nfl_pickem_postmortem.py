@@ -133,6 +133,32 @@ def analyze_settled_pickem_week(
             }
         )
 
+    # A visible settled sheet is not an authenticated pre-lock opponent snapshot.
+    # This benchmark is a historical counterfactual over ONLY the visible rows,
+    # not a prospective strategy or estimate of actual opponent ownership.
+    strict_majority_games = [
+        row for row in per_event if row["strict_majority_side"] is not None
+    ]
+    visible_majority_benchmark = {
+        "status": "POST_SETTLEMENT_VISIBLE_SAMPLE_ONLY",
+        "eligible_game_count": len(strict_majority_games),
+        "correct": sum(
+            row["strict_majority_side"] == row["winner"]
+            for row in strict_majority_games
+        ),
+        "no_strict_majority_count": len(per_event) - len(strict_majority_games),
+        "user_correct_on_same_games": sum(
+            row["user_correct"] for row in strict_majority_games
+        ),
+        "prelock_visibility_verified": False,
+        "full_opponent_pool_verified": False,
+        "prospective_strategy_validated": False,
+    }
+    visible_majority_benchmark["difference_vs_user_on_same_games"] = (
+        visible_majority_benchmark["correct"]
+        - visible_majority_benchmark["user_correct_on_same_games"]
+    )
+
     user_wins = wins_by_participant[user_name]
     best_wins = max(wins_by_participant.values())
     weekly_winners = sorted(
@@ -218,7 +244,11 @@ def analyze_settled_pickem_week(
 
     no_minority_card = minority_pick_count == 0
     not_weekly_winner = user_wins < best_wins
-    pool_strategy_shadow_earned = no_minority_card and not_weekly_winner
+    pool_strategy_shadow_research_candidate = no_minority_card and not_weekly_winner
+    # No pre-lock opponent visibility/locking receipts enter this function.
+    # A postsettlement pool pattern can nominate investigation, never earn
+    # an authorized equity replay or production challenger by itself.
+    pool_strategy_shadow_earned = False
 
     learning_actions: list[dict[str, str]] = [
         {
@@ -232,12 +262,12 @@ def analyze_settled_pickem_week(
             "action": "DO_NOT_DOWNGRADE_STRONG_SIDE_SOLELY_BECAUSE_THE_ENTIRE_POOL_MISSED",
         },
     ]
-    if pool_strategy_shadow_earned:
+    if pool_strategy_shadow_research_candidate:
         learning_actions.append(
             {
                 "lane": "POOL_CONSTRUCTION",
-                "learning_state": LEARNING_SHADOW,
-                "action": "RUN_POOL_WIN_EQUITY_SHADOW_ON_FRAGILE_OR_TOSS_UP_ROWS",
+                "learning_state": LEARNING_WATCH,
+                "action": "REQUIRE_AUTHENTIC_PRELOCK_OPPONENT_RECEIPTS_BEFORE_EQUITY_SHADOW",
             }
         )
     elif not_weekly_winner:
@@ -268,8 +298,14 @@ def analyze_settled_pickem_week(
         "unanimous_shared_loss_count": unanimous_shared_loss_count,
         "majority_side_loss_count": majority_side_loss_count,
         "winner_comparisons": winner_comparisons,
+        "visible_majority_benchmark": visible_majority_benchmark,
+        "pool_sample_provenance": "POST_LOCK_OR_PRELOCK_VISIBILITY_UNVERIFIED",
+        "frozen_user_submission_verified": False,
+        "fitted_model_miss_attribution_verified": False,
+        "prelock_pool_equity_evidence_eligible": False,
         "events": per_event,
         "tiebreaker": tiebreaker,
+        "pool_strategy_shadow_research_candidate": pool_strategy_shadow_research_candidate,
         "pool_strategy_shadow_review_earned": pool_strategy_shadow_earned,
         "production_probability_patch_earned": False,
         "learning_actions": learning_actions,

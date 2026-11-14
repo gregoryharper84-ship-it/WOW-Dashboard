@@ -106,7 +106,9 @@ def test_final_week4_sheet_regression_reconstructs_gh_outcome_and_consensus_conc
     assert report["minority_pick_count"] == 0
     assert report["all_consensus_or_split_top"] is True
     assert report["unanimous_shared_loss_count"] == 1
-    assert report["pool_strategy_shadow_review_earned"] is True
+    assert report["pool_strategy_shadow_research_candidate"] is True
+    assert report["pool_strategy_shadow_review_earned"] is False
+    assert any(action["action"] == "REQUIRE_AUTHENTIC_PRELOCK_OPPONENT_RECEIPTS_BEFORE_EQUITY_SHADOW" for action in report["learning_actions"])
     assert report["production_probability_patch_earned"] is False
     assert report["production_probability_mutation_allowed"] is False
     assert report["can_execute"] is False
@@ -266,3 +268,73 @@ def test_shadow_board_never_changes_production_strategy_or_probability():
     assert board["production_probability_changed"] is False
     assert board["automatic_promotion"] is False
     assert board["can_execute"] is False
+
+
+def test_visible_majority_postmortem_is_not_mislabeled_as_prelock_strategy():
+    report = analyze_settled_pickem_week(PICKS, WINNERS, user_name="GH")
+    benchmark = report["visible_majority_benchmark"]
+    assert benchmark["status"] == "POST_SETTLEMENT_VISIBLE_SAMPLE_ONLY"
+    assert benchmark["eligible_game_count"] + benchmark["no_strict_majority_count"] == len(EVENTS)
+    assert benchmark["correct"] <= benchmark["eligible_game_count"]
+    assert benchmark["difference_vs_user_on_same_games"] == (
+        benchmark["correct"] - benchmark["user_correct_on_same_games"]
+    )
+    assert benchmark["prelock_visibility_verified"] is False
+    assert benchmark["full_opponent_pool_verified"] is False
+    assert benchmark["prospective_strategy_validated"] is False
+    assert report["pool_sample_provenance"] == "POST_LOCK_OR_PRELOCK_VISIBILITY_UNVERIFIED"
+    assert report["frozen_user_submission_verified"] is False
+    assert report["fitted_model_miss_attribution_verified"] is False
+    assert report["prelock_pool_equity_evidence_eligible"] is False
+    assert report["production_probability_mutation_allowed"] is False
+
+
+def test_split_majority_benchmark_excludes_tied_vote_event():
+    participants = {
+        "GH": {"game-a": "A", "game-b": "C"},
+        "Jo": {"game-a": "A", "game-b": "D"},
+        "Tre": {"game-a": "B", "game-b": "C"},
+        "El": {"game-a": "A", "game-b": "D"},
+    }
+    out = analyze_settled_pickem_week(
+        participants,
+        {"game-a": "A", "game-b": "D"},
+        user_name="GH",
+    )
+    benchmark = out["visible_majority_benchmark"]
+    assert benchmark["eligible_game_count"] == 1
+    assert benchmark["no_strict_majority_count"] == 1
+    assert benchmark["correct"] == 1
+    assert benchmark["user_correct_on_same_games"] == 1
+    assert benchmark["difference_vs_user_on_same_games"] == 0
+    assert out["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("actual_winner", "majority_correct", "gh_correct", "difference"),
+    [
+        ("A", 1, 0, 1),
+        ("B", 0, 1, -1),
+    ],
+)
+def test_majority_versus_gh_nonzero_retro_benchmark(
+    actual_winner: str,
+    majority_correct: int,
+    gh_correct: int,
+    difference: int,
+):
+    participants = {
+        "GH": {"game-a": "B"},
+        "Jo": {"game-a": "A"},
+        "Tre": {"game-a": "A"},
+    }
+    report = analyze_settled_pickem_week(
+        participants, {"game-a": actual_winner}, user_name="GH"
+    )
+    benchmark = report["visible_majority_benchmark"]
+    assert benchmark["eligible_game_count"] == 1
+    assert benchmark["correct"] == majority_correct
+    assert benchmark["user_correct_on_same_games"] == gh_correct
+    assert benchmark["difference_vs_user_on_same_games"] == difference
+    assert benchmark["prelock_visibility_verified"] is False
+    assert report["prelock_pool_equity_evidence_eligible"] is False
