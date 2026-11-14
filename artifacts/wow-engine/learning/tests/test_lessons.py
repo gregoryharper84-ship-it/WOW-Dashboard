@@ -71,6 +71,37 @@ class TestLessons(unittest.TestCase):
         record = good_record()
         self.assertEqual(len(lessons.verified_lessons([record, copy.deepcopy(record)])), 1)
 
+    def test_conflicting_canonical_incident_root_causes_never_teach(self):
+        original = good_record()
+        conflicting = copy.deepcopy(original)
+        conflicting["root_cause"] = "conflicting explanation"
+        for rows in ([original, conflicting], [conflicting, original]):
+            with self.subTest(first=rows[0]["root_cause"]):
+                self.assertEqual(lessons.verified_lessons(rows), [])
+                self.assertEqual(
+                    lessons.intake_advice(rows, title="OBSERVABILITY_CORRELATION",
+                                          evidence="incident recurrence")["matches"], [],
+                )
+
+    def test_conflicting_deployed_sha_or_prevention_never_teach(self):
+        for section, field, value in (
+            ("release", "deployed_commit", "c" * 40),
+            ("learning", "preventive_control", "contradictory prevention"),
+        ):
+            with self.subTest(section=section):
+                original = good_record()
+                conflicting = copy.deepcopy(original)
+                conflicting[section][field] = value
+                self.assertEqual(lessons.verified_lessons([original, conflicting]), [])
+                self.assertEqual(lessons.verified_lessons([conflicting, original]), [])
+
+    def test_verified_and_unverified_duplicate_incident_cannot_teach(self):
+        original = good_record()
+        unverified = copy.deepcopy(original)
+        unverified["qa"]["status"] = "HOLD"
+        self.assertEqual(lessons.verified_lessons([original, unverified]), [])
+        self.assertEqual(lessons.verified_lessons([unverified, original]), [])
+
     def test_invalid_category_rejected(self):
         for value in ("correlation", "OBSERVABILITY-CORRELATION", "", "AA\nX"):
             with self.assertRaises(ValueError):

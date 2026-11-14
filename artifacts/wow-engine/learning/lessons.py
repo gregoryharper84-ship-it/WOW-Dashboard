@@ -32,9 +32,25 @@ def load_ledger(path: Path) -> list[dict]:
 
 def verified_lessons(records: list[dict]) -> list[dict]:
     """Only fully evidenced, verified closures may teach future repairs."""
+    # A repeated incident ID with conflicting content cannot teach a safe lesson.
+    # Keep identical ledger repeats deduplicated, regardless of input order.
+    records_by_id = {}
+    conflicting_ids = set()
+    for row in records:
+        incident_id = row.get("postmortem_id")
+        if isinstance(incident_id, str):
+            if incident_id in records_by_id:
+                if records_by_id[incident_id] != row:
+                    conflicting_ids.add(incident_id)
+            else:
+                records_by_id[incident_id] = row
+
     results = []
     seen_ids = set()
     for row in records:
+        incident_id = row.get("postmortem_id")
+        if isinstance(incident_id, str) and incident_id in conflicting_ids:
+            continue
         if row.get("state") != "VERIFIED_CLOSED" or row.get("root_cause_status") != "CONFIRMED":
             continue
         if any(not isinstance(row.get(field), dict) for field in (
