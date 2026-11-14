@@ -425,3 +425,20 @@ def test_final_readback_pending_cannot_claim_acceptance(tmp_path, final_pending,
     assert "production_verified=false can_execute=false" in text
     if final_pending == "true":
         assert "POST_DEPLOY_LANES_OBSERVED_SIRT_PENDING" not in text
+
+def test_pending_deploy_skips_final_artifact_without_masking_live_failures():
+    """Verified PENDING has no final receipt; live acceptance must retain missing-file failure."""
+    jobs = _load()["jobs"]
+    steps = jobs["acceptance-receipts"]["steps"]
+    upload = next(s for s in steps if s.get("name", "").startswith("Preserve final observation receipt"))
+    assert upload["if"] == "always() && needs.deployment-readback.outputs.deploy_pending != 'true'"
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert "continue-on-error" not in upload
+    checkout = next(s for s in steps if s.get("id") == "receipt_checkout")
+    assert "needs.deployment-readback.outputs.deploy_pending != 'true'" in checkout["if"]
+    assert _run_receipt(
+        __import__("pathlib").Path(__import__("tempfile").mkdtemp()),
+        DEPLOY_PENDING="true", DEPLOYMENT_READBACK="success",
+        READBACK_OUTCOME="success", SOURCE_IDENTITY_OUTCOME="success",
+    )[0] == 0
+
