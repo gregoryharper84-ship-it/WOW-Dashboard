@@ -78,9 +78,13 @@ def _result_valid(pick: Mapping[str, Any], result: Mapping[str, Any] | None) -> 
             or not _text(result.get("settlement_source"))):
         errors.append("OFFICIAL_FINAL_UNVERIFIED")
     started, settled = _utc(result.get("event_start_time_utc")), _utc(result.get("settled_at_utc"))
-    if started is None or settled is None or settled <= started:
+    is_void = sport == "TENNIS" and result.get("final_status") == "VOID_PREMATCH_WITHDRAWAL"
+    freeze = _utc(pick.get("frozen_at_utc"))
+    if (started is None or settled is None
+            or (is_void and (freeze is None or settled <= freeze))
+            or (not is_void and settled <= started)):
         errors.append("OFFICIAL_SETTLEMENT_TIME_INVALID")
-    if sport == "TENNIS" and result.get("final_status") == "VOID_PREMATCH_WITHDRAWAL":
+    if is_void:
         if result.get("void_reason") != "PREMATCH_WITHDRAWAL":
             errors.append("VOID_REASON_INVALID")
     elif result.get("final_status") != "FINAL":
@@ -120,6 +124,11 @@ def audit_multimarket_retro(
         (_text(p.get("cohort")), *_key(p), _text(p.get("market_family")).upper())
         for p in picks
     )
+    cohort_markets: dict[str, set[str]] = {}
+    for p in picks:
+        cohort_markets.setdefault(_text(p.get("cohort")), set()).add(
+            _text(p.get("market_family")).upper()
+        )
     receipt_count = Counter(_text(p.get("pregame_receipt_id")) for p in picks
                             if _text(p.get("pregame_receipt_id")))
     pick_ids = Counter(_text(p.get("selection_id")) for p in picks if _text(p.get("selection_id")))
@@ -132,6 +141,8 @@ def audit_multimarket_retro(
         side = _text(p.get("selected_side")).upper()
         line = p.get("selected_side_line")
         issues = []
+        if len(cohort_markets.get(cohort, set())) != 1:
+            issues.append("MIXED_MARKET_COHORT_INVALID")
         if sport not in BASIS or not event or not cohort or market not in MARKETS:
             issues.append("RESEARCH_SELECTION_IDENTITY_OR_MARKET_INVALID")
         if cohort_market_counts[(cohort, sport, event, market)] != 1:
