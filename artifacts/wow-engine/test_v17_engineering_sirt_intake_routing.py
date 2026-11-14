@@ -623,3 +623,27 @@ def test_actions_authored_pr_is_not_an_existing_intake_issue(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert calls == ["issue:create", "pr:comment"]
     assert len(issues) == 2
+
+
+@pytest.mark.parametrize("record", [
+    {"number": 75},
+    {"body": None},
+    {"number": "75", "body": None},
+    {"number": 75, "body": []},
+    {"number": 75, "body": None, "pull_request": []},
+])
+def test_partial_or_malformed_bot_issue_cannot_establish_inventory_absence(tmp_path, record):
+    record = dict(record, user={"login": "github-actions[bot]", "type": "Bot"})
+    proc, calls, issues, _ = _run_writer(tmp_path, inventory_response=json.dumps([record]))
+    assert proc.returncode != 0
+    assert "EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY" in proc.stdout
+    assert calls == []
+    assert issues == []
+
+
+def test_complete_issue_with_explicit_null_body_is_a_valid_empty_issue(tmp_path):
+    empty = dict(_matching_issue(75, "app/github-actions"), body=None)
+    proc, calls, issues, _ = _run_writer(tmp_path, initial_issues=[empty])
+    assert proc.returncode == 0, proc.stderr
+    assert calls == ["issue:create", "pr:comment"]
+    assert len(issues) == 2

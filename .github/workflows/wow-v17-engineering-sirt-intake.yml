@@ -210,7 +210,17 @@ jobs:
             if ! batch=$(gh api "repos/$GITHUB_REPOSITORY/issues?creator=github-actions%5Bbot%5D&state=all&per_page=100&page=$page"); then
               echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY"; exit 1
             fi
-            jq -e 'type == "array" and all(.[]; .user.login == "github-actions[bot]" and .user.type == "Bot")' \
+            # An omitted body is unreadable evidence; only an explicit null is
+            # a known empty issue. Partial records cannot establish absence.
+            jq -e 'type == "array" and all(.[];
+                type == "object" and
+                (.number | type == "number" and . > 0 and . == floor) and
+                has("body") and (.body == null or (.body | type) == "string") and
+                (if has("pull_request") then
+                  (.pull_request | type) == "object" and
+                  (.pull_request.url | type) == "string"
+                 else true end) and
+                .user.login == "github-actions[bot]" and .user.type == "Bot")' \
               <<<"$batch" >/dev/null || {
               echo "::error::EVIDENCE_UNAVAILABLE:SIRT_INTAKE_INVENTORY"; exit 1
             }
