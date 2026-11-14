@@ -100,7 +100,7 @@ def _spread_forward_warm_error_code(exc: Exception) -> str:
 def _spread_forward_warm_failure_is_transient(exc: Exception) -> bool:
     return (
         type(exc).__name__ == "ReadTimeout"
-        or _spread_forward_warm_error_code(exc) == "PGRST002"
+        or _spread_forward_warm_error_code(exc) in {"PGRST002", "57014"}
     )
 
 
