@@ -82,3 +82,105 @@ For safely repairable incidents, the target is:
 `UNFINISHED=0`
 
 Any nonzero unfinished count must identify the exact remaining blocker or governed decision rather than a vague follow-up note.
+
+## Independent-provider fallback candidate (#2000)
+
+Cursor is `CURSOR_NOT_CONFIGURED`: its current REST contract and this account's
+API/repository entitlements have not been verified. No Cursor request is made.
+An editor subscription is not an API credential, quota, or spending authorization.
+
+The existing provider dispatcher retains the #1998 OpenAI persistent quota/auth
+breaker and failed-Claude suppression. Its optional fallback uses GitHub's
+[documented existing-issue Copilot assignment API](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-cloud-agent-via-the-api),
+not the OpenAI API key or Engineering App installation token. Copilot authors
+under its own `copilot-swe-agent` app principal (GitHub bot ID `198982749`);
+assignment acceptance is not source delivery, review, or approval. Copilot uses
+its own account entitlement/credits and is not asserted to be free.
+
+Activation is owner-controlled and disabled by default. Before enabling, configure
+a separately scoped **user** credential `WOW_COPILOT_ASSIGNMENT_TOKEN` restricted
+to this repository, with the permissions required by GitHub's API documentation.
+Do not substitute an Actions/Engineering App installation token. Verify the
+account's Copilot entitlement and configure an owner-approved GitHub spending
+budget with usage stopped at its limit. Only then set repository variables:
+
+- `WOW_COPILOT_FALLBACK_ENABLED=true`
+- `WOW_COPILOT_FALLBACK_REPOSITORY=gregoryharper84-ship-it/WOW-Dashboard`
+- `WOW_COPILOT_FALLBACK_BUDGET_APPROVED=true`
+- `WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS=1`
+
+These flags attest owner setup; they do not create or verify a billing cap.
+This patch does not configure secrets, budgets, permissions, or launch agents.
+
+The default budget is **zero additional API spend**. GitHub-native scheduled
+detection and deterministic SURVIVAL checks continue while OpenAI/Claude are at
+quota limits; they do not require enabling Copilot or configuring Cursor. There
+is no automatic recharge or paid remote invocation in this default path.
+The existing Render resident dispatcher heartbeat is a separate liveness signal,
+not repair acceptance, a provider entitlement, or authorization to spend. Its
+dispatches still pass through the same quota breaker and opt-in admission gates.
+
+### Resident pre-dispatch admission (#2001 follow-through)
+
+The resident reads the existing protected-main provider-route artifact and
+protected worker completion evidence through GitHub only; it never probes a
+paid provider or assumes that configured budget flags prove provider health.
+Known persistent quota/auth blockage with no admitted fallback returns
+`PROVIDER_QUOTA_BLOCKED` before GitHub dispatch and before attempt accounting.
+Malformed, missing, expired-artifact or unreadable evidence fails closed.
+Transient throttles remain distinct: expiry of their cooldown is not proof of
+recovery. Positive admission must be fresh (15 minutes) on current main; a fresh
+successful protected worker, including its exact parent-linked `NO_ACTION`
+acknowledgment, can supersede an older blocker.
+
+Remote reservations and existing heartbeat leases are checked before dispatch.
+The existing Redis resident lease reserves a persistent pending handoff before
+the GitHub POST. Only an accepted POST, or the exact correlated workflow run
+found after an ambiguous response, increments the existing bounded attempt
+counter. Lua compare-and-set makes accounting exactly once. The pending handoff
+does not expire automatically; unknown, absent or duplicate run evidence holds
+for reconciliation, never a resend. A completed correlated run clears only the
+handoff, not the counter. Provider holds are persisted as `DEGRADED` outcomes by
+the existing resident heartbeat path.
+
+The three-attempt ceiling and its existing retention remain unchanged. Previously
+exhausted counters are not reset, increased or automatically forgiven by this
+repair. After genuinely admitted provider recovery, those incidents still require
+their existing accountable owner to triage the exhausted attempt history.
+If only opt-in Copilot is configured but no affirmative admission is proven, keep
+the resident held: the existing protected dispatcher/independent-provider owner
+must supply capability and delivery evidence through its existing lane. Do not
+create a parallel resolver, infer readiness from flags, or launch a paid recovery
+probe to clear the hold.
+
+Admission requires an exact open issue already in the dispatch manifest, its
+matching domain lease, protected `main`, a concrete current main SHA, no existing
+assignment/linked repair PR, and a successful user-context repository capability
+probe. No free-text incident body, environment, Render/Supabase key, or betting
+Action secret is copied into the assignment prompt. GitHub's assignment API takes
+a branch rather than an immutable commit; the prompt binds the observed SHA and
+requires stopping if it changes, and source acceptance verifies the exact base.
+
+The existing implementation-single-writer Actions lock serializes admission.
+Before assignment, a typed reservation is persisted in the existing #1138
+heartbeat ledger, keyed by incident. Both workers and dispatcher fence unresolved
+remote holds, including after timeout or workflow completion. Assignment has
+**zero automatic retries**: 401/402/429/5xx, malformed output and timeouts retain
+the hold because remote launch may already have occurred. Subsequent survival
+cycles reconcile the same reservation, never assign again. Receipts distinguish
+`REMOTE_QUEUED_NOT_SOURCE_ACCEPTED` from
+`SOURCE_PR_AWAITING_INDEPENDENT_REVIEW`; neither means fixed or verified.
+
+An unresolved reservation intentionally has no automatic expiry. The accountable
+owner must first prove remote termination, reconcile the PR/source SHA and obtain
+independent review, then explicitly change that reservation's `hold` to `false`
+in the #1138 ledger. Preserve the receipt and incident marker: replay remains
+blocked even after release. Never delete a reservation merely to retry. Missing
+or malformed ledger evidence fails closed; no new scheduler or incident store
+is introduced.
+
+This remains `SOURCE_CANDIDATE_NOT_DEPLOYED`. Exact-head protected CI and
+independent review are required. Operational acceptance still requires two real,
+owner-budget-authorized unattended cycles yielding independently reviewed repair
+PRs. No merge, deployment, sporting probability authority or wager execution is
+authorized here; `can_execute=false` and `V17_TERMINAL_REDUCER` remain unchanged.

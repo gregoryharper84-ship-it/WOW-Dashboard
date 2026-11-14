@@ -11,7 +11,7 @@ AGENT_NAMES = ("wow-amrt-recovery", "wow-model-challenger", "wow-scout-evidence"
 
 class GeminiAntigravityContractTests(unittest.TestCase):
     def test_workspace_contract_is_discoverable_and_preserves_governance(self):
-        contents = (ROOT / "GEMINI.md").read_text(encoding="utf-8")
+        contents = (ROOT / ".agents" / "GEMINI.md").read_text(encoding="utf-8")
         for invariant in (
             "V17_TERMINAL_REDUCER",
             "can_execute=false",
@@ -38,7 +38,7 @@ class GeminiAntigravityContractTests(unittest.TestCase):
         for name in AGENT_NAMES:
             source = (ROOT / ".agents" / "agents" / name / "agent.md").read_text(encoding="utf-8")
             with self.subTest(agent=name):
-                self.assertIn("GEMINI.md", source)
+                self.assertIn(".agents/GEMINI.md", source)
                 self.assertTrue(
                     any(term in source.lower() for term in ("not a controlling", "cannot act as independent qa", "never fitted-model probability")),
                     name,

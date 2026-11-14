@@ -6,8 +6,9 @@ Pure decision logic: no network I/O. The caller supplies the typed findings from
 repair attempts have already been dispatched for that PR, and this module decides
 whether to dispatch another repair, declare the PR waiting on the owner, or do nothing.
 
-Non-repairable findings (trust-root ownership/approval findings) are never retried,
-regardless of attempt count: they require the owner, not another repair attempt.
+Non-repairable trust-root findings are never retried. Owner-authored trusted
+source needs an independent source author, not owner self-approval; owner approval
+gaps need the real CODEOWNER, not an invented reviewer.
 can_execute=false throughout; this module never merges, dispatches a deploy, or grants
 bypass. It only classifies.
 """
@@ -69,6 +70,28 @@ def plan_recovery(
     before this call (0 on the first HOLD). The returned `attempts` is what the caller
     should persist going forward.
     """
+    # Trust-root owner-authorship is a cross-repository admission problem,
+    # not a reason to silently drop a user-authored PR from recovery triage.
+    # This route is advisory only; source adoption requires an independently
+    # authenticated agent and positively reconciled canonical writer lease.
+    if not is_wow_engineering_pr and "QA_TRUST_ROOT_OWNER_AUTHORED" in findings:
+        return {
+            "pr_number": pr_number,
+            "action": "WAITING_ON_OWNER",
+            "required_actor": "INDEPENDENT_ENGINEERING_AUTHOR",
+            "next_action": "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE",
+            # The existing Engineering App adoption worker owns re-entry.
+            # Preserve action for durable queue/backward compatibility only.
+            "progression_state": "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF",
+            "reentry_trigger": "EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER",
+            "owner_intervention_required": False,
+            "unrelated_work_may_progress": True,
+            "release_admission": "DENIED_UNTIL_INDEPENDENT_EVIDENCE",
+            "findings": list(findings),
+            "non_repairable_findings": ["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            "attempts": attempts,
+            "can_execute": False,
+        }
     if not is_wow_engineering_pr:
         return {
             "pr_number": pr_number,
@@ -87,9 +110,24 @@ def plan_recovery(
 
     non_repairable = [f for f in findings if not is_repairable_finding(f)]
     if non_repairable:
+        # Retain the existing action for worker compatibility. Diagnose the
+        # necessary independent actor without granting write authority or
+        # starting a competing repair while the canonical lease is unresolved.
+        owner_authored = "QA_TRUST_ROOT_OWNER_AUTHORED" in non_repairable
         return {
             "pr_number": pr_number,
             "action": "WAITING_ON_OWNER",
+            "required_actor": ("INDEPENDENT_ENGINEERING_AUTHOR" if owner_authored
+                               else "ACTUAL_CODEOWNER"),
+            "next_action": ("INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
+                            if owner_authored else "FRESH_EXACT_HEAD_OWNER_APPROVAL"),
+            "progression_state": ("AUTOMATED_INDEPENDENT_SOURCE_HANDOFF" if owner_authored
+                                  else "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED"),
+            "reentry_trigger": ("EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER" if owner_authored
+                                 else "AUTHENTIC_GITHUB_CODEOWNER_REVIEW_AT_EXACT_SHA"),
+            "owner_intervention_required": not owner_authored,
+            "unrelated_work_may_progress": True,
+            "release_admission": "DENIED_UNTIL_INDEPENDENT_EVIDENCE",
             "findings": list(findings),
             "non_repairable_findings": non_repairable,
             "attempts": attempts,

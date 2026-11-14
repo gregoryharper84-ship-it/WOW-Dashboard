@@ -7,7 +7,7 @@ INSTRUCTIONS = V17_DIR.parent / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 
 def test_canonical_action_exposes_durable_daily_submit_and_status():
     text = SCHEMA.read_text(encoding="utf-8")
-    assert text.count("operationId:") == 27
+    assert text.count("operationId:") == 29
     assert "operationId: scoreWowTeamEventRequest" in text
     assert "operationId: submitWowV17DailySnapshot" in text
     assert "operationId: getWowV17DailySnapshotRun" in text

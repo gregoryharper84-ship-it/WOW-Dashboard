@@ -71,6 +71,9 @@ class CertifiedNFLModel:
     artifact_checksum: str
     training_dataset_hash: str
     validation_metrics: dict[str, Any]
+    # Source artifact lifecycle flag only; forward calibration and the terminal
+    # reducer remain independent requirements before any publication.
+    probability_publishable: bool = False
 
 
 def _canonical_json(value: Any) -> str:
@@ -86,6 +89,7 @@ def feature_order_hash() -> str:
 
 
 def _paginate(table_query: Any, *, page_size: int = 500) -> list[dict[str, Any]]:
+    """Yield successive PostgREST pages until the result set ends."""
     rows: list[dict[str, Any]] = []
     start = 0
     while True:
@@ -99,6 +103,7 @@ def _paginate(table_query: Any, *, page_size: int = 500) -> list[dict[str, Any]]
 
 
 def _load_training_feature_rows(db: Any) -> list[dict[str, Any]]:
+    """Load chronological training feature rows for the candidate fit."""
     query = (
         db.table("wow_nfl_pregame_feature_rows")
         .select("game_id,season,gameday,feature_schema_version,feature_order,feature_vector,target_outcome,training_eligible,row_inputs_hash")
@@ -135,6 +140,7 @@ def _load_training_feature_rows(db: Any) -> list[dict[str, Any]]:
 
 
 def _dataset_hash(rows: Iterable[dict[str, Any]]) -> str:
+    """Hash the ordered training feature set for artifact provenance."""
     identity = [
         {
             "game_id": str(row["game_id"]),
@@ -148,6 +154,7 @@ def _dataset_hash(rows: Iterable[dict[str, Any]]) -> str:
 
 
 def _ece(y_true: np.ndarray, probabilities: np.ndarray, bins: int = 10) -> float:
+    """Compute expected calibration error across equal-mass probability bins."""
     total = len(y_true)
     if total == 0:
         return float("inf")
@@ -171,6 +178,7 @@ def _sigmoid(value: np.ndarray | float) -> np.ndarray:
 
 
 def _split(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Chronologically split rows into train, calibration, and holdout windows."""
     train = [r for r in rows if int(r["season"]) in TRAIN_SEASONS]
     calibration = [r for r in rows if int(r["season"]) == CALIBRATION_SEASON]
     validation = [r for r in rows if int(r["season"]) == VALIDATION_SEASON]
@@ -178,6 +186,7 @@ def _split(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[
 
 
 def _xy(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
+    """Build the design matrix and binary labels for logistic fitting."""
     x = np.asarray([row["feature_vector"] for row in rows], dtype=float)
     y = np.asarray([1 if row["target_outcome"] == "HOME_WIN" else 0 for row in rows], dtype=int)
     return x, y
@@ -187,6 +196,7 @@ def fit_candidate(rows: list[dict[str, Any]], *, training_code_sha: str) -> dict
     # Scikit-learn is a training/certification dependency, not an inference
     # dependency. Keep it off the web-process import path so health and governed
     # scoring routes can bind before optional model maintenance is requested.
+    """Fit and evaluate an NFL event-model candidate without promoting it."""
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
     from sklearn.preprocessing import StandardScaler
@@ -306,6 +316,7 @@ def fit_candidate(rows: list[dict[str, Any]], *, training_code_sha: str) -> dict
 
 
 def _training_code_sha() -> str:
+    """Return the immutable training-code digest bound into artifacts."""
     env_sha = str(os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT_SHA") or "").strip().lower()
     if len(env_sha) in range(40, 65) and all(ch in "0123456789abcdef" for ch in env_sha):
         return env_sha
@@ -313,11 +324,13 @@ def _training_code_sha() -> str:
 
 
 def _active_artifact_rows(db: Any) -> list[dict[str, Any]]:
+    """Fetch currently active/promoted champion artifact rows."""
     result = db.table("wow_nfl_event_fitted_model_artifacts").select("*").eq("active", True).eq("promoted", True).eq("lifecycle_state", "CHAMPION").limit(2).execute()
     return [dict(row) for row in (result.data or [])]
 
 
 def ensure_champion_model(db: Any) -> dict[str, Any]:
+    """Require exactly one active promoted champion or fail closed."""
     rows = _load_training_feature_rows(db)
     if not rows:
         raise NFLModelInputsInsufficient("NFL_TRAINING_FEATURE_ROWS_EMPTY")
@@ -402,6 +415,7 @@ def ensure_champion_model(db: Any) -> dict[str, Any]:
 
 
 def load_champion_model(db: Any) -> CertifiedNFLModel:
+    """Load the certified champion model and calibrator fail-closed."""
     active = _active_artifact_rows(db)
     if len(active) != 1:
         raise NFLModelUnavailable("NFL_CHAMPION_ARTIFACT_NOT_AVAILABLE")
@@ -460,10 +474,12 @@ def load_champion_model(db: Any) -> CertifiedNFLModel:
         artifact_checksum=str(artifact["artifact_checksum"]),
         training_dataset_hash=str(artifact["training_dataset_hash"]),
         validation_metrics=dict(artifact.get("validation_metrics") or {}),
+        probability_publishable=artifact.get("probability_publishable") is True,
     )
 
 
 def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> dict[str, Any]:
+    """Score one feature row with the certified champion and calibrator."""
     if feature_row.get("feature_schema_version") != model.feature_schema_version:
         raise NFLModelInputsInsufficient("NFL_FEATURE_SCHEMA_INPUT_MISMATCH")
     if list(feature_row.get("feature_order") or []) != list(model.feature_order):
@@ -479,6 +495,24 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         raise NFLModelInputsInsufficient("NFL_FEATURE_VECTOR_NONNUMERIC") from exc
     if not np.all(np.isfinite(x)):
         raise NFLModelInputsInsufficient("NFL_FEATURE_VECTOR_NONFINITE")
+
+    # Compare the canonical frozen input vector with the EXACT numeric array
+    # handed to the fitted logistic scorer. This proves scorer vector equivalence,
+    # not independent authentication of source data or current QB/roster facts.
+    vector_context = {
+        "feature_schema_version": model.feature_schema_version,
+        "feature_order": list(model.feature_order),
+    }
+    frozen_vector_sha256 = _sha256_json({
+        **vector_context,
+        "numeric_feature_vector": [float(v) for v in vector],
+    })
+    consumed_vector_sha256 = _sha256_json({
+        **vector_context,
+        "numeric_feature_vector": x.tolist(),
+    })
+    if frozen_vector_sha256 != consumed_vector_sha256:
+        raise NFLModelOutputInvalid("NFL_MODEL_CONSUMED_VECTOR_MISMATCH")
 
     standardized = (x - model.scaler_mean) / model.scaler_scale
     logit = float(np.dot(model.coefficients, standardized) + model.intercept)
@@ -498,7 +532,38 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
     if abs(raw_home + raw_away - 1.0) > 1e-9 or abs(calibrated_home + calibrated_away - 1.0) > 1e-9:
         raise NFLModelOutputInvalid("NFL_PROBABILITY_PAIR_NOT_NORMALIZED")
 
+    # This receipt is emitted only by the fitted Platt operation that just ran.
+    # Binding to the event/run and immutable prediction is performed by its caller.
+    model_timestamp = datetime.now(timezone.utc).isoformat()
+    calibration_operation_receipt = {
+        "schema_version": "NFL_CALIBRATION_OPERATION_V1",
+        "producer": "nfl_event_model_v17.score_feature_row",
+        "status": "COMPLETED",
+        "model_artifact_id": model.artifact_id,
+        "artifact_checksum": model.artifact_checksum,
+        "model_version": model.model_artifact_version,
+        "calibration_method": CALIBRATION_METHOD,
+        "calibration_version": model.calibration_version,
+        "calibration_training_n": model.calibration_training_n,
+        "uncertainty_method": model.bounds_method_version,
+        "feature_row_hash": str(feature_row.get("row_inputs_hash") or ""),
+        "model_timestamp": model_timestamp,
+        "platt_input_logit": logit,
+        "platt_a": model.platt_a,
+        "platt_b": model.platt_b,
+        "uncertainty_margin": margin,
+        "raw_home_probability": raw_home,
+        "calibrated_home_probability": calibrated_home,
+        "calibrated_away_probability": calibrated_away,
+        "calibrated_home_lower_bound": home_lower,
+        "calibrated_home_upper_bound": home_upper,
+        "calibrated_away_lower_bound": away_lower,
+        "calibrated_away_upper_bound": away_upper,
+        "can_execute": False,
+    }
+
     return {
+        "calibration_operation_receipt": calibration_operation_receipt,
         "raw_home_probability": raw_home,
         "raw_away_probability": raw_away,
         "independent_home_probability": raw_home,
@@ -519,14 +584,17 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         "model_version": model.model_artifact_version,
         "model_label": PROVIDER_IDENTITY,
         "model_artifact_id": model.artifact_id,
-        "model_timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_timestamp": model_timestamp,
+        "feature_snapshot_hash": frozen_vector_sha256,
+        "model_consumed_feature_hash": consumed_vector_sha256,
+        "feature_vector_hash_policy": "NFL_CANONICAL_NUMERIC_VECTOR_SCHEMA_ORDER_V1",
         "feature_schema_version": model.feature_schema_version,
         "feature_order_hash": model.feature_order_hash,
         "training_dataset_hash": model.training_dataset_hash,
         "artifact_checksum": model.artifact_checksum,
         "market_prior_weight": 0.0,
         "blend_publishable": False,
-        "probability_publishable": True,
+        "probability_publishable": getattr(model, "probability_publishable", False) is True,
         "provenance_complete": True,
         "can_execute": False,
     }

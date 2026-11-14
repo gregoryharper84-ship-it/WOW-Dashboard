@@ -169,3 +169,8 @@ receipts before the first production closure. Status until then:
 
 These new tests run within the existing GitHub CI suites; the results attached
 to the **current exact head** are authoritative, not older successful runs.
+
+
+## October 25 owner-approved lean reliability adoption (source-level)
+
+The consolidated operating contract is [WOW V17 Lean Reliability & Triple D Acceptance](WOW_V17_LEAN_RELIABILITY_ACCEPTANCE.md). It extends this recovery lifecycle with no-abandoned-handoff auditing, complete-scope model acceptance evidence, four measured product metrics, provider-independent authorized fallback, recurrence prevention and dedicated live-model requirements. The companion `v17.product_outcome_acceptance` module is read-only and does **not** by itself activate a worker, release a model or certify a deployment. The original independent QA/Release and V17 terminal safety boundaries remain unchanged.

@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  checks: read
+  pull-requests: read
 
 concurrency:
   group: wow-v17-engineering-auditor-code-health-${{ github.ref }}
@@ -48,10 +50,27 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/lifecycle-pr-body.md"
+          # An old Actions event can hold a stale PR body after a metadata edit.
+          # Read the current trusted body, but only if the PR head is unchanged.
+          [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "${EXPECTED_HEAD_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "::error::LIFECYCLE_PR_IDENTITY_INVALID"; exit 1;
+            }
+          live_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}") || {
+            echo "::error::LIFECYCLE_PR_READ_FAILED"; exit 1;
+          }
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$EXPECTED_HEAD_SHA" '
+            .state == "open" and .base.ref == "main" and
+            .base.repo.full_name == $repo and .head.sha == $sha
+          ' <<<"$live_pr" >/dev/null || {
+            echo "::error::LIFECYCLE_PR_STALE_OR_WRONG_TARGET"; exit 1;
+          }
+          jq -r '.body // ""' <<<"$live_pr" > "$RUNNER_TEMP/lifecycle-pr-body.md"
           git diff --name-only HEAD^1 HEAD^2 > "$RUNNER_TEMP/lifecycle-changed-paths.txt"
           python artifacts/wow-engine/v17/engineering_agent_team.py lifecycle-classify \
             --pr-body-file "$RUNNER_TEMP/lifecycle-pr-body.md" \
@@ -63,6 +82,7 @@ jobs:
           artifacts/wow-engine/test_v17_engineering_auditor.py
           artifacts/wow-engine/test_v17_engineering_auditor_worker_db_client.py
           artifacts/wow-engine/test_v17_engineering_auditor_backlog_constraints.py
+          artifacts/wow-engine/test_v17_release_truth_preflight.py
           artifacts/wow-engine/test_v17_sirt_assurance.py
 
       - name: Run adjacent engineering closure regressions
@@ -70,6 +90,39 @@ jobs:
           python -m pytest -q
           artifacts/wow-engine/test_v17_24h_completion_loop.py
           artifacts/wow-engine/test_v17_lifecycle_closure_cell.py
+
+      - name: Read protected main Release Truth classifier
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: _release_truth_main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Report live release truth without gating this PR
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          classifier=_release_truth_main/artifacts/wow-engine/v17/release_truth_preflight.py
+          if [ ! -f "$classifier" ]; then
+            echo 'RELEASE_TRUTH_UNVERIFIED: protected main classifier not yet available' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          result=$(python "$classifier" --repo "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER") || {
+            echo 'RELEASE_TRUTH_UNVERIFIED: live diagnostic unavailable' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          echo '## Live Release Truth Preflight (advisory; no merge/deploy authority)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve non-execution governance receipt
         if: always()

@@ -227,3 +227,59 @@ def dispatch_preflight(item: Mapping[str, Any]) -> RoleReceipt:
         return _receipt("BLOCKER_SENTINEL", "HELD", incident,
                         "ECOSYSTEM_CONDUCTOR", ("AMRT_CONFLICT_KEYS_MISSING",))
     return _receipt("BLOCKER_SENTINEL", "READY", incident, "CODE_CI_ENGINEER")
+
+
+def evaluate_amrt_specialist(
+    incident: Mapping[str, Any], *,
+    specialist: str,
+    producer_stages: Mapping[str, Mapping[str, Any]] | None = None,
+    replay_results: Mapping[str, Mapping[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> RoleReceipt:
+    """Bind five restoration specialists to the existing seven-role receipt.
+
+    Advisory/pure only: the existing worker must authenticate incident origin,
+    validate its single-writer lease and persist handoffs through the existing
+    receipt writer. Neither this adapter nor a specialist can dispatch, approve,
+    merge, deploy, infer sporting probability or announce closure.
+    """
+    if incident.get("amrt_owned") is not True:
+        return _receipt("BLOCKER_SENTINEL", "HELD",
+                        str(incident.get("incident_id") or ""), "ECOSYSTEM_CONDUCTOR",
+                        ("AMRT_INCIDENT_NOT_ADMITTED",))
+    if incident.get("can_execute") is not False:
+        return _receipt("BLOCKER_SENTINEL", "HELD",
+                        str(incident.get("incident_id") or ""), "ECOSYSTEM_CONDUCTOR",
+                        ("AMRT_EXECUTION_INVARIANT_INVALID",))
+
+    # Lazy import avoids a circular dependency: the specialists adapt their
+    # decisions to RoleReceipt, whose canonical definition lives here.
+    from v17.amrt_specialist_agents import (
+        ModelRecoveryCommander, ModelDependencyInvestigator,
+        ModelRestorationEngineer, ModelRecoveryRegressionSpecialist,
+        RecoveryEscalationDeadlockBreaker, to_existing_role_receipt,
+    )
+
+    if specialist == "MODEL_RECOVERY_COMMANDER":
+        decision = ModelRecoveryCommander().run(incident)
+    elif specialist == "MODEL_DEPENDENCY_INVESTIGATOR":
+        if not isinstance(producer_stages, Mapping):
+            return _receipt("ROOT_CAUSE_INVESTIGATOR", "HELD",
+                            str(incident.get("incident_id") or ""),
+                            "ROOT_CAUSE_INVESTIGATOR", ("PRODUCER_STAGE_EVIDENCE_MISSING",))
+        decision = ModelDependencyInvestigator().run(incident, producer_stages)
+    elif specialist == "MODEL_RESTORATION_ENGINEER":
+        decision = ModelRestorationEngineer().run(incident)
+    elif specialist == "MODEL_RECOVERY_REGRESSION_SPECIALIST":
+        decision = ModelRecoveryRegressionSpecialist().run(incident, replay_results)
+    elif specialist == "RECOVERY_ESCALATION_DEADLOCK_BREAKER":
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            return _receipt("CODE_CI_ENGINEER", "HELD",
+                            str(incident.get("incident_id") or ""),
+                            "ECOSYSTEM_CONDUCTOR", ("TRUSTED_EVALUATION_TIME_MISSING",))
+        decision = RecoveryEscalationDeadlockBreaker().run(incident, now=now)
+    else:
+        return _receipt("BLOCKER_SENTINEL", "HELD",
+                        str(incident.get("incident_id") or ""), "ECOSYSTEM_CONDUCTOR",
+                        ("UNKNOWN_AMRT_SPECIALIST",))
+    return to_existing_role_receipt(decision)

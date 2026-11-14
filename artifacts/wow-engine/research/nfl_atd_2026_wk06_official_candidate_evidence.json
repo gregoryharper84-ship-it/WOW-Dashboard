@@ -1,0 +1,97 @@
+{
+  "schema_version": "NFL_ATD_OFFICIAL_SOURCE_CANDIDATES_V1",
+  "observed_date_utc": "2026-10-21",
+  "source_class": "NFL_OFFICIAL_GAMEBOOK_PDF",
+  "status": "RESEARCH_CANDIDATES_ONLY_DO_NOT_SETTLE",
+  "persisted_outcomes": 0,
+  "can_execute": false,
+  "official_settlement_authority": false,
+  "notes": "Five distinct exact-player, line-0.5 markets produced 10 opposing-direction pregame predictions. Game scores/scorer lists and participation verified from official league or official-team sources. Independent official-stat finalization, any-TD offer rules, exact immutable prediction-ID pairing, possible corrections, and protected release must be accepted before database settlement. Do not use as a fitted-model forecast. The CHI_ATL official gamebook is hosted by NFL.com; live byte parsing acceptance is separate and must pass. This file is only a source-bound candidate, not an authenticated NFL settlement receipt.",
+  "events": [
+    {
+      "canonical_event_id": "2026_06_CAR_PHI",
+      "visitor": "CAR",
+      "home": "PHI",
+      "event_date": "2026-10-18",
+      "final_score": "CAR 25, PHI 14",
+      "scoring_evidence_url": "https://www.nflgsis.com/2026/REG/06/60264/Gamebook.pdf",
+      "participation_evidence_url": "https://www.nflgsis.com/2026/REG/06/60264/Gamebook.pdf",
+      "scoring_source_location": "GSIS gamebook p1 scoring plays, p2 individual player stats",
+      "players": [
+        {
+          "name": "Bryce Young",
+          "role_team": "CAR",
+          "source_identity": "B.Young",
+          "official_passing_touchdowns_thrown": 2,
+          "scoring_touchdowns": 0,
+          "game_participation_supported_by": "passing and rushing stat lines",
+          "line": 0.5,
+          "directions": [
+            "MORE",
+            "LESS"
+          ]
+        },
+        {
+          "name": "David Moore",
+          "role_team": "CAR",
+          "source_identity": "D.Moore",
+          "scoring_touchdowns": 0,
+          "game_participation_supported_by": "receiving/return stat lines",
+          "line": 0.5,
+          "directions": [
+            "MORE",
+            "LESS"
+          ]
+        },
+        {
+          "name": "Tetairoa McMillan",
+          "role_team": "CAR",
+          "source_identity": "T.McMillan",
+          "scoring_touchdowns": 0,
+          "game_participation_supported_by": "receiving stat line",
+          "line": 0.5,
+          "directions": [
+            "MORE",
+            "LESS"
+          ]
+        }
+      ]
+    },
+    {
+      "canonical_event_id": "2026_06_CHI_ATL",
+      "visitor": "CHI",
+      "home": "ATL",
+      "event_date": "2026-10-18",
+      "final_score": "CHI 31, ATL 23",
+      "scoring_evidence_url": "https://static.www.nfl.com/image/upload/v1792409927/gamecenter/aab577eb-4feb-11f1-abca-2c54536568a9.pdf",
+      "participation_evidence_url": "https://static.www.nfl.com/image/upload/v1792409927/gamecenter/aab577eb-4feb-11f1-abca-2c54536568a9.pdf",
+      "scoring_source_location": "Official NFL.com gamebook PDF p1 scoring plays and lineups, p2 final individual receiving/return statistics, October 18, 2026",
+      "players": [
+        {
+          "name": "Austin Hooper",
+          "role_team": "ATL",
+          "source_identity": "A.Hooper",
+          "scoring_touchdowns": 0,
+          "game_participation_supported_by": "receiving stat line (1 reception, 6 yards, 0 receiving TD)",
+          "line": 0.5,
+          "directions": [
+            "MORE",
+            "LESS"
+          ]
+        },
+        {
+          "name": "Kalif Raymond",
+          "role_team": "CHI",
+          "source_identity": "K.Raymond",
+          "scoring_touchdowns": 0,
+          "game_participation_supported_by": "receiving stat line (2 receptions, 18 yards, 0 receiving TD)",
+          "line": 0.5,
+          "directions": [
+            "MORE",
+            "LESS"
+          ]
+        }
+      ]
+    }
+  ]
+}

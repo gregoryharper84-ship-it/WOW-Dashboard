@@ -1,0 +1,53 @@
+{
+  "source": "WOW validation wow_d1_source_events canonical per ID, read-only 2026-10-26",
+  "rows": [
+    {
+      "official_event_id": "2024020007",
+      "season": "20242025",
+      "event_start_time": "2024-10-09 23:30:00+00",
+      "home_participant": "PIT",
+      "away_participant": "NYR",
+      "outcome_json": {
+        "away_score": 6,
+        "home_score": 0,
+        "positive_outcome": false
+      },
+      "source_payload_sha256": "bba5a38133f35ba5361ad8253a4e25cb28daa5c659dc0f564cd16c29c36b0a8c",
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "official_event_id": "2024020030",
+      "season": "20242025",
+      "event_start_time": "2024-10-12 23:00:00+00",
+      "home_participant": "NYR",
+      "away_participant": "UTA",
+      "outcome_json": {
+        "away_score": 6,
+        "home_score": 5,
+        "positive_outcome": false
+      },
+      "source_payload_sha256": "13f67e930a4600dc334e0e6ba890b74422d8cd68f97743663dce589591541593",
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "official_event_id": "2024020728",
+      "season": "20242025",
+      "event_start_time": "2025-01-19 00:00:00+00",
+      "home_participant": "NYR",
+      "away_participant": "CBJ",
+      "outcome_json": {
+        "away_score": 0,
+        "home_score": 1,
+        "positive_outcome": true
+      },
+      "source_payload_sha256": "463bc664977dc4827c5b14b5b97cf5686b6c0d6717e20065dc4a8bbbffd1663a",
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "historical_reconstruction": true,
+      "can_execute": false
+    }
+  ]
+}

@@ -230,3 +230,63 @@ def test_idle_worker_uses_slow_poll_and_bounded_db_failure_backoff():
     assert pickem_async_runtime._idle_wait_seconds(30, 1, 120) == 60.0
     assert pickem_async_runtime._idle_wait_seconds(30, 2, 120) == 120.0
     assert pickem_async_runtime._idle_wait_seconds(30, 5, 120) == 120.0
+
+
+
+def test_async_week_selector_is_queued_and_reaches_existing_scorer(monkeypatch):
+    db = _Db()
+    req = AsyncNFLPickemSubmitRequest(
+        requested_season=2026,
+        requested_week=8,
+        expected_game_count=14,
+        idempotency_key="week8-2026-complete",
+    )
+    run_id = _submit(db, req)
+    assert run_id.startswith("v17-nfl-pickem-async-")
+    assert len(db.rows) == 1
+    payload = db.rows[0]["request_payload"]
+    assert payload["requested_slate_dates"] == []
+    assert payload["requested_season"] == 2026
+    assert payload["requested_week"] == 8
+    assert payload["expected_game_count"] == 14
+    assert db.rows[0]["can_execute"] is False
+
+    captured = {}
+    monkeypatch.setattr(
+        pickem_runtime,
+        "run_nfl_pickem_board",
+        lambda request, **kwargs: captured.setdefault("request", request),
+    )
+    scorer_request = _run_existing_pickem(
+        payload, db_client_fn=lambda: object(), event_api=object()
+    )
+    assert scorer_request.requested_season == 2026
+    assert scorer_request.requested_week == 8
+    assert captured["request"].requested_slate_dates == []
+
+
+def test_async_rejects_ambiguous_or_partial_week_selector_without_db_write():
+    db = _Db()
+    with pytest.raises(ValueError, match="PICKEM_SEASON_WEEK_SELECTOR_INCOMPLETE"):
+        _submit(db, AsyncNFLPickemSubmitRequest(requested_week=8))
+    with pytest.raises(ValueError, match="PICKEM_SEASON_WEEK_DATES_AMBIGUOUS"):
+        _submit(
+            db,
+            AsyncNFLPickemSubmitRequest(
+                requested_season=2026,
+                requested_week=8,
+                requested_slate_dates=["2026-11-01"],
+            ),
+        )
+    assert db.rows == []
+
+
+def test_date_only_idempotency_payload_excludes_unset_new_selector_fields():
+    from v17.nfl_pickem_async_runtime import _request_payload
+
+    request = _request(idempotency_key="legacy-week4-stability")
+    payload = _request_payload(request)
+    assert payload["requested_slate_dates"] == ["2026-10-01", "2026-10-04", "2026-10-05"]
+    assert "requested_season" not in payload
+    assert "requested_week" not in payload
+    assert _submit(_Db(), request).startswith("v17-nfl-pickem-async-")

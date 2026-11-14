@@ -50,7 +50,7 @@ def render_digest(
         "## On HOLD",
         *_pr_lines(hold_prs, empty_label="none", reason_key="reason"),
         "",
-        "## Waiting on owner (trust root)",
+        "## Independent handoff or CODEOWNER decision (release scoped; other lanes continue)",
         *_pr_lines(waiting_on_owner, empty_label="none", reason_key="reason"),
         "",
         "## Stale or conflicted",

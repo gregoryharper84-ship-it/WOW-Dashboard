@@ -8,12 +8,13 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SIDECAR_ID = "wow-amrt-daily-recovery"
 DEFAULT_CRON = "17 8 * * *"  # once per day, local timezone
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_:-]{3,200}$")
 AGENT_PROMPT = (
-    "WOW V17 AMRT scheduled recovery cycle. Read GEMINI.md, "
+    "WOW V17 AMRT scheduled recovery cycle. Read .agents/GEMINI.md, "
     ".agents/agents/wow-amrt-recovery/agent.md and "
     "docs/wow/engineering/WOW_AMRT_RECOVERY_TEAM.md. "
     "Inspect live Conductor/AMRT assignments, incident OPEN state and exact SHA. "
@@ -55,10 +56,17 @@ def _project_id(value: str) -> str:
 
 def _cron(value: str) -> str:
     fields = str(value or "").split()
+    prefix = ""
+    if fields and fields[0].startswith("CRON_TZ="):
+        prefix = fields.pop(0)
+        zone_name = prefix.removeprefix("CRON_TZ=")
+        try:
+            ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("Expected a valid CRON_TZ IANA timezone") from None
     if len(fields) != 5 or any(not re.fullmatch(r"[0-9*/,-]+", field) for field in fields):
         raise ValueError("Expected a standard five-field cron expression")
-    return " ".join(fields)
-
+    return " ".join([prefix, *fields]) if prefix else " ".join(fields)
 
 def _load(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -144,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--install", action="store_true", help="Explicitly install AND enable native Sidecar")
     group.add_argument("--status", action="store_true", help="Read saved configuration without changing anything")
     parser.add_argument("--project-id", help="Actual ID from Antigravity; mandatory for preview/install")
-    parser.add_argument("--cron", default=DEFAULT_CRON, help="Local-time cron (default daily 08:17)")
+    parser.add_argument("--cron", default=DEFAULT_CRON, help="Five-field cron or CRON_TZ=<IANA zone> prefix (default daily 08:17 local)")
     args = parser.parse_args(argv)
     root = Path.home() / ".gemini" / "config"
     try:

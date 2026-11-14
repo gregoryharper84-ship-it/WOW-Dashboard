@@ -29,31 +29,75 @@ def test_oauth_retries_missing_structured_output_even_after_success():
     assert "steps.claude_api.outputs.structured_output == ''" in condition
     # Both providers must still use the same governed tool configuration.
     assert oauth["with"]["claude_args"] == api["with"]["claude_args"]
+    assert len([step for step in steps if step.get("id") == "claude_api"]) == 1
+    assert len([step for step in steps if step.get("id") == "claude_oauth"]) == 1
+
+
+def _render_claude_args(profile: str, schema: str, tmp_path: Path) -> str:
+    config = next(step for step in _action()["runs"]["steps"] if step.get("id") == "config")
+    output = tmp_path / "github_output.txt"
+    output.unlink(missing_ok=True)
+    env = dict(os.environ, PROFILE=profile, OUTPUT_SCHEMA=schema, GITHUB_OUTPUT=str(output))
+    result = subprocess.run(["bash", "-c", config["run"]], env=env,
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stderr
+    return output.read_text()
+
+
+def test_both_auth_modes_pin_the_model_that_returned_structured_json(tmp_path):
+    """API-key mode otherwise defaults to claude-opus-5-5, which returned no structured output."""
+    schema = '{"type":"object","additionalProperties":false}'
+    rendered = _render_claude_args(":read-only", schema, tmp_path)
+    assert "--model claude-sonnet-5-5" in rendered
+    assert "--max-turns 24" in rendered
+    assert "Edit" not in rendered and "Write" not in rendered
+    assert "--json-schema" in rendered
+    assert schema in rendered
+    workspace = _render_claude_args(":workspace", schema, tmp_path)
+    assert "--model claude-sonnet-5-5" in workspace
+    assert "--max-turns 40" in workspace
+    assert "Edit,Read,Write" in workspace
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq required by Ubuntu Actions runners")
-@pytest.mark.parametrize("api,oauth,expected,typed_error", [
-    ("", "", False, "CLAUDE_STRUCTURED_OUTPUT_MISSING"),
-    ("", '{"decision":"PASS"}', True, ""),
-    ('{"decision":"PASS"}', "", True, ""),
-    ("not-json", "", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
-    ("[]", "", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
-    ("null", "", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
+@pytest.mark.parametrize("api,oauth,api_outcome,oauth_outcome,expected,typed_error", [
+    # Provider exits 0 and omits structured output. That is not an approval.
+    ("", "", "success", "success", False, "CLAUDE_STRUCTURED_OUTPUT_MISSING"),
+    # OAuth recovery after the API attempt returns no object.
+    ("", '{"decision":"PASS"}', "failure", "success", True, ""),
+    # API success is sufficient. OAuth must not be required.
+    ('{"decision":"PASS"}', "", "success", "skipped", True, ""),
+    ("not-json", "", "success", "skipped", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
+    ("[]", "", "success", "skipped", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
+    ("null", "", "success", "skipped", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
+    # Freeform text that names an approval is still invalid JSON.
+    ("decision: PASS approved", "", "success", "success", False, "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"),
+    # Both providers failed and neither returned an object.
+    ("", "", "failure", "failure", False, "CLAUDE_STRUCTURED_OUTPUT_MISSING"),
 ])
-def test_actual_result_gate_fails_closed(api, oauth, expected, typed_error):
+def test_actual_result_gate_fails_closed(api, oauth, api_outcome, oauth_outcome, expected, typed_error):
     action = _action()
     step = next(item for item in action["runs"]["steps"]
                 if item.get("name") == "Verify provider result exists")
     env = dict(os.environ, API_RESULT=api, OAUTH_RESULT=oauth,
-               API_OUTCOME="success", OAUTH_OUTCOME="success")
+               API_OUTCOME=api_outcome, OAUTH_OUTCOME=oauth_outcome)
     result = subprocess.run(["bash", "-c", step["run"]], env=env,
                             capture_output=True, text=True, timeout=10, check=False)
     output = result.stdout + result.stderr
     assert (result.returncode == 0) is expected, output
+    assert f"api_outcome={api_outcome}" in output
+    assert f"oauth_outcome={oauth_outcome}" in output
+    assert "api_output_present=" in output and "oauth_output_present=" in output
+    if api:
+        assert api not in output
+    if oauth:
+        assert oauth not in output
     if typed_error:
         # GitHub Actions annotations (::error::) are written to stdout;
         # jq diagnostics, when present, are written to stderr.
         assert f"::error::{typed_error}" in output
+    if api_outcome == "failure" and oauth_outcome == "failure":
+        assert "CLAUDE_STRUCTURED_OUTPUT_MISSING" in output
 
 
 def test_output_does_not_emit_secrets_or_relax_permission_profile():
@@ -66,3 +110,5 @@ def test_output_does_not_emit_secrets_or_relax_permission_profile():
                  if item.get("name") == "Verify provider result exists")["run"]
     assert "API_RESULT" in guard and "OAUTH_RESULT" in guard
     assert 'echo "$RESULT"' not in guard
+    assert "model=claude-sonnet-5-5" in guard
+    assert "api_output_present=" in guard

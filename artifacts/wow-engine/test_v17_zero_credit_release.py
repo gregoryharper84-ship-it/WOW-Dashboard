@@ -21,7 +21,7 @@ def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py
     return {
         "repository": REPO, "pr_number": 1974, "expected_head_sha": SHA,
         "evidence_errors": [], "owner_login": "gregoryharper84-ship-it",
-        "pr": {"head_sha": SHA, "head_ref": "fix/nfl", "head_repo": REPO, "base_ref": "main",
+        "pr": {"head_sha": SHA, "body": "Incident: #2136", "head_ref": "fix/nfl", "head_repo": REPO, "base_ref": "main",
                "state": "open", "merged": False, "draft": False, "author": author},
         "files": [path], "reviews": [], "source_review": None,
         "independent_review_active": False, "current_review_active": False,
@@ -64,10 +64,14 @@ def test_free_mode_rejects_forged_target_head():
     assert "QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH" in qa(ev)
 
 
-def test_free_mode_cannot_lower_legacy_governance_requirement():
+def test_v4_retired_governance_not_a_zero_credit_or_legacy_qa_dependency():
     ev = evidence()
     ev["qa_review_policy"]["mode"] = "legacy"
-    assert "QA_EVIDENCE_MISSING:Trusted exact-head engineering governance" in qa(ev)
+    # Retiring the named trusted-governance mechanism does not turn off
+    # the exact-head regression, QA, or distinct Release App evidence.
+    assert qa(ev) == []
+    ev["check_runs"].pop()
+    assert any(f.startswith("QA_EVIDENCE_MISSING:") for f in qa(ev))
 
 
 def test_free_mode_still_requires_all_regressions():
@@ -82,9 +86,11 @@ def test_free_mode_rejects_stale_head():
     assert "QA_HEAD_STALE" in qa(ev)
 
 
-def test_free_mode_owner_authored_trust_root_still_holds():
+def test_free_mode_owner_authored_trust_root_can_pass_deterministic_qa():
     ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py")
-    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in qa(ev)
+    assert qa(ev) == []  # no independent-review claim; exact-head regressions remain mandatory
+    ev["check_runs"].pop()
+    assert any(x.startswith("QA_EVIDENCE_MISSING:") for x in qa(ev))
 
 
 def test_release_cannot_use_same_identity_as_qa():

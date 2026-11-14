@@ -104,3 +104,64 @@ def test_health_never_claims_execution(monkeypatch):
     assert body["governed_probability_capability"] == "UNAVAILABLE"
     assert body["probability_publishable"] is False
     assert body["can_execute"] is False
+
+
+def test_health_detects_missing_database_settings_without_exposing_values(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    response = TestClient(api.app).get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["database_status"] == "UNAVAILABLE"
+    assert body["database_diagnostic"] == "DATABASE_CONFIGURATION_INCOMPLETE"
+    assert "SUPABASE_SERVICE_KEY" not in response.text
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+
+
+def test_health_distinguishes_failed_ledger_read_from_missing_config(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "do-not-expose-this-test-key")
+
+    class Broken:
+        def load_runtime_capability(self):
+            raise api.KalshiWeatherPersistenceError("LEDGER_READ_FAILED", "secret-internal-detail")
+
+    monkeypatch.setattr(api, "_persistence", lambda: Broken())
+    response = TestClient(api.app).get("/health")
+    body = response.json()
+    assert body["database_diagnostic"] == "DATABASE_CAPABILITY_READ_FAILED"
+    assert body["database_status"] == "UNAVAILABLE"
+    assert "secret-internal-detail" not in response.text
+    assert "do-not-expose" not in response.text
+    assert body["can_execute"] is False
+
+
+def test_health_confirms_database_read_without_claiming_calibration(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "redacted")
+    class Healthy:
+        def load_runtime_capability(self):
+            return {"capability_status": "UNAVAILABLE"}
+    monkeypatch.setattr(api, "_persistence", lambda: Healthy())
+    response = TestClient(api.app).get("/health")
+    body = response.json()
+    assert body["database_status"] == "AVAILABLE"
+    assert body["database_diagnostic"] == "DATABASE_READ_VERIFIED"
+    assert body["governed_probability_capability"] == "UNAVAILABLE"
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+
+
+def test_health_is_never_probability_publication_authority(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "fake")
+    class Healthy:
+        def load_runtime_capability(self):
+            return {"capability_status": "AVAILABLE"}
+    monkeypatch.setattr(api, "_persistence", lambda: Healthy())
+    body = TestClient(api.app).get("/health").json()
+    assert body["database_diagnostic"] == "DATABASE_READ_VERIFIED"
+    assert body["governed_probability_capability"] == "AVAILABLE"
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False

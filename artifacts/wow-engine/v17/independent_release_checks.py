@@ -17,11 +17,13 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from engineering_incident_identity import exact_incident_id  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -41,8 +43,26 @@ QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PER_PAGE = 100
+NATIVE_REGRESSION_WORKFLOW_ID = 338954264
+NATIVE_REGRESSION_WORKFLOW_PATH = ".github/workflows/wow-verify.yml"
+MAX_NATIVE_RUN_AGE = timedelta(hours=2)
+ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
 
 Fetch = Callable[[str], tuple[int, Any]]
+QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
+QA_WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
+# Stable id of that workflow in this repository. GitHub's run `name` is the
+# workflow run-name. Today that is the dynamic shape below. A later change
+# may set it to exactly QA_WORKFLOW_NAME. Neither string is principal evidence.
+QA_WORKFLOW_ID = 380562324
+QA_RUN_NAME_RE = re.compile(
+    r"^wow-v17-independent-qa-check event=(workflow_run|workflow_dispatch) "
+    r"pr=(?:[1-9][0-9]*|AUTO) head=(?:[0-9a-f]{40}|AUTO)$"
+)
+
+
+class UpstreamQaError(Exception):
+    """Typed refusal while classifying the upstream QA run. No check is published."""
 
 
 # ----------------------------------------------------------------------- evidence
@@ -63,6 +83,133 @@ def _paged(fetch: Fetch, path: str, key: str | None, errors: list[str], label: s
             return items
     errors.append(f"{label}_TRUNCATED")
     return items
+
+
+def _paged_exact(
+    fetch: Fetch, path: str, key: str, errors: list[str], label: str,
+) -> list[dict]:
+    """Read a bounded GitHub inventory and require its declared total to match."""
+    items: list[dict] = []
+    sep = "&" if "?" in path else "?"
+    for page in range(1, MAX_PAGES + 1):
+        status, body = fetch(f"{path}{sep}per_page={PER_PAGE}&page={page}")
+        rows = body.get(key) if isinstance(body, dict) else None
+        total = body.get("total_count") if isinstance(body, dict) else None
+        if (
+            status != 200
+            or not isinstance(rows, list)
+            or not isinstance(total, int)
+            or isinstance(total, bool)
+            or total < 0
+        ):
+            errors.append(f"{label}_UNREADABLE:{status}")
+            return []
+        items.extend(rows)
+        if len(items) > total:
+            errors.append(f"{label}_COUNT_INVALID")
+            return []
+        if len(rows) < PER_PAGE:
+            if len(items) != total:
+                errors.append(f"{label}_TRUNCATED")
+                return []
+            return items
+    errors.append(f"{label}_TRUNCATED")
+    return []
+
+
+def _native_workflow_run_matches(
+    run: dict, *, repo: str, pr_number: int, head: str, head_ref: str,
+) -> bool:
+    repository = run.get("repository")
+    head_repository = run.get("head_repository")
+    prs = run.get("pull_requests")
+    if not isinstance(repository, dict) or not isinstance(head_repository, dict) or not isinstance(prs, list):
+        return False
+    return (
+        isinstance(run.get("id"), int)
+        and not isinstance(run.get("id"), bool)
+        and run["id"] > 0
+        and isinstance(run.get("run_attempt"), int)
+        and not isinstance(run.get("run_attempt"), bool)
+        and run["run_attempt"] > 0
+        and run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID
+        and run.get("path") == NATIVE_REGRESSION_WORKFLOW_PATH
+        and run.get("event") == "pull_request"
+        and run.get("head_sha") == head
+        and run.get("head_branch") == head_ref
+        and repository.get("full_name") == repo
+        and head_repository.get("full_name") == repo
+        and any(
+            isinstance(item, dict)
+            and item.get("number") == pr_number
+            and isinstance(item.get("head"), dict)
+            and item["head"].get("sha") == head
+            and item["head"].get("ref") == head_ref
+            for item in prs
+        )
+    )
+
+
+def _native_workflow_evidence(
+    repo: str, pr: dict, head: str, *, fetch: Fetch, errors: list[str],
+) -> list[dict]:
+    if not SHA_RE.fullmatch(head):
+        return []
+    runs = _paged_exact(
+        fetch,
+        f"repos/{repo}/actions/runs?head_sha={head}&event=pull_request",
+        "workflow_runs",
+        errors,
+        "NATIVE_WORKFLOW_RUNS",
+    )
+    matching = [
+        run for run in runs
+        if isinstance(run, dict)
+        and _native_workflow_run_matches(
+            run,
+            repo=repo,
+            pr_number=int(pr.get("number") or 0),
+            head=head,
+            head_ref=str(pr.get("head_ref") or ""),
+        )
+    ]
+    latest = max(matching, key=lambda run: run["id"], default=None)
+    if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
+        return []
+
+    jobs = _paged_exact(
+        fetch,
+        f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
+        "jobs",
+        errors,
+        "NATIVE_WORKFLOW_JOBS",
+    )
+    return [{
+        key: latest.get(key)
+        for key in (
+            "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
+            "head_branch", "created_at", "status", "repository",
+            "head_repository", "pull_requests",
+        )
+    } | {
+        "jobs": [
+            {"name": job.get("name"), "status": job.get("status")}
+            for job in jobs if isinstance(job, dict)
+        ],
+    }]
+
+
+def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        return False
+    age = (now or datetime.now(timezone.utc)) - created
+    return timedelta(0) <= age < MAX_NATIVE_RUN_AGE
 
 
 def gather(
@@ -94,6 +241,8 @@ def gather(
         errors.append(f"PULL_REQUEST_UNREADABLE:{status}")
         pr = {}
     ev["pr"] = {
+        "number": pr.get("number"),
+        "body": pr.get("body"),
         "state": pr.get("state"), "draft": pr.get("draft"), "merged": pr.get("merged"),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "head_ref": (pr.get("head") or {}).get("ref"),
@@ -128,8 +277,13 @@ def gather(
     runs = _paged(fetch, f"repos/{repo}/commits/{head}/check-runs", "check_runs", errors, "CHECK_RUNS")
     ev["check_runs"] = [{"id": r.get("id"), "name": r.get("name"), "head_sha": r.get("head_sha"),
                          "status": r.get("status"), "conclusion": r.get("conclusion"),
-                         "app_id": (r.get("app") or {}).get("id"), "completed_at": r.get("completed_at")}
+                         "app_id": (r.get("app") or {}).get("id"),
+                         "completed_at": r.get("completed_at"),
+                         "created_at": r.get("created_at"), "started_at": r.get("started_at")}
                         for r in runs]
+    ev["native_workflow_runs"] = _native_workflow_evidence(
+        repo, ev["pr"], head, fetch=fetch, errors=errors,
+    )
     reviews = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/reviews", None, errors, "REVIEWS")
     ev["reviews"] = [{"user": (r.get("user") or {}).get("login"), "state": r.get("state"),
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
@@ -180,7 +334,8 @@ MAX_TARGETS = 20
 
 
 def targets(repo: str, *, pr: str | None = None,
-            workflow_run_prs: list[dict] | None = None, fetch: Fetch = gh_fetch) -> dict[str, Any]:
+            workflow_run_prs: list[dict] | None = None,
+            neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
     """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input."""
     errors: list[str] = []
     out: list[dict] = []
@@ -200,6 +355,34 @@ def targets(repo: str, *, pr: str | None = None,
             if status != 200 or not isinstance(live, dict):
                 errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
                 continue
+            # A source PR can move between the workflow_run event and QA.
+            # A single proved same-origin moved/closed source is no longer a
+            # target; never publish QA for its old SHA, and do not fail a
+            # main-scoped optional run. Ambiguous/foreign/malformed remains
+            # strict. Manual dispatch never enables this classification.
+            current_sha = head.get("sha")
+            head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+            base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+            same_origin = (
+                live.get("number") == number
+                and head_repo.get("full_name") == repo
+                and base.get("ref") == "main"
+                and base_repo.get("full_name") == repo
+                and SHA_RE.match(str(current_sha or "")) is not None
+            )
+            if (
+                neutral_superseded and len(workflow_run_prs) == 1
+                and same_origin and (
+                    live.get("state") == "closed"
+                    or (live.get("state") == "open" and live.get("draft") is False
+                        and not live.get("merged_at") and current_sha != sha)
+                )
+            ):
+                return {
+                    "targets": [], "errors": [],
+                    "disposition": "neutral",
+                    "reason": "QA_SOURCE_PR_HEAD_SUPERSEDED",
+                }
             if (
                 live.get("number") != number
                 or head.get("sha") != sha
@@ -243,6 +426,105 @@ def targets(repo: str, *, pr: str | None = None,
     return {"targets": out, "errors": errors}
 
 
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _qa_run_name_matches(name: Any, event: Any) -> bool:
+    """True for the current dynamic run-name or the exact static workflow name.
+
+    A matching name does not authenticate the run. Callers still require
+    workflow id 380562324, the workflow path, repository, head, attempt, and
+    the single completed ``qa`` job. Any other name is rejected.
+    """
+    if not isinstance(name, str) or not isinstance(event, str):
+        return False
+    if name == QA_WORKFLOW_NAME:
+        return True
+    return (
+        QA_RUN_NAME_RE.fullmatch(name) is not None
+        and name.startswith(f"{QA_WORKFLOW_NAME} event={event} ")
+    )
+
+
+def classify_upstream_qa(
+    repo: str, *, run_id: int, run_attempt: int, fetch: Fetch = gh_fetch,
+) -> dict[str, str]:
+    """Classify a completed QA workflow before Release reads its policy.
+
+    A skipped run, or a completed run whose ``qa`` job was skipped, is neutral:
+    no policy lookup and no Release check. A success or failure job is applicable,
+    and a missing or forged policy on that run still fails closed downstream.
+    Cancelled, foreign, truncated, or mismatched provenance is untrusted.
+    """
+    if not _positive_int(run_id) or not _positive_int(run_attempt):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    status, run = fetch(f"repos/{repo}/actions/runs/{run_id}")
+    if status != 200 or not isinstance(run, dict):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
+    repository = run.get("repository") if isinstance(run.get("repository"), dict) else {}
+    head_repository = run.get("head_repository") if isinstance(run.get("head_repository"), dict) else {}
+    event = run.get("event")
+    name = run.get("name")
+    # Workflow id and path authenticate the workflow. `name` may be the
+    # current dynamic run-name or exactly "wow-v17-independent-qa-check".
+    name_matches = _qa_run_name_matches(name, event)
+    trusted = (
+        run.get("id") == run_id
+        and run.get("run_attempt") == run_attempt
+        and run.get("workflow_id") == QA_WORKFLOW_ID
+        and run.get("path") == QA_WORKFLOW_PATH
+        and name_matches
+        and run.get("head_branch") == "main"
+        and SHA_RE.fullmatch(str(run.get("head_sha") or "")) is not None
+        and event in {"workflow_run", "workflow_dispatch"}
+        and repository.get("full_name") == repo
+        and head_repository.get("full_name") == repo
+        and run.get("status") == "completed"
+    )
+    if not trusted:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    conclusion = run.get("conclusion")
+    if conclusion == "skipped":
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_SKIPPED"}
+    if conclusion not in {"success", "failure"}:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    job_status, jobs_body = fetch(
+        f"repos/{repo}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
+    )
+    jobs = jobs_body.get("jobs") if isinstance(jobs_body, dict) else None
+    total = jobs_body.get("total_count") if isinstance(jobs_body, dict) else None
+    if (
+        job_status != 200
+        or not isinstance(jobs, list)
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or total != len(jobs)
+    ):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
+    named = [job for job in jobs if isinstance(job, dict) and job.get("name") == "qa"]
+    if len(named) != 1:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    if named[0].get("status") != "completed":
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    job_conclusion = named[0].get("conclusion")
+    if job_conclusion == "skipped":
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+    if job_conclusion not in {"success", "failure"}:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    steps = named[0].get("steps")
+    # A failed run/job remains applicable even when its terminal artifact step
+    # was skipped: it must never be mistaken for a deliberate QA deferral.
+    if conclusion == "success" and job_conclusion == "success" and isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and step.get("name") == "Upload terminal QA outcome"
+        and step.get("conclusion") == "skipped"
+        for step in steps
+    ):
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+    return {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+
+
 # ----------------------------------------------------------------------- decisions
 
 def _latest(runs: list[dict], name: str, head: str, app_id: int | str) -> dict | None:
@@ -251,6 +533,98 @@ def _latest(runs: list[dict], name: str, head: str, app_id: int | str) -> dict |
                and str(r.get("app_id")) == str(app_id) and r.get("status") == "completed"]
     return max(matches, key=lambda r: (str(r.get("completed_at") or ""), int(r.get("id") or 0)), default=None)
 
+
+def pending_required_regressions(ev: dict) -> list[str]:
+    """Return required checks proven active by official exact-head check or workflow evidence."""
+    pr = ev.get("pr") or {}
+    head = ev.get("expected_head_sha")
+    if (
+        ev.get("evidence_errors")
+        or not isinstance(head, str)
+        or not SHA_RE.fullmatch(head)
+        or pr.get("head_sha") != head
+        or pr.get("state") != "open"
+        or pr.get("merged") is not False
+        or pr.get("base_ref") != "main"
+        or pr.get("head_repo") != ev.get("repository")
+    ):
+        return []
+
+    runs = ev.get("check_runs")
+    if not isinstance(runs, list):
+        return []
+    pending: list[str] = []
+    for name in REQUIRED_REGRESSION_CHECKS:
+        matches = [
+            run for run in runs
+            if isinstance(run, dict)
+            and run.get("name") == name
+            and run.get("head_sha") == head
+            and str(run.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+            and isinstance(run.get("id"), int)
+            and not isinstance(run.get("id"), bool)
+        ]
+        latest = max(matches, key=lambda run: run["id"], default=None)
+        if (
+            latest
+            and latest.get("status") in {"queued", "in_progress"}
+            and _recent_active_timestamp(
+                latest.get("started_at") or latest.get("created_at")
+            )
+        ):
+            pending.append(name)
+
+    native_runs = ev.get("native_workflow_runs")
+    if not isinstance(native_runs, list):
+        return pending
+    for run in native_runs:
+        if (
+            not isinstance(run, dict)
+            or not _native_workflow_run_matches(
+                run,
+                repo=str(ev.get("repository") or ""),
+                pr_number=int(pr.get("number") or 0),
+                head=head,
+                head_ref=str(pr.get("head_ref") or ""),
+            )
+            or run.get("status") not in ACTIVE_WORK_STATUSES
+        ):
+            continue
+        if not _recent_active_timestamp(run.get("created_at")):
+            continue
+        jobs = run.get("jobs")
+        if not isinstance(jobs, list):
+            continue
+        active_jobs = {
+            str(job.get("name"))
+            for job in jobs
+            if isinstance(job, dict) and job.get("status") in ACTIVE_WORK_STATUSES
+        }
+        if (
+            "WOW required-three regression" in active_jobs
+            or "WOW required-three collection contract" in active_jobs
+            or any(name.startswith("WOW required-three shard / ") for name in active_jobs)
+        ):
+            pending.append("WOW required-three regression")
+        if (
+            "WOW additional required regression" in active_jobs
+            or any(name.startswith("WOW additional shard / ") for name in active_jobs)
+        ):
+            pending.append("WOW additional required regression")
+    return list(dict.fromkeys(pending))
+
+
+def _canonical_incident_present(body: object) -> bool:
+    """Match the existing certifier's canonical incident identity contract.
+
+    Both required QA and independent Release fail closed on the same parser
+    that the protected existing-PR governance certifier actually uses.
+    """
+    try:
+        exact_incident_id(body)
+    except ValueError:
+        return False
+    return True
 
 def _owner_approved_at_head(ev: dict, head: str) -> bool:
     owner = ev.get("owner_login")
@@ -281,6 +655,11 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         findings.append("QA_PR_BASE_NOT_MAIN")
     if pr.get("head_repo") != ev.get("repository"):
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    # Required native QA and distinct Release both reject metadata missing
+    # from the existing trusted-governance certifier's canonical PR contract.
+    # Release already recomputes qa_findings() independently.
+    if not _canonical_incident_present(pr.get("body")):
+        findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
     review_active = ev.get("independent_review_active", True)
     if not isinstance(review_active, bool):
         findings.append("QA_REVIEW_POLICY_INVALID")
@@ -367,8 +746,8 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
     trust_root_change = any(is_trust_root(str(f), governance_files) for f in files)
-    if review_active is False and not trust_root_change and (policy or {}).get("mode") != "zero_credit":
-        expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
+    # V4: retired trusted-governance check is not a QA admission prerequisite.
+    # All active regression, change-impact, review-policy and owner checks remain.
     for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
         if run is None:
@@ -376,14 +755,12 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         elif run.get("conclusion") != "success":
             findings.append(f"QA_EVIDENCE_FAILED:{name}")
     if trust_root_change:
-        # Trust roots: .github/, .agents/ and every file a governance workflow executes
-        # or reads (including this module). Never autonomous: the sole owner's approval
-        # of this exact head is required, and an owner-authored PR can never be
-        # self-approved. Receipt minting for this class is the trust-root bootstrap
-        # path; this QA decision stays independent of that receipt.
-        if pr.get("author") == ev.get("owner_login"):
-            findings.append("QA_TRUST_ROOT_OWNER_AUTHORED")
-        elif not _owner_approved_at_head(ev, head):
+        # V3 single-owner policy: the authenticated repository owner can author a
+        # protected change. GitHub's required CI and the subsequent authorized
+        # merge are still separate gates; QA does NOT claim independent review.
+        # Non-owner-authored changes still require the owner's exact-head
+        # APPROVED review, preserving an attributable human authorization.
+        if pr.get("author") != ev.get("owner_login") and not _owner_approved_at_head(ev, head):
             findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
     return sorted(set(findings))
 
@@ -443,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--repo", required=True)
     t.add_argument("--pr")
     t.add_argument("--workflow-run-prs", help="JSON array from github.event.workflow_run.pull_requests")
+    t.add_argument("--neutral-superseded", action="store_true")
     g = sub.add_parser("gather")
     g.add_argument("--repo", required=True)
     g.add_argument("--pr", required=True, type=int)
@@ -462,6 +840,14 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--run-id", required=True, type=int)
     policy.add_argument("--run-attempt", required=True, type=int)
     policy.add_argument("--pr", type=int)
+    policy.add_argument("--neutral-if-superseded", action="store_true")
+    policy.add_argument("--neutral-if-draft-target", action="store_true")
+    classify = sub.add_parser("classify-upstream-qa")
+    classify.add_argument("--repo", required=True)
+    classify.add_argument("--run-id", required=True, type=int)
+    classify.add_argument("--run-attempt", required=True, type=int)
+    readiness = sub.add_parser("classify-release-readiness")
+    readiness.add_argument("--evidence", required=True)
     for name in ("decide-qa", "decide-release"):
         d = sub.add_parser(name)
         d.add_argument("--evidence", required=True)
@@ -471,7 +857,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "targets":
         prs = json.loads(args.workflow_run_prs) if args.workflow_run_prs else None
-        print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs)))
+        print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs,
+                                 neutral_superseded=args.neutral_superseded)))
         return 0
     if args.cmd == "resolve-qa-policy":
         try:
@@ -481,10 +868,29 @@ def main(argv: list[str] | None = None) -> int:
                 run_attempt=args.run_attempt,
                 expected_pr_number=args.pr,
                 token=os.environ.get("GH_TOKEN", ""),
+                allow_superseded_target=args.neutral_if_superseded,
+                neutralize_draft_target=args.neutral_if_draft_target,
             )
         except _source_review_module.SourceReviewError as exc:
             raise SystemExit(str(exc)) from exc
         print(json.dumps(resolved, sort_keys=True))
+        return 0
+    if args.cmd == "classify-upstream-qa":
+        try:
+            classified = classify_upstream_qa(
+                args.repo, run_id=args.run_id, run_attempt=args.run_attempt,
+            )
+        except UpstreamQaError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(classified, sort_keys=True))
+        return 0
+    if args.cmd == "classify-release-readiness":
+        ev = json.loads(Path(args.evidence).read_text())
+        pending = pending_required_regressions(ev)
+        print(json.dumps({
+            "disposition": "pending" if pending else "ready",
+            "pending_checks": pending,
+        }, sort_keys=True))
         return 0
     if args.cmd == "gather":
         review_args = (

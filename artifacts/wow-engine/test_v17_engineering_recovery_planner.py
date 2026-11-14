@@ -150,3 +150,92 @@ def test_cli_plan_outputs_json(capsys):
 
     payload = json.loads(out)
     assert payload["action"] == "DISPATCH_REPAIR"
+
+
+def test_owner_authored_trust_root_reports_independent_source_reentry():
+    result = rp.plan_recovery(pr_number=2125,
+                              findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+                              attempts=2, is_wow_engineering_pr=True)
+    assert result["action"] == "WAITING_ON_OWNER"
+    assert result["required_actor"] == "INDEPENDENT_ENGINEERING_AUTHOR"
+    assert result["next_action"] == "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
+    assert result["attempts"] == 2 and result["can_execute"] is False
+
+
+def test_missing_owner_approval_does_not_spawn_fake_independent_implementation():
+    result = rp.plan_recovery(pr_number=2125,
+                              findings=["QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+                              attempts=0, is_wow_engineering_pr=True)
+    assert result["required_actor"] == "ACTUAL_CODEOWNER"
+    assert result["next_action"] == "FRESH_EXACT_HEAD_OWNER_APPROVAL"
+    assert result["can_execute"] is False
+
+
+def test_owner_authored_non_bot_trust_root_is_retained_for_independent_reentry():
+    result = rp.plan_recovery(
+        pr_number=2125, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+        attempts=0, is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "WAITING_ON_OWNER"
+    assert result["required_actor"] == "INDEPENDENT_ENGINEERING_AUTHOR"
+    assert result["next_action"] == "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
+    assert result["attempts"] == 0
+    assert result["can_execute"] is False
+
+
+def test_non_bot_unrelated_qa_finding_remains_ignored():
+    result = rp.plan_recovery(
+        pr_number=2125, findings=["QA_REGRESSION_FAILED"],
+        attempts=0, is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "IGNORE"
+    assert result["can_execute"] is False
+
+
+
+def test_owner_authored_review_routed_without_owner_or_fake_approval():
+    for is_bot in (True, False):
+        result = rp.plan_recovery(
+            pr_number=2127,
+            findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            attempts=2,
+            is_wow_engineering_pr=is_bot,
+        )
+        assert result["action"] == "WAITING_ON_OWNER"  # legacy worker contract
+        assert result["progression_state"] == "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF"
+        assert result["reentry_trigger"] == "EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER"
+        assert result["required_actor"] == "INDEPENDENT_ENGINEERING_AUTHOR"
+        assert result["owner_intervention_required"] is False
+        assert result["unrelated_work_may_progress"] is True
+        assert result["release_admission"] == "DENIED_UNTIL_INDEPENDENT_EVIDENCE"
+        assert result["attempts"] == 2 and result["can_execute"] is False
+
+
+def test_codeowner_approval_is_external_but_unrelated_work_is_not_stopped():
+    result = rp.plan_recovery(
+        pr_number=2127,
+        findings=["QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+        attempts=1,
+        is_wow_engineering_pr=True,
+    )
+    assert result["progression_state"] == "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED"
+    assert result["reentry_trigger"] == "AUTHENTIC_GITHUB_CODEOWNER_REVIEW_AT_EXACT_SHA"
+    assert result["owner_intervention_required"] is True
+    assert result["unrelated_work_may_progress"] is True
+    assert result["release_admission"] == "DENIED_UNTIL_INDEPENDENT_EVIDENCE"
+    assert result["attempts"] == 1 and result["can_execute"] is False
+
+
+
+def test_protected_recovery_workflow_routes_author_vs_codeowner_without_fake_approval():
+    from pathlib import Path
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+    ).read_text()
+    assert "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF|INDEPENDENT_ENGINEERING_AUTHOR|false" in workflow
+    assert "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED|ACTUAL_CODEOWNER|true" in workflow
+    assert "RECOVERY_NONREPAIRABLE_ROUTE_INVALID" in workflow
+    assert "unrelated Engineering work continues" in workflow
+    assert "gh pr review --approve" not in workflow
+    assert "gh pr merge" not in workflow

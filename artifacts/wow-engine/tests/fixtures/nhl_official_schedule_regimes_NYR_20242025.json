@@ -1,0 +1,61 @@
+{
+  "source_uri": "https://api-web.nhle.com/v1/club-schedule-season/NYR/20242025",
+  "retrieval_date": "2026-10-26",
+  "research_only": true,
+  "official_completed_samples": [
+    {
+      "id": 2024020007,
+      "season": 20242025,
+      "gameType": 2,
+      "gameState": "OFF",
+      "startTimeUTC": "2024-10-09T23:30:00Z",
+      "homeTeam": {
+        "abbrev": "PIT",
+        "score": 0
+      },
+      "awayTeam": {
+        "abbrev": "NYR",
+        "score": 6
+      },
+      "gameOutcome": {
+        "lastPeriodType": "REG"
+      }
+    },
+    {
+      "id": 2024020030,
+      "season": 20242025,
+      "gameType": 2,
+      "gameState": "OFF",
+      "startTimeUTC": "2024-10-12T23:00:00Z",
+      "homeTeam": {
+        "abbrev": "NYR",
+        "score": 5
+      },
+      "awayTeam": {
+        "abbrev": "UTA",
+        "score": 6
+      },
+      "gameOutcome": {
+        "lastPeriodType": "OT"
+      }
+    },
+    {
+      "id": 2024020728,
+      "season": 20242025,
+      "gameType": 2,
+      "gameState": "OFF",
+      "startTimeUTC": "2025-01-19T00:00:00Z",
+      "homeTeam": {
+        "abbrev": "NYR",
+        "score": 1
+      },
+      "awayTeam": {
+        "abbrev": "CBJ",
+        "score": 0
+      },
+      "gameOutcome": {
+        "lastPeriodType": "SO"
+      }
+    }
+  ]
+}

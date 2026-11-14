@@ -1,0 +1,95 @@
+name: wow-v17-cursor-pr-handoff-bridge
+# Event intake only. Existing provider dispatcher remains the sole routing control plane.
+# Trusted owner or Engineering App may add wow-cursor-ready to an existing PR.
+# No untrusted PR code is checked out on the pull_request_target path.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: wow-v17-cursor-pr-handoff-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  route-to-existing-dispatcher:
+    if: >-
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        github.event.sender.login == github.repository_owner &&
+        startsWith(github.event.comment.body, '/wow-cursor')
+      ) || (
+        github.event_name == 'pull_request_target' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'wow-cursor-ready' &&
+        (
+          github.event.sender.login == github.repository_owner ||
+          github.event.sender.login == 'wow-engineering[bot]'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate existing same-repository PR and submit scoped Cursor handoff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.comment.body }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          info="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          head="$(jq -r '.head.sha' <<<"$info")"
+          head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$info")"
+          head_branch="$(jq -r '.head.ref // empty' <<<"$info")"
+          base="$(jq -r '.base.ref' <<<"$info")"
+          state="$(jq -r '.state' <<<"$info")"
+          if [[ ! "$head" =~ ^[0-9a-f]{40}$ ]] || [ "$head_repo" != "$GITHUB_REPOSITORY" ] || [ "$base" != main ] || [ "$state" != open ] || [ "$head_branch" = main ]; then
+            echo "::error::CURSOR_PR_IDENTITY_NOT_ELIGIBLE"
+            exit 1
+          fi
+          incident=$(jq -r '.body // ""' <<<"$info" | sed -nE 's/^Incident: *#([1-9][0-9]*).*$/\1/p' | head -n 1)
+          if [[ ! "$incident" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::CURSOR_AUTOMATIC_INCIDENT_ID_MISSING"
+            exit 1
+          fi
+          incident_json="$(gh api "repos/$GITHUB_REPOSITORY/issues/$incident")"
+          if [ "$(jq -r '.state' <<<"$incident_json")" != "open" ] || [ "$(jq -r '.number' <<<"$incident_json")" != "$incident" ] || [ "$(jq -r 'has("pull_request")' <<<"$incident_json")" = "true" ]; then
+            echo "::error::CURSOR_AUTOMATIC_INCIDENT_NOT_OPEN"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            # Only trusted label events; never interpolate untrusted PR body into shell.
+            task="WOW autonomous restoration of existing PR #$PR_NUMBER for Incident #$incident. Investigate the reproduced failure and root cause, implement the smallest admissible change on the existing PR, add positive and negative regression tests, and return exact-head CI and typed blocker evidence. Preserve single-writer lease, independent review, and can_execute=false; do not merge, deploy, alter probabilities or place wagers."
+          else
+            # Require the whole first line to be the owner's command.
+            first_line="${BODY%%$'\n'*}"
+            if [ "$first_line" != "/wow-cursor" ]; then
+              echo "::error::CURSOR_HANDOFF_COMMAND_INVALID"
+              exit 1
+            fi
+            task="${BODY#*$'\n'}"
+            if [ "$task" = "$BODY" ] || [ -z "$task" ] || [ "${#task}" -gt 4000 ]; then
+              echo "::error::CURSOR_HANDOFF_TASK_INVALID"
+              exit 1
+            fi
+          fi
+          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
+            --repo "$GITHUB_REPOSITORY" --ref main \
+            -f force_provider=cursor \
+            -f reason=OWNER_CURSOR_PR_HANDOFF \
+            -f lease_group="PR_$PR_NUMBER" \
+            -f target_incident="$incident" \
+            -f cursor_pr_number="$PR_NUMBER" \
+            -f cursor_expected_head="$head" \
+            -f cursor_task="$task"
+          echo "Submitted scoped Cursor dispatch for PR #$PR_NUMBER at $head" >> "$GITHUB_STEP_SUMMARY"

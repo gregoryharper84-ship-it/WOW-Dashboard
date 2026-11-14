@@ -534,7 +534,7 @@ def test_proposed_codeowners_covers_computed_governance_files_without_drift():
     for path in gov:
         assert f"@{OWNER}" in m._codeowners_owners(text, path), path
     listed = {line.split()[0].lstrip("/") for line in text.splitlines()
-              if line.startswith("/") and not line.startswith(("/.github/", "/.agents/"))}
+              if line.startswith("/") and not line.startswith(("/.github/", "/.agents/", "/.claude/"))}
     expected = {g for g in gov if not g.startswith(m.TRUST_ROOT_PREFIXES)}
     assert listed == expected, (listed - expected, expected - listed)
 
@@ -571,3 +571,28 @@ def test_new_agent_skill_requires_owner_coverage():
     findings = m.evaluate(owner, principals=[principal(r) for r in m.AI_RUNTIMES], live_acceptance=live(),
                           trust_roots=TRUST_ROOTS + m.governance_trust_roots(ROOT), now=NOW)["findings"]
     assert "PROTECTION_CODEOWNERS_UNCOVERED:.agents/skills/__new_skill__/SKILL.md" in findings
+
+
+@pytest.mark.parametrize('path', (
+    '.claude/README.md',
+    '.claude/skills/wow-debug-dissolve-deploy/SKILL.md',
+    '.claude/skills/__new_skill__/SKILL.md',
+    '.claude/agents/__new_agent__.md',
+    '.claude/settings.json',
+))
+def test_native_claude_instructions_are_protected_and_codeowned(path):
+    assert m.is_trust_root(path, frozenset())
+    for codeowners_path in (ROOT / '.github/CODEOWNERS', PROPOSED / 'CODEOWNERS.proposed'):
+        assert f'@{OWNER}' in m._codeowners_owners(codeowners_path.read_text(), path)
+
+
+@pytest.mark.parametrize('missing_path', (
+    '.claude/skills/__new_skill__/SKILL.md',
+    '.claude/agents/__new_agent__.md',
+    '.claude/settings.json',
+))
+def test_missing_native_claude_owner_rule_fails_closed(missing_path):
+    owner = owner_inventory()
+    owner['codeowners'] = owner['codeowners'].replace(f'/.claude/ @{OWNER}\n', '')
+    findings = run(owner)['findings']
+    assert f'PROTECTION_CODEOWNERS_UNCOVERED:{missing_path}' in findings

@@ -93,6 +93,11 @@ def _eligible_row(
         return False, "EVIDENCE_TIMESTAMP_INVALID"
     if evidence_at >= event_start:
         return False, "EVIDENCE_NOT_PREGAME"
+    try:
+        if _aware(row.get("event_start_time")) != event_start:
+            return False, "EVENT_START_TIME_MISMATCH"
+    except Exception:
+        return False, "EVENT_START_TIME_INVALID"
 
     scope = str(row.get("scope") or "").upper()
     expected_team = None
@@ -145,14 +150,16 @@ def _manifest_entry(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def compile_training_feature_row(
+def _compile_feature_row(
     game: Mapping[str, Any],
     evidence_rows: Iterable[Mapping[str, Any]],
+    *,
+    training_game_id: str | None,
 ) -> dict[str, Any]:
     event_id = str(game.get("official_event_id") or "").strip()
     home_team = str(game.get("home_team") or "").strip()
     away_team = str(game.get("away_team") or "").strip()
-    if not event_id or not home_team or not away_team or not game.get("training_game_id"):
+    if not event_id or not home_team or not away_team:
         raise NCAAFFeatureCompileBlocked("NCAAF_FEATURE_IDENTITY_INCOMPLETE", [event_id or "EVENT_ID_MISSING"])
 
     try:
@@ -166,13 +173,14 @@ def compile_training_feature_row(
         raise NCAAFFeatureCompileBlocked("NCAAF_MODEL_FEATURE_EVIDENCE_INCOMPLETE", missing)
 
     out: dict[str, Any] = {
-        "training_game_id": str(game["training_game_id"]),
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "market_home_no_vig": None,
         "market_away_no_vig": None,
         "market_timestamp": None,
         "can_execute": False,
     }
+    if training_game_id is not None:
+        out["training_game_id"] = training_game_id
     used: list[Mapping[str, Any]] = []
     blockers: list[str] = []
 
@@ -243,13 +251,67 @@ def compile_training_feature_row(
     return out
 
 
+def compile_training_feature_row(
+    game: Mapping[str, Any],
+    evidence_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    training_game_id = str(game.get("training_game_id") or "").strip()
+    if not training_game_id:
+        raise NCAAFFeatureCompileBlocked(
+            "NCAAF_FEATURE_IDENTITY_INCOMPLETE",
+            [str(game.get("official_event_id") or "TRAINING_GAME_ID_MISSING")],
+        )
+    return _compile_feature_row(game, evidence_rows, training_game_id=training_game_id)
+
+
+def compile_official_event_feature_row(
+    game: Mapping[str, Any],
+    evidence_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compile the shared fitted feature schema for a current official event."""
+    return _compile_feature_row(game, evidence_rows, training_game_id=None)
+
+
+# Stable, unique PostgREST pagination is mandatory for reproducible training.
+# Offset ranges without a total order can overlap/skip rows on multi-page
+# corpora and silently alter the fitted dataset or evidence manifest.
+_PAGED_PRIMARY_KEYS = {
+    "wow_ncaaf_training_games": "training_game_id",
+    "wow_ncaaf_pregame_evidence": "evidence_id",
+    "wow_ncaaf_training_features": "feature_row_id",
+}
+
+
 def _paged(db: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    if table not in _PAGED_PRIMARY_KEYS or page_size <= 0:
+        raise ValueError("Unsupported NCAAF feature pagination table or page size")
+    key = _PAGED_PRIMARY_KEYS[table]
+    projection = {column.strip() for column in columns.split(",")}
+    if key not in projection:
+        columns += "," + key
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     start = 0
     while True:
-        result = db.table(table).select(columns).range(start, start + page_size - 1).execute()
+        # Unique primary-key ordering keeps a total, deterministic sort across
+        # page boundaries. Never admit duplicated/missing identities into a fit.
+        result = (
+            db.table(table).select(columns).order(key)
+            .range(start, start + page_size - 1).execute()
+        )
         batch = list(result.data or [])
-        rows.extend(dict(row) for row in batch)
+        for entry in batch:
+            if not isinstance(entry, Mapping) or not str(entry.get(key) or "").strip():
+                raise NCAAFFeatureCompileBlocked(
+                    "NCAAF_FEATURE_PAGINATION_INVALID", [f"{table}:ROW_ID_MISSING"],
+                )
+            row_id = str(entry[key])
+            if row_id in seen:
+                raise NCAAFFeatureCompileBlocked(
+                    "NCAAF_FEATURE_PAGINATION_INVALID", [f"{table}:ROW_ID_DUPLICATED"],
+                )
+            seen.add(row_id)
+            rows.append(dict(entry))
         if len(batch) < page_size:
             return rows
         start += page_size
@@ -335,6 +397,7 @@ __all__ = [
     "COMPILER_VERSION",
     "FEATURE_SCHEMA_VERSION",
     "NCAAFFeatureCompileBlocked",
+    "compile_official_event_feature_row",
     "compile_training_feature_row",
     "materialize_complete_training_features",
 ]

@@ -1,0 +1,30 @@
+name: WOW V17 Restoration Progress Ticker
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+# Only this issue receives a write. No code, model, market or deployment permissions.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-restoration-progress-ticker
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify fail-closed ticker behavior
+        run: node --test scripts/tests/wow_v17_progress_ticker.test.cjs
+      - name: Refresh issue 2020 from current GitHub evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/wow_v17_progress_ticker.cjs

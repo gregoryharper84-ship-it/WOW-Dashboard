@@ -529,7 +529,10 @@ def compact_response(response: dict[str, Any], *, detail_available: bool) -> dic
     return compacted
 
 
-def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def persist_row_detail(
+    db: Any, *, run_id: str, rows: list[dict[str, Any]],
+    request_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Persist full per-row evidence once so compact transport loses nothing.
 
     Fails closed and explicitly: a persistence failure is reported as a typed
@@ -546,20 +549,57 @@ def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> d
             "lane": row.get("lane"),
             "row_status": row.get("row_status"),
             "identity": row.get("identity") or {},
-            "detail": row,
+            "detail": ({**row, "daily_request_context": dict(request_context)}
+                       if request_context is not None else row),
             "captured_at": captured_at,
             "can_execute": False,
         }
         for index, row in enumerate(rows)
     ]
     try:
-        db.table(DAILY_ROW_DETAIL_TABLE).upsert(payload).execute()
+        db.table(DAILY_ROW_DETAIL_TABLE).upsert(
+            payload, on_conflict="run_id,row_index"
+        ).execute()
+        # A successful HTTP upsert is not proof that every terminal row was
+        # durably written. Read back the exact run's indices, in bounded pages.
+        stored_indices: list[int] = []
+        page_size = 250
+        for offset in range(0, len(payload), page_size):
+            end = min(offset + page_size, len(payload)) - 1
+            query = (
+                db.table(DAILY_ROW_DETAIL_TABLE)
+                .select("row_index")
+                .eq("run_id", run_id)
+                .order("row_index")
+            )
+            ranged = getattr(query, "range", None)
+            stored = (
+                ranged(offset, end).execute().data
+                if callable(ranged)
+                else (query.limit(end + 1).execute().data or [])[offset:end + 1]
+            ) or []
+            stored_indices.extend(
+                row["row_index"]
+                for row in stored
+                if isinstance(row, dict) and type(row.get("row_index")) is int
+            )
     except Exception as exc:
         return {
             "status": "PERSISTENCE_UNAVAILABLE",
             "detail_available": False,
             "rows_persisted": 0,
             "blockers": [f"{DETAIL_PERSISTENCE_UNAVAILABLE}:{type(exc).__name__}"],
+            "can_execute": False,
+        }
+    expected_indices = set(range(len(payload)))
+    actual_indices = set(stored_indices)
+    if len(stored_indices) != len(payload) or actual_indices != expected_indices:
+        return {
+            "status": "PERSISTENCE_RECONCILIATION_FAILED",
+            "detail_available": False,
+            "rows_persisted": len(actual_indices & expected_indices),
+            "rows_expected": len(payload),
+            "blockers": ["DAILY_ROW_DETAIL_PERSISTED_SET_MISMATCH"],
             "can_execute": False,
         }
     return {

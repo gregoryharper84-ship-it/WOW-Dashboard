@@ -1,0 +1,41 @@
+name: wow-v17-ncaab-frozen-replay-unit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-ncaab-frozen-replay-unit.yml"
+      - "artifacts/wow-engine/v17/ncaab_moneyline_replay.py"
+      - "artifacts/wow-engine/v17/ncaab_source_pinned_replay.py"
+      - "artifacts/wow-engine/test_v17_ncaab_moneyline_replay.py"
+      - "artifacts/wow-engine/test_v17_ncaab_source_pinned_replay.py"
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/v17/ncaab_moneyline_replay.py"
+      - "artifacts/wow-engine/v17/ncaab_source_pinned_replay.py"
+      - "artifacts/wow-engine/test_v17_ncaab_moneyline_replay.py"
+      - "artifacts/wow-engine/test_v17_ncaab_source_pinned_replay.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ncaab-frozen-replay-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  candidate-replay-tests:
+    name: NCAAB research-only deterministic replay regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - name: Verify frozen candidate and original source hashes without writes
+        run: python -m pytest -q test_v17_ncaab_moneyline_replay.py test_v17_ncaab_source_pinned_replay.py

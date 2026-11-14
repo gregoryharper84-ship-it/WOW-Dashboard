@@ -98,3 +98,22 @@ def test_execution_authority_is_never_accepted_as_certification_evidence():
         assert "cannot grant execution authority" in str(exc)
     else:
         raise AssertionError("can_execute=true must fail closed")
+
+
+def test_canonical_13_sport_certification_inventory_with_legacy_golf_alias():
+    from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
+
+    assert CERTIFICATION_SPORTS == EXPECTED_TEAM_EVENT_SPORTS
+    assert len(CERTIFICATION_SPORTS) == 13
+    assert "PGA" in CERTIFICATION_SPORTS
+    assert "CRICKET" in CERTIFICATION_SPORTS
+    assert "GOLF" not in CERTIFICATION_SPORTS
+    for sport in ("PGA", "CRICKET"):
+        for surface in SURFACES:
+            result = assess(CertificationEvidence(sport=sport, surface=surface))
+            assert result.numerical_authority is False
+            assert result.status == "MODEL_UNAVAILABLE"
+            assert result.can_execute is False
+    legacy = assess(CertificationEvidence(sport="GOLF", surface="PROP"))
+    assert legacy.sport == "PGA"
+    assert legacy.numerical_authority is False

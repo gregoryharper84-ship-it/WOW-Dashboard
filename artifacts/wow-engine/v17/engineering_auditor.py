@@ -519,6 +519,10 @@ class EngineeringAuditStore:
         self.client.table("wow_engineering_auditor_runtime").update({**counts, "updated_at": iso(now)}).eq("auditor_id", AUDITOR_ID).execute()
         return counts
 
+    def read_runtime_row(self, auditor_id: str) -> dict[str, Any] | None:
+        """Read-only fetch of another observer's runtime row (e.g. the external SIRT sentinel)."""
+        return self._select_one("wow_engineering_auditor_runtime", "auditor_id", auditor_id)
+
     def health(self) -> dict[str, Any]:
         runtime = self._select_one("wow_engineering_auditor_runtime", "auditor_id", AUDITOR_ID) or {}
         return {

@@ -22,9 +22,8 @@ from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 CAN_EXECUTE = False
 PROP_PARITY_VERSION = "WOW_V17_PROP_SPORT_PARITY_V1"
 
-# Team/event catalog uses PGA while existing prop artifacts use GOLF. Preserve
-# artifact identity but expose one canonical sport to orchestration consumers.
-_MANIFEST_SPORT = {"PGA": "GOLF"}
+# Team/event and prop manifests now share the same canonical 13-sport roster.
+# The request alias GOLF normalizes to PGA inside prop_capability_manifest.
 
 # Automatic row hydration is already reviewed for these sports. This is not the
 # same as autonomous board discovery: NFL/WNBA need a candidate row/player/event
@@ -43,7 +42,7 @@ _DAILY_AUTONOMOUS_DISCOVERY = {
 
 
 def _manifest_sport(canonical_sport: str) -> str:
-    return _MANIFEST_SPORT.get(canonical_sport, canonical_sport)
+    return canonical_sport
 
 
 def prop_sport_parity() -> dict[str, dict[str, Any]]:

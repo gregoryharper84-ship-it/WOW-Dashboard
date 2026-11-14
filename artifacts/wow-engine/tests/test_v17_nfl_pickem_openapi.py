@@ -27,7 +27,10 @@ def test_wow_action_schema_exposes_durable_governed_nfl_pickem_board():
 
     request = spec["components"]["schemas"]["AsyncNFLPickemSubmitRequest"]
     assert request["additionalProperties"] is False
-    assert request["required"] == ["requested_slate_dates"]
+    assert "requested_slate_dates" not in request.get("required", [])
+    assert request["properties"]["requested_slate_dates"]["minItems"] == 0
+    assert request["properties"]["requested_week"]["minimum"] == 1
+    assert request["properties"]["requested_season"]["minimum"] == 2000
     assert request["properties"]["strategy_mode"]["enum"] == ["MAX_EXPECTED_CORRECT"]
     assert request["properties"]["expected_game_count"]["default"] == 16
     assert request["properties"]["idempotency_key"]["minLength"] == 8

@@ -40,11 +40,43 @@ def _paginate(query: Any, page_size: int = 1000) -> list[dict[str,Any]]:
 
 def _basketball_events(client: Any, sport: str) -> list[dict[str,Any]]:
     from basketball_specialist_pipeline import load_games
+
+    # WNBA's persisted game table already contains the original licensed
+    # source provider and immutable payload digest. Do not discard those
+    # identifiers when assembling the D1 model's source manifest: the
+    # candidate-bound replay verifier must validate the real source, not
+    # infer entitlement from an internal Supabase table name.
+    provenance: dict[str, dict[str, Any]] = {}
+    if sport == "WNBA":
+        source_rows = _paginate(
+            client.table("wow_wnba_training_games")
+            .select("game_id,source_provider,source_endpoint,source_retrieved_at,source_payload_sha256")
+            .order("game_id")
+        )
+        for row in source_rows:
+            game_id = str(row.get("game_id") or "").strip()
+            provider = str(row.get("source_provider") or "").strip().upper()
+            digest = str(row.get("source_payload_sha256") or "").strip().lower()
+            # Unverified records must retain the old, deliberately
+            # non-entitled internal-table identity (fail closed).
+            if not game_id or not provider or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                continue
+            provenance[game_id] = {
+                "source": provider,
+                "game_id": game_id,
+                "source_endpoint": row.get("source_endpoint"),
+                "source_retrieved_at": row.get("source_retrieved_at"),
+                "source_payload_sha256": digest,
+            }
+
+    games = load_games(client, sport)
     return [{"event_id":f"{sport}:{g.game_id}","event_start_time":f"{g.game_date.isoformat()}T12:00:00+00:00",
              "season":int(g.season),"home_team":str(g.home_team_id),"away_team":str(g.away_team_id),
              "home_score":float(g.home_score),"away_score":float(g.away_score),
-             "source_manifest":{"source":f"wow_{sport.lower()}_training_games","game_id":str(g.game_id)}}
-            for g in load_games(client,sport)]
+             "source_manifest":provenance.get(str(g.game_id), {
+                 "source":f"wow_{sport.lower()}_training_games","game_id":str(g.game_id)
+             })}
+            for g in games]
 
 
 def _ncaaf_events(client: Any) -> list[dict[str,Any]]:

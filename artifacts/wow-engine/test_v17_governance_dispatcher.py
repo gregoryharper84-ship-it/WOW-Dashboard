@@ -240,49 +240,30 @@ def test_action_required_zero_job_source_review_only_dispatches_reviewer():
     assert not_verified["findings"] == ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"]
 
 
-@pytest.mark.parametrize(
-    ("trusted_check", "finding"),
-    [
-        (None, f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"),
-        (
-            make_check(policy.TRUSTED_GOVERNANCE_CHECK, status="in_progress"),
-            f"TRUSTED_GOVERNANCE_CHECK_PENDING:{policy.TRUSTED_GOVERNANCE_CHECK}",
-        ),
-        (
-            make_check(policy.TRUSTED_GOVERNANCE_CHECK, conclusion="failure"),
-            f"TRUSTED_GOVERNANCE_CHECK_FAILED:{policy.TRUSTED_GOVERNANCE_CHECK}",
-        ),
-        (
-            make_check(policy.TRUSTED_GOVERNANCE_CHECK, app_id=policy.QA_APP_ID),
-            f"TRUSTED_GOVERNANCE_CHECK_FOREIGN_SOURCE:{policy.TRUSTED_GOVERNANCE_CHECK}",
-        ),
-    ],
-)
-def test_authenticated_source_review_does_not_bypass_downstream_trusted_gate(trusted_check, finding):
+@pytest.mark.parametrize("retired_gate", [
+    None,
+    "pending",
+    "failed",
+    "foreign",
+])
+def test_v4_retired_gate_does_not_prevent_authenticated_qa_dispatch(retired_gate):
     checks = required_ci_checks()
-    if trusted_check:
-        checks.append(trusted_check)
-
+    if retired_gate == "pending":
+        checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK, status="in_progress"))
+    elif retired_gate == "failed":
+        checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK, conclusion="failure"))
+    elif retired_gate == "foreign":
+        checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK, app_id=policy.QA_APP_ID))
     result = classify(source_review="PASS", check_runs=checks)
+    assert result["action"] == "DISPATCH"
+    assert result["role"] == "qa"
 
-    assert result["action"] == "HOLD"
-    assert result["findings"] == [finding]
 
-
-def test_source_review_and_trusted_gate_order_before_qa_then_release():
+def test_v4_required_ci_then_qa_then_release_still_in_order():
     checks = required_ci_checks()
-
-    reviewed_without_trusted = classify(source_review="PASS", check_runs=checks)
-    assert reviewed_without_trusted["action"] == "HOLD"
-    assert reviewed_without_trusted["findings"] == [
-        f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"
-    ]
-
-    checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK))
     qa = classify(source_review="PASS", check_runs=checks)
     assert qa["action"] == "DISPATCH"
     assert qa["role"] == "qa"
-
     checks.append(make_check(policy.QA_CHECK, app_id=policy.QA_APP_ID))
     release = classify(source_review="PASS", check_runs=checks)
     assert release["action"] == "DISPATCH"
@@ -411,15 +392,11 @@ def test_failed_regression_or_change_impact_check_never_dispatches_qa(conclusion
     assert result["findings"][0].startswith("REQUIRED_CHECK_FAILED:")
 
 
-def test_ordinary_pr_requires_trusted_governance_check_before_qa():
+def test_v4_ordinary_pr_requires_actual_ci_not_trusted_governance():
     checks = [item for item in all_ci_checks() if item["name"] != policy.TRUSTED_GOVERNANCE_CHECK]
-
     result = classify(check_runs=checks)
-
-    assert result["action"] == "HOLD"
-    assert result["findings"] == [
-        f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"
-    ]
+    assert result["action"] == "DISPATCH"
+    assert result["role"] == "qa"
 
 
 def test_ordinary_pr_routes_qa_only_after_checks_and_reviewer_artifact():
@@ -612,13 +589,11 @@ def test_active_work_in_progress_is_counted_per_role():
     class FakeClient:
         def get(self, path):
             if "/workflows/2/runs?" in path:
-                return {
-                    "workflow_runs": [
-                        {"status": "in_progress"},
-                        {"status": "queued"},
-                        {"status": "completed"},
-                    ]
-                }
+                if "status=in_progress" in path:
+                    return {"workflow_runs": [{"id": 10, "status": "in_progress"}]}
+                if "status=queued" in path:
+                    return {"workflow_runs": [{"id": 11, "status": "queued"}]}
+                return {"workflow_runs": []}
             return {"workflow_runs": []}
 
     workflows = {
@@ -894,12 +869,48 @@ def test_role_run_matching_accepts_api_workflow_name_with_display_title():
     }
 
     class FakeClient:
-        def get(self, _):
+        def get(self, path):
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": "2026-10-21T00:00:00Z"}
             return {"workflow_runs": [run]}
 
     matches = transport.list_role_runs(FakeClient(), 12, "source_review", 41, HEAD)
 
     assert matches == [run]
+
+
+@pytest.mark.parametrize("role", ["qa", "release"])
+def test_qa_release_history_queries_only_manual_dispatch_events(role):
+    """Filtering excludes irrelevant cron/workflow_run backlog without losing qualifying App runs."""
+    paths = []
+
+    class FakeClient:
+        def get(self, path):
+            paths.append(path)
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": "2026-10-21T00:00:00Z"}
+            return {"workflow_runs": []}
+
+    assert transport.list_role_runs(FakeClient(), 12, role, 41, HEAD) == []
+    role_paths = [p for p in paths if "/actions/workflows/12/runs" in p]
+    assert len(role_paths) == 1
+    assert "&event=workflow_dispatch" in role_paths[0]
+    assert "created=" in role_paths[0]
+
+
+def test_source_review_history_keeps_both_supported_trigger_types():
+    """Source review permits manual and workflow_run; never narrow it to manual-only."""
+    paths = []
+
+    class FakeClient:
+        def get(self, path):
+            paths.append(path)
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": "2026-10-21T00:00:00Z"}
+            return {"workflow_runs": []}
+
+    assert transport.list_role_runs(FakeClient(), 12, "source_review", 41, HEAD) == []
+    assert all("event=workflow_dispatch" not in p for p in paths)
 
 
 @pytest.mark.parametrize(
@@ -1187,7 +1198,9 @@ def test_reconcile_reserves_before_dispatch(monkeypatch):
     monkeypatch.setattr(transport, "check_runs", lambda *_: checks)
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    history_reads = []
+    monkeypatch.setattr(transport, "matching_role_runs",
+                        lambda *_args: history_reads.append(_args[2]) or {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(transport, "reserve_dispatch", lambda *_args, **_kwargs: events.append("reserve"))
@@ -1201,11 +1214,51 @@ def test_reconcile_reserves_before_dispatch(monkeypatch):
         source_sha=OTHER_HEAD,
     )
 
+    assert history_reads == [41]
     assert events == ["reserve", "dispatch"]
     assert result["dispatch_count"] == 1
     assert result["decisions"][0]["role"] == "qa"
     assert result["can_execute"] is False
     assert result["merge_or_release_authorized"] is False
+
+
+
+def test_reconcile_completed_authorized_apps_skip_history_without_false_green(monkeypatch):
+    """Valid exact-head App receipts establish DONE without scanning old GitHub role runs."""
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    pr = make_pull()
+    workflows = {
+        role: {"id": index + 1, **details}
+        for index, (role, details) in enumerate(transport.WORKFLOWS.items())
+    }
+    checks = all_ci_checks() + [
+        make_check(policy.QA_CHECK, app_id=policy.QA_APP_ID, id=20),
+        make_check(policy.RELEASE_CHECK, app_id=policy.RELEASE_APP_ID, id=21),
+    ]
+    monkeypatch.setattr(transport, "_owner", lambda _: (OWNER_ID, OWNER))
+    monkeypatch.setattr(transport, "list_workflows", lambda _: workflows)
+    monkeypatch.setattr(transport, "count_wip", lambda *_: {role: 0 for role in transport.WORKFLOWS})
+    monkeypatch.setattr(transport, "_source_review_module", lambda: object())
+    monkeypatch.setattr(transport, "_target_list", lambda *_: [pr])
+    monkeypatch.setattr(transport, "_target_pull", lambda *_: pr)
+    monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
+    monkeypatch.setattr(transport, "check_runs", lambda *_: checks)
+    monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "matching_role_runs",
+                        lambda *_: pytest.fail("no history scan for authentic completed App receipts"))
+    monkeypatch.setattr(transport, "dispatch",
+                        lambda *_args, **_kwargs: pytest.fail("no dispatch after DONE"))
+    result = transport.reconcile(
+        client=object(),
+        input_pr="41",
+        run_number=7,
+        controller_run_id="12345",
+        source_sha=OTHER_HEAD,
+        zero_credit_mode=True,
+    )
+    assert result["dispatch_count"] == 0
+    assert result["decisions"][0]["action"] == "DONE"
+    assert result["can_execute"] is False
 
 
 def test_reconcile_does_not_overfill_singleton_role_workflow_queue(monkeypatch):
@@ -1263,7 +1316,8 @@ def test_reconcile_does_not_fetch_reviewer_artifact_before_ci_is_ready(monkeypat
     monkeypatch.setattr(transport, "check_runs", lambda *_: [])
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "matching_role_runs",
+                        lambda *_: pytest.fail("no role history for statically missing CI"))
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(
         transport,
@@ -1574,4 +1628,30 @@ def test_existing_manual_qa_release_accept_exact_optional_head_sha(workflow_name
     assert "INPUT_HEAD_SHA: ${{ inputs.head_sha }}" in workflow
     assert "INPUT_HEAD_SHA_INVALID" in workflow
     assert "INPUT_HEAD_SHA_STALE" in workflow
-    assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
+    # Manual exact-head validation must remain independent of GitHub's mutable
+    # display run-name. QA's pinned name is required by strict receipt clients;
+    # Release may retain its diagnostic display suffix.
+    if workflow_name == "wow-v17-independent-qa-check.yml":
+        assert "run-name: wow-v17-independent-qa-check\n" in workflow
+        assert "run-name: wow-v17-independent-qa-check event=" not in workflow
+    else:
+        assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
+
+
+def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner():
+    """Reject unrelated check_run storms without removing late Release re-entry."""
+    source = (ROOT / ".github/workflows/wow-v17-existing-pr-governance-review.yml").read_text()
+    parsed = yaml.load(source, Loader=yaml.BaseLoader)
+    gate = parsed["jobs"]["certify-existing-pr"]["if"]
+    for part in (
+        "github.event_name != 'check_run'",
+        "github.event.check_run.app.id == 5245853",
+        "github.event.check_run.name == 'WOW Release Authority exact-head'",
+        "github.event.check_run.status == 'completed'",
+        "github.event.check_run.conclusion == 'success'",
+    ):
+        assert part in gate
+    assert set(parsed["on"]) == {"workflow_dispatch"}
+    assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
+    assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
+    assert "cancel-in-progress: false" in source

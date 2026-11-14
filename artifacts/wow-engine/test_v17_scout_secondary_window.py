@@ -24,7 +24,8 @@ def test_secondary_events_enforce_exact_timestamp_window(monkeypatch):
                 "events": [
                     _event("in-window", "2026-09-16T18:00:00Z", "Home A", "Away A"),
                     _event("after-cutoff", "2026-09-17T23:30:00Z", "Pittsburgh Panthers", "Syracuse Orange"),
-                ]
+                ],
+                "_wow_provider_truncated": False,
             },
             200,
         ),

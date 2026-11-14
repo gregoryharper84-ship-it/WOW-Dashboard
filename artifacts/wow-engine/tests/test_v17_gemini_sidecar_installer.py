@@ -83,5 +83,31 @@ class GeminiSidecarInstallerContract(unittest.TestCase):
             self.assertFalse(cfg.exists())
 
 
+    def test_google_documented_cron_tz_schedule_roundtrip(self):
+        with tempfile.TemporaryDirectory() as root:
+            cfg = Path(root) / "config"
+            cron = "CRON_TZ=America/Chicago 17 8 * * *"
+            preview = worker.plan(cfg, "project_abc", cron)
+            self.assertEqual(preview["manifest"]["args"][0], cron)
+            self.assertFalse(cfg.exists())
+            installed = worker.install(cfg, "project_abc", cron)
+            self.assertEqual(installed["manifest"]["args"][0], cron)
+            self.assertFalse(worker.status(cfg)["runtime_verified"])
+
+    def test_google_documented_cron_tz_utc_supported(self):
+        self.assertEqual(worker.manifest("CRON_TZ=UTC 17 8 * * *")["args"][0],
+                         "CRON_TZ=UTC 17 8 * * *")
+
+    def test_invalid_cron_tz_fails_closed_without_writing(self):
+        for cron in ("CRON_TZ=America/DefinitelyInvalid 17 8 * * *",
+                     "CRON_TZ= 17 8 * * *",
+                     "CRON_TZ=America/Chicago 17 8 * *",
+                     "CRON_TZ=UTC 17 8 * * $(echo fail)"):
+            with self.subTest(cron=cron), tempfile.TemporaryDirectory() as root:
+                cfg = Path(root) / "config"
+                with self.assertRaises(ValueError):
+                    worker.install(cfg, "project_abc", cron)
+                self.assertFalse(cfg.exists())
+
 if __name__ == "__main__":
     unittest.main()

@@ -69,7 +69,7 @@ class FakeQuery:
 
     def upsert(self, rows, on_conflict=None):
         self.mode = "upsert"
-        self.rows = list(rows)
+        self.rows = [rows] if isinstance(rows, dict) else list(rows)
         return self
 
     def execute(self):

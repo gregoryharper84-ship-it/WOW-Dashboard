@@ -80,3 +80,40 @@ Report these independently:
 - `REPOSITORY_GOVERNANCE = current protected-main CI state`.
 - `LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED` until editor resync plus live Action/multi-page acceptance passes.
 - `USER_JOURNEY_HEALTH = FAIL` until the golden production canary passes.
+
+## Per-sport production-model readiness (2026-11-11 audit)
+
+The 2026-11-11 audit of the six reported sport lanes was checked against
+repository evidence. No certification, calibration, forward-validation, or
+publication-provenance claim was added, and no probability behavior changed.
+
+| Sport | Audited limitation | Repository evidence |
+| --- | --- | --- |
+| NHL | Unverified starting goalies, missing pregame inputs, uncertified model | Two-provider confirmation contract and pregame evidence boundary exist but have no production caller; the NHL bridge accepts numerical goalie SV% without a confirmed-starter boundary; absent from `CERTIFIED_TEAM_EVENT_SPORTS`. |
+| NBA | Incomplete source-to-scorer integration and certified calibration | Candidate/registry/bridge modules exist; no registered production bridge or certified calibration artifact; `calibration_mode=UNAVAILABLE`. |
+| NFL | Forward validation, publication provenance, certification requirements | Runtime champion/calibrator loader exists and is reported by readiness health; static certification remains `CANDIDATE_REGISTERED_UNCERTIFIED`; forward-validation and provenance receipts are not supplied. |
+| NCAAF | Certified live serving incomplete | Fitted provider/feature handoff modules exist; no registered production bridge or bound calibrator; `calibration_mode=UNAVAILABLE`. |
+| NCAAB | Pregame model integration and independent validation incomplete | Pregame hydration/source-pinned replay modules exist; no registered production bridge or bound calibrator. |
+| Tennis / Soccer | No verified production-ready specialist | Candidate/training modules only (`CANDIDATE_PIPELINE_PRESENT`); no certified production specialist or calibration artifact. |
+
+`v17/sport_model_production_readiness.py` encodes these limits as typed,
+fail-closed gates. A sport reads `PRODUCTION_READY` only when authoritative
+bridge registration, scorer resolution, fitted-model certification, calibration
+and hydration dependencies are all active **and** the sport-specific receipt
+(for example an NHL confirmed-starting-goalie boundary) is supplied by a server
+path. Observation flags can satisfy an evidence gate but can never satisfy a
+certification gate; unsupplied evidence stays `BLOCKED` and is never collapsed
+into `MODEL_UNAVAILABLE`. `can_execute=false` and
+`probability_publishable=false` are invariant.
+
+The register is observability only. It does not certify, promote, hydrate,
+score, or publish any model. Tests:
+
+```text
+tests/test_v17_sport_model_production_readiness.py
+```
+
+Closing any row still requires real evidence: a promoted fitted artifact, a
+PASS calibration/bounds package, current pregame inputs and, where governed, an
+independent forward-validation/provenance receipt. Repository code cannot
+manufacture that evidence.

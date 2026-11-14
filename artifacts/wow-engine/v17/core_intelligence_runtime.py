@@ -113,6 +113,7 @@ def capture_settled_prop_observations(
             "status": "PASS",
             "candidate_n": 0,
             "observation_n": 0,
+            "authority": AUTHORITY,
             "can_execute": False,
         }
 
