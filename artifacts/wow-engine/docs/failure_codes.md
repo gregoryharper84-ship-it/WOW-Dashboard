@@ -8,6 +8,19 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `PICKEM_AUDIT_REQUEST_INVALID` | NFL Pick'em read-only exact-week receipt audit | Invalid season, week or expected game count; reject request before reconciling. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_SOURCE_UNVERIFIED` | NFL Pick'em read-only exact-week receipt audit | Caller did not supply a usable immutable official schedule snapshot identifier; obtain independent source proof. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_EVENT_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Schedule contains missing, malformed or inconsistent official IDs, teams or times; reconcile authoritative fixture. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_EVENT_WEEK_IDENTITY_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Canonical event belongs to another season/week; reject cross-week collision. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_DUPLICATE_CANONICAL_SCHEDULE_EVENT` | NFL Pick'em read-only exact-week receipt audit | Official event appears twice; deduplicate at authenticated source rather than inflate count. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_OFFICIAL_SLATE_COUNT_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Distinct valid official games differ from expected weekly denominator; reconcile full schedule. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREDICTION_ROW_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction observation is not a mapping; repair source serialization. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREDICTION_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction lacks or contradicts a canonical official event ID; no implicit alias fallback. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_REUSED_IMMUTABLE_PREDICTION_ID` | NFL Pick'em read-only exact-week receipt audit | Same immutable prediction ID belongs to two distinct official games, even if one observation is postkickoff; reject all uses pending lineage repair. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS` | NFL Pick'em read-only exact-week receipt audit | Latest pregame observations have the same trusted creation instant but distinct IDs or conflicting flags; never use UUID sorting to choose publication state. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREGAME_PREDICTION_MISSING` | NFL Pick'em read-only exact-week receipt audit | No unique eligible matching immutable pregame receipt remains for an official game; repair through authenticated scoring route. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_WEEKLY_RUN_NOT_OBSERVED` | NFL Pick'em read-only exact-week receipt audit | No asynchronous run bears the exact requested season/week identity; inspect existing authenticated Action submission ledger. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_WEEKLY_RUN_NOT_COMPLETED` | NFL Pick'em read-only exact-week receipt audit | Exact-week run exists but none has completed; diagnose worker/terminal run evidence. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
 | `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
 | `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
 | `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
@@ -39,19 +52,6 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE` | independent semantic reviewer / Claude tool contract | `tool_use` stop reason but not exactly one named `submit_review` result. `EVIDENCE_PENDING`; preserve HOLD and inspect the code-level tool schema, not the raw response. No retry or alternate reviewer shopping. | No |
 | `SPREAD_NFLVERSE_CLOSE_PROXY_TEAM_IDENTITY_MISMATCH` | NFL historical spread close-proxy source binding | Canonical nflverse `game_id` away/home tokens disagree with row participants, or row lists the same team twice. **Recovery class:** SOURCE_IDENTITY_CONFLICT; reject that research evidence row, reduce exact-line coverage, reconcile against authoritative source before replay. Never substitute a line or infer a probability. | No |
 | `SPREAD_EXACT_LINE_PREGAME_QUOTE_UNAVAILABLE` | spread exact-line historical evidence binding | No matching pregame source quote survives exact event, market and first-seen capture-time checks, including rejected legacy OPEN/CLOSE records. **Recovery class:** SOURCE_TIME_INTEGRITY; preserve missing-evidence HOLD, reconcile independently observed pregame timestamps, never substitute a synthetic line or sportsbook probability. | No |
-| `PICKEM_AUDIT_REQUEST_INVALID` | NFL Pick'em read-only exact-week receipt audit | Invalid season, week or expected game count; reject request before reconciling. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_SCHEDULE_SOURCE_UNVERIFIED` | NFL Pick'em read-only exact-week receipt audit | Caller did not supply a usable immutable official schedule snapshot identifier; obtain independent source proof. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_SCHEDULE_EVENT_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Schedule contains missing, malformed or inconsistent official IDs, teams or times; reconcile authoritative fixture. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_SCHEDULE_EVENT_WEEK_IDENTITY_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Canonical event belongs to another season/week; reject cross-week collision. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_DUPLICATE_CANONICAL_SCHEDULE_EVENT` | NFL Pick'em read-only exact-week receipt audit | Official event appears twice; deduplicate at authenticated source rather than inflate count. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_OFFICIAL_SLATE_COUNT_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Distinct valid official games differ from expected weekly denominator; reconcile full schedule. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_PREDICTION_ROW_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction observation is not a mapping; repair source serialization. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_PREDICTION_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction lacks or contradicts a canonical official event ID; no implicit alias fallback. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_REUSED_IMMUTABLE_PREDICTION_ID` | NFL Pick'em read-only exact-week receipt audit | Same immutable prediction ID belongs to two distinct official games, even if one observation is postkickoff; reject all uses pending lineage repair. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS` | NFL Pick'em read-only exact-week receipt audit | Latest pregame observations have the same trusted creation instant but distinct IDs or conflicting flags; never use UUID sorting to choose publication state. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_PREGAME_PREDICTION_MISSING` | NFL Pick'em read-only exact-week receipt audit | No unique eligible matching immutable pregame receipt remains for an official game; repair through authenticated scoring route. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_WEEKLY_RUN_NOT_OBSERVED` | NFL Pick'em read-only exact-week receipt audit | No asynchronous run bears the exact requested season/week identity; inspect existing authenticated Action submission ledger. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
-| `PICKEM_WEEKLY_RUN_NOT_COMPLETED` | NFL Pick'em read-only exact-week receipt audit | Exact-week run exists but none has completed; diagnose worker/terminal run evidence. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -689,3 +689,130 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 | `NHL_STARTING_GOALIE_NOT_CONFIRMED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A provider reports the goalie as projected, expected, participating, or otherwise not a confirmed starter. Gamecenter participation is not starting confirmation. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
 | `NHL_STARTER_SOURCE_NOT_TRUSTED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt's provider is absent from the server-owned trusted-provider registry, is not registered as OFFICIAL, or the receipt's declared provider family disagrees with the registry. Authority is never read from receipt fields. Recovery: `WAIT_FOR_EVIDENCE` / source-rights decision. Not a fitted-model capability error. | No |
 | `NHL_STARTER_ATTESTATION_INVALID` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt lacks a valid server attestation (HMAC-SHA256 under the server-held key), was edited after signing, or the attestation key is unavailable. Recovery: `WAIT_FOR_EVIDENCE` through the server-owned acquisition path. Not a fitted-model capability error. | No |
+
+## Offline NFL count-prop candidate fit codes (2026-11-11)
+
+These are **offline research-builder and source-coverage audit only** errors from `scripts/train_nfl_missing_prop_candidates.py` and `scripts/audit_nfl_count_prop_participation.py`, owned by `WOW_PROP_LANE`. Recovery class is indicated per row; they are not runtime scorer failures, do not grant rank eligibility, and must never be collapsed into `MODEL_UNAVAILABLE`. These source diagnostics never authorize model registration, calibration promotion, publication, or wagers.
+
+| Typed code | Recovery class | Detection and required recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_SOURCE_FILE_MISSING` | INPUT | Missing one of five frozen 2021–2025 weekly CSVs; acquire and checksum the actual source file. | No |
+| `NFL_PROP_SOURCE_COLUMNS_MISSING` | INPUT | Frozen source lacks required stat or identity columns; repair legal/complete acquisition. | No |
+| `NFL_PROP_SOURCE_REGULAR_SEASON_EMPTY` | INPUT | Regular-season cohort is empty; inspect source season_type and coverage. | No |
+| `NFL_PROP_SOURCE_COUNT_INVALID` | INPUT | Missing, negative, nonfinite, or fractional count; do not coerce to zero. | No |
+| `NFL_PROP_SOURCE_DATE_INVALID` | INPUT | Invalid year/week numeric identity; reject snapshot. | No |
+| `NFL_PROP_SOURCE_DATE_OUT_OF_SCOPE` | INPUT | Season/week outside frozen training scope; reject snapshot. | No |
+| `NFL_PROP_FITTING_SOURCE_ADMISSION_HOLD` | SOURCE | Offline public candidate CLI requires genuine independent source-identity, rights, and explicit training-admission evidence in addition to frozen release digests. Missing approval must stop before any fit or artifact write; do not use synthetic/hand-authored flags as independent signoff. Owned by WOW_PROP_LANE. | No |
+| `HOLD_ANONYMOUS_WEEKLY_SOURCE_SEMANTICS` | SOURCE | Frozen 2021–2025 weekly-stat SHA-pinned files can establish a one-null-ID-group-per-week shape, but that does not independently establish source-generator equivalence, player identity or settled count labels. Keep research receipt non-rank-eligible and non-authorizing; review the generator/source corpus independently. Owned by WOW_PROP_LANE. | No |
+| `NFL_PROP_SOURCE_IDENTITY_INVALID` | IDENTITY | Null or empty player/event/role identity; reconcile source. Exception: wholly zero-count anonymous REG rows can be quarantined under the separately verified source-preflight contract; nonzero, missing or invalid counts still HOLD as `NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING`. Quarantine never certifies an event. | No |
+| `NFL_PROP_SOURCE_DUPLICATE_PLAYER_EVENT` | IDENTITY | Repeated player/game key; deduplicate at authoritative source, not by overwriting fitted outcomes. | No |
+| `NFL_PROP_SOURCE_COUNT_EXCEEDS_OPPORTUNITY` | INPUT | Completes/receptions/touchdowns exceed corresponding game opportunities; repair raw data. | No |
+| `NFL_PROP_STAT_NOT_DECLARED` | MODEL | Unsupported stat candidate request; fail closed, no shared generic fallback. | No |
+| `NFL_PROP_FEATURE_ROWS_EMPTY` | INPUT | Stat/role history insufficient for leakage-safe pregame features; acquire real qualifying history. | No |
+| `NFL_PROP_TRAIN_ROWS_BELOW_MINIMUM` | MODEL | Train cohort below 1,000 qualifying rows; no fit. | No |
+| `NFL_PROP_CAL_ROWS_BELOW_MINIMUM` | MODEL | Separate 2024 calibration cohort below 300 rows; no calibration. | No |
+| `NFL_PROP_HOLDOUT_ROWS_BELOW_MINIMUM` | MODEL | Independent 2025 holdout below 300 rows; no valid research evaluation. | No |
+| `NFL_PROP_TRAINING_CHRONOLOGY_INVALID` | MODEL | Train, calibration, and test chronology overlaps; restore immutable temporal split. | No |
+| `NFL_PROP_TRAINING_NONFINITE` | MODEL | Feature or target matrix nonfinite; validate source and feature computation. | No |
+| `NFL_PROP_CALIBRATION_FACTOR_UNSUPPORTED` | MODEL | Poisson calibration offset nonfinite/extreme; reject research candidate fit. | No |
+| `NFL_PROP_SOURCE_SEASON_MISMATCH` | INPUT | Named source season has regular-season rows for a different season; reject source file and reacquire season-specific bytes. | No |
+| `NFL_PROP_SOURCE_OUTPUT_COLLISION` | SECURITY | Requested candidate output resolves to same file/inode as a frozen training source; reject before any write, preserve source bytes. | No |
+| `NFL_PROP_SOURCE_DIGEST_MISMATCH` | INPUT | A local 2021-2025 NFL player-week source differs from the published frozen nflverse stats_player release SHA-256; reject before parsing/fitting, reacquire exact bytes; never silently refresh pins. | No |
+| `NFL_PROP_SOURCE_UNATTRIBUTED_COUNT_NONZERO_OR_MISSING` | IDENTITY | A player-ID-absent REG row contains a positive, missing, or nonfinite modeled count; never quarantine it or manufacture a player; HOLD source input for independent reconciliation. | No |
+| `NFL_PROP_PARTICIPATION_SOURCE_MISSING` | INPUT | Pinned 2021–2025 snap file or player ID crosswalk absent; acquire approved bytes before audit. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_SOURCE_DIGEST_MISMATCH` | INPUT | Pinned snap or crosswalk bytes differ from official release SHA-256; HOLD without interpolation. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_COLUMNS_MISSING` | INPUT | Snap, crosswalk or weekly stats lacks required explicit identity/participation columns; no fuzzy matching. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_CROSSWALK_CONFLICT` | IDENTITY | PFR-to-GSIS mapping ambiguous across records; HOLD rather than choose an identity. Non-rank-eligible offline research check only. | No |
+| `HOLD_PARTICIPATION_SELECTION_UNKNOWN` | SOURCE | Verified snap-positive participation coverage varies by season, offensive role and snap band; report matched, missing and unmapped denominators without imputing labels or inferring outcome bias direction. Non-rank-eligible descriptive source-selection diagnostic, not source-use or fitted-model authorization. Owned by WOW_PROP_LANE. | No |
+| `NFL_PROP_PARTICIPATION_SNAP_INVALID` | INPUT | Official snap row has nonfinite/negative counts or invalid date/game/participant identity; also malformed/inconsistent source-cohort split receipts (`cohort_*`) and source-missingness denominators (`missingness_counts`). HOLD; inspect source rows or split receipt respectively before replay. Non-rank-eligible offline research only. | No |
+| `NFL_PROP_PARTICIPATION_SNAP_DUPLICATE` | IDENTITY | Repeated participant-game snap row; do not count or silently dedupe without source resolution. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_STATS_DUPLICATE` | IDENTITY | Repeated player/week/game weekly stats identity; reject before gap reconciliation. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_SNAP_SEASON_MISMATCH` | INPUT | Named season snap file contains unexpected season identity; reject before cohort comparison. Non-rank-eligible offline research check only. | No |
+| `NFL_PROP_PARTICIPATION_SNAP_EMPTY` | INPUT | Pinned season or combined REG eligible offensive-snap participant cohort is empty; reject rather than falsely report 100% matching. | No |
+
+## Offline NFL official-source acquisition failures (2026-11-11)
+
+Produced only by scripts/acquire_nfl_count_prop_sources.py; owned by WOW_PROP_LANE. Never rank-eligible, never model qualification, and never permission to bypass certified model or source-rights constraints.
+
+| Typed code | Class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_ACQUIRE_PINS_INVALID` | SECURITY | Official code-owned SHA pin map or source count is invalid | No |
+| `NFL_PROP_ACQUIRE_FILE_MISSING` | INPUT | Pinned local file is absent or a symlink; no verification receipt | No |
+| `NFL_PROP_ACQUIRE_DIGEST_MISMATCH` | SECURITY | Frozen source size or hash differs from authoritative release; never overwrite | No |
+| `NFL_PROP_ACQUIRE_PATH_INVALID` | SECURITY | Source filename or dataset family not approved | No |
+| `NFL_PROP_ACQUIRE_HTTP_ERROR` | SOURCE | Official release server rejected the request; no fallback source | No |
+| `NFL_PROP_ACQUIRE_NETWORK_UNAVAILABLE` | TRANSIENT | DNS, connection or timeout prevents official source acquisition | No |
+| `NFL_PROP_ACQUIRE_REDIRECT_UNTRUSTED` | SECURITY | GitHub release redirect used an untrusted host or non-HTTPS scheme | No |
+| `NFL_PROP_ACQUIRE_TARGET_RACE` | CONCURRENCY | Concurrent writer occupied frozen target before atomic install | No |
+| `HOLD_ARCHIVE_RDS_NOT_EQUIVALENT_TO_FROZEN_CSV` | SOURCE | Official archive RDS digests and byte sizes may verify without proving that archived identities, participation or stat labels are equivalent to the original frozen CSV. Keep separate source semantics/rights review; do not replace pins, fit, or publish from metadata alone. | No |
+
+## Offline NFL PBP presence audit failures (2026-11-11)
+
+Produced only by `scripts/audit_nfl_count_prop_pbp_presence.py`, owned by WOW_PROP_LANE. Research-only (P/C PR #2605), not a model or publication gate. Absence of a PBP actor cannot be interpreted as a count-zero, and no source result can enable a wager.
+
+| Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_PBP_PIN_SET_INVALID` | SECURITY | Exact frozen PBP season-to-hash map differs from required 2021–2025 seasons; repair independently verified release pins. | No |
+| `NFL_PROP_PBP_SOURCE_MISSING` | INPUT | Required immutable year gzip is missing or symlinked; reacquire only using approved official release URL. | No |
+| `NFL_PROP_PBP_SOURCE_DIGEST_MISMATCH` | SECURITY | Published compressed size or SHA-256 differs; preserve HOLD, never substitute a caller digest. | No |
+| `NFL_PROP_PBP_SOURCE_UNREADABLE` | INPUT | Verified gzip bytes cannot be parsed without truncation or schema transport failure; repair data provenance, not counts. | No |
+| `NFL_PROP_PBP_EVENT_SCHEMA_INVALID` | INPUT | PBP does not contain required game/season/week/role actor columns, valid season identity, REG scope or even one regular-season game; no presence receipt. | No |
+| `NFL_PROP_PBP_RECONCILIATION_DRIFT` | IDENTITY | PBP evidence selection disagrees with canonical mapped-missing-game count; preserve HOLD, repair joins without guessing PFR↔GSIS. | No |
+| `HOLD_PBP_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | PBP acquisition/parsing/reconciliation could not complete all five pinned research archives, even if the original 11 sources verified; preserve explicit partial count and retain unknown stat rows. | No |
+| `HOLD_PBP_PRESENCE_ONLY` | RESEARCH_HOLD | All source and actor-presence evidence remains observation-only; no absence-as-zero, fitted specialist, registration, promotion or execution. | No |
+
+## Offline PBP-to-weekly stat signal comparison (2026-11-11)
+
+Produced only by `scripts/audit_nfl_count_prop_pbp_stats.py`, owned by WOW_PROP_LANE as research-only C-class data diagnostics. Event flag counts are **not** official settled stat labels and never authorize rank, betting execution, or a fitted-probability route.
+
+| Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_PBP_EVENT_DUPLICATE` | IDENTITY | Two actor-bearing PBP records share the exact game/play identity; reject any additive event count. | No |
+| `NFL_PROP_PBP_ATTRIBUTION_INCOMPLETE` | IDENTITY | A relevant regular-season pass/rush flag has no attributable player ID; reject per-stat agreement rather than dropping the play from the candidate source. | No |
+| `NFL_PROP_PBP_FLAG_INVALID` | INPUT | An event flag is neither binary nor absent; reject rather than interpret as a valid play. | No |
+| `NFL_PROP_PBP_STAT_COLUMNS_MISSING` | INPUT | Weekly frozen stats lack declared target/identity fields; reject comparison. | No |
+| `HOLD_PBP_STAT_SIGNALS_NOT_SETTLEMENT` | RESEARCH_HOLD | Event signal counts have not been independently reconciled to NFL stat/scoring rules or source semantics; no model-certification authority. | No |
+| `HOLD_PBP_STAT_EVIDENCE_INCOMPLETE` | RESEARCH_HOLD | Pinned PBP event flags are absent/inconsistent, parsing failed or required identity checks failed; preserve source HOLD. | No |
+| `HOLD_PBP_STAT_DISAGREEMENT_UNRESOLVED` | RESEARCH_HOLD | A positive weekly count differs from the independently pinned PBP actor event flags. Preserve exact event/play type examples, never manufacture an extra event or correct a stat without independent source authority. | No |
+
+## Pinned 2025 historical roster ID shadow (2026-11-11)
+
+These are research-only source failures owned by NFL_PROP_SOURCE_RESEARCH; no crosswalk adoption or new model registration is permitted. The published 2025 nflverse season-roster GitHub release has SHA-256 `531ee5de386037bb17de3e3e3d50f7b4ed08789526bbaae9876fdd3dfb4d04ad`, 1,010,039 bytes. 2021–24 archived roster CSVs lack independently published digests; they are not admitted by this diagnostic.
+
+| Code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_ROSTER_DIGEST_MISMATCH` | INPUT | Refuse a size or SHA-256-mismatched roster before decoding any IDs. | No |
+| `NFL_PROP_ROSTER_SCHEMA_INVALID` | INPUT | Pinned asset lacks required source identity fields or is not exclusively 2025 season. | No |
+| `NFL_PROP_ROSTER_RDS_READER_UNAVAILABLE` | RESEARCH_INPUT | The optional offline RDS parser is unavailable; Nov-05 SHA-pinned archive identities cannot be inspected and must remain on HOLD. Recovery: provision the free research-only RDS decoder in an isolated environment and rerun; never fall back to mutable CSV or guessed identifiers. | No |
+| `NFL_PROP_ROSTER_REDIRECT_UNTRUSTED` | SECURITY | Refuse a response outside the existing HTTPS official-release host allowlist. | No |
+| `NFL_PROP_ROSTER_TARGET_INVALID` | IDENTITY | Invalid requested source PFR key; never guess an identity from a name or position. | No |
+| `NFL_PROP_ROSTER_CROSSWALK_CONFLICT` | IDENTITY | An exact source PFR code maps to multiple GSIS identities, or a GSIS identity is reused by distinct PFR codes anywhere in the frozen roster; no candidate accepted. | No |
+| `HOLD_ROSTER_CROSSWALK_SOURCE_UNAVAILABLE` | RESEARCH_HOLD | Research-only 2025 candidate mapping not observed because required pinned bytes are inaccessible or invalid. | No |
+| `HOLD_ROSTER_CROSSWALK_INDEPENDENT_REVIEW` | RESEARCH_HOLD | Exact-ID roster pairs are source-supported research candidates only; none is adopted into fitted, live or model feature pathways. | No |
+
+## Historical nflverse roster two-read research (2026-11-11)
+
+Older release assets from 2021–2024 have public byte-size metadata but no **published** SHA-256. These typed conditions belong to NFL_PROP_SOURCE_RESEARCH, and even a content hash reproduced twice is NOT a trusted source pin. No outcome is rank eligible or production-serving.
+
+| Code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| `NFL_PROP_ROSTER_YEAR_UNPINNED` | INPUT | Only predeclared 2021–24 historical roster assets may enter the two-read research probe. | No |
+| `NFL_PROP_ROSTER_SOURCE_SIZE_MISMATCH` | INPUT | A historical response differs from GitHub release-published byte size; refuse content. | No |
+| `NFL_PROP_ROSTER_TWO_READ_DRIFT` | SECURITY | Two consecutive public-source reads differ even though expected size matches; retain HOLD and reject all candidate pairs. | No |
+| `HOLD_HISTORICAL_ROSTER_UNPUBLISHED_DIGEST` | RESEARCH_HOLD | Two matching source reads supply only provisional PFR/GSIS candidate evidence, with no upstream-published digest or independent semantic sign-off. | No |
+| `HOLD_HISTORICAL_ROSTER_SOURCE_UNAVAILABLE` | RESEARCH_HOLD | Source could not be read and validated twice; output failure evidence, never substitute a name/position guessed player identity. | No |
+
+
+## Offline FTN 2025 offensive play-participation research (2026-11-12)
+
+Owned by NFL_PROP_SOURCE_RESEARCH on C-class PR #2605 only. Source: **FTN Data via nflverse**, CC-BY-SA-4.0; file pbp_participation_2025.csv, 49,094,943 bytes, official SHA-256 59069adfee7b0f464befba8a5e8be331e523633cc6a7ab403d37bcbcdfbe66ac. No stat zero or settled target is established by offensive-player presence/absence; no fitting, rank or production grant.
+
+| Typed code | Recovery class | Mechanism and recovery | Rank eligible? |
+|---|---|---|---|
+| NFL_PROP_FTN_PARTICIPATION_NETWORK_UNAVAILABLE | TRANSIENT | Approved public release could not be reached; preserve HOLD; bounded retry only for transient failure. | No |
+| NFL_PROP_FTN_PARTICIPATION_REDIRECT_UNTRUSTED | SECURITY | Download endpoint resolved outside official HTTPS release hosts; refuse content. | No |
+| NFL_PROP_FTN_PARTICIPATION_DIGEST_MISMATCH | SOURCE | Size or SHA-256 differs from published 2025 FTN asset; reject before parsing; never re-pin automatically. | No |
+| NFL_PROP_FTN_PARTICIPATION_SCHEMA_INVALID | INPUT | Required game/play/offense-list invalid, missing, ambiguous, malformed GSIS IDs, or empty source; no inferred zero. | No |
+| HOLD_FTN_OFFENSE_PRESENCE_RESEARCH_ONLY | RESEARCH_HOLD | Exact GSIS player-on-play is not an exact count-target settlement or license approval. | No |
+| HOLD_FTN_PARTICIPATION_SOURCE_OR_IDENTITY | RESEARCH_HOLD | Source/crosswalk reconciliation incomplete; preserve unknown labels and no inferred ID. | No |
+| HOLD_FTN_OFFENSE_PRESENCE_ONLY | RESEARCH_HOLD | Observational 2025 comparison unapproved for model training or fitted certification. | No |
