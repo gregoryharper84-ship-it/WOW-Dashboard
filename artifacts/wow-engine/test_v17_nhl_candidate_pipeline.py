@@ -99,6 +99,30 @@ def test_normalize_accepts_only_settled_regular_season_games():
     assert nhl.normalize_game(raw_game(3, game_type=3), source_uri="u", retrieved_at="x") is None
 
 
+@pytest.mark.parametrize(
+    "bad_score",
+    [3.7, 3.0, "3.7", "3.0", True, False, -1, "-1", "", None, "²", "١", "９"],
+)
+def test_normalize_rejects_non_exact_integer_scores(bad_score):
+    """Fractional or non-integer scores must fail closed — never truncate via int()."""
+    raw = raw_game(10, home_score=bad_score, away_score=2)
+    assert nhl.normalize_game(raw, source_uri="u", retrieved_at="x") is None
+    with pytest.raises(nhl.NHLCandidateError) as caught:
+        nhl.normalize_game(raw, source_uri="u", retrieved_at="x", strict=True)
+    assert caught.value.code == "NHL_SOURCE_SCORE_INVALID"
+
+
+def test_normalize_accepts_digit_string_scores():
+    parsed = nhl.normalize_game(
+        raw_game(11, home_score="4", away_score="2"),
+        source_uri="u",
+        retrieved_at="x",
+    )
+    assert parsed is not None
+    assert parsed.home_score == 4
+    assert parsed.away_score == 2
+
+
 def test_team_season_fetch_fails_closed_on_schema_drift():
     class Response:
         status_code = 200
@@ -125,7 +149,11 @@ def test_duplicate_official_game_must_reconcile_exactly(monkeypatch):
     first = game(1, "BOS", "NYR")
     conflicting = nhl.NHLGame(**{**first.__dict__, "home_score": first.home_score + 1})
     calls = {"BOS": [first], "NYR": [conflicting]}
-    monkeypatch.setattr(nhl, "fetch_team_season_games", lambda team, year, session=None: calls[team])
+    monkeypatch.setattr(
+        nhl,
+        "fetch_team_season_games",
+        lambda team, year, session=None, strict=False: calls[team],
+    )
     with pytest.raises(nhl.NHLCandidateError) as caught:
         nhl.fetch_historical_games([2021], teams=("BOS", "NYR"), session=object())
     assert caught.value.code == "NHL_DUPLICATE_GAME_CONFLICT"
@@ -182,3 +210,22 @@ def test_nhl_fit_is_candidate_only_and_requires_later_source_review():
     assert candidate.metrics.train_n < len(records)
     assert candidate.automatic_certification is False
     assert candidate.automatic_promotion is False
+
+
+@pytest.mark.parametrize(
+    "field,value,code",
+    [
+        ("gameType", 2.9, "NHL_SOURCE_GAME_TYPE_INVALID"),
+        ("gameType", True, "NHL_SOURCE_GAME_TYPE_INVALID"),
+        ("season", 20262027.9, "NHL_SOURCE_SEASON_IDENTITY_INVALID"),
+        ("season", True, "NHL_SOURCE_SEASON_IDENTITY_INVALID"),
+    ],
+)
+def test_normalize_rejects_coerced_game_type_and_season(field, value, code):
+    from nhl_candidate_pipeline import NHLCandidateError, normalize_game
+
+    raw = raw_game(1)
+    raw[field] = value
+    with pytest.raises(NHLCandidateError) as caught:
+        normalize_game(raw, source_uri="https://example.test", retrieved_at="2026-09-15T00:00:00+00:00", strict=True)
+    assert caught.value.code == code
