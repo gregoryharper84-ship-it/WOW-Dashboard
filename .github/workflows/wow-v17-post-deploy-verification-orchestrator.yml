@@ -51,7 +51,6 @@ jobs:
     steps:
       - name: Checkout protected main (read-only)
         id: source_checkout
-        continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
@@ -60,7 +59,6 @@ jobs:
       - name: Verify execution and checkout identity
         id: source_identity
         if: steps.source_checkout.outcome == 'success'
-        continue-on-error: true
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
@@ -69,7 +67,6 @@ jobs:
 
       - name: Fresh authenticated exact-SHA readback of BOTH native deployments
         if: steps.source_identity.outcome == 'success'
-        continue-on-error: true
         id: readback
         # The upstream observer is nonblocking. Its success is only a trigger;
         # fresh GET-only service/deploy/current-main evidence gates these lanes.
@@ -82,7 +79,6 @@ jobs:
       - name: Skip repeat acceptance only for the identical deployment
         id: dedupe
         if: steps.readback.outcome == 'success' && steps.readback.outputs.deploy_pending != 'true'
-        continue-on-error: true
         # The hourly observer re-triggers this workflow on unchanged deployments.
         # The fresh readback above still ran (drift fails the job). Expensive
         # lanes are skipped only when a prior successful run observed the same
@@ -92,7 +88,6 @@ jobs:
 
       - name: Preserve readback receipt (observation, never SIRT approval)
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-post-deploy-readback-${{ github.run_id }}-${{ github.run_attempt }}
@@ -102,7 +97,6 @@ jobs:
 
       - name: Preserve typed readback HOLD independently of CI conclusion
         if: always()
-        continue-on-error: true
         shell: bash
         env:
           SOURCE_IDENTITY_OUTCOME: ${{ steps.source_identity.outcome }}
@@ -194,7 +188,6 @@ jobs:
     steps:
       - name: Publish domain receipt matrix
         id: receipt_matrix
-        continue-on-error: true
         shell: bash
         env:
           DEPLOYMENT_READBACK: ${{ needs.deployment-readback.result }}
@@ -262,7 +255,6 @@ jobs:
       - name: Checkout the previously authenticated SHA for final identity readback
         id: receipt_checkout
         if: steps.receipt_matrix.outcome == 'success' && needs.deployment-readback.outputs.deploy_pending != 'true'
-        continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.expected_sha || github.event.workflow_run.head_sha }}
@@ -271,18 +263,15 @@ jobs:
       - name: Verify checkout still matches accepted SHA
         id: receipt_identity
         if: steps.receipt_checkout.outcome == 'success'
-        continue-on-error: true
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Reject main or deployment changes during acceptance
         if: steps.receipt_identity.outcome == 'success'
-        continue-on-error: true
         id: final-readback
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
       - name: Preserve final observation receipt (independent acceptance still required)
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-post-deploy-final-readback-${{ github.run_id }}-${{ github.run_attempt }}
@@ -292,7 +281,6 @@ jobs:
 
       - name: Preserve nonauthoritative post-deploy observer status
         if: always()
-        continue-on-error: true
         shell: bash
         env:
           MATRIX_OUTCOME: ${{ steps.receipt_matrix.outcome }}
