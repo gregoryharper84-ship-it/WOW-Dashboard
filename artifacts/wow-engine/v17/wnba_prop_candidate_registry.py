@@ -242,6 +242,7 @@ def register_candidates(db: Any, batch: WNBAPropCandidateBatch) -> dict[str, Any
                 "stat_type": stat,
                 "model_artifact_version": row["model_artifact_version"],
                 "artifact_id": existing.get("artifact_id"),
+                "artifact_checksum": row["artifact_checksum"],
                 "status": "ALREADY_REGISTERED_IDENTICAL",
                 "lifecycle_state": existing.get("lifecycle_state"),
             })
@@ -253,6 +254,7 @@ def register_candidates(db: Any, batch: WNBAPropCandidateBatch) -> dict[str, Any
             "stat_type": stat,
             "model_artifact_version": row["model_artifact_version"],
             "artifact_id": persisted.get("artifact_id"),
+            "artifact_checksum": row["artifact_checksum"],
             "status": "CANDIDATE_REGISTERED",
             "lifecycle_state": "CANDIDATE",
         })

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -207,3 +208,98 @@ def test_duplicate_stat_route_in_one_batch_blocks():
     with pytest.raises(HTTPException) as caught:
         register_candidates(FakeDB(), WNBAPropCandidateBatch(artifacts=[a, b]))
     assert caught.value.detail["code"] == "WNBA_PROP_DUPLICATE_STAT_ROUTE"
+
+
+def _frozen_registration_replay():
+    # Same immutable versions/checksums observed in Supabase on 2026-11-14.
+    path = Path(__file__).resolve().parent / "data/wow_wnba_prop_artifacts_v1.json"
+    artifacts = json.loads(path.read_text())
+    existing = [dict(validate_candidate(WNBAPropCandidateArtifact(**a)),
+                     artifact_id=f"existing-{i}", lifecycle_state="PROSPECTIVE_CERTIFIED",
+                     active=True, promoted=True)
+                for i, a in enumerate(artifacts)]
+    db = FakeDB(existing)
+    before = json.dumps(db.rows, sort_keys=True)
+    receipt = register_candidates(db, WNBAPropCandidateBatch(artifacts=artifacts))
+    assert json.dumps(db.rows, sort_keys=True) == before
+    return artifacts, receipt
+
+
+def _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt):
+    import urllib.request
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/wow-v17-wnba-prop-candidate.yml").read_text())
+    script = next(s["run"] for s in workflow["jobs"]["train-and-register"]["steps"]
+                  if s.get("name") == "Register validated candidates through governed control plane")
+    python = script.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    (tmp_path / "wow_wnba_prop_artifacts_v1.json").write_text(json.dumps(artifacts))
+    for key, value in {
+        "WNBA_ARTIFACT_OUT_DIR": str(tmp_path),
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.test/token",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "test-only",
+        "WOW_ACTION_ORIGIN": "https://control.test",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    def urlopen(request, **_):
+        if request.full_url.startswith("https://oidc.test/token?"):
+            return io.StringIO(json.dumps({"value": "test-oidc"}))
+        assert request.full_url == "https://control.test/internal/v17/wnba-prop-candidates"
+        assert request.method == "POST"
+        assert json.loads(request.data) == {"artifacts": artifacts}
+        return io.StringIO(json.dumps(receipt))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    exec(compile(python, str(root / ".github/workflows/wow-v17-wnba-prop-candidate.yml"), "exec"), {})
+
+
+def test_workflow_accepts_identical_replay_without_demoting_existing_lifecycle(tmp_path, monkeypatch):
+    # The Nov 9 failure's line 56 demands CANDIDATE even for identical replay.
+    artifacts, receipt = _frozen_registration_replay()
+    assert receipt["status"] == "CANDIDATE_REGISTRATION_COMPLETE"
+    assert receipt["registered_n"] == 4
+    assert all(r["status"] == "ALREADY_REGISTERED_IDENTICAL" for r in receipt["registered"])
+    _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt)
+
+
+def test_registry_receipt_binds_new_and_replayed_checksum():
+    candidate = _candidate()
+    db = FakeDB()
+    for _ in range(2):
+        receipt = register_candidates(db, WNBAPropCandidateBatch(artifacts=[candidate]))
+        assert receipt["registered"][0]["artifact_checksum"] == candidate.artifact_checksum
+
+
+def test_workflow_accepts_only_candidate_lifecycle_for_new_registration(tmp_path, monkeypatch):
+    artifacts, _ = _frozen_registration_replay()
+    db = FakeDB()
+    receipt = register_candidates(db, WNBAPropCandidateBatch(artifacts=artifacts))
+    assert all(r["lifecycle_state"] == "CANDIDATE" for r in db.rows)
+    _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt)
+
+
+@pytest.mark.parametrize("bad", [
+    "checksum", "version", "foreign_stat", "duplicate_stat", "missing_row",
+    "missing_id", "unknown_status", "unknown_lifecycle", "new_non_candidate",
+    "executable", "non_object_row", "duplicate_id", "non_string_id",
+])
+def test_workflow_rejects_incomplete_or_mismatched_registration_receipt(tmp_path, monkeypatch, bad):
+    artifacts, receipt = _frozen_registration_replay()
+    row = receipt["registered"][0]
+    if bad == "checksum": row["artifact_checksum"] = "0" * 64
+    elif bad == "version": row["model_artifact_version"] = "foreign-version"
+    elif bad == "foreign_stat": row["stat_type"] = "FOREIGN_STAT"
+    elif bad == "duplicate_stat": receipt["registered"][1] = dict(row)
+    elif bad == "missing_row": receipt["registered"].pop()
+    elif bad == "missing_id": row.pop("artifact_id")
+    elif bad == "unknown_status": row["status"] = "APPROVED"
+    elif bad == "unknown_lifecycle": row["lifecycle_state"] = "UNREVIEWED"
+    elif bad == "new_non_candidate": row["status"] = "CANDIDATE_REGISTERED"
+    elif bad == "executable": receipt["can_execute"] = True
+    elif bad == "non_object_row": receipt["registered"][0] = None
+    elif bad == "duplicate_id": receipt["registered"][1]["artifact_id"] = row["artifact_id"]
+    elif bad == "non_string_id": row["artifact_id"] = {"unverified": "id"}
+    with pytest.raises(AssertionError):
+        _execute_registration_workflow(tmp_path, monkeypatch, artifacts, receipt)
