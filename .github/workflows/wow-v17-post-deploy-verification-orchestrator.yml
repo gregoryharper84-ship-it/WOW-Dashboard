@@ -271,7 +271,7 @@ jobs:
         run: python artifacts/wow-engine/v17/lean_production_readback.py
 
       - name: Preserve final observation receipt (independent acceptance still required)
-        if: always()
+        if: always() && needs.deployment-readback.outputs.deploy_pending != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-post-deploy-final-readback-${{ github.run_id }}-${{ github.run_attempt }}
