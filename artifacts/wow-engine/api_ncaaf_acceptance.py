@@ -31,7 +31,7 @@ from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
 from pick_request_runtime import install_pick_request_routes
 from prop_live_model_acceptance import run_prop_model_live_self_acceptance
-from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance
+from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance, log_v17_synthetic_startup_readback
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
 from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
@@ -640,7 +640,8 @@ async def schedule_v17_synthetic_self_acceptance():
                 delay_seconds,
             )
             await asyncio.sleep(float(delay_seconds))
-        await run_v17_synthetic_self_acceptance(_v17_logger)
+        result = await run_v17_synthetic_self_acceptance(_v17_logger)
+        log_v17_synthetic_startup_readback(_v17_logger, result)
 
     task = asyncio.create_task(_run_after_startup())
     _background_tasks.add(task)

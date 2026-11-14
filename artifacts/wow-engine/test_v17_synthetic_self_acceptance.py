@@ -70,7 +70,7 @@ def _projected_candidate():
 
 
 @pytest.mark.anyio
-async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
+async def test_both_scenarios_failing_closed_reports_pass(monkeypatch, caplog):
     monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
     _patch_client(
         monkeypatch,
@@ -104,6 +104,19 @@ async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
     assert result["source_backed_pregame_scoring"]["blocker"] == (
         "NO_ELIGIBLE_SOURCE_BACKED_PREGAME_CANDIDATE"
     )
+    # Production log must not confuse synthetic negative-probe PASS with a
+    # certified fitted numerical scoring receipt.
+    diagnostic_lines = [
+        record.getMessage() for record in caplog.records
+        if "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=PASS" in record.getMessage()
+    ]
+    assert len(diagnostic_lines) == 1
+    assert "status_scope=SELF_ACCEPTANCE_DIAGNOSTICS_ONLY" in diagnostic_lines[0]
+    assert "scoring_acceptance_proven=False" in diagnostic_lines[0]
+    assert "synthetic_negative_status=PASS" in diagnostic_lines[0]
+    assert "source_backed_status=BLOCKED" in diagnostic_lines[0]
+    assert "source_backed_lane=SOURCE_BACKED_PREGAME_SCORING" in diagnostic_lines[0]
+    assert "source_backed_blocker=NO_ELIGIBLE_SOURCE_BACKED_PREGAME_CANDIDATE" in diagnostic_lines[0]
 
 
 @pytest.mark.anyio
@@ -310,7 +323,7 @@ async def test_projected_diagnostics_reject_wrong_identity_or_terminal(monkeypat
 
 
 @pytest.mark.anyio
-async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monkeypatch):
+async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monkeypatch, caplog):
     """A reducer purge may prove model diagnostics without granting a HELD row."""
     monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
     monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
@@ -351,3 +364,50 @@ async def test_stronger_purge_is_diagnostic_success_but_never_a_lineup_hold(monk
     assert result["source_backed_pregame_scoring"]["blocker"] == "SLATE_PURGE"
     assert result["scoring_acceptance_proven"] is False
     assert result["can_execute"] is False
+    assert any(
+        "source_backed_status=BLOCKED" in record.getMessage()
+        and "source_backed_blocker=SLATE_PURGE" in record.getMessage()
+        and "scoring_acceptance_proven=False" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_startup_readback_never_infers_qualified_scoring(caplog):
+    logger = logging.getLogger("test-v17-startup-readback")
+    result = {
+        "status": "PASS",
+        "status_scope": "SELF_ACCEPTANCE_DIAGNOSTICS_ONLY",
+        "scoring_acceptance_proven": False,
+        "source_backed_pregame_scoring": {
+            "status": "HELD",
+            "lane": "SOURCE_BACKED_PROJECTED_TEAM_EVENT",
+            "blocker": "LINEUP_CONFIRMATION_PENDING",
+            "calibrated_lower_bound": 0.41,
+        },
+    }
+    mod.log_v17_synthetic_startup_readback(logger, result)
+    line = next(
+        item.getMessage() for item in caplog.records
+        if item.getMessage().startswith("WOW_V17_SYNTHETIC_STARTUP_READBACK ")
+    )
+    assert "status=PASS" in line
+    assert "status_scope=SELF_ACCEPTANCE_DIAGNOSTICS_ONLY" in line
+    assert "scoring_acceptance_proven=False" in line
+    assert "source_backed_status=HELD" in line
+    assert "source_backed_lane=SOURCE_BACKED_PROJECTED_TEAM_EVENT" in line
+    assert "source_backed_blocker=LINEUP_CONFIRMATION_PENDING" in line
+    assert "can_execute=false" in line
+    assert "0.41" not in line  # Do not leak numeric forecast from a held row.
+
+
+def test_startup_readback_missing_result_never_claims_scoring(caplog):
+    logger = logging.getLogger("test-v17-startup-empty")
+    mod.log_v17_synthetic_startup_readback(logger, {"status": "FAILED"})
+    line = next(
+        item.getMessage() for item in caplog.records
+        if item.getMessage().startswith("WOW_V17_SYNTHETIC_STARTUP_READBACK ")
+    )
+    assert "status_scope=DIAGNOSTIC_NOT_COMPLETED" in line
+    assert "scoring_acceptance_proven=False" in line
+    assert "source_backed_status=NOT_ATTEMPTED" in line
+    assert "source_backed_blocker=NO_SOURCE_BACKED_SCORING_PROOF" in line
