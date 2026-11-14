@@ -98,12 +98,18 @@ bytes of row payload (39,094 B/row) now complete instead of failing
 rows, `row_status=COMPLETED` count zero for that cohort). `can_execute=false`
 held on all 850 rows.
 
-Items 3–6 were deployed in the same commit but were **not independently
-observed** in the 2026-09-15T15:28Z–2026-09-16T15:23Z production evidence
-window (no `/governance` read, no `max_props=0` run, and no fresh 1IP Action
-receipt appeared in that window). This record therefore reflects the ledger
-in `FIX-2026-09-14-001`'s own status: `DEPLOYED — PRIMARY and CRITICAL
-VERIFIED IN PRODUCTION`, not a global `FIXED_VERIFIED`.
+Items 3 and 6 were independently observed on 2026-11-10 without paid retries
+(live `/v17/governance-detail` 1IP hold-only declaration; unpaid decision-level
+DB recount of 806 PROPS direction decisions / 422 rows / 55 Daily runs under
+live SHA `e7384b9d…` with `verdict_class=MODEL_REJECTED`,
+`model_evaluated=true`, `infrastructure_blocked=false`, and non-empty
+`concurrent_infrastructure_blockers` on the same rejected decision — sanitized
+receipt from `v17-daily-a2b7f50e-…` at `2026-11-09T15:35:34Z`).
+Item 4 (`REQUESTED_ROW_LIMIT_ZERO`) was independently observed on the #2585
+production canary. Item 5's backend pair was observed, but its host three-field
+receipt remains pending. Ledger status stays `DEPLOYED_PENDING_VERIFY` until
+that receipt is independently observed. Evidence:
+`engineering-fixes/PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
 
 ## Closure Evidence (2026-11-10)
 
