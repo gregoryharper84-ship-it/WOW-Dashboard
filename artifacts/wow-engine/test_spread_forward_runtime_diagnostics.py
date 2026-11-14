@@ -31,3 +31,13 @@ def test_diagnostic_message_is_truncated_and_redacts_bearer_and_jwt_material():
     out = route._execute_forward("NFL", "EVT-2", _leak)
     assert len(out["error_message"]) <= 300
     assert "eyJ" not in out["error_message"] and "abc.def.ghi" not in out["error_message"]
+
+
+def test_quoted_credential_fields_are_redacted():
+    def _leak():
+        raise RuntimeError("""upstream {"password": "plain-secret"} and {'api_key': 'plain-secret2'} and "token":"plain-secret3" """)
+
+    out = route._execute_forward("NCAAF", "EVT-3", _leak)
+    assert "plain-secret" not in out["error_message"]
+    assert "plain-secret2" not in out["error_message"]
+    assert "plain-secret3" not in out["error_message"]
