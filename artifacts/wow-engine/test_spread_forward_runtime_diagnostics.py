@@ -41,3 +41,13 @@ def test_quoted_credential_fields_are_redacted():
     assert "plain-secret" not in out["error_message"]
     assert "plain-secret2" not in out["error_message"]
     assert "plain-secret3" not in out["error_message"]
+
+
+def test_delimiter_led_and_spaced_secret_values_are_fully_redacted():
+    def _leak():
+        raise RuntimeError('a password=,lead-comma-secret b token=}brace-secret c secret=]bracket-secret d {"password": "two words secret"} e api_key=mid,comma-secret')
+
+    out = route._execute_forward("NCAAF", "EVT-4", _leak)
+    msg = out["error_message"]
+    for leaked in ("lead-comma-secret", "brace-secret", "bracket-secret", "two words secret", "words", "mid,comma-secret", "comma-secret"):
+        assert leaked not in msg, leaked

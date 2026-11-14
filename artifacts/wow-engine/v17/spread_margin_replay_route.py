@@ -24,7 +24,7 @@ DATABASE_MUTATED = False
 PRODUCTION_REGISTRY_MUTATED = False
 GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 _LOG = logging.getLogger(__name__)
-_REDACT = re.compile(r"(?i)(bearer\s+\S+|eyJ[\w-]+(?:\.[\w-]+)*|(?:apikey|api_key|token|secret|password|key)[\"']?\s*[=:]\s*[\"']?[^\s,}\]]+)")
+_REDACT = re.compile(r"(?i)(bearer\s+\S+|eyJ[\w-]+(?:\.[\w-]+)*|(?:apikey|api_key|token|secret|password|key)[\"']?\s*[=:]\s*(?:\"[^\"]*\"|'[^']*'|\S+))")
 
 
 def _runtime_diagnostics(exc: BaseException) -> dict[str, Any]:
