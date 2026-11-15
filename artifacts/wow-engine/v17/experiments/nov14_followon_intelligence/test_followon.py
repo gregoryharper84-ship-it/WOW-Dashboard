@@ -367,3 +367,13 @@ def test_dual_gate_exact_period_and_settlement_are_binding():
             model(), quote(**changed), policy(), as_of_utc=NOW)
         assert out["status"] == "EXACT_PRICE_OR_IDENTITY_UNVERIFIED"
         assert not out["value_candidate_pass"]
+
+
+def test_future_but_pregame_prediction_cannot_be_used_for_earlier_asof():
+    out = dual_gate_strong_confidence_shadow(
+        model(immutable_prediction_timestamp_utc="2026-11-14T22:00:00Z"),
+        quote(), policy(), as_of_utc=NOW,
+    )
+    assert out["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert out["probability_rank_eligible"] is False
+    assert out["value_candidate_pass"] is False
