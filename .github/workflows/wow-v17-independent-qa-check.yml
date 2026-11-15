@@ -71,6 +71,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Check Gemini review bridge contract
+        run: python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
+
       - name: Require this role's App identity
         shell: bash
         env:
