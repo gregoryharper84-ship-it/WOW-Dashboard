@@ -1,0 +1,17 @@
+{
+  "status": "RESEARCH_ONLY_PENDING_CI",
+  "experiment_class": "C",
+  "lanes": [
+    "NBA_B2B_3PT_SHOT_VARIANCE",
+    "SAME_EVENT_CROSS_MARKET_EXPOSURE",
+    "DUAL_GATE_STRONG_CONFIDENCE_VALUE"
+  ],
+  "real_holdout_metrics": "NOT_AVAILABLE",
+  "nov14_stage20_attribution": "NOT_VERIFIED",
+  "model_artifact_mutation": false,
+  "publishing_change": false,
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false,
+  "automatic_promotion": false,
+  "expected_test_count": 26
+}
