@@ -138,7 +138,13 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
         code = row.get("code") if isinstance(row.get("code"), str) else "MODEL_FACTORY_NATIVE_HOLD"
         return _receipt(s, m, sha, status="HOLD", code=code, native_status=native_status, evidence=evidence)
 
+    persistence = result.get("persistence")
+    persistence = persistence if isinstance(persistence, Mapping) else {}
+    candidate = persistence.get("candidate")
+    candidate = candidate if isinstance(candidate, Mapping) else {}
     evidence = {
+        "candidate_id": candidate.get("candidate_id") if isinstance(candidate.get("candidate_id"), str) else None,
+        "model_artifact_version": candidate.get("model_artifact_version") if isinstance(candidate.get("model_artifact_version"), str) else None,
         "model_evidence_mode": "NHL_D1_CANDIDATE",
         "source_event_n": result.get("source_event_n") if type(result.get("source_event_n")) is int else None,
         "training_feature_n": result.get("training_feature_n") if type(result.get("training_feature_n")) is int else None,
@@ -157,6 +163,14 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
             or result["training_feature_n"] <= 0
             or preflight.get("source_event_n") != result["source_event_n"]
             or preflight.get("training_feature_n") != result["training_feature_n"]
+            or not isinstance(preflight.get("training_dataset_hash"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", preflight["training_dataset_hash"]) is None
+            or persistence.get("status") != "D1_CANDIDATE_PACKAGE_PERSISTED"
+            or not isinstance(candidate.get("candidate_id"), str)
+            or not candidate["candidate_id"].strip()
+            or not isinstance(candidate.get("model_artifact_version"), str)
+            or not candidate["model_artifact_version"].strip()
+            or candidate.get("lifecycle_state") != "CANDIDATE"
         ):
             return _receipt(s, m, sha, status="HOLD", code="MODEL_FACTORY_NATIVE_RESULT_INVALID", native_status=native_status, evidence=evidence)
         if result.get("research_screen_pass") is not True:
