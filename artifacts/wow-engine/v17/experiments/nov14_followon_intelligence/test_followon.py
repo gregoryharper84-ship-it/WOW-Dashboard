@@ -83,6 +83,7 @@ def quote(**updates):
         "settlement_basis": "FULL_GAME_INCLUDING_OT",
         "quote_source_id": "book",
         "two_way_market_snapshot_id": "snapshot-1",
+        "two_way_market_snapshot_timestamp_utc": "2026-11-14T18:53:00Z",
         "two_way_market_verified": True,
         "quoted_at_utc": "2026-11-14T18:54:00Z",
         "american_odds": -110, "fee_rate_on_profit": .02,
@@ -159,6 +160,7 @@ def test_nba_no_assumed_shot_covariance():
 def test_nba_valid_frozen_covariance_estimate():
     out = nba_fatigue_three_point_shadow(nba(
         shot_count_covariance=0.0, joint_shot_covariance_artifact_hash="sha256:frozen-joint",
+        joint_shot_covariance_fit_cutoff_utc="2026-11-13T12:00:00Z",
     ))
     expected = 9 * (out["home_three_point_variance"] + out["away_three_point_variance"])
     assert isclose(out["three_point_margin_variance"], expected)
@@ -170,6 +172,7 @@ def test_nba_invalid_covariance_rejected():
     assert nba_fatigue_three_point_shadow(nba(
         shot_count_covariance=1000000,
         joint_shot_covariance_artifact_hash="sha256:frozen-joint",
+        joint_shot_covariance_fit_cutoff_utc="2026-11-13T12:00:00Z",
     ))["status"] == "SHOT_COVARIANCE_INVALID"
 
 
@@ -377,3 +380,23 @@ def test_future_but_pregame_prediction_cannot_be_used_for_earlier_asof():
     assert out["status"] == "MODEL_INPUTS_INSUFFICIENT"
     assert out["probability_rank_eligible"] is False
     assert out["value_candidate_pass"] is False
+
+
+def test_postfreeze_covariance_fit_cannot_be_used():
+    out = nba_fatigue_three_point_shadow(nba(
+        shot_count_covariance=0.0,
+        joint_shot_covariance_artifact_hash="sha256:synthetic",
+        joint_shot_covariance_fit_cutoff_utc="2026-11-14T19:00:00Z",
+    ))
+    assert out["status"] == "SHOT_COVARIANCE_NOT_VALIDATED"
+    assert out["three_point_margin_variance"] is None
+
+
+def test_stale_or_future_two_way_market_snapshot_cannot_pass_value():
+    for moment in ("2026-11-14T18:00:00Z", "2026-11-14T19:05:00Z"):
+        out = dual_gate_strong_confidence_shadow(
+            model(), quote(two_way_market_snapshot_timestamp_utc=moment),
+            policy(), as_of_utc=NOW,
+        )
+        assert out["status"] == "EXACT_PRICE_OR_IDENTITY_UNVERIFIED"
+        assert not out["value_candidate_pass"]
