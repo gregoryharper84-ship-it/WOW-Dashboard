@@ -149,3 +149,23 @@ def test_protected_reviewer_contract_step_has_literal_shell_continuations():
     assert all(not line.rstrip().endswith(slash + slash) for line in lines)
     assert ".github/scripts/tests/test_independent_source_review_receipt.py" in section
     assert ".github/scripts/tests/test_wow_v28_gemini_qa_bridge.py" in section
+
+
+def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
+    import os
+    import subprocess
+    import textwrap
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    script = textwrap.dedent(section.split("run: |", 1)[1]).replace(
+        "${{ github.event.pull_request.base.sha }}", "a" * 40)
+    git = tmp_path / "git"
+    git.write_text("#!/bin/sh\nexit 42\n")
+    git.chmod(0o755)
+    result = subprocess.run(["bash", "-c", script], env={**os.environ,
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+        "RUNNER_TEMP": str(tmp_path)}, capture_output=True)
+    assert result.returncode == 42

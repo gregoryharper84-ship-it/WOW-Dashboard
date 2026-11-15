@@ -15,7 +15,7 @@ import independent_source_review_receipt as source
 import wow_simple_security_review as semantic
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
-MODEL = "gemini-3.7-flash"
+MODEL = "gemini-3.8-flash"
 APP_ID = "5765620"
 BOT = "wow-independent-reviewer[bot]"
 PREFIX = "WOW_V28_GEMINI_QA_V1"

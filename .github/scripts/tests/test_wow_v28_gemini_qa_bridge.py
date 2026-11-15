@@ -27,6 +27,23 @@ GOOD = {"decision": "PASS", "summary": "reviewed all changed code and safeguards
 
 
 class TestGeminiQaBridge(unittest.TestCase):
+    def test_verified_model_pin_and_no_silent_substitution(self):
+        self.assertEqual(bridge.MODEL, "gemini-3.8-flash")
+        env = {"WOW_QA_REVIEW_GEMINI_API_KEY": "fake",
+               "WOW_QA_GEMINI_MODEL": "gemini-3.7-flash",
+               "WOW_QA_GEMINI_FREE_TIER_CONFIRMED": "true"}
+        with patch.dict(os.environ, env), patch.object(bridge.semantic, "request_json") as call:
+            with self.assertRaisesRegex(bridge.GeminiHold, "GEMINI_CONFIG_INVALID"):
+                bridge.model_review(CAPTURED)
+            call.assert_not_called()
+        env["WOW_QA_GEMINI_MODEL"] = bridge.MODEL
+        with patch.dict(os.environ, env), \
+             patch.object(bridge.semantic, "review_models", return_value=["gemini-3.6-flash"]), \
+             patch.object(bridge.semantic, "request_json") as call:
+            with self.assertRaisesRegex(bridge.GeminiHold, "GEMINI_MODEL_NOT_AVAILABLE"):
+                bridge.model_review(CAPTURED)
+            call.assert_not_called()
+
     def test_exact_head_diff_and_file_inventory(self):
         number, head, author, files, digest = bridge.target(CAPTURED)
         self.assertEqual((number, head, digest), (2667, SHA, DIGEST))
