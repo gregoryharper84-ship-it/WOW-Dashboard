@@ -1190,6 +1190,35 @@ def test_regression_untagged_official_target_entry_cannot_borrow_sibling_team_sc
     assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
 
 
+def test_regression_untagged_name_only_official_entry_cannot_decide():
+    """Event identity alone cannot attribute a name-only status to this team."""
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=45)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "entries": [
+            {"athlete_name": "Amon-Ra St. Brown", "game_status": "Available"},
+        ],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.designation is None
+    assert ev.basis is None
+    assert ev.report_complete is False
+    dec = evaluate_player_availability(ev.to_role_availability())
+    assert dec.status == AVAILABILITY_UNVERIFIED
+    assert dec.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
 @pytest.mark.parametrize(
     "authenticated,report_timestamp",
     [
