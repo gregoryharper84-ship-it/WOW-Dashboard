@@ -7,7 +7,7 @@ Requires explicit feature-flag installation and the independent database migrati
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import re
@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 SCHEMA = "WOW_V17_KALSHI_SLIP_RESEARCH_EXCHANGE_V1"
+MAX_SERVER_CLOCK_SKEW_SECONDS = 300
 TABLE = "wow_kalshi_slip_research_exchange"
 ROUTE = "/v17/intelligence/kalshi-slip-exchange"
 CAN_EXECUTE = False
@@ -100,6 +101,11 @@ def normalize_research_observation(raw: Mapping[str, Any]) -> dict[str, Any]:
     observed = _utc(raw["source_observed_at_utc"], "OBSERVED_AT")
     if observed > as_of:
         raise ExchangeHold("EXCHANGE_CHRONOLOGY_INVALID")
+    # Client timestamps are claims; never accept source observations or an
+    # analysis timestamp beyond the real server clock plus a small skew.
+    server_now = datetime.now(timezone.utc)
+    if observed > server_now + timedelta(seconds=MAX_SERVER_CLOCK_SKEW_SECONDS) or as_of > server_now + timedelta(seconds=MAX_SERVER_CLOCK_SKEW_SECONDS):
+        raise ExchangeHold("EXCHANGE_FUTURE_TIMESTAMP_INVALID")
     start_raw = raw.get("event_start_utc")
     if scope == "EVENT" and start_raw is None:
         raise ExchangeHold("EXCHANGE_EVENT_START_MISSING")
