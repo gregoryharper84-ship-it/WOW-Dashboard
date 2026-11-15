@@ -1026,6 +1026,82 @@ def test_regression_in_scope_gameday_inactives_string_inherits_report_team_scope
     assert decision.blocker == PLAYER_RULED_OUT
 
 
+@pytest.mark.parametrize(
+    "scope_metadata",
+    [
+        {},
+        {"event_id": "espn-401873053", "sport": "NFL"},
+        {"event_id": "espn-401873053", "sport": "NFL", "teams": ["DET", "MIA"]},
+    ],
+)
+@pytest.mark.parametrize(
+    "target_entry",
+    [
+        "Amon-Ra St. Brown",
+        {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown"},
+    ],
+)
+def test_regression_untagged_inactive_entry_cannot_inherit_sibling_mapping_team(scope_metadata, target_entry):
+    # A different tagged entry must not lend its team scope to this untagged player.
+    report = {
+        "authenticated": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=30)).isoformat(),
+        "inactives": [
+            {"athlete_id": "999", "athlete_name": "Other Player", "team": "DET"},
+            target_entry,
+        ],
+    }
+    report.update(scope_metadata)
+    ev = parse_nfl_gameday_inactives(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.is_inactive is False
+    assert ev.designation is None
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+def test_regression_contradictory_report_team_and_teams_metadata_fails_closed():
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(hours=1)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "teams": ["MIA"],
+        "entries": [
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "team": "DET",
+                "game_status": "Out",
+            },
+        ],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.evidence_status == "REPORT_SCOPE_MISMATCH"
+    assert ev.designation is None
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
 def test_regression_naive_datetime_is_normalized_as_utc(monkeypatch):
     import time
 
