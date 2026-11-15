@@ -409,18 +409,29 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
             "QA_APP_TOKEN": "fake-check-token",
         }
-        with patch.dict(m.os.environ, env, clear=True), \
-             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
-             patch.object(m.Path, "write_text", autospec=True), \
-             patch.object(m, "capture", return_value=target), \
-             patch.object(m, "prior_semantic_reject", return_value=False), \
-             patch.object(m, "semantic_review") as generate, \
-             patch.object(m, "publish_check") as publish:
-            with self.assertRaises(SystemExit) as outcome:
-                m.main()
-        self.assertEqual(outcome.exception.code, 1)
-        generate.assert_not_called()
-        self.assertEqual(publish.call_args.args[1]["reason"], "GEMINI_FREE_TIER_VERIFICATION_REQUIRED")
+        for confirmation in (None, "false", "", "TRUE"):
+            with self.subTest(free_tier_confirmation=confirmation):
+                case_env = dict(env)
+                if confirmation is not None:
+                    case_env["WOW_QA_GEMINI_FREE_TIER_CONFIRMED"] = confirmation
+                with patch.dict(m.os.environ, case_env, clear=True), \
+                     patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+                     patch.object(m.Path, "write_text", autospec=True) as save, \
+                     patch.object(m, "capture", return_value=target), \
+                     patch.object(m, "prior_semantic_reject", return_value=False), \
+                     patch.object(m, "semantic_review") as generate, \
+                     patch.object(m, "publish_check") as publish:
+                    with self.assertRaises(SystemExit) as outcome:
+                        m.main()
+                self.assertEqual(outcome.exception.code, 1)
+                generate.assert_not_called()
+                save.assert_called_once()
+                receipt = m.json.loads(save.call_args.args[1])
+                self.assertEqual(receipt["decision"], "HOLD")
+                self.assertEqual(receipt["reason"], "GEMINI_FREE_TIER_VERIFICATION_REQUIRED")
+                self.assertNotEqual(receipt["decision"], "PASS")
+                publish.assert_called_once()
+                self.assertEqual(publish.call_args.args[1], receipt)
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
