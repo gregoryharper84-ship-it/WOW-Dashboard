@@ -133,3 +133,19 @@ def test_invalid_shard_parameters_fail_closed() -> None:
         assert "0 <= index < total" in str(exc)
     else:
         raise AssertionError("invalid shard index must fail")
+
+
+def test_protected_reviewer_contract_step_has_literal_shell_continuations():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    slash = chr(92)
+    assert f"grep -Eq '^{slash}.github/(workflows|scripts)/'" in section
+    assert f"grep -Eq '^{slash}{slash}.github" not in section
+    lines = section.splitlines()
+    assert any("python -m pytest -q --tb=short -rs" in line for line in lines)
+    assert all(not line.rstrip().endswith(slash + slash) for line in lines)
+    assert ".github/scripts/tests/test_independent_source_review_receipt.py" in section
+    assert ".github/scripts/tests/test_wow_v28_gemini_qa_bridge.py" in section
