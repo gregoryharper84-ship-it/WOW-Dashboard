@@ -46,5 +46,23 @@ class TestReviewerAppPreflight(unittest.TestCase):
             m.validate_installation([self.app], [{"full_name": "another/repo"}])
 
 
+class TestReviewerPreflightWiring(unittest.TestCase):
+    def test_read_only_app_scope_and_no_cost_preflight_precede_gemini_inference(self):
+        workflow = (Path(__file__).resolve().parents[2] / "workflows" /
+                    "wow-v17-independent-qa-check.yml").read_text(encoding="utf-8")
+        gate = "- name: Preflight independent semantic reviewer before inference"
+        review = "- name: Run isolated read-only Gemini semantic review"
+        self.assertEqual(workflow.count(gate), 1)
+        self.assertLess(workflow.index(gate), workflow.index(review))
+        step = workflow.split(gate, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("if: steps.policy.outputs.review_active == 'true'", step)
+        self.assertIn("python .github/scripts/wow_v28_reviewer_app_preflight.py", step)
+        self.assertIn("WOW_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}", step)
+        self.assertIn("WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}", step)
+        self.assertIn("GEMINI_FREE_TIER_UNVERIFIED", step)
+        self.assertIn("GEMINI_CONFIG_INVALID", step)
+        self.assertNotIn("generateContent", step)
+
+
 if __name__ == "__main__":
     unittest.main()
