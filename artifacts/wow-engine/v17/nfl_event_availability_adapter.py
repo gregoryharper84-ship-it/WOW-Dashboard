@@ -332,7 +332,7 @@ def parse_nfl_official_game_status_report(
             normalize_nfl_designation(e.get("game_status") or e.get("designation") or e.get("status"))
             for e in matching_entries
         }
-        if len(desigs) > 1:
+        if len(desigs) > 1 and scope_valid:
             return NFLPlayerAvailabilityEvidence(
                 athlete_id=str(athlete_id),
                 athlete_name=athlete_name,
@@ -361,11 +361,11 @@ def parse_nfl_official_game_status_report(
             source=SOURCE_NFL_OFFICIAL_GAME_STATUS,
             captured_at=captured.isoformat(),
             evidence_status="RETRIEVED" if scope_valid else "REPORT_SCOPE_MISMATCH",
-            designation=desig,
+            designation=desig if scope_valid else None,
             basis=None,
             fresh=fresh,
             report_complete=is_auth and is_complete and scope_valid,
-            risk=risk,
+            risk=risk if scope_valid else False,
             provenance={
                 "report_timestamp": report_ts.isoformat() if report_ts else None,
                 "authenticated": is_auth,
