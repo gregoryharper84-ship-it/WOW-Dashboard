@@ -62,7 +62,7 @@ def _token(value: Any, field: str) -> str:
 
 
 def _host(value: Any) -> str:
-    if value not in HOSTS:
+    if not isinstance(value, str) or value not in HOSTS:
         raise ExchangeHold("EXCHANGE_HOST_UNSUPPORTED")
     return value
 
@@ -81,20 +81,20 @@ def normalize_research_observation(raw: Mapping[str, Any]) -> dict[str, Any]:
     if scope not in ("EVENT", "COHORT"):
         raise ExchangeHold("EXCHANGE_SCOPE_INVALID")
     sport = raw["sport"]
-    if sport not in SPORTS or (scope == "EVENT" and sport == "MIXED"):
+    if not isinstance(sport, str) or sport not in SPORTS or (scope == "EVENT" and sport == "MIXED"):
         raise ExchangeHold("EXCHANGE_SPORT_INVALID")
     reference_id = _token(raw["reference_id"], "REFERENCE_ID")
     market_ref = raw.get("market_ref")
     if market_ref is not None:
         market_ref = _token(market_ref, "MARKET_REF")
     finding_type = raw["finding_type"]
-    if finding_type not in FINDING_TYPES:
+    if not isinstance(finding_type, str) or finding_type not in FINDING_TYPES:
         raise ExchangeHold("EXCHANGE_FINDING_TYPE_INVALID")
     finding_code = raw["finding_code"]
     if not isinstance(finding_code, str) or not CODE.fullmatch(finding_code):
         raise ExchangeHold("EXCHANGE_FINDING_CODE_INVALID")
     stage = raw["analysis_stage"]
-    if stage not in STAGES:
+    if not isinstance(stage, str) or stage not in STAGES:
         raise ExchangeHold("EXCHANGE_STAGE_INVALID")
     as_of = _utc(raw["as_of_utc"], "AS_OF")
     observed = _utc(raw["source_observed_at_utc"], "OBSERVED_AT")
