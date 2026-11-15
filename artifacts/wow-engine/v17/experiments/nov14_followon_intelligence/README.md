@@ -40,3 +40,7 @@ CI should also run existing portfolio, cash-single and basketball specialist tes
 - **Not established:** real model lift, calibrated intervals, officially certified strong-confidence card, verified cross-market portfolio joint models, deployment or user-app synchronization.
 
 Do not call this research packet a full model improvement until real data and held-out validation substantiate the gain.
+
+## Branch synchronization
+
+The research branch was reconciled with current main without overwriting later changes to engineering adoption files. This preserves the experiment-only diff and requires a fresh exact-head CI acceptance after synchronization.
