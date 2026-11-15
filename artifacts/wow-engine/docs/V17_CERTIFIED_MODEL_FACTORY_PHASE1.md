@@ -43,6 +43,7 @@ native maintainers. It cannot perform stages 7 or 8.
 - **NHL Winner:** call run_nhl_model_maintenance(db, training_code_sha=SHA),
   require CANDIDATE_EVIDENCE_UPDATED with a complete
   NHL_CANDIDATE_PREFLIGHT_READY receipt, matching cohort counts,
+  and a nonempty persisted D1 CANDIDATE identity/version,
   and research_screen_pass=true. A source review still marked
   REQUIRED must be completed independently before certification.
 - All other sport/market keys remain unsupported until their exact
@@ -61,9 +62,9 @@ Run from artifacts/wow-engine:
 
     python -m pytest -q test_v17_certified_model_factory.py
 
-Thirteen isolated local unit tests cover both sport paths, no cross-adapter
+Fourteen isolated local unit tests cover both sport paths, no cross-adapter
 fallback, unsupported sport/market, bad SHA/seasons, typed blocker propagation,
-failed NHL research screen, malformed/absent candidate preflight, NBA nested replay readiness, nested
+failed NHL research screen, malformed/absent candidate preflight, persisted NHL candidate identity, NBA nested replay readiness, nested
 promotion/publication flags, and exception sanitization. These are mocked
 contract tests, not DB-backed replay, full CI, model certification or
 production verification.
