@@ -118,7 +118,7 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           inventory="$(mktemp)"
           trap 'rm -f "$inventory"' EXIT
-          git diff --name-only "$BASE...HEAD" > "$inventory"
+          git diff --no-renames --name-only "$BASE...HEAD" > "$inventory"
           if grep -Eq '^\.github/(workflows|scripts)/' "$inventory"; then
             python -m pytest -q --tb=short -rs \
               .github/scripts/tests/test_independent_source_review_receipt.py \

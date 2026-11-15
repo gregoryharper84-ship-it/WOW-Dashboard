@@ -151,6 +151,38 @@ def test_protected_reviewer_contract_step_has_literal_shell_continuations():
     assert ".github/scripts/tests/test_wow_v28_gemini_qa_bridge.py" in section
 
 
+def test_protected_reviewer_contract_rename_keeps_original_path(tmp_path):
+    """A rename OUT of .github must still trigger protected reviewer suites."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    assert 'git diff --no-renames --name-only "$BASE...HEAD" > "$inventory"' in section
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                              capture_output=True, text=True).stdout
+
+    git("init", "-q")
+    git("config", "user.name", "WOW-CI")
+    git("config", "user.email", "ci@example.invalid")
+    old = tmp_path / ".github/scripts/tests/test_guard.py"
+    old.parent.mkdir(parents=True)
+    old.write_text("safe = True\\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    moved = tmp_path / "docs/test_guard.py"
+    moved.parent.mkdir()
+    git("mv", str(old.relative_to(tmp_path)), str(moved.relative_to(tmp_path)))
+    git("commit", "-qm", "rename-out")
+    inventory = git("diff", "--no-renames", "--name-only", "HEAD^", "HEAD").splitlines()
+    assert ".github/scripts/tests/test_guard.py" in inventory
+    assert "docs/test_guard.py" in inventory
+
+
 def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
     import os
     import subprocess
