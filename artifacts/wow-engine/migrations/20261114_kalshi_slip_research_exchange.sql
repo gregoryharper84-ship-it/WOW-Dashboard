@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS public.wow_kalshi_slip_research_exchange (
 CREATE INDEX IF NOT EXISTS wow_kalshi_slip_research_lookup_idx
   ON public.wow_kalshi_slip_research_exchange (scope, reference_id, created_at DESC);
 ALTER TABLE public.wow_kalshi_slip_research_exchange ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.wow_kalshi_slip_research_exchange FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON public.wow_kalshi_slip_research_exchange FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT, INSERT ON public.wow_kalshi_slip_research_exchange TO service_role;
 
 -- Defense in depth: even a privileged API caller may not rewrite research
