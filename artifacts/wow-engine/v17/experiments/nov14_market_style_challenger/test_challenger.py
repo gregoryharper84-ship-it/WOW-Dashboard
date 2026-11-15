@@ -21,9 +21,11 @@ def history():
         for dependent in (True, False):
             rows.append({
                 "prediction_id": f"hist-{int(dependent)}-{i}",
+                "event_id": f"event-{int(dependent)}-{i}",
                 "sport": "BOXING", "market_role": "FAVORITE",
                 "immutable_pregame": True,
                 "immutable_model_timestamp": "2026-10-10T17:00:00Z",
+                "event_start_timestamp": "2026-10-10T20:00:00Z",
                 "official_settlement_timestamp": "2026-10-10T22:00:00Z",
                 "calibrated_probability": .88 if dependent else .70,
                 "market_prior_weight": .7 if dependent else .2,
@@ -168,3 +170,29 @@ def test_safety_flags():
         assert result["automatic_parameter_mutation"] is False
         assert result["publication_allowed"] is False
         assert result["probability_mutated"] is False
+
+
+def test_duplicate_event_distinct_prediction_ids_count_once():
+    rows = history()
+    rows[1]["event_id"] = rows[0]["event_id"]
+    result = market_dependency_shadow(fc(), rows)
+    assert result["cohort_n"] == {"dependent": 34, "independent": 33}
+
+
+def test_adverse_regime_realization_distinct_from_loss_mass():
+    rows = regimes()
+    rows[0]["regime_probability"] = .75
+    rows[1]["regime_probability"] = .25
+    rows[1]["conditional_win_probability"] = .90
+    rows[1]["conditional_win_stress_floor"] = .80
+    result = combat_style_mixture_shadow(sport="MMA", regimes=rows, style_features=features())
+    assert abs(result["failure_path_score"] - .025) < 1e-10
+    assert result["adverse_regime_probability_max"] == .25
+    assert result["material_failure_path"] is True
+
+
+def test_historical_postkickoff_receipt_rejected():
+    rows = history()
+    for record in rows:
+        record["event_start_timestamp"] = "2026-10-10T15:00:00Z"
+    assert market_dependency_shadow(fc(), rows)["status"] == "INSUFFICIENT_SAMPLE"

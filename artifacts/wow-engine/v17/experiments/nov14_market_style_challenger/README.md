@@ -16,13 +16,16 @@ calibration cohort. Do not backfill sporting forecasts or infer model reliabilit
    floor is diagnostic; it is NOT a calibrated interval. This exploratory
    approach may be confounded by probability distribution differences and
    must pass covariate-matched chronological holdouts before consideration.
+   Historical records must include a unique event ID, immutable pregame issuance,
+   kickoff and settlement timestamps; only one row per event counts.
    Incumbent PrizePicks cash-single market-dependency rejection stays active.
 2. The combat style mixture scores mutually exclusive fitted MMA/boxing regimes
    using sum(weight * conditional_win_probability). Required upstream style
    features: takedown_defense_vs_chain_wrestling_delta (MMA) and
    high_guard_pressure_jab_absorption (boxing). Stress floors omit uncertainty
    in weights and therefore are NOT calibrated lower bounds. A failure score
-   >0.20 is only a hypothesis flag; not production policy.
+   >0.20 is a single adverse-regime realization probability hypothesis flag,
+   distinct from expected adverse loss mass; not production policy.
 
 ## Run
 

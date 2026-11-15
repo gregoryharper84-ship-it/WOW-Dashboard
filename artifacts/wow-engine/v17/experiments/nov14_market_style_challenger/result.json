@@ -2,7 +2,7 @@
   "status": "DIAGNOSTIC_ONLY",
   "experiment_class": "C",
   "real_replay_status": "BLOCKED_NO_VERIFIED_NOV14_STAGE20_RECEIPTS",
-  "tests": "16 local synthetic regressions to be verified",
+  "tests": "19 synthetic regression cases; exact-head CI pending",
   "production_change": false,
   "automatic_parameter_mutation": false,
   "can_execute": false,

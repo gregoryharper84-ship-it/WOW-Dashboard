@@ -81,26 +81,32 @@ def market_dependency_shadow(
     dependent_residuals: list[float] = []
     independent_residuals: list[float] = []
     seen_prediction_ids: set[str] = set()
+    seen_event_ids: set[str] = set()
     for record in frozen_history:
         if str(record.get("sport") or "").strip().upper() != sport:
             continue
         if str(record.get("market_role") or "").strip().upper() != role:
             continue
         identity = str(record.get("prediction_id") or "").strip()
-        if not identity or identity in seen_prediction_ids or record.get("immutable_pregame") is not True:
+        event_id = str(record.get("event_id") or "").strip()
+        if not identity or identity in seen_prediction_ids or not event_id or event_id in seen_event_ids:
+            continue
+        if record.get("immutable_pregame") is not True:
             continue
         issued = _aware(record.get("immutable_model_timestamp"))
+        event_start = _aware(record.get("event_start_timestamp"))
         settled = _aware(record.get("official_settlement_timestamp"))
         historical_p = _finite_prob(record.get("calibrated_probability"))
         historical_weight = _finite_prob(record.get("market_prior_weight"))
         outcome = record.get("official_binary_outcome")
-        if issued is None or settled is None or not issued < settled < when:
+        if issued is None or event_start is None or settled is None or not issued < event_start < settled < when:
             continue
         if historical_p is None or historical_weight is None:
             continue
         if type(outcome) not in (int, float) or outcome not in (0, 1):
             continue
         seen_prediction_ids.add(identity)
+        seen_event_ids.add(event_id)
         adverse_residual = max(0.0, historical_p - float(outcome))
         (dependent_residuals if historical_weight > 0.50 else independent_residuals).append(adverse_residual)
     output["cohort_n"] = {
@@ -151,7 +157,7 @@ def combat_style_mixture_shadow(
         return output
     if not style_features.get("feature_snapshot_hash"):
         return {**output, "status": "SOURCE_PROVENANCE_MISSING"}
-    total_weight = mix = stress = failure = 0.0
+    total_weight = mix = stress = failure = max_adverse_weight = 0.0
     labels: set[str] = set()
     for regime in regimes:
         label = str(regime.get("regime") or "").strip()
@@ -170,6 +176,7 @@ def combat_style_mixture_shadow(
         stress += weight * floor
         if regime.get("adverse_style_path") is True:
             failure += weight * (1 - probability)
+            max_adverse_weight = max(max_adverse_weight, weight)
     if abs(total_weight - 1.0) > 1e-9:
         return output
     return {
@@ -177,7 +184,8 @@ def combat_style_mixture_shadow(
         "mixture_probability_shadow": mix,
         "stress_floor_shadow": stress,
         "failure_path_score": failure,
-        "material_failure_path": failure > 0.20,  # research hypothesis only
+        "adverse_regime_probability_max": max_adverse_weight,
+        "material_failure_path": max_adverse_weight > 0.20,  # single adverse regime realization hypothesis
         "required_style_feature": required_feature,
         "regime_count": len(regimes),
     }
