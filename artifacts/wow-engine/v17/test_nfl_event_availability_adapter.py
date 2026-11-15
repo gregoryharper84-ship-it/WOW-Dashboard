@@ -1492,8 +1492,11 @@ def test_regression_official_conflict_not_overridden_by_espn_out():
             {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "game_status": "Out"},
         ],
     }
-    # ESPN has a fresh dated Out entry
+    # ESPN has a fresh, event-scoped dated Out entry. It must be
+    # independently eligible before testing conflict precedence.
     fresh_espn = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {
                 "team": {"abbreviation": "DET"},
@@ -1507,6 +1510,19 @@ def test_regression_official_conflict_not_overridden_by_espn_out():
             }
         ]
     }
+    direct_espn = parse_espn_event_summary_injuries(
+        fresh_espn,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        captured=CAPTURED,
+        event_start=KICKOFF,
+    )
+    assert direct_espn.evidence_status == "RETRIEVED"
+    assert direct_espn.fresh is True
+    assert direct_espn.designation == "OUT"
+
     comp_ev = compose_nfl_event_availability(
         athlete_id="4361788",
         athlete_name="Amon-Ra St. Brown",
@@ -1588,6 +1604,37 @@ def test_adversarial_direct_official_parser_rejects_untrusted_or_stale_ruleout(
     assert evidence.designation is None
     assert evidence.risk is False
     assert evidence.report_complete is False
+    decision = evaluate_player_availability(evidence.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+def test_regression_stale_espn_entry_25h_not_decisive():
+    # A valid event and team-scoped OUT entry that is 25h old exceeds
+    # the 24h evidence-age limit; it must not become an unavailable player.
+    old = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "injuries": [{
+            "team": {"abbreviation": "DET"},
+            "injuries": [{
+                "athlete": {"id": "4361788", "displayName": "Amon-Ra St. Brown"},
+                "status": "Out",
+                "date": (CAPTURED - timedelta(hours=25)).isoformat(),
+            }],
+        }],
+    }
+    evidence = parse_espn_event_summary_injuries(
+        old,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        captured=CAPTURED,
+        event_start=KICKOFF,
+    )
+    assert evidence.fresh is False
+    assert evidence.designation is None
     decision = evaluate_player_availability(evidence.to_role_availability())
     assert decision.status == AVAILABILITY_UNVERIFIED
     assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
