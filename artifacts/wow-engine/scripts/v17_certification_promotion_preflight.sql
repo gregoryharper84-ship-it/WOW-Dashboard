@@ -61,6 +61,67 @@ prop_model_counts AS (
 ),
 requested_props(sport) AS (
     VALUES ('MLB'), ('NBA'), ('NFL'), ('WNBA')
+),
+requested_prop_families(sport, stat_type) AS (
+    -- Authoritative expected prop families: every lane declared in
+    -- v17/prop_capability_manifest.py DECLARED_PROP_LANES for a requested prop
+    -- sport. Enumerating them here (instead of inferring families from artifact
+    -- rows) means a family the registry has never seen still gets a row and a
+    -- PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND finding. The preflight guard test
+    -- fails if this list drifts from the manifest.
+    VALUES
+    ('MLB', '1ST_INNING_PITCHES_THROWN'),
+    ('MLB', 'BALLS_THROWN'),
+    ('MLB', 'HITTER_FANTASY_SCORE'),
+    ('MLB', 'PITCHER_FANTASY_SCORE'),
+    ('MLB', 'PITCHER_STRIKEOUTS'),
+    ('MLB', 'PITCHING_OUTS'),
+    ('MLB', 'PLATE_APPEARANCES'),
+    ('MLB', 'STRIKES_THROWN'),
+    ('NBA', 'ASSISTS'),
+    ('NBA', 'FANTASY_SCORE'),
+    ('NBA', 'POINTS'),
+    ('NBA', 'POINTS_ASSISTS'),
+    ('NBA', 'POINTS_REBOUNDS'),
+    ('NBA', 'PRA'),
+    ('NBA', 'REBOUNDS'),
+    ('NBA', 'REBOUNDS_ASSISTS'),
+    ('NBA', 'THREE_POINTERS_MADE'),
+    ('NFL', 'ANYTIME_TD'),
+    ('NFL', 'COMPLETIONS'),
+    ('NFL', 'FANTASY_SCORE'),
+    ('NFL', 'PASSING_TOUCHDOWNS'),
+    ('NFL', 'PASSING_YARDS'),
+    ('NFL', 'PASS_ATTEMPTS'),
+    ('NFL', 'RECEIVING_YARDS'),
+    ('NFL', 'RECEPTIONS'),
+    ('NFL', 'RUSHING_YARDS'),
+    ('NFL', 'RUSH_ATTEMPTS'),
+    ('WNBA', 'ASSISTS'),
+    ('WNBA', 'FANTASY_SCORE'),
+    ('WNBA', 'POINTS'),
+    ('WNBA', 'POINTS_ASSISTS'),
+    ('WNBA', 'POINTS_REBOUNDS'),
+    ('WNBA', 'PRA'),
+    ('WNBA', 'REBOUNDS'),
+    ('WNBA', 'REBOUNDS_ASSISTS'),
+    ('WNBA', 'THREE_POINTERS_MADE')
+),
+prop_inventory AS (
+    -- Every declared family is inventoried even when the registry holds no row
+    -- for it, so an absent family reports NOT_FOUND rather than disappearing
+    -- from the audit. Registry families that the manifest does not declare for
+    -- these sports stay visible too: they are evidence of manifest/registry
+    -- drift, and dropping them would hide it.
+    SELECT COALESCE(rpf.sport, pm.sport) AS sport,
+           COALESCE(rpf.stat_type, pm.stat_type) AS stat_type,
+           COALESCE(pm.fitted_artifact_count,0) AS fitted_artifact_count,
+           COALESCE(pm.active_promoted_artifacts,0) AS active_promoted_artifacts
+    FROM requested_prop_families rpf
+    FULL OUTER JOIN prop_model_counts pm
+      ON pm.sport = upper(btrim(rpf.sport))
+     AND pm.stat_type = upper(btrim(rpf.stat_type))
+    WHERE COALESCE(rpf.sport, pm.sport) IN (SELECT sport FROM requested_props)
 )
 SELECT rt.sport, 'LLP_TEAM_BETTING_ENGINE'::text AS routed_lane,
        'MONEYLINE'::text AS market_key,
@@ -108,17 +169,16 @@ CROSS JOIN ncaaf_model_counts nm
 CROSS JOIN ncaaf_calibrator_counts nc
 LEFT JOIN latest_nfl_health nh ON rt.sport='NFL'
 UNION ALL
-SELECT rp.sport, 'WOW_PROP_LANE'::text, COALESCE(pm.stat_type,'__NO_FITTED_ARTIFACT_ROWS__'),
-       COALESCE(pm.fitted_artifact_count,0),
-       COALESCE(pm.active_promoted_artifacts,0),
+SELECT pi.sport, 'WOW_PROP_LANE'::text, pi.stat_type,
+       pi.fitted_artifact_count,
+       pi.active_promoted_artifacts,
        NULL::int, NULL::text, NULL::text, NULL::text,
        NULL::text, NULL::text,
-       CASE WHEN COALESCE(pm.active_promoted_artifacts,0) = 0
+       CASE WHEN pi.active_promoted_artifacts = 0
             THEN 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
             ELSE 'PROP_REGISTRY_FLAGS_PRESENT_REQUIRES_CERTIFIED_ROUTE_REPLAY'
        END,
        FALSE AS preflight_authorizes_publication,
        FALSE AS can_execute
-FROM requested_props rp
-LEFT JOIN prop_model_counts pm ON pm.sport=upper(btrim(rp.sport))
+FROM prop_inventory pi
 ORDER BY routed_lane, sport, market_key;

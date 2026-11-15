@@ -72,12 +72,59 @@ def test_prop_registry_uses_canonical_certified_lifecycle_not_publish_flag():
 def test_prop_inventory_is_per_stat_family_and_requires_calibrator_and_line_range():
     sql = SQL.read_text()
     assert 'GROUP BY upper(btrim(sport)), upper(btrim(stat_type))' in sql
-    assert 'LEFT JOIN prop_model_counts pm ON pm.sport=upper(btrim(rp.sport))' in sql
-    assert "'__NO_FITTED_ARTIFACT_ROWS__'" in sql
+    assert 'FROM requested_prop_families rpf' in sql
+    assert 'FULL OUTER JOIN prop_model_counts pm' in sql
+    assert 'AND pm.stat_type = upper(btrim(rpf.stat_type))' in sql
     assert "NULLIF(btrim(calibrator_version),'') IS NOT NULL" in sql
     assert 'supported_line_min IS NOT NULL' in sql
     assert 'FALSE AS preflight_authorizes_publication' in sql
     assert 'FALSE AS can_execute' in sql
+
+
+PREFLIGHT_PROP_SPORTS = ('MLB', 'NBA', 'NFL', 'WNBA')
+MANIFEST = Path(__file__).resolve().parents[1] / 'v17' / 'prop_capability_manifest.py'
+
+
+def _declared_prop_families():
+    """The governed expected set: DECLARED_PROP_LANES for the requested sports."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location('prop_capability_manifest_under_test', MANIFEST)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses introspect their own module
+    spec.loader.exec_module(module)
+    return {
+        (sport, stat_type)
+        for (sport, stat_type) in module.DECLARED_PROP_LANES
+        if sport in PREFLIGHT_PROP_SPORTS
+    }
+
+
+def _preflight_prop_families(sql):
+    block = re.search(r'requested_prop_families\(sport, stat_type\) AS \((.*?)\n\),', sql, re.S)
+    assert block is not None, 'the preflight must enumerate its expected prop families'
+    return set(re.findall(r"\('([A-Z]+)', '([A-Z0-9_]+)'\)", block.group(1)))
+
+
+def test_expected_prop_families_are_the_governed_declared_set():
+    enumerated = _preflight_prop_families(SQL.read_text())
+    declared = _declared_prop_families()
+    assert enumerated == declared, sorted(enumerated ^ declared)
+    # Dropping a declared family here would silently skip its not-found finding.
+    assert {sport for sport, _stat in enumerated} == set(PREFLIGHT_PROP_SPORTS)
+    assert len(enumerated) >= 30, len(enumerated)
+
+
+def test_declared_family_without_a_registry_row_still_reports_not_found():
+    sql = SQL.read_text()
+    # The declared set drives the inventory, so a family the registry has never
+    # seen keeps its row and reports NOT_FOUND; registry families the manifest
+    # does not declare stay visible instead of vanishing from the audit.
+    assert 'FULL OUTER JOIN prop_model_counts pm' in sql
+    assert 'COALESCE(pm.active_promoted_artifacts,0) AS active_promoted_artifacts' in sql
+    assert 'WHERE COALESCE(rpf.sport, pm.sport) IN (SELECT sport FROM requested_props)' in sql
+    assert "THEN 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +235,18 @@ def test_executed_query_separates_certified_and_uncertified_families_in_same_spo
     assert prop[('MLB', 'HITS')] == flags
 
 
-def test_executed_query_reports_sport_without_artifacts_and_never_authorizes(preflight_rows):
+def test_executed_query_inventories_declared_families_without_registry_rows(preflight_rows):
     prop = _prop(preflight_rows)
-    assert prop[('NBA', '__NO_FITTED_ARTIFACT_ROWS__')] == 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
-    assert prop[('WNBA', '__NO_FITTED_ARTIFACT_ROWS__')] == 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
+    missing = 'PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND'
+    # Declared families with no registry row still get a row and a finding.
+    assert prop[('NBA', 'PRA')] == missing
+    assert prop[('WNBA', 'POINTS')] == missing
+    assert prop[('NFL', 'FANTASY_SCORE')] == missing
+    assert prop[('MLB', 'PITCHER_STRIKEOUTS')] == missing
+    # Every requested sport is inventoried, not just the ones with artifacts.
+    assert {sport for sport, _stat in prop} == set(PREFLIGHT_PROP_SPORTS)
+    # A certified registry family the manifest does not declare stays visible.
+    assert prop[('MLB', 'HITS')] == 'PROP_REGISTRY_FLAGS_PRESENT_REQUIRES_CERTIFIED_ROUTE_REPLAY'
     # Every row, team and prop, keeps the non-authorizing flags.
     assert preflight_rows
     for r in preflight_rows:

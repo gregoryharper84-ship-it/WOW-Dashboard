@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Mapping, Any
 
 from v17.nhl_event_identity import team_abbreviation
+from v17.nhl_starter_goalie_confirmation import REQUIRED_RECEIPTS as MIN_INDEPENDENT_SOURCES
 
 CAN_EXECUTE = False
 REQUIRED = (
@@ -31,12 +32,69 @@ def _time(value: Any) -> datetime | None:
         return None
 
 
+def _goalie_confirmation_blockers(
+    confirmation: Mapping[str, Any] | None,
+    evidence: Mapping[str, Any],
+    *,
+    official_id: Any,
+) -> list[str]:
+    """Require an independently confirmed starter receipt bound to this event.
+
+    A caller-provided ``goalie_status='CONFIRMED'`` string is not proof. The
+    receipt must be the one ``v17.nhl_starter_goalie_confirmation`` derives
+    server-side from at least two independent registered providers, and it must
+    agree with the evidence row on the exact event, derived identity snapshot
+    and verification instant.
+    """
+    if not isinstance(confirmation, Mapping):
+        return ["NHL_GOALIE_CONFIRMATION_RECEIPT_MISSING"]
+    blockers: list[str] = []
+    if (
+        str(confirmation.get("goalie_status") or "").strip().upper() != "CONFIRMED"
+        or confirmation.get("derived_server_side") is not True
+        or str(confirmation.get("official_event_id") or "") != str(official_id or "")
+    ):
+        blockers.append("NHL_GOALIE_CONFIRMATION_RECEIPT_NOT_CONFIRMED")
+    receipts = confirmation.get("provider_receipts")
+    if not isinstance(receipts, (list, tuple)) or len(receipts) < MIN_INDEPENDENT_SOURCES:
+        blockers.append("NHL_GOALIE_CONFIRMATION_SOURCES_NOT_INDEPENDENT")
+    receipt_snapshot = confirmation.get("goalie_identity_snapshot_id")
+    if (
+        not isinstance(receipt_snapshot, str)
+        or not receipt_snapshot.strip()
+        or receipt_snapshot != evidence.get("goalie_identity_snapshot_id")
+    ):
+        blockers.append("NHL_GOALIE_IDENTITY_SNAPSHOT_MISMATCH")
+    receipt_at = _time(confirmation.get("verified_at"))
+    evidence_at = _time(evidence.get("goalie_status_observed_at"))
+    if receipt_at is None or evidence_at is None or receipt_at != evidence_at:
+        blockers.append("NHL_GOALIE_CONFIRMATION_TIME_MISMATCH")
+    home_goalie = str(confirmation.get("home_goalie_id") or "").strip()
+    away_goalie = str(confirmation.get("away_goalie_id") or "").strip()
+    if not home_goalie or not away_goalie or home_goalie == away_goalie:
+        blockers.append("NHL_GOALIE_IDENTITY_UNVERIFIED")
+    # The derived receipt carries no rank field; what matters is that nothing
+    # it does carry asserts authority.
+    if (
+        confirmation.get("probability_publishable") is not False
+        or confirmation.get("can_execute") is not False
+        or confirmation.get("rank_eligible", False) is not False
+    ):
+        blockers.append("NHL_GOALIE_CONFIRMATION_AUTHORITY_INVALID")
+    return blockers
+
+
 def validate_nhl_pregame_evidence(
     evidence: Mapping[str, Any], *, as_of_utc: datetime,
     max_status_age_minutes: int = 60,
     resolved_identity: Mapping[str, Any] | None = None,
+    goalie_confirmation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return typed blockers. PASS means only source completeness, not model readiness."""
+    """Return typed blockers. PASS means only source completeness, not model readiness.
+
+    A goalie can pass only with two independent official starter receipts. A
+    caller's ``goalie_status`` label alone never satisfies the gate.
+    """
     if as_of_utc.tzinfo is None:
         raise ValueError("as_of_utc must be timezone-aware")
     def _missing_required(value: Any) -> bool:
@@ -103,6 +161,11 @@ def validate_nhl_pregame_evidence(
             reasons.append("NHL_CANONICAL_IDENTITY_RECEIPT_MISMATCH")
     if status_at is None or status_at > now or (now - status_at).total_seconds() > max_status_age_minutes * 60:
         reasons.append("NHL_GOALIE_STATUS_STALE")
+    reasons.extend(
+        _goalie_confirmation_blockers(
+            goalie_confirmation, evidence, official_id=official_id
+        )
+    )
     # A caller may supply a start time up to 30 minutes different from the
     # official schedule. Only the server-owned resolved start can prove that
     # the game is still pregame; a later caller timestamp cannot override it.
