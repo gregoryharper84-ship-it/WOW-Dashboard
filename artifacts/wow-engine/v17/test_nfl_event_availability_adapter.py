@@ -911,3 +911,74 @@ def test_regression_4576456234_undated_espn_out_does_not_produce_decisive_out():
     )
     assert comp_ev.designation is None
     assert evaluate_player_availability(comp_ev.to_role_availability()).status == AVAILABILITY_UNVERIFIED
+
+
+def test_regression_official_report_age_parameter_respected_in_compose():
+    # Official report is 3 hours old (older than default 2h max_official_report_age_seconds = 7200)
+    # Default max_espn_report_age_seconds is 24h (86400).
+    stale_official = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(hours=3)).isoformat(),
+        "team": "DET",
+        "event_id": "espn-401873053",
+        "entries": [],
+    }
+    comp_ev = compose_nfl_event_availability(
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+        official_game_status=stale_official,
+    )
+    assert comp_ev.fresh is False
+    assert comp_ev.basis != "FRESH_OFFICIAL_REPORT_UNLISTED"
+    role_av = comp_ev.to_role_availability()
+    assert evaluate_player_availability(role_av).status == AVAILABILITY_UNVERIFIED
+
+
+def test_regression_official_conflict_not_overridden_by_espn_out():
+    # Official report contains duplicate conflicting entries for same athlete (Questionable vs Out)
+    conflicting_official = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=30)).isoformat(),
+        "team": "DET",
+        "event_id": "espn-401873053",
+        "entries": [
+            {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "game_status": "Questionable"},
+            {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "game_status": "Out"},
+        ],
+    }
+    # ESPN has a fresh dated Out entry
+    fresh_espn = {
+        "injuries": [
+            {
+                "team": {"abbreviation": "DET"},
+                "injuries": [
+                    {
+                        "athlete": {"id": "4361788", "displayName": "Amon-Ra St. Brown"},
+                        "status": "Out",
+                        "date": (CAPTURED - timedelta(minutes=15)).isoformat(),
+                    }
+                ],
+            }
+        ]
+    }
+    comp_ev = compose_nfl_event_availability(
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+        official_game_status=conflicting_official,
+        espn_event_summary=fresh_espn,
+    )
+    # Must preserve the detected official-report conflict: fail closed to UNVERIFIED, NOT UNAVAILABLE!
+    assert comp_ev.evidence_status == "REPORT_ENTRY_CONFLICT_UNVERIFIED"
+    role_av = comp_ev.to_role_availability()
+    assert evaluate_player_availability(role_av).status == AVAILABILITY_UNVERIFIED
+

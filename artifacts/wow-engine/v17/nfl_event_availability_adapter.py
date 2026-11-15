@@ -671,8 +671,11 @@ def compose_nfl_event_availability(
             event_id=event_id,
             event_start=event_start,
             captured=captured,
-            max_report_age_seconds=max_espn_report_age_seconds,
+            max_report_age_seconds=max_official_report_age_seconds,
         )
+        # If official report had conflicting entries for this player, fail closed immediately
+        if off.evidence_status == "REPORT_ENTRY_CONFLICT_UNVERIFIED":
+            return off
         # If report was complete & fresh, its decision is authoritative
         if off.report_complete and off.fresh:
             return off
