@@ -22,6 +22,7 @@ from v17.nfl_event_availability_adapter import (
     SOURCE_ESPN_EVENT_INJURIES,
     SOURCE_NFL_OFFICIAL_GAME_STATUS,
     SOURCE_NFL_OFFICIAL_INACTIVES,
+    _parse_iso_ts,
     compose_nfl_event_availability,
     normalize_nfl_designation,
     parse_espn_event_summary_injuries,
@@ -938,6 +939,106 @@ def test_regression_foreign_event_official_conflict_does_not_suppress_current_ev
     decision = evaluate_player_availability(comp_ev.to_role_availability())
     assert decision.status == AVAILABILITY_UNAVAILABLE
     assert decision.blocker == PLAYER_RULED_OUT
+
+
+@pytest.mark.parametrize(
+    "scope_overrides",
+    [
+        {"event_id": "espn-FOREIGN-EVENT"},
+        {"sport": "NBA"},
+        {"team": "MIA"},
+    ],
+)
+def test_regression_foreign_scope_gameday_inactives_cannot_preempt_current_event_clearance(scope_overrides):
+    foreign_inactives = {
+        "authenticated": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=30)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "inactives": ["Amon-Ra St. Brown"],
+    }
+    foreign_inactives.update(scope_overrides)
+    ev = parse_nfl_gameday_inactives(
+        foreign_inactives,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.evidence_status == "REPORT_SCOPE_MISMATCH"
+    assert ev.is_inactive is False
+    assert ev.designation is None
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+    # Invalid-scope inactives must not preempt current-event official clearance.
+    current_official = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=45)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "entries": [],
+    }
+    composed = compose_nfl_event_availability(
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+        official_game_status=current_official,
+        gameday_inactives=foreign_inactives,
+    )
+    assert composed.source == SOURCE_NFL_OFFICIAL_GAME_STATUS
+    assert composed.basis == "FRESH_OFFICIAL_REPORT_UNLISTED"
+    assert evaluate_player_availability(composed.to_role_availability()).status == AVAILABILITY_AVAILABLE
+
+
+def test_regression_in_scope_gameday_inactives_string_inherits_report_team_scope():
+    in_scope = {
+        "authenticated": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=30)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "inactives": ["Amon-Ra St. Brown"],
+    }
+    ev = parse_nfl_gameday_inactives(
+        in_scope,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.evidence_status == "RETRIEVED"
+    assert ev.is_inactive is True
+    assert ev.designation == "INACTIVE"
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNAVAILABLE
+    assert decision.blocker == PLAYER_RULED_OUT
+
+
+def test_regression_naive_datetime_is_normalized_as_utc(monkeypatch):
+    import time
+
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset is unavailable on this platform")
+    naive = datetime(2026, 11, 15, 15, 0, 0)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setenv("TZ", "EST5")
+            time.tzset()
+            assert _parse_iso_ts(naive) == naive.replace(tzinfo=timezone.utc)
+    finally:
+        time.tzset()
 
 
 def test_regression_espn_post_kickoff_or_stale_entry_not_decisive():
