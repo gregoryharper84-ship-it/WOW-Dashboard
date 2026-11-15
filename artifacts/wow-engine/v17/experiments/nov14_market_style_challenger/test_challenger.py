@@ -239,8 +239,11 @@ def test_event_representative_latest_pregame_receipt_order_invariant():
     older["immutable_model_timestamp"] = "2026-10-10T16:00:00Z"
     older["market_prior_weight"] = 0.2
     older["calibrated_probability"] = 0.30
-    a = market_dependency_shadow(fc(), [older] + records)
-    b = market_dependency_shadow(fc(), list(reversed(records + [older])))
-    assert a["status"] == b["status"] == "CHALLENGER_DIAGNOSTIC_ONLY"
+    ordered = [older] + records
+    a = market_dependency_shadow(fc(), ordered)
+    b = market_dependency_shadow(fc(), list(reversed(ordered)))
+    latest = market_dependency_shadow(fc(), records)
+    assert a["status"] == b["status"] == latest["status"] == "CHALLENGER_DIAGNOSTIC_ONLY"
+    assert a["cohort_n"] == b["cohort_n"] == {"dependent": 34, "independent": 34}
     for field in ("shadow_empirical_excess_tail", "shadow_lower_bound", "cohort_n"):
-        assert a[field] == b[field]
+        assert a[field] == b[field] == latest[field]
