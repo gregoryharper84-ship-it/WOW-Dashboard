@@ -80,7 +80,7 @@ def market_dependency_shadow(
     output["independent_model_probability"] = independent_prob
     dependent_residuals: list[float] = []
     independent_residuals: list[float] = []
-    seen_prediction_ids: set[str] = set()
+    seen_prediction_signatures: dict[str, tuple[Any, ...]] = {}
     seen_event_ids: set[str] = set()
     for record in frozen_history:
         if str(record.get("sport") or "").strip().upper() != sport:
@@ -89,7 +89,7 @@ def market_dependency_shadow(
             continue
         identity = str(record.get("prediction_id") or "").strip()
         event_id = str(record.get("event_id") or "").strip()
-        if not identity or identity in seen_prediction_ids or not event_id or event_id in seen_event_ids:
+        if not identity or not event_id:
             continue
         if record.get("immutable_pregame") is not True:
             continue
@@ -105,7 +105,15 @@ def market_dependency_shadow(
             continue
         if type(outcome) not in (int, float) or outcome not in (0, 1):
             continue
-        seen_prediction_ids.add(identity)
+        signature = (event_id, issued, event_start, settled, historical_p, historical_weight, float(outcome))
+        prior_signature = seen_prediction_signatures.get(identity)
+        if prior_signature is not None:
+            if prior_signature != signature:
+                return {**output, "status": "SOURCE_RECEIPT_CONFLICT"}
+            continue  # identical receipt replay is deduplicated
+        if event_id in seen_event_ids:
+            continue  # distinct versions of the same event do not inflate sample N
+        seen_prediction_signatures[identity] = signature
         seen_event_ids.add(event_id)
         adverse_residual = max(0.0, historical_p - float(outcome))
         (dependent_residuals if historical_weight > 0.50 else independent_residuals).append(adverse_residual)
@@ -129,6 +137,8 @@ def combat_style_mixture_shadow(
     sport: str,
     regimes: Sequence[Mapping[str, Any]],
     style_features: Mapping[str, Any],
+    event_id: str | None = None,
+    event_start_timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Mixture of mutually exclusive, exhaustive fitted style regimes.
 
@@ -148,7 +158,9 @@ def combat_style_mixture_shadow(
         "MMA": "takedown_defense_vs_chain_wrestling_delta",
         "BOXING": "high_guard_pressure_jab_absorption",
     }.get(str(sport).strip().upper())
-    if not required_feature or not regimes:
+    target_event = str(event_id or "").strip()
+    cutoff = _aware(event_start_timestamp)
+    if not required_feature or not regimes or not target_event or cutoff is None:
         return output
     feature_value = style_features.get(required_feature)
     if isinstance(feature_value, bool) or not isinstance(feature_value, (float, int)):
@@ -157,6 +169,13 @@ def combat_style_mixture_shadow(
         return output
     if not style_features.get("feature_snapshot_hash"):
         return {**output, "status": "SOURCE_PROVENANCE_MISSING"}
+    if str(style_features.get("event_id") or "").strip() != target_event:
+        return {**output, "status": "SOURCE_PROVENANCE_MISMATCH"}
+    feature_frozen = _aware(style_features.get("frozen_at"))
+    if feature_frozen is None:
+        return {**output, "status": "SOURCE_PROVENANCE_MISSING"}
+    if feature_frozen >= cutoff:
+        return {**output, "status": "SOURCE_PROVENANCE_LATE"}
     total_weight = mix = stress = failure = max_adverse_weight = 0.0
     labels: set[str] = set()
     for regime in regimes:
@@ -168,6 +187,13 @@ def combat_style_mixture_shadow(
             return output
         if not regime.get("fitted_artifact_hash") or not regime.get("pregame_evidence_hash"):
             return {**output, "status": "SOURCE_PROVENANCE_MISSING"}
+        if str(regime.get("event_id") or "").strip() != target_event:
+            return {**output, "status": "SOURCE_PROVENANCE_MISMATCH"}
+        regime_frozen = _aware(regime.get("frozen_at"))
+        if regime_frozen is None:
+            return {**output, "status": "SOURCE_PROVENANCE_MISSING"}
+        if regime_frozen >= cutoff:
+            return {**output, "status": "SOURCE_PROVENANCE_LATE"}
         if floor > probability:
             return output
         labels.add(label)

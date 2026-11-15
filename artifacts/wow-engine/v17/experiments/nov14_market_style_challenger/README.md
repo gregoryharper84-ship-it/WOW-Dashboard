@@ -17,7 +17,8 @@ calibration cohort. Do not backfill sporting forecasts or infer model reliabilit
    approach may be confounded by probability distribution differences and
    must pass covariate-matched chronological holdouts before consideration.
    Historical records must include a unique event ID, immutable pregame issuance,
-   kickoff and settlement timestamps; only one row per event counts.
+   kickoff and settlement timestamps; only one row per event counts. Conflicting
+   eligible versions of the same prediction ID HOLD rather than choosing one.
    Incumbent PrizePicks cash-single market-dependency rejection stays active.
 2. The combat style mixture scores mutually exclusive fitted MMA/boxing regimes
    using sum(weight * conditional_win_probability). Required upstream style
@@ -26,6 +27,8 @@ calibration cohort. Do not backfill sporting forecasts or infer model reliabilit
    in weights and therefore are NOT calibrated lower bounds. A failure score
    >0.20 is a single adverse-regime realization probability hypothesis flag,
    distinct from expected adverse loss mass; not production policy.
+   Every style feature and fitted regime must match an explicit target event ID
+   and have a timezone-aware freeze time strictly before its event-start cutoff.
 
 ## Run
 

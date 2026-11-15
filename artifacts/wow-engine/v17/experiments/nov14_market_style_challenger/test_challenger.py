@@ -36,11 +36,11 @@ def history():
 
 def regimes():
     return [
-        {"regime": "neutral", "regime_probability": .7,
+        {"regime": "neutral", "regime_probability": .7, "event_id": "bout-001", "frozen_at": "2026-11-14T17:00:00Z",
          "conditional_win_probability": .95, "conditional_win_stress_floor": .87,
          "fitted_artifact_hash": "sha256:synth-a", "pregame_evidence_hash": "sha256:synth-b",
          "adverse_style_path": False},
-        {"regime": "chain_wrestling", "regime_probability": .3,
+        {"regime": "chain_wrestling", "regime_probability": .3, "event_id": "bout-001", "frozen_at": "2026-11-14T17:00:00Z",
          "conditional_win_probability": .10, "conditional_win_stress_floor": .05,
          "fitted_artifact_hash": "sha256:synth-a", "pregame_evidence_hash": "sha256:synth-b",
          "adverse_style_path": True},
@@ -49,7 +49,8 @@ def regimes():
 
 def features():
     return {"takedown_defense_vs_chain_wrestling_delta": -.2,
-            "feature_snapshot_hash": "sha256:synth-f"}
+            "feature_snapshot_hash": "sha256:synth-f",
+            "event_id": "bout-001", "frozen_at": "2026-11-14T17:00:00Z"}
 
 
 def test_market_dependent_requires_sample():
@@ -118,7 +119,7 @@ def test_duplicate_prediction_receipt_not_counted_twice():
 
 
 def test_mma_mixture_arithmetic():
-    result = combat_style_mixture_shadow(sport="MMA", regimes=regimes(), style_features=features())
+    result = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features=features())
     assert result["status"] == "CHALLENGER_DIAGNOSTIC_ONLY"
     assert abs(result["mixture_probability_shadow"] - .695) < 1e-10
     assert abs(result["stress_floor_shadow"] - .624) < 1e-10
@@ -128,43 +129,44 @@ def test_mma_mixture_arithmetic():
 
 
 def test_boxing_requires_boxing_feature():
-    boxing = {"high_guard_pressure_jab_absorption": .4, "feature_snapshot_hash": "sha256:synth-feature"}
-    assert combat_style_mixture_shadow(sport="BOXING", regimes=regimes(), style_features=boxing)["status"] == "CHALLENGER_DIAGNOSTIC_ONLY"
-    assert combat_style_mixture_shadow(sport="BOXING", regimes=regimes(), style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    boxing = {"high_guard_pressure_jab_absorption": .4, "feature_snapshot_hash": "sha256:synth-feature",
+              "event_id": "bout-001", "frozen_at": "2026-11-14T17:00:00Z"}
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="BOXING", regimes=regimes(), style_features=boxing)["status"] == "CHALLENGER_DIAGNOSTIC_ONLY"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="BOXING", regimes=regimes(), style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
 
 
 def test_missing_provenance_is_blocked():
     r = regimes()
     r[1].pop("fitted_artifact_hash")
-    assert combat_style_mixture_shadow(sport="MMA", regimes=r, style_features=features())["status"] == "SOURCE_PROVENANCE_MISSING"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=r, style_features=features())["status"] == "SOURCE_PROVENANCE_MISSING"
     f = features()
     f.pop("feature_snapshot_hash")
-    assert combat_style_mixture_shadow(sport="MMA", regimes=regimes(), style_features=f)["status"] == "SOURCE_PROVENANCE_MISSING"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features=f)["status"] == "SOURCE_PROVENANCE_MISSING"
 
 
 def test_non_exhaustive_or_overlapping_regime_weights():
     r = regimes()
     r[0]["regime_probability"] = .8
-    assert combat_style_mixture_shadow(sport="MMA", regimes=r, style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=r, style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
 
 
 def test_missing_style_inputs_or_unknown_sport():
-    assert combat_style_mixture_shadow(sport="MMA", regimes=[], style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
-    assert combat_style_mixture_shadow(sport="SOCCER", regimes=regimes(), style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
-    assert combat_style_mixture_shadow(sport="MMA", regimes=regimes(), style_features={})["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=[], style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="SOCCER", regimes=regimes(), style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features={})["status"] == "MODEL_INPUTS_INSUFFICIENT"
 
 
 def test_stress_floor_cannot_exceed_probability():
     r = regimes()
     r[0]["conditional_win_stress_floor"] = .98
-    assert combat_style_mixture_shadow(sport="MMA", regimes=r, style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=r, style_features=features())["status"] == "MODEL_INPUTS_INSUFFICIENT"
 
 
 def test_safety_flags():
     assert CAN_EXECUTE is False
     for result in (
         market_dependency_shadow(fc(), history()),
-        combat_style_mixture_shadow(sport="MMA", regimes=regimes(), style_features=features()),
+        combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features=features()),
     ):
         assert result["can_execute"] is False
         assert result["automatic_parameter_mutation"] is False
@@ -185,7 +187,7 @@ def test_adverse_regime_realization_distinct_from_loss_mass():
     rows[1]["regime_probability"] = .25
     rows[1]["conditional_win_probability"] = .90
     rows[1]["conditional_win_stress_floor"] = .80
-    result = combat_style_mixture_shadow(sport="MMA", regimes=rows, style_features=features())
+    result = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=rows, style_features=features())
     assert abs(result["failure_path_score"] - .025) < 1e-10
     assert result["adverse_regime_probability_max"] == .25
     assert result["material_failure_path"] is True
@@ -196,3 +198,36 @@ def test_historical_postkickoff_receipt_rejected():
     for record in rows:
         record["event_start_timestamp"] = "2026-10-10T15:00:00Z"
     assert market_dependency_shadow(fc(), rows)["status"] == "INSUFFICIENT_SAMPLE"
+
+
+def test_conflicting_duplicate_receipts_fail_closed_regardless_of_order():
+    original = history()
+    conflict = dict(original[0])
+    conflict["official_binary_outcome"] = 1
+    for records in ([conflict] + original, original + [conflict]):
+        out = market_dependency_shadow(fc(), records)
+        assert out["status"] == "SOURCE_RECEIPT_CONFLICT"
+        assert out["shadow_lower_bound"] is None
+        assert not out["publication_allowed"]
+
+
+def test_style_provenance_foreign_event_rejected():
+    wrong_regime = regimes()
+    wrong_regime[0]["event_id"] = "different-bout"
+    out = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=wrong_regime, style_features=features())
+    assert out["status"] == "SOURCE_PROVENANCE_MISMATCH"
+    wrong_features = features()
+    wrong_features["event_id"] = "different-bout"
+    out = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features=wrong_features)
+    assert out["status"] == "SOURCE_PROVENANCE_MISMATCH"
+
+
+def test_style_provenance_captured_after_kickoff_rejected():
+    late_regime = regimes()
+    late_regime[0]["frozen_at"] = "2026-11-15T01:00:00Z"
+    out = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=late_regime, style_features=features())
+    assert out["status"] == "SOURCE_PROVENANCE_LATE"
+    late_features = features()
+    late_features["frozen_at"] = "2026-11-15T01:00:00Z"
+    out = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features=late_features)
+    assert out["status"] == "SOURCE_PROVENANCE_LATE"
