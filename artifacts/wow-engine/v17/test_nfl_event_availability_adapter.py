@@ -1521,3 +1521,73 @@ def test_regression_official_conflict_not_overridden_by_espn_out():
     assert comp_ev.evidence_status == "REPORT_ENTRY_CONFLICT_UNVERIFIED"
     role_av = comp_ev.to_role_availability()
     assert evaluate_player_availability(role_av).status == AVAILABILITY_UNVERIFIED
+
+# Exact adverse-parser cases from independent review on PR #2669.
+# These tests preserve the existing fail-closed repair; shadow-only, no publish.
+@pytest.mark.parametrize("uninterpretable_entry", [
+    {},
+    {"team": "DET", "game_status": "Out"},
+])
+def test_adversarial_complete_report_with_uninterpretable_entry_cannot_clear_player(uninterpretable_entry):
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=30)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "entries": [uninterpretable_entry],
+    }
+    evidence = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert evidence.report_complete is False
+    assert evidence.basis is None
+    assert evidence.designation is None
+    decision = evaluate_player_availability(evidence.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+@pytest.mark.parametrize("authenticated,age_minutes,designation", [
+    (False, 30, "Out"),
+    (True, 1440, "Injured Reserve"),
+])
+def test_adversarial_direct_official_parser_rejects_untrusted_or_stale_ruleout(
+    authenticated, age_minutes, designation
+):
+    report = {
+        "authenticated": authenticated,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=age_minutes)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "entries": [{
+            "athlete_id": "4361788",
+            "athlete_name": "Amon-Ra St. Brown",
+            "team": "DET",
+            "game_status": designation,
+        }],
+    }
+    evidence = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert evidence.designation is None
+    assert evidence.risk is False
+    assert evidence.report_complete is False
+    decision = evaluate_player_availability(evidence.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
