@@ -40,7 +40,8 @@ def _nhl_ok():
         "sport": "NHL",
         "research_screen_pass": True,
         "source_review_status": "REQUIRED",
-        "candidate_preflight": {"status": "NHL_CANDIDATE_PREFLIGHT_READY", "source_event_n": 100, "training_feature_n": 100, "can_execute": False},
+        "candidate_preflight": {"status": "NHL_CANDIDATE_PREFLIGHT_READY", "source_event_n": 100, "training_feature_n": 100, "training_dataset_hash": "f"*64, "can_execute": False},
+        "persistence": {"status": "D1_CANDIDATE_PACKAGE_PERSISTED", "candidate": {"candidate_id": "nhl-candidate-1", "model_artifact_version": "nhl-artifact-v1", "lifecycle_state": "CANDIDATE"}, "can_execute": False},
         "source_event_n": 100,
         "training_feature_n": 100,
         "model_family": "NHL_REGULAR_SEASON_LOGISTIC_V1",
@@ -80,6 +81,7 @@ def test_nhl_winner_calls_only_nhl(monkeypatch):
     assert receipt["status"] == "RESEARCH_EVIDENCE_PREPARED"
     assert receipt["certification_status"] == "NOT_CERTIFIED"
     assert receipt["native_evidence"]["source_review_status"] == "REQUIRED"
+    assert receipt["native_evidence"]["candidate_id"] == "nhl-candidate-1"
 
 
 def test_wrong_market_cannot_reuse_winner_model(monkeypatch):
@@ -201,3 +203,14 @@ def test_nba_completed_wrapper_cannot_mask_unready_replay(monkeypatch):
     )
     assert receipt["status"] == "HOLD"
     assert receipt["code"] == "MODEL_FACTORY_NATIVE_HOLD"
+
+
+def test_nhl_success_without_persisted_candidate_identity_is_hold(monkeypatch):
+    result = _nhl_ok()
+    result["persistence"] = {"status": "D1_CANDIDATE_PACKAGE_PERSISTED", "candidate": {"candidate_id": None}}
+    monkeypatch.setattr(factory, "_run_nhl", lambda *_: result)
+    receipt = factory.prepare_candidate_evidence(
+        object(), sport="NHL", market="WINNER", source_head_sha="a"*40,
+    )
+    assert receipt["status"] == "HOLD"
+    assert receipt["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID"
