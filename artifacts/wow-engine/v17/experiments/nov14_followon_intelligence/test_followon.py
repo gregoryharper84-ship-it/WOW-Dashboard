@@ -16,6 +16,7 @@ def nba(**updates):
         "snapshot_timestamp_utc": "2026-11-14T18:00:00Z",
         "source_snapshot_hash": "sha256:synthetic-frozen",
         "shot_fit_artifact_hash": "sha256:synthetic-priors",
+        "shot_fit_data_cutoff_utc": "2026-11-13T17:00:00Z",
         "projected_pace": 100.0,
         "home_perimeter_defense_index": 0.95,
         "opponent_back_to_back": True,
@@ -25,10 +26,12 @@ def nba(**updates):
         "home_three_point_prior": {
             "projected_attempts": 40, "alpha": 15, "beta": 25,
             "frozen_at_utc": "2026-11-14T17:30:00Z",
+            "official_event_id": "nba-event-001",
         },
         "away_three_point_prior": {
             "projected_attempts": 33, "alpha": 12, "beta": 24,
             "frozen_at_utc": "2026-11-14T17:30:00Z",
+            "official_event_id": "nba-event-001",
         },
     }
     record.update(updates)
@@ -42,6 +45,9 @@ def leg(row_id="a", family="MONEYLINE", event="x", sport="NBA", **updates):
         "exact_line": 220.5,
         "market_model_certified": True,
         "model_market_family": family,
+        "model_official_event_id": event,
+        "model_exact_line": 220.5,
+        "model_selected_side": "OVER",
         "market_model_artifact_hash": "sha256:synthetic-market",
         "market_model_receipt_id": "synthetic-receipt",
         "calibration_receipt_id": "synthetic-calibration",
@@ -60,6 +66,8 @@ def model(**updates):
         "prediction_id": "pred-1", "model_artifact_hash": "sha256:synthetic-model",
         "immutable_prediction_timestamp_utc": "2026-11-14T16:30:00Z",
         "event_start_utc": "2026-11-14T23:00:00Z",
+        "market_family": "MONEYLINE", "market_period": "FULL_GAME",
+        "settlement_basis": "FULL_GAME_INCLUDING_OT",
         "calibration_status": "PASS", "probability_publishable": True,
         "rank_eligible": True, "market_prior_weight": .1,
         "calibrated_probability": .81, "calibrated_lower_bound": .77,
@@ -71,7 +79,9 @@ def model(**updates):
 def quote(**updates):
     record = {
         "sport": "NBA", "official_event_id": "x", "selected_participant": "Home",
-        "market_family": "MONEYLINE", "quote_source_id": "book",
+        "market_family": "MONEYLINE", "market_period": "FULL_GAME",
+        "settlement_basis": "FULL_GAME_INCLUDING_OT",
+        "quote_source_id": "book",
         "two_way_market_snapshot_id": "snapshot-1",
         "two_way_market_verified": True,
         "quoted_at_utc": "2026-11-14T18:54:00Z",
@@ -321,3 +331,39 @@ def test_outputs_cannot_mutate_original_probabilities_or_execute():
     assert out["automatic_promotion"] is False
     assert CAN_EXECUTE is False and AUTOMATIC_PROMOTION is False
     assert TERMINAL_AUTHORITY == "V17_TERMINAL_REDUCER"
+
+
+def test_nba_fit_data_after_feature_freeze_is_rejected():
+    out = nba_fatigue_three_point_shadow(
+        nba(shot_fit_data_cutoff_utc="2026-11-14T21:00:00Z"))
+    assert out["status"] == "SHOT_FIT_NOT_AVAILABLE_AT_FREEZE"
+
+
+def test_nba_foreign_event_shot_priors_are_rejected():
+    data = nba()
+    data["away_three_point_prior"]["official_event_id"] = "foreign-game"
+    assert nba_fatigue_three_point_shadow(data)["status"] == "SHOT_PRIOR_NOT_AVAILABLE_AT_FREEZE"
+
+
+def test_secondary_market_mismatched_model_line_and_side_rejected():
+    for mismatched in ({"model_exact_line": 221.5},
+                       {"model_selected_side": "UNDER"},
+                       {"model_official_event_id": "foreign-event"}):
+        out = audit_same_event_cross_market([leg("total", "TOTAL", **mismatched)])
+        assert "SECONDARY_MARKET_SPECIALIST_UNVERIFIED" in out["rows"]["total"]["blockers"]
+
+
+def test_dual_gate_cannot_use_spread_probability_as_moneyline():
+    out = dual_gate_strong_confidence_shadow(
+        model(market_family="SPREAD"), quote(), policy(), as_of_utc=NOW)
+    assert out["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert not out["probability_rank_eligible"]
+
+
+def test_dual_gate_exact_period_and_settlement_are_binding():
+    for changed in ({"market_period": "FIRST_HALF"},
+                    {"settlement_basis": "REGULATION_ONLY"}):
+        out = dual_gate_strong_confidence_shadow(
+            model(), quote(**changed), policy(), as_of_utc=NOW)
+        assert out["status"] == "EXACT_PRICE_OR_IDENTITY_UNVERIFIED"
+        assert not out["value_candidate_pass"]
