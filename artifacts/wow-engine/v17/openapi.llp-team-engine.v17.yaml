@@ -70,6 +70,559 @@ paths:
         '200': {description: Governed live event result or exact held blocker}
         '401': {description: Authentication failed}
         '422': {description: Live state, identity, settlement or request invalid}
+  /functions/v1/wow-llp-action-gateway/v17/intelligence/kalshi-slip-exchange:
+    get:
+      operationId: readLlpV17KalshiSlipResearch
+      x-openai-isConsequential: false
+      description: >-
+        Read shared LLP and WOW Kalshi slip research findings. Non-authoritative,
+        no model probability, orders, money or calibration approval. Host is an
+        unverified label under the existing shared bearer.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: consumer_host
+          in: query
+          required: true
+          schema: {type: string, enum: [LLP_TEAM_BETTING_ENGINE, WOW_BETTING_ENGINE]}
+        - name: scope
+          in: query
+          required: false
+          schema: {type: string, enum: [EVENT, COHORT]}
+        - name: reference_id
+          in: query
+          required: false
+          schema: {type: string, maxLength: 128}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200': {description: Read-only unverified research records; can_execute false}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid scope, host or filtering parameters}
+        '503': {description: Research persistence unavailable}
+    post:
+      operationId: publishLlpV17KalshiSlipResearch
+      x-openai-isConsequential: true
+      description: >-
+        Append an idempotent UNVERIFIED_RESEARCH observation for cross-engine
+        inspection. No probability, quote, personal order or stake data accepted.
+        Source host is a claim, not independently authenticated.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source_host, scope, sport, reference_id, finding_type, finding_code, analysis_stage, as_of_utc, source_observed_at_utc, evidence_refs]
+              properties:
+                source_host: {type: string, enum: [LLP_TEAM_BETTING_ENGINE, WOW_BETTING_ENGINE]}
+                scope: {type: string, enum: [EVENT, COHORT]}
+                sport: {type: string, enum: [NFL, NBA, NHL, NCAAF, NCAAB, MLB, WNBA, SOCCER, TENNIS, PGA, MMA, BOXING, CRICKET, MIXED]}
+                reference_id: {type: string, maxLength: 128}
+                market_ref: {type: [string, 'null'], maxLength: 128}
+                finding_type: {type: string, enum: [SCHEDULE_REST_TRAVEL, LINEUP_AVAILABILITY, GAME_SCRIPT, SPORT_SPECIALIST_DIAGNOSTIC, DEPENDENCY_CORRELATION, QUOTE_MARKET_SANITY, SLIP_FRAGILITY, SETTLEMENT_DIAGNOSTIC, CALIBRATION_DIAGNOSTIC, RESEARCH_HYPOTHESIS]}
+                finding_code: {type: string, pattern: '^[A-Z][A-Z0-9_]{2,95}    get:
+      operationId: getLlpV17HostContract
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      responses:
+        '200': {description: Canonical v17 host/lane alignment contract}
+        '401': {description: Authentication failed}
+  /functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run:
+    post:
+      operationId: runLlpV17FullSlate
+      x-openai-isConsequential: false
+      description: >-
+        Canonical governed all-sports outright-winner board scan for LLP. This
+        Action is MONEYLINE-only, retains every discovered row through typed
+        reconciliation, and never substitutes provider or market probability for
+        a fitted specialist. Use this before ranking an across-all-sports request.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlpFullSlateRequest'}
+      responses:
+        '200': {description: Compact governed Daily moneyline receipt; full row evidence is available through paged readback}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid full-slate request}
+  /functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run/{run_id}/rows:
+    get:
+      operationId: readLlpV17FullSlateRows
+      x-openai-isConsequential: false
+      description: >-
+        Read a bounded page of persisted full per-row evidence for the governed
+        all-sports Daily run. Read-only; can_execute remains false.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 25, default: 5}
+      responses:
+        '200': {description: One page of full all-sports row evidence}
+        '401': {description: Authentication failed}
+  /functions/v1/wow-llp-action-gateway/v17/llp-team-intelligence/{run_id}/events:
+    get:
+      operationId: readLlpV17TeamIntelligenceEvents
+      x-openai-isConsequential: false
+      description: >-
+        Read-only, opt-in NFL/NBA/NHL team-event synthesis from saved Daily winner
+        receipts. Unsupported spreads/totals remain explicitly unverified.
+        Does not score, certify, rank, update Pick'em, or execute.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 25, default: 5}
+      responses:
+        '200': {description: Read-only LLP event receipt projection with typed holds}
+        '401': {description: Authentication failed}
+        '404': {description: Readback not enabled in backend}
+        '422': {description: Invalid run ID or pagination request}
+  /functions/v1/wow-llp-action-gateway/score-team-event:
+    post:
+      operationId: scoreLlpV17TeamEvent
+      x-openai-isConsequential: false
+      description: >-
+        Canonical outright-winner team/event scoring ingress for
+        LLP_TEAM_BETTING_ENGINE. Unregistered fitted routes fail closed as
+        MODEL_UNAVAILABLE; no market/generic probability substitution. Spread
+        scoring remains separate.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlpTeamEventRequest'}
+      responses:
+        '200': {description: Governed team/event result or held model proof}
+        '401': {description: Authentication failed}
+        '409': {description: Controlling model/capability unavailable}
+        '422': {description: Event/evidence/host contract invalid}
+  /functions/v1/wow-llp-action-gateway/score-team-event-request:
+    post:
+      operationId: scoreLlpV17TeamEventBatch
+      x-openai-isConsequential: false
+      description: >-
+        Authenticated 1-100 team/event row dispatcher. Fitted specialists and
+        terminal holds remain authoritative. No market or model substitution,
+        automatic certification, live wagers or orders; can_execute=false.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TeamEventRequestBatch'}
+      responses:
+        '200': {description: Governed per-event approvals and typed holds}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid request or batch size}
+  /functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17SpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only NCAAF exact-line spread forward shadow. Does not certify,
+        promote, publish, rank, or execute. Exact spread is a post-fit threshold
+        only; no moneyline-to-spread or market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only fitted spread challenger shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid NCAAF exact-line shadow request}
+  /functions/v1/wow-llp-action-gateway/internal/v17/nfl-spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17NFLSpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only NFL exact-line spread forward shadow using a fitted margin
+        distribution. Does not certify, promote, publish, rank, or execute. Exact
+        spread is a post-fit threshold; no market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NFLSpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only NFL fitted spread shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid NFL exact-line shadow request}
+  /functions/v1/wow-llp-action-gateway/internal/v17/wnba-spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17WNBASpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only WNBA exact-line spread forward shadow using verified ESPN
+        event/team identity and a fitted margin distribution. Does not certify,
+        promote, publish, rank, or execute; no market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WNBASpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only WNBA fitted spread shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid WNBA exact-line shadow request}
+  /functions/v1/wow-llp-action-gateway/internal/v17/mlb-run-line-forward-shadow:
+    post:
+      operationId: scoreLlpV17MLBRunLineForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only MLB exact run-line forward shadow using an immutable
+        pregame score snapshot and fitted margin distribution. Does not certify,
+        promote, publish, rank, or execute; no market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MLBRunLineForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only MLB fitted run-line shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid MLB exact run-line shadow request}
+  /functions/v1/wow-llp-action-gateway/record-recommendations:
+    post:
+      operationId: recordLlpV17Recommendations
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecommendationBatch'}
+      responses:
+        '200': {description: All recommendation rows durably recorded and display authorized}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid or non-pregame recommendation contract}
+        '503': {description: Write-before-display not proven}
+  /functions/v1/wow-llp-action-gateway/settle-recommendations:
+    post:
+      operationId: settleLlpV17Recommendations
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecommendationSettlementBatch'}
+      responses:
+        '200': {description: Linked recommendation settlement recorded}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid settlement contract or recommendation record not found}
+        '503': {description: Settlement persistence failed}
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+  schemas:
+    LlpLiveStateCaptureRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, league, official_event_id, home_team, away_team]
+      properties:
+        sport: {type: string, enum: [MLB, NFL, NBA, WNBA, NCAAF, NCAAB, NHL, SOCCER, TENNIS, PGA, MMA, BOXING, CRICKET]}
+        league: {type: string, minLength: 2, maxLength: 64}
+        official_event_id: {type: string, minLength: 1, maxLength: 128}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+    LlpLiveEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - research_run_id
+        - official_event_id
+        - sport
+        - league
+        - exact_selection
+        - event_status
+        - settlement_rule
+        - source_snapshot_id
+        - live_snapshot_timestamp
+        - latest_material_update_at
+        - market_role
+        - market_role_source
+        - market_role_timestamp
+        - market_role_confidence
+      properties:
+        research_run_id: {type: string, minLength: 1}
+        official_event_id: {type: string, minLength: 1}
+        sport: {type: string}
+        league: {type: string}
+        exact_selection: {type: string, minLength: 1}
+        event_status: {type: string, enum: [IN_PROGRESS]}
+        settlement_rule: {type: string, minLength: 1, maxLength: 512}
+        source_snapshot_id: {type: string, format: uuid}
+        live_snapshot_timestamp: {type: string, format: date-time}
+        latest_material_update_at: {type: string, format: date-time}
+        market_role: {type: string, enum: [UNDERDOG, FAVORITE, EVEN, CONFLICT]}
+        market_role_source: {type: string, minLength: 1}
+        market_role_timestamp: {type: string, format: date-time}
+        market_role_confidence: {type: number, minimum: 0, maximum: 1}
+    LlpFullSlateRequest:
+      type: object
+      additionalProperties: false
+      required: [requested_slate_date, requested_timezone, lanes, max_props, max_team_events, response_mode]
+      properties:
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string, minLength: 1, maxLength: 64}
+        lanes:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items: {type: string, enum: [MONEYLINE]}
+        max_props: {type: integer, enum: [0]}
+        max_team_events: {type: integer, minimum: 1, maximum: 12}
+        response_mode: {type: string, enum: [COMPACT]}
+    SpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]
+      properties:
+        sport: {type: string, enum: [NCAAF]}
+        event_id: {type: string, minLength: 1, maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+        home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}
+        season: {type: integer, minimum: 2000, maximum: 2100}
+    NFLSpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team, away_team, home_spread]
+      properties:
+        sport: {type: string, enum: [NFL]}
+        event_id: {type: string, minLength: 1, maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+        home_spread: {type: number, exclusiveMinimum: -30, exclusiveMaximum: 30}
+    WNBASpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team_id, away_team_id, home_spread]
+      properties:
+        sport: {type: string, enum: [WNBA]}
+        event_id: {type: string, pattern: '^espn-.+$', maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team_id: {type: string, pattern: '^espn-.+$', maxLength: 128}
+        away_team_id: {type: string, pattern: '^espn-.+$', maxLength: 128}
+        home_spread: {type: number, exclusiveMinimum: -20, exclusiveMaximum: 20}
+    MLBRunLineForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, score_snapshot_id, home_run_line]
+      properties:
+        sport: {type: string, enum: [MLB]}
+        score_snapshot_id: {type: string, minLength: 1, maxLength: 128}
+        home_run_line: {type: number, exclusiveMinimum: -10, exclusiveMaximum: 10}
+    RecommendationBatch:
+      type: object
+      additionalProperties: false
+      required: [research_run_id, host_identity, model_identity, source_type, rows]
+      properties:
+        research_run_id: {type: string}
+        request_id: {type: [string, 'null']}
+        host_identity: {type: string}
+        model_identity: {type: string}
+        source_type: {type: string}
+        source_conversation_ref: {type: [string, 'null']}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RecommendationRow'
+    RecommendationRow:
+      type: object
+      additionalProperties: false
+      required: [row_key, sport, event_id, event_start_time, participant, selection, terminal_label]
+      properties:
+        row_key: {type: string}
+        sport: {type: string}
+        league: {type: [string, 'null']}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        participant: {type: string}
+        opponent: {type: [string, 'null']}
+        market_family: {type: string, default: OUTRIGHT_WINNER}
+        selection: {type: string}
+        terminal_label: {type: string}
+        probability_publishable: {type: boolean, default: false}
+        model_probability: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        calibrated_probability: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        calibrated_probability_lower_bound: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        governed_prediction_table: {type: [string, 'null']}
+        governed_prediction_id: {type: [string, 'null'], format: uuid}
+        source_snapshot_id: {type: [string, 'null'], format: uuid}
+        evidence_fingerprint: {type: [string, 'null']}
+        blockers:
+          type: array
+          items: {type: string}
+        display_payload:
+          type: object
+          additionalProperties: true
+    RecommendationSettlementBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RecommendationSettlementRow'
+    RecommendationSettlementRow:
+      type: object
+      additionalProperties: false
+      required: [recommendation_record_id, settled_at, settled_result, settlement_source, position_reference, position_structure, underlying_market_count]
+      properties:
+        recommendation_record_id: {type: string, format: uuid}
+        settled_at: {type: string, format: date-time}
+        settled_result: {type: string, enum: [WIN, LOSS, PUSH, VOID]}
+        official_result: {type: [string, 'null']}
+        settlement_source: {type: string}
+        settlement_evidence_ref: {type: [string, 'null']}
+        position_reference: {type: [string, 'null']}
+        position_structure: {type: [string, 'null']}
+        underlying_market_count: {type: [integer, 'null'], minimum: 1}
+        entry_cost: {type: [number, 'null'], minimum: 0}
+        payout: {type: [number, 'null'], minimum: 0}
+        profit_loss: {type: [number, 'null']}
+        displayed_roi: {type: [number, 'null']}
+    TeamEventRequestBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {$ref: '#/components/schemas/TeamEventRequestRow'}
+    TeamEventRequestRow:
+      type: object
+      additionalProperties: false
+      required: [research_run_id, objective_lane, sport, league, event_key, event_state, event_date, timezone, price_required_for_objective]
+      properties:
+        research_run_id: {type: string}
+        objective_lane: {type: string, enum: [OUTRIGHT_WIN_PROBABILITY, UPSET_PROBABILITY, MARKET_EDGE]}
+        sport: {type: string}
+        league: {type: string}
+        event_key: {type: string}
+        event_state: {type: string, enum: [PREGAME]}
+        event_date: {type: string, format: date}
+        timezone: {type: string}
+        price_required_for_objective: {type: boolean}
+        event_start_time_utc: {type: [string, 'null']}
+        home_team: {type: [string, 'null']}
+        away_team: {type: [string, 'null']}
+        source_snapshot_id: {type: [string, 'null']}
+        latest_material_update_timestamp: {type: [string, 'null']}
+        settlement_basis: {type: [string, 'null']}
+        market_input: {type: [object, 'null'], additionalProperties: true}
+        sport_specific_evidence: {type: object, additionalProperties: true}
+    LlpTeamEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - requester_host_identity
+        - research_run_id
+        - requested_slate_date
+        - requested_timezone
+        - scan_stage
+        - candidate_family
+        - decision_intent
+        - event_key
+        - official_event_id
+        - event_start_time_utc
+        - sport
+        - league
+        - market_family
+        - settlement_basis
+        - home_team
+        - away_team
+        - source_snapshot_id
+      properties:
+        requester_host_identity: {type: string, enum: [LLP_TEAM_BETTING_ENGINE]}
+        research_run_id: {type: string}
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string}
+        scan_stage: {type: string, enum: [PREGAME]}
+        candidate_family:
+          type: string
+          enum: [TEAM_EVENT, OUTRIGHT_WINNER, MONEYLINE, FAVORITE, UNDERDOG, UPSET, MATCH_WINNER, FIGHT_WINNER]
+        decision_intent: {type: string, enum: [WINNER, FAVORITE, UNDERDOG, UPSET, BEST_SIDE]}
+        event_key: {type: string}
+        official_event_id: {type: string}
+        event_start_time_utc: {type: string, format: date-time}
+        sport: {type: string}
+        league: {type: string}
+        market_family: {type: string, enum: [OUTRIGHT_WINNER]}
+        settlement_basis: {type: string}
+        home_team: {type: string}
+        away_team: {type: string}
+        source_snapshot_id: {type: string}
+        latest_material_update_timestamp: {type: [string, 'null'], format: date-time}
+        market_prior: {type: [object, 'null'], additionalProperties: true}
+        market_input:
+          type: [object, 'null']
+          additionalProperties: false
+          description: >-
+            Optional user-supplied moneyline market identity/value context.
+            This input never supplies, implies, calibrates, or substitutes the
+            governed sporting probability. If omitted, a fitted probability may
+            still be returned while market/value qualification remains separate.
+          required: [market_family, selection]
+          properties:
+            market_family: {type: string, enum: [MONEYLINE]}
+            selection: {type: string}
+            american_odds: {type: [number, 'null']}
+            captured_at: {type: [string, 'null'], format: date-time}
+        sport_specific_evidence: {type: object, additionalProperties: true}
+}
+                analysis_stage: {type: string, enum: [PREGAME_RESEARCH, POSTMORTEM_RESEARCH]}
+                as_of_utc: {type: string, format: date-time}
+                source_observed_at_utc: {type: string, format: date-time}
+                event_start_utc: {type: [string, 'null'], format: date-time}
+                evidence_refs: {type: array, minItems: 1, maxItems: 12, items: {type: string, maxLength: 128}}
+      responses:
+        '202': {description: Idempotent append-only research receipt; no prediction authority}
+        '401': {description: Authentication failed}
+        '422': {description: Forbidden field or invalid chronology}
+        '503': {description: Research persistence unavailable}
   /functions/v1/wow-llp-action-gateway/v17/host-contract:
     get:
       operationId: getLlpV17HostContract
