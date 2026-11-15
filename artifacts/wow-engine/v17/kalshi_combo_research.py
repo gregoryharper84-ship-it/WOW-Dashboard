@@ -112,6 +112,8 @@ class FrozenComboQuote:
     evaluated_at_utc: datetime
     total_cost_including_fees: Decimal
     maximum_payout: Decimal
+    # Frozen and immutable producer-side joint receipt timestamp (never inferred).
+    joint_receipt_asof_utc: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,10 @@ def _prob(p: float | None) -> bool:
     return p is not None and isinstance(p, (float, int)) and not isinstance(p, bool) and isfinite(p) and 0 < p < 1
 
 
+def _lower_bound(value: float | None) -> bool:
+    return value is not None and isinstance(value, (float, int)) and not isinstance(value, bool) and isfinite(value) and 0 <= value < 1
+
+
 def evaluate_frozen_quote(q: FrozenComboQuote, quote_max_age_seconds: int = 180) -> ResearchVerdict:
     """Calculate only non-authoritative pretrade diagnostics on frozen evidence.
 
@@ -147,11 +153,17 @@ def evaluate_frozen_quote(q: FrozenComboQuote, quote_max_age_seconds: int = 180)
         blockers.append("INVALID_COMBO_IDENTITY_OR_SIZE")
     if len(q.legs) > 2:
         blockers.append("COMBO_SIZE_EXCEEDS_RESEARCH_PAIR_DEFAULT")
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for leg in q.legs
+        for value in (leg.receipt_id, leg.exact_market_identity, leg.event_id)
+    ):
+        blockers.append("LEG_RECEIPT_EVENT_IDENTITY_MISSING")
     if len({leg.receipt_id for leg in q.legs}) != len(q.legs) or len({leg.exact_market_identity for leg in q.legs}) != len(q.legs):
         blockers.append("DUPLICATE_LEG_OR_RECEIPT")
     if not q.joint_receipt_id or not q.dependency_method or q.joint_calibration_status != "PASS":
         blockers.append("JOINT_MODEL_OR_DEPENDENCE_UNVERIFIED")
-    if not _prob(q.joint_probability) or not _prob(q.joint_lower_bound):
+    if not _prob(q.joint_probability) or not _lower_bound(q.joint_lower_bound):
         blockers.append("JOINT_PROBABILITY_MISSING_OR_INVALID")
     elif q.joint_lower_bound > q.joint_probability:
         blockers.append("JOINT_LOWER_EXCEEDS_POINT")
@@ -166,13 +178,19 @@ def evaluate_frozen_quote(q: FrozenComboQuote, quote_max_age_seconds: int = 180)
         blockers.append("QUOTE_ECONOMICS_INVALID")
     try:
         quote_at, evaluated_at = _utc(q.quote_at_utc), _utc(q.evaluated_at_utc)
+        if q.joint_receipt_asof_utc is None:
+            blockers.append("JOINT_RECEIPT_ASOF_UNVERIFIED")
+        else:
+            joint_at = _utc(q.joint_receipt_asof_utc)
+            if joint_at > quote_at or any(joint_at >= _utc(leg.event_start_utc) for leg in q.legs):
+                blockers.append("JOINT_RECEIPT_LOOKAHEAD_INVALID")
         if not 0 <= (evaluated_at - quote_at).total_seconds() <= quote_max_age_seconds:
             blockers.append("RFQ_QUOTE_STALE_OR_FUTURE")
         for leg in q.legs:
             start, model_at = _utc(leg.event_start_utc), _utc(leg.model_asof_utc)
             if quote_at >= start or evaluated_at >= start or model_at > quote_at:
                 blockers.append("PREGAME_CHRONOLOGY_INVALID")
-            if leg.calibration_status != "PASS" or not _prob(leg.calibrated_probability) or not _prob(leg.calibrated_lower_bound):
+            if leg.calibration_status != "PASS" or not _prob(leg.calibrated_probability) or not _lower_bound(leg.calibrated_lower_bound):
                 blockers.append("LEG_CALIBRATION_INVALID")
             elif leg.calibrated_lower_bound > leg.calibrated_probability:
                 blockers.append("LEG_LOWER_EXCEEDS_POINT")
