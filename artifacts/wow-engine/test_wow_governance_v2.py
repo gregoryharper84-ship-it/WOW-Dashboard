@@ -38,14 +38,21 @@ def test_source_review_negative_suite_runs_on_pr_head():
 def test_protected_main_workflow_and_separate_qa_app_are_required():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     code = SCRIPT.read_text(encoding="utf-8")
-    assert "on:\n  workflow_dispatch:" in workflow
-    assert "on:\n  pull_request_target:" not in workflow
+    assert "on:\n  pull_request_target:" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "types: [opened, synchronize, reopened, ready_for_review]" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "environment: wow-qa" in workflow
     assert "ref: main" in workflow
     assert "persist-credentials: false" in workflow
     assert "permission-checks: write" in workflow
     assert "steps.qa.outputs.token" in workflow
+    assert "uses: ./.github/actions/wow-claude-agent" in workflow
+    assert 'anthropic_api_key: ""' in workflow
+    assert "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" in workflow
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" not in workflow
+    assert "WOW_QA_REVIEW_ANTHROPIC_API_KEY" not in workflow
+    assert "pull-requests: write" not in workflow
     assert "github.event.pull_request.head.ref" not in workflow
     assert "NoCredentialRedirect" in code
     assert "HTTP_CLIENT.open" in code
