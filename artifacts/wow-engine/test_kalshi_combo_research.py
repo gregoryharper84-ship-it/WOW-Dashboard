@@ -35,7 +35,7 @@ def example_quote():
         FrozenLeg("a", "NBA:eventA:ML:YES", "eventA", start, quote_at-timedelta(minutes=2), .78, .72, "PASS"),
         FrozenLeg("b", "NBA:eventB:ML:YES", "eventB", start, quote_at-timedelta(minutes=2), .80, .73, "PASS"),
     )
-    return FrozenComboQuote("demo", legs, .65, .58, "j-123", "PASS", "simulation:fit-v4", "rfq-1", "KALSHI_RFQ", quote_at, quote_at+timedelta(seconds=20), Decimal("20.00"), Decimal("40.00"))
+    return FrozenComboQuote("demo", legs, .65, .58, "j-123", "PASS", "simulation:fit-v4", "rfq-1", "KALSHI_RFQ", quote_at, quote_at+timedelta(seconds=20), Decimal("20.00"), Decimal("40.00"), joint_receipt_asof_utc=quote_at-timedelta(minutes=1))
 
 
 def test_passing_math_is_still_non_executable_hold():
@@ -90,3 +90,37 @@ def test_no_independence_guess():
 def test_invalid_money_rejected():
     with pytest.raises(ValueError):
         audit_settled([SettledCombo("x", 2, Decimal("-1"), Decimal("0"))])
+
+
+def test_joint_lower_bound_zero_keeps_conservative_loss_diagnostic():
+    quote = replace(example_quote(), joint_lower_bound=0.0)
+    verdict = evaluate_frozen_quote(quote)
+    assert verdict.status == "RESEARCH_HOLD_KALSHI_RECOVERY_ACTIVE"
+    assert verdict.conservative_return_diagnostic == Decimal("-20.000")
+
+
+def test_leg_lower_bound_zero_is_valid():
+    quote = example_quote()
+    leg0 = replace(quote.legs[0], calibrated_lower_bound=0.0)
+    verdict = evaluate_frozen_quote(replace(quote, legs=(leg0, quote.legs[1]), joint_lower_bound=0.0))
+    assert verdict.status == "RESEARCH_HOLD_KALSHI_RECOVERY_ACTIVE"
+
+
+@pytest.mark.parametrize("field", ["receipt_id", "exact_market_identity", "event_id"])
+def test_leg_missing_identity_fails_before_numeric_diagnostics(field):
+    quote = example_quote()
+    bad_leg = replace(quote.legs[0], **{field: ""})
+    verdict = evaluate_frozen_quote(replace(quote, legs=(bad_leg, quote.legs[1])))
+    assert "LEG_RECEIPT_EVENT_IDENTITY_MISSING" in verdict.blockers
+    assert verdict.conservative_return_diagnostic is None
+
+
+def test_joint_asof_is_required():
+    verdict = evaluate_frozen_quote(replace(example_quote(), joint_receipt_asof_utc=None))
+    assert "JOINT_RECEIPT_ASOF_UNVERIFIED" in verdict.blockers
+
+
+def test_joint_receipt_cannot_look_ahead():
+    quote = example_quote()
+    verdict = evaluate_frozen_quote(replace(quote, joint_receipt_asof_utc=quote.legs[0].event_start_utc+timedelta(minutes=1)))
+    assert "JOINT_RECEIPT_LOOKAHEAD_INVALID" in verdict.blockers
