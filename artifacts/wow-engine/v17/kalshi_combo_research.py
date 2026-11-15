@@ -159,7 +159,10 @@ def evaluate_frozen_quote(q: FrozenComboQuote, quote_max_age_seconds: int = 180)
         for value in (leg.receipt_id, leg.exact_market_identity, leg.event_id)
     ):
         blockers.append("LEG_RECEIPT_EVENT_IDENTITY_MISSING")
-    if len({leg.receipt_id for leg in q.legs}) != len(q.legs) or len({leg.exact_market_identity for leg in q.legs}) != len(q.legs):
+    if "LEG_RECEIPT_EVENT_IDENTITY_MISSING" not in blockers and (
+        len({leg.receipt_id for leg in q.legs}) != len(q.legs)
+        or len({leg.exact_market_identity for leg in q.legs}) != len(q.legs)
+    ):
         blockers.append("DUPLICATE_LEG_OR_RECEIPT")
     if not q.joint_receipt_id or not q.dependency_method or q.joint_calibration_status != "PASS":
         blockers.append("JOINT_MODEL_OR_DEPENDENCE_UNVERIFIED")
