@@ -726,6 +726,27 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
     )
 
 
+
+@pytest.mark.parametrize(("status", "body", "suffix"), [
+    (403, {"message": "You have exceeded a secondary rate limit"}, "403:SECONDARY_RATE_LIMIT"),
+    (403, {"message": "API rate limit exceeded"}, "403:RATE_LIMIT"),
+    (403, {"message": "Resource not accessible by integration"}, "403:APP_PERMISSION_DENIED"),
+    (403, {"message": "Bad credentials"}, "403:CREDENTIAL_REJECTED"),
+    (403, {"message": "unclassified 403 secret=private-value"}, "403"),
+    (429, {"message": "Rate limit reached"}, "429:RATE_LIMIT"),
+    (404, {"message": "Not Found"}, "404"),
+])
+def test_qa_pr_unreadable_fails_closed_with_safe_http_classification(status, body, suffix):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    routes = Fake({f"repos/{REPO}/pulls/7": (status, body)})
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True, fetch=routes)
+    assert out == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:7:{suffix}"]}
+    assert "private-value" not in str(out)
+    dispatch = m.targets(REPO, pr="7", fetch=routes)
+    assert dispatch == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:{suffix}"]}
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
