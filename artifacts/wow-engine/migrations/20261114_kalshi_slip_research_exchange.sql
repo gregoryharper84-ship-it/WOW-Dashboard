@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS public.wow_kalshi_slip_research_exchange (
     OR (scope='COHORT' AND event_start_utc IS NULL AND market_ref IS NULL)
   ),
   CONSTRAINT kalshi_research_stage_time CHECK (
-    (analysis_stage='PREGAME_RESEARCH' AND as_of_utc < event_start_utc)
+    (analysis_stage='PREGAME_RESEARCH' AND event_start_utc IS NOT NULL AND as_of_utc < event_start_utc)
     OR (analysis_stage='POSTMORTEM_RESEARCH' AND
         (event_start_utc IS NULL OR as_of_utc >= event_start_utc))
   )
