@@ -127,3 +127,43 @@ def test_sql_security_and_immutability_contract():
     for required in ("ENABLE ROW LEVEL SECURITY", "REVOKE ALL", "GRANT SELECT, INSERT", "BEFORE UPDATE OR DELETE", "CHECK (can_execute=false)", "CHECK (model_feature_eligible=false)", "CHECK (probability_publishable=false)"):
         assert required in sql
     assert not CAN_EXECUTE and not CAN_ALLOCATE_CAPITAL
+
+
+def test_http_cross_engine_authentication_and_round_trip():
+    from fastapi import Header, HTTPException
+    from fastapi.testclient import TestClient
+    db=FakeDB()
+    def require_key(authorization: str | None = Header(None)):
+        if authorization != "Bearer test-only":
+            raise HTTPException(status_code=401, detail="AUTH_REQUIRED")
+    app=FastAPI()
+    install_kalshi_slip_research_routes(app,auth_dependency=require_key,get_client_fn=lambda:db)
+    client=TestClient(app)
+    assert client.post(ROUTE,json=SAMPLE).status_code == 401
+    assert client.get(ROUTE,params={"consumer_host":"WOW_BETTING_ENGINE"}).status_code == 401
+    response=client.post(ROUTE,headers={"Authorization":"Bearer test-only"},json=SAMPLE)
+    assert response.status_code == 202
+    assert not response.json()["can_execute"]
+    consumed=client.get(ROUTE,headers={"Authorization":"Bearer test-only"},params={"consumer_host":"WOW_BETTING_ENGINE"})
+    assert consumed.status_code==200 and consumed.json()["entry_count"]==1
+    assert consumed.json()["entries"][0]["source_host"]=="LLP_TEAM_BETTING_ENGINE"
+
+
+def test_http_bad_input_is_422_no_persistence():
+    from fastapi.testclient import TestClient
+    db=FakeDB();app=FastAPI()
+    install_kalshi_slip_research_routes(app,auth_dependency=lambda:None,get_client_fn=lambda:db)
+    response=TestClient(app).post(ROUTE,json={**SAMPLE,"calibrated_probability":0.8})
+    assert response.status_code==422 and response.json()["detail"]["code"]=="EXCHANGE_SCHEMA_OR_FORBIDDEN_FIELD"
+    assert not db.store
+
+
+def test_http_database_failure_is_503_no_fabricated_success():
+    from fastapi.testclient import TestClient
+    app=FastAPI()
+    def broken_db(): raise RuntimeError("secret database exception")
+    install_kalshi_slip_research_routes(app,auth_dependency=lambda:None,get_client_fn=broken_db)
+    response=TestClient(app).post(ROUTE,json=SAMPLE)
+    assert response.status_code==503
+    assert "secret database exception" not in response.text
+    assert response.json()["detail"]["code"]=="EXCHANGE_PERSISTENCE_UNAVAILABLE"
