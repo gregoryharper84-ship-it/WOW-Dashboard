@@ -32,8 +32,12 @@ def test_simplified_release_keeps_optional_checks_honest_and_model_safety():
     for name in (QA_CHECK, RELEASE_CHECK):
         assert name in document
     assert "diagnostic" in document
-    assert "five" in document.lower()
+    assert "exactly the three required" in document
+    assert "no longer required" in document
     for literal in ("can_execute=false", "V17_TERMINAL_REDUCER", "calibrated lower bound"):
         assert literal in document
     assert "one authenticated owner-authorized protected merge" in design
-    assert "pending repository admin reconciliation" in design
+    assert "live ruleset reconciled to three checks" in design
+    assert "including protected/security-adjacent Class P" in design
+    assert "issue #1830" in document
+    assert "without an independent premerge QA/SIRT reviewer" in document
