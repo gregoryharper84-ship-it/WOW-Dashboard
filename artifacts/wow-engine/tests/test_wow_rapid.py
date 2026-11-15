@@ -255,5 +255,5 @@ def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
         "DIFF_LOG": str(diff_log),
         "PR_HEAD_SHA": "a" * 40,
         "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1"}, capture_output=True)
-    assert diff_log.read_text() == "diff-called\\n"
+    assert diff_log.read_text().splitlines() == ["diff-called"]
     assert result.returncode == 42
