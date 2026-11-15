@@ -244,6 +244,24 @@ jobs:
             echo "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING"; exit 1;
           }
 
+      - name: Preflight independent semantic reviewer before inference
+        if: steps.policy.outputs.review_active == 'true'
+        shell: bash
+        env:
+          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
+          WOW_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}
+          WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
+          WOW_QA_GEMINI_FREE_TIER_CONFIRMED: ${{ vars.WOW_QA_GEMINI_FREE_TIER_CONFIRMED }}
+        run: |
+          set -euo pipefail
+          [ "${WOW_QA_GEMINI_FREE_TIER_CONFIRMED:-}" = "true" ] || {
+            echo "::error::GEMINI_FREE_TIER_UNVERIFIED"; exit 1;
+          }
+          [ "${WOW_QA_GEMINI_MODEL:-}" = "gemini-3.8-flash" ] || {
+            echo "::error::GEMINI_CONFIG_INVALID"; exit 1;
+          }
+          python .github/scripts/wow_v28_reviewer_app_preflight.py
+
       - name: Capture complete exact-head source evidence
         id: capture
         if: steps.policy.outputs.review_active == 'true'
