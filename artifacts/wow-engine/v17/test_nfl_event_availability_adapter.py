@@ -841,6 +841,105 @@ def test_regression_foreign_event_listed_athlete_not_authoritative():
     assert comp_ev.source == "NFL_COMPOSITE_AVAILABILITY_FALLBACK"
 
 
+@pytest.mark.parametrize(
+    "scope_overrides",
+    [
+        {"event_id": "espn-FOREIGN-EVENT"},
+        {"sport": "NBA"},
+        {"team": "MIA"},
+    ],
+)
+def test_regression_out_of_scope_official_out_cannot_rule_player_out(scope_overrides):
+    # A foreign-event, foreign-sport, or foreign-team OUT must not become decisive.
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(hours=1)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "entries": [
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "team": "DET",
+                "game_status": "Out",
+            },
+        ],
+    }
+    report.update(scope_overrides)
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.evidence_status == "REPORT_SCOPE_MISMATCH"
+    assert ev.designation is None
+    assert ev.risk is False
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+def test_regression_foreign_event_official_conflict_does_not_suppress_current_event_espn():
+    # A conflicting report for another event is not authoritative for this event.
+    foreign_conflicting_official = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=30)).isoformat(),
+        "event_id": "espn-FOREIGN-EVENT",
+        "team": "DET",
+        "entries": [
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "team": "DET",
+                "game_status": "Questionable",
+            },
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "team": "DET",
+                "game_status": "Out",
+            },
+        ],
+    }
+    current_event_espn = {
+        "injuries": [
+            {
+                "team": {"abbreviation": "DET"},
+                "injuries": [
+                    {
+                        "athlete": {"id": "4361788", "displayName": "Amon-Ra St. Brown"},
+                        "status": "Out",
+                        "date": (CAPTURED - timedelta(minutes=15)).isoformat(),
+                    }
+                ],
+            }
+        ]
+    }
+    comp_ev = compose_nfl_event_availability(
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+        official_game_status=foreign_conflicting_official,
+        espn_event_summary=current_event_espn,
+    )
+    assert comp_ev.source == SOURCE_ESPN_EVENT_INJURIES
+    assert comp_ev.designation == "OUT"
+    assert comp_ev.fresh is True
+    decision = evaluate_player_availability(comp_ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNAVAILABLE
+    assert decision.blocker == PLAYER_RULED_OUT
+
+
 def test_regression_espn_post_kickoff_or_stale_entry_not_decisive():
     # ESPN entry published after kickoff
     post_kickoff_espn = {
@@ -981,4 +1080,3 @@ def test_regression_official_conflict_not_overridden_by_espn_out():
     assert comp_ev.evidence_status == "REPORT_ENTRY_CONFLICT_UNVERIFIED"
     role_av = comp_ev.to_role_availability()
     assert evaluate_player_availability(role_av).status == AVAILABILITY_UNVERIFIED
-
