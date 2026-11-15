@@ -33,6 +33,7 @@ def _nhl_ok():
         "sport": "NHL",
         "research_screen_pass": True,
         "source_review_status": "REQUIRED",
+        "candidate_preflight": {"status": "NHL_CANDIDATE_PREFLIGHT_READY", "source_event_n": 100, "training_feature_n": 100, "can_execute": False},
         "source_event_n": 100,
         "training_feature_n": 100,
         "model_family": "NHL_REGULAR_SEASON_LOGISTIC_V1",
@@ -166,3 +167,14 @@ def test_deep_nested_promotion_claim_fails_closed(monkeypatch):
     )
     assert receipt["status"] == "HOLD"
     assert receipt["code"] == "MODEL_FACTORY_NATIVE_INERTNESS_VIOLATION"
+
+
+def test_nhl_missing_preflight_is_not_ready(monkeypatch):
+    result = _nhl_ok()
+    del result["candidate_preflight"]
+    monkeypatch.setattr(factory, "_run_nhl", lambda *_: result)
+    receipt = factory.prepare_candidate_evidence(
+        object(), sport="NHL", market="WINNER", source_head_sha="a"*40,
+    )
+    assert receipt["status"] == "HOLD"
+    assert receipt["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID"
