@@ -146,10 +146,12 @@ def test_durable_duplicate_pr_never_selected(monkeypatch):
 
 
 def test_discovery_reads_fifth_page_of_426_open_prs(monkeypatch):
-    """Full source inventory is required; 426 rows must not be truncated at 400."""
+    """An eligible reviewed source on page five must be discovered, not discarded."""
     foreign = {"user": {"login": "non-owner"}, "state": "open"}
+    candidate = source_pr(n=426)
     visited = []
     prefix = "pulls?state=open&base=main&per_page=100&page="
+    monkeypatch.setattr(adoption, "verify_git_source", lambda *args: BASE)
 
     def fetch(path):
         if path == "pulls?state=open&base=main&per_page=100":
@@ -157,30 +159,45 @@ def test_discovery_reads_fifth_page_of_426_open_prs(monkeypatch):
         if path.startswith(prefix):
             page = int(path.removeprefix(prefix))
             visited.append(page)
-            return [foreign] * (26 if page == 5 else 100) if page <= 5 else []
+            if page == 5:
+                return [foreign] * 25 + [candidate]
+            return [foreign] * 100 if page < 5 else []
+        if path.startswith("pulls?state=all&head="):
+            return []
+        if path == "pulls/426/files?per_page=100":
+            return source_files()
+        if path == "pulls/426":
+            return candidate
+        if path == f"commits/{SHA}/check-runs?per_page=100":
+            return source_checks()
+        if path == f"compare/{SHA}...{BASE}?per_page=100":
+            return main_compare()
         raise AssertionError(path)
 
     monkeypatch.setattr(adoption, "api", fetch)
     result = adoption.discover(slot=0)
-    assert result == {"status": "NO_ELIGIBLE_SOURCE",
-                      "detail": "NO_ELIGIBLE_SOURCE", "can_execute": False}
+    assert result == {"status": "SOURCE_READY", "pr_number": 426,
+                      "source_sha": SHA,
+                      "paths": sorted(x["filename"] for x in source_files()),
+                      "can_execute": False}
     assert visited == [1, 2, 3, 4, 5]
 
 
 def test_discovery_still_holds_when_six_pages_are_saturated(monkeypatch):
-    """Raise the bounded capacity, not the requirement for complete inventory."""
+    """No partial adoption even if a reviewed source appeared before the cap."""
     foreign = {"user": {"login": "non-owner"}, "state": "open"}
+    candidate = source_pr(n=426)
     visited = []
     prefix = "pulls?state=open&base=main&per_page=100&page="
 
     def fetch(path):
         if path == "pulls?state=open&base=main&per_page=100":
-            return [foreign] * 100
+            return [candidate] + [foreign] * 99
         if path.startswith(prefix):
             page = int(path.removeprefix(prefix))
             visited.append(page)
-            return [foreign] * 100
-        raise AssertionError(path)
+            return [candidate] + [foreign] * 99 if page == 1 else [foreign] * 100
+        raise AssertionError("Saturated inventory must hold before candidate review: " + path)
 
     monkeypatch.setattr(adoption, "api", fetch)
     result = adoption.discover(slot=0)
