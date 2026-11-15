@@ -214,3 +214,95 @@ def test_nhl_success_without_persisted_candidate_identity_is_hold(monkeypatch):
     )
     assert receipt["status"] == "HOLD"
     assert receipt["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID"
+
+
+def test_nested_forbidden_authority_statuses_always_hold(monkeypatch):
+    for field in ("promoted", "active", "rank_eligible"):
+        result = _nhl_ok()
+        result["persistence"]["candidate"][field] = True
+        monkeypatch.setattr(factory, "_run_nhl", lambda *_args, result=result: result)
+        receipt = factory.prepare_candidate_evidence(
+            object(), sport="NHL", market="WINNER", source_head_sha="a" * 40,
+        )
+        assert receipt["status"] == "HOLD", field
+        assert receipt["code"] == "MODEL_FACTORY_NATIVE_INERTNESS_VIOLATION", field
+        assert receipt["rank_eligible"] is False
+        assert receipt["probability_publishable"] is False
+        assert receipt["can_execute"] is False
+
+
+def test_false_native_authority_statuses_remain_safe():
+    assert not factory._unsafe_native({"candidate": {"promoted": False, "active": False, "rank_eligible": False}})
+
+
+def test_nba_independent_provenance_and_freshness_fail_closed(monkeypatch):
+    for part, key, invalid in (
+        ("provenance_preflight", "provenance_complete", False),
+        ("freshness_preflight", "freshness_status", "STALE"),
+    ):
+        result = _nba_ok()
+        result["rows"][0]["training_replay"][part][key] = invalid
+        monkeypatch.setattr(factory, "_run_nba", lambda *_args, result=result: result)
+        receipt = factory.prepare_candidate_evidence(
+            object(), sport="NBA", market="WINNER", source_head_sha="a" * 40,
+        )
+        assert receipt["status"] == "HOLD", part
+        assert receipt["code"] == "MODEL_FACTORY_NATIVE_HOLD", part
+        assert receipt["rank_eligible"] is False
+        assert receipt["probability_publishable"] is False
+        assert receipt["can_execute"] is False
+
+
+def test_nhl_independent_dataset_and_count_checks_fail_closed(monkeypatch):
+    for field, value in (
+        ("source_event_n", 99),
+        ("training_feature_n", 99),
+        ("training_dataset_hash", "not-a-sha"),
+    ):
+        result = _nhl_ok()
+        result["candidate_preflight"][field] = value
+        monkeypatch.setattr(factory, "_run_nhl", lambda *_args, result=result: result)
+        receipt = factory.prepare_candidate_evidence(
+            object(), sport="NHL", market="WINNER", source_head_sha="a" * 40,
+        )
+        assert receipt["status"] == "HOLD", field
+        assert receipt["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID", field
+        assert receipt["rank_eligible"] is False
+        assert receipt["probability_publishable"] is False
+        assert receipt["can_execute"] is False
+
+
+def test_nba_receipt_binds_versions_and_scope_to_native_replay(monkeypatch):
+    result = _nba_ok()
+    result["rows"][0]["training_replay"].update({
+        "model_artifact_version": "NBA-MODEL-ONE", "calibrator_version": "NBA-CAL-ONE",
+    })
+    monkeypatch.setattr(factory, "_run_nba", lambda *_args, result=result: result)
+    a = factory.prepare_candidate_evidence(object(), sport="NBA", market="WINNER", source_head_sha="a" * 40, seasons=(2025, 2026))
+    assert a["native_evidence"]["model_artifact_version"] == "NBA-MODEL-ONE"
+    assert a["native_evidence"]["calibrator_version"] == "NBA-CAL-ONE"
+    assert a["native_evidence"]["requested_acquisition_seasons"] == [2025, 2026]
+    assert a["native_evidence"]["fit_season_scope"] == "NATIVE_REPLAY_NOT_FILTERED_BY_REQUESTED_SEASONS"
+    result["rows"][0]["training_replay"]["model_artifact_version"] = "NBA-MODEL-TWO"
+    b = factory.prepare_candidate_evidence(object(), sport="NBA", market="WINNER", source_head_sha="a" * 40, seasons=(2025, 2026))
+    assert a["evidence_sha256"] != b["evidence_sha256"]
+    assert a["certification_status"] == b["certification_status"] == "NOT_CERTIFIED"
+
+
+def test_invalid_nba_version_types_become_null(monkeypatch):
+    result = _nba_ok()
+    result["rows"][0]["training_replay"].update({
+        "model_artifact_version": ["not-a-string"], "calibrator_version": 42,
+    })
+    monkeypatch.setattr(factory, "_run_nba", lambda *_args, result=result: result)
+    a = factory.prepare_candidate_evidence(object(), sport="NBA", market="WINNER", source_head_sha="a" * 40)
+    assert a["native_evidence"]["model_artifact_version"] is None
+    assert a["native_evidence"]["calibrator_version"] is None
+
+
+def test_nhl_receipt_contains_validated_dataset_hash(monkeypatch):
+    result = _nhl_ok()
+    monkeypatch.setattr(factory, "_run_nhl", lambda *_args: result)
+    a = factory.prepare_candidate_evidence(object(), sport="NHL", market="WINNER", source_head_sha="a" * 40)
+    assert a["native_evidence"]["training_dataset_hash"] == "f" * 64
+    assert a["certification_status"] == "NOT_CERTIFIED"

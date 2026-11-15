@@ -16,12 +16,17 @@ CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 FACTORY_VERSION = "V17_RESEARCH_EVIDENCE_FACTORY_V1"
 SUPPORTED_RECIPES = frozenset({("NBA", "WINNER"), ("NHL", "WINNER")})
-_INERT_FLAGS = ("can_execute", "probability_publishable", "automatic_promotion", "automatic_certification", "promotion_attempted")
+_INERT_FLAGS = (
+    "can_execute", "probability_publishable", "automatic_promotion",
+    "automatic_certification", "promotion_attempted", "promoted", "active",
+    "rank_eligible",
+)
 
 
 def _run_nba(db: Any, seasons: tuple[int, ...] | None) -> Mapping[str, Any]:
     from v17.basketball_model_maintenance import run_basketball_model_maintenance
 
+    # Explicit seasons constrain acquisition only; native replay reads all settled rows.
     args: dict[str, Any] = {"sports": ("NBA",)}
     if seasons is not None:
         args["seasons"] = seasons
@@ -83,6 +88,9 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
                                seasons: tuple[int, ...] | None = None) -> dict[str, Any]:
     """Call native maintenance and produce *research* evidence, not a model approval.
 
+    NBA ``seasons`` selects source acquisition only: native training replay is
+    not filtered to those seasons. NHL seasons select native maintenance years.
+
     Native NBA hydration/feature/replay checks and native NHL candidate/preflight
     remain the respective scientific authorities. This layer does not interpret
     their probabilities, calibrate, or promote an artifact. No implied-odds
@@ -128,6 +136,12 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
             "row_status": row.get("status") if isinstance(row.get("status"), str) else None,
             "hydration_status": row.get("hydration_status") if isinstance(row.get("hydration_status"), str) else None,
             "model_evidence_mode": "BASKETBALL_SHADOW_REPLAY",
+            "requested_acquisition_seasons": list(seasons) if seasons is not None else None,
+            "fit_season_scope": "NATIVE_REPLAY_NOT_FILTERED_BY_REQUESTED_SEASONS",
+            "model_artifact_version": (replay.get("model_artifact_version")
+                if isinstance(replay.get("model_artifact_version"), str) else None),
+            "calibrator_version": (replay.get("calibrator_version")
+                if isinstance(replay.get("calibrator_version"), str) else None),
         }
         if (native_status == "COMPLETE" and result.get("rows_updated") == 1
                 and row.get("sport") == "NBA" and row.get("status") == "SHADOW_EVIDENCE_UPDATED"
@@ -175,6 +189,7 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
             return _receipt(s, m, sha, status="HOLD", code="MODEL_FACTORY_NATIVE_RESULT_INVALID", native_status=native_status, evidence=evidence)
         if result.get("research_screen_pass") is not True:
             return _receipt(s, m, sha, status="HOLD", code="RESEARCH_SCREEN_FAILED", native_status=native_status, evidence=evidence)
+        evidence["training_dataset_hash"] = preflight["training_dataset_hash"]
         return _receipt(s, m, sha, status="RESEARCH_EVIDENCE_PREPARED", native_status=native_status, evidence=evidence)
     code = result.get("code") if isinstance(result.get("code"), str) else "MODEL_FACTORY_NATIVE_HOLD"
     return _receipt(s, m, sha, status="HOLD", code=code, native_status=native_status, evidence=evidence)
