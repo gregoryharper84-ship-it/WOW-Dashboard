@@ -239,11 +239,21 @@ def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
     script = textwrap.dedent(section.split("run: |", 1)[1]).replace(
         "${{ github.event.pull_request.base.sha }}", "a" * 40)
     git = tmp_path / "git"
-    git.write_text("#!/bin/sh\nexit 42\n")
+    diff_log = tmp_path / "diff-reached.txt"
+    git.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  cat-file) exit 0 ;;\n"
+        "  diff) printf 'diff-called\\n' >> \"$DIFF_LOG\"; exit 42 ;;\n"
+        "  *) exit 97 ;;\n"
+        "esac\n"
+    )
     git.chmod(0o755)
     result = subprocess.run(["bash", "-c", script], env={**os.environ,
         "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
         "RUNNER_TEMP": str(tmp_path),
+        "DIFF_LOG": str(diff_log),
         "PR_HEAD_SHA": "a" * 40,
         "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1"}, capture_output=True)
+    assert diff_log.read_text() == "diff-called\\n"
     assert result.returncode == 42
