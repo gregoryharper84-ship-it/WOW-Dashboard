@@ -255,8 +255,8 @@ def test_source_review_artifact_binds_exact_head_complete_diff_and_trusted_run()
     assert receipt["schema_version"] == 1
     assert receipt["review"]["decision"] == "PASS"
     assert receipt["diff"]["sha256"] == RESULT["reviewed_diff_sha256"]
-    assert receipt["source"]["provider_identity"] == "openai-codex-action"
-    assert receipt["source"]["credential_scope"] == "WOW_QA_REVIEW_OPENAI_API_KEY"
+    assert receipt["source"]["provider_identity"] == "gemini-generative-api"
+    assert receipt["source"]["credential_scope"] == "WOW_QA_REVIEW_GEMINI_API_KEY"
 
 
 def test_workflow_run_triggered_review_keeps_protected_main_provenance():
