@@ -127,7 +127,9 @@ def nba_fatigue_three_point_shadow(snapshot: Mapping[str, Any]) -> dict[str, Any
     cov = snapshot.get("shot_count_covariance")
     if cov is not None:
         cov_value = _number(cov)
-        if cov_value is None or not snapshot.get("joint_shot_covariance_artifact_hash"):
+        covariance_fit_cutoff = _time(snapshot.get("joint_shot_covariance_fit_cutoff_utc"))
+        if (cov_value is None or not snapshot.get("joint_shot_covariance_artifact_hash")
+                or covariance_fit_cutoff is None or covariance_fit_cutoff > freeze):
             return {**pending, "status": "SHOT_COVARIANCE_NOT_VALIDATED"}
         limit = sqrt(shot_variances["home"] * shot_variances["away"])
         if abs(cov_value) > limit + 1e-9:
@@ -269,6 +271,7 @@ def dual_gate_strong_confidence_shadow(
     if quote is None:
         return {**out, "status": "PRICE_MISSING", "blockers": ["PRICE_MISSING"]}
     quote_time = _time(quote.get("quoted_at_utc"))
+    two_way_time = _time(quote.get("two_way_market_snapshot_timestamp_utc"))
     odds = quote.get("american_odds")
     fee = _prob(quote.get("fee_rate_on_profit"))
     no_vig = _prob(quote.get("market_no_vig_probability"))
@@ -283,7 +286,10 @@ def dual_gate_strong_confidence_shadow(
             or _name(quote.get("market_period")) != _name(model.get("market_period"))
             or _name(quote.get("settlement_basis")) != _name(model.get("settlement_basis"))
             or quote_time is None or quote_time > now or quote_time >= event_time
+            or two_way_time is None or two_way_time > quote_time
+            or two_way_time >= event_time
             or max_age is None or (now - quote_time).total_seconds() / 60 > max_age
+            or (now - two_way_time).total_seconds() / 60 > max_age
             or type(odds) is not int or abs(odds) < 100
             or fee is None or no_vig is None or weight is None):
         return {**out, "status": "EXACT_PRICE_OR_IDENTITY_UNVERIFIED",
