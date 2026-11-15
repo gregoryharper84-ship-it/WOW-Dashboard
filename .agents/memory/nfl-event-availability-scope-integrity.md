@@ -1,0 +1,9 @@
+# NFL event availability scope integrity
+
+- **Date:** 2026-11-15
+- **Typed reason:** `REPORT_SCOPE_MISMATCH` → `PLAYER_AVAILABILITY_UNVERIFIED`; no new canonical failure code was introduced.
+- **Mechanism:** An official game-status report with a foreign event, sport, or team could still supply a listed designation before the availability gate rejected the scope. The same class existed in game-day inactives: plain-name entries could be treated as decisive without checking the report's top-level event/sport/team. Separately, naive `datetime` objects were converted using the runner's local timezone, unlike naive ISO strings which are treated as UTC.
+- **Detection point:** RED hosted regressions on PR #2669 reproduced three foreign-scope `OUT` failures plus one foreign-event conflicting-report failure; a second RED run reproduced three foreign-scope game-day inactive failures and one timezone-dependent timestamp failure.
+- **Fix:** Validate official report scope before a designation or inactive listing can become authoritative. Reuse the existing report-scope validator for game-day inactives, using report-level metadata and mapping entries; return non-decisive `REPORT_SCOPE_MISMATCH` evidence on invalid/missing scope. String inactive entries inherit only a verified report-level scope. Normalize naive datetime objects as UTC.
+- **Prevention artifact:** `artifacts/wow-engine/v17/test_nfl_event_availability_adapter.py` regressions `test_regression_out_of_scope_official_out_cannot_rule_player_out`, `test_regression_foreign_event_official_conflict_does_not_suppress_current_event_espn`, `test_regression_foreign_scope_gameday_inactives_cannot_preempt_current_event_clearance`, `test_regression_in_scope_gameday_inactives_string_inherits_report_team_scope`, and `test_regression_naive_datetime_is_normalized_as_utc`.
+- **Link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2669

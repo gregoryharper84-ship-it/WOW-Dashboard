@@ -152,7 +152,7 @@ def normalize_nfl_designation(raw: Any) -> str | None:
 
 def _parse_iso_ts(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc)
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -450,6 +450,36 @@ def parse_nfl_gameday_inactives(
     inactives_list = raw_inactives if isinstance(raw_inactives, Sequence) and not isinstance(raw_inactives, (str, bytes)) else []
     team_norm = normalize_nfl_team_code(team)
     target_name_norm = _normalize_token(athlete_name)
+    scope_entries = [item for item in inactives_list if isinstance(item, Mapping)]
+    scope_valid = _validate_report_scope(
+        inactives_data,
+        event_id=str(event_id),
+        team_norm=team_norm,
+        listed_entries=scope_entries,
+    )
+    if not scope_valid:
+        return NFLPlayerAvailabilityEvidence(
+            athlete_id=str(athlete_id),
+            athlete_name=athlete_name,
+            team=team,
+            event_id=str(event_id),
+            source=SOURCE_NFL_OFFICIAL_INACTIVES,
+            captured_at=captured.isoformat(),
+            evidence_status="REPORT_SCOPE_MISMATCH",
+            designation=None,
+            basis=None,
+            fresh=fresh,
+            report_complete=False,
+            risk=False,
+            is_inactive=False,
+            provenance={
+                "reason": "AVAILABILITY_REPORT_SCOPE_MISMATCH",
+                "authenticated": is_auth,
+                "report_timestamp": report_ts.isoformat() if report_ts else None,
+                "scope_valid": False,
+            },
+        )
+
     is_inactive = False
 
     for item in inactives_list:
