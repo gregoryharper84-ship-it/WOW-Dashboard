@@ -230,41 +230,46 @@ def _validate_report_scope(
     team_norm: str,
     listed_entries: Sequence[Mapping[str, Any]],
 ) -> bool:
-    # 1. Sport check: if present, must be NFL
+    # Every supplied scope field is a constraint; none may short-circuit
+    # validation of another supplied field.
     sport = report_data.get("sport")
     if sport is not None and _normalize_token(sport) not in ("NFL", "PRO FOOTBALL", "FOOTBALL"):
         return False
 
-    # 2. Event check: if present, must match event_id
-    rep_event = report_data.get("event_id")
-    if rep_event is not None and str(rep_event) != str(event_id):
-        return False
+    scope_identity_present = False
 
-    # 3. Team check: if explicit team / teams provided on report_data
+    rep_event = report_data.get("event_id")
+    if rep_event is not None:
+        scope_identity_present = True
+        if str(rep_event) != str(event_id):
+            return False
+
     rep_team = report_data.get("team")
     if rep_team is not None:
+        scope_identity_present = True
         if normalize_nfl_team_code(rep_team) != team_norm:
             return False
-        return True
 
     rep_teams = report_data.get("teams")
-    if rep_teams is not None and isinstance(rep_teams, Sequence) and not isinstance(rep_teams, (str, bytes)):
+    if rep_teams is not None:
+        scope_identity_present = True
+        if not isinstance(rep_teams, Sequence) or isinstance(rep_teams, (str, bytes)):
+            return False
         teams_norm = {normalize_nfl_team_code(t) for t in rep_teams}
         if team_norm not in teams_norm:
             return False
+
+    # Matching report-level identity is authoritative only after all
+    # supplied sport/event/team constraints have passed.
+    if scope_identity_present:
         return True
 
-    # If event_id matched and was explicitly provided on report_data
-    if rep_event is not None and str(rep_event) == str(event_id):
-        return True
-
-    # If any listed entry explicitly belongs to this team
-    for e in listed_entries:
-        if isinstance(e, Mapping) and normalize_nfl_team_code(e.get("team")) == team_norm:
-            return True
-
-    # Otherwise, scope is missing / unverifiable
-    return False
+    # Without report-level identity, only explicitly team-tagged entries
+    # can establish their own scope. Untagged entries must not borrow it.
+    return any(
+        isinstance(entry, Mapping) and normalize_nfl_team_code(entry.get("team")) == team_norm
+        for entry in listed_entries
+    )
 
 
 def parse_nfl_official_game_status_report(
@@ -457,6 +462,13 @@ def parse_nfl_gameday_inactives(
         team_norm=team_norm,
         listed_entries=scope_entries,
     )
+    report_team_norm = normalize_nfl_team_code(inactives_data.get("team"))
+    if not report_team_norm:
+        raw_report_teams = inactives_data.get("teams")
+        if isinstance(raw_report_teams, Sequence) and not isinstance(raw_report_teams, (str, bytes)):
+            normalized_report_teams = {normalize_nfl_team_code(t) for t in raw_report_teams}
+            if len(normalized_report_teams) == 1:
+                report_team_norm = next(iter(normalized_report_teams))
     if not scope_valid:
         return NFLPlayerAvailabilityEvidence(
             athlete_id=str(athlete_id),
@@ -485,7 +497,10 @@ def parse_nfl_gameday_inactives(
     for item in inactives_list:
         if isinstance(item, Mapping):
             item_team = normalize_nfl_team_code(item.get("team"))
-            if item_team and item_team != team_norm:
+            if item_team:
+                if item_team != team_norm:
+                    continue
+            elif report_team_norm != team_norm:
                 continue
             item_id = str(item.get("athlete_id") or "").strip()
             item_name = _normalize_token(item.get("athlete_name") or item.get("player_name"))
@@ -493,6 +508,8 @@ def parse_nfl_gameday_inactives(
                 is_inactive = True
                 break
         elif isinstance(item, str):
+            if report_team_norm != team_norm:
+                continue
             if _normalize_token(item) == target_name_norm:
                 is_inactive = True
                 break
