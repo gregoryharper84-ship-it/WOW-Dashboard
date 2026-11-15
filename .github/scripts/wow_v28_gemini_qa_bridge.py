@@ -142,6 +142,32 @@ def read_reviews(pr, token):
     raise GeminiHold("GEMINI_APP_REVIEWS_UNBOUNDED")
 
 
+def require_current_capture(captured, token):
+    pr = captured.get("pr") or {}
+    number = pr.get("number")
+    head = (pr.get("head") or {}).get("sha")
+    observed = source.capture_pr_evidence(
+        repository=REPO, pr_number=number, expected_head_sha=head, token=token
+    )
+    if observed != captured:
+        raise GeminiHold("GEMINI_APP_PR_IDENTITY_OR_DIFF_MOVED")
+
+
+def review_state(existing, verdict, body):
+    if verdict == "PASS" and any(r.get("state") == "CHANGES_REQUESTED" for r in existing):
+        raise GeminiHold("GEMINI_APP_STICKY_REJECT_SAME_SHA")
+    state = "APPROVED" if verdict == "PASS" else "CHANGES_REQUESTED"
+    good = [r for r in existing if r.get("state") == state and r.get("body") == body]
+    if len(good) > 1:
+        raise GeminiHold("GEMINI_APP_DUPLICATE_VERDICT")
+    if any(r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
+           and r.get("body") != body
+           and not (verdict == "REJECT" and r.get("state") == "APPROVED")
+           for r in existing):
+        raise GeminiHold("GEMINI_APP_CONFLICTING_SAME_SHA")
+    return len(good)
+
+
 def attest(captured, artifact, *, verify_only):
     number, head, author, files, digest = target(captured)
     t = artifact.get("target") or {}
@@ -155,26 +181,21 @@ def attest(captured, artifact, *, verify_only):
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
         raise GeminiHold("GEMINI_GITHUB_READ_TOKEN_MISSING")
-    current = source.capture_pr_evidence(repository=REPO, pr_number=number,
-                                          expected_head_sha=head, token=token)
-    if current["diff_sha256"] != digest:
-        raise GeminiHold("GEMINI_APP_SOURCE_DRIFT")
+    require_current_capture(captured, token)
     existing = [r for r in read_reviews(number, token) if isinstance(r, dict)
                 and (r.get("user") or {}).get("login") == BOT and r.get("commit_id") == head]
+    # A new commit or changed base during review inventory must not inherit
+    # approval for the previous head. Verify immediately before the write.
+    require_current_capture(captured, token)
     verdict = artifact["review"]["decision"]
-    if verdict == "PASS" and any(r.get("state") == "CHANGES_REQUESTED" for r in existing):
-        raise GeminiHold("GEMINI_APP_STICKY_REJECT_SAME_SHA")
-    state = "APPROVED" if verdict == "PASS" else "CHANGES_REQUESTED"
-    good = [r for r in existing if r.get("state") == state and r.get("body") == body]
-    if len(good) > 1:
-        raise GeminiHold("GEMINI_APP_DUPLICATE_VERDICT")
-    if any(r.get("state") in ("APPROVED", "CHANGES_REQUESTED") and r.get("body") != body for r in existing):
-        raise GeminiHold("GEMINI_APP_CONFLICTING_SAME_SHA")
+    same_decisions = review_state(existing, verdict, body)
     if verify_only:
-        if len(good) != 1:
+        if same_decisions != 1:
             raise GeminiHold("GEMINI_APP_VERDICT_MISSING")
+        require_current_capture(captured, token)
         return
-    if len(good) == 1:
+    if same_decisions == 1:
+        require_current_capture(captured, token)
         return
     app_token = os.environ.get("REVIEWER_APP_TOKEN", "")
     if not app_token:
@@ -188,6 +209,8 @@ def attest(captured, artifact, *, verify_only):
             or (response.get("user") or {}).get("login") != BOT
             or response.get("body") != body):
         raise GeminiHold("GEMINI_APP_SUBMISSION_NOT_VERIFIED")
+    # A push racing with the GitHub review API must leave QA in HOLD.
+    require_current_capture(captured, token)
 
 
 def main(argv=None):
