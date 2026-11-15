@@ -23,6 +23,25 @@ FEATURE_TIMESTAMP = "2026-10-22T16:00:00Z"
 TEST_NBA_SPECIALIST = "NBA_GAME_WIN_PROBABILITY_EXPERT_V1"
 
 
+def test_overflowing_feature_holds_before_model_resolution():
+    package = _feature_package()
+    package["features"][FEATURE_NAMES[0]] = 10**400
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=package,
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: pytest.fail("invalid feature reached model"),
+    )
+    assert result["blockers"] == ["NBA_CURRENT_FEATURES_INVALID"]
+    assert result["can_execute"] is False
+    assert result["probability_publishable"] is False
+
+
 def _schedule(rows):
     return lambda _sport, _season: [dict(row) for row in rows]
 

@@ -138,7 +138,7 @@ def _feature_blocker(
         try:
             if not math.isfinite(float(value)):
                 return "NBA_CURRENT_FEATURES_INVALID"
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return "NBA_CURRENT_FEATURES_INVALID"
 
     audit = feature_package.get("feature_audit")
