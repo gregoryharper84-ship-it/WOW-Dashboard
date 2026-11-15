@@ -20,6 +20,10 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/v17\/daily-snapshot-run$/, auth: true },
   { method: "GET", pattern: /^\/v17\/daily-snapshot-run\/[^/]+\/rows$/, auth: true },
   { method: "GET", pattern: /^\/v17\/llp-team-intelligence\/[^/]+\/events$/, auth: true },
+  // Research exchange. Both methods stay behind the existing Action bearer;
+  // no probability, model or trading authority passes through this gateway.
+  { method: "GET", pattern: /^\\/v17\\/intelligence\\/kalshi-slip-exchange$/, auth: true },
+  { method: "POST", pattern: /^\\/v17\\/intelligence\\/kalshi-slip-exchange$/, auth: true },
   { method: "POST", pattern: /^\/score-team-event$/, auth: true },
   { method: "POST", pattern: /^\/score-team-event-request$/, auth: true },
   { method: "POST", pattern: /^\/internal\/v17\/spread-forward-shadow$/, auth: true },
