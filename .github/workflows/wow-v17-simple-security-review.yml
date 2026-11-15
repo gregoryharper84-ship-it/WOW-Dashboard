@@ -51,6 +51,7 @@ jobs:
           python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
           python -m unittest discover -s .github/scripts/tests -p test_wow_v28_reviewer_app_preflight.py -q
           python -m unittest discover -s .github/scripts/tests -p test_wow_v28_reviewer_app_attest.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
       - name: Mint separate QA App checks-only token
         if: inputs.preflight_only != true
         id: qa
