@@ -98,7 +98,7 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _source_id(manifest: Mapping[str, Any]) -> str:
     nested = manifest.get("source_manifest") if isinstance(manifest.get("source_manifest"), Mapping) else manifest
-    raw = str((nested or {}).get("source") or (nested or {}).get("provider") or "")
+    raw = str((nested or {}).get("source") or (nested or {}).get("source_id") or (nested or {}).get("provider") or "")
     return raw.split(":", 1)[0].strip().upper()
 
 
