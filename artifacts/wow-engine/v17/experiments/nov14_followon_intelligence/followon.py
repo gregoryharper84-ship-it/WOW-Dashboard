@@ -79,6 +79,9 @@ def nba_fatigue_three_point_shadow(snapshot: Mapping[str, Any]) -> dict[str, Any
         return _base("SOURCE_PROVENANCE_MISSING", **{k: v for k, v in pending.items() if k not in {"status", "research_only", "can_execute", "automatic_promotion", "terminal_authority", "probability_mutated", "production_publication_allowed"}})
     if start is None or freeze is None or not freeze < start:
         return {**pending, "status": "PREGAME_CHRONOLOGY_INVALID"}
+    fit_cutoff = _time(snapshot.get("shot_fit_data_cutoff_utc"))
+    if fit_cutoff is None or fit_cutoff > freeze:
+        return {**pending, "status": "SHOT_FIT_NOT_AVAILABLE_AT_FREEZE"}
     pace = _number(snapshot.get("projected_pace"), minimum=1)
     perimeter = _number(snapshot.get("home_perimeter_defense_index"), minimum=0)
     b2b = snapshot.get("opponent_back_to_back")
@@ -101,7 +104,8 @@ def nba_fatigue_three_point_shadow(snapshot: Mapping[str, Any]) -> dict[str, Any
         prior_time = _time(profile.get("frozen_at_utc"))
         if type(attempts) is not int or attempts < 0 or alpha is None or beta is None:
             return pending
-        if alpha <= 0 or beta <= 0 or prior_time is None or prior_time > freeze:
+        if (alpha <= 0 or beta <= 0 or prior_time is None or prior_time > freeze
+                or str(profile.get("official_event_id") or "") != str(snapshot["official_event_id"])):
             return {**pending, "status": "SHOT_PRIOR_NOT_AVAILABLE_AT_FREEZE"}
         mu = alpha / (alpha + beta)
         concentration = alpha + beta
@@ -179,6 +183,9 @@ def audit_same_event_cross_market(legs: Sequence[Mapping[str, Any]]) -> dict[str
                 and leg.get("market_model_artifact_hash")
                 and leg.get("calibration_receipt_id")
                 and _MARKET.get(_name(leg.get("model_market_family"))) == market
+                and str(leg.get("model_official_event_id") or "") == event
+                and _number(leg.get("model_exact_line")) == line
+                and _name(leg.get("model_selected_side")) == _name(leg.get("selected_side"))
                 and leg.get("market_model_certified") is True
                 and receipt_time is not None and start_time is not None
                 and receipt_time < start_time
@@ -237,7 +244,10 @@ def dual_gate_strong_confidence_shadow(
     now = _time(as_of_utc)
     if not (model.get("prediction_id") and model.get("model_artifact_hash")
             and model.get("official_event_id") and model.get("sport")
-            and model.get("selected_participant") and p is not None
+            and model.get("selected_participant")
+            and _MARKET.get(_name(model.get("market_family"))) == "ML"
+            and model.get("market_period") and model.get("settlement_basis")
+            and p is not None
             and lower is not None and lower <= p
             and pred_time is not None and event_time is not None and now is not None
             and pred_time < event_time and now < event_time
@@ -270,6 +280,8 @@ def dual_gate_strong_confidence_shadow(
             or str(quote.get("official_event_id")) != str(model.get("official_event_id"))
             or _name(quote.get("selected_participant")) != _name(model.get("selected_participant"))
             or _MARKET.get(_name(quote.get("market_family"))) != "ML"
+            or _name(quote.get("market_period")) != _name(model.get("market_period"))
+            or _name(quote.get("settlement_basis")) != _name(model.get("settlement_basis"))
             or quote_time is None or quote_time > now or quote_time >= event_time
             or max_age is None or (now - quote_time).total_seconds() / 60 > max_age
             or type(odds) is not int or abs(odds) < 100
