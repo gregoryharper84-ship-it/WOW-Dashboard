@@ -245,11 +245,14 @@ def dual_gate_strong_confidence_shadow(
     pred_time = _time(model.get("immutable_prediction_timestamp_utc"))
     event_time = _time(model.get("event_start_utc"))
     now = _time(as_of_utc)
-    if not (model.get("prediction_id") and model.get("model_artifact_hash")
-            and model.get("official_event_id") and model.get("sport")
-            and model.get("selected_participant")
+    if not (str(model.get("prediction_id") or "").strip()
+            and str(model.get("model_artifact_hash") or "").strip()
+            and str(model.get("official_event_id") or "").strip()
+            and _name(model.get("sport"))
+            and _name(model.get("selected_participant"))
             and _MARKET.get(_name(model.get("market_family"))) == "ML"
-            and model.get("market_period") and model.get("settlement_basis")
+            and _name(model.get("market_period"))
+            and _name(model.get("settlement_basis"))
             and p is not None
             and lower is not None and lower <= p
             and pred_time is not None and event_time is not None and now is not None
@@ -277,8 +280,8 @@ def dual_gate_strong_confidence_shadow(
     fee = _prob(quote.get("fee_rate_on_profit"))
     no_vig = _prob(quote.get("market_no_vig_probability"))
     max_age = _number(policy.get("max_quote_age_minutes"), minimum=0)
-    if (not quote.get("quote_source_id")
-            or not quote.get("two_way_market_snapshot_id")
+    if (not str(quote.get("quote_source_id") or "").strip()
+            or not str(quote.get("two_way_market_snapshot_id") or "").strip()
             or quote.get("two_way_market_verified") is not True
             or _name(quote.get("sport")) != _name(model.get("sport"))
             or str(quote.get("official_event_id")) != str(model.get("official_event_id"))
