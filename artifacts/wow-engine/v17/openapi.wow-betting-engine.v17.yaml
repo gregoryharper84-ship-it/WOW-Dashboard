@@ -33,10 +33,7 @@ paths:
     get:
       operationId: readWowV17KalshiSlipResearch
       x-openai-isConsequential: false
-      description: >-
-        Read shared LLP and WOW Kalshi slip research findings. Non-authoritative,
-        no model probability, orders, money or calibration approval. Host is an
-        unverified label under the existing shared bearer.
+      description: Read both engines' UNVERIFIED_RESEARCH findings. No probability or trading authority.
       security: [{actionBearer: []}]
       parameters:
         - name: consumer_host
@@ -56,17 +53,14 @@ paths:
           required: false
           schema: {type: integer, minimum: 1, maximum: 100, default: 50}
       responses:
-        '200': {description: Read-only unverified research records; can_execute false}
-        '401': {description: Authentication failed}
-        '422': {description: Invalid scope, host or filtering parameters}
-        '503': {description: Research persistence unavailable}
+        '200': {description: Bounded read-only research rows}
+        '401': {description: Unauthorized}
+        '422': {description: Invalid input}
+        '503': {description: Persistence unavailable}
     post:
       operationId: publishWowV17KalshiSlipResearch
       x-openai-isConsequential: true
-      description: >-
-        Append an idempotent UNVERIFIED_RESEARCH observation for cross-engine
-        inspection. No probability, quote, personal order or stake data accepted.
-        Source host is a claim, not independently authenticated.
+      description: Append an idempotent unverified research finding without probability, stake or account data.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -83,7 +77,19 @@ paths:
                 reference_id: {type: string, maxLength: 128}
                 market_ref: {type: [string, 'null'], maxLength: 128}
                 finding_type: {type: string, enum: [SCHEDULE_REST_TRAVEL, LINEUP_AVAILABILITY, GAME_SCRIPT, SPORT_SPECIALIST_DIAGNOSTIC, DEPENDENCY_CORRELATION, QUOTE_MARKET_SANITY, SLIP_FRAGILITY, SETTLEMENT_DIAGNOSTIC, CALIBRATION_DIAGNOSTIC, RESEARCH_HYPOTHESIS]}
-                finding_code: {type: string, pattern: '^[A-Z][A-Z0-9_]{2,95}    get:
+                finding_code: {type: string, pattern: '^[A-Z][A-Z0-9_]{2,95}$'}
+                analysis_stage: {type: string, enum: [PREGAME_RESEARCH, POSTMORTEM_RESEARCH]}
+                as_of_utc: {type: string, format: date-time}
+                source_observed_at_utc: {type: string, format: date-time}
+                event_start_utc: {type: [string, 'null'], format: date-time}
+                evidence_refs: {type: array, minItems: 1, maxItems: 12, items: {type: string, maxLength: 128}}
+      responses:
+        '202': {description: Research receipt persisted; can_execute false}
+        '401': {description: Unauthorized}
+        '422': {description: Invalid input or chronology}
+        '503': {description: Persistence unavailable}
+  /v17/detailed-evidence-contract:
+    get:
       operationId: getWowV17DetailedEvidenceContract
       x-openai-isConsequential: false
       description: >-
@@ -1102,14 +1108,3 @@ components:
             Sport-specific evidence. Rich V17 research uses v17_detailed_evidence.
             Server-owned identity, starters, lineups, venue and lifecycle remain
             authoritative and cannot be overwritten.
-}
-                analysis_stage: {type: string, enum: [PREGAME_RESEARCH, POSTMORTEM_RESEARCH]}
-                as_of_utc: {type: string, format: date-time}
-                source_observed_at_utc: {type: string, format: date-time}
-                event_start_utc: {type: [string, 'null'], format: date-time}
-                evidence_refs: {type: array, minItems: 1, maxItems: 12, items: {type: string, maxLength: 128}}
-      responses:
-        '202': {description: Idempotent append-only research receipt; no prediction authority}
-        '401': {description: Authentication failed}
-        '422': {description: Forbidden field or invalid chronology}
-        '503': {description: Research persistence unavailable}
