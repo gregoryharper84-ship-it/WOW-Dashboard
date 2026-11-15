@@ -50,6 +50,7 @@ jobs:
         run: |
           python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
           python -m unittest discover -s .github/scripts/tests -p test_wow_v28_reviewer_app_preflight.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_reviewer_app_attest.py -q
       - name: Mint separate QA App checks-only token
         if: inputs.preflight_only != true
         id: qa
@@ -77,11 +78,30 @@ jobs:
         env:
           GH_READ_TOKEN: ${{ github.token }}
           QA_APP_TOKEN: ${{ steps.qa.outputs.token }}
-          WOW_QA_REVIEW_ANTHROPIC_API_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY }}
+          WOW_QA_REVIEW_ANTHROPIC_API_KEY: ''
+          WOW_QA_GEMINI_FREE_TIER_CONFIRMED: ${{ vars.WOW_QA_GEMINI_FREE_TIER_CONFIRMED }}
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
           WOW_QA_CLAUDE_MODEL: ${{ vars.WOW_QA_CLAUDE_MODEL }}
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
         run: python .github/scripts/wow_simple_security_review.py
+      - name: Mint dedicated independent reviewer App token
+        id: reviewer
+        if: always() && inputs.preflight_only != true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.WOW_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}
+          repositories: WOW-Dashboard
+          permission-pull-requests: write
+
+      - name: Submit Gemini semantic decision as the dedicated App
+        if: always() && inputs.preflight_only != true && steps.reviewer.outcome == 'success'
+        env:
+          GH_READ_TOKEN: ${{ github.token }}
+          REVIEWER_APP_TOKEN: ${{ steps.reviewer.outputs.token }}
+          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
+        run: python .github/scripts/wow_v28_reviewer_app_attest.py
+
       - name: Retain attributable reviewer decision
         if: always() && inputs.preflight_only != true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
