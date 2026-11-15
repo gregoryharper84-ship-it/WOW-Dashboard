@@ -990,24 +990,28 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
     steps = parsed["jobs"]["qa"]["steps"]
-    recheck = next(
-        step for step in steps
-        if step.get("name") == "Recheck PR head and diff after review"
-    )
-    review_step = next(step for step in steps if step.get("name") == "Run isolated read-only adversarial review")
-    publisher_step = next(step for step in steps if step.get("name") == "Mint checks-only App token")
+    recheck = next(step for step in steps
+                   if step.get("name") == "Recheck PR head and diff after review")
+    review_step = next(step for step in steps
+                       if step.get("name") == "Run isolated read-only Gemini semantic review")
+    publisher_step = next(step for step in steps
+                          if step.get("name") == "Mint checks-only App token")
+    dedicated_app_step = next(step for step in steps
+                              if step.get("name") == "Mint dedicated semantic reviewer App token")
 
     assert "github.ref == 'refs/heads/main'" in workflow
+    # Preserve the four bounded native regression admission triggers;
+    # trusted governance gate was deliberately removed to prevent QA loops.
     assert parsed["on"]["workflow_run"]["workflows"] == [
-        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
-        "wow-v17-trusted-governance-gate",
+        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
+        "wow-v17-change-impact-gate",
     ]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
-    assert "WOW_QA_REVIEW_OPENAI_API_KEY" in workflow
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" in workflow
+    assert "WOW_QA_GEMINI_FREE_TIER_CONFIRMED" in workflow
     assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
-    assert 'permission_profile: ":read-only"' in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
@@ -1016,11 +1020,18 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "Select exact-head review policy" in workflow
     assert "wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "independent_review_canary" in workflow
-    assert "WOW_REVIEW_OPENAI_API_KEY" not in workflow
-    assert "wow-review" not in workflow
-    assert review_step["with"]["openai_api_key"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
-    assert "WOW_QA_APP_PRIVATE_KEY" not in review_step["with"].values()
-    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in str(publisher_step)
+    assert "wow_v28_gemini_qa_bridge.py review" in review_step["run"]
+    assert review_step["env"]["WOW_QA_REVIEW_GEMINI_API_KEY"] == (
+        "${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}"
+    )
+    assert "WOW_QA_APP_PRIVATE_KEY" not in str(review_step)
+    assert "permission-checks: write" in str(publisher_step)
+    assert "permission-pull-requests: write" in str(dedicated_app_step)
+    assert "permission-checks: write" not in str(dedicated_app_step)
+    assert "wow_v28_gemini_qa_bridge.py attest" in workflow
+    assert "wow_v28_gemini_qa_bridge.py verify" in workflow
+    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
+    assert "uses: ./.github/actions/wow-chatgpt-agent" not in workflow
     assert "contents: write" not in workflow
     assert "pull-requests: write" not in workflow
     assert "actions: write" not in workflow
