@@ -52,11 +52,12 @@ def _jwt(key):
 
 
 def _get(path, token, payload=None):
-    if not path.startswith("/app/") and path != "/installation/repositories?per_page=100":
+    if not path.startswith("/app/") and path not in ("/app", "/installation/repositories?per_page=100"):
         raise ReviewerConfigHold("REVIEWER_API_PATH_INVALID")
     data = None if payload is None else json.dumps(payload).encode()
     req = Request("https://api.github.com" + path, data=data, headers={
         "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
         "User-Agent": "wow-v28-reviewer-preflight",
     })
     with urlopen(req, timeout=20) as response:
@@ -68,6 +69,10 @@ def run():
     if os.getenv("WOW_REVIEWER_APP_ID") != str(APP_ID) or not key:
         raise ReviewerConfigHold("REVIEWER_APP_CREDENTIAL_UNAVAILABLE")
     jwt = _jwt(key)
+    identity = _get("/app", jwt)
+    if (identity.get("id") != APP_ID or identity.get("slug") != "wow-independent-reviewer"
+            or identity.get("owner", {}).get("login") != "gregoryharper84-ship-it"):
+        raise ReviewerConfigHold("REVIEWER_GITHUB_APP_IDENTITY_INVALID")
     installs = _get("/app/installations?per_page=100", jwt)
     if not isinstance(installs, list) or len(installs) != 1:
         raise ReviewerConfigHold("REVIEWER_INSTALLATION_NOT_EXCLUSIVE")
