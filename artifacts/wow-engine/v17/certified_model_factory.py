@@ -116,14 +116,24 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
         if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
             return _receipt(s, m, sha, status="HOLD", code="MODEL_FACTORY_NATIVE_RESULT_INVALID", native_status=native_status)
         row = rows[0]
+        replay = row.get("training_replay")
+        replay = replay if isinstance(replay, Mapping) else {}
+        provenance = replay.get("provenance_preflight")
+        provenance = provenance if isinstance(provenance, Mapping) else {}
+        freshness = replay.get("freshness_preflight")
+        freshness = freshness if isinstance(freshness, Mapping) else {}
         evidence = {
+            "replay_status": replay.get("persisted_status") if isinstance(replay.get("persisted_status"), str) else None,
             "rows_updated": result.get("rows_updated") if type(result.get("rows_updated")) is int else None,
             "row_status": row.get("status") if isinstance(row.get("status"), str) else None,
             "hydration_status": row.get("hydration_status") if isinstance(row.get("hydration_status"), str) else None,
             "model_evidence_mode": "BASKETBALL_SHADOW_REPLAY",
         }
         if (native_status == "COMPLETE" and result.get("rows_updated") == 1
-                and row.get("sport") == "NBA" and row.get("status") == "SHADOW_EVIDENCE_UPDATED"):
+                and row.get("sport") == "NBA" and row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+                and replay.get("persisted_status") == "SHADOW"
+                and provenance.get("provenance_complete") is True
+                and freshness.get("freshness_status") == "PASS"):
             return _receipt(s, m, sha, status="RESEARCH_EVIDENCE_PREPARED", native_status=native_status, evidence=evidence)
         code = row.get("code") if isinstance(row.get("code"), str) else "MODEL_FACTORY_NATIVE_HOLD"
         return _receipt(s, m, sha, status="HOLD", code=code, native_status=native_status, evidence=evidence)
