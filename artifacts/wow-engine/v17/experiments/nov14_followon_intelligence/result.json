@@ -1,5 +1,5 @@
 {
-  "status": "RESEARCH_ONLY_PENDING_CI",
+  "status": "RESEARCH_ONLY_PENDING_EXACT_HEAD_CI",
   "experiment_class": "C",
   "lanes": [
     "NBA_B2B_3PT_SHOT_VARIANCE",
@@ -13,5 +13,6 @@
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "can_execute": false,
   "automatic_promotion": false,
-  "expected_test_count": 26
+  "expected_test_count": 31,
+  "scope_repair": "CHRONOLOGY_EXACT_MARKET_MATCH_REGRESSIONS"
 }
