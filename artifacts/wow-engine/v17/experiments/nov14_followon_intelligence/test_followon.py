@@ -45,6 +45,7 @@ def leg(row_id="a", family="MONEYLINE", event="x", sport="NBA", **updates):
         "exact_line": 220.5,
         "market_model_certified": True,
         "model_market_family": family,
+        "model_sport": sport,
         "model_official_event_id": event,
         "model_exact_line": 220.5,
         "model_selected_side": "OVER",
@@ -351,7 +352,8 @@ def test_nba_foreign_event_shot_priors_are_rejected():
 def test_secondary_market_mismatched_model_line_and_side_rejected():
     for mismatched in ({"model_exact_line": 221.5},
                        {"model_selected_side": "UNDER"},
-                       {"model_official_event_id": "foreign-event"}):
+                       {"model_official_event_id": "foreign-event"},
+                       {"model_sport": "NHL"}):
         out = audit_same_event_cross_market([leg("total", "TOTAL", **mismatched)])
         assert "SECONDARY_MARKET_SPECIALIST_UNVERIFIED" in out["rows"]["total"]["blockers"]
 
