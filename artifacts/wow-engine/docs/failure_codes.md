@@ -7,13 +7,13 @@ This file is the repository source of truth for governed typed failure/status co
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---:|
 | `MODEL_FACTORY_RECIPE_UNSUPPORTED` | V17 research-only model factory | Requested sport/market is not on the explicit research recipe allowlist; no cross-market or cross-sport model fallback. Recovery class: RECIPE_IMPLEMENTATION_REQUIRED. | No |
 | `MODEL_FACTORY_INPUT_INVALID` | V17 research-only model factory | Research run lacks usable DB client, exact source SHA, or valid ordered season scope. Recovery class: INPUT_CONTRACT_REPAIR. | No |
 | `MODEL_FACTORY_MAINTENANCE_EXCEPTION` | V17 research-only model factory | Sport-owned maintenance raised an unexpected exception; do not expose provider/credential details or claim research completion. Recovery class: DIAGNOSE_NATIVE_MAINTENANCE. | No |
 | `MODEL_FACTORY_NATIVE_RESULT_INVALID` | V17 research-only model factory | Sport maintenance returned malformed or incomplete receipt structure. Recovery class: NATIVE_RECEIPT_CONTRACT_REPAIR. | No |
 | `MODEL_FACTORY_NATIVE_INERTNESS_VIOLATION` | V17 research-only model factory | Any nested sport maintenance receipt claims authorization, publication, promotion or execution. Recovery class: FAIL_CLOSED_GOVERNANCE_REPAIR. | No |
 | `MODEL_FACTORY_NATIVE_HOLD` | V17 research-only model factory | Sport-owned maintenance did not report successful research evidence and supplied no specific typed blocker. Recovery class: NATIVE_EVIDENCE_DIAGNOSIS. | No |
-|---|---|---|---:|
 | `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
 | `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
 | `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
