@@ -12,7 +12,7 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 ROOTS = frozenset({"src/trust-root.py"})
 
 
-def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py"):
+def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="artifacts/wow-engine/learning/README.md"):
     checks = [
         {"id": i, "name": name, "head_sha": SHA, "app_id": policy.GITHUB_ACTIONS_APP_ID,
          "status": "completed", "conclusion": "success"}
@@ -40,6 +40,39 @@ def qa(ev):
 
 def test_free_mode_procedural_checks_pass_without_semantic_review():
     assert qa(evidence()) == []
+
+
+def test_free_mode_nonallowlisted_code_requires_semantic_review():
+    ev = evidence(path="artifacts/wow-engine/v17/nfl_event_availability_adapter.py")
+    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    ev["files"] = ["artifacts/wow-engine/v17/nba_current_pregame_scorer.py"]
+    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+
+
+def test_free_mode_mixed_training_and_protected_source_never_passes():
+    ev = evidence()
+    ev["files"].append(".github/workflows/wow-v17-independent-qa-check.yml")
+    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    ev["files"] = []
+    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+
+
+def test_free_mode_exact_training_inventory_only():
+    ev = evidence()
+    assert ev["files"][0] in policy.CLASS_A_EXACT_PATHS
+    assert qa(ev) == []
+
+
+def test_release_rederives_missing_semantic_evidence_even_with_signed_qa():
+    ev = evidence(path="artifacts/wow-engine/v17/nfl_event_availability_adapter.py")
+    ev["check_runs"].append({
+        "id": 88, "name": policy.QA_CHECK, "head_sha": SHA,
+        "app_id": 5245832, "conclusion": "success", "status": "completed",
+    })
+    findings = policy.release_findings(
+        ev, qa_app_id="5245832", release_app_id="5245853", governance_files=ROOTS,
+    )
+    assert "RELEASE_QA_SEMANTIC_REVIEW_REQUIRED" in findings
 
 
 def test_free_mode_opt_in_mandatory():
@@ -86,9 +119,9 @@ def test_free_mode_rejects_stale_head():
     assert "QA_HEAD_STALE" in qa(ev)
 
 
-def test_free_mode_owner_authored_trust_root_can_pass_deterministic_qa():
+def test_free_mode_owner_authored_trust_root_requires_independent_semantic_review():
     ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py")
-    assert qa(ev) == []  # no independent-review claim; exact-head regressions remain mandatory
+    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
     ev["check_runs"].pop()
     assert any(x.startswith("QA_EVIDENCE_MISSING:") for x in qa(ev))
 

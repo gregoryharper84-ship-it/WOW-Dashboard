@@ -28,6 +28,14 @@ from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
 
+GOVERNANCE_CLASS_A_SCRIPT = REPO_ROOT / ".github/scripts/verify_existing_pr_governance_receipt.py"
+_class_a_spec = importlib.util.spec_from_file_location("_existing_pr_class_a_policy", GOVERNANCE_CLASS_A_SCRIPT)
+assert _class_a_spec and _class_a_spec.loader
+_class_a_policy = importlib.util.module_from_spec(_class_a_spec)
+_class_a_spec.loader.exec_module(_class_a_policy)
+# One canonical exact allowlist; QA never invents a broader R-class classifier.
+CLASS_A_EXACT_PATHS = _class_a_policy.CLASS_A_EXACT_PATHS
+
 SOURCE_REVIEW_SCRIPT = REPO_ROOT / ".github/scripts/independent_source_review_receipt.py"
 _source_review_spec = importlib.util.spec_from_file_location(
     "_independent_source_review_receipt", SOURCE_REVIEW_SCRIPT
@@ -711,6 +719,14 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
+            # The protected-main certifier owns the narrow R-class allowlist.
+            # Deterministic-only QA cannot pass P/C or unknown source.
+            # Renamed origin paths are already included in ev["files"].
+            if not files or any(
+                not isinstance(path, str) or path not in CLASS_A_EXACT_PATHS
+                for path in files
+            ):
+                findings.append("QA_SEMANTIC_REVIEW_REQUIRED")
             # Reduced-assurance evidence checks only: not adversarial source review.
             if ev.get("zero_credit_enabled") is not True:
                 findings.append("QA_ZERO_CREDIT_POLICY_NOT_ENABLED")
