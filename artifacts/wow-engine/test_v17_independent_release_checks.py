@@ -726,6 +726,27 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
     )
 
 
+
+@pytest.mark.parametrize(("status", "body", "suffix"), [
+    (403, {"message": "You have exceeded a secondary rate limit"}, "403:SECONDARY_RATE_LIMIT"),
+    (403, {"message": "API rate limit exceeded"}, "403:RATE_LIMIT"),
+    (403, {"message": "Resource not accessible by integration"}, "403:APP_PERMISSION_DENIED"),
+    (403, {"message": "Bad credentials"}, "403:CREDENTIAL_REJECTED"),
+    (403, {"message": "unclassified 403 secret=private-value"}, "403"),
+    (429, {"message": "Rate limit reached"}, "429:RATE_LIMIT"),
+    (404, {"message": "Not Found"}, "404"),
+])
+def test_qa_pr_unreadable_fails_closed_with_safe_http_classification(status, body, suffix):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    routes = Fake({f"repos/{REPO}/pulls/7": (status, body)})
+    out = m.targets(REPO, workflow_run_prs=event_pr,
+                    neutral_superseded=True, fetch=routes)
+    assert out == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:7:{suffix}"]}
+    assert "private-value" not in str(out)
+    dispatch = m.targets(REPO, pr="7", fetch=routes)
+    assert dispatch == {"targets": [], "errors": [f"TARGET_PR_UNREADABLE:{suffix}"]}
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
@@ -766,6 +787,37 @@ def _source_review_resolver(**kwargs):
         author="bot",
         pr_number=kwargs["pr_number"],
     )
+
+
+@pytest.mark.parametrize(("operation", "previous", "must_hold"), [
+    ("added", None, False),
+    ("modified", None, False),
+    ("changed", None, False),
+    ("removed", None, True),
+    ("renamed", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+    ("copied", None, True),
+    ("unchanged", None, True),
+    ("modified", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+])
+def test_zero_credit_gather_rejects_disallowed_file_operations(operation, previous, must_hold):
+    item = {"filename": "artifacts/wow-engine/learning/README.md", "status": operation}
+    if previous is not None:
+        item["previous_filename"] = previous
+    qa_policy = {"mode": "zero_credit", "target": {
+        "pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830",
+    }}
+    ev = m.gather(
+        REPO, 7, HEAD, fetch=Fake(_gather_routes(files=[item])),
+        qa_review_policy=qa_policy, independent_review_active=False,
+        zero_credit_enabled=True,
+    )
+    findings = m.qa_findings(ev)
+    if must_hold:
+        assert ev["zero_credit_disallowed_file_operations"]
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
+    else:
+        assert ev["zero_credit_disallowed_file_operations"] == []
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" not in findings
 
 
 def test_gather_collects_exact_head_evidence():
