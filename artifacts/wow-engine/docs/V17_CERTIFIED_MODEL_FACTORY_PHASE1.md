@@ -61,9 +61,9 @@ Run from artifacts/wow-engine:
 
     python -m pytest -q test_v17_certified_model_factory.py
 
-Twelve isolated local unit tests cover both sport paths, no cross-adapter
+Thirteen isolated local unit tests cover both sport paths, no cross-adapter
 fallback, unsupported sport/market, bad SHA/seasons, typed blocker propagation,
-failed NHL research screen, malformed/absent candidate preflight, nested
+failed NHL research screen, malformed/absent candidate preflight, NBA nested replay readiness, nested
 promotion/publication flags, and exception sanitization. These are mocked
 contract tests, not DB-backed replay, full CI, model certification or
 production verification.
