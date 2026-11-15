@@ -291,7 +291,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_UPSTREAM_QA_UNTRUSTED` | release authority | The upstream run is not the protected-main QA workflow at the claimed attempt, or its repository, event, or job identity does not match. Cancelled runs are untrusted. No Release check is published. | N/A |
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
-| `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
+| `TARGET_PR_UNREADABLE` | check targeting / independent QA admission | Current canonical PR could not be read or has no head SHA; never accept the event as a substitute. Suffixed with HTTP status, and for a known 403/429 failure a safe discriminator `SECONDARY_RATE_LIMIT`, `RATE_LIMIT`, `APP_PERMISSION_DENIED`, or `CREDENTIAL_REJECTED`. Unknown messages remain numeric and untrusted API messages are never printed. **Recovery:** identify the actual response class; only a proven transient rate limit permits one bounded identical retry, permission failures need installation/token repair. No QA or Release PASS on unreadable PR. | N/A |
 | `TARGET_PR_IDENTITY_MISMATCH` | check targeting | The fresh canonical PR does not match the workflow_run PR number/head, canonical head repository, or main base repository/ref. | N/A |
 | `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
 
