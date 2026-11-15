@@ -917,7 +917,11 @@ def test_regression_foreign_event_official_conflict_does_not_suppress_current_ev
             },
         ],
     }
+    # Source identity must be explicit; the parser must not relabel a summary
+    # as the caller's event when event/sport metadata is omitted.
     current_event_espn = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {
                 "team": {"abbreviation": "DET"},
