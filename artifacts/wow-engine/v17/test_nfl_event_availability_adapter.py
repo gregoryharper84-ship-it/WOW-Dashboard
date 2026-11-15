@@ -728,7 +728,7 @@ def test_regression_4576456233_unauthenticated_or_stale_inactives_does_not_preem
         "team": "DET",
         "entries": [],
     }
-    # Unauthenticated inactives report listing the player
+    # Case 1: Unauthenticated inactives report listing the player
     unauth_inactives = {
         "authenticated": False,
         "report_timestamp": (CAPTURED - timedelta(minutes=45)).isoformat(),
@@ -751,6 +751,124 @@ def test_regression_4576456233_unauthenticated_or_stale_inactives_does_not_preem
     assert ev.is_inactive is False
     dec = evaluate_player_availability(ev.to_role_availability())
     assert dec.status == AVAILABILITY_AVAILABLE
+
+    # Case 2: Stale inactives report (older than 2h max) listing the player
+    stale_inactives = {
+        "authenticated": True,
+        "report_timestamp": (CAPTURED - timedelta(hours=3)).isoformat(),
+        "inactives": [
+            {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "team": "DET"},
+        ],
+    }
+    ev_stale = compose_nfl_event_availability(
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+        official_game_status=official,
+        gameday_inactives=stale_inactives,
+    )
+    # Stale inactive must NOT preempt fresh official clearance!
+    assert ev_stale.basis == "FRESH_OFFICIAL_REPORT_UNLISTED"
+    assert ev_stale.is_inactive is False
+    dec_stale = evaluate_player_availability(ev_stale.to_role_availability())
+    assert dec_stale.status == AVAILABILITY_AVAILABLE
+
+
+def test_regression_conflicting_official_entries_for_same_athlete_fails_closed():
+    # Report has two entries for athlete 4361788 with conflicting designations
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(hours=1)).isoformat(),
+        "team": "DET",
+        "entries": [
+            {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "team": "DET", "game_status": "Questionable"},
+            {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "team": "DET", "game_status": "Out"},
+        ],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.designation is None
+    assert ev.report_complete is False
+    assert ev.evidence_status == "REPORT_ENTRY_CONFLICT_UNVERIFIED"
+    assert evaluate_player_availability(ev.to_role_availability()).status == AVAILABILITY_UNVERIFIED
+
+
+def test_regression_foreign_event_listed_athlete_not_authoritative():
+    # Foreign event report with an entry for athlete 4361788
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(hours=1)).isoformat(),
+        "event_id": "espn-FOREIGN-EVENT",
+        "team": "DET",
+        "entries": [
+            {"athlete_id": "4361788", "athlete_name": "Amon-Ra St. Brown", "team": "DET", "game_status": "Questionable"},
+        ],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.report_complete is False
+    assert ev.evidence_status == "REPORT_SCOPE_MISMATCH"
+
+    # In compose, out-of-scope report is NOT authoritative
+    comp_ev = compose_nfl_event_availability(
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+        official_game_status=report,
+    )
+    assert comp_ev.source == "NFL_COMPOSITE_AVAILABILITY_FALLBACK"
+
+
+def test_regression_espn_post_kickoff_or_stale_entry_not_decisive():
+    # ESPN entry published after kickoff
+    post_kickoff_espn = {
+        "injuries": [
+            {
+                "team": {"abbreviation": "DET"},
+                "injuries": [
+                    {
+                        "athlete": {"id": "4361788", "displayName": "Amon-Ra St. Brown"},
+                        "status": "Out",
+                        "date": (KICKOFF + timedelta(minutes=15)).isoformat(),
+                    }
+                ],
+            }
+        ]
+    }
+    ev = parse_espn_event_summary_injuries(
+        post_kickoff_espn,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=KICKOFF + timedelta(minutes=20),
+    )
+    assert ev.fresh is False
+    assert ev.designation is None
+    assert evaluate_player_availability(ev.to_role_availability()).status == AVAILABILITY_UNVERIFIED
 
 
 def test_regression_4576456234_undated_espn_out_does_not_produce_decisive_out():

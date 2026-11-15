@@ -47,6 +47,7 @@ SOURCE_NFLVERSE_ARCHIVE = "NFLVERSE_INJURIES_ARCHIVE"
 # Configurable via max_report_age_seconds parameters; no unreviewed production policy assumed.
 DEFAULT_MAX_OFFICIAL_REPORT_AGE_SECONDS = 2 * 3600
 DEFAULT_MAX_GAMEDAY_INACTIVES_AGE_SECONDS = 2 * 3600
+DEFAULT_MAX_ESPN_INJURY_AGE_SECONDS = 24 * 3600
 
 # Canonical designations
 DESIGNATION_OUT = "OUT"
@@ -310,9 +311,12 @@ def parse_nfl_official_game_status_report(
 
     # Look for the athlete in the team's listed entries
     team_norm = normalize_nfl_team_code(team)
-    target_entry = None
     target_name_norm = _normalize_token(athlete_name)
 
+    # Validate report scope before evaluating listed or unlisted decisions
+    scope_valid = _validate_report_scope(report_data, event_id=str(event_id), team_norm=team_norm, listed_entries=listed_entries)
+
+    matching_entries: list[Mapping[str, Any]] = []
     for entry in listed_entries:
         entry_team = normalize_nfl_team_code(entry.get("team"))
         if entry_team and entry_team != team_norm:
@@ -320,10 +324,32 @@ def parse_nfl_official_game_status_report(
         entry_id = str(entry.get("athlete_id") or "").strip()
         entry_name = _normalize_token(entry.get("athlete_name") or entry.get("player_name"))
         if _athlete_matches(entry_id, entry_name, str(athlete_id), target_name_norm):
-            target_entry = entry
-            break
+            matching_entries.append(entry)
 
-    if target_entry is not None:
+    if matching_entries:
+        # Detect multiple entries for the same athlete with conflicting designations
+        desigs = {
+            normalize_nfl_designation(e.get("game_status") or e.get("designation") or e.get("status"))
+            for e in matching_entries
+        }
+        if len(desigs) > 1:
+            return NFLPlayerAvailabilityEvidence(
+                athlete_id=str(athlete_id),
+                athlete_name=athlete_name,
+                team=team,
+                event_id=str(event_id),
+                source=SOURCE_NFL_OFFICIAL_GAME_STATUS,
+                captured_at=captured.isoformat(),
+                evidence_status="REPORT_ENTRY_CONFLICT_UNVERIFIED",
+                designation=None,
+                basis=None,
+                fresh=fresh,
+                report_complete=False,
+                risk=False,
+                provenance={"reason": "CONFLICTING_OFFICIAL_ENTRIES", "designations": sorted(str(d) for d in desigs)},
+            )
+
+        target_entry = matching_entries[0]
         raw_desig = target_entry.get("game_status") or target_entry.get("designation") or target_entry.get("status")
         desig = normalize_nfl_designation(raw_desig)
         risk = desig in PLAYABLE_RISK_SET
@@ -334,21 +360,19 @@ def parse_nfl_official_game_status_report(
             event_id=str(event_id),
             source=SOURCE_NFL_OFFICIAL_GAME_STATUS,
             captured_at=captured.isoformat(),
-            evidence_status="RETRIEVED",
+            evidence_status="RETRIEVED" if scope_valid else "REPORT_SCOPE_MISMATCH",
             designation=desig,
             basis=None,
             fresh=fresh,
-            report_complete=is_auth and is_complete,
+            report_complete=is_auth and is_complete and scope_valid,
             risk=risk,
             provenance={
                 "report_timestamp": report_ts.isoformat() if report_ts else None,
                 "authenticated": is_auth,
                 "listed": True,
+                "scope_valid": scope_valid,
             },
         )
-
-    # Validate report scope before clearing unlisted player
-    scope_valid = _validate_report_scope(report_data, event_id=str(event_id), team_norm=team_norm, listed_entries=listed_entries)
 
     # Athlete is NOT listed in the report
     if is_auth and is_complete and fresh and scope_valid:
@@ -488,6 +512,8 @@ def parse_espn_event_summary_injuries(
     team: str,
     event_id: str,
     captured: datetime,
+    event_start: datetime | None = None,
+    max_report_age_seconds: int = DEFAULT_MAX_ESPN_INJURY_AGE_SECONDS,
 ) -> NFLPlayerAvailabilityEvidence:
     """Parse dated ESPN per-game injury entries as supporting evidence.
 
@@ -529,9 +555,14 @@ def parse_espn_event_summary_injuries(
     if found_entry is not None:
         raw_status = found_entry.get("status")
         entry_date = _parse_iso_ts(found_entry.get("date"))
-        fresh = entry_date is not None
+        fresh = False
+        if entry_date is not None:
+            age = (captured - entry_date).total_seconds()
+            if (event_start is None or entry_date <= event_start) and -300 <= age <= max_report_age_seconds:
+                fresh = True
+
         if not fresh:
-            # Undated entry cannot carry a gate-consumable decisive designation
+            # Undated, stale, or post-kickoff entry cannot carry a gate-consumable decisive designation
             return NFLPlayerAvailabilityEvidence(
                 athlete_id=str(athlete_id),
                 athlete_name=athlete_name,
@@ -539,13 +570,13 @@ def parse_espn_event_summary_injuries(
                 event_id=str(event_id),
                 source=SOURCE_ESPN_EVENT_INJURIES,
                 captured_at=captured.isoformat(),
-                evidence_status="UNDATED_ENTRY_INSUFFICIENT",
+                evidence_status="UNDATED_OR_STALE_ENTRY_INSUFFICIENT",
                 designation=None,
                 basis=None,
                 fresh=False,
                 report_complete=False,
                 risk=False,
-                provenance={"raw_status": raw_status, "note": "undated_entry_cannot_decide"},
+                provenance={"raw_status": raw_status, "note": "non_fresh_entry_cannot_decide"},
             )
 
         desig = normalize_nfl_designation(raw_status)
@@ -599,6 +630,7 @@ def compose_nfl_event_availability(
     nflverse_row: Mapping[str, Any] | None = None,
     max_official_report_age_seconds: int = DEFAULT_MAX_OFFICIAL_REPORT_AGE_SECONDS,
     max_gameday_inactives_age_seconds: int = DEFAULT_MAX_GAMEDAY_INACTIVES_AGE_SECONDS,
+    max_espn_report_age_seconds: int = DEFAULT_MAX_ESPN_INJURY_AGE_SECONDS,
 ) -> NFLPlayerAvailabilityEvidence:
     """Compose game-specific availability following the governed interpretation order.
 
@@ -639,7 +671,7 @@ def compose_nfl_event_availability(
             event_id=event_id,
             event_start=event_start,
             captured=captured,
-            max_report_age_seconds=max_official_report_age_seconds,
+            max_report_age_seconds=max_espn_report_age_seconds,
         )
         # If report was complete & fresh, its decision is authoritative
         if off.report_complete and off.fresh:
@@ -655,6 +687,8 @@ def compose_nfl_event_availability(
             team=team,
             event_id=event_id,
             captured=captured,
+            event_start=event_start,
+            max_report_age_seconds=max_espn_report_age_seconds,
         )
         # If player has an explicit stated designation from dated event summary, return it as supporting evidence
         if espn_ev.designation is not None and espn_ev.fresh:
