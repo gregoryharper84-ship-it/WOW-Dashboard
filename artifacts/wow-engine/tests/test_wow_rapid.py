@@ -119,6 +119,13 @@ def test_affected_selection_remains_nonempty_for_unfiltered_pr_path_classes(tmp_
         assert set(wow_rapid.GOVERNANCE_TESTS).issubset(selected)
 
 
+def test_zero_credit_qa_negative_tests_are_mandatory() -> None:
+    # The required exact-head rapid regression must run fail-closed reviewer-mode
+    # tests; future source changes may not silently omit them.
+    assert "test_v17_zero_credit_release.py" in wow_rapid.GOVERNANCE_TESTS
+    assert (MODULE_PATH.parents[1] / "test_v17_zero_credit_release.py").is_file()
+
+
 def test_invalid_shard_parameters_fail_closed() -> None:
     try:
         wow_rapid.shard_test_files(["tests/test_a.py"], 2, 2)
