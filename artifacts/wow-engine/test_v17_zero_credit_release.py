@@ -154,14 +154,20 @@ def test_release_rejects_qa_from_wrong_app():
     )
 
 
-def test_workflows_keep_paid_review_and_explicit_free_flag():
+def test_workflows_keep_independent_gemini_review_and_explicit_free_flag():
     qa_yaml = (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
     release_yaml = (ROOT / ".github/workflows/wow-v17-release-authority-check.yml").read_text()
     assert "WOW_QA_ZERO_CREDIT_MODE" in qa_yaml
     assert "WOW_QA_ZERO_CREDIT_MODE" in release_yaml
     assert "--zero-credit-policy-enabled" in qa_yaml
     assert "--zero-credit-policy-enabled" in release_yaml
-    assert "uses: ./.github/actions/wow-chatgpt-agent" in qa_yaml
+    assert "wow_v28_gemini_qa_bridge.py review" in qa_yaml
+    assert "wow_v28_gemini_qa_bridge.py attest" in qa_yaml
+    assert "wow_v28_gemini_qa_bridge.py verify" in qa_yaml
+    assert "permission-pull-requests: write" in qa_yaml
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" in qa_yaml
+    assert "WOW_QA_GEMINI_FREE_TIER_CONFIRMED" in qa_yaml
+    assert "uses: ./.github/actions/wow-chatgpt-agent" not in qa_yaml
 
 
 def dispatcher_case(*, zero_credit=True, checks=None, author="copilot-swe-agent[bot]",
