@@ -726,6 +726,80 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
     )
 
 
+
+def test_qa_nonmain_workflow_run_skips_before_resolution_and_release_stays_neutral():
+    """A non-main PR's source-CI completion is not a protected-main QA target.
+
+    Live regression: QA run 42846662166 admitted a PR #2559 workflow_run with
+    base=freebuff/*, failed QA_TARGET_COUNT_INVALID with no target, and caused
+    Release admit-release to fail QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING on main.
+    Deny admission at the job guard; Release already classifies qa=skipped as
+    neutral, without consulting a nonexistent QA-policy artifact.
+    """
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    qa_gate = workflow["jobs"]["qa"]["if"]
+    assert "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'" in qa_gate
+    assert "github.ref == 'refs/heads/main'" in qa_gate
+    assert "github.event_name != 'workflow_run'" in qa_gate
+    assert (
+        "github.event.workflow_run.pull_requests[0] && "
+        "github.event.workflow_run.pull_requests[0].base.ref == 'main'"
+    ) in qa_gate
+    # Evaluate the actual job expression, not just a fragment of its text.
+    # An added bypass clause would keep the string assertions passing but make
+    # this executable negative case fail.
+    import ast
+    from types import SimpleNamespace as NS
+
+    py_expression = qa_gate.replace("&&", " and ").replace("||", " or ")
+    tree = ast.parse(py_expression, mode="eval")
+    safe_nodes = (
+        ast.Expression, ast.BoolOp, ast.Compare, ast.Attribute,
+        ast.Subscript, ast.Name, ast.Constant, ast.Load,
+        ast.And, ast.Or, ast.Eq, ast.NotEq,
+    )
+    assert all(isinstance(node, safe_nodes) for node in ast.walk(tree))
+    expression = compile(tree, "<QA-job-admission>", "eval")
+
+    def admitted(event, base_ref, *, repository=REPO, ref="refs/heads/main", has_pr=True):
+        """Evaluate real QA admission on a bounded, non-executable event context."""
+        # GitHub returns null for missing pull_requests[0]; [None] models
+        # that lookup in Python without an IndexError on an empty list.
+        event_prs = [] if event == "workflow_dispatch" else [
+            NS(base=NS(ref=base_ref)) if has_pr else None,
+        ]
+        context = {
+            "github": NS(
+                repository=repository, ref=ref, event_name=event,
+                event=NS(workflow_run=NS(
+                    pull_requests=event_prs, name="wow-engine-verify",
+                )),
+            ),
+            "vars": NS(
+                WOW_QA_APP_ID="5245832",
+                WOW_QA_INDEPENDENT_REVIEW_ACTIVE="false",
+                WOW_QA_ZERO_CREDIT_MODE="false",
+            ),
+        }
+        return bool(eval(expression, {"__builtins__": {}}, context))
+
+    assert admitted("workflow_run", "freebuff/review-branch") is False
+    assert admitted("workflow_run", None, has_pr=False) is False
+    assert admitted("workflow_run", "main") is True
+    assert admitted("workflow_dispatch", None) is True
+    assert admitted("workflow_run", "main", repository="foreign/WOW-Dashboard") is False
+    assert admitted("workflow_run", "main", ref="refs/heads/development") is False
+    assert "vars.WOW_QA_APP_ID != ''" in qa_gate
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(_qa_run(conclusion="success"), _qa_jobs("skipped")),
+    )
+    assert classified == {
+        "disposition": "neutral",
+        "reason": "RELEASE_UPSTREAM_QA_NO_TARGET",
+    }
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
     live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
@@ -889,7 +963,11 @@ def _workflow_on(path):
 
 def test_prless_workflow_run_skips_qa_before_target_resolution():
     job_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
-    assert "github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]" in job_if
+    assert (
+        "(github.event_name != 'workflow_run' || "
+        "(github.event.workflow_run.pull_requests[0] && "
+        "github.event.workflow_run.pull_requests[0].base.ref == 'main'))"
+    ) in job_if
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in job_if
     script = _step_script(QA_WF, "Resolve one exact-head QA target")
     assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in script

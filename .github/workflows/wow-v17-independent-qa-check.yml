@@ -53,9 +53,13 @@ concurrency:
 
 jobs:
   qa:
+    # Workflow-run callbacks for a PR whose base is not protected main are
+    # outside this exact-head certification lane. Skip the whole job so the
+    # authenticated Release classifier sees qa=skipped and exits neutral.
+    # Genuine main-based PRs and manual dispatch retain all strict checks.
     # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
     # not red. Once bound, a missing key fails closed in the identity step below.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]) && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || (vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || (github.event.workflow_run.pull_requests[0] && github.event.workflow_run.pull_requests[0].base.ref == 'main')) && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || (vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15
