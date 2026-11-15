@@ -27,6 +27,7 @@ def validate_installation(installations, repos):
             or app.get("account", {}).get("login") != "gregoryharper84-ship-it"
             or scopes.get("contents") != "read" or scopes.get("pull_requests") != "write"
             or any(k not in {"contents", "pull_requests", "metadata"} for k in scopes)
+            or app.get("events") != []
             or repos[0].get("full_name") != REPO):
         raise ReviewerConfigHold("REVIEWER_APP_SCOPE_INVALID")
 
