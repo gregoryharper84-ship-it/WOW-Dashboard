@@ -82,7 +82,18 @@ def market_dependency_shadow(
     independent_residuals: list[float] = []
     seen_prediction_signatures: dict[str, tuple[Any, ...]] = {}
     seen_event_ids: set[str] = set()
-    for record in frozen_history:
+    # Stage-20 retrospective contract: select latest eligible pregame snapshot
+    # for each event, not the caller's input ordering. Use prediction ID as a
+    # deterministic tie breaker if multiple snapshots share a timestamp.
+    ordered_history = sorted(
+        frozen_history,
+        key=lambda row: (
+            _aware(row.get("immutable_model_timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+            str(row.get("prediction_id") or ""),
+        ),
+        reverse=True,
+    )
+    for record in ordered_history:
         if str(record.get("sport") or "").strip().upper() != sport:
             continue
         if str(record.get("market_role") or "").strip().upper() != role:

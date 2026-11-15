@@ -17,7 +17,9 @@ calibration cohort. Do not backfill sporting forecasts or infer model reliabilit
    approach may be confounded by probability distribution differences and
    must pass covariate-matched chronological holdouts before consideration.
    Historical records must include a unique event ID, immutable pregame issuance,
-   kickoff and settlement timestamps; only one row per event counts. Conflicting
+   kickoff and settlement timestamps; only one row per event counts. The
+   event representative is the latest eligible frozen pregame snapshot, with
+   prediction ID as deterministic tie breaker, never the input order. Conflicting
    eligible versions of the same prediction ID HOLD rather than choosing one.
    Incumbent PrizePicks cash-single market-dependency rejection stays active.
 2. The combat style mixture scores mutually exclusive fitted MMA/boxing regimes

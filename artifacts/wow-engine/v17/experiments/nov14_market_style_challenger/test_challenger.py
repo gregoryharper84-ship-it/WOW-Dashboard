@@ -231,3 +231,16 @@ def test_style_provenance_captured_after_kickoff_rejected():
     late_features["frozen_at"] = "2026-11-15T01:00:00Z"
     out = combat_style_mixture_shadow(event_id="bout-001", event_start_timestamp="2026-11-14T23:00:00Z", sport="MMA", regimes=regimes(), style_features=late_features)
     assert out["status"] == "SOURCE_PROVENANCE_LATE"
+
+def test_event_representative_latest_pregame_receipt_order_invariant():
+    records = history()
+    older = dict(records[0])
+    older["prediction_id"] = "older-alternative-same-event"
+    older["immutable_model_timestamp"] = "2026-10-10T16:00:00Z"
+    older["market_prior_weight"] = 0.2
+    older["calibrated_probability"] = 0.30
+    a = market_dependency_shadow(fc(), [older] + records)
+    b = market_dependency_shadow(fc(), list(reversed(records + [older])))
+    assert a["status"] == b["status"] == "CHALLENGER_DIAGNOSTIC_ONLY"
+    for field in ("shadow_empirical_excess_tail", "shadow_lower_bound", "cohort_n"):
+        assert a[field] == b[field]
