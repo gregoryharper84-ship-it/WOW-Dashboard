@@ -148,6 +148,14 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
                 and replay.get("persisted_status") == "SHADOW"
                 and provenance.get("provenance_complete") is True
                 and freshness.get("freshness_status") == "PASS"):
+            if any(
+                not isinstance(replay.get(name), str) or not replay[name].strip()
+                for name in ("model_artifact_version", "calibrator_version")
+            ):
+                return _receipt(
+                    s, m, sha, status="HOLD", code="MODEL_FACTORY_NATIVE_RESULT_INVALID",
+                    native_status=native_status, evidence=evidence,
+                )
             return _receipt(s, m, sha, status="RESEARCH_EVIDENCE_PREPARED", native_status=native_status, evidence=evidence)
         code = row.get("code") if isinstance(row.get("code"), str) else "MODEL_FACTORY_NATIVE_HOLD"
         return _receipt(s, m, sha, status="HOLD", code=code, native_status=native_status, evidence=evidence)

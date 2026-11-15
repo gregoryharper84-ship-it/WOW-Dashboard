@@ -18,6 +18,8 @@ def _nba_ok():
             "hydration_status": "FRESH_ACQUISITION_UPDATED",
             "training_replay": {
                 "persisted_status": "SHADOW",
+                "model_artifact_version": "NBA-TEAM-EVENT-v1",
+                "calibrator_version": "NBA-PLATT-v1",
                 "provenance_preflight": {"provenance_complete": True},
                 "freshness_preflight": {"freshness_status": "PASS"},
                 "promotion_attempted": False,
@@ -298,6 +300,10 @@ def test_invalid_nba_version_types_become_null(monkeypatch):
     a = factory.prepare_candidate_evidence(object(), sport="NBA", market="WINNER", source_head_sha="a" * 40)
     assert a["native_evidence"]["model_artifact_version"] is None
     assert a["native_evidence"]["calibrator_version"] is None
+    assert a["status"] == "HOLD"
+    assert a["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID"
+    assert a["probability_publishable"] is False
+    assert a["can_execute"] is False
 
 
 def test_nhl_receipt_contains_validated_dataset_hash(monkeypatch):
@@ -306,3 +312,20 @@ def test_nhl_receipt_contains_validated_dataset_hash(monkeypatch):
     a = factory.prepare_candidate_evidence(object(), sport="NHL", market="WINNER", source_head_sha="a" * 40)
     assert a["native_evidence"]["training_dataset_hash"] == "f" * 64
     assert a["certification_status"] == "NOT_CERTIFIED"
+
+
+def test_nba_nonblank_replay_versions_required_before_research_ready(monkeypatch):
+    for field in ("model_artifact_version", "calibrator_version"):
+        for invalid in (None, "", "   "):
+            result = _nba_ok()
+            result["rows"][0]["training_replay"][field] = invalid
+            monkeypatch.setattr(factory, "_run_nba", lambda *_args, result=result: result)
+            receipt = factory.prepare_candidate_evidence(
+                object(), sport="NBA", market="WINNER", source_head_sha="a" * 40,
+            )
+            assert receipt["status"] == "HOLD", (field, invalid)
+            assert receipt["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID", (field, invalid)
+            assert receipt["certification_status"] == "NOT_CERTIFIED"
+            assert receipt["rank_eligible"] is False
+            assert receipt["probability_publishable"] is False
+            assert receipt["can_execute"] is False
