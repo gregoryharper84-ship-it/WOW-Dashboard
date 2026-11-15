@@ -106,6 +106,28 @@ class TestGeminiQaBridge(unittest.TestCase):
                 bridge.attest(CAPTURED, artifact, verify_only=False)
             submission.assert_not_called()
 
+    def test_same_source_second_run_reuses_approved_app_review(self):
+        initial = {
+            "schema_version": 1,
+            "target": {"pr_number": 2667, "head_sha": SHA},
+            "diff": {"sha256": DIGEST},
+            "review": {"decision": "PASS"},
+            "source": {"provider_identity": "gemini-generative-api",
+                       "credential_scope": "WOW_QA_REVIEW_GEMINI_API_KEY",
+                       "run_id": "123", "run_attempt": 1},
+        }
+        next_run = {**initial, "source": {**initial["source"],
+                                         "run_id": "456", "run_attempt": 2}}
+        first = bridge.attestation_body(initial)
+        second = bridge.attestation_body(next_run)
+        self.assertEqual(first, second)
+        self.assertEqual(bridge.review_state(
+            [{"state": "APPROVED", "body": first}], "PASS", second), 1)
+        reject = {**next_run, "review": {"decision": "REJECT"}}
+        rejected_body = bridge.attestation_body(reject)
+        self.assertEqual(bridge.review_state(
+            [{"state": "APPROVED", "body": first}], "REJECT", rejected_body), 0)
+
     def test_wrong_provider_artifact_cannot_attest(self):
         artifact = {"schema_version": 1, "target": {"pr_number": 2667, "head_sha": SHA},
                     "diff": {"sha256": DIGEST}, "review": {"decision": "PASS"},

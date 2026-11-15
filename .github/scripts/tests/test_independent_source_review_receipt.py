@@ -1025,16 +1025,15 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
         "${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}"
     )
     assert "WOW_QA_APP_PRIVATE_KEY" not in str(review_step)
-    assert "permission-checks: write" in str(publisher_step)
-    assert "permission-pull-requests: write" in str(dedicated_app_step)
-    assert "permission-checks: write" not in str(dedicated_app_step)
+    assert publisher_step["with"]["permission-checks"] == "write"
+    assert dedicated_app_step["with"]["permission-pull-requests"] == "write"
+    assert "permission-checks" not in dedicated_app_step["with"]
     assert "wow_v28_gemini_qa_bridge.py attest" in workflow
     assert "wow_v28_gemini_qa_bridge.py verify" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
     assert "uses: ./.github/actions/wow-chatgpt-agent" not in workflow
-    assert "contents: write" not in workflow
-    assert "pull-requests: write" not in workflow
-    assert "actions: write" not in workflow
+    assert "write" not in parsed["permissions"].values()
+    assert "write" not in (parsed["jobs"]["qa"].get("permissions") or {}).values()
     assert "checkout.*inputs" not in workflow
     assert "retention-days: 1" in workflow
     assert "github.run_id" in workflow and "github.run_attempt" in workflow

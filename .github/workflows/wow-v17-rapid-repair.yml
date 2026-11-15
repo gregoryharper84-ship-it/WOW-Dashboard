@@ -109,6 +109,21 @@ jobs:
             --cov-report=term-missing:skip-covered \
             "${tests[@]}"
 
+      - name: Verify exact-head protected reviewer contracts
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if git diff --name-only "$BASE...HEAD" | grep -Eq '^\\.github/(workflows|scripts)/'; then
+            python -m pytest -q --tb=short -rs \\
+              .github/scripts/tests/test_independent_source_review_receipt.py \\
+              .github/scripts/tests/test_wow_v28_gemini_qa_bridge.py \\
+              .github/scripts/tests/test_wow_v28_reviewer_app_preflight.py \\
+              .github/scripts/tests/test_wow_simple_security_review.py
+          fi
+
       - name: Upload informational patch coverage to Codecov
         if: always() && hashFiles('artifacts/wow-engine/coverage.xml') != ''
         uses: codecov/codecov-action@v5

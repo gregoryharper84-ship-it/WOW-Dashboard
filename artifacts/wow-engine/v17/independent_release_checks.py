@@ -267,12 +267,15 @@ def gather(
     # must not disguise an incomplete paginated file inventory.
     ev["files"] = []
     ev["source_review_paths"] = []
+    ev["zero_credit_disallowed_file_operations"] = []
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
             errors.append("FILES_PATH_INVALID")
             continue
         ev["files"].append(entry["filename"])
         ev["source_review_paths"].append(entry["filename"])
+        if entry.get("status") not in {"added", "modified", "changed"} or entry.get("previous_filename") is not None:
+            ev["zero_credit_disallowed_file_operations"].append(entry["filename"])
         if entry.get("status") == "renamed" or "previous_filename" in entry:
             origin = entry.get("previous_filename")
             if isinstance(origin, str) and origin:
@@ -746,7 +749,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
             # The protected-main certifier owns the narrow R-class allowlist.
             # Deterministic-only QA cannot pass P/C or unknown source.
             # Renamed origin paths are already included in ev["files"].
-            if not files or any(
+            if not files or ev.get("zero_credit_disallowed_file_operations") or any(
                 not isinstance(path, str) or path not in CLASS_A_EXACT_PATHS
                 for path in files
             ):

@@ -789,6 +789,37 @@ def _source_review_resolver(**kwargs):
     )
 
 
+@pytest.mark.parametrize(("operation", "previous", "must_hold"), [
+    ("added", None, False),
+    ("modified", None, False),
+    ("changed", None, False),
+    ("removed", None, True),
+    ("renamed", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+    ("copied", None, True),
+    ("unchanged", None, True),
+    ("modified", "artifacts/wow-engine/learning/AGENT_TRAINING.md", True),
+])
+def test_zero_credit_gather_rejects_disallowed_file_operations(operation, previous, must_hold):
+    item = {"filename": "artifacts/wow-engine/learning/README.md", "status": operation}
+    if previous is not None:
+        item["previous_filename"] = previous
+    qa_policy = {"mode": "zero_credit", "target": {
+        "pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830",
+    }}
+    ev = m.gather(
+        REPO, 7, HEAD, fetch=Fake(_gather_routes(files=[item])),
+        qa_review_policy=qa_policy, independent_review_active=False,
+        zero_credit_enabled=True,
+    )
+    findings = m.qa_findings(ev)
+    if must_hold:
+        assert ev["zero_credit_disallowed_file_operations"]
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
+    else:
+        assert ev["zero_credit_disallowed_file_operations"] == []
+        assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" not in findings
+
+
 def test_gather_collects_exact_head_evidence():
     ev = m.gather(
         REPO,

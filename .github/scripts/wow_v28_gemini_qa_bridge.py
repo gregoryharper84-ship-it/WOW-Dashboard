@@ -5,7 +5,6 @@ Protected-main only; PR source is untrusted data. Never execute PR code. No mode
 fallback, no paid project inference, no merge/check authority for reviewer App.
 """
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -124,10 +123,11 @@ def attestation_body(artifact):
             or not isinstance(t.get("head_sha"), str)
             or not isinstance(diff.get("sha256"), str)):
         raise GeminiHold("GEMINI_ARTIFACT_PROVENANCE_INVALID")
-    fingerprint = hashlib.sha256(json.dumps(artifact, sort_keys=True).encode()).hexdigest()
+    # Idempotency identity is source SHA + complete diff + verdict, not the
+    # ephemeral workflow run. The signed QA artifact separately retains run ID,
+    # attempt, artifact digest, provider identity and credential provenance.
     return (f"{PREFIX} PR={t['pr_number']} HEAD={t['head_sha']} "
-            f"DIFF_SHA256={diff['sha256']} VERDICT={review['decision']} "
-            f"RUN={prov['run_id']}/{prov['run_attempt']} ARTIFACT_SHA256={fingerprint}")
+            f"DIFF_SHA256={diff['sha256']} VERDICT={review['decision']}")
 
 
 def read_reviews(pr, token):
