@@ -37,6 +37,10 @@ class TestReviewerAppPreflight(unittest.TestCase):
         with self.assertRaisesRegex(m.ReviewerConfigHold, "SCOPE"):
             m.validate_installation([changed], self.repos)
 
+    def test_webhook_event_subscription_holds(self):
+        with self.assertRaisesRegex(m.ReviewerConfigHold, "SCOPE"):
+            m.validate_installation([{**self.app, "events": ["pull_request"]}], self.repos)
+
     def test_different_repo_holds(self):
         with self.assertRaisesRegex(m.ReviewerConfigHold, "SCOPE"):
             m.validate_installation([self.app], [{"full_name": "another/repo"}])
