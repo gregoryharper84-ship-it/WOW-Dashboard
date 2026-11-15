@@ -30,7 +30,7 @@ All writes and reads return model_feature_eligible=false, probability_publishabl
 
 Production mounts the installer only when the V17 active guard is true AND environment flag WOW_V17_KALSHI_SLIP_EXCHANGE_ENABLED=1. It is OFF by default. Apply the SQL migration through governed deployment before enabling the flag. Server-side service-role insert/select only; RLS blocks public, anon and authenticated database roles; immutable trigger rejects update/delete. On persistent failure, API returns 503. Neither code nor flag grants order or capital authority.
 
-After CI and independent QA/release acceptance, separately integrate the operations into the canonical single-domain Action layouts for BOTH GPT hosts without violating editor instruction/operation constraints. Verify actual live editors with fresh-chat auth and GET/POST canaries; do not claim access from repository changes alone.
+The canonical WOW (31 operations) and LLP (19 operations) Action schemas and both LLP gateway route allowlists are updated in this PR. After CI and independent QA/release acceptance, deploy the accepted SHA, apply the production migration, enable the flag, and independently re-attest BOTH live GPT editors with fresh-chat auth and GET/POST canaries. Repository Action schemas do not automatically update custom GPT editors. Do not claim access from repository changes alone.
 
 ## Example finding
 
@@ -64,3 +64,10 @@ The eight visible settled combinations on November 14, 2026 had displayed cost $
 5. Only promote independently proven feature/settlement improvements through existing V17 specialist fitting, calibration, forward backtesting and terminal governance.
 
 Absolute invariants: can_execute=false; capital_allocation=false; no live orders; no automatic promotion or trusted probability from research evidence; Kalshi recovery stays active.
+
+## Current implementation readback (November 14, 2026)
+
+- PR #2670 contains implementation, five CodeRabbit repair classes, canonical Action schemas and both LLP transports. No protected merge is asserted by this record.
+- `WOW_V17_KALSHI_SLIP_EXCHANGE_ENABLED` must remain unset/0 until production schema deployment and independent acceptance.
+- Validation Supabase schema received the base migration, service-role grant repair, and explicit non-null pregame timestamp repair. This does not establish production migration.
+- GPT editor sync requires human/Work-mode access to the actual editor and explicit fresh-chat canaries; neither editor can be assumed updated from GitHub files.
