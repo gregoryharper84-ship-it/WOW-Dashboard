@@ -202,6 +202,7 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
         "owner_login": "repository-owner",
         "pr": {
             "state": "open", "draft": False, "merged": False, "head_sha": HEAD,
+            "body": "Incident: #2136",
             "head_ref": "copilot/fix", "head_repo": review.CANONICAL_REPOSITORY,
             "base_ref": "main", "author": "copilot-swe-agent", "author_id": 123,
         },
@@ -227,6 +228,9 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
     }
 
     assert qa.decision("qa", qa.qa_findings(evidence), evidence)["conclusion"] == "success"
+    evidence["pr"].pop("body")
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in qa.qa_findings(evidence)
+    evidence["pr"]["body"] = "Incident: #2136"
     evidence["source_review"].pop("producer_context")
     assert any(
         finding.startswith("QA_INDEPENDENT_SOURCE_REVIEW_INVALID:")
