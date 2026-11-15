@@ -142,13 +142,16 @@ def test_protected_reviewer_contract_step_has_literal_shell_continuations():
     section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
     section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
     slash = chr(92)
-    assert f"grep -Eq '^{slash}.github/(workflows|scripts)/'" in section
-    assert f"grep -Eq '^{slash}{slash}.github" not in section
+    assert f"grep -zEq '^{slash}.github/(workflows|scripts)/'" in section
+    assert f"grep -zEq '^{slash}{slash}.github" not in section
     lines = section.splitlines()
     assert any("python -m pytest -q --tb=short -rs" in line for line in lines)
     assert all(not line.rstrip().endswith(slash + slash) for line in lines)
     assert ".github/scripts/tests/test_independent_source_review_receipt.py" in section
     assert ".github/scripts/tests/test_wow_v28_gemini_qa_bridge.py" in section
+    assert "git worktree add --detach" in section
+    assert 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' in section
+    assert 'git diff --no-renames --name-only -z "$BASE...$PR_HEAD_SHA"' in section
 
 
 def test_protected_reviewer_contract_rename_keeps_original_path(tmp_path):
@@ -160,7 +163,7 @@ def test_protected_reviewer_contract_rename_keeps_original_path(tmp_path):
     workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
     section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
     section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
-    assert 'git diff --no-renames --name-only "$BASE...HEAD" > "$inventory"' in section
+    assert 'git diff --no-renames --name-only -z "$BASE...$PR_HEAD_SHA" > "$inventory"' in section
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True,
@@ -183,6 +186,47 @@ def test_protected_reviewer_contract_rename_keeps_original_path(tmp_path):
     assert "docs/test_guard.py" in inventory
 
 
+
+
+def test_protected_reviewer_contract_nonascii_paths_nul_safe(tmp_path):
+    """Git path quoting must not suppress tests on a Unicode protected path."""
+    import subprocess
+
+    def run(*cmd):
+        return subprocess.run(["git", *cmd], cwd=tmp_path, capture_output=True, check=True).stdout
+
+    run("init", "-q")
+    run("config", "user.name", "WOW-CI")
+    run("config", "user.email", "ci@example.invalid")
+    path = tmp_path / ".github/scripts/café.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("x = 1\n")
+    run("add", ".")
+    run("commit", "-qm", "base")
+    path.write_text("x = 2\n")
+    run("commit", "-qam", "edit-unicode")
+    raw = run("diff", "--no-renames", "--name-only", "-z", "HEAD^", "HEAD")
+    assert raw == ".github/scripts/café.py".encode() + b"\x00"
+    verdict = subprocess.run(["grep", "-zEq", r"^\.github/(workflows|scripts)/"],
+                             input=raw, check=False)
+    assert verdict.returncode == 0
+
+
+def test_protected_reviewer_contract_exact_head_is_not_merge_candidate():
+    """The contract suite explicitly checks out the exact PR head in a worktree."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    assert "git cat-file -e" in section
+    assert "git worktree add --detach" in section
+    assert '"$PR_HEAD_SHA"' in section
+    assert 'cd "$review_tree"' in section
+    assert 'git rev-parse HEAD' in section
+    assert "git diff --no-renames --name-only -z" in section
+
+
 def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
     import os
     import subprocess
@@ -199,5 +243,7 @@ def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
     git.chmod(0o755)
     result = subprocess.run(["bash", "-c", script], env={**os.environ,
         "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
-        "RUNNER_TEMP": str(tmp_path)}, capture_output=True)
+        "RUNNER_TEMP": str(tmp_path),
+        "PR_HEAD_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1"}, capture_output=True)
     assert result.returncode == 42
