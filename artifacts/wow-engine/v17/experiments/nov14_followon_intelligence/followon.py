@@ -250,7 +250,7 @@ def dual_gate_strong_confidence_shadow(
             and p is not None
             and lower is not None and lower <= p
             and pred_time is not None and event_time is not None and now is not None
-            and pred_time < event_time and now < event_time
+            and pred_time <= now and pred_time < event_time and now < event_time
             and model.get("calibration_status") == "PASS"
             and model.get("probability_publishable") is True
             and model.get("rank_eligible") is True):
