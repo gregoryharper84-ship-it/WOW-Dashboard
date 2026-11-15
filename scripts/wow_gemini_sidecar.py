@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -29,10 +30,10 @@ AGENT_PROMPT = (
     "explicit consent; do not infer that an unmerged skill is installed. "
     "Do not invent an owner or assume a stale/missing writer lease authorizes writes. "
     "Without a verified current authorized shared-branch writer lease, "
-    "make changes only in an isolated local worktree: diagnose, prepare the "
-    "smallest patch, run targeted and negative tests, and give the existing owner "
-    "a truthful handoff. With verified writer permission, use the assigned "
-    "existing branch and the authenticated Engineering App workflow. "
+    "perform read-only diagnosis and patch proposal without repository writes; "
+    "give the existing owner a truthful handoff. With verified writer "
+    "permission, reproduce, patch and test in an isolated local worktree; "
+    "use the assigned existing branch and authenticated Engineering App workflow. "
     "Never create a duplicate issue, PR, dispatcher or control plane. "
     "Do not infer dynamic-calibration execution from calibration-health values. "
     "Do not invent fitted probabilities or stage PASS receipts. Preserve held "
@@ -54,6 +55,29 @@ def _project_id(value: str) -> str:
     return value
 
 
+def _valid_cron_field(field: str, lower: int, upper: int) -> bool:
+    """Accept numeric five-field cron ranges/lists/steps; reject malformed values."""
+    for item in field.split(","):
+        segments = item.split("/")
+        if len(segments) > 2 or not segments[0]:
+            return False
+        if len(segments) == 2:
+            step = segments[1]
+            if not step.isascii() or not step.isdecimal() or not (1 <= int(step) <= upper - lower + 1):
+                return False
+        base = segments[0]
+        if base == "*":
+            continue
+        bounds = base.split("-")
+        if len(bounds) not in (1, 2) or not all(v.isascii() and v.isdecimal() for v in bounds):
+            return False
+        first = int(bounds[0])
+        last = int(bounds[-1])
+        if not (lower <= first <= last <= upper):
+            return False
+    return True
+
+
 def _cron(value: str) -> str:
     fields = str(value or "").split()
     prefix = ""
@@ -64,8 +88,10 @@ def _cron(value: str) -> str:
             ZoneInfo(zone_name)
         except (ZoneInfoNotFoundError, ValueError):
             raise ValueError("Expected a valid CRON_TZ IANA timezone") from None
-    if len(fields) != 5 or any(not re.fullmatch(r"[0-9*/,-]+", field) for field in fields):
-        raise ValueError("Expected a standard five-field cron expression")
+    bounds = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
+    if len(fields) != 5 or any(not _valid_cron_field(field, lo, hi)
+                               for field, (lo, hi) in zip(fields, bounds)):
+        raise ValueError("Expected a valid five-field cron expression")
     return " ".join([prefix, *fields]) if prefix else " ".join(fields)
 
 def _load(path: Path) -> dict[str, Any]:
@@ -126,13 +152,22 @@ def _write(path: Path, data: dict[str, Any]) -> None:
 
 
 def install(config_root: Path, project_id: str, cron: str = DEFAULT_CRON) -> dict[str, Any]:
-    result = plan(config_root, project_id, cron)
-    if not result["sidecar_path"].exists():
-        _write(result["sidecar_path"], result["manifest"])
-    if _load(result["config_path"]) != result["config"]:
-        _write(result["config_path"], result["config"])
-    return result
-
+    # Validate before any filesystem write (including creation of the lockfile).
+    plan(config_root, project_id, cron)
+    config_root.mkdir(parents=True, exist_ok=True)
+    # Cross-process, advisory serialization for this one native Sidecar installer.
+    # Crucially, RE-READ the current config under the lock before any write.
+    with (config_root / ".wow-amrt-daily-recovery.lock").open("a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            result = plan(config_root, project_id, cron)
+            if not result["sidecar_path"].exists():
+                _write(result["sidecar_path"], result["manifest"])
+            if _load(result["config_path"]) != result["config"]:
+                _write(result["config_path"], result["config"])
+            return result
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 def status(config_root: Path) -> dict[str, Any]:
     path = config_root / "sidecars" / SIDECAR_ID / "sidecar.json"

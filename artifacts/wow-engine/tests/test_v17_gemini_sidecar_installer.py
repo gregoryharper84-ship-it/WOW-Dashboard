@@ -2,6 +2,8 @@
 import importlib.util
 import json
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 
@@ -108,6 +110,66 @@ class GeminiSidecarInstallerContract(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     worker.install(cfg, "project_abc", cron)
                 self.assertFalse(cfg.exists())
+
+    def test_invalid_cron_ranges_and_zero_steps_never_write(self):
+        for cron in ("99 99 * * *", "61 8 * * *", "17 24 * * *",
+                     "17 8 0 * *", "17 8 * 13 *", "17 8 * * 9",
+                     "*/0 8 * * *", "17 8 * * 1-8", "17 8 * * 3-1",
+                     "17 8 * * 1,", "17 8 * * 1//2", "17 8 * * 1-1-1"):
+            with self.subTest(cron=cron), tempfile.TemporaryDirectory() as root:
+                cfg = Path(root) / "config"
+                with self.assertRaises(ValueError):
+                    worker.install(cfg, "project_abc", cron)
+                self.assertFalse(cfg.exists())
+
+    def test_valid_cron_composites_remain_supported(self):
+        for cron in ("17 8 * * 1-5", "*/15 0,12 * 1-12 0,7",
+                     "CRON_TZ=America/Chicago 0 8-17/2 * * 1-5"):
+            with self.subTest(cron=cron), tempfile.TemporaryDirectory() as root:
+                cfg = Path(root) / "config"
+                self.assertEqual(worker.plan(cfg, "project_abc", cron)["cron"], cron)
+                self.assertFalse(cfg.exists())
+
+    def test_concurrent_installs_cannot_redirect_project(self):
+        original_plan = worker.plan
+        barrier = threading.Barrier(2)
+        seen = set()
+        guard = threading.Lock()
+
+        def interleaved_plan(cfg, pid, cron=worker.DEFAULT_CRON):
+            with guard:
+                first = threading.get_ident() not in seen
+                seen.add(threading.get_ident())
+            if first:
+                result = original_plan(cfg, pid, cron)
+                barrier.wait(timeout=5)
+                return result
+            return original_plan(cfg, pid, cron)
+
+        worker.plan = interleaved_plan
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                cfg = Path(root) / "config"
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    futures = [pool.submit(worker.install, cfg, pid)
+                               for pid in ("project_aaa", "project_bbb")]
+                    outcomes = []
+                    for future in futures:
+                        try:
+                            outcomes.append(("ok", future.result(timeout=8)["project_id"]))
+                        except ValueError as exc:
+                            outcomes.append(("hold", str(exc)))
+                successful = [row[1] for row in outcomes if row[0] == "ok"]
+                self.assertEqual(len(successful), 1, outcomes)
+                self.assertEqual(worker.status(cfg)["project_id"], successful[0])
+        finally:
+            worker.plan = original_plan
+
+    def test_missing_writer_lease_limits_agent_to_readonly_proposal(self):
+        prompt = worker.AGENT_PROMPT
+        self.assertIn("Without a verified current authorized shared-branch writer lease", prompt)
+        self.assertIn("read-only diagnosis and patch proposal", prompt)
+        self.assertNotIn("make changes only in an isolated local worktree", prompt)
 
 if __name__ == "__main__":
     unittest.main()

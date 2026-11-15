@@ -19,3 +19,17 @@ def test_flint_handoff_skill_is_discoverable_and_unprivileged():
         assert item.lower() in text.lower()
     assert "FIXED_AND_VERIFIED" in text
     assert "secret transmission" in text.lower()
+
+def test_flint_identity_match_and_rejection_remain_mandatory():
+    text = SKILL.read_text(encoding="utf-8")
+    fourth = next(line for line in text.splitlines() if line.startswith("4. "))
+    identity = "matching incident_id, lease_group, source_head_sha, and can_execute=false"
+    refusal = "On FLINT_HANDOFF_REJECTED"
+    hold = "stop with a typed hold"
+    def enforces_contract(line):
+        return identity in line and refusal in line and hold in line and "continue" not in line.lower()
+    assert enforces_contract(fourth)
+    assert not enforces_contract(fourth.replace(identity, "incident_id, lease_group, source_head_sha"))
+    assert not enforces_contract(fourth.replace(hold, "continue"))
+
+

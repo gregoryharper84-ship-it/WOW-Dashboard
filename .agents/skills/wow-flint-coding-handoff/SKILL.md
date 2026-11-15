@@ -17,7 +17,7 @@ This workspace skill supports the existing wow-amrt-recovery agent and WOW Engin
 ## Coding work
 
 6. Independently inspect the actual source, logs and original fixture. Verify or reject Flint's hypothesis with real code evidence; do not claim the model already investigated files it did not receive.
-7. If the current authenticated Conductor/AMRT writer lease is missing or held, prepare changes only in an isolated local worktree. Never release a writer or push to a shared branch without that authorization. Preserve original incident and PR identity; do not create duplicate tasks or a second dispatcher.
+7. If the current authenticated Conductor/AMRT writer lease is missing or held, produce only read-only diagnosis and a patch proposal; do not write to the repository or an isolated local worktree. With a verified current writer lease, work in an isolated local worktree on the assigned PR branch. Never release a writer or push to a shared branch without that authorization. Preserve original incident and PR identity; do not create duplicate tasks or a second dispatcher.
 8. Once authorized for the existing PR branch, implement the smallest meaningful patch, run positive and negative pytest cases, applicable Ruff and original regression coverage. Log exact commands, exits, environment and SHA; Flint text cannot count as passing tests.
 9. Hand off the exact patch, test evidence, risks and current SHA to genuine CODEOWNER and independent QA/Release. Never impersonate their approval or assert production closure before authenticated deployment and independent checks.
 
