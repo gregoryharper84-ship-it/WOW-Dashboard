@@ -122,7 +122,7 @@ def test_route_authenticated_idempotent_and_additive():
 
 
 def test_sql_security_and_immutability_contract():
-    path=Path(__file__).resolve().parents[1]/"migrations/20261114_kalshi_slip_research_exchange.sql"
+    path=Path(__file__).resolve().parent/"migrations/20261114_kalshi_slip_research_exchange.sql"
     sql=path.read_text()
     for required in ("ENABLE ROW LEVEL SECURITY", "REVOKE ALL", "GRANT SELECT, INSERT", "BEFORE UPDATE OR DELETE", "CHECK (can_execute=false)", "CHECK (model_feature_eligible=false)", "CHECK (probability_publishable=false)"):
         assert required in sql
