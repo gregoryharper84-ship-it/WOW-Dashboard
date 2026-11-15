@@ -76,6 +76,36 @@ class TestGeminiQaBridge(unittest.TestCase):
             with self.assertRaisesRegex(bridge.source.SourceReviewError, "HEAD_MISMATCH"):
                 bridge.model_review(CAPTURED)
 
+    def test_same_sha_reject_can_supersede_approval_but_not_reverse(self):
+        prior = [{"state": "APPROVED", "body": "earlier approval"}]
+        self.assertEqual(bridge.review_state(prior, "REJECT", "later rejection"), 0)
+        with self.assertRaisesRegex(bridge.GeminiHold, "STICKY_REJECT"):
+            bridge.review_state([{"state": "CHANGES_REQUESTED", "body": "earlier reject"}],
+                                "PASS", "later purported pass")
+
+    def test_app_review_cannot_post_after_head_changes_during_inventory(self):
+        artifact = {
+            "schema_version": 1,
+            "target": {"pr_number": 2667, "head_sha": SHA,
+                       "author": {"login": "repository-author"}},
+            "diff": {"sha256": DIGEST, "file_paths": ["src/fix.py"]},
+            "review": {"decision": "PASS"},
+            "source": {"provider_identity": "gemini-generative-api",
+                       "credential_scope": "WOW_QA_REVIEW_GEMINI_API_KEY",
+                       "run_id": "123", "run_attempt": 1},
+        }
+        changed = {**CAPTURED, "pr": {**CAPTURED["pr"],
+                                    "head": {"sha": "b" * 40, "repo": {"full_name": bridge.REPO}}}}
+        with patch.dict(os.environ, {"WOW_REVIEWER_APP_ID": bridge.APP_ID,
+                                      "GITHUB_TOKEN": "read", "REVIEWER_APP_TOKEN": "reviewer"}), \
+             patch.object(bridge.source, "capture_pr_evidence",
+                          side_effect=[CAPTURED, changed]), \
+             patch.object(bridge, "read_reviews", return_value=[]), \
+             patch.object(bridge.semantic, "request_json") as submission:
+            with self.assertRaisesRegex(bridge.GeminiHold, "PR_IDENTITY_OR_DIFF_MOVED"):
+                bridge.attest(CAPTURED, artifact, verify_only=False)
+            submission.assert_not_called()
+
     def test_wrong_provider_artifact_cannot_attest(self):
         artifact = {"schema_version": 1, "target": {"pr_number": 2667, "head_sha": SHA},
                     "diff": {"sha256": DIGEST}, "review": {"decision": "PASS"},
