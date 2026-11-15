@@ -167,3 +167,27 @@ def test_http_database_failure_is_503_no_fabricated_success():
     assert response.status_code==503
     assert "secret database exception" not in response.text
     assert response.json()["detail"]["code"]=="EXCHANGE_PERSISTENCE_UNAVAILABLE"
+
+ 
+def test_server_clock_rejects_future_dated_analysis_even_if_pregame():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    payload = {
+        **SAMPLE,
+        "as_of_utc": (now+timedelta(days=1)).isoformat(),
+        "source_observed_at_utc": now.isoformat(),
+        "event_start_utc": (now+timedelta(days=2)).isoformat(),
+    }
+    with pytest.raises(ExchangeHold, match="EXCHANGE_FUTURE_TIMESTAMP_INVALID"):
+        normalize_research_observation(payload)
+
+
+def test_malformed_unhashable_host_and_sport_are_typed_holds():
+    for key in ("source_host", "sport", "finding_type", "analysis_stage"):
+        with pytest.raises(ExchangeHold):
+            normalize_research_observation({**SAMPLE, key: []})
+
+
+def test_sql_explicit_nonnull_pregame_guard():
+    sql=(Path(__file__).resolve().parent/"migrations/20261114_kalshi_slip_research_exchange.sql").read_text()
+    assert "event_start_utc IS NOT NULL AND as_of_utc < event_start_utc" in sql
