@@ -137,6 +137,18 @@ def prepare_candidate_evidence(db: Any, *, sport: str, market: str,
         "research_screen_pass": result.get("research_screen_pass") is True,
     }
     if native_status == "CANDIDATE_EVIDENCE_UPDATED" and result.get("sport") == "NHL":
+        preflight = result.get("candidate_preflight")
+        if (
+            not isinstance(preflight, Mapping)
+            or preflight.get("status") != "NHL_CANDIDATE_PREFLIGHT_READY"
+            or type(result.get("source_event_n")) is not int
+            or result["source_event_n"] <= 0
+            or type(result.get("training_feature_n")) is not int
+            or result["training_feature_n"] <= 0
+            or preflight.get("source_event_n") != result["source_event_n"]
+            or preflight.get("training_feature_n") != result["training_feature_n"]
+        ):
+            return _receipt(s, m, sha, status="HOLD", code="MODEL_FACTORY_NATIVE_RESULT_INVALID", native_status=native_status, evidence=evidence)
         if result.get("research_screen_pass") is not True:
             return _receipt(s, m, sha, status="HOLD", code="RESEARCH_SCREEN_FAILED", native_status=native_status, evidence=evidence)
         return _receipt(s, m, sha, status="RESEARCH_EVIDENCE_PREPARED", native_status=native_status, evidence=evidence)
