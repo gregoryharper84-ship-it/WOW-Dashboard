@@ -74,9 +74,9 @@ def model_review(captured):
         "file: one reviewed path, detail: nonempty, evidence: nonempty}). "
         "Do not label a real concern merely informational. Any finding means REJECT. "
         f"REPO={REPO} PR={number} HEAD={head} DIFF_SHA256={digest} "
-        f"PATHS={json.dumps(paths)}.\\nBEGIN_UNTRUSTED_SOURCE\\n"
+        f"PATHS={json.dumps(paths)}.\nBEGIN_UNTRUSTED_SOURCE\n"
         + json.dumps(files, sort_keys=True, ensure_ascii=False)
-        + "\\nEND_UNTRUSTED_SOURCE"
+        + "\nEND_UNTRUSTED_SOURCE"
     )
     if len(prompt.encode("utf-8")) > 700000:
         raise GeminiHold("GEMINI_PROMPT_LIMIT_EXCEEDED")
@@ -203,7 +203,7 @@ def main(argv=None):
             if args.output is None:
                 raise GeminiHold("GEMINI_OUTPUT_PATH_MISSING")
             result = model_review(captured)
-            args.output.write_text(json.dumps(result, sort_keys=True) + "\\n", encoding="utf-8")
+            args.output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
         else:
             if args.artifact is None:
                 raise GeminiHold("GEMINI_REVIEW_ARTIFACT_PATH_MISSING")
