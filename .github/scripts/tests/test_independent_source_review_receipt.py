@@ -229,7 +229,9 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
 
     assert qa.decision("qa", qa.qa_findings(evidence), evidence)["conclusion"] == "success"
     evidence["pr"].pop("body")
-    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in qa.qa_findings(evidence)
+    missing_incident_findings = qa.qa_findings(evidence)
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in missing_incident_findings
+    assert qa.decision("qa", missing_incident_findings, evidence)["conclusion"] == "failure"
     evidence["pr"]["body"] = "Incident: #2136"
     evidence["source_review"].pop("producer_context")
     assert any(
