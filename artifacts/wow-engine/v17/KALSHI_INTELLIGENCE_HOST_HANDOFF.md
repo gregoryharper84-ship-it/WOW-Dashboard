@@ -16,7 +16,7 @@ A common authenticated append-only research ledger for identifying fatigue, rest
 ## After identifying a research fact
 
 - Use the matching host's publish operation to append an observed, source-referenced categorical finding. No credentials, Kalshi account data, personal order IDs, balances, stakes, payouts, bookmaker odds, model probabilities, free-form private data or invented observations.
-- Supply precise `as_of_utc`, `source_observed_at_utc` and `event_start_utc` for event-scoped pregame observations. `source_observed_at_utc <= as_of_utc < event_start_utc`; timestamps must not be future-dated beyond server tolerance.
+- Supply precise `as_of_utc`, `source_observed_at_utc` and `event_start_utc` for event-scoped pregame observations. `source_observed_at_utc <= as_of_utc < event_start_utc`; only `as_of_utc` and `source_observed_at_utc` must not exceed the server clock tolerance. The game start `event_start_utc` may legitimately be in the future.
 - A successful append returns a research receipt only. Source-host identity remains a claim; do not treat the successful write as proof of an independently authenticated engine.
 
 ## Division of labor
