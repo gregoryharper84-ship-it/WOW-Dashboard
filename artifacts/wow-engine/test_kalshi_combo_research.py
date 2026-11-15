@@ -124,3 +124,13 @@ def test_joint_receipt_cannot_look_ahead():
     quote = example_quote()
     verdict = evaluate_frozen_quote(replace(quote, joint_receipt_asof_utc=quote.legs[0].event_start_utc+timedelta(minutes=1)))
     assert "JOINT_RECEIPT_LOOKAHEAD_INVALID" in verdict.blockers
+
+
+@pytest.mark.parametrize("field", ["receipt_id", "exact_market_identity"])
+def test_unhashable_leg_identity_results_in_typed_hold(field):
+    quote = example_quote()
+    malformed = replace(quote.legs[0], **{field: []})
+    verdict = evaluate_frozen_quote(replace(quote, legs=(malformed, quote.legs[1])))
+    assert verdict.status == "RESEARCH_HOLD_INSUFFICIENT_EVIDENCE"
+    assert "LEG_RECEIPT_EVENT_IDENTITY_MISSING" in verdict.blockers
+    assert verdict.conservative_return_diagnostic is None
