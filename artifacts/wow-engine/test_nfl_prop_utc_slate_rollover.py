@@ -54,6 +54,7 @@ def test_target_event_finds_sunday_night_game_on_prior_espn_slate_date() -> None
     assert requested_dates == ["20260920", "20260921", "20260922"]
     assert result == {
         "event_id": "401872945",
+        "provider_event_start_time": "2026-09-21T00:20:00+00:00",
         "team": "KC",
         "opponent": "IND",
         "provider_season": 2026,

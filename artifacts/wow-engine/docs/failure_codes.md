@@ -4,9 +4,54 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `COLUMNAR_SCHEMA_INVALID` | Offline Parquet corpus preflight | Any frozen Parquet file omits a required point-in-time column or has unusable per-file schema. Recovery: repair/repin the original authorized source schema, not nullable cross-file union coercion; no fitting or publishing. | No |
+| `COLUMNAR_MANIFEST_INVALID` | Offline Parquet corpus preflight | Manifest schema, immutable source file list, safe relative paths or explicitly false execution boundary is invalid. Recovery: correct frozen manifest; no fitting or publication. | No |
+| `COLUMNAR_SOURCE_UNAVAILABLE` | Offline Parquet corpus preflight | Expected frozen source file missing, nonregular, traversing a symlink or inaccessible. Recovery: restore exact source under approved research root; no fallback corpus. | No |
+| `COLUMNAR_SOURCE_HASH_MISMATCH` | Offline Parquet corpus preflight | Actual SHA-256 differs from manifest pin. Recovery: reconcile immutable source provenance, never silently repin. | No |
+| `COLUMNAR_DUCKDB_UNAVAILABLE` | Offline Parquet corpus preflight | Optional research-only DuckDB dependency absent. Recovery: install only in approved research environment; never in production or lower qualification. | No |
+| `COLUMNAR_SCAN_INVALID` | Offline Parquet corpus preflight | Parquet schema/query or integrity aggregate invalid; fail closed. Recovery: diagnose real DuckDB exception and corpus schema; never treat as empty or clean. | No |
+| `COLUMNAR_EMPTY_CORPUS` | Offline Parquet corpus preflight | Frozen inputs have zero observations. Recovery: acquire authorized actual source records, not fabricated or market-derived observations. | No |
+| `COLUMNAR_INTEGRITY_HOLD` | Offline Parquet corpus preflight | Missing/duplicate observation identity, wrong sport-season partition, invalid event time, future-available features or invalid/future quotes. Recovery: repair source lineage and pre-event timestamps; no fitting. | No |
+| `GOLDEN_ACCEPTANCE_CONTRACT_TESTS_FAILED` | optional read-only golden product acceptance observer | Deterministic product-journey contract pytest step returned a non-success raw outcome. **Recovery class:** REPAIRABLE_CODE or EVIDENCE_PENDING only after reading pytest logs; record the failed outcome in the receipt/summary without falsely asserting product health or blocking protected main through this optional observer. This is not QA/Release/model certification. | No |
+| `GOLDEN_ACCEPTANCE_HEALTH_READ_UNAVAILABLE` | optional golden product acceptance observer | Declared product-journey health command, JSON parse or status extraction failed. Preserve raw health-step failure and typed nonpublishable status; no substitution of a passing health state. **Recovery class:** EVIDENCE_PENDING or REPAIRABLE_CODE after source/receipt inspection. | No |
+| `GOLDEN_ACCEPTANCE_CHECKOUT_SHA_UNVERIFIED` | optional golden product acceptance observer | Checked-out protected-main commit cannot be reliably resolved; recorded receipt SHA is explicit UNVERIFIED, never the workflow dispatch SHA. **Recovery class:** SOURCE_IDENTITY_UNVERIFIED; repair checkout/provenance before accepting this receipt. | No |
+| `GOLDEN_ACCEPTANCE_BACKEND_LIVENESS_UNAVAILABLE` | optional golden product acceptance observer | GET /health/live did not complete with both successful curl exit and HTTP 200; health is not product acceptance. **Recovery class:** EVIDENCE_PENDING; investigate service/request logs, no automatic model failure inference. | No |
+| `KALSHI_WEATHER_WAKE_PROBE_FAILED` | optional read-only Kalshi weather shadow wake observer | Isolated API/DB-read/collector-readiness probe could not prove prerequisites before bounded deadline; current error and can_execute=false must remain visible despite observer CI isolation. **Recovery class:** PROVIDER_CONFIGURATION_OR_READINESS; inspect actual readiness rather than retrying a known configuration failure. | No |
+| `ACTION_ORIGIN_KEEPALIVE_UNREACHABLE` | optional read-only Action origin keepalive | HTTP liveness check failed due to curl transport failure or non-200 response, including incomplete response with 200 status. **Recovery class:** RUNTIME_HEALTH_UNVERIFIED; not proof of fitted scoring failure. | No |
+| `NIGHTLY_SCAN_PRODUCTION_PROBE_UNAVAILABLE` | optional read-only nightly engineering scan | Production health/governance probe could not return usable read-only evidence; preserve typed observer result and no product PASS inference. **Recovery class:** RUNTIME_EVIDENCE_PENDING; inspect source logs and live service SHA before rechecking. | No |
+| `RELEASE_WORKER_SHA_UNVERIFIED` | protected release / independent production readback | Public web health and governance report the protected-main SHA, but no independent LIVE worker SHA, matching release receipt and SIRT acceptance are attached. **Recovery class:** EVIDENCE_PENDING; read exact Render web/worker deployment IDs and SHAs, then independently verify; never publish PRODUCTION_VERIFIED from web-only evidence. | No |
+| `PROP_LATEST_SNAPSHOT_AMBIGUOUS` | governed prop evidence latest-snapshot read | The two newest exact-identity observations have equal capture instants (including equivalent timezone offsets), or the maximum timestamp cannot be verified. Source UUID ordering is not evidence chronology. Reject any attempt to select an arbitrary clean snapshot, keep the row nonpublishable, and investigate authoritative source ordering/dedupe. **Recovery class:** SOURCE_AUTHORITY_CONFLICT, no retry without new official evidence or corrected immutable lineage. | No |
+| `NFL_FORWARD_PAGINATION_INVALID` | NFL prospective forward grading and calibration health | PostgREST page reads lacked stable primary-key order or contained missing/duplicate prediction, settled-game or existing-grade identities. Fail the entire shadow-grading run before appending misleading calibration results; not a fitted-model capability error. | No |
+| `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
+| `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
+| `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
 | `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
+| `SCOUT_DISCOVERY_ARTIFACT_UNOBTAINABLE` | Scout persistence / cancelled-writer source reconciliation | Non-expired discovery artifact is absent for a source referenced by a cancelled persistence writer. Allowed bounded context: numeric `source_run_id` and authenticated discovery-job status only, no payload bytes. **Recovery class:** `NOT_APPLICABLE` only when GitHub proves the unique discovery job was completed/skipped; continue oldest-first without falsely claiming a persisted receipt. Otherwise `EVIDENCE_PENDING`: fail closed and investigate source artifacts/jobs before any replay, never fabricate source evidence. **Next action:** verify the source run's immutable jobs and discovery artifact inventory; repair upstream collection if discovery actually ran. | No |
+| `SEMANTIC_FINDINGS_INVALID` | independent semantic reviewer / response validation | Untrusted verdict has missing/wrong findings array or more than 12 items (`:NOT_LIST`, `:TOO_MANY`); a finding is not an object, has the wrong exact key set, invalid severity/category, or malformed file/detail/evidence (`:NOT_OBJECT`, `:FIELD_SET`, `:SEVERITY`, `:CATEGORY`, and `:TEXT_{FILE,DETAIL,EVIDENCE}_{TYPE,EMPTY,TOO_LONG}`). Historical pre-patch receipts may retain `:TEXT`. The nine new suffixes identify the field and condition without emitting untrusted text. The 500-character bound remains unchanged. All are allowlisted reasons with no provider body or secrets. **EVIDENCE_PENDING**; preserve authenticated attempt identity, publish HOLD, inspect source/schema/provider preflight and produce a new reviewed source head if repair is required. A malformed response is never an automatic Gemini failover, retry, PASS, or review approval. | No |
+| `CLAUDE_REVIEW_TRUNCATED` | independent semantic reviewer / Claude response | A single Anthropic request with a 6144-token output budget returned explicit `max_tokens` without the required structured-tool verdict. No replay of the untrusted diff or same-head reviewer shopping is permitted. `EVIDENCE_PENDING`; QA App publishes HOLD, reviewer operations investigates output length/model health, never fails over, never self-approves or reattempts solely for a friendlier decision. | No |
+| `CLAUDE_REVIEW_REFUSED` | independent semantic reviewer / Claude response | Provider returned an explicit `refusal` stop reason rather than a typed verdict. `EVIDENCE_PENDING` policy HOLD (not a substantive security REJECT): no retry, no fallback and no PASS; escalate genuine provider refusal to an authenticated independent Security/Architect. No response text logged. | No |
+| `CLAUDE_REVIEW_INCOMPLETE` | independent semantic reviewer / Claude response | Provider ended without required authenticated tool output for a non-truncation stop reason (including `end_turn`, `stop_sequence`, `pause_turn`, unknown). `EVIDENCE_PENDING`; QA App HOLD and security owner investigates allowlisted stop-reason metadata. Do not retry or fallback on such ambiguity. | No |
+| `CLAUDE_RESPONSE_INVALID` | independent semantic reviewer / Claude tool transport | Provider message or content is not a valid dict/list container for exact-one `submit_review` tool payload. `REPAIRABLE_CODE` only after source/transport diagnosis, never fallback or PASS. | No |
+| `CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE` | independent semantic reviewer / Claude tool contract | `tool_use` stop reason but not exactly one named `submit_review` result. `EVIDENCE_PENDING`; preserve HOLD and inspect the code-level tool schema, not the raw response. No retry or alternate reviewer shopping. | No |
+| `SPREAD_NFLVERSE_CLOSE_PROXY_TEAM_IDENTITY_MISMATCH` | NFL historical spread close-proxy source binding | Canonical nflverse `game_id` away/home tokens disagree with row participants, or row lists the same team twice. **Recovery class:** SOURCE_IDENTITY_CONFLICT; reject that research evidence row, reduce exact-line coverage, reconcile against authoritative source before replay. Never substitute a line or infer a probability. | No |
+| `SPREAD_EXACT_LINE_PREGAME_QUOTE_UNAVAILABLE` | spread exact-line historical evidence binding | No matching pregame source quote survives exact event, market and first-seen capture-time checks, including rejected legacy OPEN/CLOSE records. **Recovery class:** SOURCE_TIME_INTEGRITY; preserve missing-evidence HOLD, reconcile independently observed pregame timestamps, never substitute a synthetic line or sportsbook probability. | No |
+| `PICKEM_AUDIT_REQUEST_INVALID` | NFL Pick'em read-only exact-week receipt audit | Invalid season, week or expected game count; reject request before reconciling. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_SOURCE_UNVERIFIED` | NFL Pick'em read-only exact-week receipt audit | Caller did not supply a usable immutable official schedule snapshot identifier; obtain independent source proof. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_EVENT_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Schedule contains missing, malformed or inconsistent official IDs, teams or times; reconcile authoritative fixture. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_SCHEDULE_EVENT_WEEK_IDENTITY_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Canonical event belongs to another season/week; reject cross-week collision. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_DUPLICATE_CANONICAL_SCHEDULE_EVENT` | NFL Pick'em read-only exact-week receipt audit | Official event appears twice; deduplicate at authenticated source rather than inflate count. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_OFFICIAL_SLATE_COUNT_MISMATCH` | NFL Pick'em read-only exact-week receipt audit | Distinct valid official games differ from expected weekly denominator; reconcile full schedule. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREDICTION_ROW_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction observation is not a mapping; repair source serialization. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREDICTION_IDENTITY_INVALID` | NFL Pick'em read-only exact-week receipt audit | Prediction lacks or contradicts a canonical official event ID; no implicit alias fallback. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_REUSED_IMMUTABLE_PREDICTION_ID` | NFL Pick'em read-only exact-week receipt audit | Same immutable prediction ID belongs to two distinct official games, even if one observation is postkickoff; reject all uses pending lineage repair. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREGAME_RECEIPT_ORDER_AMBIGUOUS` | NFL Pick'em read-only exact-week receipt audit | Latest pregame observations have the same trusted creation instant but distinct IDs or conflicting flags; never use UUID sorting to choose publication state. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_PREGAME_PREDICTION_MISSING` | NFL Pick'em read-only exact-week receipt audit | No unique eligible matching immutable pregame receipt remains for an official game; repair through authenticated scoring route. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_WEEKLY_RUN_NOT_OBSERVED` | NFL Pick'em read-only exact-week receipt audit | No asynchronous run bears the exact requested season/week identity; inspect existing authenticated Action submission ledger. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
+| `PICKEM_WEEKLY_RUN_NOT_COMPLETED` | NFL Pick'em read-only exact-week receipt audit | Exact-week run exists but none has completed; diagnose worker/terminal run evidence. **Recovery class:** SOURCE_INTEGRITY_OR_EVIDENCE_PENDING; no inferred certification, publication or execution. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -208,7 +253,6 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_MISSING` | independent QA | A required exact-head check from `github-actions` (App 15368) has no completed run at the head; same-named checks from other Apps are ignored. Suffixed `:<check>`. | N/A |
 | `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
 | `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
-| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; it can never be independently approved (re-propose from the Engineering App). | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
 | `RELEASE_QA_RUN_IDENTITY_INVALID` | Release read-only admission | Producing QA run ID or attempt is missing or malformed before assigning a PR-scoped writer. | N/A |
@@ -232,12 +276,16 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_UPSTREAM_QA_DISPOSITION_INVALID` | release authority | Upstream classification returned a disposition other than `neutral` or `applicable`. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_JOB_INCOMPLETE` | release authority | The upstream `qa` job is not a completed success, failure, or skip. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_NO_TARGET` | release authority | The upstream QA workflow completed but its `qa` job was skipped, so there is no exact-head target. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_QA_DRAFT_TARGET_NOT_RELEASABLE` | release authority / workflow_run admission | Opt-in only (`--neutral-if-draft-target`). The authenticated policy resolves to a same-repository, main-based PR that is still an open draft at the exact policy head. GitHub cannot merge a draft, so no Release check is published and the unrelated protected-main commit is not failed. A non-draft, moved, closed, foreign or invalid target keeps the strict path. | No |
+| `RELEASE_QA_SOURCE_PR_SUPERSEDED` | release authority / workflow_run admission | The complete authenticated QA run/policy identifies a same-repository, main-based source PR that was subsequently closed or advanced to a different valid head. **Neutral only for the automatic historical workflow_run**: no release check is published and no PASS is asserted. A current PR head, invalid/foreign identity, stale artifact, or manual release stays fail-closed. Prevention: superseded-policy negative tests and exact-source required checks. | No |
+| `RELEASE_QA_POLICY_ARTIFACT_ABSENT` | release authority / workflow_run admission | Opt-in only (`--neutral-if-superseded` / `allow_superseded_target`). For an automatic main-scoped callback with zero matching `wow-v17-qa-policy-{run}-{attempt}` artifacts, authenticate the producer QA run (workflow/event/main SHA/repositories/completed status/conclusion) **before returning neutral**; forged/incomplete runs raise `QA_POLICY_RUN_PROVENANCE_MISMATCH` (resolver SourceReviewError; not a Phase-C `RELEASE_QA_*` registry row). Neutral publishes **no Release check or PASS** and does not fail the unrelated protected-main tip under Render `checksPass`. The artifact-present path instead validates GitHub artifact metadata and downloads the matching archive before `verify_qa_review_policy` authenticates the policy and its run provenance; it must not be described as a pre-download provenance check. Fail-closed distinctions: missing artifact in strict/manual mode or duplicates in any mode → `QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING`; expired GitHub artifact → `QA_POLICY_ARTIFACT_EXPIRED`; stale/future-dated GitHub artifact → `QA_POLICY_ARTIFACT_STALE_OR_FUTURE`; expired/future-dated policy payload → `QA_POLICY_EXPIRED_OR_FUTURE`. | No |
+| `QA_SOURCE_PR_HEAD_SUPERSEDED` | independent QA / workflow_run admission | Authenticated upstream event refers to a single main-based same-repository PR whose verified live head has changed or whose PR has closed. The obsolete event exits neutral **before** QA policy/decision/check creation, leaving any real current-head QA gate untouched. Foreign/malformed/ambiguous targets and explicit manual requests still fail closed. | No |
 | `RELEASE_UPSTREAM_QA_SKIPPED` | release authority | The upstream QA workflow conclusion is `skipped`. Neutral: no policy lookup and no Release check. | N/A |
 | `RELEASE_UPSTREAM_QA_UNREADABLE` | release authority | The upstream QA run or its job list could not be read as a complete inventory. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_UNTRUSTED` | release authority | The upstream run is not the protected-main QA workflow at the claimed attempt, or its repository, event, or job identity does not match. Cancelled runs are untrusted. No Release check is published. | N/A |
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
-| `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
+| `TARGET_PR_UNREADABLE` | check targeting / independent QA admission | Current canonical PR could not be read or has no head SHA; never accept the event as a substitute. Suffixed with HTTP status, and for a known 403/429 failure a safe discriminator `SECONDARY_RATE_LIMIT`, `RATE_LIMIT`, `APP_PERMISSION_DENIED`, or `CREDENTIAL_REJECTED`. Unknown messages remain numeric and untrusted API messages are never printed. **Recovery:** identify the actual response class; only a proven transient rate limit permits one bounded identical retry, permission failures need installation/token repair. No QA or Release PASS on unreadable PR. | N/A |
 | `TARGET_PR_IDENTITY_MISMATCH` | check targeting | The fresh canonical PR does not match the workflow_run PR number/head, canonical head repository, or main base repository/ref. | N/A |
 | `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
 
@@ -379,6 +427,9 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 | `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
 | `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
 | `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+| `CURSOR_CREATE_FAILED_NO_AGENT_PROVEN` | failed-launch reconciliation | Authenticated read-only probe (`GET /v1/agents/{id}` HTTP 404 plus complete archived global and PR inventories) proves no Cursor agent was created after a failed create attempt (catalog version `2026-10-31.2`; consumer parsers updated in lock-step in `engineering_remote_writer_release.py` and `cursor_terminal_status_receipt.py`) |
+| `CURSOR_AGENT_STILL_ACTIVE`, `CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION`, `CURSOR_AGENT_INVENTORY_CONTRADICTION` | failed-launch negative probe | Direct agent lookup or archived inventory shows the deterministic agent ID exists or is active; negative-launch release is refused and the writer hold remains active (catalog version `2026-10-31.2`) |
+| `CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE` | shared #1138 writer reconciliation | Held `CURSOR_LAUNCH_RESERVED` record without a `cursor_run_id` requires authenticated negative-launch proof and serialized release receipt before writer admission (catalog version `2026-10-31.2`; 0-second bypass tolerance; hold persists indefinitely until verified release, and resident supervisor recovery window is bounded to 900 seconds post-release) |
 
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
@@ -472,3 +523,169 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## V17 candidate-only recalibration research input failures
+
+These are typed research-input rejections from `v17/refit_scheduler.py`, never model capability or Action failures. All preserve `can_execute=false`, `probability_publishable=false`; no champion/production mutation follows. The retrospective diagnostic is **not** an independent promotion holdout.
+
+| Code | Owning lane | Condition | Rank eligible? |
+|---|---|---|---:|
+| `REFIT_PROPOSAL_TYPE_UNSUPPORTED` | V17 advisory refit scheduler | Proposal is not an exact RECALIBRATION_CHALLENGER. | No |
+| `REFIT_PROPOSAL_SAFETY_INVALID` | V17 advisory refit scheduler | Proposal lacks mandatory nonpromotion or nonexecution safety flags. | No |
+| `REFIT_PROPOSAL_IDENTITY_REQUIRED` | V17 advisory refit scheduler | Proposal ID or exact cohort key is missing. | No |
+| `REFIT_EVIDENCE_FLOOR_INVALID` | V17 advisory refit scheduler | Requested fit/diagnostic event floor is below the candidate-only evidence minimum. | No |
+| `REFIT_EVENT_OR_PREDICTION_ID_MISSING` | V17 advisory refit scheduler | Immutable prediction ID or official event ID is missing. | No |
+| `REFIT_DUPLICATE_PREDICTION` | V17 advisory refit scheduler | One prediction ID occurs multiple times in the hydrated cohort. | No |
+| `REFIT_COHORT_MISMATCH` | V17 advisory refit scheduler | Source forecast does not match the exact proposal cohort. | No |
+| `REFIT_NOT_CALIBRATED_FORECAST` | V17 advisory refit scheduler | Frozen input probability is not attributed to calibrated_probability. | No |
+| `REFIT_BINARY_SETTLEMENT_REQUIRED` | V17 advisory refit scheduler | Exact officially settled outcome is not a nonboolean binary 0/1. | No |
+| `REFIT_MODEL_TIME_REQUIRED` | V17 advisory refit scheduler | Pregame model timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_EVENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official event timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_SETTLEMENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official settlement timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_TEMPORAL_IDENTITY_INVALID` | V17 advisory refit scheduler | Model timestamp is not strictly pregame or settlement precedes event. | No |
+| `REFIT_EVENT_TIME_CONFLICT` | V17 advisory refit scheduler | Same official event ID has inconsistent event-start timestamps. | No |
+| `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
+| `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
+| `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
+
+
+## Reviewer provider compatibility — owner-only read-only preflight
+
+These failure codes preserve the pre-existing protected semantic-review gate. A
+preflight GET validates only provider compatibility; it produces no QA receipt,
+independent security PASS, merger authorization, probability or market order.
+Recover only through authenticated protected-main workflow execution.
+
+| Code | Owner / stage | Recovery class | Bounded safe context | Next action |
+| --- | --- | --- | --- | --- |
+| `REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED` | Owner / QA preflight admission | EXTERNAL_AUTHORIZATION | GitHub event type and trusted main identity only | Dispatch owner-only diagnostic from protected main |
+| `GEMINI_MODEL_INVALID` | QA reviewer / model selection | CONFIGURATION | Expected allowlisted model ID, never secret | Remove explicit stale model variable or bind reviewed stable model |
+| `REVIEWER_PREFLIGHT_CREDENTIAL_MISSING` | QA environment / preflight | PROVIDER_CREDENTIAL | Credential present/missing boolean only | Restore existing scoped QA provider credential |
+| `REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED` | QA provider / metadata GET | PROVIDER_CONFIGURATION | Model identity and `generateContent` supported boolean only | Verify project entitlement and exact supported method |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider / review | PROVIDER_CONFIGURATION | Structured Google NOT_FOUND for API version/method; no response text or keys | Use owner-approved model selection and a fresh independent exact-head review |
+| `HTTP_404` | QA provider / review or preflight | DIAGNOSE | Fixed allowlisted endpoint label and HTTP status only | Attribute endpoint/model/credential; do not infer model retirement or semantic REJECT |
+| `REVIEWER_CLI_ARGUMENT_INVALID` | QA workflow / preflight entrypoint | CONFIGURATION | Argument shape only | Invoke `--preflight` or normal review through trusted workflow |
+
+A structured model failure may allow the existing reviewer fallback mechanism,
+but only a genuine independent semantic PASS on the exact source SHA qualifies as
+security evidence. A prior signed REJECT remains binding at that SHA.
+
+
+## Reviewer model discovery — bounded credential-scoped candidates
+
+No new QA App check, merge gate, approval, spending limit, or probability output
+is created by model discovery. The credential-scoped GET lists provider models;
+only stable, exact, approved family IDs are eligible. The model-ID allowlist is
+anchored (including end of string), and the reviewer logs selected/unavailable
+model IDs only, never prompts, API keys, raw response data, or URLs. At most
+three approved candidates are attempted, only after typed
+`PROVIDER_MODEL_UNAVAILABLE`; a substantive REJECT/malformed answer is terminal.
+
+| Typed code | Owner / stage | Recovery class | Bounded safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `REVIEW_MODEL_CATALOG_INVALID` | QA provider selection / GET models | FAIL_CLOSED | Provider label and invalid shape only | Repair provider response contract; do not guess from static models |
+| `REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED` | QA provider selection / GET models | FAIL_CLOSED | Provider label and nonempty next-page boolean only | Add governed bounded pagination before using incomplete catalog |
+| `REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL` | QA owner-only preflight | PROVIDER_CONFIGURATION | Provider/model readiness labels only | Verify existing credential entitlement or approved model availability |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider model availability | PROVIDER_CONFIGURATION | Reviewed exact model ID only | Try next approved credential-listed model within same provider; after bounded exhaustion retain existing authenticated owner fallback |
+| `GEMINI_MODEL_INVALID` / `CLAUDE_MODEL_UNAPPROVED` | QA reviewer / configured model | FAIL_CLOSED | Sanitized model pattern failure only | Correct explicitly unapproved variable via governed trust-root change |
+
+The optional `WOW_QA_GEMINI_MODEL`/`WOW_QA_CLAUDE_MODEL` preference
+is honored only when listed under the credential and approved family.
+A failed transient model catalog GET may use a short *static approved*
+candidate list for normal review; owner preflight has `strict=True` and
+may report `PROVIDER_READY` only with real live catalog proof.
+A valid empty catalog, malformed listing, authentication failure, or
+partial paginated listing cannot be treated as approved availability.
+Changing source invalidates prior owner review; no code may forge the
+current-head approval or a signed independent semantic PASS.
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
+
+
+
+## NCAAB current-event schedule identity (#2550)
+
+Discovery-only failure codes; they do not authorize fitted probabilities or publication. An unresolved row stays `EVENT_IDENTITY_UNRESOLVED` and `can_execute=false`.
+
+| Typed code | Owning lane | Recovery class | Rank eligible? |
+| --- | --- | --- | --- |
+| `NCAAB_EVENT_TIME_INVALID` | NCAAB identity | INPUT_INVALID | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_INVALID` | NCAAB identity | INPUT_INVALID | No |
+| `NCAAB_PROVIDER_TEAM_ALIAS_MISSING` | NCAAB handoff | SOURCE_INCOMPLETE | No |
+| `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB identity | SOURCE_MISMATCH | No |
+| `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB identity | SOURCE_AMBIGUOUS | No |
+| `NCAAB_CANONICAL_EVENT_ID_MISSING` | NCAAB handoff | SOURCE_MALFORMED | No |
+| `NCAAB_SCHEDULE_SOURCE_NOT_READY` | NCAAB source | SOURCE_NOT_READY | No |
+| `NCAAB_SCHEDULE_SOURCE_UNAVAILABLE` | NCAAB source | SOURCE_UNAVAILABLE | No |
+| `NCAAB_SCHEDULE_SOURCE_RATE_LIMITED` | NCAAB source | TRANSIENT | No |
+| `NCAAB_SCHEDULE_SCHEMA_DRIFT` | NCAAB source | SOURCE_MALFORMED | No |
+
+## Simple V1 deterministic delivery re-entry
+
+These are read-only delivery **decisions**, not fitted-model failure substitutes,
+approval checks, or new release gates. Only the trusted QA App on the exact SHA
+can create independent review evidence. A prior signed semantic REJECT is binding
+on that SHA even when a later attempt produces a provider HOLD.
+
+| Decision / typed reason | Owner / stage | Recovery class | Safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `SEMANTIC_REJECT_SAME_SHA` | Independent QA / PR continuation | CODE_REPAIR | QA App ID, exact PR/SHA, signed check title | Repair findings on a new source SHA, then independent review |
+| `REVIEWER_MODEL_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Explicit typed model-unavailable reason, no response body | Verify supported model and authorized credential, then obtain a new signed review |
+| `REVIEWER_PROVIDER_DIAGNOSIS` | QA provider / preflight | PROVIDER_CONFIGURATION | Ambiguous bare HTTP 404 only | Prove endpoint, model and credential scope with authorized preflight before any reviewer retry |
+| `REVIEWER_AUTH_OR_QUOTA_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Typed provider credit / 401, no credentials or billing data | Repair existing entitlement or credential without new vendor/spend |
+| `REVIEWER_TRANSIENT_OUTAGE` | QA provider / review | TRANSIENT | Bounded 429/5xx/transport code only | One bounded retry after provider recovery, never on signed REJECT |
+| `OWNER_REVIEW_REQUIRED` | Owner / protected release | EXTERNAL_AUTHORIZATION | Exact PR/SHA and established owner-fallback reason | Authenticated independent owner review where policy allows, then fresh exact-head QA |
+| `INDEPENDENT_QA_NOT_ACCEPTED` | Independent QA / PR continuation | FAIL_CLOSED | Unknown/invalid/missing definitive review evidence | Diagnose signed QA receipt; no automatic override |
+| `EVIDENCE_PENDING` | Engineering controller / PR continuation | RETRY_ON_NEW_EVIDENCE | Missing/pending exact-head QA check | Re-enter on signed QA App check or explicit authorized owner dispatch |
+
+The existing controller performs no automatic protected merge, no semantic
+self-approval, no live betting and no unbounded provider retry. Production DONE
+requires authentic merged/live/verified SHA parity, healthy route and persisted
+business result; a green workflow is not proof of production delivery.
+
+## Offline MLflow/Evidently research-receipt preflight (incident #2536)
+
+Read-only research diagnostics only: the codes below have **no probability rank eligibility**, no model-certification significance, and never substitute for a scorer error. Only research manifest validation and local reporting emit them. A reported hold cannot be repaired with an odds-derived or heuristic prediction; preserve original candidate artifacts and source bytes.
+
+| Code | Owning lane/stage | Condition and recovery class | Rank eligible? |
+|---|---|---|---:|
+| `RESEARCH_MANIFEST_UNREADABLE` | V17 research telemetry / local receipt preflight | Manifest missing or not valid JSON. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_MANIFEST_INVALID` | V17 research telemetry / local receipt preflight | Missing model-family or sport identity. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_FILE_MANIFEST_INVALID` | V17 research telemetry / local receipt preflight | Relative path or SHA256 declaration is invalid. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_FILE_OUTSIDE_ROOT` | V17 research telemetry / local receipt preflight | Referenced source escapes research workspace. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_FILE_UNREADABLE` | V17 research telemetry / local receipt preflight | Source or artifact bytes cannot be read. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_FILE_SHA256_MISMATCH` | V17 research telemetry / local receipt preflight | Actual file bytes differ from pinned expected hash. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_SOURCE_SNAPSHOTS_MISSING` | V17 research telemetry / local receipt preflight | No source archive files are provided. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_SOURCE_SNAPSHOT_DUPLICATE` | V17 research telemetry / local receipt preflight | Duplicate source archive path in manifest. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_PREDICTIONS_UNREADABLE` | V17 research telemetry / local receipt preflight | Predictions CSV cannot be read. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_PREDICTION_SCHEMA_INVALID` | V17 research telemetry / local receipt preflight | Required per-event columns missing. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_COHORT_EMPTY` | V17 research telemetry / local receipt preflight | No original fitted predictions available. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_EVENT_IDENTITY_MISSING_OR_DUPLICATE` | V17 research telemetry / local receipt preflight | Missing or repeated official event identity. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_SPLIT_UNKNOWN` | V17 research telemetry / local receipt preflight | Unexpected HOLDOUT or FORWARD partition value. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_SPLIT_MISSING` | V17 research telemetry / local receipt preflight | Either HOLDOUT or FORWARD split missing. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_PREDICTION_OR_LABEL_INVALID` | V17 research telemetry / local receipt preflight | Nonfinite/out-of-range probability or nonbinary settlement. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_TIMESTAMP_INVALID` | V17 research telemetry / local receipt preflight | Invalid, naive, or overflowing timestamp. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_CUTOFF_OR_SETTLEMENT_INVALID` | V17 research telemetry / local receipt preflight | Forecast not strictly pre-start or label before start. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_SPLIT_CHRONOLOGY_OVERLAP` | V17 research telemetry / local receipt preflight | Holdout event chronology overlaps forward cohort. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_LABEL_LEAKAGE` | V17 research telemetry / local receipt preflight | Holdout labels available after first forward forecast. Recovery: `EVIDENCE_PENDING`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_OUTPUT_ROOT_INVALID` | V17 research telemetry / local receipt preflight | Reports target input-root or tracking-root. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_OUTPUT_OVERLAPS_INPUT` | V17 research telemetry / local receipt preflight | Reports would overwrite pinned source, predictions, manifest, or artifact. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_TRACKING_OVERLAPS_OUTPUT` | V17 research telemetry / local receipt preflight | Local tracking and report trees nest recursively. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_OUTPUT_ROOT_NOT_EMPTY` | V17 research telemetry / local receipt preflight | Report destination contains previous or unrelated files. Recovery: `CODE_REPAIR`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `RESEARCH_MLFLOW_OR_EVIDENTLY_NOT_INSTALLED` | V17 research telemetry / local receipt preflight | Optional reporting dependency unavailable; no receipt generated. Recovery: `PROVIDER_CONFIGURATION`; investigate the exact files/environment, then use a new distinct output directory. | No |
+| `NHL_STARTER_RECEIPTS_INCOMPLETE` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Provider receipts are not exactly two, or a receipt lacks identity, snapshot id, 64-hex payload hash, timezone-aware times or required fields. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-acquire both official receipts server-side. Not a fitted-model capability error. | No |
+| `NHL_STARTER_SOURCE_NOT_OFFICIAL` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A starting-goalie receipt does not carry official source authority. Aggregators and caller-supplied strings cannot confirm a starter. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | No |
+| `NHL_STARTER_PROVIDERS_NOT_INDEPENDENT` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The two receipts share a source id, provider family, snapshot id or payload hash; syndicated or duplicated evidence is one provider. Recovery: `SOURCE_AUTHORITY_CONFLICT`; obtain a genuinely independent official provider. Not a fitted-model capability error. | No |
+| `NHL_STARTER_EVENT_IDENTITY_MISMATCH` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Official event id, home team or away team differs between the two receipts. No neighboring-event substitution. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | No |
+| `NHL_STARTER_START_TIME_DISAGREEMENT` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Scheduled start times differ by more than 60 seconds. Recovery: `SOURCE_AUTHORITY_CONFLICT`; re-read the official schedule. Not a fitted-model capability error. | No |
+| `NHL_STARTER_VERIFICATION_WINDOW` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Evidence is not strictly before scheduled start, is older than 90 minutes before start, or evaluation is at or after start. Recovery: `WAIT_FOR_EVIDENCE`; re-collect inside the pregame window. Not a fitted-model capability error. | No |
+| `NHL_STARTER_EVIDENCE_STALE` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | Evidence is older than 24 hours at evaluation time or timestamped in the future. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
+| `NHL_STARTER_GOALIE_CONFLICT` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The two official providers name different goalie identities for the same side. HOLD; never choose a provider to resolve. Recovery: `SOURCE_AUTHORITY_CONFLICT`. Not a fitted-model capability error. | No |
+| `NHL_STARTER_GOALIE_MISSING` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A receipt lacks a goalie identity for home or away. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
+| `NHL_STARTING_GOALIE_NOT_CONFIRMED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | A provider reports the goalie as projected, expected, participating, or otherwise not a confirmed starter. Gamecenter participation is not starting confirmation. Recovery: `WAIT_FOR_EVIDENCE`. Not a fitted-model capability error. | No |
+| `NHL_STARTER_SOURCE_NOT_TRUSTED` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt's provider is absent from the server-owned trusted-provider registry, is not registered as OFFICIAL, or the receipt's declared provider family disagrees with the registry. Authority is never read from receipt fields. Recovery: `WAIT_FOR_EVIDENCE` / source-rights decision. Not a fitted-model capability error. | No |
+| `NHL_STARTER_ATTESTATION_INVALID` | NHL starting-goalie two-provider confirmation (`v17/nhl_starter_goalie_confirmation.py`) | The receipt lacks a valid server attestation (HMAC-SHA256 under the server-held key), was edited after signing, or the attestation key is unavailable. Recovery: `WAIT_FOR_EVIDENCE` through the server-owned acquisition path. Not a fitted-model capability error. | No |

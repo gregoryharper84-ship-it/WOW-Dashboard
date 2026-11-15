@@ -240,49 +240,30 @@ def test_action_required_zero_job_source_review_only_dispatches_reviewer():
     assert not_verified["findings"] == ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"]
 
 
-@pytest.mark.parametrize(
-    ("trusted_check", "finding"),
-    [
-        (None, f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"),
-        (
-            make_check(policy.TRUSTED_GOVERNANCE_CHECK, status="in_progress"),
-            f"TRUSTED_GOVERNANCE_CHECK_PENDING:{policy.TRUSTED_GOVERNANCE_CHECK}",
-        ),
-        (
-            make_check(policy.TRUSTED_GOVERNANCE_CHECK, conclusion="failure"),
-            f"TRUSTED_GOVERNANCE_CHECK_FAILED:{policy.TRUSTED_GOVERNANCE_CHECK}",
-        ),
-        (
-            make_check(policy.TRUSTED_GOVERNANCE_CHECK, app_id=policy.QA_APP_ID),
-            f"TRUSTED_GOVERNANCE_CHECK_FOREIGN_SOURCE:{policy.TRUSTED_GOVERNANCE_CHECK}",
-        ),
-    ],
-)
-def test_authenticated_source_review_does_not_bypass_downstream_trusted_gate(trusted_check, finding):
+@pytest.mark.parametrize("retired_gate", [
+    None,
+    "pending",
+    "failed",
+    "foreign",
+])
+def test_v4_retired_gate_does_not_prevent_authenticated_qa_dispatch(retired_gate):
     checks = required_ci_checks()
-    if trusted_check:
-        checks.append(trusted_check)
-
+    if retired_gate == "pending":
+        checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK, status="in_progress"))
+    elif retired_gate == "failed":
+        checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK, conclusion="failure"))
+    elif retired_gate == "foreign":
+        checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK, app_id=policy.QA_APP_ID))
     result = classify(source_review="PASS", check_runs=checks)
+    assert result["action"] == "DISPATCH"
+    assert result["role"] == "qa"
 
-    assert result["action"] == "HOLD"
-    assert result["findings"] == [finding]
 
-
-def test_source_review_and_trusted_gate_order_before_qa_then_release():
+def test_v4_required_ci_then_qa_then_release_still_in_order():
     checks = required_ci_checks()
-
-    reviewed_without_trusted = classify(source_review="PASS", check_runs=checks)
-    assert reviewed_without_trusted["action"] == "HOLD"
-    assert reviewed_without_trusted["findings"] == [
-        f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"
-    ]
-
-    checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK))
     qa = classify(source_review="PASS", check_runs=checks)
     assert qa["action"] == "DISPATCH"
     assert qa["role"] == "qa"
-
     checks.append(make_check(policy.QA_CHECK, app_id=policy.QA_APP_ID))
     release = classify(source_review="PASS", check_runs=checks)
     assert release["action"] == "DISPATCH"
@@ -411,15 +392,11 @@ def test_failed_regression_or_change_impact_check_never_dispatches_qa(conclusion
     assert result["findings"][0].startswith("REQUIRED_CHECK_FAILED:")
 
 
-def test_ordinary_pr_requires_trusted_governance_check_before_qa():
+def test_v4_ordinary_pr_requires_actual_ci_not_trusted_governance():
     checks = [item for item in all_ci_checks() if item["name"] != policy.TRUSTED_GOVERNANCE_CHECK]
-
     result = classify(check_runs=checks)
-
-    assert result["action"] == "HOLD"
-    assert result["findings"] == [
-        f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"
-    ]
+    assert result["action"] == "DISPATCH"
+    assert result["role"] == "qa"
 
 
 def test_ordinary_pr_routes_qa_only_after_checks_and_reviewer_artifact():
@@ -1674,9 +1651,7 @@ def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner()
         "github.event.check_run.conclusion == 'success'",
     ):
         assert part in gate
-    assert "check_run" in parsed["on"]
-    assert "workflow_run" in parsed["on"]
-    assert "pull_request_target" in parsed["on"]
+    assert set(parsed["on"]) == {"workflow_dispatch"}
     assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
     assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
     assert "cancel-in-progress: false" in source

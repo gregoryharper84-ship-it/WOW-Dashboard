@@ -1,3 +1,5 @@
+> **SUPERSEDED — 2026-10-29.** This document records the former distinct-principal reviewer design. The controlling engineering release policy is [WOW Governance V3 — Single Owner](WOW_GOVERNANCE_V3_SINGLE_OWNER.md) after its authorized merge to main. Do not treat the Class S independent-human prerequisite or owner-authored QA rejection below as current after adoption. Historical receipts and real security findings remain immutable.
+
 # WOW Governance V2 — One independent security check, not a certification chain
 
 ## Replacement architecture

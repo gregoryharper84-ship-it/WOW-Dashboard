@@ -1,121 +1,32 @@
-# WOW Stability-First Governance — temporary minimum (proposed)
-Date: 2026-10-29 | Scope: engineering delivery, not probability governance | Status: review candidate
+# WOW Minimum Release Governance — authoritative source contract
 
-## The only release decision tree during stabilization
+**Owner authorization:** WOW governance issue #1830. **Policy status:** owner-approved. **Technical status:** migration INCOMPLETE until GitHub ruleset #24907422 actually enforces only the three regression checks. This document is not GitHub admin access, a source-review receipt, or permission to bypass a failed required check.
 
-```text
-PR opened
-  |
-  +-- Ordinary Class A change (no security / probability impact)?
-  |     -> Three existing mandatory regression checks -> authorized merge
-  |
-  +-- Class B protected / probability-adjacent change?
-  |     -> Same three checks + ONE authenticated independent security decision
-  |        -> authorized merge; REJECT / unknown / provider outage = HOLD
-  |
-  +-- Class C probability-producing change?
-        -> governed challenger + replay / holdout / calibration validation
-           -> independent authorization -> protected merge
+## Routine engineering release — one path
 
-After any authorized merge: deploy -> read back exact LIVE main SHA ->
-real scoring + persistence + terminal reconciliation -> SIRT independent verify.
-```
+1. One existing, reviewed-scope pull request with immutable **exact head SHA**, complete changed-file inventory, and provenance. The repository owner is the sole required merge authorizer; zero mandatory approving-review count. An owner's intentional protected merge or otherwise authenticated exact-head owner release decision provides authority; no second human or independent SIRT signature required for routine engineering.
+2. **Exactly three required GitHub Actions checks (App ID 15368), all SUCCESS at the same PR head**:
+   - `WOW required-three regression`
+   - `WOW governed probability backend`
+   - `WOW additional required regression`
+3. For protected/security-adjacent source, retain exact diff review, narrow **negative-path tests** for secret/token/permission boundaries, stale SHA, event identity, wrong-origin evidence, and non-execution, plus a documented rollback. Real high/critical security defects or credential exposure require repair and confirmation; owner authorization does not make them vanish.
+4. Authorized merge through native GitHub protection (non-fast-forward and deletion rules stay enabled; strict required status-check policy stays enabled). No unprotected push, fabricated PASS, forced check run, waived scientific model gate or change to `can_execute=false`.
+5. Observe Render web and worker **LIVE at the accepted protected-main SHA**; verify health plus actual relevant governed Action request, immutable receipt, persistence and terminal reconciliation before marking product completion.
 
-There are **no mandatory human approval counts** in the current GitHub ruleset.
-Do **not** treat optional `HTTP_404`, old certifier artifacts or skipped
-workflow statuses as required Class A checks. Do **not** turn a genuine Class B
-security HOLD into an approval. The Class B security decision can be automated
-under the separately credentialed existing QA App; no second human account is
-necessary once the trust-root bootstrap is independently authorized.
+## What is NOT a mandatory engineering merge gate
 
-**Deferred until the model is stable:** elaborate governance artifact chains,
-repeated certifiers, duplicate polling, extra periodic certification, and
-optional provider-retry complexity. They are diagnostic inputs, not additional
-branch-required checks. Retire their code only after proving no authenticated
-QA/Release workflow still consumes it.
+`WOW Independent QA exact-head` (App 5245832), `WOW Release Authority exact-head` (App 5245853), a paid/free AI reviewer, signed SIRT semantic source review, legacy certifier, extra dispatcher lease or approval polling. These lanes may provide **diagnostic** evidence. Never call a deterministic-only QA run an independent semantic review. A substantiated security REJECT must be investigated and fixed regardless of whether the advisory lane is required.
 
-## Goal
-Restore and stabilize NFL, NBA and NCAAF model delivery without a recursive approval chain. The owner is one human; routine repairs must not require a second human account, Copilot credits or a maze of certifier receipts.
+## Permanent exclusions
 
-## Single release line
-1. **Change ownership + classification.** A = routine reliability with no security/probability impact; B = transport/identity/QA/trust-root or probability-adjacent; C = models/calibration/thresholds/probability-affecting behavior.
-2. **Three existing required regression checks on exact head**: `WOW required-three regression`, `WOW governed probability backend`, `WOW additional required regression`. Do not alter their contents or make failures optional.
-3. **Trust-root / Class B security:** a separately authenticated QA App/provider semantic review or an explicitly authorized, bounded bootstrap for the installing reviewer. A deterministic unit test or owner-authored bot PASS must never be recorded as independent security approval. REJECT is terminal and non-overridable without governed repair.
-4. **Class C:** governed model validation and independent authorized promotion; never silently ship coefficients, calibration or model behavior.
-5. **Protected merge and release:** merge to main only once exact SHA gates and required authorization pass. Verify merged/main SHA, Render live web+worker SHAs, health, persisted/reconciled sporting probabilities and independent QA outcome. No wagers/orders.
+A **fitted, certified sport specialist**, calibration and calibrated lower bound, fresh inputs, pregame event eligibility, immutable model/Action receipts, governed model publication and independent scientific acceptance remain distinct and mandatory. `V17_TERMINAL_REDUCER` alone owns terminal dispositions. `can_execute=false`: no wager, trading, funds movement or order authorization.
 
-## Remove redundant liveness dependencies after equivalence is proven
-The live ruleset #24907422 already requires only the three regression checks, **zero required human approving reviews**. The extra workflows below are NOT necessarily required branch rules, but may still be relied on by each other:
-- `wow-v17-existing-pr-governance-review.yml`: large existing-PR artifact certifier, workflow_run/check_run recursion.
-- `wow-v17-trusted-governance-gate.yml`: second artifact wait/certifier, reports missing/duplicate artifacts when not produced.
-- `wow-v17-governance-dispatcher.yml`: scheduled 15-minute periodic re-dispatch.
-- `wow-v17-independent-qa-check.yml`, `wow-v17-release-authority-check.yml`: distinct real QA/Release App check producers. **Retain authenticated principal, test evidence and release authority.**
+## Required native GitHub admin reconciliation (one-time)
 
-Proposed fast-follow after dependency audit: collapse duplicate certifier/artifact loops into one exact-SHA terminal receipt generated by the existing QA/Release architecture; run periodic dispatcher for stalled incidents only, not for re-certification churn; leave required native checks and independent security reviewer protected. Avoid a fourth required status check until its positive/REJECT/404/moved-SHA canaries are proven. Do not remove observability or re-entry tracking.
+Repository ruleset: [#24907422](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/rules/24907422). As verified on 2026-11-15, the live ruleset has **five**, not three, required contexts. An authorized repository administrator must edit the existing ruleset, **remove only** the two named QA/Release App contexts above, and retain the three exact App-ID-15368 checks. Preserve active branch target `~DEFAULT_BRANCH`, 0 required approving reviews, strict matching, no bypass actors, non-fast-forward and deletion protection. Save and re-read the live ruleset before merging any previously held PR. Do not rename or forge statuses to trick enforcement.
 
-## Deterministic safety envelope
-- No direct main pushes, fabricated review receipts, self-approval, stale SHA acceptance, bypassed red checks or automatic PASS for stale reservations.
-- `custom_gpt_identity=WOW_BETTING_ENGINE`
-- `runtime_generation=V17_ACTIVE`
-- `terminal_authority=V17_TERMINAL_REDUCER`
-- `can_execute=false`
-- `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
+**Verification:** read the GitHub ruleset again and compare both context **and integration ID**; all three actual checks must SUCCESS at the current PR SHA and owner must authorize release. For any failed/stale/missing check, HOLD. The current ruleset cannot be changed by editing this Markdown file or committing a PR.
 
-## Rollout tests and rollback
-1. Snapshot branch ruleset, workflow dependencies, required app identities, exact SHAs and current incidents.
-2. Add regression/negative tests ensuring a Class B protected change cannot pass using a Class A workflow; the approved origin signs actual QA and Release receipts.
-3. Stage minimal routing changes behind an opt-in release candidate, run on a throwaway PR and deliberate REJECT, timeout, 404 and stale-base canaries.
-4. Independently approve change, merge, then monitor 24h for missing or duplicate receipts, P0/P1 queues and recovery; revert to recorded workflow SHA on any assurance regression.
-5. Fast-follow full governance after model coverage and production reconciliation are stable.
+**Rollback:** if the new policy causes a material security escape or CI qualification failure, restore the prior two App-pinned required contexts (QA 5245832 and Release 5245853), preserve the original three, and revert the affected release through a protected PR. Open an incident with the exact head, findings and deployment receipts. No silent automatic gate changes.
 
-## Current incident #2136
-#2287 has combined #2275+Cursor work; the three native checks passed on head `f2f3f08376703f8dd659de4eb74b674984b86c22`, but independent security review and trusted-governance evidence remain absent and its base is stale. This document is **not** an authorization to merge that PR or drop any gate. It is the contract for reducing redundant governance work safely.
-
-## Phase 1 source implementation (review required before adoption)
-The first bounded source change is included in this PR. Existing-PR certification now
-**skips its own runner on an initial pull_request_target event**; PR creation is
-not authenticated QA evidence. The trusted-governance job likewise admits
-only a **successful authenticated workflow_run** of its existing certifier,
-not a premature PR-open event. Both workflow triggers remain in YAML for
-compatibility and follow-up analysis, but these job admission guards avoid
-redundant premature work and historical false-negative missing-receipt runs.
-
-Importantly, the QA workflow_run, independent Release Authority check_run,
-manual repair route, exact artifact identity validation, failure handling, and
-three actual branch-required regressions remain unchanged. No check failure is
-treated as success, and no proof is fabricated. A PR must still obtain all
-applicable security approvals and release acceptance; these changed jobs do not
-themselves authorize merge. The regression
-`test_stability_first_skips_premature_pr_receipt_certification_without_hiding_qa`
-pins both the new admission behavior and the retained evidence contract.
-
-Further removal of obsolete 784-line and 450-line certifier scripts is a
-**fast-follow**, only after authenticated QA/Release canaries prove the proposed
-replacement handles positive, negative, stale, lost-event and duplicate cases.
-
-## Phase 2: optional semantic review is scoped, not required for routine repair
-Ruleset #24907422 does **not** require `WOW Independent Security Review`.
-The installed optional reviewer on protected main currently produces a generic
-`HTTP_404` for several PRs. This is not one of the three mandatory regressions
-and must not be presented as a mandatory Class A release gate.
-
-To stop the recurring irrelevant red checks without concealing a genuine
-security HOLD, the `pull_request_target` trigger is narrowed with explicit
-`paths` for protected trust roots: GitHub workflows/actions/scripts,
-agent configs, independent QA/release/governance/writer code, security migrations,
-and governance policy. The full `workflow_dispatch` route is preserved for
-independent Class B challenges and any changed path identified by a security
-reviewer. A protected path still runs the reviewer and a provider error stays
-red; the scope change does not make a failed review green.
-
-Do **not** treat file paths alone as proof of Class A. If a change affects
-sporting probability semantics, security, authentication, protected routing,
-QA/trust roots or production release behavior outside this globs list, its owner
-must still classify it B/C and obtain the appropriate independent approval
-and governed model validation. Adding a new sensitive path requires adding
-it to the guarded list and regression tests. Unknown or protected changes
-must never inherit a fabricated reviewer PASS.
-
-This reduces **automatic reviewer noise**, not the substantive trust-root
-review obligation. Complete reviewer bootstrap with an authentic QA App
-verdict and canaries before making its check branch-required.
+**Owner incident:** #1830; implementation/restoration: #2136; SIRT remains independent read-only challenger, not routine merge approver.

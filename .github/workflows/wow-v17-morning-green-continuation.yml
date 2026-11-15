@@ -174,172 +174,74 @@ jobs:
           echo "approved=true" >> "$GITHUB_OUTPUT"
           echo "guard_exit_code=0" >> "$GITHUB_OUTPUT"
 
-      - name: Verify trusted exact-head governance receipt
+      - name: Verify V4 exact-head QA and Release checks for restorative auto-merge
         id: governance
         if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.ready == 'true' && steps.scope.outputs.approved == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
-          HEAD_REF: ${{ steps.resolve.outputs.head_ref }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         run: |
           set -euo pipefail
-          pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
-          jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
-            '.state == "open" and .draft == false and .head.sha == $sha and
-             .head.repo.full_name == $repo and .base.ref == "main" and
-             .base.repo.full_name == $repo' <<<"$pr_json" >/dev/null || {
-              echo "GOVERNANCE_PR_IDENTITY_MOVED_OR_UNTRUSTED" >&2
-              echo "approved=false" >> "$GITHUB_OUTPUT"
+          echo "approved=false" >> "$GITHUB_OUTPUT"
+          # Only the existing Morning-Green R0/R1/R2-restorative scope guard
+          # can reach this step. Do not auto-merge protected trust-root or
+          # model changes via deterministic evidence alone.
+          current=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" '
+            .state == "open" and .draft == false and
+            .head.sha == $sha and .head.repo.full_name == $repo and
+            .base.ref == "main" and .base.repo.full_name == $repo
+          ' <<<"$current" >/dev/null || {
+            echo "V4_PR_HEAD_MOVED_OR_UNTRUSTED" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          checks='[]'
+          for page in $(seq 1 10); do
+            response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}") || {
+              echo "V4_CHECK_READ_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             }
-          artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"
-          artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
-          artifact_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // ""' <<<"$artifacts")
-          run_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .workflow_run.id // ""' <<<"$artifacts")
-
-          if [ -z "$artifact_id" ] || [ -z "$run_id" ]; then
-            echo "GOVERNANCE_RECEIPT_MISSING: autonomous merge denied for exact head ${HEAD_SHA}." >> "$GITHUB_STEP_SUMMARY"
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          run_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")
-          name=$(jq -r '.name // ""' <<<"$run_json")
-          path=$(jq -r '.path // ""' <<<"$run_json")
-          status=$(jq -r '.status // ""' <<<"$run_json")
-          conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
-          event=$(jq -r '.event // ""' <<<"$run_json")
-          head_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
-          head_repo=$(jq -r '.head_repository.full_name // ""' <<<"$run_json")
-          trusted_worker=false
-          protected_main_source=false
-          case "$name|$path" in
-            "wow-v17-chatgpt-engineering-worker|.github/workflows/wow-v17-chatgpt-engineering-worker.yml")
-              case "$event" in schedule|workflow_run|workflow_dispatch) trusted_worker=true ;; esac
-              [ "$head_branch" = "main" ] && protected_main_source=true
-              ;;
-            "wow-v17-claude-engineering-worker|.github/workflows/wow-v17-claude-engineering-worker.yml")
-              [ "$event" = "workflow_dispatch" ] && trusted_worker=true
-              [ "$head_branch" = "main" ] && protected_main_source=true
-              ;;
-            "wow-v17-existing-pr-governance-review|.github/workflows/wow-v17-existing-pr-governance-review.yml")
-              case "$event" in
-                pull_request_target)
-                  trusted_worker=true
-                  protected_main_source=true
-                  ;;
-                workflow_dispatch)
-                  [ "$head_branch" = "main" ] && trusted_worker=true && protected_main_source=true
-                  ;;
-                workflow_run)
-                  [ "$head_branch" = "main" ] && trusted_worker=true && protected_main_source=true
-                  ;;
-              esac
-              ;;
-          esac
-          if [ "$trusted_worker" != "true" ] ||
-             [ "$protected_main_source" != "true" ] ||
-             [ "$head_repo" != "$GITHUB_REPOSITORY" ] ||
-             [ "$status" != "completed" ] ||
-             [ "$conclusion" != "success" ]; then
-            echo "GOVERNANCE_WORKFLOW_UNTRUSTED_OR_INCOMPLETE: autonomous merge denied for run ${run_id}." >> "$GITHUB_STEP_SUMMARY"
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          zip_path="$RUNNER_TEMP/governance.zip"
-          receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
-          checksum="$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
-          live_reviews="$RUNNER_TEMP/wow-live-reviews.json"
-          reviews='[]'
-          for page in $(seq 1 10); do
-            response=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100&page=${page}")
-            count=$(jq 'length' <<<"$response")
-            reviews=$(jq -cn --argjson old "$reviews" --argjson new "$response" '$old + $new')
+            batch=$(jq -ce '.check_runs | select(type == "array")' <<<"$response") || {
+              echo "V4_CHECK_PAGE_INVALID" >> "$GITHUB_STEP_SUMMARY"; exit 0;
+            }
+            count=$(jq 'length' <<<"$batch")
+            checks=$(jq -cn --argjson old "$checks" --argjson new "$batch" '$old + $new')
             [ "$count" -lt 100 ] && break
             [ "$page" -lt 10 ] || {
-              echo "GOVERNANCE_REVIEW_INVENTORY_LIMIT_EXCEEDED" >&2
-              echo "approved=false" >> "$GITHUB_OUTPUT"
-              exit 0
+              echo "V4_CHECK_INVENTORY_INCOMPLETE" >> "$GITHUB_STEP_SUMMARY"; exit 0;
             }
           done
-          printf '%s\n' "$reviews" > "$live_reviews"
-          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$zip_path"
-          unzip -p "$zip_path" wow-engineering-governance-receipt.json > "$receipt"
-          unzip -p "$zip_path" wow-engineering-governance-receipt.sha256 > "$checksum"
-          expected=$(tr -d '[:space:]' < "$checksum")
-          actual=$(sha256sum "$receipt" | awk '{print $1}')
-
-          if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-            echo "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH: autonomous merge denied." >> "$GITHUB_STEP_SUMMARY"
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          verifier=".github/scripts/verify_engineering_governance_receipt.py"
-          cert_mode=""
-          live_checks="$RUNNER_TEMP/wow-live-checks.json"
-          if [ "$name" = "wow-v17-existing-pr-governance-review" ]; then
-            verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
-            set +e
-            cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
-            cert_rc=$?
-            set -e
-            if [ "$cert_rc" -ne 0 ]; then
-              echo "GOVERNANCE_RECEIPT_UNREADABLE: autonomous merge denied." >> "$GITHUB_STEP_SUMMARY"
-              echo "approved=false" >> "$GITHUB_OUTPUT"
+          expected=(
+            "WOW required-three regression|15368"
+            "WOW governed probability backend|15368"
+            "WOW additional required regression|15368"
+            "WOW Independent QA exact-head|5245832"
+            "WOW Release Authority exact-head|5245853"
+          )
+          for entry in "${expected[@]}"; do
+            name="${entry%%|*}"
+            app="${entry#*|}"
+            if ! jq -e --arg name "$name" --arg sha "$HEAD_SHA" --argjson app "$app" '
+              ([.[] | select(.name == $name and .head_sha == $sha)]
+                | sort_by(.id) | last) as $run
+              | $run != null and $run.app.id == $app
+                and $run.status == "completed" and $run.conclusion == "success"
+            ' <<<"$checks" >/dev/null; then
+              echo "V4_CHECK_NOT_VALID:${name}" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$cert_mode" = "CLASS_A_DETERMINISTIC" ]; then
-              checks='[]'
-              for page in $(seq 1 10); do
-                response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}") || {
-                  echo "GOVERNANCE_CHECK_INVENTORY_UNAVAILABLE: autonomous merge denied." >> "$GITHUB_STEP_SUMMARY"
-                  echo "approved=false" >> "$GITHUB_OUTPUT"
-                  exit 0
-                }
-                items=$(jq -ce '.check_runs' <<<"$response")
-                count=$(jq 'length' <<<"$items")
-                checks=$(jq -cn --argjson old "$checks" --argjson new "$items" '$old + $new')
-                [ "$count" -lt 100 ] && break
-                [ "$page" -lt 10 ] || {
-                  echo "GOVERNANCE_CHECK_INVENTORY_LIMIT_EXCEEDED" >&2
-                  echo "approved=false" >> "$GITHUB_OUTPUT"
-                  exit 0
-                }
-              done
-              printf '%s\n' "$checks" > "$live_checks"
-            fi
-          fi
-
-          set +e
-          extra_args=()
-          if [ "$name" = "wow-v17-existing-pr-governance-review" ]; then
-            extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$cert_mode" = "CLASS_A_DETERMINISTIC" ]; then
-              extra_args+=(--live-checks-json "$live_checks")
-            fi
-          fi
-          python "$verifier" \
-            --receipt "$receipt" \
-            --repository "$GITHUB_REPOSITORY" \
-            --head-sha "$HEAD_SHA" \
-            --head-ref "$HEAD_REF" \
-            --workflow-run-id "$run_id" \
-            --workflow-name "$name" \
-            "${extra_args[@]}" \
-            | tee "$RUNNER_TEMP/governance-result.json"
-          rc=${PIPESTATUS[0]}
-          set -e
-          cat "$RUNNER_TEMP/governance-result.json" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$rc" -ne 0 ]; then
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
+          done
+          # Re-read identity to reject a PR that moved during pagination.
+          live=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}") || {
+            echo "V4_FINAL_PR_READ_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"; exit 0;
+          }
+          jq -e --arg sha "$HEAD_SHA" '.head.sha == $sha and .state == "open" and .draft == false' <<<"$live" >/dev/null || {
+            echo "V4_FINAL_HEAD_CHANGED" >> "$GITHUB_STEP_SUMMARY"; exit 0;
+          }
           echo "approved=true" >> "$GITHUB_OUTPUT"
+          echo "Five pinned exact-head checks verified; routine scope only." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Persist machine-readable closure state
         id: closure

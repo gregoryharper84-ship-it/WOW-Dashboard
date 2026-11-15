@@ -233,6 +233,7 @@ def governance():
         "calibration_health": calibration_health,
         "compute_provider": "RENDER",
         "database_provider": "SUPABASE",
+        "deployed_sha": base_api._render_deployed_sha(),
         "lane_capabilities": {
             MLB_EVENT_CAPABILITY_KEY: {
                 "status": event_lane.get("capability_status", "UNAVAILABLE"),

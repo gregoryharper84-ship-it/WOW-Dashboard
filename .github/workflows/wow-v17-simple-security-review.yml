@@ -1,38 +1,10 @@
 name: wow-v17-simple-security-review
 # Independent Claude -> Gemini -> authenticated owner recovery, no certification loop.
 # Owner review never certifies owner-authored source, including App copies.
-# Add WOW Independent Security Review (QA App 5245832) as required after bootstrap.
+# Manual-only independent semantic review; not one of the five pinned required checks.
+# Retired automatic trigger lane: the five pinned main ruleset checks are authoritative.
+# Manual dispatch remains available for non-authoritative historical diagnostics.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-    # Stabilization mode: ordinary Class A source repairs use the three
-    # existing required regression checks, not a redundant reviewer with an
-    # unavailable provider. Security and release trust roots still trigger
-    # independent review automatically; manual exact-PR dispatch is retained.
-    paths:
-      - '.github/**'
-      - '.agents/**'
-      - '.claude/**'
-      - '.cursor/**'
-      - 'CODEOWNERS'
-      - 'artifacts/wow-engine/v17/*governance*'
-      - 'artifacts/wow-engine/v17/*release*'
-      - 'artifacts/wow-engine/v17/*security*'
-      - 'artifacts/wow-engine/v17/*writer*'
-      - 'artifacts/wow-engine/v17/*qa*'
-      - 'artifacts/wow-engine/v17/independent_*'
-      # Policy and App adoption are trust roots even when their filenames
-      # do not contain 'governance' or 'security'. Unknown trust-root files
-      # remain subject to separate Class B review policy.
-      - 'artifacts/wow-engine/v17/agent_identity_policy.py'
-      - 'artifacts/wow-engine/v17/engineering_authorized_adoption.py'
-      - 'artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py'
-      - 'artifacts/wow-engine/v17/engineering_recovery_planner.py'
-      - 'artifacts/wow-engine/v17/engineering_provider_failover.py'
-      - 'artifacts/wow-engine/**/migrations/**'
-      - 'supabase/migrations/**'
-      - 'docs/WOW_GOVERNANCE_V2.md'
-      - 'docs/WOW_STABILITY_FIRST_MINIMUM_GOVERNANCE.md'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -43,6 +15,12 @@ on:
         description: Optional exact expected 40-char SHA; stale targets fail closed
         required: false
         type: string
+      preflight_only:
+        description: Owner-only, zero-inference Gemini credential/model capability probe
+        required: false
+        type: boolean
+        default: false
+
 permissions:
   contents: read
   pull-requests: read
@@ -69,8 +47,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Validate reviewer code locally
-        run: python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
+        run: |
+          python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_reviewer_app_preflight.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
       - name: Mint separate QA App checks-only token
+        if: inputs.preflight_only != true
         id: qa
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
@@ -78,17 +60,32 @@ jobs:
           private-key: ${{ secrets.WOW_QA_APP_PRIVATE_KEY }}
           repositories: WOW-Dashboard
           permission-checks: write
+      - name: Verify dedicated reviewer App installation
+        if: inputs.preflight_only == true
+        env:
+          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
+          WOW_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}
+        run: python .github/scripts/wow_v28_reviewer_app_preflight.py
+
+      - name: Authenticate Gemini model without generating content
+        if: inputs.preflight_only == true
+        env:
+          WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
+          WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
+        run: python .github/scripts/wow_simple_security_review.py --preflight
       - name: Review exact PR diff and publish QA App check
+        if: inputs.preflight_only != true
         env:
           GH_READ_TOKEN: ${{ github.token }}
           QA_APP_TOKEN: ${{ steps.qa.outputs.token }}
-          WOW_QA_REVIEW_ANTHROPIC_API_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY }}
+          WOW_QA_REVIEW_ANTHROPIC_API_KEY: ''
+          WOW_QA_GEMINI_FREE_TIER_CONFIRMED: ${{ vars.WOW_QA_GEMINI_FREE_TIER_CONFIRMED }}
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
           WOW_QA_CLAUDE_MODEL: ${{ vars.WOW_QA_CLAUDE_MODEL }}
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
         run: python .github/scripts/wow_simple_security_review.py
       - name: Retain attributable reviewer decision
-        if: always()
+        if: always() && inputs.preflight_only != true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-independent-security-${{ github.run_id }}-${{ github.run_attempt }}

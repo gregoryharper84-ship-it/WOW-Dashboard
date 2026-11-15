@@ -7,17 +7,20 @@ from v17 import nfl_prop_memory_safety as memory
 class _Response:
     status_code = 200
 
-    def __init__(self, content: bytes):
+    def __init__(self, content: bytes = b"", *, payload=None):
         self.content = content
         self.text = content.decode("utf-8")
+        self.payload = payload
 
     def json(self):
+        if self.payload is not None:
+            return self.payload
         raise AssertionError("CSV path should not parse JSON")
 
 
 def _csv(season: int, weeks: range, *, unused_size: int = 0) -> bytes:
     header = (
-        "player_display_name,season,week,game_id,team,opponent_team,position,"
+        "player_display_name,season,season_type,week,game_id,team,opponent_team,position,"
         "passing_yards,attempts,rushing_yards,carries,receiving_yards,targets,"
         "rushing_tds,receiving_tds,special_teams_tds,unused_blob\n"
     )
@@ -25,7 +28,7 @@ def _csv(season: int, weeks: range, *, unused_size: int = 0) -> bytes:
     lines = [header]
     for week in weeks:
         lines.append(
-            f"Test Player,{season},{week},{season}_{week:02d}_AAA_BBB,AAA,BBB,WR,"
+            f"Test Player,{season},REG,{week},{season}_{week:02d}_AAA_BBB,AAA,BBB,WR,"
             f"0,0,0,0,{50 + week},5,0,{1 if week % 3 == 0 else 0},0,{blob}\n"
         )
     return "".join(lines).encode("utf-8")
@@ -38,6 +41,22 @@ def test_compact_cache_preserves_exact_history_outputs(monkeypatch) -> None:
     }
 
     def fake_get(url, **kwargs):
+        if url.endswith("/teams/AAA/schedule"):
+            from datetime import timedelta
+            season = kwargs["params"]["season"]
+            weeks = range(1, 4) if season == 2026 else range(1, 13)
+            events = [{
+                "id": f"{season}-{week}",
+                "date": (datetime(season, 9, 6, 17, tzinfo=timezone.utc) + timedelta(weeks=week - 1)).isoformat(),
+                "season": {"year": season, "type": 2},
+                "week": {"number": week},
+                "competitions": [{
+                    "competitors": [{"homeAway": "home", "team": {"abbreviation": "BBB"}},
+                                    {"homeAway": "away", "team": {"abbreviation": "AAA"}}],
+                    "status": {"type": {"state": "post", "completed": True}},
+                }],
+            } for week in weeks]
+            return _Response(payload={"events": events})
         season = 2026 if "2026.csv" in url else 2025
         return _Response(payloads[season])
 
@@ -48,6 +67,7 @@ def test_compact_cache_preserves_exact_history_outputs(monkeypatch) -> None:
         event_start=event_start,
         http_get=fake_get,
         now_ts=event_start.timestamp() - 60,
+        provider_season=2026,
     )
 
     monkeypatch.setattr(nfl, "_cached_nflverse_rows", memory._cached_compact_nflverse_rows)
@@ -57,6 +77,7 @@ def test_compact_cache_preserves_exact_history_outputs(monkeypatch) -> None:
         event_start=event_start,
         http_get=fake_get,
         now_ts=event_start.timestamp() - 60,
+        provider_season=2026,
     )
 
     assert actual == expected
@@ -93,6 +114,15 @@ def test_live_compact_cache_is_singleflight_and_drops_unused_columns(monkeypatch
     assert not isinstance(first_rows[0], dict)
     assert first_rows[0].get("unused_blob") is None
     assert first_rows[0].get("receiving_yards") == 51.0
+
+
+def test_compact_cache_preserves_postseason_identity() -> None:
+    content = _csv(2026, range(19, 20)).replace(b",REG,", b",POST,")
+
+    rows = memory._compact_rows(content)
+
+    assert rows[0].get("season_type") == "POST"
+    assert rows[0].get("week") == 19.0
 
 
 def test_installer_releases_legacy_cache_and_preserves_no_execution_authority(monkeypatch) -> None:

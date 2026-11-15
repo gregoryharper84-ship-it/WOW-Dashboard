@@ -707,6 +707,7 @@ def mlb_team_event_bridge_readiness(*, event_api: Any | None = None) -> dict[str
 
 
 def _install_health_route(app: Any, *, event_api: Any) -> None:
+    """Install non-secret MLB bridge health and deployed source identity."""
     if getattr(app.state, "v17_mlb_bridge_health_installed", False):
         return
     app.router.routes[:] = [
@@ -719,6 +720,7 @@ def _install_health_route(app: Any, *, event_api: Any) -> None:
 
     @app.get("/health")
     def v17_health():
+        """Return MLB bridge readiness and the serving Render commit SHA."""
         return {
             "status": "ok",
             "host_type": "EXTERNAL_GOVERNED_BACKEND",
@@ -727,6 +729,7 @@ def _install_health_route(app: Any, *, event_api: Any) -> None:
             "batch_provider": "COLAB",
             "deployment_tier": "FREE",
             "runtime_generation": "V17_ACTIVE",
+            "deployed_sha": event_api.base_api._render_deployed_sha(),
             "team_event_bridges": {
                 "MLB": mlb_team_event_bridge_readiness(event_api=event_api),
             },

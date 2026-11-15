@@ -16,6 +16,7 @@ from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 import pick_request_runtime as pick_runtime
+import pick_request_runtime_core as pick_core
 from v17 import team_event_request_runtime as team_event_runtime
 from v17.detailed_evidence_runtime import (
     DetailedEvidenceEnvelope,
@@ -70,12 +71,19 @@ def _patch_model_features(market_api: Any) -> None:
 
 
 def _patch_snapshot_payload() -> None:
-    if getattr(pick_runtime, _SNAPSHOT_PATCH_ATTR, False):
+    # The producing score route resolves globals in pick_request_runtime_core.
+    # Patching only the receipt facade leaves the actual snapshot writer
+    # untouched; install the same wrapper at the producing boundary instead.
+    if getattr(pick_core, _SNAPSHOT_PATCH_ATTR, False):
         return
-    original = pick_runtime._snapshot_payload
+    original = pick_core._snapshot_payload
 
-    def snapshot_payload_with_detailed_evidence(row: Any, normalized: dict[str, Any]):
-        snapshot_id, base_fingerprint, persisted = original(row, normalized)
+    def snapshot_payload_with_detailed_evidence(
+        row: Any,
+        normalized: dict[str, Any],
+        blockers: list[str] | None = None,
+    ):
+        snapshot_id, base_fingerprint, persisted = original(row, normalized, blockers)
         row_key = str(getattr(row, "row_key", "") or "")
         detailed = _detailed_by_row_key.get().get(row_key)
         if detailed is None:
@@ -95,7 +103,9 @@ def _patch_snapshot_payload() -> None:
         enriched["detailed_evidence_fingerprint"] = detail_fingerprint
         return combined_snapshot_id, combined_fingerprint, enriched
 
+    pick_core._snapshot_payload = snapshot_payload_with_detailed_evidence
     pick_runtime._snapshot_payload = snapshot_payload_with_detailed_evidence
+    setattr(pick_core, _SNAPSHOT_PATCH_ATTR, True)
     setattr(pick_runtime, _SNAPSHOT_PATCH_ATTR, True)
 
 

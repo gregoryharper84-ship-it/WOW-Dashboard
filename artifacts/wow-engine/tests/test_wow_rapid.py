@@ -119,6 +119,13 @@ def test_affected_selection_remains_nonempty_for_unfiltered_pr_path_classes(tmp_
         assert set(wow_rapid.GOVERNANCE_TESTS).issubset(selected)
 
 
+def test_zero_credit_qa_negative_tests_are_mandatory() -> None:
+    # The required exact-head rapid regression must run fail-closed reviewer-mode
+    # tests; future source changes may not silently omit them.
+    assert "test_v17_zero_credit_release.py" in wow_rapid.GOVERNANCE_TESTS
+    assert (MODULE_PATH.parents[1] / "test_v17_zero_credit_release.py").is_file()
+
+
 def test_invalid_shard_parameters_fail_closed() -> None:
     try:
         wow_rapid.shard_test_files(["tests/test_a.py"], 2, 2)
@@ -126,3 +133,127 @@ def test_invalid_shard_parameters_fail_closed() -> None:
         assert "0 <= index < total" in str(exc)
     else:
         raise AssertionError("invalid shard index must fail")
+
+
+def test_protected_reviewer_contract_step_has_literal_shell_continuations():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    slash = chr(92)
+    assert f"grep -zEq '^{slash}.github/(workflows|scripts)/'" in section
+    assert f"grep -zEq '^{slash}{slash}.github" not in section
+    lines = section.splitlines()
+    assert any("python -m pytest -q --tb=short -rs" in line for line in lines)
+    assert all(not line.rstrip().endswith(slash + slash) for line in lines)
+    assert ".github/scripts/tests/test_independent_source_review_receipt.py" in section
+    assert ".github/scripts/tests/test_wow_v28_gemini_qa_bridge.py" in section
+    assert "git worktree add --detach" in section
+    assert 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' in section
+    assert 'git diff --no-renames --name-only -z "$BASE...$PR_HEAD_SHA"' in section
+
+
+def test_protected_reviewer_contract_rename_keeps_original_path(tmp_path):
+    """A rename OUT of .github must still trigger protected reviewer suites."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    assert 'git diff --no-renames --name-only -z "$BASE...$PR_HEAD_SHA" > "$inventory"' in section
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                              capture_output=True, text=True).stdout
+
+    git("init", "-q")
+    git("config", "user.name", "WOW-CI")
+    git("config", "user.email", "ci@example.invalid")
+    old = tmp_path / ".github/scripts/tests/test_guard.py"
+    old.parent.mkdir(parents=True)
+    old.write_text("safe = True\\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    moved = tmp_path / "docs/test_guard.py"
+    moved.parent.mkdir()
+    git("mv", str(old.relative_to(tmp_path)), str(moved.relative_to(tmp_path)))
+    git("commit", "-qm", "rename-out")
+    inventory = git("diff", "--no-renames", "--name-only", "HEAD^", "HEAD").splitlines()
+    assert ".github/scripts/tests/test_guard.py" in inventory
+    assert "docs/test_guard.py" in inventory
+
+
+
+
+def test_protected_reviewer_contract_nonascii_paths_nul_safe(tmp_path):
+    """Git path quoting must not suppress tests on a Unicode protected path."""
+    import subprocess
+
+    def run(*cmd):
+        return subprocess.run(["git", *cmd], cwd=tmp_path, capture_output=True, check=True).stdout
+
+    run("init", "-q")
+    run("config", "user.name", "WOW-CI")
+    run("config", "user.email", "ci@example.invalid")
+    path = tmp_path / ".github/scripts/café.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("x = 1\n")
+    run("add", ".")
+    run("commit", "-qm", "base")
+    path.write_text("x = 2\n")
+    run("commit", "-qam", "edit-unicode")
+    raw = run("diff", "--no-renames", "--name-only", "-z", "HEAD^", "HEAD")
+    assert raw == ".github/scripts/café.py".encode() + b"\x00"
+    verdict = subprocess.run(["grep", "-zEq", r"^\.github/(workflows|scripts)/"],
+                             input=raw, check=False)
+    assert verdict.returncode == 0
+
+
+def test_protected_reviewer_contract_exact_head_is_not_merge_candidate():
+    """The contract suite explicitly checks out the exact PR head in a worktree."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    assert "git cat-file -e" in section
+    assert "git worktree add --detach" in section
+    assert '"$PR_HEAD_SHA"' in section
+    assert 'cd "$review_tree"' in section
+    assert 'git rev-parse HEAD' in section
+    assert "git diff --no-renames --name-only -z" in section
+
+
+def test_protected_reviewer_contract_diff_failure_cannot_skip_tests(tmp_path):
+    import os
+    import subprocess
+    import textwrap
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-rapid-repair.yml").read_text()
+    section = workflow.split("- name: Verify exact-head protected reviewer contracts", 1)[1]
+    section = section.split("- name: Upload informational patch coverage to Codecov", 1)[0]
+    script = textwrap.dedent(section.split("run: |", 1)[1]).replace(
+        "${{ github.event.pull_request.base.sha }}", "a" * 40)
+    git = tmp_path / "git"
+    diff_log = tmp_path / "diff-reached.txt"
+    git.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  cat-file) exit 0 ;;\n"
+        "  diff) printf 'diff-called\\n' >> \"$DIFF_LOG\"; exit 42 ;;\n"
+        "  *) exit 97 ;;\n"
+        "esac\n"
+    )
+    git.chmod(0o755)
+    result = subprocess.run(["bash", "-c", script], env={**os.environ,
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+        "RUNNER_TEMP": str(tmp_path),
+        "DIFF_LOG": str(diff_log),
+        "PR_HEAD_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1"}, capture_output=True)
+    assert diff_log.read_text().splitlines() == ["diff-called"]
+    assert result.returncode == 42

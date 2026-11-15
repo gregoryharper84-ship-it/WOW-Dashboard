@@ -23,7 +23,7 @@ def _line(value: Any) -> str | None:
     except (InvalidOperation, TypeError, ValueError):
         return None
 
-def _time(value: Any) -> str:
+def canonical_event_start_time(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
@@ -38,7 +38,7 @@ def _time(value: Any) -> str:
 def canonical_sporting_key(row: dict[str, Any]) -> tuple[str, ...] | None:
     sport = _SPORT_ALIASES.get(_text(row.get("sport")), _text(row.get("sport")))
     event_id = str(row.get("event_id") or row.get("official_event_id") or "").strip()
-    event_start = _time(row.get("event_start_time") or row.get("event_start_time_utc"))
+    event_start = canonical_event_start_time(row.get("event_start_time") or row.get("event_start_time_utc"))
     player = _player(row.get("player") or row.get("participant"))
     stat_type = _text(row.get("stat_type") or row.get("market_stat"))
     line = _line(row.get("line"))
@@ -111,4 +111,4 @@ def canonical_source_snapshot_ids(rows: Iterable[dict[str, Any]]) -> set[str]:
         ids.update(_snapshot_ids(row))
     return ids
 
-__all__ = ["canonical_sporting_key", "canonicalize_prop_manifest", "canonical_source_snapshot_ids"]
+__all__ = ["canonical_event_start_time", "canonical_sporting_key", "canonicalize_prop_manifest", "canonical_source_snapshot_ids"]

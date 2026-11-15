@@ -161,3 +161,35 @@ def test_legacy_loader_aliases_without_raw_parquet_schema_are_rejected():
     row["passing_yards"] = row.pop("passingYards")
     with pytest.raises(CrosswalkHold, match="NCAAF_ESPN_SCHEMA_DRIFT"):
         audit([ncaa()], [row])
+
+def test_full_source_candidates_have_exact_reconcilable_stat_ids():
+    output = []
+    report = reconcile(
+        [ncaa(), ncaa(category="rushing"), ncaa(category="receiving")],
+        [espn(), espn(category="rushing"), espn(category="receiving")],
+        season=2024, ncaa_sha256="a"*64, espn_sha256="b"*64,
+        full_candidate_rows=output)
+    from hashlib import sha256
+    import json
+    assert len(output) == 7
+    assert report["full_candidate_stat_cells"] == 7
+    assert report["full_candidate_stat_rows_sha256"] == sha256(
+        json.dumps(output, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert all("name" not in row for row in output)
+    assert len({(r["event_id"],r["athlete_id"],r["stat_type"]) for r in output})==7
+    assert report["full_candidate_team_id_verified"] is False
+    assert report["full_candidate_export_for_model"] is False
+    assert report["probability_publishable"] is False
+    assert report["can_execute"] is False
+
+
+def test_full_source_rejects_wrong_event_or_conflicting_stats():
+    output = []
+    report = reconcile(
+        [ncaa()], [espn(game_id=401677190)],
+        season=2024, ncaa_sha256="a"*64, espn_sha256="b"*64,
+        full_candidate_rows=output)
+    assert output == []
+    assert report["full_candidate_stat_cells"] == 0
+    assert report["candidate_distinct_espn_game_player_ids"] == 0

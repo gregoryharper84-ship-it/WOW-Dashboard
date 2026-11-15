@@ -397,12 +397,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ inputs.target_incident }}
         run: |
           set -euo pipefail
           # This exact workflow owns the existing global single-writer lock.
           # Dispatcher-time provider health is never sufficient after queueing.
           python artifacts/wow-engine/v17/engineering_provider_worker_admission.py \
-            --provider anthropic
+            --provider anthropic --target-incident "${TARGET_INCIDENT:-}"
 
       - name: Engineering Lead agent
         id: lead_agent

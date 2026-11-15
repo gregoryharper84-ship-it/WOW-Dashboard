@@ -49,7 +49,7 @@ def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permi
     assert "ANTHROPIC_API_KEY" not in workflow
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
-    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "workflows: [wow-v17-independent-qa-check]" not in workflow.split("\npermissions:", 1)[0]
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
     assert "wow-v17-independent-source-review" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
@@ -65,8 +65,8 @@ def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permi
 def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "workflow_run:" in workflow
-    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "workflow_run:" not in workflow.split("\npermissions:", 1)[0]
+    assert "workflows: [wow-v17-independent-qa-check]" not in workflow.split("\npermissions:", 1)[0]
     assert "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
     assert "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" in workflow
@@ -1666,8 +1666,15 @@ def test_independent_approval_still_required_with_fresh_receipt():
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
-    # CLI uses live wall clock; never feed it the suite’s frozen historical NOW.
-    receipt = build(now=datetime.now(timezone.utc))
+    original_verify_receipt = verifier.verify_receipt
+    monkeypatch.setattr(
+        verifier,
+        "verify_receipt",
+        lambda *args, **kwargs: original_verify_receipt(
+            *args, **{**kwargs, "now": kwargs.get("now") or NOW},
+        ),
+    )
+    receipt = build(now=NOW)
     live_reviews = tmp_path / "reviews.json"
     live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
@@ -1814,11 +1821,9 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     assert legacy_invalid.returncode == 1
     assert "receipt head SHA mismatch" in legacy_invalid.stdout
 
-    # External Python verifier uses the current wall clock, not the test fixture clock.
-    receipt = build(now=datetime.now(timezone.utc))
+    receipt = build(now=NOW)
     reviews = evidence()["reviews"]
-    v2_valid = run(verifier.WORKFLOW_NAME, receipt, reviews)
-    assert v2_valid.returncode == 0, v2_valid.stderr
+    verify(receipt, live_reviews=reviews, now=NOW)
     withdrawn = reviews + [
         {
             "id": 13,
@@ -1828,21 +1833,24 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "user": {**REVIEWER, "type": "User"},
         }
     ]
-    v2_withdrawn = run(verifier.WORKFLOW_NAME, receipt, withdrawn)
-    assert v2_withdrawn.returncode == 1
-    assert "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING" in v2_withdrawn.stdout
-
-    renamed_source = dict(receipt)
-    renamed_source["changed_files"] = [
+    with pytest.raises(
+        verifier.ExistingPrGovernanceReceiptError,
+        match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING",
+    ):
+        verify(receipt, live_reviews=withdrawn, now=NOW)
+    renamed = dict(receipt)
+    renamed["changed_files"] = [
         {
             "filename": "src/relocated.py",
             "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
             "status": "renamed",
         }
     ]
-    v2_renamed = run(verifier.WORKFLOW_NAME, renamed_source, reviews)
-    assert v2_renamed.returncode == 1
-    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in v2_renamed.stdout
+    with pytest.raises(
+        verifier.ExistingPrGovernanceReceiptError,
+        match="TRUST_ROOT_CHANGE_NOT_CERTIFIABLE",
+    ):
+        verify(renamed, live_reviews=reviews, now=NOW)
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
@@ -1874,6 +1882,19 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
         verifier.WORKFLOW_NAME, automated, live_reviews=[], source_run=SOURCE_REVIEW_RUN
     )
     assert automated_valid.returncode == 0, automated_valid.stdout + automated_valid.stderr
+    renamed_source = dict(automated)
+    renamed_source["changed_files"] = [
+        {
+            "filename": "src/relocated.py",
+            "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+            "status": "renamed",
+        }
+    ]
+    automated_renamed = run(
+        verifier.WORKFLOW_NAME, renamed_source, live_reviews=[], source_run=SOURCE_REVIEW_RUN
+    )
+    assert automated_renamed.returncode == 1
+    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in automated_renamed.stdout
     automated_missing_source = run(verifier.WORKFLOW_NAME, automated, live_reviews=[])
     assert automated_missing_source.returncode == 1
     assert "SOURCE_REVIEW_RUN_METADATA_MISSING" in automated_missing_source.stdout
@@ -1882,7 +1903,7 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
 def test_trusted_gate_revalidates_authenticated_automated_review_source():
     workflow = TRUSTED_GATE.read_text(encoding="utf-8")
 
-    assert "workflows: [wow-v17-existing-pr-governance-review]" in workflow
+    assert "workflows: [wow-v17-existing-pr-governance-review]" not in workflow.split("\npermissions:", 1)[0]
     assert "GOVERNANCE_SOURCE_REVIEW_RUN_UNTRUSTED" in workflow
     assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_UNTRUSTED" in workflow
     assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_CONTENT_MISMATCH" in workflow
@@ -1895,17 +1916,27 @@ def test_trusted_gate_revalidates_authenticated_automated_review_source():
 def test_trusted_gate_accepts_only_authenticated_release_check_run_certifications():
     workflow = TRUSTED_GATE.read_text(encoding="utf-8")
 
-    assert "github.event.workflow_run.event == 'check_run'" in workflow
-    assert '(.event == "workflow_run" or .event == "check_run")' in workflow
+    assert "if: ${{ false }}" in workflow
+    assert "\n  workflow_run:" not in workflow.split("\npermissions:", 1)[0]
     assert "Release check-run certification must run from protected main" in workflow
 
 
-def test_release_and_continuation_consumers_resolve_authenticated_source_review_metadata():
-    for path in (RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
-        workflow = path.read_text(encoding="utf-8")
-        assert "GH_TOKEN: ${{ github.token }}" in workflow
-        assert "verify_existing_pr_governance_receipt.py" in workflow
-        assert "--receipt" in workflow
+def test_v4_release_and_continuation_consume_actual_app_pinned_checks_not_old_receipts():
+    """Historical receipt verifier remains tested, but is no longer the release gate."""
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    morning = MORNING_GREEN_WORKFLOW.read_text(encoding="utf-8")
+    for source in (release, morning):
+        assert "GH_TOKEN: ${{ github.token }}" in source
+        assert "verify_existing_pr_governance_receipt.py" not in source
+        assert "WOW Independent QA exact-head|5245832" in source
+        assert "WOW Release Authority exact-head|5245853" in source
+        assert "WOW required-three regression|15368" in source
+        assert "WOW governed probability backend|15368" in source
+        assert "WOW additional required regression|15368" in source
+    assert 'select(.name == $name and .head_sha == $sha)' in release
+    assert '$check.app.id == $app' in release
+    assert "V4_CHECK_NOT_VALID" in morning
+    assert "V4_FINAL_HEAD_CHANGED" in morning
 
 
 def test_trust_root_bootstrap_receipt_uses_owner_approval_not_an_allowlist():
@@ -2052,19 +2083,30 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
     evidence_path.write_text(json.dumps(ordinary), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["verify", *common, "--classify"])
     assert verifier.main() == 0
+    original_build_receipt = verifier.build_receipt
+    original_verify_receipt = verifier.verify_receipt
+    monkeypatch.setattr(
+        verifier,
+        "build_receipt",
+        lambda *args, **kwargs: original_build_receipt(
+            *args, **{**kwargs, "now": kwargs.get("now") or NOW},
+        ),
+    )
+    monkeypatch.setattr(
+        verifier,
+        "verify_receipt",
+        lambda *args, **kwargs: original_verify_receipt(
+            *args, **{**kwargs, "now": kwargs.get("now") or NOW},
+        ),
+    )
     monkeypatch.setattr(sys, "argv", [
         "verify", *common, "--output", str(output),
         "--trusted-reviewers-json", json.dumps(ALLOWLIST),
     ])
-    # CLI verifies against the wall clock; the fixture clock is historical.
-    original_build = verifier.build_receipt
-
-    def build_now(*args, **kwargs):
-        kwargs["now"] = datetime.now(timezone.utc)
-        return original_build(*args, **kwargs)
-
-    monkeypatch.setattr(verifier, "build_receipt", build_now)
     assert verifier.main() == 0
+    ordinary_receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert ordinary_receipt["receipt_schema_version"] == 2
+    assert ordinary_receipt["can_execute"] is False
 
 
 @pytest.mark.parametrize('filename,previous_filename', (
@@ -2360,16 +2402,23 @@ def test_class_a_schema_cannot_claim_semantic_review_or_change_assurance():
         verify_class_a(receipt, source)
 
 
-def test_class_a_workflow_and_consumers_require_no_provider_or_human_approval():
+def test_v4_class_a_historical_certifier_is_not_release_dependency():
+    """Legacy Class A evidence is not upgraded to independent semantic PASS."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    gate = TRUSTED_GATE.read_text(encoding="utf-8")
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    morning = MORNING_GREEN_WORKFLOW.read_text(encoding="utf-8")
     assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
     assert "--deterministic-class-a" in workflow
-    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow  # other classes still hold
-    for path in (TRUSTED_GATE, RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
-        source = path.read_text(encoding="utf-8")
-        assert "CLASS_A_DETERMINISTIC" in source or path == TRUSTED_GATE
-        assert "--live-checks-json" in source
-    assert '[ "$receipt_schema" = "4" ]' in TRUSTED_GATE.read_text(encoding="utf-8")
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+    assert "verify_existing_pr_governance_receipt.py" in gate
+    assert '[ "$receipt_schema" = "4" ]' in gate
+    for source in (release, morning):
+        assert "CLASS_A_DETERMINISTIC" not in source
+        assert "--live-checks-json" not in source
+        assert "verify_existing_pr_governance_receipt.py" not in source
+        assert "WOW Independent QA exact-head|5245832" in source
+        assert "WOW Release Authority exact-head|5245853" in source
 
 
 def test_class_a_classifier_does_not_capture_other_ordinary_or_protected_prs():

@@ -1,0 +1,141 @@
+{
+ "schema": "WOW_SOURCE_RIGHTS_RECEIPTS_V1",
+ "can_execute": false,
+ "note": "Receipts are evidence, not authorization. Only RAW_BYTES + PERMITS_TRAINING clears the license-receipt blocker; nothing here is a training authorization.",
+ "receipts": [
+  {
+   "source_id": "NFLVERSE",
+   "finding": "LICENSE_LINK_ONLY_SCOPE_UNSTATED",
+   "evidence_grade": "SUMMARY",
+   "url": "https://github.com/nflverse/nflverse-data",
+   "excerpt": "Repo page links a CC-BY-4.0 license; does not state data-vs-code scope, attribution, commercial terms, per-dataset exceptions, or weather fields.",
+   "excerpt_sha256": "f517b1c6bdb1a4f8f4125347c75f7f709e79f96eb65c1a453e61c3660b78f955",
+   "retrieved_at": "2026-11-10"
+  },
+  {
+   "source_id": "NHL_PUBLIC_WEB_API",
+   "finding": "RESTRICTS_NONCOMMERCIAL",
+   "evidence_grade": "SEARCH_SNIPPET",
+   "url": "https://www.nhl.com/info/nhl-hockeyverse-terms-of-service",
+   "excerpt": "NHL terms snippet: use only for non-commercial, informational, personal use, without modification.",
+   "excerpt_sha256": "b3d2cfa10356c8ddf4a4748e7f967cbbb0ac41a538d66722bafaca8839d41963",
+   "retrieved_at": "2026-11-10"
+  },
+  {
+   "source_id": "NHL_PUBLIC_WEB_API",
+   "finding": "ENDPOINT_REACHABLE_NO_PUBLICATION_TIMESTAMP",
+   "evidence_grade": "SUMMARY",
+   "url": "https://api-web.nhle.com/v1/schedule/2025-10-15",
+   "excerpt": "JSON; keys nextStartDate, previousStartDate, gameWeek; per-game id/startTimeUTC/gameState/teams; no last-updated field found (response truncated).",
+   "excerpt_sha256": "f5473705d280c076c8d613c330cd799106b4c03f8c04ab10e18cd908a360db83",
+   "retrieved_at": "2026-11-10",
+   "timestamp_gap": true
+  },
+  {
+   "source_id": "MLB_STATS_API",
+   "finding": "RESTRICTS_NONCOMMERCIAL",
+   "evidence_grade": "SECONDARY",
+   "url": "http://gdx.mlb.com/components/copyright.txt",
+   "excerpt": "Responses carry MLBAM copyright notice; secondary sources describe terms as personal, non-commercial, non-bulk. Primary notice not fetched.",
+   "excerpt_sha256": "8510542d56337e7e905cafe56dc669a40facf2e1395e0a2cb464a737c4931dc7",
+   "retrieved_at": "2026-11-10"
+  },
+  {
+   "source_id": "NOAA_NCEI",
+   "finding": "FETCH_FAILED",
+   "evidence_grade": "NONE",
+   "url": "https://www.ncei.noaa.gov/access/services/data/v1",
+   "excerpt": "WebFetch client_error; nothing retrieved.",
+   "excerpt_sha256": "42213fa57f8c89db90e43a6010d3dd20b1ef3de97c2d433405a5d0a5d727f7a2",
+   "retrieved_at": "2026-11-10"
+  },
+  {
+   "source_id": "SPORTSDATAVERSE_ESPN",
+   "finding": "PERMITS_DATA_STORE_UPSTREAM_UNVERIFIED",
+   "evidence_grade": "RAW_BYTES",
+   "url": "https://github.com/sportsdataverse/sportsdataverse-data",
+   "excerpt": "Data store CC BY 4.0 (code MIT separate); upstream ESPN/NHL-origin rights unverified.",
+   "excerpt_sha256": "9312c751719bfbd66df761452d6a77666a493412ff21eeba519c93cb448d0be5",
+   "retrieved_at": "2026-11-09",
+   "upstream_unverified": true,
+   "carried_from": "prior-session-receipt",
+   "carried_hash_prefix16": "21a3010f3be2a1de"
+  },
+  {
+   "source_id": "SPORTSDATAVERSE_WNBA_STATS",
+   "finding": "PERMITS_DATA_STORE_UPSTREAM_UNVERIFIED",
+   "evidence_grade": "RAW_BYTES",
+   "url": "https://github.com/sportsdataverse/sportsdataverse-data",
+   "excerpt": "Data store CC BY 4.0 (code MIT separate); upstream ESPN/NHL-origin rights unverified.",
+   "excerpt_sha256": "9312c751719bfbd66df761452d6a77666a493412ff21eeba519c93cb448d0be5",
+   "retrieved_at": "2026-11-09",
+   "upstream_unverified": true,
+   "carried_from": "prior-session-receipt",
+   "carried_hash_prefix16": "21a3010f3be2a1de"
+  },
+  {
+   "source_id": "SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS",
+   "finding": "PERMITS_DATA_STORE_UPSTREAM_UNVERIFIED",
+   "evidence_grade": "RAW_BYTES",
+   "url": "https://github.com/sportsdataverse/sportsdataverse-data",
+   "excerpt": "Data store CC BY 4.0 (code MIT separate); upstream ESPN/NHL-origin rights unverified.",
+   "excerpt_sha256": "9312c751719bfbd66df761452d6a77666a493412ff21eeba519c93cb448d0be5",
+   "retrieved_at": "2026-11-09",
+   "upstream_unverified": true,
+   "carried_from": "prior-session-receipt",
+   "carried_hash_prefix16": "21a3010f3be2a1de"
+  },
+  {
+   "source_id": "CFBD",
+   "finding": "PERMITS_TRAINING",
+   "evidence_grade": "SUMMARY",
+   "url": "https://collegefootballdata.com/terms",
+   "excerpt": "Terms eff. 2026-08-12 permit model training/backtesting/derived outputs; raw redistribution and key sharing prohibited.",
+   "excerpt_sha256": "834aff2a665a50455dd98dd785a0c674dbbcca1fb089d9c721742f41bd34e05e",
+   "retrieved_at": "2026-11-09",
+   "carried_from": "prior-session-receipt",
+   "carried_hash_prefix16": "06f8c26df3ab43a8"
+  },
+  {
+   "source_id": "OPEN_METEO_FORECAST",
+   "finding": "RESTRICTS_NONCOMMERCIAL",
+   "evidence_grade": "SUMMARY",
+   "url": "https://open-meteo.com/en/terms",
+   "excerpt": "Free API non-commercial only; commercial needs paid plan.",
+   "excerpt_sha256": "5d93c1bb91a483148d74e4c56efe1dcb52c04e79b427e759715fef5292406e11",
+   "retrieved_at": "2026-11-09",
+   "carried_from": "prior-session-receipt",
+   "carried_hash_prefix16": "87095cfa324c9515"
+  },
+  {
+   "source_id": "NWS_API",
+   "finding": "PERMITS_PUBLIC_DOMAIN",
+   "evidence_grade": "SUMMARY",
+   "url": "https://www.weather.gov/disclaimer",
+   "excerpt": "Public domain unless noted; identifying User-Agent mandatory; observations retained 7 days.",
+   "excerpt_sha256": "0f59a50cab048cf31cc952db21e8cec2d2602329b6680c30a614eb3d28618ca3",
+   "retrieved_at": "2026-11-09",
+   "carried_from": "prior-session-receipt",
+   "carried_hash_prefix16": "f353fb26206be647"
+  },
+  {
+   "source_id": "NFLVERSE",
+   "finding": "DATASET_SPLIT_CCBY_MAJORITY_FTN_SA",
+   "evidence_grade": "SEARCH_SNIPPET",
+   "url": "https://github.com/nflverse",
+   "excerpt": "Publisher org page: most releases CC-BY 4.0 (commercial use allowed with attribution); FTN datasets (charting; participation from 2023) CC-BY-SA 4.0 (derivatives must share alike); dataset-specific licenses marked on release pages. Upstream NFL data owners' terms stated separately by nflreadr (via secondary report).",
+   "excerpt_sha256": "6b68b2300227dee94d9653f992a007610c05450510c316cfb221cd6d987fbea6",
+   "retrieved_at": "2026-11-10",
+   "upstream_unverified": true
+  },
+  {
+   "source_id": "NOAA_NCEI",
+   "finding": "TERMS_NOT_ADDRESSED_NO_AUTH_STATED",
+   "evidence_grade": "SUMMARY",
+   "url": "https://www.ncei.noaa.gov/support/access-data-service-api-user-documentation",
+   "excerpt": "Access Data Service v1 docs: plain HTTPS GET; no token or rate limit stated; warns not all datasets are available; no license/citation terms on page; cloud-migration notice of possible access delays.",
+   "excerpt_sha256": "b712ec76660fff4424861697bf7ebd2648f763e4821b149b2add133fc9dce26d",
+   "retrieved_at": "2026-11-10"
+  }
+ ]
+}

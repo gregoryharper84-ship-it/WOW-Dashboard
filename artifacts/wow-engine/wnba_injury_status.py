@@ -35,12 +35,23 @@ def availability_from_report(
     *,
     player_name: str,
     team_name: str,
+    opponent_name: str,
     matchup: str,
     game_date: str,
 ) -> dict[str, Any]:
+    """Parse one team's bounded section of the official WNBA injury report.
+
+    The section runs from the target team header to the opposing team header on
+    the same matchup page. A player absence is only read as "no reported
+    designation" once that bounded section is shown to contain parsed status
+    rows; a missing opponent header or a section with no status rows raises
+    instead of clearing. An explicit ``OUT`` is returned as a ruling so the
+    terminal reducer can preserve ``PLAYER_RULED_OUT``.
+    """
     normalized = _key(" ".join(str(text).replace("\u00a0", " ").split()))
     matchup_key = _key(matchup)
     team_key = _key(team_name)
+    opponent_key = _key(opponent_name)
     if matchup_key not in normalized or team_key not in normalized:
         raise WNBAInjuryStatusError(
             "WNBA_INJURY_REPORT_EVENT_UNRESOLVED",
@@ -49,11 +60,57 @@ def availability_from_report(
         )
 
     team_pos = normalized.find(team_key)
-    section = normalized[team_pos : team_pos + 1800]
-    if "not yet submitted" in section[:250]:
+    if "not yet submitted" in normalized[team_pos : team_pos + 250]:
         raise WNBAInjuryStatusError(
             "WNBA_INJURY_REPORT_NOT_SUBMITTED",
             "target team has not submitted its official WNBA injury report",
+            detail={"team": team_name, "game_date": game_date},
+        )
+
+    opponent_pos = normalized.find(opponent_key) if opponent_key else -1
+    if not opponent_key or opponent_pos < 0:
+        raise WNBAInjuryStatusError(
+            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+            "opponent section header was not parsed, so the target section cannot be bounded",
+            detail={"team": team_name, "opponent": opponent_name, "game_date": game_date},
+        )
+    if opponent_pos > team_pos:
+        section = normalized[team_pos:opponent_pos]
+    else:
+        # The opponent is listed first; otherwise a slice to EOF can consume
+        # subsequent games and falsely certify this player's absence.
+        report_lines = str(text).replace("\u00a0", " ").splitlines()
+        target_headers = [
+            idx for idx, line in enumerate(report_lines)
+            if _key(line) == team_key
+        ]
+        if len(target_headers) != 1:
+            raise WNBAInjuryStatusError(
+                "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+                "second-listed team header is not uniquely identifiable",
+                detail={"team": team_name, "game_date": game_date},
+            )
+        following = report_lines[target_headers[0]:]
+        next_matchup = next(
+            (
+                idx for idx, line in enumerate(following[1:], start=1)
+                if re.match(r"^\s*[A-Z0-9]{2,4}\s*@\s*[A-Z0-9]{2,4}(?:\s|$)", line)
+            ),
+            len(following),
+        )
+        section = _key(" ".join(following[:next_matchup]))
+    if not section.strip():
+        raise WNBAInjuryStatusError(
+            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+            "target team section was empty",
+            detail={"team": team_name, "game_date": game_date},
+        )
+    if "no injuries" not in section and not re.search(
+        r"\b(available|out|doubtful|questionable|probable)\b", section
+    ):
+        raise WNBAInjuryStatusError(
+            "WNBA_INJURY_REPORT_SECTION_INCOMPLETE",
+            "target team section contained no parsed participation designations",
             detail={"team": team_name, "game_date": game_date},
         )
 
@@ -93,6 +150,11 @@ def availability_from_report(
         )
 
     designation = status_match.group(1).upper()
+    if designation == "OUT":
+        # A rule-out is a settled participation fact, not an uncertified model
+        # adjustment. Return it so hydration terminates the row with
+        # PLAYER_RULED_OUT instead of a model/hydration failure label.
+        return {"availability": "UNAVAILABLE", "designation": "OUT", "injury_reason": None}
     if designation != "AVAILABLE":
         raise WNBAInjuryStatusError(
             "WNBA_PLAYER_AVAILABILITY_NOT_CLEAR",

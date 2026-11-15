@@ -26,7 +26,7 @@ def test_scout_stress_workflow_is_manual_staging_safe_and_10x_by_default():
 def test_existing_morning_green_workflow_is_merge_captain():
     text = CAPTAIN.read_text()
     assert "Re-verify all protected checks on exact head SHA" in text
-    assert "Verify trusted exact-head governance receipt" in text
+    assert "Verify V4 exact-head QA and Release checks" in text
     assert "Verify Morning-Green diff scope" in text
     assert 'gh pr merge "$PR_NUMBER"' in text
     assert "--match-head-commit" in text

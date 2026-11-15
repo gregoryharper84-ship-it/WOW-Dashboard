@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import FinalLockDashboard from "@/pages/final-lock-dashboard";
+import V17RequestsPage from "@/pages/v17-requests";
 import PromptPage from "@/pages/prompt";
 import KalshiPage from "@/pages/kalshi";
 import RequestLogPage from "@/pages/request-log";
@@ -24,7 +25,8 @@ function IconRail() {
   const [loc] = useLocation();
 
   const navItems = [
-    { href: "/",           label: "Final Lock",    icon: Lock,          match: (l: string) => l === "/" },
+    { href: "/",           label: "V17 Requests",  icon: Lock,          match: (l: string) => l === "/" },
+    { href: "/legacy",     label: "Legacy V16 Form", icon: FlaskConical, match: (l: string) => l.startsWith("/legacy") },
     { href: "/rankings",   label: "Rankings",      icon: BarChart2,     match: (l: string) => l.startsWith("/rankings") },
     { href: "/history",    label: "Predictions",   icon: Clock,         match: (l: string) => l.startsWith("/history") },
     { href: "/backtest",   label: "Backtesting",   icon: FlaskConical,  match: (l: string) => l.startsWith("/backtest") },
@@ -48,6 +50,7 @@ function IconRail() {
           key={href}
           href={href}
           title={label}
+          aria-label={label}
           className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
             match(loc)
               ? "bg-primary/20 text-primary"
@@ -62,12 +65,15 @@ function IconRail() {
 }
 
 function Router() {
+  const [loc] = useLocation();
   return (
     <>
       <IconRail />
       <div className="pl-14">
+        {loc !== "/" && <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">Legacy V16 compatibility view. These records and estimates are separate from governed V17 receipts. <Link href="/" className="underline">Open V17 Requests and configure dashboard access</Link>.</div>}
         <Switch>
-          <Route path="/"            component={FinalLockDashboard} />
+          <Route path="/"            component={V17RequestsPage} />
+          <Route path="/legacy"      component={FinalLockDashboard} />
           <Route path="/rankings"    component={RankingsPage} />
           <Route path="/history"     component={HistoryPage} />
           <Route path="/backtest"    component={BacktestingPage} />

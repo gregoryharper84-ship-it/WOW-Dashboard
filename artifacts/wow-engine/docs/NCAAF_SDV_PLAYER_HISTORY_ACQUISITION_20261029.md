@@ -161,3 +161,36 @@ No leakage-free model fit or probability is implied.
 `V17_TERMINAL_REDUCER` remains sole terminal authority;
 `model_training_eligible=false`, `probability_publishable=false`,
 `can_execute=false`.
+
+## Full source-agreed 2024 stat cohort (no new database credentials)
+
+The independent NCAA/ESPN public source read now produces a SHA-256-hashed
+**full candidate stat cell** JSON in the same 7-day GitHub Actions
+research artifact, in addition to the prior 28-cell fixture/sample.
+The new JSON contains only exact ESPN event ID, athlete ID, stat type,
+candidate settled value and the unresolved ESPN team alias; no name or
+historical market odds. The full file's hash, size and underlying release
+SHA-256 fingerprints are included in the aggregate receipt.
+
+On protected-main push, monthly schedule, or manual `workflow_dispatch`, a bounded script
+`v17/ncaaf_cfbd_full_audit_log.py` validates row cardinality, source hashes,
+strict IDs/stat families, uniqueness and deterministic sort order, and emits
+source-only candidate chunks to GitHub Actions log lines prefixed
+`WOW_NCAAF_CANDIDATE_CHUNK_V1=`. A single header prefixed
+`WOW_NCAAF_CANDIDATE_MANIFEST_V1=` provides the complete digest/count.
+No private database rows, credentials, sportsbook data or model probabilities
+are printed.
+
+The separate connected Supabase read-only audit can consume these chunks,
+group exact `season + event + athlete + stat` comparisons, and report:
+exact key/value matches, contradictions, absent entire events, absent athlete
+IDs, absent stat types, duplicate stored keys, and invalid chronology.
+The source-only CI job deliberately does **not** use a database connection
+or modify protected CFBD tables.
+
+**Acceptance distinction:** Exported source candidates are NOT automatically
+CFBD-matched merely because the source report is successful. The previous
+28-cell live sample matched 27 exact values and found one missing source event.
+Full-cohort counts require executing and reconciling every read-only batch.
+Do not label an incomplete or partially queried batch set as a full audit.
+No team-ID mapping or pregame feature timestamp is certified by this work.

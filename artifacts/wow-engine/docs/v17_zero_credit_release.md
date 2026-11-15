@@ -5,6 +5,28 @@ review, autonomous SIRT semantic review, or a source-code correctness proof.
 There are **no OpenAI/Claude API calls**. A PASS establishes only the specified
 exact-head deterministic policy and regression checks.
 
+## Always-on no-API-credit evidence (proposed CodeQL PR rollout)
+
+The existing `.github/workflows/wow-codeql.yml` analyzes Python and
+JavaScript/TypeScript on `pull_request` to `main`, `push` to `main`,
+the existing daily schedule, and manual dispatch. Standard GitHub-hosted Actions
+for a public repository do not need OpenAI, Claude, Gemini, Cursor or a billing
+API key. CodeQL executes static vulnerability queries and publishes findings in
+GitHub code scanning; it does **not** review the full semantics of a change,
+and a successful analyzer process is not proof of zero security findings.
+
+Do not create a second release authority, automatically approve a protected
+change on the basis of CodeQL, or remove the existing exact-head required
+regression, negative, concurrency, provenance and fail-closed tests.
+CodeQL is additional free evidence until independently accepted governance
+changes explicitly define how it factors into protected release admission.
+
+OpenAI Codex can optionally be used for coding and PR review by signing in
+with an existing ChatGPT plan. This does not require an OpenAI API key,
+but **Codex plan usage has limits** and is **not** a free unlimited autonomous
+release-signing authority. Do not run Codex using an API key in this zero-credit
+lane or treat a Codex finding/absence of findings as an independent QA App PASS.
+
 ## Enable only after approved protected merge
 
 ```bash

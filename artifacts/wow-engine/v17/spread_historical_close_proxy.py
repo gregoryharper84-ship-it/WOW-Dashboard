@@ -114,6 +114,16 @@ def nflverse_close_proxy(row: Mapping[str, Any]) -> HistoricalCloseProxy:
             "SPREAD_HISTORICAL_PROXY_ROW_INCOMPLETE",
             "nflverse row requires game_id, home_team, away_team, and spread_line",
         )
+    # A canonical nflverse game_id encodes AWAY_HOME. Cross-check the
+    # independently supplied participant fields before attaching a close
+    # proxy to the held-out event. Legacy synthetic fixture IDs remain
+    # accepted by this research-only normalizer.
+    encoded = re.fullmatch(r"\d{4}_\d{2}_([A-Z]{2,4})_([A-Z]{2,4})", event_id)
+    if home == away or (encoded is not None and (away, home) != encoded.groups()):
+        raise SpreadChallengerUnavailable(
+            "SPREAD_NFLVERSE_CLOSE_PROXY_TEAM_IDENTITY_MISMATCH",
+            "nflverse game_id and home/away participant fields disagree",
+        )
     return HistoricalCloseProxy(
         event_id=event_id,
         sport="NFL",

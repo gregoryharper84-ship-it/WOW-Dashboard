@@ -29,8 +29,9 @@ def _claims(*, job_workflow_ref: str, event_name: str = "workflow_run", **overri
         oidc.DAILY_SNAPSHOT_WORKFLOW_REF,
     ],
 )
-def test_exact_post_deploy_reusable_pairs_are_authorized(callee: str):
-    claims = _claims(job_workflow_ref=callee)
+@pytest.mark.parametrize("event_name", ["workflow_run", "workflow_dispatch"])
+def test_exact_post_deploy_reusable_pairs_are_authorized(callee: str, event_name: str):
+    claims = _claims(job_workflow_ref=callee, event_name=event_name)
     assert callee in oidc.POST_DEPLOY_REUSABLE_WORKFLOW_REFS
     assert oidc.validate_github_actions_claims(claims) == claims
 
@@ -72,8 +73,8 @@ def test_orchestrator_non_main_reusable_callee_is_rejected():
         )
 
 
-@pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_dispatch", "pull_request"])
-def test_post_deploy_reusable_pairs_accept_only_workflow_run(event_name: str):
+@pytest.mark.parametrize("event_name", ["push", "schedule", "pull_request", "pull_request_target", "repository_dispatch"])
+def test_post_deploy_reusable_pairs_reject_other_events(event_name: str):
     with pytest.raises(
         oidc.GitHubOIDCValidationError,
         match="GITHUB_OIDC_EVENT_NOT_ALLOWED",
@@ -101,3 +102,19 @@ def test_unlisted_caller_cannot_borrow_approved_reusable_callee():
                 workflow_ref=unlisted_caller,
             )
         )
+
+
+@pytest.mark.parametrize("overrides,reason", [
+    ({"repository": "foreign/repo"}, "GITHUB_OIDC_REPOSITORY_MISMATCH"),
+    ({"repository_id": "foreign"}, "GITHUB_OIDC_REPOSITORY_ID_MISMATCH"),
+    ({"repository_owner_id": "foreign"}, "GITHUB_OIDC_REPOSITORY_OWNER_ID_MISMATCH"),
+    ({"ref": "refs/heads/feature"}, "GITHUB_OIDC_REF_MISMATCH"),
+    ({"runner_environment": "self-hosted"}, "GITHUB_OIDC_RUNNER_ENVIRONMENT_MISMATCH"),
+    ({"workflow_ref": oidc.POST_DEPLOY_ORCHESTRATOR_WORKFLOW_REF.replace("@refs/heads/main", "@refs/heads/feature")}, "GITHUB_OIDC_WORKFLOW_REF_MISMATCH"),
+    ({"job_workflow_ref": oidc.DAILY_SNAPSHOT_WORKFLOW_REF.replace("@refs/heads/main", "@refs/heads/feature")}, "GITHUB_OIDC_JOB_WORKFLOW_REF_MISMATCH"),
+])
+def test_manual_post_deploy_keeps_exact_existing_identity_checks(overrides, reason):
+    claims = _claims(job_workflow_ref=oidc.DAILY_SNAPSHOT_WORKFLOW_REF, event_name="workflow_dispatch")
+    claims.update(overrides)
+    with pytest.raises(oidc.GitHubOIDCValidationError, match=reason):
+        oidc.validate_github_actions_claims(claims)
