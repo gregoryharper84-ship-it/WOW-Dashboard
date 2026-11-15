@@ -44,17 +44,17 @@ def test_free_mode_procedural_checks_pass_without_semantic_review():
 
 def test_free_mode_nonallowlisted_code_requires_semantic_review():
     ev = evidence(path="artifacts/wow-engine/v17/nfl_event_availability_adapter.py")
-    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
     ev["files"] = ["artifacts/wow-engine/v17/nba_current_pregame_scorer.py"]
-    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
 
 
 def test_free_mode_mixed_training_and_protected_source_never_passes():
     ev = evidence()
     ev["files"].append(".github/workflows/wow-v17-independent-qa-check.yml")
-    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
     ev["files"] = []
-    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
 
 
 def test_free_mode_exact_training_inventory_only():
@@ -72,7 +72,7 @@ def test_release_rederives_missing_semantic_evidence_even_with_signed_qa():
     findings = policy.release_findings(
         ev, qa_app_id="5245832", release_app_id="5245853", governance_files=ROOTS,
     )
-    assert "RELEASE_QA_SEMANTIC_REVIEW_REQUIRED" in findings
+    assert "RELEASE_QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
 
 
 def test_free_mode_opt_in_mandatory():
@@ -121,7 +121,7 @@ def test_free_mode_rejects_stale_head():
 
 def test_free_mode_owner_authored_trust_root_requires_independent_semantic_review():
     ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py")
-    assert "QA_SEMANTIC_REVIEW_REQUIRED" in qa(ev)
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in qa(ev)
     ev["check_runs"].pop()
     assert any(x.startswith("QA_EVIDENCE_MISSING:") for x in qa(ev))
 

@@ -726,7 +726,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                 not isinstance(path, str) or path not in CLASS_A_EXACT_PATHS
                 for path in files
             ):
-                findings.append("QA_SEMANTIC_REVIEW_REQUIRED")
+                findings.append("QA_INDEPENDENT_SOURCE_REVIEW_MISSING")
             # Reduced-assurance evidence checks only: not adversarial source review.
             if ev.get("zero_credit_enabled") is not True:
                 findings.append("QA_ZERO_CREDIT_POLICY_NOT_ENABLED")
