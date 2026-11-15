@@ -185,6 +185,7 @@ def audit_same_event_cross_market(legs: Sequence[Mapping[str, Any]]) -> dict[str
                 and leg.get("market_model_artifact_hash")
                 and leg.get("calibration_receipt_id")
                 and _MARKET.get(_name(leg.get("model_market_family"))) == market
+                and _name(leg.get("model_sport")) == sport
                 and str(leg.get("model_official_event_id") or "") == event
                 and _number(leg.get("model_exact_line")) == line
                 and _name(leg.get("model_selected_side")) == _name(leg.get("selected_side"))
