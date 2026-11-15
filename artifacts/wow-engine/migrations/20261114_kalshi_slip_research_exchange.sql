@@ -46,6 +46,7 @@ BEGIN
   RAISE EXCEPTION 'KALSHI_RESEARCH_APPEND_ONLY';
 END;
 $$;
+REVOKE ALL ON FUNCTION public.wow_kalshi_slip_research_immutable() FROM PUBLIC, anon, authenticated;
 DROP TRIGGER IF EXISTS wow_kalshi_slip_research_no_mutation ON public.wow_kalshi_slip_research_exchange;
 CREATE TRIGGER wow_kalshi_slip_research_no_mutation
   BEFORE UPDATE OR DELETE ON public.wow_kalshi_slip_research_exchange
