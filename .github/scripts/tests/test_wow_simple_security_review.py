@@ -1151,6 +1151,16 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 self.assertTrue(required)
                 self.assertEqual(reason, "PROTECTED_CHANGE_REQUIRES_SEMANTIC_REVIEW")
 
+
+    def test_protected_diff_content_triggers_review_even_in_generic_file(self):
+        target = {
+            "file_blobs": {"src/feature.py": "e" * 40},
+            "diff": "+probability = calibrated_score(features)\n",
+        }
+        required, reason = m.requires_semantic_review(target)
+        self.assertTrue(required)
+        self.assertEqual(reason, "PROTECTED_CHANGE_REQUIRES_SEMANTIC_REVIEW")
+
     def test_incomplete_or_ambiguous_diff_never_classifies_as_routine(self):
         for target in (
             {},
