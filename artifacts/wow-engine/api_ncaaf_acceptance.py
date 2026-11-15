@@ -39,6 +39,7 @@ from v17.web_intelligence_fallback_routes import install_web_intelligence_fallba
 from v17.web_intelligence_live_acceptance import run_web_research_self_acceptance
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
+from v17.kalshi_slip_intelligence_exchange import install_kalshi_slip_research_routes
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
 from v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
@@ -264,6 +265,15 @@ if V17_ACTIVE:
         install_shadow_lab_routes(
             app,
             auth_dependency=core_intelligence_auth,
+            get_client_fn=_db_client,
+        )
+
+    # Separate, research-only host exchange. No model, payout or trading path
+    # consumes its unverified observations. Disabled until schema + QA accepted.
+    if os.getenv("WOW_V17_KALSHI_SLIP_EXCHANGE_ENABLED", "").strip() == "1":
+        install_kalshi_slip_research_routes(
+            app,
+            auth_dependency=base.market_api.prod._require_action_api_key,
             get_client_fn=_db_client,
         )
 
