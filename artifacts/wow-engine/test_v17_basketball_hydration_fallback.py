@@ -26,7 +26,7 @@ def _sportsdataverse_row(*, event_id="401", game_date="2026-09-20", home_score="
         "_wow_source_observed_at": (datetime.fromisoformat(game_date).replace(tzinfo=timezone.utc) + timedelta(days=1, hours=6)).isoformat(),
         "game_id": event_id,
         "game_date": game_date,
-        "game_date_time": f"{game_date}T19:00:00",  # SportsDataverse Eastern local time
+        "game_date_time": f"{game_date}T19:00:00-04:00",
         "home_id": "10",
         "away_id": "20",
         "home_score": home_score,
