@@ -341,6 +341,30 @@ def gather(
 MAX_TARGETS = 20
 
 
+def _pr_read_failure_detail(status: int, payload: object) -> str:
+    """Only classify a verified HTTP response; never log untrusted API text.
+
+    A workflow_run can have exact PR metadata but must not bypass the live
+    GitHub read. This diagnostic distinguishes rate-pressure from missing
+    permissions while preserving TARGET_PR_UNREADABLE fail-closed behavior.
+    """
+    if status not in (403, 429) or not isinstance(payload, dict):
+        return str(status)
+    raw = payload.get("message")
+    if not isinstance(raw, str):
+        return str(status)
+    message = raw.lower()
+    if "secondary rate limit" in message or "abuse detection" in message:
+        return f"{status}:SECONDARY_RATE_LIMIT"
+    if "rate limit" in message:
+        return f"{status}:RATE_LIMIT"
+    if "resource not accessible by integration" in message:
+        return f"{status}:APP_PERMISSION_DENIED"
+    if "bad credentials" in message:
+        return f"{status}:CREDENTIAL_REJECTED"
+    return str(status)
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None,
             neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
@@ -361,7 +385,7 @@ def targets(repo: str, *, pr: str | None = None,
             head = (live or {}).get("head") or {}
             base = (live or {}).get("base") or {}
             if status != 200 or not isinstance(live, dict):
-                errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
+                errors.append(f"TARGET_PR_UNREADABLE:{number}:{_pr_read_failure_detail(status, live)}")
                 continue
             # A source PR can move between the workflow_run event and QA.
             # A single proved same-origin moved/closed source is no longer a
@@ -408,7 +432,7 @@ def targets(repo: str, *, pr: str | None = None,
             status, body = fetch(f"repos/{repo}/pulls/{int(pr)}")
             sha = ((body or {}).get("head") or {}).get("sha") if status == 200 and isinstance(body, dict) else None
             if not SHA_RE.match(str(sha or "")):
-                errors.append(f"TARGET_PR_UNREADABLE:{status}")
+                errors.append(f"TARGET_PR_UNREADABLE:{_pr_read_failure_detail(status, body)}")
             elif (
                 body.get("number") != int(pr)
                 or ((body.get("head") or {}).get("repo") or {}).get("full_name") != repo
