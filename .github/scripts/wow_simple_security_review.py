@@ -775,6 +775,10 @@ def main():
     try:
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        # Never invoke Gemini on an unverified paid/unknown project.
+        # Catalog-only --preflight works with this flag unset.
+        if os.environ.get("WOW_QA_GEMINI_FREE_TIER_CONFIRMED") != "true":
+            raise Hold("GEMINI_FREE_TIER_VERIFICATION_REQUIRED")
         verdict, output, provider, attempts = semantic_review(target, {
             "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
             "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
