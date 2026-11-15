@@ -26,7 +26,7 @@ ALLOWED_ROOTS = (
 OWNER_LOGIN = "gregoryharper84-ship-it"
 MAX_CHANGED_FILES = 30
 MAX_SCAN = 50
-MAX_SOURCE_PAGES = 6
+MAX_SOURCE_PAGES = 4
 MAX_CHECK_PAGES = 5
 REQUIRED_CHECKS = (
     "WOW required-three regression",
