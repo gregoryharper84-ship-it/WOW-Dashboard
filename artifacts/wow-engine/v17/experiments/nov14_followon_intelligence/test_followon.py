@@ -402,3 +402,15 @@ def test_stale_or_future_two_way_market_snapshot_cannot_pass_value():
         )
         assert out["status"] == "EXACT_PRICE_OR_IDENTITY_UNVERIFIED"
         assert not out["value_candidate_pass"]
+
+
+def test_whitespace_period_settlement_or_identity_never_enters_value_gate():
+    for mutation in ({"market_period": " ", "settlement_basis": " "},
+                     {"sport": " ", "selected_participant": " "},
+                     {"prediction_id": " ", "model_artifact_hash": " "}):
+        out = dual_gate_strong_confidence_shadow(
+            model(**mutation), quote(market_period=None, settlement_basis=None),
+            policy(), as_of_utc=NOW)
+        assert out["status"] == "MODEL_INPUTS_INSUFFICIENT"
+        assert not out["probability_rank_eligible"]
+        assert not out["value_candidate_pass"]
