@@ -16,6 +16,13 @@ def _nba_ok():
             "sport": "NBA",
             "status": "SHADOW_EVIDENCE_UPDATED",
             "hydration_status": "FRESH_ACQUISITION_UPDATED",
+            "training_replay": {
+                "persisted_status": "SHADOW",
+                "provenance_preflight": {"provenance_complete": True},
+                "freshness_preflight": {"freshness_status": "PASS"},
+                "promotion_attempted": False,
+                "can_execute": False,
+            },
             "promotion_attempted": False,
             "probability_publishable": False,
             "can_execute": False,
@@ -178,3 +185,19 @@ def test_nhl_missing_preflight_is_not_ready(monkeypatch):
     )
     assert receipt["status"] == "HOLD"
     assert receipt["code"] == "MODEL_FACTORY_NATIVE_RESULT_INVALID"
+
+
+def test_nba_completed_wrapper_cannot_mask_unready_replay(monkeypatch):
+    result = _nba_ok()
+    result["rows"][0]["training_replay"] = {
+        "persisted_status": "INPUT_INCOMPLETE",
+        "provenance_preflight": {"provenance_complete": True},
+        "freshness_preflight": {"freshness_status": "PASS"},
+        "can_execute": False,
+    }
+    monkeypatch.setattr(factory, "_run_nba", lambda *_: result)
+    receipt = factory.prepare_candidate_evidence(
+        object(), sport="NBA", market="WINNER", source_head_sha="a"*40,
+    )
+    assert receipt["status"] == "HOLD"
+    assert receipt["code"] == "MODEL_FACTORY_NATIVE_HOLD"
