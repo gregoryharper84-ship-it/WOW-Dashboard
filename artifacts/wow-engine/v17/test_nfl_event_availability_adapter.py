@@ -267,6 +267,8 @@ def test_gameday_inactives_unlisted_player_is_not_cleared_by_inactives_alone():
 # ---------------------------------------------------------------------------
 def test_espn_event_summary_stated_out_rules_player_out():
     summary = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {
                 "team": {"abbreviation": "DET"},
@@ -297,6 +299,8 @@ def test_espn_event_summary_stated_out_rules_player_out():
 
 def test_espn_event_summary_unlisted_player_does_not_clear():
     summary = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {
                 "team": {"abbreviation": "DET"},
@@ -635,6 +639,8 @@ def test_regression_4576456221_conflicting_athlete_id_same_name_does_not_match()
     # ESPN event summary: entry has same name but conflicting athlete_id
     espn_ev = parse_espn_event_summary_injuries(
         {
+            "event_id": "espn-401873053",
+            "sport": "NFL",
             "injuries": [
                 {
                     "team": {"abbreviation": "DET"},
@@ -703,6 +709,8 @@ def test_regression_4576456225_out_of_scope_report_does_not_clear_player():
 def test_regression_4576456229_nested_espn_malformed_objects_fail_closed_safely():
     # None team or None athlete does not raise AttributeError
     malformed = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {"team": None, "injuries": [{"athlete": None, "status": "Out"}]},
             {"team": {"abbreviation": "DET"}, "injuries": [None, "string_entry", {"athlete": None}]},
@@ -1117,9 +1125,230 @@ def test_regression_naive_datetime_is_normalized_as_utc(monkeypatch):
         time.tzset()
 
 
+def test_regression_unidentifiable_official_entry_blocks_unlisted_clearance():
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=45)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "entries": [{"game_status": "Out"}],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.report_complete is False
+    assert ev.basis is None
+    assert ev.designation is None
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+def test_regression_untagged_official_target_entry_cannot_borrow_sibling_team_scope():
+    report = {
+        "authenticated": True,
+        "report_complete": True,
+        "report_timestamp": (CAPTURED - timedelta(minutes=45)).isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "entries": [
+            {
+                "athlete_id": "999",
+                "athlete_name": "Other Player",
+                "team": "DET",
+                "game_status": "Questionable",
+            },
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "game_status": "Available",
+            },
+        ],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.report_complete is False
+    assert ev.basis is None
+    assert ev.designation is None
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+@pytest.mark.parametrize(
+    "authenticated,report_timestamp",
+    [
+        (False, CAPTURED - timedelta(minutes=30)),
+        (True, CAPTURED - timedelta(days=1)),
+    ],
+)
+def test_regression_official_listed_out_requires_authentication_and_freshness(authenticated, report_timestamp):
+    report = {
+        "authenticated": authenticated,
+        "report_complete": True,
+        "report_timestamp": report_timestamp.isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "entries": [
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "team": "DET",
+                "game_status": "Out",
+            }
+        ],
+    }
+    ev = parse_nfl_official_game_status_report(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.designation is None
+    assert ev.risk is False
+    assert ev.report_complete is False
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+@pytest.mark.parametrize(
+    "authenticated,report_timestamp",
+    [
+        (False, CAPTURED - timedelta(minutes=30)),
+        (True, CAPTURED - timedelta(days=1)),
+    ],
+)
+def test_regression_gameday_inactive_requires_authentication_and_freshness(authenticated, report_timestamp):
+    report = {
+        "authenticated": authenticated,
+        "report_timestamp": report_timestamp.isoformat(),
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "team": "DET",
+        "inactives": [
+            {
+                "athlete_id": "4361788",
+                "athlete_name": "Amon-Ra St. Brown",
+                "team": "DET",
+            }
+        ],
+    }
+    ev = parse_nfl_gameday_inactives(
+        report,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        event_start=KICKOFF,
+        captured=CAPTURED,
+    )
+    assert ev.is_inactive is False
+    assert ev.designation is None
+    assert ev.report_complete is False
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+@pytest.mark.parametrize(
+    "summary_overrides",
+    [
+        {"event_id": "espn-FOREIGN-EVENT", "sport": "NFL"},
+        {"event_id": "espn-401873053", "sport": "NBA"},
+        {"event_id": None, "sport": "NFL"},
+        {"event_id": "espn-401873053", "sport": None},
+    ],
+)
+def test_regression_espn_out_requires_matching_event_and_nfl_sport(summary_overrides):
+    summary = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "injuries": [
+            {
+                "team": {"abbreviation": "DET"},
+                "injuries": [
+                    {
+                        "athlete": {"id": "4361788", "displayName": "Amon-Ra St. Brown"},
+                        "status": "Out",
+                        "date": (CAPTURED - timedelta(minutes=30)).isoformat(),
+                    }
+                ],
+            }
+        ],
+    }
+    summary.update(summary_overrides)
+    ev = parse_espn_event_summary_injuries(
+        summary,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        captured=CAPTURED,
+    )
+    assert ev.designation is None
+    assert ev.evidence_status == "REPORT_SCOPE_MISMATCH"
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
+def test_regression_espn_empty_team_metadata_cannot_emit_out():
+    summary = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
+        "injuries": [
+            {
+                "team": {"abbreviation": ""},
+                "injuries": [
+                    {
+                        "athlete": {"id": "4361788", "displayName": "Amon-Ra St. Brown"},
+                        "status": "Out",
+                        "date": (CAPTURED - timedelta(minutes=30)).isoformat(),
+                    }
+                ],
+            }
+        ],
+    }
+    ev = parse_espn_event_summary_injuries(
+        summary,
+        athlete_id="4361788",
+        athlete_name="Amon-Ra St. Brown",
+        team="DET",
+        event_id="espn-401873053",
+        captured=CAPTURED,
+    )
+    assert ev.designation is None
+    assert ev.evidence_status == "SUPPORTING_FEED_CLEARANCE_NOT_PROVEN"
+    decision = evaluate_player_availability(ev.to_role_availability())
+    assert decision.status == AVAILABILITY_UNVERIFIED
+    assert decision.blocker == PLAYER_AVAILABILITY_UNVERIFIED
+
+
 def test_regression_espn_post_kickoff_or_stale_entry_not_decisive():
     # ESPN entry published after kickoff
     post_kickoff_espn = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {
                 "team": {"abbreviation": "DET"},
@@ -1150,6 +1379,8 @@ def test_regression_espn_post_kickoff_or_stale_entry_not_decisive():
 def test_regression_4576456234_undated_espn_out_does_not_produce_decisive_out():
     # ESPN entry with OUT but no date
     undated_espn = {
+        "event_id": "espn-401873053",
+        "sport": "NFL",
         "injuries": [
             {
                 "team": {"abbreviation": "DET"},
