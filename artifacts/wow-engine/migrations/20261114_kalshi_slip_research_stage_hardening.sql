@@ -1,5 +1,6 @@
 -- Validation environments initially applied the permissive three-valued CHECK.
 -- Recreate it with an explicit non-null event timestamp for pregame research.
+BEGIN;
 ALTER TABLE public.wow_kalshi_slip_research_exchange
   DROP CONSTRAINT IF EXISTS kalshi_research_stage_time;
 ALTER TABLE public.wow_kalshi_slip_research_exchange
@@ -10,3 +11,5 @@ ALTER TABLE public.wow_kalshi_slip_research_exchange
     OR (analysis_stage='POSTMORTEM_RESEARCH'
       AND (event_start_utc IS NULL OR as_of_utc >= event_start_utc))
   );
+
+COMMIT;
