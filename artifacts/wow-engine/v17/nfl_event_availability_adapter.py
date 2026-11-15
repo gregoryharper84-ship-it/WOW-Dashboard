@@ -306,7 +306,10 @@ def parse_nfl_official_game_status_report(
     else:
         entries_malformed = False
         for entry in raw_entries:
-            if not isinstance(entry, Mapping):
+            # An uninterpretable row cannot support a complete-enumeration claim.
+            if (not isinstance(entry, Mapping) or not (
+                    str(entry.get("athlete_id") or "").strip()
+                    or _normalize_token(entry.get("athlete_name") or entry.get("player_name")))):
                 entries_malformed = True
                 break
             listed_entries.append(entry)
@@ -318,13 +321,26 @@ def parse_nfl_official_game_status_report(
     team_norm = normalize_nfl_team_code(team)
     target_name_norm = _normalize_token(athlete_name)
 
-    # Validate report scope before evaluating listed or unlisted decisions
+    # Validate report scope before evaluating listed or unlisted decisions.
+    # An untagged player entry cannot inherit scope from a tagged sibling.
     scope_valid = _validate_report_scope(report_data, event_id=str(event_id), team_norm=team_norm, listed_entries=listed_entries)
+    report_team_norm = normalize_nfl_team_code(report_data.get("team"))
+    if not report_team_norm:
+        raw_teams = report_data.get("teams")
+        if isinstance(raw_teams, Sequence) and not isinstance(raw_teams, (str, bytes)):
+            normalized = {normalize_nfl_team_code(t) for t in raw_teams}
+            if len(normalized) == 1:
+                report_team_norm = next(iter(normalized))
+    if any(not normalize_nfl_team_code(entry.get("team")) for entry in listed_entries):
+        if report_team_norm != team_norm:
+            is_complete = False
 
     matching_entries: list[Mapping[str, Any]] = []
     for entry in listed_entries:
         entry_team = normalize_nfl_team_code(entry.get("team"))
         if entry_team and entry_team != team_norm:
+            continue
+        if not entry_team and report_team_norm != team_norm:
             continue
         entry_id = str(entry.get("athlete_id") or "").strip()
         entry_name = _normalize_token(entry.get("athlete_name") or entry.get("player_name"))
@@ -357,6 +373,7 @@ def parse_nfl_official_game_status_report(
         target_entry = matching_entries[0]
         raw_desig = target_entry.get("game_status") or target_entry.get("designation") or target_entry.get("status")
         desig = normalize_nfl_designation(raw_desig)
+        trusted = is_auth and fresh and scope_valid
         risk = desig in PLAYABLE_RISK_SET
         return NFLPlayerAvailabilityEvidence(
             athlete_id=str(athlete_id),
@@ -365,12 +382,14 @@ def parse_nfl_official_game_status_report(
             event_id=str(event_id),
             source=SOURCE_NFL_OFFICIAL_GAME_STATUS,
             captured_at=captured.isoformat(),
-            evidence_status="RETRIEVED" if scope_valid else "REPORT_SCOPE_MISMATCH",
-            designation=desig if scope_valid else None,
+            evidence_status=("RETRIEVED" if trusted else
+                             "REPORT_SCOPE_MISMATCH" if not scope_valid else
+                             "REPORT_INCOMPLETE_OR_UNVERIFIED"),
+            designation=desig if trusted else None,
             basis=None,
             fresh=fresh,
-            report_complete=is_auth and is_complete and scope_valid,
-            risk=risk if scope_valid else False,
+            report_complete=trusted and is_complete,
+            risk=risk if trusted else False,
             provenance={
                 "report_timestamp": report_ts.isoformat() if report_ts else None,
                 "authenticated": is_auth,
@@ -514,7 +533,9 @@ def parse_nfl_gameday_inactives(
                 is_inactive = True
                 break
 
-    if is_inactive:
+    # The exported parser result may be passed directly to the availability
+    # gate. Never emit a decisive inactive designation from stale/untrusted data.
+    if is_inactive and is_auth and fresh:
         return NFLPlayerAvailabilityEvidence(
             athlete_id=str(athlete_id),
             athlete_name=athlete_name,
@@ -547,7 +568,8 @@ def parse_nfl_gameday_inactives(
         report_complete=False,
         risk=False,
         is_inactive=False,
-        provenance={"listed_inactive": False, "note": "unlisted_on_inactives_does_not_clear"},
+        provenance={"listed_inactive": is_inactive, "authenticated": is_auth,
+                    "fresh": fresh, "note": "unverified_inactives_do_not_decide"},
     )
 
 
@@ -567,6 +589,16 @@ def parse_espn_event_summary_injuries(
     Stated designations are recorded. Absence from this feed does NOT grant
     clearance because the feed is not certified complete.
     """
+    # A foreign-event or non-NFL summary must never be rebound to the caller's event.
+    if (str(event_summary.get("event_id") or "") != str(event_id)
+            or _normalize_token(event_summary.get("sport")) != "NFL"):
+        return NFLPlayerAvailabilityEvidence(
+            athlete_id=str(athlete_id), athlete_name=athlete_name, team=team,
+            event_id=str(event_id), source=SOURCE_ESPN_EVENT_INJURIES,
+            captured_at=captured.isoformat(), evidence_status="REPORT_SCOPE_MISMATCH",
+            designation=None, basis=None, fresh=False, report_complete=False,
+            risk=False, provenance={"reason": "SOURCE_EVENT_OR_SPORT_MISMATCH"},
+        )
     raw_groups = event_summary.get("injuries")
     injuries_groups = raw_groups if isinstance(raw_groups, Sequence) and not isinstance(raw_groups, (str, bytes)) else []
     team_norm = normalize_nfl_team_code(team)
@@ -580,7 +612,7 @@ def parse_espn_event_summary_injuries(
         if not isinstance(grp_team_raw, Mapping):
             continue
         grp_team = normalize_nfl_team_code(grp_team_raw.get("abbreviation") or grp_team_raw.get("displayName"))
-        if grp_team and grp_team != team_norm:
+        if not grp_team or grp_team != team_norm:
             continue
         injuries_list = grp.get("injuries")
         if not isinstance(injuries_list, Sequence) or isinstance(injuries_list, (str, bytes)):
