@@ -1,3 +1,4 @@
+- [V17 columnar research preflight](research-columnar-preflight.md) — chronologically sorted rows can still leak future-captured features or quotes; frozen Parquet SHA, unique observation IDs, correct sport/season and pre-event UTC epochs are required before optional DuckDB research. DATA_PREFLIGHT_PASS_ONLY never authorizes training/publishing.
 - [LLP multi-agent sync](llp-multiagent-sync.md) — user runs a 3-agent workflow (Replit Claude + external ChatGPT + external Claude) that reason blind against app.py; verify before building, keep ground-truth doc current.
 - [GitHub push format](github-push-format.md) — bare-token URL (https://$TOKEN@github.com/…) stops working periodically; use username-prefixed insteadOf config instead.
 - [Flask scoring gunicorn workers](flask-scoring-gunicorn-workers.md) — flask-scoring-api runs 2 gunicorn workers in prod; in-process crons run twice → guard shared-DB writes with pg_try_advisory_lock.
