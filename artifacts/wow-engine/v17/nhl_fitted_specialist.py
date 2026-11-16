@@ -1353,6 +1353,33 @@ def timeline_receipt_for_target(
         event_id = str(item.get("official_event_id") or "").strip()
         if event_id:
             prior_ids.add(event_id)
+    # The receipt is a point-in-time snapshot. A game still scheduled when
+    # acquired may have settled before this target, changing rest, fatigue,
+    # Elo and form. It must be re-ingested before the target can be scored.
+    for item in stored["scheduled_events"]:
+        if not isinstance(item, Mapping):
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+                {"reason": "SOURCE_TIMELINE_SCHEDULE_INVALID"},
+            )
+        scheduled_id = str(item.get("official_event_id") or "").strip()
+        scheduled_start = _aware(item.get("event_start_time"))
+        if not scheduled_id or scheduled_start is None:
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+                {"reason": "SOURCE_TIMELINE_SCHEDULE_INVALID"},
+            )
+        if scheduled_start < event_start_time and scheduled_id not in prior_ids:
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_INCOMPLETE"],
+                {
+                    "reason": "SOURCE_TIMELINE_PRIOR_GAME_UNSETTLED_IN_RECEIPT",
+                    "official_event_id": scheduled_id,
+                },
+            )
     return {
         "provenance_complete": True,
         "season": str(season),
