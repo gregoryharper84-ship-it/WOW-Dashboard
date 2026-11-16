@@ -801,6 +801,9 @@ def certified_spread_receipt(**overrides):
         "score_snapshot_status": "PASS",
         "can_execute": False,
         "source_receipt_id": "receipt-spread-1",
+        "provider_event_id": "rd-nfl-7001",
+        "quote_sportsbook": "Pinnacle",
+        "quote_observed_at_utc": (FUTURE_DT - timedelta(hours=1)).isoformat(),
         "model_class": "CERTIFIED_FITTED",
         "model_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
         "calibration_version": "cal-v1",
@@ -843,6 +846,35 @@ def test_governed_receipt_completes_the_spread_row():
     assert payload["reason_codes"] == []
     assert payload["exact_signed_spread"] == -6.5
     assert payload["line_source"] == "APPEND_ONLY_MARKET_LEDGER"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_code"),
+    [
+        ({"provider_event_id": "OTHER_PROVIDER_EVENT"}, "SPREAD_RECEIPT_PROVIDER_EVENT_MISMATCH"),
+        ({"quote_sportsbook": "OtherBook"}, "SPREAD_RECEIPT_BOOK_MISMATCH"),
+        ({"quote_observed_at_utc": (FUTURE_DT - timedelta(hours=2)).isoformat()},
+         "SPREAD_RECEIPT_QUOTE_TIME_MISMATCH"),
+        ({"quote_observed_at_utc": "not-a-date"}, "SPREAD_RECEIPT_QUOTE_TIME_MISMATCH"),
+    ],
+)
+def test_same_line_wrong_quote_identity_held_without_nested_probabilities(overrides, expected_code):
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    rows = _spread_lane_rows(
+        db, moneyline_rows=moneyline, requested_limit=6,
+        receipt_provider=lambda _db, **_kwargs: (certified_spread_receipt(**overrides), None),
+    )
+    payload = rows[0]["result"]
+    assert rows[0]["row_status"] == "HELD"
+    assert expected_code in payload["reason_codes"]
+    assert payload["probability_publishable"] is False
+    for field in ("p_cover", "p_push", "p_not_cover",
+                  "calibrated_lower_bound", "calibrated_upper_bound"):
+        assert field not in payload.get("spread_admission", {})
+    assert "p_cover" not in payload
 
 
 def test_receipt_at_a_different_line_holds_the_row():
