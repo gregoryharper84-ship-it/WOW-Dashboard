@@ -133,6 +133,9 @@ def persist_nba_shadow_prediction(
     event_at = _utc(scored.get("event_start_time_utc"))
     source_at = _utc(receipt.get("source_snapshot_timestamp"))
     feature_at = _utc(receipt.get("feature_timestamp"))
+    dataset_id = _required(receipt.get("dataset_id"), "NBA_SHADOW_DATASET_ID_MISSING")
+    if len(dataset_id) > 256:
+        raise NBAShadowReceiptHold("NBA_SHADOW_DATASET_ID_INVALID")
     if not source_at <= feature_at <= timestamp < event_at:
         raise NBAShadowReceiptHold("NBA_SHADOW_NOT_PROSPECTIVE")
     event_id = _required(receipt.get("official_event_id"), "NBA_SHADOW_EVENT_ID_MISSING")
@@ -172,6 +175,8 @@ def persist_nba_shadow_prediction(
         "event_start_time_utc": event_at.isoformat(),
         "home_team_id": home, "away_team_id": away,
         "source_snapshot_timestamp": source_at.isoformat(),
+        "feature_timestamp": feature_at.isoformat(),
+        "dataset_id": dataset_id,
         "certification_id": _required(receipt.get("certification_id"), "NBA_SHADOW_CERT_ID_MISSING"),
         "model_artifact_version": _required(receipt.get("model_artifact_version"), "NBA_SHADOW_MODEL_VERSION_MISSING"),
         "raw_home_probability": raw, "calibrated_home_probability": point,
@@ -200,6 +205,8 @@ def persist_nba_shadow_prediction(
         raise NBAShadowReceiptHold("NBA_SHADOW_WRITE_NOT_PERSISTED")
     if (
         persisted.get("prediction_sha256") != digest
+        or str(persisted.get("dataset_id") or "") != dataset_id
+        or _utc(persisted.get("feature_timestamp")) != feature_at
         or not persisted.get("nba_prediction_id")
         or persisted.get("probability_publishable") is not False
         or persisted.get("rank_eligible") is not False

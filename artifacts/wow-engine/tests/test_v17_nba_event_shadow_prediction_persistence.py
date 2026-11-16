@@ -24,6 +24,7 @@ def scored(**extra):
         source_snapshot_id="sha256:" + "a" * 64,
         source_snapshot_timestamp=(NOW - timedelta(minutes=20)).isoformat(),
         feature_timestamp=(NOW - timedelta(minutes=10)).isoformat(),
+        dataset_id="nba-source-frozen-corpus-v1",
         certification_id="cert-1", model_artifact_id="model-1",
         model_artifact_version="NBA_FITTED_V1", model_artifact_sha256=MODEL,
         calibration_artifact_id="cal-1", calibration_artifact_sha256=CAL,
@@ -124,6 +125,8 @@ def test_prospective_insert_and_exact_duplicate_readback():
     assert db.rows[0]["home_team_id"] == "espn-1610612749"
     assert db.rows[0]["away_team_id"] == "espn-1610612741"
     assert "home_team" not in db.rows[0]  # caller display aliases never become immutable IDs
+    assert db.rows[0]["dataset_id"] == "nba-source-frozen-corpus-v1"
+    assert db.rows[0]["feature_timestamp"] == (NOW - timedelta(minutes=10)).isoformat()
 
 
 @pytest.mark.parametrize("changes", [
@@ -134,6 +137,9 @@ def test_prospective_insert_and_exact_duplicate_readback():
     {"source_snapshot_id": "client-supplied"},
     {"source_snapshot_timestamp": (NOW + timedelta(minutes=1)).isoformat()},
     {"feature_timestamp": (NOW + timedelta(minutes=1)).isoformat()},
+    {"dataset_id": None},
+    {"dataset_id": " "},
+    {"dataset_id": "x" * 257},
     {"model_artifact_sha256": "unverified"},
     {"certification_id": ""},
     {"raw_probability": float("nan")},
@@ -216,3 +222,35 @@ def test_sql_contract_restricts_roles_and_fixes_shadow_state():
     tail = sql.split("create table if not exists")[1]
     assert "alter table public.wow_event_predictions" not in tail
     assert "alter table public.wow_predictions" not in tail
+
+def test_changed_feature_lineage_is_not_a_duplicate_prediction():
+    db = Db()
+    save(db)
+    changed = scored()
+    changed["nba_receipt"]["feature_timestamp"] = (NOW - timedelta(minutes=9)).isoformat()
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db, changed)
+    assert caught.value.code == "NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT"
+    assert db.insert_count == 1
+
+
+def test_changed_dataset_id_is_not_an_idempotent_reuse():
+    db = Db()
+    save(db)
+    changed = scored(dataset_id="nba-another-frozen-corpus")
+    with pytest.raises(NBAShadowReceiptHold) as caught:
+        save(db, changed)
+    assert caught.value.code == "NBA_SHADOW_IMMUTABLE_READBACK_CONFLICT"
+    assert db.insert_count == 1
+
+
+def test_sql_requires_feature_and_server_model_chronology():
+    sql = (
+        Path(__file__).resolve().parents[1]
+        / "migrations/20261103_nba_event_shadow_prediction_receipts.sql"
+    ).read_text().lower()
+    assert "feature_timestamp timestamptz not null" in sql
+    assert "dataset_id text not null" in sql
+    assert "source_snapshot_timestamp <= feature_timestamp" in sql
+    assert "feature_timestamp <= model_timestamp" in sql
+    assert "model_timestamp <= created_at" in sql

@@ -138,6 +138,32 @@ def test_canonical_action_contract_exposes_sport_specific_evidence():
     assert "additionalProperties: true" in team_event
 
 
+def _install_isolated_overlay(monkeypatch):
+    """Do not stack health/parity overlays or leak installer bookkeeping."""
+    import v17.team_event_sport_parity as parity
+
+    monkeypatch.setattr(
+        bridge_runtime, "team_event_bridge_health", bridge_runtime.team_event_bridge_health
+    )
+    monkeypatch.setattr(parity, "_state_for", parity._state_for)
+    monkeypatch.setattr(
+        bridge_runtime, "_v17_all_sport_capability_readiness_installed",
+        getattr(bridge_runtime, "_v17_all_sport_capability_readiness_installed", False),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bridge_runtime, "_v17_all_sport_capability_readiness_original_health",
+        getattr(bridge_runtime, "_v17_all_sport_capability_readiness_original_health", None),
+        raising=False,
+    )
+    install_all_sport_capability_readiness()
+    health = bridge_runtime.team_event_bridge_health
+    parity_state = parity._state_for
+    assert install_all_sport_capability_readiness()["status"] == "ALREADY_INSTALLED"
+    assert bridge_runtime.team_event_bridge_health is health
+    assert parity._state_for is parity_state
+
+
 def test_readiness_overlay_preserves_nba_hydration_blocker(monkeypatch):
     """Bridge-native HOLDs must survive the capability readiness overlay."""
     monkeypatch.setattr(
@@ -145,10 +171,7 @@ def test_readiness_overlay_preserves_nba_hydration_blocker(monkeypatch):
         "TEAM_EVENT_BRIDGES",
         dict(bridge_runtime.TEAM_EVENT_BRIDGES),
     )
-    monkeypatch.setattr(
-        bridge_runtime, "_v17_all_sport_capability_readiness_installed", False, raising=False
-    )
-    install_all_sport_capability_readiness()
+    _install_isolated_overlay(monkeypatch)
     assert bridge_runtime._register_nba_bridge_if_available() is True
     nba = bridge_runtime.team_event_bridge_health()["NBA"]
     assert nba["registered"] is True
@@ -163,10 +186,7 @@ def test_installed_health_to_parity_keeps_request_dependent_certification(monkey
     """Parity must not re-merge overlay blockers into a false REGISTERED_NOT_READY."""
     import v17.team_event_sport_parity as parity
 
-    monkeypatch.setattr(
-        bridge_runtime, "_v17_all_sport_capability_readiness_installed", False, raising=False
-    )
-    install_all_sport_capability_readiness()
+    _install_isolated_overlay(monkeypatch)
 
     # Synthetic certified request-dependent health already annotated by overlay.
     overlaid = {

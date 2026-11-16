@@ -11,6 +11,8 @@ create table if not exists public.wow_nba_event_shadow_predictions (
   away_team_id text not null,
   source_snapshot_id text not null,
   source_snapshot_timestamp timestamptz not null,
+  feature_timestamp timestamptz not null,
+  dataset_id text not null check (length(btrim(dataset_id)) between 1 and 256),
   model_timestamp timestamptz not null,
   certification_id text not null,
   model_artifact_id text not null,
@@ -33,7 +35,9 @@ create table if not exists public.wow_nba_event_shadow_predictions (
     official_event_id,source_snapshot_id,model_artifact_id,calibration_artifact_id
   ),
   constraint nba_shadow_prospective check (
-    source_snapshot_timestamp <= model_timestamp
+    source_snapshot_timestamp <= feature_timestamp
+    and feature_timestamp <= model_timestamp
+    and model_timestamp <= created_at
     and model_timestamp < event_start_time_utc
     and created_at < event_start_time_utc
   ),

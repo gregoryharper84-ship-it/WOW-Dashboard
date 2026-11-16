@@ -86,7 +86,8 @@ def db():
         )
 
 
-def _insert(conn, *, created_at: datetime, event_start: datetime):
+def _insert(conn, *, created_at: datetime, event_start: datetime,
+            source_at=None, feature_at=None, model_at=None, dataset_id="nba-test-dataset-v1"):
     """Insert one otherwise-valid shadow receipt to challenge chronology."""
     now = datetime.now(timezone.utc)
     source_snapshot_id = "sha256:" + uuid4().hex * 2
@@ -95,7 +96,8 @@ def _insert(conn, *, created_at: datetime, event_start: datetime):
         insert into public.wow_nba_event_shadow_predictions (
           created_at, official_event_id, event_start_time_utc,
           home_team_id, away_team_id, source_snapshot_id,
-          source_snapshot_timestamp, model_timestamp, certification_id,
+          source_snapshot_timestamp, feature_timestamp, dataset_id,
+          model_timestamp, certification_id,
           model_artifact_id, model_artifact_version, model_artifact_sha256,
           calibration_artifact_id, calibration_artifact_sha256,
           raw_home_probability, calibrated_home_probability,
@@ -104,7 +106,7 @@ def _insert(conn, *, created_at: datetime, event_start: datetime):
         ) values (
           %s, 'espn-401809999', %s,
           'espn-1610612749', 'espn-1610612741', %s,
-          %s, %s, %s,
+          %s, %s, %s, %s, %s,
           %s, 'NBA_FITTED_V1', %s,
           %s, %s,
           0.57, 0.55,
@@ -116,8 +118,10 @@ def _insert(conn, *, created_at: datetime, event_start: datetime):
             created_at,
             event_start,
             source_snapshot_id,
-            now - timedelta(minutes=20),
-            now - timedelta(minutes=10),
+            source_at if source_at is not None else now - timedelta(minutes=20),
+            feature_at if feature_at is not None else now - timedelta(minutes=15),
+            dataset_id,
+            model_at if model_at is not None else now - timedelta(minutes=10),
             f"cert-{uuid4().hex}",
             f"model-{uuid4().hex}",
             "b" * 64,
@@ -265,3 +269,31 @@ def test_replay_is_idempotent_and_service_role_cannot_rewrite_receipts(db):
         "can_update": False,
         "can_trigger": False,
     }
+
+def test_direct_future_model_timestamp_cannot_precede_server_receipt(db):
+    """The direct service-role SQL path cannot backdate observation chronology."""
+    now = datetime.now(timezone.utc)
+    before = db.execute(f"select count(*) as n from {TABLE}").fetchone()["n"]
+    with pytest.raises(psycopg.errors.CheckViolation, match="nba_shadow_prospective"):
+        _insert(
+            db,
+            created_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+            event_start=now + timedelta(hours=3),
+            source_at=now + timedelta(minutes=5),
+            feature_at=now + timedelta(minutes=10),
+            model_at=now + timedelta(minutes=15),
+        )
+    after = db.execute(f"select count(*) as n from {TABLE}").fetchone()["n"]
+    assert after == before
+
+
+def test_postgres_stores_feature_lineage(db):
+    row = _insert(
+        db,
+        created_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+        event_start=datetime.now(timezone.utc) + timedelta(hours=3),
+        dataset_id="nba-source-hash-2026-11-15",
+    )
+    assert row["dataset_id"] == "nba-source-hash-2026-11-15"
+    assert row["source_snapshot_timestamp"] <= row["feature_timestamp"]
+    assert row["feature_timestamp"] <= row["model_timestamp"] <= row["created_at"]
