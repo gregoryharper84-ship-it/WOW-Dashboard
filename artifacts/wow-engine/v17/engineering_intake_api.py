@@ -155,6 +155,35 @@ def _fetch_enumeration(repo, kind, endpoint, *, runner, sleep, page_size):
         page += 1
 
 
+def _pr_claim_signature(row):
+    """Compare only decision-bearing PR metadata, not review counters.
+
+    A new comment changes updated_at and comments without changing the
+    incident claim, code SHA or owner. The returned full PR rows stay intact.
+    """
+    def _ref(value):
+        if not isinstance(value, dict):
+            return value
+        repo = value.get('repo')
+        repo_name = repo.get('full_name') if isinstance(repo, dict) else repo
+        return (value.get('ref'), value.get('sha'), repo_name)
+
+    def _names(items, field):
+        if not isinstance(items, list):
+            return items
+        return tuple(sorted(str(item.get(field) if isinstance(item, dict) else item)
+                            for item in items))
+
+    owner = row.get('user')
+    login = owner.get('login') if isinstance(owner, dict) else owner
+    return (
+        row['number'], row.get('state'), row.get('body'), row.get('title'),
+        row.get('draft'), login,
+        _ref(row.get('head')), _ref(row.get('base')),
+        _names(row.get('labels'), 'name'), _names(row.get('assignees'), 'login'),
+    )
+
+
 def fetch_pages(repo, kind, endpoint, *, runner=subprocess.run, sleep=time.sleep,
                 page_size=PAGE_SIZE):
     """Reject issue/PR absence unless two full inventories agree."""
@@ -164,8 +193,16 @@ def fetch_pages(repo, kind, endpoint, *, runner=subprocess.run, sleep=time.sleep
         return first
     second = _fetch_enumeration(repo, kind, endpoint, runner=runner, sleep=sleep,
                                 page_size=page_size)
-    # Compare ownership evidence as well as IDs; ordering alone is irrelevant.
-    if sorted(first, key=lambda row: row['number']) != sorted(second, key=lambda row: row['number']):
+    # Issue timestamps affect controller priority and still demand exact equality.
+    # For PRs, only compare decision-bearing claim fields. Comment counters and
+    # updated_at are not absent-PR evidence and must not starve all dispatches.
+    if kind == 'prs':
+        left = [_pr_claim_signature(row) for row in sorted(first, key=lambda row: row['number'])]
+        right = [_pr_claim_signature(row) for row in sorted(second, key=lambda row: row['number'])]
+    else:
+        left = sorted(first, key=lambda row: row['number'])
+        right = sorted(second, key=lambda row: row['number'])
+    if left != right:
         raise IntakeFailure(f'ENGINEERING_INTAKE_INVENTORY_UNSTABLE {kind}')
     return first
 
