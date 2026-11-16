@@ -18,10 +18,10 @@ def test_size_economics_are_reconciled_without_inferring_leg_wins():
         {"underlying_market_count": 5, "entry_cents": 1000, "payout_cents": 0},
     ]
     out = audit_snapshot(rows)
-    assert out["net_cents"] == -300
-    assert out["by_market_count"]["2"]["net_cents"] == 700
-    assert out["by_market_count"]["5"]["net_cents"] == -1000
-    assert out["profitable_positions"] == 1
+    assert out["net_before_fees_cents"] == -300
+    assert out["by_market_count"]["2"]["net_before_fees_cents"] == 700
+    assert out["by_market_count"]["5"]["net_before_fees_cents"] == -1000
+    assert out["positive_before_fees_positions"] == 1
     assert out["leg_outcomes"] == "UNVERIFIED_DO_NOT_INFER"
     assert out["missing_settlement_day_rows"] == 2
 
@@ -30,8 +30,8 @@ def test_nonzero_payout_is_not_necessarily_economic_success():
     out = audit_snapshot([
         {"underlying_market_count": 3, "entry_cents": 1000, "payout_cents": 870},
     ])
-    assert out["positive_payout_negative_net_rows"] == 1
-    assert out["profitable_positions"] == 0
+    assert out["positive_payout_negative_before_fees_rows"] == 1
+    assert out["positive_before_fees_positions"] == 0
 
 
 def test_total_payout_is_not_the_same_as_settlement_payout():
@@ -40,7 +40,7 @@ def test_total_payout_is_not_the_same_as_settlement_payout():
          "payout_cents": 1600, "settlement_payout_cents": 0},
     ])
     assert out["total_vs_settlement_payout_mismatch_rows"] == 1
-    assert out["profitable_positions"] == 1
+    assert out["positive_before_fees_positions"] == 1
     assert out["leg_outcomes"] == "UNVERIFIED_DO_NOT_INFER"
 
 
@@ -55,7 +55,7 @@ def test_day_filter_excludes_unknown_dates_rather_than_claiming_daily_results():
     assert out["included_rows"] == 1
     assert out["excluded_from_target_rows"] == 2
     assert out["missing_settlement_day_rows"] == 1
-    assert out["net_cents"] == -100
+    assert out["net_before_fees_cents"] == -100
     assert out["scope"] == "SOURCE_REPORTED_DAY_NOT_AUTHENTICATED"
 
 
@@ -85,3 +85,16 @@ def test_calibration_and_execution_are_always_closed():
     assert out["probability_publishable"] is False
     assert out["can_execute"] is False
     assert out["joint_probabilities"] == "NOT_AVAILABLE_DO_NOT_BACKFILL"
+
+
+def test_unobserved_fees_prevent_any_fee_adjusted_profit_claim():
+    out = audit_snapshot([{
+        "underlying_market_count": 2, "entry_cents": 1000,
+        "payout_cents": 1001,
+    }])
+    assert out["economics_basis"] == "PAYOUT_MINUS_ENTRY_BEFORE_UNOBSERVED_FEES"
+    assert out["fees_observed"] is False
+    assert out["net_before_fees_cents"] == 1
+    assert out["positive_before_fees_positions"] == 1
+    assert "net_cents" not in out
+    assert "profitable_positions" not in out
