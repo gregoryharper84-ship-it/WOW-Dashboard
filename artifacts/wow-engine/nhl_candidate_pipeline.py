@@ -419,6 +419,7 @@ def fetch_season_reingest_corpus(
     """One-pass season acquisition for settled games plus schedule coverage."""
     settled_by_id: dict[str, NHLGame] = {}
     schedule_by_id: dict[str, dict[str, Any]] = {}
+    neutral_by_id: dict[str, bool] = {}
     retrieved_at = _utcnow().isoformat()
     season_teams = tuple(teams) if teams is not None else teams_for_start_year(start_year)
     for team in season_teams:
@@ -435,8 +436,36 @@ def fetch_season_reingest_corpus(
             if event is not None:
                 event_id = event["official_event_id"]
                 existing_event = schedule_by_id.get(event_id)
-                if existing_event is not None and existing_event != event:
-                    raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
+                if existing_event is not None:
+                    incoming_neutral = raw.get("neutralSite")
+                    prior_neutral = neutral_by_id.get(event_id)
+                    if (
+                        type(incoming_neutral) is bool
+                        and type(prior_neutral) is bool
+                        and incoming_neutral != prior_neutral
+                    ):
+                        raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
+                    if existing_event != event:
+                        prior_state = existing_event["game_state"]
+                        incoming_state = event["game_state"]
+                        equivalent_settlement = (
+                            prior_state in SETTLED_SCHEDULE_STATES
+                            and incoming_state in SETTLED_SCHEDULE_STATES
+                            and all(
+                                existing_event.get(key) == event.get(key)
+                                for key in ("official_event_id", "event_start_time", "game_type")
+                            )
+                        )
+                        if not equivalent_settlement:
+                            raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
+                        event = {
+                            **event,
+                            "game_state": ("OFF" if "OFF" in (prior_state, incoming_state)
+                                           else "FINAL"),
+                        }
+                else:
+                    if type(raw.get("neutralSite")) is bool:
+                        neutral_by_id[event_id] = raw["neutralSite"]
                 schedule_by_id[event_id] = event
             game = normalize_game(
                 raw,
@@ -455,6 +484,7 @@ def fetch_season_reingest_corpus(
                     game.away_team,
                     game.home_score,
                     game.away_score,
+                    game.neutral_site,
                 )
                 other = (
                     current.season_id,
@@ -463,6 +493,7 @@ def fetch_season_reingest_corpus(
                     current.away_team,
                     current.home_score,
                     current.away_score,
+                    current.neutral_site,
                 )
                 if identity != other:
                     raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", game.game_id)
