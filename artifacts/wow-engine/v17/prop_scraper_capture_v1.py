@@ -13,7 +13,7 @@ from hashlib import sha256
 from http.client import HTTPException
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.robotparser import RobotFileParser
 import math
@@ -186,6 +186,7 @@ def _validated_robots(robots_text: str, url: str) -> None:
         "sitemap", "host",
     }
     clean: list[str] = []
+    wildcard_agent_groups = 0
     for raw in robots_text.splitlines():
         line = raw.partition("#")[0].strip()
         if not line:
@@ -196,6 +197,10 @@ def _validated_robots(robots_text: str, url: str) -> None:
         key, value = key.strip().lower(), value.strip()
         if key not in directives or (key == "user-agent" and not value):
             raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
+        if key == "user-agent" and value == "*":
+            wildcard_agent_groups += 1
+            if wildcard_agent_groups > 1:
+                raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
         if key in {"allow", "disallow"} and (
                 "*" in value or "$" in value
                 or "%2a" in value.lower() or "%24" in value.lower()):
@@ -208,6 +213,20 @@ def _validated_robots(robots_text: str, url: str) -> None:
         robots.default_entry,
     )
     if selected is None or not selected.rulelines:
+        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
+    # RobotFileParser uses first-match rather than longest-match logic.
+    # A policy that disagrees across applicable prefixes is ambiguous for
+    # this conservative collector, even when a standard parser would allow.
+    parsed_url = urlparse(unquote(url))
+    match_url = quote(urlunparse((
+        "", "", parsed_url.path, parsed_url.params,
+        parsed_url.query, parsed_url.fragment,
+    ))) or "/"
+    allowances = {
+        rule.allowance for rule in selected.rulelines
+        if rule.applies_to(match_url)
+    }
+    if len(allowances) > 1:
         raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
     if not robots.can_fetch(USER_AGENT, url):
         raise PropScrapeHold("PROP_SCRAPE_ROBOTS_DISALLOW")
