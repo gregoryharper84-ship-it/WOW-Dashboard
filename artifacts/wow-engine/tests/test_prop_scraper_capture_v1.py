@@ -286,3 +286,17 @@ def test_declared_oversize_content_length_returns_payload_hold():
         return out
 
     holds("PROP_SCRAPE_PAYLOAD_INVALID", lambda: capture(fetch=fetch))
+
+
+def test_robots_wildcard_disallow_is_not_silently_ignored():
+    fetch, seen = opener(robots=b"User-agent: *\nDisallow: /research/*\n")
+    holds("PROP_SCRAPE_ROBOTS_UNVERIFIED", lambda: capture(fetch=fetch))
+    assert seen == ["https://example.org/robots.txt"]
+
+
+def test_same_player_stat_line_different_fixture_remains_distinct():
+    first = rows()["rows"][0]
+    second = dict(first, fixture_text="TST vs OPP - game two")
+    receipt = capture(parse=lambda _: {"rows": [first, second]})
+    assert receipt["row_count"] == 2
+    assert receipt["rows"][0]["fixture_text_unverified"] != receipt["rows"][1]["fixture_text_unverified"]
