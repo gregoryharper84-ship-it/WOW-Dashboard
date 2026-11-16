@@ -81,14 +81,15 @@ def parse_user_visible_player_page(
     if not isinstance(captured_at, datetime) or captured_at.utcoffset() is None:
         raise VisiblePageHold("PM_VISIBLE_CAPTURE_TIME_INVALID")
     t = captured_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    scan_text = page_text.replace("\r\n", "\n")
     headers = list(re.finditer(
-        rf"(?m)^[ \t]*{re.escape(expected_player)}[ \t]*$", page_text,
+        rf"(?m)^[ \t]*{re.escape(expected_player)}[ \t]*$", scan_text,
     ))
     if not headers:
         raise VisiblePageHold("PM_VISIBLE_PLAYER_NOT_FOUND")
     if len(headers) != 1:
         raise VisiblePageHold("PM_VISIBLE_PLAYER_AMBIGUOUS")
-    segment = page_text[headers[0].end():headers[0].end() + MAX_PLAYER_BLOCK]
+    segment = scan_text[headers[0].end():headers[0].end() + MAX_PLAYER_BLOCK]
     price = re.match(
         r'^\s*(?:G/F|F/G|F/C|C/F|PG|SG|SF|PF|G|F|C)\s*'
         r'<img\b[^>]{0,500}\balt="(?P<book>[^"<>]{1,64})"[^>]*>'
