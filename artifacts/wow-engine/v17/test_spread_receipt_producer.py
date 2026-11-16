@@ -71,23 +71,29 @@ def _market_rows(*, home_spread=-0.5, provider_event_id="rd-nfl-9101", start=STA
 
 
 class _DB:
-    """Append-only ledger read plus receipt upsert recording."""
+    """Append-only market ledger and hash-verified spread receipt readback."""
 
     def __init__(self, market_rows=()):
         self.market_rows = list(market_rows)
         self.upserts: list[dict] = []
+        self.receipts: dict[str, dict] = {}
         self._mode = "read"
         self._name = ""
+        self._lookup_key = None
+        self._pending_rows = []
 
     def table(self, name):
         self._name = name
         self._mode = "read"
+        self._lookup_key = None
         return self
 
     def select(self, *_args, **_kwargs):
         return self
 
-    def eq(self, *_args, **_kwargs):
+    def eq(self, field, value):
+        if self._name == "wow_v17_spread_card_receipts" and field == "receipt_key":
+            self._lookup_key = value
         return self
 
     def gte(self, *_args, **_kwargs):
@@ -104,19 +110,24 @@ class _DB:
 
     def upsert(self, rows, on_conflict=None, ignore_duplicates=False):
         self._mode = "write"
-        self.upserts.append(
-            {
-                "table": self._name,
-                "rows": [dict(row) for row in rows],
-                "on_conflict": on_conflict,
-                "ignore_duplicates": ignore_duplicates,
-            }
-        )
+        self._pending_rows = [dict(row) for row in rows]
+        self.upserts.append({
+            "table": self._name, "rows": self._pending_rows,
+            "on_conflict": on_conflict, "ignore_duplicates": ignore_duplicates,
+        })
         return self
 
     def execute(self):
         if self._mode == "write":
+            for row in self._pending_rows:
+                self.receipts.setdefault(row["receipt_key"], row)
             return SimpleNamespace(data=[])
+        if self._name == "wow_v17_spread_card_receipts":
+            item = self.receipts.get(self._lookup_key)
+            return SimpleNamespace(data=(
+                [{"receipt_key": item["receipt_key"], "content_sha256": item["content_sha256"]}]
+                if item else []
+            ))
         return SimpleNamespace(data=self.market_rows)
 
 
