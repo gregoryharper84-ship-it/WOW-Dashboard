@@ -1341,3 +1341,26 @@ def test_atomic_reingest_migration_is_service_role_only_with_fenced_writes():
     assert "from public, anon, authenticated" in migration
     assert "to service_role" in migration
     assert "revoke insert, update on table public.wow_nhl_season_timeline_receipts" in migration
+
+
+@pytest.mark.parametrize("bad_sha", ["ggggggg", "a" * 65, "a" * 39 + "g", "a" * 7 + " " + "g"])
+def test_invalid_nhl_ingest_commit_sha_blocks_before_dry_run(bad_sha):
+    db = _FakeDB()
+    result = reingest.run_nhl_source_reingest(
+        db, season=int(SEASON), teams=("BOS", "PIT"),
+        session=_Session(_by_team(_fixture())),
+        ingest_code_sha=bad_sha, dry_run=True, rights_approved=False,
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_INGEST_CODE_SHA_INVALID"
+    assert result["blocked_stage"] == "PROVENANCE"
+    assert db.rows == {}
+
+
+@pytest.mark.parametrize("bad_sha", ["ggggggg", "a" * 65, "a" * 39 + "g"])
+def test_invalid_nhl_ingest_commit_sha_cannot_build_v2_source_rows(bad_sha):
+    with pytest.raises(reingest.NHLSourceReingestError) as caught:
+        reingest.build_reingest_rows(
+            _normalized_games(_fixture()), ingest_code_sha=bad_sha
+        )
+    assert caught.value.code == "NHL_INGEST_CODE_SHA_INVALID"
