@@ -188,3 +188,28 @@ the desired win/loss result.
 - replay style comparisons across nonoverlapping genuine holdout cohorts,
   account for duplicate theses, event/player nesting and execution costs;
 - no unapproved production import, default-threshold change or live trade.
+
+
+## Nested-threshold follow-up: two markets need not be two independent claims
+
+A same-player two-market structure must be divided into:
+- **Complementary different-stat** examples: points and assists, or points and
+  rebounds. Shared minutes/usage induce dependence; a fitted joint
+  distribution is needed.
+- **Potentially nested same-stat** examples: two numerical cutoffs for the
+  identical player/stat family. These are NOT automatically confirmed as
+  mathematical nesting from a short label such as `3+` and `4+`.
+- **Verified nested thresholds** require the same player/event, exact stat,
+  direction, period and settlement rule identity, with both exact numeric
+  cutoffs. If both are GE events on the same played/sporting outcome, success
+  at the stricter threshold implies success at the easier threshold. But the
+  Kalshi combo remains a separately priced RFQ market, and scalar/DNP or
+  protected settlement handling must be evaluated under the exact terms.
+
+The classifier now emits potential vs verified nesting counters and
+`COMPLEMENTARY_STATS_SHARED_PLAYER_ROLE` separately. It **does not**
+invent any statistic identity, numeric correlation, value, or probability,
+and does not change production structure limits. A counterfactual
+comparison between nested and complementary strategies requires
+recorded pregame quotes, market IDs and exact independent settlement
+rules, not just email results.
