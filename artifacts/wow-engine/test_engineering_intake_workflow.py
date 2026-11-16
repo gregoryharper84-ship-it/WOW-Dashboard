@@ -6,9 +6,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowIntakeTests(unittest.TestCase):
+    def test_helper_only_changes_trigger_controller_validation(self):
+        wf = (ROOT / '.github/workflows/wow-engineering-24x7.yml').read_text()
+        paths = wf.split('  pull_request:\n', 1)[1].split('\npermissions:', 1)[0]
+        for path in ('v17/engineering_intake_api.py', 'test_engineering_intake_api.py',
+                     'test_engineering_intake_workflow.py'):
+            self.assertIn(f'"artifacts/wow-engine/{path}"', paths)
+
     def test_every_intake_stage_uses_verified_pager(self):
         wf = (ROOT / '.github/workflows/wow-engineering-24x7.yml').read_text()
-        self.assertEqual(wf.count('v17/engineering_intake_api.py'), 5)
+        self.assertEqual(wf.count('python artifacts/wow-engine/v17/engineering_intake_api.py'), 5)
         self.assertNotIn('gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?', wf)
         self.assertNotIn('gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?', wf)
         self.assertNotIn('"$RUNNER_TEMP/fresh-runs.json" | jq', wf)

@@ -6,6 +6,7 @@ Each API page is individually validated; no partial inventory is published.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,33 @@ def _rows(payload, kind):
             item.get('number') if isinstance(item, dict) else None)
         if type(ident) is not int or ident < 1:
             raise ValueError('missing row identity')
+        if kind == 'runs':
+            title = item.get('display_title')
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError('missing worker ownership title')
+            status = item.get('status')
+            if status not in {'queued', 'in_progress', 'completed', 'waiting', 'pending', 'requested'}:
+                raise ValueError('missing or unknown worker status')
+            stamps = []
+            for field in ('created_at', 'updated_at'):
+                value = item.get(field)
+                if not isinstance(value, str):
+                    raise ValueError('missing worker timestamp')
+                stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                if stamp.tzinfo is None or stamp.utcoffset() is None:
+                    raise ValueError('worker timestamp must include timezone')
+                stamps.append(stamp)
+            if stamps[1] < stamps[0]:
+                raise ValueError('worker completion precedes creation')
+            if 'conclusion' not in item:
+                raise ValueError('missing worker conclusion')
+            conclusion = item['conclusion']
+            if status == 'completed':
+                if conclusion not in {'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                                      'timed_out', 'action_required', 'stale', 'startup_failure'}:
+                    raise ValueError('missing or unknown completed worker conclusion')
+            elif conclusion is not None:
+                raise ValueError('active worker cannot have a conclusion')
 
     if kind == 'runs':
         return raw, [
@@ -60,9 +88,8 @@ def _rows(payload, kind):
     return raw, raw
 
 
-def fetch_pages(repo, kind, endpoint, *, runner=subprocess.run, sleep=time.sleep,
-                page_size=PAGE_SIZE):
-    """Return a COMPLETE verified list; raise typed HOLD on any ambiguous page."""
+def _fetch_enumeration(repo, kind, endpoint, *, runner, sleep, page_size):
+    """Validate a bounded enumeration; absence still needs reconciliation."""
     if kind not in LIMITS or not (1 <= page_size <= 100):
         raise ValueError('unrecognized intake kind or page size')
     if repo != 'gregoryharper84-ship-it/WOW-Dashboard':
@@ -123,6 +150,21 @@ def fetch_pages(repo, kind, endpoint, *, runner=subprocess.run, sleep=time.sleep
         page += 1
 
 
+def fetch_pages(repo, kind, endpoint, *, runner=subprocess.run, sleep=time.sleep,
+                page_size=PAGE_SIZE):
+    """Reject issue/PR absence unless two full inventories agree."""
+    first = _fetch_enumeration(repo, kind, endpoint, runner=runner, sleep=sleep,
+                               page_size=page_size)
+    if kind == 'runs':
+        return first
+    second = _fetch_enumeration(repo, kind, endpoint, runner=runner, sleep=sleep,
+                                page_size=page_size)
+    # Compare ownership evidence as well as IDs; ordering alone is irrelevant.
+    if sorted(first, key=lambda row: row['number']) != sorted(second, key=lambda row: row['number']):
+        raise IntakeFailure(f'ENGINEERING_INTAKE_INVENTORY_UNSTABLE {kind}')
+    return first
+
+
 def _write_json_atomic(target, rows):
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -155,9 +197,15 @@ def collect(*, repo, issues=None, prs=None, runs=None, worker=None,
                                          runner=runner, sleep=sleep)
     if runs is not None:
         merged = []
+        seen_runs = set()
         for name in ((worker,) if worker else WORKERS):
-            merged.extend(fetch_pages(repo, 'runs', f'/actions/workflows/{name}/runs',
-                                      runner=runner, sleep=sleep))
+            provider_runs = fetch_pages(repo, 'runs', f'/actions/workflows/{name}/runs',
+                                         runner=runner, sleep=sleep)
+            for item in provider_runs:
+                if item['databaseId'] in seen_runs:
+                    raise IntakeFailure('ENGINEERING_INTAKE_DUPLICATE_ID runs across providers')
+                seen_runs.add(item['databaseId'])
+            merged.extend(provider_runs)
         if len(merged) > 1998:
             raise IntakeFailure('WORKER_RUN_HISTORY_TRUNCATED: combined limit')
         planned[Path(runs)] = merged

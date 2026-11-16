@@ -37,6 +37,9 @@ on:
       - "artifacts/wow-engine/test_engineering_24x7_selector.py"
       - "artifacts/wow-engine/v17/engineering_delivery_pipeline.py"
       - "artifacts/wow-engine/test_engineering_delivery_pipeline.py"
+      - "artifacts/wow-engine/v17/engineering_intake_api.py"
+      - "artifacts/wow-engine/test_engineering_intake_api.py"
+      - "artifacts/wow-engine/test_engineering_intake_workflow.py"
 
 permissions:
   actions: read

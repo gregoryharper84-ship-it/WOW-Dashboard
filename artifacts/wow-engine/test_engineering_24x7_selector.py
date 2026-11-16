@@ -197,7 +197,7 @@ class Test24x7(unittest.TestCase):
               "wow-engineering-24x7.yml").read_text(encoding="utf-8")
         helper = (Path(__file__).resolve().parent / "v17" /
                   "engineering_intake_api.py").read_text(encoding="utf-8")
-        self.assertEqual(wf.count("v17/engineering_intake_api.py"), 5)
+        self.assertEqual(wf.count("python artifacts/wow-engine/v17/engineering_intake_api.py"), 5)
         self.assertEqual(wf.count("gh api --paginate"), 4)
         self.assertNotIn('gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?', wf)
         self.assertNotIn('gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?', wf)
