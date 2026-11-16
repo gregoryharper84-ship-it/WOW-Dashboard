@@ -333,3 +333,15 @@ def resolve_evidence_field(observations: Sequence[Mapping[str, Any]], *, now: An
 __all__ = ["CAN_EXECUTE", "FEATURE_FAMILY_VERSION", "TREND_DRIVER_STATUSES", "SOURCE_STATUSES",
            "TeamStateSnapshot", "build_team_state", "paired_matchup_features",
            "champion_challenger_metrics", "coverage_report", "resolve_evidence_field", "season_regime"]
+
+def paired_schedule_fatigue_context(*, target: Mapping[str, Any],
+                                    history: Sequence[Mapping[str, Any]],
+                                    history_completeness: Mapping[str, bool]) -> dict[str, Any]:
+    """Read-only schedule evidence alongside paired_matchup_features.
+
+    Do not merge this context into the existing fitted-model feature vector:
+    model feature changes require independent out-of-time validation.
+    """
+    from v17.schedule_fatigue_intelligence import build_schedule_matchup_context
+    return build_schedule_matchup_context(target=target, history=history,
+                                          history_completeness=history_completeness)
