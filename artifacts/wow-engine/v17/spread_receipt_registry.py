@@ -307,18 +307,48 @@ def admit_spread_receipt(candidate: Mapping[str, Any]) -> tuple[dict[str, Any], 
 
 
 def persist_certified_spread_receipt(client: Any, candidate: Mapping[str, Any]) -> dict[str, Any]:
-    """Insert one admitted receipt. Insert-only and idempotent on receipt_key."""
+    """Append a receipt and prove the stored hash matches the exact candidate.
+
+    ON CONFLICT DO NOTHING is not proof that the candidate was persisted: an
+    earlier immutable receipt may share the key with different model output.
+    Read back the winning row before returning a success receipt.
+    """
     row, admission = admit_spread_receipt(candidate)
     try:
         client.table(TABLE).upsert(
             [row], on_conflict="receipt_key", ignore_duplicates=True
         ).execute()
+        response = (
+            client.table(TABLE)
+            .select("receipt_key,content_sha256")
+            .eq("receipt_key", row["receipt_key"])
+            .limit(1)
+            .execute()
+        )
     except Exception as exc:  # noqa: BLE001 - typed persistence boundary
         return {
             "status": "PERSISTENCE_UNAVAILABLE",
             "code": f"SPREAD_RECEIPT_PERSISTENCE_UNAVAILABLE:{type(exc).__name__}",
             "receipt_key": row["receipt_key"],
-            "admission": admission,
+            "updates_allowed": False,
+            "can_execute": False,
+        }
+
+    stored = getattr(response, "data", None)
+    stored_row = stored[0] if isinstance(stored, list) and len(stored) == 1 else None
+    if not isinstance(stored_row, dict) or stored_row.get("receipt_key") != row["receipt_key"]:
+        return {
+            "status": "PERSISTENCE_UNVERIFIED",
+            "code": "SPREAD_RECEIPT_PERSISTENCE_UNVERIFIED",
+            "receipt_key": row["receipt_key"],
+            "updates_allowed": False,
+            "can_execute": False,
+        }
+    if stored_row.get("content_sha256") != row["content_sha256"]:
+        return {
+            "status": "PERSISTENCE_CONFLICT",
+            "code": "SPREAD_RECEIPT_CONTENT_CONFLICT",
+            "receipt_key": row["receipt_key"],
             "updates_allowed": False,
             "can_execute": False,
         }
