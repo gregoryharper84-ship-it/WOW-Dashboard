@@ -23,6 +23,8 @@ def test_same_player_two_stats_detects_common_cause_not_certified_independence()
     assert r["structure"] == "SINGLE_PLAYER_SAME_GAME_MULTI_MARKET"
     assert "ONE_PLAYER_MINUTES_OR_AVAILABILITY_COMMON_CAUSE" in r["shared_failure_factors"]
     assert r["same_team_receiver_competition_groups"] == 0
+    assert r["complementary_stat_player_groups"] == 1
+    assert r["verified_nested_threshold_groups"] == 0
     assert r["joint_probability"] is None
     assert r["can_execute"] is False
 
@@ -82,3 +84,47 @@ def test_no_classification_can_become_fitted_model_or_live_execution():
     assert r["calibration_eligible"] is False
     assert r["probability_publishable"] is False
     assert r["can_execute"] is False
+
+
+def test_nested_threshold_requires_matching_stat_period_rule_and_direction():
+    a = l("NBA", "g", "p", "x", "THREES_MADE", "m1")
+    b = l("NBA", "g", "p", "x", "THREES_MADE", "m2")
+    a.update(threshold=3, direction="GE", period_id="FULL", settlement_rule_id="v1")
+    b.update(threshold=4, direction="GE", period_id="FULL", settlement_rule_id="v1")
+    r = diagnose([a, b])
+    assert r["potential_same_stat_groups"] == 1
+    assert r["verified_nested_threshold_groups"] == 1
+    assert "VERIFIED_NESTED_THRESHOLD_REDUNDANCY" in r["shared_failure_factors"]
+    assert r["joint_probability"] is None
+
+
+def test_same_stat_without_exact_threshold_qualified_as_potential_only():
+    a = l("NBA", "g", "p", "x", "THREES_MADE", "m1")
+    b = l("NBA", "g", "p", "x", "THREES_MADE", "m2")
+    r = diagnose([a, b])
+    assert r["potential_same_stat_groups"] == 1
+    assert r["verified_nested_threshold_groups"] == 0
+
+
+def test_same_stat_mixed_period_not_confirmed_as_nested():
+    a = l("NBA", "g", "p", "x", "POINTS", "m1")
+    b = l("NBA", "g", "p", "x", "POINTS", "m2")
+    a.update(threshold=20, direction="GE", period_id="FIRST_HALF",
+             settlement_rule_id="v1")
+    b.update(threshold=30, direction="GE", period_id="FULL",
+             settlement_rule_id="v1")
+    r = diagnose([a, b])
+    assert r["potential_same_stat_groups"] == 1
+    assert r["verified_nested_threshold_groups"] == 0
+
+
+def test_malformed_threshold_and_direction_rejected():
+    a = l("NBA", "g", "p", "x", "POINTS", "m1")
+    b = l("NBA", "g", "p", "x", "POINTS", "m2")
+    a["threshold"] = float("nan")
+    with pytest.raises(ValueError, match="finite numeric"):
+        diagnose([a, b])
+    a["threshold"] = 20
+    a["direction"] = "UNKNOWN"
+    with pytest.raises(ValueError, match="direction must"):
+        diagnose([a, b])
