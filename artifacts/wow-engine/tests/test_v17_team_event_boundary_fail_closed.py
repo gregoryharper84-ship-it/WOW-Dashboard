@@ -314,3 +314,43 @@ def test_nfl_out_of_domain_probability_is_output_invalid():
     assert held["code"] == "MODEL_OUTPUT_INVALID"
     assert "NFL_GOVERNED_PROBABILITY_DOMAIN_INVALID" in held["blockers"]
     assert held["can_execute"] is False
+
+
+
+@pytest.mark.parametrize("blank_blockers", [[""], ["   "], ["", "\t", "   "]])
+def test_invalid_registered_probability_cannot_hide_behind_blank_inherited_blockers(blank_blockers):
+    # A malformed model package cannot become COMPLETED when inherited blocker
+    # strings are blank. They are not a real typed reason and must be ignored.
+    from team_event_request_runtime import _governed_package_blocker
+
+    package = _registered_package(
+        calibrated_probability=1.5, blockers=blank_blockers
+    )
+    bounds = ((
+        "calibrated_probability",
+        "calibrated_lower_bound",
+        "calibrated_upper_bound",
+    ),)
+    assert _governed_package_blocker(package, bounds) == "GOVERNED_PROBABILITY_FIELDS_INVALID"
+
+    held = _completed_registered(_row("NHL"), package)
+    assert held["terminal_status"] == "HELD"
+    assert held["code"] == "MODEL_OUTPUT_INVALID"
+    assert "GOVERNED_PROBABILITY_FIELDS_INVALID" in held["blockers"]
+    assert held["probability_publishable"] is False
+    assert held["can_execute"] is False
+
+
+def test_invalid_registered_probability_preserves_meaningful_inherited_blocker():
+    from team_event_request_runtime import _governed_package_blocker
+
+    package = _registered_package(
+        calibrated_probability=1.5,
+        blockers=["", "MODEL_INPUTS_INSUFFICIENT", "  "],
+    )
+    bounds = ((
+        "calibrated_probability",
+        "calibrated_lower_bound",
+        "calibrated_upper_bound",
+    ),)
+    assert _governed_package_blocker(package, bounds) == "MODEL_INPUTS_INSUFFICIENT"
