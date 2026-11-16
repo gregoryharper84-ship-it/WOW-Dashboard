@@ -161,3 +161,22 @@ def test_nonstring_or_blank_blocker_list_cannot_prove_registration():
         result = view([route_row(**{**safe, "blockers": malformed})])
         assert result["registered_observed_n"] == 0
         assert result["routes"][0]["first_blocker"] == "ROUTE_BLOCKERS_UNVERIFIED"
+
+
+
+def test_ambiguous_route_retains_all_upstream_blockers_without_granting_authority():
+    first = route_row(blockers=["SOURCE_PERMISSION_REQUIRED", "MISSING_EVENT_ID"])
+    second = route_row(blockers=["FORWARD_CALIBRATION_REQUIRED", "MISSING_EVENT_ID"])
+    status = view([first, second])
+    result = status["routes"][0]
+    assert result["state"] == "HOLD"
+    assert result["first_blocker"] == "ROUTE_STATUS_AMBIGUOUS"
+    assert result["blockers"] == [
+        "ROUTE_STATUS_AMBIGUOUS",
+        "SOURCE_PERMISSION_REQUIRED",
+        "MISSING_EVENT_ID",
+        "FORWARD_CALIBRATION_REQUIRED",
+    ]
+    assert status["registered_observed_n"] == 0
+    assert first["blockers"] == ["SOURCE_PERMISSION_REQUIRED", "MISSING_EVENT_ID"]
+    assert second["blockers"] == ["FORWARD_CALIBRATION_REQUIRED", "MISSING_EVENT_ID"]
