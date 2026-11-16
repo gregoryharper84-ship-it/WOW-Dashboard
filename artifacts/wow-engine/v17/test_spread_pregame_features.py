@@ -249,21 +249,29 @@ def test_the_producer_adapter_refuses_a_non_nfl_sport(monkeypatch):
 # --- producer integration -------------------------------------------------
 
 class _DB:
+    """Fake both observed market rows and immutable receipt persistence readback."""
+
     def __init__(self, market_rows=()):
         self.market_rows = list(market_rows)
         self.upserts = []
+        self.receipts = {}
         self._mode = "read"
         self._name = ""
+        self._pending_rows = []
+        self._lookup_key = None
 
     def table(self, name):
         self._name = name
         self._mode = "read"
+        self._lookup_key = None
         return self
 
     def select(self, *_a, **_k):
         return self
 
-    def eq(self, *_a, **_k):
+    def eq(self, field, value):
+        if self._name == "wow_v17_spread_card_receipts" and field == "receipt_key":
+            self._lookup_key = value
         return self
 
     def gte(self, *_a, **_k):
@@ -280,12 +288,21 @@ class _DB:
 
     def upsert(self, rows, on_conflict=None, ignore_duplicates=False):
         self._mode = "write"
-        self.upserts.append({"rows": [dict(row) for row in rows]})
+        self._pending_rows = [dict(row) for row in rows]
+        self.upserts.append({"rows": self._pending_rows})
         return self
 
     def execute(self):
         if self._mode == "write":
+            for row in self._pending_rows:
+                self.receipts.setdefault(row["receipt_key"], row)
             return SimpleNamespace(data=[])
+        if self._name == "wow_v17_spread_card_receipts":
+            item = self.receipts.get(self._lookup_key)
+            return SimpleNamespace(data=(
+                [{"receipt_key": item["receipt_key"], "content_sha256": item["content_sha256"]}]
+                if item else []
+            ))
         return SimpleNamespace(data=self.market_rows)
 
 
