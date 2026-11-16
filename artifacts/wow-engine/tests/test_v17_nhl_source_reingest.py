@@ -1454,3 +1454,61 @@ def test_older_nhl_schedule_cannot_replace_newer_fenced_timeline(older_at, older
     assert stored["schedule_digest"] == "b" * 64
     assert stored["schedule_retrieved_at"] == "2026-11-16T15:00:00Z"
     assert stored["can_execute"] is False
+
+
+def test_reingest_accepts_equivalent_final_off_across_two_club_responses():
+    # Two official club snapshots can straddle FINAL -> OFF without changing
+    # the underlying full-game result. A correct reconciler must be order-safe.
+    fixture = _fixture()
+    first = fixture["games"][0]
+    event = first["id"]
+    home = first["homeTeam"]["abbrev"]
+    away = first["awayTeam"]["abbrev"]
+    mapping = _by_team(fixture)
+    for item in mapping[home]:
+        if item["id"] == event:
+            replacement = dict(item)
+            replacement["gameState"] = "FINAL"
+            mapping[home] = [
+                replacement if g["id"] == event else g for g in mapping[home]
+            ]
+            break
+    for item in mapping[away]:
+        if item["id"] == event:
+            replacement = dict(item)
+            replacement["gameState"] = "OFF"
+            mapping[away] = [
+                replacement if g["id"] == event else g for g in mapping[away]
+            ]
+            break
+    response = _run(
+        _FakeDB(), session=_Session(mapping),
+        teams=(home, away), dry_run=True,
+    )
+    assert response["status"] == "NHL_SOURCE_REINGEST_DRY_RUN_READY"
+    assert response["can_execute"] is False
+
+
+def test_reingest_rejects_conflicting_neutral_site_between_official_club_views():
+    # Two boolean but conflicting venue classifications must not silently
+    # inherit the first fetched identity.
+    fixture = _fixture()
+    first = fixture["games"][0]
+    event = first["id"]
+    home = first["homeTeam"]["abbrev"]
+    away = first["awayTeam"]["abbrev"]
+    mapping = _by_team(fixture)
+    assert type(first["neutralSite"]) is bool
+    mapping[away] = [
+        {**g, "neutralSite": not first["neutralSite"]}
+        if g["id"] == event else g
+        for g in mapping[away]
+    ]
+    response = _run(
+        _FakeDB(), session=_Session(mapping),
+        teams=(home, away), dry_run=True,
+    )
+    assert response["status"] == "BLOCKED"
+    assert response["code"] == "NHL_DUPLICATE_GAME_CONFLICT"
+    assert response["blocked_stage"] == "SOURCE_ACQUISITION"
+    assert response["can_execute"] is False
