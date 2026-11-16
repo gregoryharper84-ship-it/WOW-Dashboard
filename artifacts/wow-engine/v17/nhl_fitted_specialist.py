@@ -367,11 +367,14 @@ def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
                 if not isinstance(entry, Mapping):
                     blockers.append("NHL_FITTED_CALIBRATOR_BINS_INVALID")
                     break
+                calibrated = _probability(entry.get("calibrated_probability"))
+                lower = _probability(entry.get("wilson_lower"))
+                upper = _probability(entry.get("wilson_upper"))
+                raw_mean = _number(entry.get("raw_mean"))
                 if (
-                    _probability(entry.get("calibrated_probability")) is None
-                    or _probability(entry.get("wilson_lower")) is None
-                    or _probability(entry.get("wilson_upper")) is None
-                    or (_number(entry.get("raw_mean")) is None)
+                    calibrated is None or lower is None or upper is None
+                    or raw_mean is None or not 0.0 <= raw_mean <= 1.0
+                    or not lower <= calibrated <= upper
                 ):
                     blockers.append("NHL_FITTED_CALIBRATOR_BINS_INVALID")
                     break
