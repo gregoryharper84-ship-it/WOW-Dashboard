@@ -59,7 +59,8 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
     style = _str(row, "structure_type")
     if style not in STYLES:
         raise ValueError("UNKNOWN_STRUCTURE_TYPE")
-    if _str(row, "official_result") not in RESULTS:
+    result = _str(row, "official_result")
+    if result not in RESULTS:
         raise ValueError("INVALID_RESULT")
     if _str(row, "calibration_status") != "PASS":
         raise ValueError("CALIBRATION_NOT_VERIFIED")
@@ -78,10 +79,14 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
         raise ValueError("MISSING_EXACT_STAT_FAMILIES")
     predicted = _utc(row.get("prediction_at_utc"))
     quote = _utc(row.get("quote_at_utc"))
+    filled = _utc(row.get("filled_at_utc"))
     started = _utc(row.get("event_start_utc"))
     settled = _utc(row.get("settlement_at_utc"))
     fit_cutoff = _utc(row.get("model_fit_cutoff_utc"))
-    if not fit_cutoff < predicted <= quote < started <= settled:
+    # The independent fitted forecast and RFQ quote can arrive in either
+    # order. Both MUST predate the *actual accepted fill* and event start.
+    if not (fit_cutoff < predicted <= filled and quote <= filled
+            and filled < started <= settled):
         raise ValueError("CHRONOLOGY_INVALID")
     if started < cutoff:
         raise ValueError("OUTSIDE_FORWARD_HOLDOUT")
@@ -94,7 +99,6 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
     price = _int(row, "executable_quote_cents", 1, 99)
     fee = _int(row, "fee_cents_per_contract", 0, 100)
     settlement = _int(row, "settlement_cents_per_contract", 0, 100)
-    result = row["official_result"]
     if (result == "YES" and settlement != 100) or (result == "NO" and settlement != 0):
         raise ValueError("RESULT_PAYOUT_CONFLICT")
     if result == "SCALAR" and settlement in (0, 100):
@@ -105,6 +109,7 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
     _str(row, "fitted_model_artifact_id")
     _str(row, "official_settlement_evidence_ref")
     _str(row, "quote_evidence_ref")
+    _str(row, "filled_order_receipt_id")
     _str(row, "thesis_cluster_id")
     _str(row, "comparison_group_id")
     return {
@@ -113,6 +118,9 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
         "outcome": None if result == "SCALAR" else int(result == "YES"),
         "cash_profit_cents_per_contract": settlement - price - fee,
         "capital_cents_per_contract": price + fee,
+        "break_even_joint_probability": None if result == "SCALAR" else (price + fee) / 100,
+        "ex_ante_ev_cents_per_contract": None if result == "SCALAR" else 100 * p - price - fee,
+        "lower_bound_ev_cents_per_contract": None if result == "SCALAR" else 100 * float(lb) - price - fee,
         "cluster": row["thesis_cluster_id"],
         "comparison_group": row["comparison_group_id"],
         "scalar": result == "SCALAR",
@@ -163,6 +171,18 @@ def replay(rows: list[dict[str, Any]], *, holdout_start_utc: str) -> dict[str, A
             ) / len(binary) if binary else None,
             "net_cents_per_contract_sum": profit,
             "entry_weighted_roi": profit / invested if invested else None,
+            "mean_ex_ante_ev_cents_per_contract": (
+                sum(x["ex_ante_ev_cents_per_contract"] for x in binary) / len(binary)
+                if binary else None
+            ),
+            "mean_lower_bound_ev_cents_per_contract": (
+                sum(x["lower_bound_ev_cents_per_contract"] for x in binary) / len(binary)
+                if binary else None
+            ),
+            "mean_break_even_joint_probability": (
+                sum(x["break_even_joint_probability"] for x in binary) / len(binary)
+                if binary else None
+            ),
         }
 
     groups: dict[str, set[str]] = defaultdict(set)
