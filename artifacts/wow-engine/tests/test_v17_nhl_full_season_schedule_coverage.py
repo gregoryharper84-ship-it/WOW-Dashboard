@@ -448,3 +448,53 @@ def test_schedule_digest_is_stable_for_identical_coverage():
         separators=(",", ":"),
     )
     assert first["schedule_digest"] == hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def test_timeline_projection_holds_for_scheduled_prior_game_missing_settlement():
+    # The receipt is only 22 hours old, yet an earlier scheduled match could
+    # have settled since acquisition. Never derive fresh rest/form features
+    # as though that earlier game did not occur.
+    at = datetime(2026, 11, 17, 10, 0, tzinfo=timezone.utc)
+    stored = {
+        "season": SEASON, "season_scope": "FULL_SEASON",
+        "provenance_complete": True, "schedule_digest": "a" * 64,
+        "verified_at": "2026-11-16T12:00:00Z",
+        "settled_events": [],
+        "scheduled_events": [{
+            "official_event_id": "2026029888",
+            "event_start_time": "2026-11-17T00:00:00Z",
+        }],
+        "source": "NHL_SOURCE_REINGEST",
+    }
+    with pytest.raises(fitted.NHLFittedSpecialistError) as caught:
+        fitted.timeline_receipt_for_target(
+            stored, event_start_time=at, season=SEASON,
+            as_of_utc=datetime(2026, 11, 17, 9, 59, tzinfo=timezone.utc),
+        )
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
+    assert caught.value.detail["reason"] == "SOURCE_TIMELINE_PRIOR_GAME_UNSETTLED_IN_RECEIPT"
+
+
+@pytest.mark.parametrize("bad_scheduled", [
+    [None],
+    [{"official_event_id": "", "event_start_time": "2026-11-17T00:00:00Z"}],
+    [{"official_event_id": "2026029888", "event_start_time": None}],
+])
+def test_timeline_projection_rejects_malformed_scheduled_event(bad_scheduled):
+    stored = {
+        "season": SEASON, "season_scope": "FULL_SEASON",
+        "provenance_complete": True, "schedule_digest": "a" * 64,
+        "verified_at": "2026-11-16T12:00:00Z",
+        "settled_events": [],
+        "scheduled_events": bad_scheduled,
+        "source": "NHL_SOURCE_REINGEST",
+    }
+    with pytest.raises(fitted.NHLFittedSpecialistError) as caught:
+        fitted.timeline_receipt_for_target(
+            stored,
+            event_start_time=datetime(2026, 11, 17, 10, tzinfo=timezone.utc),
+            season=SEASON,
+            as_of_utc=datetime(2026, 11, 17, 9, 59, tzinfo=timezone.utc),
+        )
+    assert "NHL_SOURCE_TIMELINE_INCOMPLETE" in caught.value.blockers
+    assert caught.value.detail["reason"] == "SOURCE_TIMELINE_SCHEDULE_INVALID"
