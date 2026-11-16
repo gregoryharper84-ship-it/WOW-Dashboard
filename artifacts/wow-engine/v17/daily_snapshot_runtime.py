@@ -700,6 +700,7 @@ def _admit_certified_spread_receipt(
     sport: str,
     home_line: float,
     settlement_basis: str | None,
+    ledger_evidence: Any,
 ) -> tuple[dict[str, Any], bool, list[str]]:
     """Admit one candidate receipt against the ledger-bound exact line.
 
@@ -717,6 +718,27 @@ def _admit_certified_spread_receipt(
         blockers.append("SPREAD_RECEIPT_SPORT_MISMATCH")
     if not settlement_basis or str(receipt.get("settlement_basis") or "") != settlement_basis:
         blockers.append("SPREAD_RECEIPT_SETTLEMENT_BASIS_MISMATCH")
+    # A certified receipt for the same event and signed line is not sufficient:
+    # sportsbook, provider event and observed quote instant must match the exact
+    # ledger evidence used to construct the current selection.
+    if str(receipt.get("provider_event_id") or "") != str(ledger_evidence.provider_event_id):
+        blockers.append("SPREAD_RECEIPT_PROVIDER_EVENT_MISMATCH")
+    if (str(receipt.get("quote_sportsbook") or "").strip().casefold()
+            != str(ledger_evidence.sportsbook).strip().casefold()):
+        blockers.append("SPREAD_RECEIPT_BOOK_MISMATCH")
+    try:
+        observed = datetime.fromisoformat(
+            str(receipt.get("quote_observed_at_utc") or "").replace("Z", "+00:00")
+        )
+        quoted = datetime.fromisoformat(
+            str(ledger_evidence.quote_timestamp or "").replace("Z", "+00:00")
+        )
+        if (observed.tzinfo is None or quoted.tzinfo is None
+                or observed.utcoffset() is None or quoted.utcoffset() is None
+                or observed != quoted):
+            blockers.append("SPREAD_RECEIPT_QUOTE_TIME_MISMATCH")
+    except (TypeError, ValueError, OverflowError):
+        blockers.append("SPREAD_RECEIPT_QUOTE_TIME_MISMATCH")
     expected_line = float(home_line) if side != "AWAY" else -float(home_line)
     admission = spread_card_admission(
         receipt,
@@ -823,6 +845,7 @@ def _spread_lane_rows(
                 sport=sport,
                 home_line=float(evidence.home_spread),
                 settlement_basis=payload["settlement_basis"],
+                ledger_evidence=evidence,
             )
             # A blocked receipt is research/diagnostic evidence, never a
             # publishable numerical package. Remove nested distribution values
