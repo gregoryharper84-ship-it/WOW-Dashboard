@@ -112,18 +112,28 @@ def diagnose_slip_structure(legs: list[dict[str, Any]]) -> dict[str, Any]:
         thresholds = [r["threshold"] for r in group]
         if (
             None not in directions and len(directions) == 1
-            and None not in periods and len(periods) == 1
-            and None not in rules and len(rules) == 1
+            and len(periods) == 1 and all(
+                value is not None and value.upper() not in {"UNKNOWN", "UNVERIFIED", "N/A"}
+                for value in periods
+            )
+            and len(rules) == 1 and all(
+                value is not None and value.upper() not in {"UNKNOWN", "UNVERIFIED", "N/A"}
+                for value in rules
+            )
             and all(v is not None for v in thresholds)
             and len(set(thresholds)) >= 2
         ):
             verified_nested += 1
 
     factors = []
-    if len(events) == 1:
+    if len(events) < len(clean):
         factors.append("SAME_GAME_SCRIPT_COMMON_CAUSE")
-    if len(players) == 1:
+        if len(events) > 1:
+            factors.append("REPEATED_EVENT_EXPOSURE")
+    if len(players) < len(clean):
         factors.append("ONE_PLAYER_MINUTES_OR_AVAILABILITY_COMMON_CAUSE")
+        if len(players) > 1:
+            factors.append("REPEATED_PLAYER_EXPOSURE")
     if receiver_groups:
         factors.append("SAME_TEAM_RECEIVING_OPPORTUNITY_COMPETITION")
     if duplicate_market_count:
