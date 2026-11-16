@@ -438,10 +438,20 @@ def run_nhl_source_reingest(
                 db, rows, season=effective_season, lease_token=lease_token
             )
         except D1RegistryError as exc:
+            # Preserve the native fenced-RPC failure, including whether prior
+            # completed batches may already have been appended.
             return _blocked(
                 exc.code,
                 stage="SOURCE_PERSISTENCE",
-                detail={"error_type": type(exc).__name__},
+                detail={
+                    "error_type": type(exc).__name__,
+                    "retryable": exc.code not in {
+                        "NHL_SOURCE_IDENTITY_CONFLICT",
+                        "NHL_SOURCE_REINGEST_BATCH_INVALID",
+                        "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID",
+                    },
+                    "partial_write_possible": True,
+                },
             )
         except Exception as exc:  # noqa: BLE001 - persistence is a typed boundary
             return _blocked(
