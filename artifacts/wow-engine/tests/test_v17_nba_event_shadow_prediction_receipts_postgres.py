@@ -297,3 +297,30 @@ def test_postgres_stores_feature_lineage(db):
     assert row["dataset_id"] == "nba-source-hash-2026-11-15"
     assert row["source_snapshot_timestamp"] <= row["feature_timestamp"]
     assert row["feature_timestamp"] <= row["model_timestamp"] <= row["created_at"]
+
+
+@pytest.mark.parametrize(
+    ("source_age_minutes", "feature_age_minutes", "model_age_minutes"),
+    [
+        (4, 5, 3),  # source after feature; feature before model
+        (6, 4, 5),  # feature after model; source before feature
+    ],
+    ids=["source-after-feature", "feature-after-model"],
+)
+def test_direct_past_out_of_order_feature_chain_is_rejected(
+    db, source_age_minutes, feature_age_minutes, model_age_minutes
+):
+    """Every server chronology inequality must reject even fully past evidence."""
+    now = datetime.now(timezone.utc)
+    before = db.execute(f"select count(*) as n from {TABLE}").fetchone()["n"]
+    with pytest.raises(psycopg.errors.CheckViolation, match="nba_shadow_prospective"):
+        _insert(
+            db,
+            created_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+            event_start=now + timedelta(hours=3),
+            source_at=now - timedelta(minutes=source_age_minutes),
+            feature_at=now - timedelta(minutes=feature_age_minutes),
+            model_at=now - timedelta(minutes=model_age_minutes),
+        )
+    after = db.execute(f"select count(*) as n from {TABLE}").fetchone()["n"]
+    assert after == before
