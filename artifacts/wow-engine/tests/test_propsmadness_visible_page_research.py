@@ -144,3 +144,10 @@ def test_under_odds_must_be_complete_numeric_token(bad_under):
     with pytest.raises(VisiblePageHold, match="PM_VISIBLE_LINE_OR_ODDS_MISSING"):
         parsed(BODY.replace('\n-137\n<button aria-label="Track',
                             '\n' + bad_under + '\n<button aria-label="Track'))
+
+
+def test_windows_crlf_page_text_extracts_same_visible_stats():
+    result = parsed(BODY.replace("\n", "\r\n"))
+    assert result["player_display_unverified"] == "Ada Example"
+    assert result["display_line_unverified"] == 21.5
+    assert result["stats_display_unverified"]["Usage"] == 29.4
