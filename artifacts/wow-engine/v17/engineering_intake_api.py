@@ -48,6 +48,11 @@ def _rows(payload, kind):
             item.get('number') if isinstance(item, dict) else None)
         if type(ident) is not int or ident < 1:
             raise ValueError('missing row identity')
+        if kind != 'runs':
+            if item.get('state') != 'open' or 'body' not in item:
+                raise ValueError('incomplete row ownership fields')
+            if item['body'] is not None and not isinstance(item['body'], str):
+                raise ValueError('invalid row ownership body')
         if kind == 'runs':
             title = item.get('display_title')
             if not isinstance(title, str) or not title.strip():

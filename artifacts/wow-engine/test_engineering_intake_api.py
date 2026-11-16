@@ -20,7 +20,7 @@ def load():
 
 
 def row(i):
-    return {'number': i, 'state': 'open', 'labels': []}
+    return {'number': i, 'state': 'open', 'body': None, 'labels': []}
 
 
 def worker(i):
@@ -42,6 +42,32 @@ class FakeRun:
 
 
 class IntakeTests(unittest.TestCase):
+    def test_missing_pr_ownership_fields_cannot_reach_duplicate_dispatch(self):
+        for field in ('state', 'body'):
+            with self.subTest(field=field):
+                m = load()
+                item = {**row(100), 'body': 'Incident: #23'}
+                del item[field]
+                with self.assertRaises(m.IntakeFailure):
+                    m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
+                                  runner=FakeRun([[item]] * 3), sleep=lambda _: None)
+
+    def test_invalid_issue_or_pr_ownership_fields_are_rejected(self):
+        for kind in ('issues', 'prs'):
+            for field, value in (('state', None), ('state', 'closed'), ('body', {})):
+                with self.subTest(kind=kind, field=field, value=value):
+                    m = load()
+                    item = {**row(100), field: value}
+                    with self.assertRaises(m.IntakeFailure):
+                        m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', kind, '/items',
+                                      runner=FakeRun([[item]] * 3), sleep=lambda _: None)
+
+    def test_explicit_null_body_remains_valid(self):
+        m = load()
+        result = m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
+                              runner=FakeRun([[row(1)], [row(1)]]), sleep=lambda _: None)
+        self.assertEqual(result[0]['body'], None)
+
     def test_incomplete_worker_evidence_cannot_reach_duplicate_dispatch(self):
         m = load()
         selector_spec = importlib.util.spec_from_file_location(
@@ -223,7 +249,7 @@ class IntakeTests(unittest.TestCase):
 
     def test_issue_pr_rows_are_filtered_after_validated_raw_paging(self):
         m = load()
-        issue_pr = {'number': 2, 'pull_request': {'url': 'example'}}
+        issue_pr = {**row(2), 'pull_request': {'url': 'example'}}
         run = FakeRun([[row(1), issue_pr], [row(1), issue_pr]])
         self.assertEqual(m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'issues', '/issues?state=open',
                                        runner=run, sleep=lambda _: None), [row(1)])
