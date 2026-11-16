@@ -1507,4 +1507,4 @@ def test_registry_loader_recovers_from_noniterable_newest_feature_names():
         _DB(candidates=[newest, prior]), as_of_utc=NOW
     )
     assert selected.created_at == datetime.fromisoformat(prior["created_at"])
-    assert selected.can_execute is False
+    assert selected.publication_capable is False
