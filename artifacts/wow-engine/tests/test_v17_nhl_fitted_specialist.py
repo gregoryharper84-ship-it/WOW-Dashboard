@@ -1554,3 +1554,23 @@ def test_fitted_candidate_recovers_to_older_artifact_after_invalid_bounds():
     )
     assert selected.created_at == datetime.fromisoformat(valid["created_at"])
     assert selected.publication_capable is False
+
+
+@pytest.mark.parametrize(
+    ("metric", "bad"),
+    [
+        ("calibrated_brier", None),
+        ("calibrated_log_loss", -0.01),
+        ("raw_brier", "not-numeric"),
+        ("raw_log_loss", float("nan")),
+        ("ece", 1.01),
+    ],
+)
+def test_fitted_candidate_requires_quantified_validation_metrics(metric, bad):
+    candidate = _candidate_row()
+    metrics = dict(candidate["validation_metrics"])
+    metrics[metric] = bad
+    candidate["validation_metrics"] = metrics
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl._verify_candidate(candidate)
+    assert "NHL_FITTED_VALIDATION_METRICS_INVALID" in caught.value.blockers
