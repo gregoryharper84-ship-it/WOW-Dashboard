@@ -2,12 +2,14 @@
 
 ## Status
 
-DEPLOYED — PRIMARY and CRITICAL VERIFIED IN PRODUCTION
+DEPLOYED — PRIMARY, CRITICAL, 1IP MANIFEST, AND INFRASTRUCTURE_BLOCKED VERIFIED
 
-Merged and live. The two headline defects are confirmed repaired against live
-production data (see Production Verification). The four secondary repairs are
-deployed in the running image but have not been independently observed in
-production, so `FIXED_VERIFIED` is **partial**, not global.
+Merged and live. The two headline defects plus the 1IP capability manifest and
+infrastructure-blocked semantics are confirmed repaired against live production
+data (see Production Verification and the 2026-11-10 secondary acceptance
+receipt). `REQUESTED_ROW_LIMIT_ZERO` is recorded as verified in production via
+the #2585 canary. The host three-field scoring-attempted receipt remains
+pending, so `FIXED_VERIFIED` is still **partial**, not global.
 
 ## Linked Postmortem(s)
 
@@ -275,13 +277,31 @@ previously counted these rows as held will see the count move to purged.
 - Detail persistence: healthy; no
   `DAILY_ROW_DETAIL_PERSISTENCE_UNAVAILABLE` condition observed.
 
-**NOT independently verified in production** (deployed, but not observed):
-`1IP_CAPABILITY_MANIFEST_DRIFT` (requires reading `/governance`),
-`ZERO_ROW_REASON_MISCLASSIFIED` (no `max_props=0` run in the window),
-`SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`, and
-`INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT`. The Will Warren 16.5 `REJECT_OOD`
-gate is covered by the unchanged `test_mlb_1ip_exact_line_contract.py`; no 1IP
-OOD row appeared in the production window, so it was not re-observed live.
+**Independently verified later without paid retries (2026-11-10):**
+- `1IP_CAPABILITY_MANIFEST_DRIFT` — live `/v17/governance-detail` declares
+  `1ST_INNING_PITCHES_THROWN` as `SUPPORTED_HOLD_ONLY` /
+  `publication_allowed=false` / exact-line OOD policy. See
+  `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
+- `INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT` — unpaid decision-level recount
+  while live SHA `e7384b9d2fed3256681b25715516dff2e97d3233`: 806 PROPS
+  direction decisions / 422 rows / 55 Daily runs where the same rejected
+  decision carries `verdict_class=MODEL_REJECTED`, `model_evaluated=true`,
+  `infrastructure_blocked=false`, and non-empty
+  `concurrent_infrastructure_blockers` (not pre-model `MODEL_JUDGMENT` alone).
+  Structured JSON-path query recorded in
+  `PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`.
+  Evidence window `2026-09-15T15:28:06Z`–`2026-11-09T15:35:34Z`; sanitized
+  receipt from `v17-daily-a2b7f50e-…` shows `NO_LOW_PROBABILITY` +
+  `PAYOUT_UNRESOLVED`.
+
+**Still not independently verified in production**:
+The host three-field receipt for `SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`
+remains pending (compact Daily row-detail does not currently persist attempt
+fields). Closure requires a real Action receipt with
+`action_invocation_attempted=true`, `specialist_scoring_attempted=false`, and
+host-alias `scoring_attempted=true` on a selected PROPS row
+(`test_receipt_semantics_split.py`). The Will Warren 16.5 `REJECT_OOD` gate
+remains covered by `test_mlb_1ip_exact_line_contract.py`.
 
 ## Rollback
 
@@ -294,17 +314,17 @@ OOD row appeared in the production window, so it was not re-observed live.
 
 ## Result
 
-**FIXED — PRIMARY and CRITICAL VERIFIED IN PRODUCTION; four secondary repairs
-deployed but not independently observed.**
+**FIXED — PRIMARY, CRITICAL, 1IP MANIFEST, INFRASTRUCTURE_BLOCKED, and ZERO_ROW
+VERIFIED IN PRODUCTION; scoring-attempted host three-field receipt still pending.**
 
 ```text
 INCIDENT_STATUS = REPAIRED
 DAILY_RESPONSE_SERIALIZATION_TOO_LARGE = FIXED_VERIFIED
 TERMINAL_REDUCER_UPGRADE = FIXED_VERIFIED
-1IP_CAPABILITY_MANIFEST_DRIFT = DEPLOYED_NOT_OBSERVED
+1IP_CAPABILITY_MANIFEST_DRIFT = FIXED_VERIFIED
+INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = FIXED_VERIFIED
 ZERO_ROW_REASON_MISCLASSIFIED = FIXED_VERIFIED_IN_PRODUCTION (2026-11-10 canary 42910074320 / v17-daily-ebc1ba5b; prior 42895886635 / v17-daily-3420226d)
 SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = BACKEND_PAIR_OBSERVED_HOST_PENDING (2026-11-10 canary 42910074320 BACKEND_ATTEMPT_FIELDS_CAPTURED_HOST_PENDING)
-INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = DEPLOYED_NOT_OBSERVED
 can_execute = false
 ```
 
@@ -313,13 +333,23 @@ can_execute = false
 - DONE: `v17/sql/20260914_v17_daily_run_row_detail.sql` applied to the governed
   production project and verified least-privilege. The file header still reads
   "repository source only" as the standing rule for re-application elsewhere.
+- DONE (2026-11-10): live `/governance` 1IP declaration and production
+  `infrastructure_blocked=false` under concurrent market blockers
+  (`PROD-ACCEPTANCE-2026-11-10__pm-2026-09-14-001-secondary-verify.md`).
 - DONE (2026-11-10): live PROPS `max_props=0` returned `REQUESTED_ROW_LIMIT_ZERO`
   (re-verified GREEN with soft-hold on canary `42910074320`).
 - DONE (2026-11-10): backend exposes distinct `specialist_scoring_attempted` and
   `scoring_attempted` on FULL `/score-pick-request`.
+- DONE (2026-11-10): post-safety sync MONEYLINE Daily observed —
+  delayed cron `0 17` workflow `42875617354` /
+  `run_id=v17-daily-73c75380-97e8-40b3-8352-cae443ab9047`; schedule
+  `42911461928` /
+  `run_id=v17-daily-80c514c0-1aff-46fc-b3e7-99722a5b9c78`; live tip
+  `6998b62af…` retains safety ancestor `98a56157…`.
 - Remaining owner/host Action replay for scoring-attempted semantics:
   confirm one ChatGPT Action receipt also exposes `action_invocation_attempted`
   without collapsing the backend pair.
+- Cron `0 23` not yet observed as of `2026-11-10T23:01Z` (no paid dispatch).
 - Confirm downstream consumers of Daily reconciliation tolerate the
   `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
   the observed window).
