@@ -58,6 +58,11 @@ def _time(value: str) -> datetime:
         raise NHLXGResearchError("NHL_XG_TIME_INVALID") from exc
 
 
+def _regular_season_event_id(value: Any) -> bool:
+    """Require canonical NHL ten-digit official regular-season game identity."""
+    return isinstance(value, str) and re.fullmatch(r"20[0-9]{2}02[0-9]{4}", value) is not None
+
+
 def _team(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[A-Z]{3}", value) is not None
 
@@ -96,7 +101,7 @@ def reconstruct_5v5_xg(
     returned statistic may be used for a serving model without separate source
     rights, source authentication, fit, calibration and scientific acceptance.
     """
-    if not (isinstance(target_event_id, str) and target_event_id.strip()):
+    if not _regular_season_event_id(target_event_id):
         raise NHLXGResearchError("NHL_XG_TARGET_INVALID")
     if not (_team(home_team) and _team(away_team) and home_team != away_team):
         raise NHLXGResearchError("NHL_XG_INVALID_TEAM_ID")
@@ -115,7 +120,7 @@ def reconstruct_5v5_xg(
     for row in prior_games:
         if not isinstance(row, NHLXGRecord):
             raise NHLXGResearchError("NHL_XG_HISTORY_INVALID")
-        if not isinstance(row.official_event_id, str) or not row.official_event_id.strip():
+        if not _regular_season_event_id(row.official_event_id):
             raise NHLXGResearchError("NHL_XG_EVENT_ID_INVALID")
         if row.official_event_id == target_event_id:
             raise NHLXGResearchError("NHL_XG_TARGET_LEAKAGE")
