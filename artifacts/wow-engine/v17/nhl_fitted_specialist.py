@@ -1144,7 +1144,9 @@ def score_current_nhl_event(req: Any, *, db: Any = None, now_utc: datetime | Non
     return package
 
 
-def persist_nhl_season_timeline_receipt(db: Any, receipt: Mapping[str, Any]) -> dict[str, Any]:
+def persist_nhl_season_timeline_receipt(
+    db: Any, receipt: Mapping[str, Any], *, lease_token: str | None = None
+) -> dict[str, Any]:
     """Persist a verified full-season timeline receipt for later scoring."""
     if db is None:
         raise NHLFittedSpecialistError(
@@ -1193,6 +1195,42 @@ def persist_nhl_season_timeline_receipt(db: Any, receipt: Mapping[str, Any]) -> 
         "source": str(receipt.get("source") or "NHL_SOURCE_REINGEST"),
         "can_execute": False,
     }
+    # Protected ingestion always uses the token-fenced RPC; standalone
+    # direct calls are retained for nonproduction fixture tests only.
+    if lease_token is not None:
+        rpc = getattr(db, "rpc", None)
+        if not callable(rpc):
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT", ["NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE"]
+            )
+        try:
+            response = rpc("wow_nhl_persist_reingest_timeline", {
+                "p_season": season, "p_token": lease_token, "p_receipt": row,
+            }).execute()
+        except Exception as exc:  # noqa: BLE001 - fail closed at DB boundary
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                ["NHL_SOURCE_TIMELINE_RECEIPT_PERSIST_FAILED"],
+                {"error_type": type(exc).__name__},
+            ) from exc
+        data = getattr(response, "data", None)
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if not isinstance(data, Mapping) or data.get("can_execute") is not False:
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT", ["NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID"]
+            )
+        if data.get("status") != "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED":
+            raise NHLFittedSpecialistError(
+                "MODEL_INPUTS_INSUFFICIENT",
+                [str(data.get("code") or "NHL_SOURCE_TIMELINE_RECEIPT_PERSIST_FAILED")],
+            )
+        return {
+            "status": "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED",
+            "season": season, "settled_event_n": len(settled),
+            "scheduled_event_n": len(scheduled), "schedule_digest": digest,
+            "written": data.get("written"), "can_execute": False,
+        }
     result = (
         db.table(TIMELINE_RECEIPT_TABLE)
         .upsert([row], on_conflict="season")
@@ -1523,6 +1561,7 @@ def build_reingest_timeline_receipt(
     }
 
 
+
 def acquire_nhl_reingest_season_lease(
     db: Any,
     *,
@@ -1530,62 +1569,51 @@ def acquire_nhl_reingest_season_lease(
     lease_token: str,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
-    """Acquire a season-scoped re-ingest lease; concurrent writers fail closed."""
-    if db is None:
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE",
-            "can_execute": False,
-        }
-    now = now_utc or datetime.now(timezone.utc)
+    """Acquire only through one database-atomic, server-clock season RPC.
+
+    A client SELECT+UPSERT fallback can grant two conflicting writers.
+    now_utc remains for compatibility but never overrides PostgreSQL time.
+    """
+    del now_utc
     season_token = str(season or "").strip()
     token = str(lease_token or "").strip()
     if not season_token or not token:
-        return {
-            "status": "BLOCKED",
-            "code": "NHL_SOURCE_REINGEST_LEASE_INVALID",
-            "can_execute": False,
-        }
-    existing = (
-        db.table(REINGEST_LEASE_TABLE)
-        .select("season,lease_token,expires_at")
-        .eq("season", season_token)
-        .limit(1)
-        .execute()
-    )
-    rows = list(getattr(existing, "data", None) or [])
-    if rows:
-        current = rows[0]
-        expires = _aware(current.get("expires_at"))
-        holder = str(current.get("lease_token") or "")
-        if expires is not None and expires > now and holder and holder != token:
-            return {
-                "status": "BLOCKED",
-                "code": "NHL_SOURCE_REINGEST_IN_PROGRESS",
-                "detail": {"season": season_token, "retryable": True},
-                "can_execute": False,
-            }
-    row = {
-        "season": season_token,
-        "lease_token": token,
-        "acquired_at": now.isoformat(),
-        "expires_at": (now + REINGEST_LEASE_TTL).isoformat(),
-        "can_execute": False,
-    }
+        return {"status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_LEASE_INVALID", "can_execute": False}
+    rpc = getattr(db, "rpc", None)
+    if not callable(rpc):
+        return {"status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE", "can_execute": False}
     try:
-        db.table(REINGEST_LEASE_TABLE).upsert([row], on_conflict="season").execute()
-    except Exception as exc:  # noqa: BLE001 - lease conflict is a typed boundary
+        response = rpc("wow_nhl_claim_reingest_lease", {
+            "p_season": season_token, "p_token": token,
+        }).execute()
+    except Exception as exc:  # noqa: BLE001 - RPC is an external atomic boundary
         return {
             "status": "BLOCKED",
-            "code": "NHL_SOURCE_REINGEST_IN_PROGRESS",
+            "code": "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE",
             "detail": {"error_type": type(exc).__name__, "retryable": True},
             "can_execute": False,
         }
+    data = getattr(response, "data", None)
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    if not isinstance(data, Mapping) or data.get("can_execute") is not False:
+        return {"status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID", "can_execute": False}
+    status = str(data.get("status") or "")
+    if (
+        status == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
+        and str(data.get("season") or "") == season_token
+        and str(data.get("lease_token") or "") == token
+        and _aware(data.get("expires_at")) is not None
+    ):
+        return {
+            "status": status, "season": season_token, "lease_token": token,
+            "expires_at": str(data["expires_at"]), "can_execute": False,
+        }
     return {
-        "status": "NHL_SOURCE_REINGEST_LEASE_ACQUIRED",
-        "season": season_token,
-        "lease_token": token,
-        "expires_at": row["expires_at"],
+        "status": "BLOCKED",
+        "code": str(data.get("code") or "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID")
+        if status == "BLOCKED" else "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID",
+        "detail": {"season": season_token, "retryable": True},
         "can_execute": False,
     }
 
@@ -1593,21 +1621,26 @@ def acquire_nhl_reingest_season_lease(
 def release_nhl_reingest_season_lease(
     db: Any, *, season: int | str, lease_token: str
 ) -> dict[str, Any]:
-    """Release a previously acquired season re-ingest lease."""
-    if db is None:
+    """Release only the exact token through a database-owned atomic RPC."""
+    rpc = getattr(db, "rpc", None)
+    if not callable(rpc):
         return {"status": "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED", "can_execute": False}
-    season_token = str(season or "").strip()
-    token = str(lease_token or "").strip()
-    query = db.table(REINGEST_LEASE_TABLE).delete().eq("season", season_token)
-    if hasattr(query, "eq"):
-        query = query.eq("lease_token", token)
-    query.execute()
-    return {
-        "status": "NHL_SOURCE_REINGEST_LEASE_RELEASED",
-        "season": season_token,
-        "can_execute": False,
-    }
-
+    try:
+        response = rpc("wow_nhl_release_reingest_lease", {
+            "p_season": str(season or "").strip(), "p_token": str(lease_token or "").strip(),
+        }).execute()
+        data = getattr(response, "data", None)
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if isinstance(data, Mapping) and data.get("can_execute") is False:
+            if data.get("status") in {
+                "NHL_SOURCE_REINGEST_LEASE_RELEASED",
+                "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED",
+            }:
+                return dict(data)
+    except Exception:  # noqa: BLE001 - terminal release must not mask original failure
+        pass
+    return {"status": "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED", "can_execute": False}
 
 def resolve_nhl_timeline_receipt(
     *,
