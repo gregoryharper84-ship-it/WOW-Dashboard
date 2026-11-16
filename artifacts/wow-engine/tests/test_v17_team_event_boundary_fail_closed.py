@@ -354,3 +354,52 @@ def test_invalid_registered_probability_preserves_meaningful_inherited_blocker()
         "calibrated_upper_bound",
     ),)
     assert _governed_package_blocker(package, bounds) == "MODEL_INPUTS_INSUFFICIENT"
+
+
+@pytest.mark.parametrize("blank_blockers", [[""], ["   "], ["", "\t", "   "]])
+def test_missing_registered_numeric_probability_ignores_blank_inherited_blockers(blank_blockers):
+    # Regression: do not emit an empty error or empty CARD_ADMISSION reason.
+    held = _completed_registered(
+        _row("NHL"),
+        _registered_package(calibrated_probability=None, blockers=blank_blockers),
+    )
+    assert held["terminal_status"] == "HELD"
+    assert held["code"] == "MODEL_OUTPUT_INVALID"
+    assert held["blockers"] == ["GOVERNED_PROBABILITY_FIELDS_INVALID"]
+    assert held["card_admission_blockers"] == [
+        "CARD_ADMISSION:GOVERNED_PROBABILITY_FIELDS_INVALID"
+    ]
+    assert held["can_execute"] is False
+
+
+@pytest.mark.parametrize("blank_blockers", [[""], ["   "], ["", "\t", "   "]])
+def test_valid_registered_probability_ignores_blank_inherited_blockers(blank_blockers):
+    # Non-errors cannot downgrade a valid complete sporting probability.
+    completed = _completed_registered(
+        _row("NHL"), _registered_package(blockers=blank_blockers)
+    )
+    assert completed["terminal_status"] == "COMPLETED"
+    assert completed["audit_result"] == "PASS"
+    assert completed["blockers"] == []
+    assert completed["can_execute"] is False
+
+
+def test_registered_probability_keeps_only_meaningful_inherited_blockers():
+    completed = _completed_registered(
+        _row("NHL"),
+        _registered_package(blockers=["", "MODEL_INPUTS_INSUFFICIENT", "  ", "MODEL_INPUTS_INSUFFICIENT"]),
+    )
+    assert completed["terminal_status"] == "COMPLETED"
+    assert completed["audit_result"] == "PARTIAL"
+    assert completed["blockers"] == ["MODEL_INPUTS_INSUFFICIENT"]
+    assert completed["can_execute"] is False
+
+
+def test_registered_probability_preserves_market_only_unavailability_without_blank_blockers():
+    completed = _completed_registered(
+        _row("NHL", lane="MARKET_EDGE"), _registered_package(blockers=["  "])
+    )
+    assert completed["terminal_status"] == "COMPLETED"
+    assert completed["audit_result"] == "PARTIAL"
+    assert completed["blockers"] == ["MARKET_DATA_UNOBTAINABLE"]
+    assert completed["can_execute"] is False
