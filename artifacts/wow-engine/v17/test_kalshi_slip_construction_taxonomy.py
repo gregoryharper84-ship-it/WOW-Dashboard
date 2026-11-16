@@ -128,3 +128,31 @@ def test_malformed_threshold_and_direction_rejected():
     a["direction"] = "UNKNOWN"
     with pytest.raises(ValueError, match="direction must"):
         diagnose([a, b])
+
+
+def test_mixed_event_card_keeps_repeated_player_and_game_risks():
+    r = diagnose([
+        l("NFL", "event1", "player1", "TEAM1", "RECEIVING_YARDS", "m1"),
+        l("NFL", "event1", "player1", "TEAM1", "RECEPTIONS", "m2"),
+        l("NFL", "event2", "player2", "TEAM2", "RUSHING_YARDS", "m3"),
+    ])
+    assert r["structure"] == "MULTI_EVENT_COMBINATION"
+    assert "REPEATED_EVENT_EXPOSURE" in r["shared_failure_factors"]
+    assert "REPEATED_PLAYER_EXPOSURE" in r["shared_failure_factors"]
+    assert "SAME_GAME_SCRIPT_COMMON_CAUSE" in r["shared_failure_factors"]
+    assert "ONE_PLAYER_MINUTES_OR_AVAILABILITY_COMMON_CAUSE" in r["shared_failure_factors"]
+
+
+@pytest.mark.parametrize("field", ["period_id", "settlement_rule_id"])
+@pytest.mark.parametrize("sentinel", ["UNKNOWN", " UNVERIFIED ", "N/A"])
+def test_unverified_nesting_identifiers_are_never_confirmed(field, sentinel):
+    a = l("NBA", "g", "p", "t", "POINTS", "m1")
+    b = l("NBA", "g", "p", "t", "POINTS", "m2")
+    for leg, threshold in ((a, 20), (b, 30)):
+        leg.update(threshold=threshold, direction="GE",
+                   period_id="FULL", settlement_rule_id="EXACT_R1")
+    b[field] = sentinel
+    r = diagnose([a, b])
+    assert r["potential_same_stat_groups"] == 1
+    assert r["verified_nested_threshold_groups"] == 0
+    assert "VERIFIED_NESTED_THRESHOLD_REDUNDANCY" not in r["shared_failure_factors"]
