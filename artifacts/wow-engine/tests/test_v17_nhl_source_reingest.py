@@ -1103,3 +1103,28 @@ def test_reingest_maps_an_unexpected_post_write_verification_failure(monkeypatch
         table == "wow_d1_source_events" and mode == "upsert" and count > 0
         for table, mode, count in db.operations
     )
+
+
+def test_reingest_season_claim_must_use_atomic_database_rpc():
+    # A SELECT followed by an UPSERT is not a lock: two contenders can win.
+    db = _FakeDB()
+    claimed = fitted.acquire_nhl_reingest_season_lease(
+        db, season=SEASON, lease_token="first-season-writer"
+    )
+    assert claimed["status"] == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
+    # The lease decision must be made inside one database transaction.
+    assert not any(
+        table == fitted.REINGEST_LEASE_TABLE and operation in {"select", "upsert"}
+        for table, operation, _ in db.operations
+    ), "lease acquired using non-atomic SELECT+UPSERT rather than database RPC"
+
+
+def test_reingest_fail_closed_without_atomic_lease_rpc():
+    # No compatible RPC must mean no writes, rather than a legacy fallback.
+    db = _FakeDB()
+    db.rpc = None
+    outcome = _run(db)
+    assert outcome["status"] == "BLOCKED"
+    assert outcome["code"] == "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE"
+    assert db.rows.get("wow_d1_source_events", []) == []
+    assert db.rows.get(fitted.TIMELINE_RECEIPT_TABLE, []) == []
