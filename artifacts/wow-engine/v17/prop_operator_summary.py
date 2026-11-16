@@ -65,14 +65,20 @@ def summarize_prop_routes(
         matches = indexed.get(token, [])
         original = matches[0] if len(matches) == 1 else {}
         existing = original.get("blockers")
-        blockers = [str(x) for x in existing if isinstance(x, str) and x.strip()] if isinstance(existing, list) else []
+        # Multiple route rows are ambiguous, but their upstream findings still
+        # matter; never erase the evidence when presenting a typed HOLD.
+        blockers = list(dict.fromkeys(
+            reason for row in matches
+            for reason in (row.get("blockers") if isinstance(row.get("blockers"), list) else [])
+            if isinstance(reason, str) and reason.strip()
+        ))
         lifecycle = str(original.get("lifecycle_status") or "NOT_OBSERVED")
 
-        if payload.get("can_execute") is True or original.get("can_execute") is True:
+        if payload.get("can_execute") is True or any(row.get("can_execute") is True for row in matches):
             blocker = "EXECUTION_AUTHORITY_VIOLATION"
         elif payload.get("can_execute") is not False:
             blocker = "EXECUTION_AUTHORITY_UNVERIFIED"
-        elif matches and len(matches) == 1 and original.get("can_execute") is not False:
+        elif matches and any(row.get("can_execute") is not False for row in matches):
             blocker = "EXECUTION_AUTHORITY_UNVERIFIED"
         elif stage_blocker:
             blocker = stage_blocker
