@@ -121,7 +121,8 @@ begin
           as r(official_event_id text, source_payload_sha256 text)
         join public.wow_d1_source_events e
           on e.sport = 'NHL' and e.official_event_id = r.official_event_id
-        where e.source_payload_sha256 is distinct from r.source_payload_sha256
+        where e.outcome_json->>'provenance_version' = 'NHL_SOURCE_PROVENANCE_V2'
+          and e.source_payload_sha256 is distinct from r.source_payload_sha256
     ) then
         return pg_catalog.jsonb_build_object(
             'status','BLOCKED','code','NHL_SOURCE_IDENTITY_CONFLICT',
