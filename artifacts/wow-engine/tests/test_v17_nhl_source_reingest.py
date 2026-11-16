@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from pathlib import Path
 import threading
@@ -142,6 +142,122 @@ class _Query:
         return SimpleNamespace(data=matched)
 
 
+
+class _RPCQuery:
+    """Atomic, fenced PostgreSQL RPC simulation for focused source tests.
+
+    The real race and expiry guarantees still require a PostgreSQL integration
+    test; this double verifies that client code uses RPC and honors typed HOLD.
+    """
+    def __init__(self, db, name, params):
+        self.db, self.name, self.params = db, name, params
+
+    def execute(self):
+        db, p = self.db, self.params
+        lease_table = fitted.REINGEST_LEASE_TABLE
+        with db.lock:
+            leases = db.rows.setdefault(lease_table, [])
+            season, token = p.get("p_season"), p.get("p_token")
+            now = datetime.now(timezone.utc)
+            current = next((r for r in leases if r.get("season") == season), None)
+
+            def active():
+                if current is None or current.get("lease_token") != token:
+                    return False
+                return datetime.fromisoformat(current["expires_at"]) > now
+
+            def response(data):
+                return SimpleNamespace(data=data)
+
+            if self.name == "wow_nhl_claim_reingest_lease":
+                if current is not None and datetime.fromisoformat(current["expires_at"]) > now:
+                    return response({"status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_IN_PROGRESS", "can_execute": False})
+                expires = (now + timedelta(minutes=15)).isoformat()
+                leases[:] = [r for r in leases if r.get("season") != season]
+                leases.append({
+                    "season": season, "lease_token": token,
+                    "acquired_at": now.isoformat(), "expires_at": expires,
+                    "can_execute": False,
+                })
+                db.operations.append((lease_table, "rpc_claim", 1))
+                return response({
+                    "status": "NHL_SOURCE_REINGEST_LEASE_ACQUIRED",
+                    "season": season, "lease_token": token,
+                    "expires_at": expires, "can_execute": False,
+                })
+            if self.name == "wow_nhl_release_reingest_lease":
+                before = len(leases)
+                leases[:] = [r for r in leases if not (
+                    r.get("season") == season and r.get("lease_token") == token
+                )]
+                db.operations.append((lease_table, "rpc_release", before - len(leases)))
+                return response({
+                    "status": ("NHL_SOURCE_REINGEST_LEASE_RELEASED" if before != len(leases)
+                               else "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED"),
+                    "can_execute": False,
+                })
+            if self.name not in {
+                "wow_nhl_append_reingest_source_batch",
+                "wow_nhl_persist_reingest_timeline",
+            }:
+                raise RuntimeError("unknown database RPC " + self.name)
+            if not active():
+                return response({"status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_LEASE_STALE", "can_execute": False})
+
+            if self.name == "wow_nhl_append_reingest_source_batch":
+                source = db.rows.setdefault("wow_d1_source_events", [])
+                batch = list(p.get("p_rows") or [])
+                if any(
+                    row.get("sport") != "NHL" or row.get("season") != season
+                    or row.get("can_execute") is not False
+                    for row in batch
+                ):
+                    return response({"status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_BATCH_INVALID", "can_execute": False})
+                for row in batch:
+                    prior_hashes = {
+                        existing["source_payload_sha256"]
+                        for existing in source
+                        if existing["official_event_id"] == row["official_event_id"]
+                        and existing["outcome_json"].get("provenance_version") == "NHL_SOURCE_PROVENANCE_V2"
+                    }
+                    if prior_hashes and prior_hashes != {row["source_payload_sha256"]}:
+                        return response({"status": "BLOCKED", "code": "NHL_SOURCE_IDENTITY_CONFLICT", "can_execute": False})
+                if db.fail_after_upserts is not None and db.upsert_attempts >= db.fail_after_upserts:
+                    raise RuntimeError("simulated write failure")
+                written = 0
+                for row in batch:
+                    if row.get("official_event_id") in db.ignored_event_ids:
+                        continue
+                    if not any(
+                        item["sport"] == row["sport"]
+                        and item["official_event_id"] == row["official_event_id"]
+                        and item["source_payload_sha256"] == row["source_payload_sha256"]
+                        for item in source
+                    ):
+                        saved = dict(row)
+                        saved.setdefault("source_event_id", f"source-{len(source)}")
+                        source.append(saved)
+                        written += 1
+                db.upsert_attempts += 1
+                db.operations.append(("wow_d1_source_events", "rpc_batch", written))
+                return response({
+                    "status": "NHL_SOURCE_REINGEST_BATCH_PERSISTED",
+                    "written": written, "can_execute": False,
+                })
+
+            receipt = dict(p.get("p_receipt") or {})
+            if receipt.get("season") != season or receipt.get("can_execute") is not False:
+                return response({"status": "BLOCKED", "code": "NHL_SOURCE_TIMELINE_INCOMPLETE", "can_execute": False})
+            target = db.rows.setdefault(fitted.TIMELINE_RECEIPT_TABLE, [])
+            target[:] = [r for r in target if r.get("season") != season]
+            target.append(receipt)
+            db.operations.append((fitted.TIMELINE_RECEIPT_TABLE, "rpc_timeline", 1))
+            return response({
+                "status": "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED",
+                "season": season, "written": 1, "can_execute": False,
+            })
+
+
 class _FakeDB:
     def __init__(self):
         self.rows: dict[str, list[dict]] = {}
@@ -153,6 +269,9 @@ class _FakeDB:
 
     def table(self, name):
         return _Query(self, name)
+
+    def rpc(self, name, params):
+        return _RPCQuery(self, name, params)
 
 
 class _Response:
@@ -338,7 +457,7 @@ def test_reingest_appends_genuine_2026_27_provenance_idempotently():
         )
         assert row["sport"] == "NHL" and row["league"] == "NHL"
         assert row["can_execute"] is False
-    assert all(mode in {"upsert", "select", "delete"} for _, mode, _ in db.operations)
+    assert all(mode in {"upsert", "select", "delete", "rpc_claim", "rpc_batch", "rpc_release", "rpc_timeline"} for _, mode, _ in db.operations)
 
     second = _run(db)
     assert second["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
