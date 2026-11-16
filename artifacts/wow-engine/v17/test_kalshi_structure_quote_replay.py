@@ -23,6 +23,7 @@ def record(**updates):
         "model_fit_cutoff_utc": "2026-11-10T00:00:00Z",
         "prediction_at_utc": "2026-11-14T00:00:00Z",
         "quote_at_utc": "2026-11-14T00:10:00Z",
+        "filled_at_utc": "2026-11-14T00:12:00Z",
         "event_start_utc": "2026-11-15T22:00:00Z",
         "settlement_at_utc": "2026-11-16T01:00:00Z",
         "pregame_joint_probability": 0.6,
@@ -34,6 +35,7 @@ def record(**updates):
         "fitted_model_artifact_id": "fitted-model-1",
         "official_settlement_evidence_ref": "official-source-1",
         "quote_evidence_ref": "quote-source-1",
+        "filled_order_receipt_id": "accepted-fill-1",
         "thesis_cluster_id": "cluster-1",
         "comparison_group_id": "same-pregame-context-1",
     }
@@ -53,6 +55,9 @@ def test_valid_synthetic_replay_has_only_descriptive_output():
     assert style["win_rate"] == 1
     assert style["brier"] == pytest.approx(.16)
     assert style["net_cents_per_contract_sum"] == 53
+    assert style["mean_break_even_joint_probability"] == pytest.approx(.47)
+    assert style["mean_ex_ante_ev_cents_per_contract"] == pytest.approx(13.0)
+    assert style["mean_lower_bound_ev_cents_per_contract"] == pytest.approx(5.0)
     assert out["comparative_lift_established"] is False
     assert out["probability_publishable"] is False
     assert out["can_execute"] is False
@@ -70,6 +75,8 @@ def test_valid_synthetic_replay_has_only_descriptive_output():
     ("pregame_joint_lower_bound", None, "MISSING_JOINT_LOWER_BOUND"),
     ("immutable_prediction_receipt_id", None, "MISSING_IMMUTABLE_PREDICTION_RECEIPT_ID"),
     ("quote_evidence_ref", "", "MISSING_QUOTE_EVIDENCE_REF"),
+    ("filled_order_receipt_id", "", "MISSING_FILLED_ORDER_RECEIPT_ID"),
+    ("filled_at_utc", "2026-11-14T00:05:00Z", "CHRONOLOGY_INVALID"),
     ("settlement_cents_per_contract", 0, "RESULT_PAYOUT_CONFLICT"),
 ])
 def test_reject_missing_causality_and_market_evidence(field, value, reason):
@@ -84,6 +91,8 @@ def test_scalar_settlement_keeps_economics_but_not_binary_calibration():
     assert g["scalar_settled"] == 1
     assert g["binary_graded"] == 0
     assert g["brier"] is None
+    assert g["mean_ex_ante_ev_cents_per_contract"] is None
+    assert g["mean_lower_bound_ev_cents_per_contract"] is None
     assert g["net_cents_per_contract_sum"] == 18
 
 
@@ -103,3 +112,22 @@ def test_duplicate_and_unknown_timestamp_rejected():
     assert out["rows_eligible"] == 1
     assert out["reject_reasons"]["DUPLICATE_SLIP_ID"] == 1
     assert out["reject_reasons"]["NAIVE_TIMESTAMP"] == 1
+
+
+def test_legitimate_quote_before_fitted_prediction_is_accepted_if_before_fill():
+    out = audit([record(
+        quote_at_utc="2026-11-14T00:00:00Z",
+        prediction_at_utc="2026-11-14T00:10:00Z",
+        filled_at_utc="2026-11-14T00:12:00Z",
+    )])
+    assert out["rows_eligible"] == 1
+    assert out["reject_reasons"] == {}
+
+
+def test_quote_after_fill_is_rejected_even_if_before_game():
+    out = audit([record(
+        quote_at_utc="2026-11-14T00:15:00Z",
+        filled_at_utc="2026-11-14T00:12:00Z",
+    )])
+    assert out["rows_eligible"] == 0
+    assert out["reject_reasons"]["CHRONOLOGY_INVALID"] == 1
