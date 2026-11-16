@@ -495,7 +495,7 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
     """
     keys = ("calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound")
     if not all(isinstance(scored.get(k), (int, float)) and not isinstance(scored.get(k), bool) for k in keys):
-        blockers = [str(value) for value in (scored.get("blockers") or [])]
+        blockers = [str(value) for value in (scored.get("blockers") or []) if str(value).strip()]
         return _held(row, str(scored.get("code") or "MODEL_OUTPUT_INVALID"), blockers[0] if blockers else "GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
     invalid = _governed_package_blocker(scored, (
         ("calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound"),
@@ -555,7 +555,7 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
         if side_invalid:
             return _held(row, "MODEL_OUTPUT_INVALID", side_invalid, scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
-    inherited_blockers = [str(value) for value in (scored.get("blockers") or [])]
+    inherited_blockers = [str(value) for value in (scored.get("blockers") or []) if str(value).strip()]
     blockers = list(dict.fromkeys([*inherited_blockers, *(["MARKET_DATA_UNOBTAINABLE"] if market_needed else [])]))
     probability_rank_eligible = bool(scored.get("rank_eligible") is True and scored.get("probability_publishable") is True)
     return {
