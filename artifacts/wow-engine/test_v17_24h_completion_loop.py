@@ -233,3 +233,14 @@ def test_capability_matrix_is_explicit_and_fail_closed() -> None:
     ):
         assert dimension in team
     assert "production_enabled requires every upstream capability" in team
+
+
+def test_release_verifier_is_independently_scheduled_and_controller_does_not_reselect_it() -> None:
+    loop = _text(LOOP)
+    verifier = _text(ROOT / ".github/workflows/wow-v17-release-resume-agent.yml")
+    assert 'cron: "37 * * * *"' in verifier
+    assert "engineering_agent_team.py priority)" in verifier
+    assert "engineering_agent_team.py priority --exclude-release)" in loop
+    assert loop.index("action=\"RESUME_REPAIR_PR\"") < loop.index("action=\"REPAIR\"")
+    assert "can_execute: false" in loop
+    assert "permission_profile: \":read-only\"" in verifier
