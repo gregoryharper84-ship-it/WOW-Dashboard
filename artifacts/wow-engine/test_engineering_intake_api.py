@@ -295,13 +295,17 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'runs',
                            '/actions/workflows/a.yml/runs', runner=run, sleep=lambda _: None), [])
 
-    def test_no_sensitive_response_text_in_logs(self):
+    def test_rate_limit_retries_fail_closed_without_response_text_in_logs(self):
         m = load()
         err = io.StringIO()
+        run = FakeRun([(1, 'HTTP 403 API rate limit exceeded TOKEN_SECRET')] * 3)
+        delays = []
         with redirect_stderr(err):
-            with self.assertRaises(m.IntakeFailure):
+            with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_API_FAILURE.*attempts=3'):
                 m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'issues', '/issues?state=open',
-                              runner=FakeRun([(1, 'TOKEN_SECRET')]*3), sleep=lambda _: None)
+                              runner=run, sleep=delays.append)
+        self.assertEqual(len(run.calls), 3)
+        self.assertEqual(delays, [0.25, 0.5])
         self.assertNotIn('TOKEN_SECRET', err.getvalue())
 
 
