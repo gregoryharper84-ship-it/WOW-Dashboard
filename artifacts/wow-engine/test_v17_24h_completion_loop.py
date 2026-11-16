@@ -34,7 +34,7 @@ def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
     assert "branches: [main]" in text
     assert "wow-v17-morning-green-continuation.yml" in text
     assert "wow-v17-release-resume-agent.yml" in text
-    assert "wow-v17-p0-rapid-dispatch.yml" in text
+    assert "P0 planner runs independently every 15 minutes" in text
     assert "wow-v17-engineering-provider-dispatcher.yml" in text
     assert "wow-v17-golden-product-acceptance.yml" in text
     assert "wow-v17-model-improvement-experiment.yml" in text
@@ -255,8 +255,8 @@ def test_controller_never_dispatches_unbound_worker_from_pm_ledger() -> None:
     )[0]
     assert "action=\"REQUEST_ADMITTED_REPAIR\"" in loop
     assert 'action="REPAIR"' not in loop
-    assert "wow-v17-p0-rapid-dispatch.yml" in route
-    assert "wow-v17-engineering-provider-dispatcher.yml" in route
+    assert "workflow=wow-v17-engineering-provider-dispatcher.yml" in route
+    assert "workflow=wow-v17-p0-rapid-dispatch.yml" not in route
     assert "wow-v17-chatgpt-engineering-worker.yml" not in route
     assert 'gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main' in route
     assert 'target_incident="$incident"' not in route
@@ -277,3 +277,20 @@ def test_experiment_pr_resumption_requires_frontier_permission() -> None:
     assert "frontier_allowed=not reliability_blocks_frontier(records)" in _text(
         ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py"
     )
+
+
+def test_rapid_p0_intake_remains_independent_of_pm_severity() -> None:
+    loop = _text(LOOP)
+    route = loop.split("- name: Request vetted engineering repair intake", 1)[1].split(
+        "- name: Verify golden product acceptance", 1
+    )[0]
+    assert 'if [ "$SEVERITY" = "P0" ]; then' not in route
+    assert 'workflow=wow-v17-engineering-provider-dispatcher.yml' in route
+    assert "Neither path accepts a PM ledger ID as a worker target." in route
+    rapid = _text(ROOT / ".github/workflows/wow-v17-p0-rapid-dispatch.yml")
+    assert 'cron: "*/15 * * * *"' in rapid
+    assert "engineering_dispatch_queue.py build" in rapid
+    assert "p0_parallel_dispatch.py" in rapid
+    assert 'gh workflow run wow-v17-engineering-provider-dispatcher.yml' in rapid
+    assert '-f target_incident="$incident"' in rapid
+    assert '-f lease_group="$lease_group"' in rapid
