@@ -333,6 +333,19 @@ def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
     )
     if not counts_valid:
         blockers.append("NHL_FITTED_ARTIFACT_PARTITION_MISMATCH")
+    # Scientific candidate acceptance requires the recorded numerical
+    # holdout/proper-score evidence, not just an artifact checksum and row count.
+    # These are range-validity checks, not certification or performance floors.
+    for metric in ("calibrated_brier", "raw_brier", "ece"):
+        value = _number(metrics.get(metric))
+        if value is None or not 0.0 <= value <= 1.0:
+            blockers.append("NHL_FITTED_VALIDATION_METRICS_INVALID")
+            break
+    for metric in ("calibrated_log_loss", "raw_log_loss"):
+        value = _number(metrics.get(metric))
+        if value is None or value < 0.0:
+            blockers.append("NHL_FITTED_VALIDATION_METRICS_INVALID")
+            break
     # Never index or add unvalidated registry values. A malformed newest
     # candidate must yield a typed blocker and allow an older valid fallback.
     if not counts_valid or (
