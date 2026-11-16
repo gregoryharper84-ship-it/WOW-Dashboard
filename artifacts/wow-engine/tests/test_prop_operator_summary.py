@@ -130,3 +130,25 @@ def test_invalid_registration_evidence_is_a_hold():
     status = view([invalid_blockers])
     assert status["registered_observed_n"] == 0
     assert status["routes"][0]["first_blocker"] == "ROUTE_BLOCKERS_UNVERIFIED"
+
+
+def test_dashboard_global_execution_flag_cannot_be_ignored():
+    safe = route_row(lifecycle_status="PRODUCTION_REGISTERED", blockers=[],
+                     production_numerical_authority=True, action_canary_verified=True)
+    summary = summarize_prop_routes(
+        {"route_rows": [safe], "can_execute": True},
+        requested_routes=[ROUTE], stage_statuses=STAGES,
+    )
+    assert summary["registered_observed_n"] == 0
+    assert summary["routes"][0]["first_blocker"] == "EXECUTION_AUTHORITY_VIOLATION"
+
+
+def test_dashboard_absent_execution_flag_holds_registration():
+    safe = route_row(lifecycle_status="PRODUCTION_REGISTERED", blockers=[],
+                     production_numerical_authority=True, action_canary_verified=True)
+    summary = summarize_prop_routes(
+        {"route_rows": [safe]},
+        requested_routes=[ROUTE], stage_statuses=STAGES,
+    )
+    assert summary["registered_observed_n"] == 0
+    assert summary["routes"][0]["first_blocker"] == "EXECUTION_AUTHORITY_UNVERIFIED"
