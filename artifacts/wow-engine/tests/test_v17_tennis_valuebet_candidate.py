@@ -71,3 +71,27 @@ def test_tennis_player_summary_calculates_clean_features_without_leakage():
     assert summary["games_prior_log"] > 0.0
     assert summary["rest_days_capped"] >= 0.0
     assert summary["prior_event_count"] == 10
+
+    # Equal-time and future results cannot enter prior form, workload,
+    # last-match rest, or the immutable prior-event provenance digest.
+    contaminated = history + [
+        {"start": target_date, "surface": "HARD", "won": True, "event_id": "same-time"},
+        {"start": target_date + timedelta(days=1), "surface": "HARD", "won": True, "event_id": "future-1"},
+        {"start": target_date + timedelta(days=4), "surface": "CLAY", "won": False, "event_id": "future-2"},
+    ]
+    assert tennis._player_summary(contaminated, target_date, "HARD") == summary
+
+
+def test_tennis_cold_start_remains_held_with_same_time_and_future_rows():
+    """Future and simultaneous observations may not satisfy the five-prior-match floor."""
+    cutoff = datetime(2026, 2, 10, tzinfo=timezone.utc)
+    prior = [
+        {"start": cutoff - timedelta(days=i + 1), "surface": "HARD", "won": True, "event_id": f"prior-{i}"}
+        for i in range(4)
+    ]
+    contaminated = prior + [
+        {"start": cutoff, "surface": "HARD", "won": True, "event_id": "same-time"},
+        {"start": cutoff + timedelta(days=1), "surface": "HARD", "won": True, "event_id": "future"},
+    ]
+    assert tennis._player_summary(prior, cutoff, "HARD") is None
+    assert tennis._player_summary(contaminated, cutoff, "HARD") is None
