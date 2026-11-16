@@ -1482,3 +1482,29 @@ def test_unversioned_calibrator_is_rejected_during_candidate_selection():
     )
     # Both fixtures share model_version; created_at proves the older valid row won.
     assert candidate.created_at == datetime.fromisoformat(valid["created_at"])
+
+
+@pytest.mark.parametrize("bad_feature_names", [1, True, {"bad": "data"}, "one-string", None])
+def test_untrusted_fitted_feature_name_shape_is_typed_invalid(bad_feature_names):
+    # Malformed artifacts must not escape candidate selection with Python TypeError.
+    malformed = _candidate_row()
+    malformed["artifact_payload"]["feature_names"] = bad_feature_names
+    malformed["artifact_checksum"] = nhl._sha256(malformed["artifact_payload"])
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl._verify_candidate(malformed)
+    assert "NHL_FITTED_ARTIFACT_FEATURE_ORDER_MISMATCH" in caught.value.blockers
+
+
+def test_registry_loader_recovers_from_noniterable_newest_feature_names():
+    newest = _candidate_row()
+    newest["artifact_payload"]["feature_names"] = 1
+    newest["artifact_checksum"] = nhl._sha256(newest["artifact_payload"])
+    newest["created_at"] = "2026-11-18T00:00:00+00:00"
+    prior = _candidate_row()
+    prior["created_at"] = "2026-11-17T00:00:00+00:00"
+
+    selected = nhl.load_nhl_fitted_candidate(
+        _DB(candidates=[newest, prior]), as_of_utc=NOW
+    )
+    assert selected.created_at == datetime.fromisoformat(prior["created_at"])
+    assert selected.can_execute is False
