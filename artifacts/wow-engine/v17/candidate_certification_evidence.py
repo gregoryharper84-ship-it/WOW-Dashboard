@@ -238,8 +238,15 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
         if expected_version != str(c["model_artifact_version"]):
             replay_blockers.append("MODEL_ARTIFACT_VERSION_IDENTITY_MISMATCH")
 
-    source_pass = not blockers
-    replay_pass = source_pass and not replay_blockers
+    # Technical source readiness is not independent source-rights acceptance.
+    # Preserve reproducible mathematical replay while independent review is
+    # pending, but never mint a source PASS from a registry lookup alone.
+    source_integrity_pass = not blockers
+    governed_review = str(c.get("source_review_status") or "REQUIRED").strip().upper()
+    if governed_review != "PASS":
+        blockers.append("SOURCE_REVIEW_FAILED" if governed_review == "FAIL" else "SOURCE_REVIEW_REQUIRED")
+    source_pass = source_integrity_pass and governed_review == "PASS"
+    replay_pass = source_integrity_pass and replay is not None and not replay_blockers
     payload = {
         "verifier_version": VERIFIER_VERSION,
         "candidate_identity": _identity(c),
@@ -253,7 +260,7 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     }
     receipt = _persist(db, c, source_pass, replay_pass, payload)
     return {
-        "status": "CERTIFICATION_EVIDENCE_PASS" if replay_pass else "CERTIFICATION_EVIDENCE_FAILED",
+        "status": "CERTIFICATION_EVIDENCE_PASS" if source_pass and replay_pass else "CERTIFICATION_EVIDENCE_FAILED",
         "candidate_id": str(c["candidate_id"]),
         "source_review_status": receipt.get("source_review_status"),
         "replay_status": receipt.get("replay_status"),

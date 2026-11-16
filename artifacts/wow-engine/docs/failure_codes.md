@@ -8,6 +8,8 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `SOURCE_REVIEW_REQUIRED` | D1 frozen-candidate source-rights acceptance | Technical source lineage or training-readiness evidence exists, but governed independent source-review state is not PASS. Frozen mathematical replay remains diagnostic, not a source approval. | No |
+| `SOURCE_REVIEW_FAILED` | D1 frozen-candidate source-rights acceptance | Governed candidate source review explicitly failed; no certification or publication can follow from a replay receipt. | No |
 | `MODEL_FACTORY_RECIPE_UNSUPPORTED` | V17 research-only model factory | Requested sport/market is not on the explicit research recipe allowlist; no cross-market or cross-sport model fallback. Recovery class: RECIPE_IMPLEMENTATION_REQUIRED. | No |
 | `MODEL_FACTORY_INPUT_INVALID` | V17 research-only model factory | Research run lacks usable DB client, exact source SHA, or valid ordered season scope. Recovery class: INPUT_CONTRACT_REPAIR. | No |
 | `MODEL_FACTORY_MAINTENANCE_EXCEPTION` | V17 research-only model factory | Sport-owned maintenance raised an unexpected exception; do not expose provider/credential details or claim research completion. Recovery class: DIAGNOSE_NATIVE_MAINTENANCE. | No |
