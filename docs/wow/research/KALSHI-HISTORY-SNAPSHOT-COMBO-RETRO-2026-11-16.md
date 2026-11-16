@@ -133,3 +133,58 @@ pregame probability receipts, independent source review and enough matched
 historical outcomes to establish chronology-respecting lift. Actual engine-grade
 labels remain unverified even when a settlement notification and public box score
 agree at the surface level.
+
+
+## November 16 implementation continuation: quote-aware acceptance harness
+
+Kalshi publicly confirms that a combo is a separately quoted RFQ market and
+settles as the product of constituent contract values, sometimes including
+intermediate scalar values for DNP/protected player markets. Those are not
+equivalent to multiplying displayed implied probabilities or assuming that
+every positive total payout represents a winning sporting settlement.
+
+The added research-only `kalshi_structure_quote_replay.py` accepts **only**
+explicitly structured rows with:
+- stable quote and underlying market evidence and exact component stat family;
+- immutable fitted-model prediction receipt and fitted artifact ID, pregame
+  calibrated joint probability and lower bound;
+- chronological fit cutoff, prediction timestamp, quote timestamp, event
+  start, official settlement timestamp and settlement evidence;
+- entry quote, observed fee and settlement value in cents per contract;
+- construction style, comparator group and independent thesis cluster.
+
+It *rejects* unknown market families, unverified research source status,
+candidate-only calibration, missing fitted receipts, missing prices and
+impossible timestamps. Scalar settlement contributes to **economics only**,
+never a false binary win/loss grade. It reports descriptive Brier/log loss
+and structure-level ROI only for supplied legitimate pregame rows, and
+always returns `comparative_lift_established=false`,
+`probability_publishable=false`, `can_execute=false`.
+Even a completed input sheet does not authenticate upstream evidence:
+source signatures, independent sample provenance, nonoverlapping holdout,
+actual fills and independent signoff are external acceptance requirements.
+
+### Observed methodology counterexamples
+Review of existing private settlement notices identified both successful
+and unsuccessful single-player, two-market construction examples across
+different games. This invalidates the idea that *single-player two-leg* is
+an automatic winning formula. It remains a candidate structure for
+joint-calibrated pregame comparisons. No specific private positions or
+Gmail message links are committed to this public document.
+
+### Kalshi market label ambiguity
+The short label `6+` on a player does **not** specify whether it refers
+to assists, three-pointers or another counting statistic. The same game
+can have multiple active thresholds for the same player. An official box
+score can rule out interpretations but cannot prove the actual selected
+component without its original `market_id` and full market rules. Market
+identification must be **fail closed**, never chosen post-event to match
+the desired win/loss result.
+
+### Follow-on release acceptance
+- exact-head hosted unit/negative tests and CodeQL pass;
+- independent review of code and no-hindsight probability/quote policy;
+- authentic, time-correct user fill and component records (not email-only);
+- replay style comparisons across nonoverlapping genuine holdout cohorts,
+  account for duplicate theses, event/player nesting and execution costs;
+- no unapproved production import, default-threshold change or live trade.
