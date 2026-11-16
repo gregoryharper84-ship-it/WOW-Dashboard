@@ -128,3 +128,16 @@ def test_source_byte_or_observation_update_changes_fingerprint():
 def test_excluded_teams_do_not_change_selected_digest():
     rows = sample() + [game(12, "FLA", "TBL", 7.0, 0.5)]
     assert build(rows) == build()
+
+
+
+def test_accepted_sequence_types_beyond_builtin_list_tuple():
+    from collections import UserList
+    assert build(UserList(sample())) == build(sample())
+
+
+def test_settlement_timestamp_is_part_of_replay_fingerprint():
+    rows = sample()
+    first = rows[0]
+    changed = [replace(first, settled_utc=(BASE + timedelta(hours=3, minutes=1)).isoformat())] + rows[1:]
+    assert build(changed)["lineage_digest"] != build()["lineage_digest"]
