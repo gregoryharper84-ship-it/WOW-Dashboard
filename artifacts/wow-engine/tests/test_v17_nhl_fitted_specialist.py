@@ -1508,3 +1508,49 @@ def test_registry_loader_recovers_from_noniterable_newest_feature_names():
     )
     assert selected.created_at == datetime.fromisoformat(prior["created_at"])
     assert selected.publication_capable is False
+
+
+@pytest.mark.parametrize(
+    ("point", "lower", "upper", "raw_mean"),
+    [
+        (0.5, 0.8, 0.2, 0.5),
+        (0.5, 0.1, 0.4, 0.5),
+        (0.5, 0.6, 0.9, 0.5),
+        (0.5, 0.2, 0.8, -0.1),
+        (0.5, 0.2, 0.8, 1.1),
+    ],
+)
+def test_fitted_candidate_rejects_inverted_empirical_wilson_interval(
+    point, lower, upper, raw_mean
+):
+    row = _candidate_row()
+    calibrator = dict(row["calibrator_payload"])
+    calibrator["method"] = nhl.EMPIRICAL_CALIBRATION_METHOD
+    calibrator["bins"] = [{
+        "calibrated_probability": point,
+        "wilson_lower": lower, "wilson_upper": upper,
+        "raw_mean": raw_mean,
+    }]
+    row["calibrator_payload"] = calibrator
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl._verify_candidate(row)
+    assert "NHL_FITTED_CALIBRATOR_BINS_INVALID" in caught.value.blockers
+
+
+def test_fitted_candidate_recovers_to_older_artifact_after_invalid_bounds():
+    invalid = _candidate_row()
+    cal = dict(invalid["calibrator_payload"])
+    cal["method"] = nhl.EMPIRICAL_CALIBRATION_METHOD
+    cal["bins"] = [{
+        "calibrated_probability": 0.5, "wilson_lower": 0.8,
+        "wilson_upper": 0.2, "raw_mean": 0.5,
+    }]
+    invalid["calibrator_payload"] = cal
+    invalid["created_at"] = "2026-11-18T00:00:00+00:00"
+    valid = _candidate_row()
+    valid["created_at"] = "2026-11-17T00:00:00+00:00"
+    selected = nhl.load_nhl_fitted_candidate(
+        _DB(candidates=[invalid, valid]), as_of_utc=NOW
+    )
+    assert selected.created_at == datetime.fromisoformat(valid["created_at"])
+    assert selected.publication_capable is False
