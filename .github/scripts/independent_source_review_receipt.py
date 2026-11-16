@@ -22,8 +22,8 @@ CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW_NAME = "wow-v17-independent-qa-check"
 WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
 WORKFLOW_ID = 380562324
-PROVIDER_IDENTITY = "openai-codex-action"
-CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
+PROVIDER_IDENTITY = "gemini-generative-api"
+CREDENTIAL_SCOPE = "WOW_QA_REVIEW_GEMINI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
