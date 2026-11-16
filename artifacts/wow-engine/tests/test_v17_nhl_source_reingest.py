@@ -1364,3 +1364,31 @@ def test_invalid_nhl_ingest_commit_sha_cannot_build_v2_source_rows(bad_sha):
             _normalized_games(_fixture()), ingest_code_sha=bad_sha
         )
     assert caught.value.code == "NHL_INGEST_CODE_SHA_INVALID"
+
+
+def test_reingest_strict_unknown_regular_season_state_fails_closed():
+    fixture = _fixture()
+    fixture["games"][0]["gameState"] = "FINLA"
+    result = _run(
+        _FakeDB(), session=_Session(_by_team(fixture)),
+        dry_run=True, teams=("BOS", "PIT"),
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "NHL_SOURCE_GAME_STATE_UNVERIFIED"
+    assert result["blocked_stage"] == "SOURCE_ACQUISITION"
+    assert result["can_execute"] is False
+
+
+def test_strict_normalizer_never_silently_discards_unknown_regular_season_state():
+    raw = dict(_fixture()["games"][0])
+    raw["gameState"] = "FINLA"
+    for normalize in (
+        lambda: pipeline.normalize_game(
+            raw, source_uri="https://api-web.nhle.com/v1/test",
+            retrieved_at="2026-11-16T12:00:00Z", strict=True,
+        ),
+        lambda: pipeline.normalize_schedule_event(raw, strict=True),
+    ):
+        with pytest.raises(pipeline.NHLCandidateError) as caught:
+            normalize()
+        assert caught.value.code == "NHL_SOURCE_GAME_STATE_UNVERIFIED"
