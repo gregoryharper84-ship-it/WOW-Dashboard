@@ -80,7 +80,9 @@ def summarize_prop_routes(
             blocker = "ROUTE_STATUS_AMBIGUOUS"
         elif not matches:
             blocker = "ROUTE_STATUS_NOT_OBSERVED"
-        elif not isinstance(existing, list):
+        elif not isinstance(existing, list) or any(
+            not isinstance(x, str) or not x.strip() for x in existing
+        ):
             blocker = "ROUTE_BLOCKERS_UNVERIFIED"
         elif (lifecycle == "PRODUCTION_REGISTERED" and (
             blockers or any(original.get(field) is not True for field in EXISTING_AUTHORITY_FLAGS)
