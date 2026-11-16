@@ -824,6 +824,14 @@ def _spread_lane_rows(
                 home_line=float(evidence.home_spread),
                 settlement_basis=payload["settlement_basis"],
             )
+            # A blocked receipt is research/diagnostic evidence, never a
+            # publishable numerical package. Remove nested distribution values
+            # before persistence and FULL response projection.
+            if not eligible:
+                admission = {key: value for key, value in admission.items()
+                             if key not in {"p_cover", "p_push", "p_not_cover",
+                                            "calibrated_lower_bound",
+                                            "calibrated_upper_bound"}}
             payload["spread_admission"] = admission
             if eligible:
                 status = "COMPLETED"
@@ -859,6 +867,7 @@ def _spread_lane_rows(
                         receipt.get("calibrated_probability_upper_bound"),
                     ),
                     "selection_status": "QUALIFIED",
+                    "evaluation_state": "SPREAD_CERTIFIED_RECEIPT_ADMITTED",
                     "reason_codes": [],
                     "probability_publishable": True,
                     "rank_eligible": True,
