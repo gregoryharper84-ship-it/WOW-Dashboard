@@ -116,7 +116,10 @@ def _governed_package_blocker(
         lower = _strict_probability(scored.get(lower_field))
         upper = _strict_probability(scored.get(upper_field))
         if probability is None or lower is None or upper is None:
-            inheritance = [str(value) for value in (scored.get("blockers") or [])]
+            inheritance = [
+                str(value) for value in (scored.get("blockers") or [])
+                if str(value).strip()
+            ]
             return inheritance[0] if inheritance else "GOVERNED_PROBABILITY_FIELDS_INVALID"
         if not lower <= probability <= upper:
             return "GOVERNED_PROBABILITY_BOUNDS_INCONSISTENT"
