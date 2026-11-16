@@ -1,0 +1,26 @@
+{
+  "copyright": "Copyright 2026 MLB Advanced Media, L.P.",
+  "gamePk": 823001,
+  "teams": {
+    "away": {
+      "team": {"id": 135, "name": "San Diego Padres", "abbreviation": "SD"},
+      "battingOrder": [],
+      "players": {
+        "ID605484": {
+          "person": {"id": 605484, "fullName": "Fernando Tatis Jr."},
+          "position": {"abbreviation": "RF"}
+        }
+      }
+    },
+    "home": {
+      "team": {"id": 119, "name": "Los Angeles Dodgers", "abbreviation": "LAD"},
+      "battingOrder": [],
+      "players": {
+        "ID592450": {
+          "person": {"id": 592450, "fullName": "Mookie Betts"},
+          "position": {"abbreviation": "SS"}
+        }
+      }
+    }
+  }
+}

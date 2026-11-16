@@ -145,6 +145,67 @@ def test_durable_duplicate_pr_never_selected(monkeypatch):
     assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
 
 
+def test_discovery_reads_fifth_page_of_426_open_prs(monkeypatch):
+    """An eligible reviewed source on page five must be discovered, not discarded."""
+    foreign = {"user": {"login": "non-owner"}, "state": "open"}
+    candidate = source_pr(n=426)
+    visited = []
+    prefix = "pulls?state=open&base=main&per_page=100&page="
+    monkeypatch.setattr(adoption, "verify_git_source", lambda *args: BASE)
+
+    def fetch(path):
+        if path == "pulls?state=open&base=main&per_page=100":
+            return [foreign] * 100
+        if path.startswith(prefix):
+            page = int(path.removeprefix(prefix))
+            visited.append(page)
+            if page == 5:
+                return [foreign] * 25 + [candidate]
+            return [foreign] * 100 if page < 5 else []
+        if path.startswith("pulls?state=all&head="):
+            return []
+        if path == "pulls/426/files?per_page=100":
+            return source_files()
+        if path == "pulls/426":
+            return candidate
+        if path == f"commits/{SHA}/check-runs?per_page=100":
+            return source_checks()
+        if path == f"compare/{SHA}...{BASE}?per_page=100":
+            return main_compare()
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result == {"status": "SOURCE_READY", "pr_number": 426,
+                      "source_sha": SHA,
+                      "paths": sorted(x["filename"] for x in source_files()),
+                      "can_execute": False}
+    assert visited == [1, 2, 3, 4, 5]
+
+
+def test_discovery_still_holds_when_six_pages_are_saturated(monkeypatch):
+    """No partial adoption even if a reviewed source appeared before the cap."""
+    foreign = {"user": {"login": "non-owner"}, "state": "open"}
+    candidate = source_pr(n=426)
+    visited = []
+    prefix = "pulls?state=open&base=main&per_page=100&page="
+
+    def fetch(path):
+        if path == "pulls?state=open&base=main&per_page=100":
+            return [candidate] + [foreign] * 99
+        if path.startswith(prefix):
+            page = int(path.removeprefix(prefix))
+            visited.append(page)
+            return [candidate] + [foreign] * 99 if page == 1 else [foreign] * 100
+        raise AssertionError("Saturated inventory must hold before candidate review: " + path)
+
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result == {"status": "NO_ELIGIBLE_SOURCE",
+                      "detail": "SOURCE_PR_INVENTORY_PAGE_CAP", "can_execute": False}
+    assert visited == [1, 2, 3, 4, 5, 6]
+
+
 def test_global_review_wip_limit_prevents_pr_flood(monkeypatch):
     app_open = [
         {"user": {"login": adoption.APP_AUTHOR},

@@ -28,6 +28,14 @@ from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
 
+GOVERNANCE_CLASS_A_SCRIPT = REPO_ROOT / ".github/scripts/verify_existing_pr_governance_receipt.py"
+_class_a_spec = importlib.util.spec_from_file_location("_existing_pr_class_a_policy", GOVERNANCE_CLASS_A_SCRIPT)
+assert _class_a_spec and _class_a_spec.loader
+_class_a_policy = importlib.util.module_from_spec(_class_a_spec)
+_class_a_spec.loader.exec_module(_class_a_policy)
+# One canonical exact allowlist; QA never invents a broader R-class classifier.
+CLASS_A_EXACT_PATHS = _class_a_policy.CLASS_A_EXACT_PATHS
+
 SOURCE_REVIEW_SCRIPT = REPO_ROOT / ".github/scripts/independent_source_review_receipt.py"
 _source_review_spec = importlib.util.spec_from_file_location(
     "_independent_source_review_receipt", SOURCE_REVIEW_SCRIPT
@@ -259,12 +267,15 @@ def gather(
     # must not disguise an incomplete paginated file inventory.
     ev["files"] = []
     ev["source_review_paths"] = []
+    ev["zero_credit_disallowed_file_operations"] = []
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
             errors.append("FILES_PATH_INVALID")
             continue
         ev["files"].append(entry["filename"])
         ev["source_review_paths"].append(entry["filename"])
+        if entry.get("status") not in {"added", "modified", "changed"} or entry.get("previous_filename") is not None:
+            ev["zero_credit_disallowed_file_operations"].append(entry["filename"])
         if entry.get("status") == "renamed" or "previous_filename" in entry:
             origin = entry.get("previous_filename")
             if isinstance(origin, str) and origin:
@@ -333,6 +344,30 @@ def gather(
 MAX_TARGETS = 20
 
 
+def _pr_read_failure_detail(status: int, payload: object) -> str:
+    """Only classify a verified HTTP response; never log untrusted API text.
+
+    A workflow_run can have exact PR metadata but must not bypass the live
+    GitHub read. This diagnostic distinguishes rate-pressure from missing
+    permissions while preserving TARGET_PR_UNREADABLE fail-closed behavior.
+    """
+    if status not in (403, 429) or not isinstance(payload, dict):
+        return str(status)
+    raw = payload.get("message")
+    if not isinstance(raw, str):
+        return str(status)
+    message = raw.lower()
+    if "secondary rate limit" in message or "abuse detection" in message:
+        return f"{status}:SECONDARY_RATE_LIMIT"
+    if "rate limit" in message:
+        return f"{status}:RATE_LIMIT"
+    if "resource not accessible by integration" in message:
+        return f"{status}:APP_PERMISSION_DENIED"
+    if "bad credentials" in message:
+        return f"{status}:CREDENTIAL_REJECTED"
+    return str(status)
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None,
             neutral_superseded: bool = False, fetch: Fetch = gh_fetch) -> dict[str, Any]:
@@ -353,7 +388,7 @@ def targets(repo: str, *, pr: str | None = None,
             head = (live or {}).get("head") or {}
             base = (live or {}).get("base") or {}
             if status != 200 or not isinstance(live, dict):
-                errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
+                errors.append(f"TARGET_PR_UNREADABLE:{number}:{_pr_read_failure_detail(status, live)}")
                 continue
             # A source PR can move between the workflow_run event and QA.
             # A single proved same-origin moved/closed source is no longer a
@@ -400,7 +435,7 @@ def targets(repo: str, *, pr: str | None = None,
             status, body = fetch(f"repos/{repo}/pulls/{int(pr)}")
             sha = ((body or {}).get("head") or {}).get("sha") if status == 200 and isinstance(body, dict) else None
             if not SHA_RE.match(str(sha or "")):
-                errors.append(f"TARGET_PR_UNREADABLE:{status}")
+                errors.append(f"TARGET_PR_UNREADABLE:{_pr_read_failure_detail(status, body)}")
             elif (
                 body.get("number") != int(pr)
                 or ((body.get("head") or {}).get("repo") or {}).get("full_name") != repo
@@ -711,6 +746,14 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
+            # The protected-main certifier owns the narrow R-class allowlist.
+            # Deterministic-only QA cannot pass P/C or unknown source.
+            # Renamed origin paths are already included in ev["files"].
+            if not files or ev.get("zero_credit_disallowed_file_operations") or any(
+                not isinstance(path, str) or path not in CLASS_A_EXACT_PATHS
+                for path in files
+            ):
+                findings.append("QA_INDEPENDENT_SOURCE_REVIEW_MISSING")
             # Reduced-assurance evidence checks only: not adversarial source review.
             if ev.get("zero_credit_enabled") is not True:
                 findings.append("QA_ZERO_CREDIT_POLICY_NOT_ENABLED")
@@ -841,6 +884,7 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--run-attempt", required=True, type=int)
     policy.add_argument("--pr", type=int)
     policy.add_argument("--neutral-if-superseded", action="store_true")
+    policy.add_argument("--neutral-if-draft-target", action="store_true")
     classify = sub.add_parser("classify-upstream-qa")
     classify.add_argument("--repo", required=True)
     classify.add_argument("--run-id", required=True, type=int)
@@ -868,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_pr_number=args.pr,
                 token=os.environ.get("GH_TOKEN", ""),
                 allow_superseded_target=args.neutral_if_superseded,
+                neutralize_draft_target=args.neutral_if_draft_target,
             )
         except _source_review_module.SourceReviewError as exc:
             raise SystemExit(str(exc)) from exc

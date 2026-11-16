@@ -265,6 +265,7 @@ def acquire_nfl_forward_evidence_batch(
                 f"{candidate['player']}:{candidate['stat_type']}:NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}"
             )
             continue
+        writing = False
         try:
             raw = auto_hydrate_prop_evidence(
                 sport=SPORT,
@@ -302,11 +303,29 @@ def acquire_nfl_forward_evidence_batch(
             snapshot_id, _fingerprint, snapshot = _snapshot_payload(row, normalized)
             snapshot["source_snapshot_id"] = snapshot_id
             result["hydrated"] += 1
+            writing = True
             db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
             result["persisted"] += 1
         except PropAutoHydrationError as exc:
             result["held"] += 1
             result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{exc.code}")
+        except ValueError as exc:
+            if writing:
+                # A failure after validation, while writing the snapshot, is a genuine write failure.
+                result["held"] += 1
+                result["snapshot_write_failed"] += 1
+                result["blockers"].append(
+                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
+                )
+            else:
+                # Governed evidence validation (for example L10_GAME_LOG_INCOMPLETE) is a typed
+                # row-scoped HOLD with its reason, not a snapshot write failure. Nothing is
+                # persisted and no probability is produced for the row.
+                reason = " ".join(str(exc).split())[:120] or type(exc).__name__
+                result["held"] += 1
+                result["blockers"].append(
+                    f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_EVIDENCE_INVALID:{reason}"
+                )
         except Exception as exc:
             result["held"] += 1
             result["snapshot_write_failed"] += 1

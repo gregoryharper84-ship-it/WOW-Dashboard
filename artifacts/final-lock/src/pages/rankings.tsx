@@ -1,3 +1,4 @@
+import { apiFetch, API_ROOT } from "@/lib/api";
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RefreshCw, TrendingUp, Target, Award, GitBranch, AlertCircle, CheckCircle } from "lucide-react";
 
-const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const API_BASE = API_ROOT;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -296,7 +297,7 @@ export default function RankingsPage() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (sport !== "all") params.set("sport", sport);
-      const res = await fetch(`${API_BASE}/wow/rankings?${params}`);
+      const res = await apiFetch(`${API_BASE}/wow/rankings?${params}`);
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();
     },

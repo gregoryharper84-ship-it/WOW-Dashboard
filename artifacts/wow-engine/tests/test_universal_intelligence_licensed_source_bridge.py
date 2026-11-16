@@ -149,6 +149,27 @@ def test_duplicate_source_row_does_not_double_count():
     assert out["row_dispositions"][1]["status"] == "SOURCE_BRIDGE_DUPLICATE_SOURCE_ROW"
 
 
+@pytest.mark.parametrize("alternate_url", [
+    "https://github.com/sportsdataverse/sportsdataverse-data/releases/"
+    "download/nba_team_box/fixture-nba-game.json",
+    "https://raw.githubusercontent.com/sportsdataverse/"
+    "sportsdataverse-data/main/alternate/nba_game.json",
+])
+def test_same_provider_source_record_alias_does_not_double_count(alternate_url):
+    """Changing an authorized mirror URL must not create new independent evidence."""
+    original = row()
+    alias = row(source_url=alternate_url)
+    out = compile([original, alias])
+    assert out["received"] == 2
+    assert out["candidate_rows"] == 1 and out["held"] == 1
+    assert [x["status"] for x in out["row_dispositions"]] == [
+        "SOURCE_CANDIDATE_UNVERIFIED", "SOURCE_BRIDGE_DUPLICATE_SOURCE_ROW",
+    ]
+    assert out["research_snapshot"]["fact_count"] == 1
+    assert out["probability_publishable"] is False
+    assert out["can_execute"] is False
+
+
 def test_categorical_and_hypotheses_do_not_get_numeric_shadow_features():
     categorical = row(value="starter questionable")
     hypothetical = row(source_record_id="different", value=3.2,
