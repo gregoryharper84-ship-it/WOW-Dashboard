@@ -307,3 +307,38 @@ def test_undeclared_artifact_is_visible_but_never_promoted_in_health_dashboard(m
     assert route["production_numerical_authority"] is False
     assert route["lifecycle_status"] == "NO_CURRENT_PROP_CATEGORY_DECLARED"
     assert dashboard["kpi"]["production_registered_n"] == 0
+
+
+
+def test_failed_settlement_stage_is_a_persistable_typed_hold_not_zero_work(monkeypatch):
+    """A stage exception must not masquerade as zero pending settlement rows."""
+    monkeypatch.setattr(base, "_requested_tokens", lambda values: [TOKEN])
+    monkeypatch.setattr(base, "build_forward_evidence_inventory", lambda: [])
+    monkeypatch.setattr(base, "build_settlement_inventory", lambda: [])
+    monkeypatch.setattr(base, "run_universal_prop_forward_evidence", lambda *a, **k: _forward_result())
+
+    def broken_settlement(*args, **kwargs):
+        raise RuntimeError("backend unavailable")
+
+    monkeypatch.setattr(base, "run_exact_route_settlement", broken_settlement)
+    monkeypatch.setattr(base, "run_prop_certification_audit", lambda *a, **k: _cert_result())
+    monkeypatch.setattr(base, "run_prop_production_registration_audit", lambda *a, **k: _registration_result())
+
+    result = base.run_prop_lifecycle_autopilot(
+        base.PropLifecycleAutopilotRequest(routes=[TOKEN], persist_health=False),
+        db=object(), market_api=object(), now=NOW,
+    )
+    row = result["dashboard"]["route_rows"][0]
+    assert result["settlement"]["status"] == "FAILED"
+    assert result["failed_stages"] == ["UNIVERSAL_EXACT_SETTLEMENT"]
+    assert row["settlement_stage_status"] == "FAILED"
+    assert row["settlement_cycle_considered_n"] is None
+    assert row["settlement_cycle_settled_n"] is None
+    assert row["settlement_cycle_held_n"] is None
+    assert row["settlement_adapter_status"] == "SETTLEMENT_STAGE_FAILED"
+    assert "SETTLEMENT_STAGE_FAILED:RuntimeError" in row["blockers"]
+    assert "FORWARD_CALIBRATION_CERTIFICATION_REQUIRED" in row["blockers"]
+    assert row["can_execute"] is False
+    persisted = base._persistence_rows("cycle-1", result["dashboard"])
+    assert "SETTLEMENT_STAGE_FAILED:RuntimeError" in persisted[0]["blockers"]
+    assert persisted[0]["payload"]["settlement_cycle_considered_n"] is None
