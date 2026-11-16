@@ -148,9 +148,14 @@ explicitly structured rows with:
 - stable quote and underlying market evidence and exact component stat family;
 - immutable fitted-model prediction receipt and fitted artifact ID, pregame
   calibrated joint probability and lower bound;
-- chronological fit cutoff, prediction timestamp, quote timestamp, event
-  start, official settlement timestamp and settlement evidence;
+- chronological fit cutoff, prediction timestamp, RFQ quote timestamp,
+  **authenticated accepted-fill timestamp and receipt**, event start,
+  official settlement timestamp and settlement evidence; the independent
+  model forecast and quote may arrive in either order, but both must
+  predate the accepted fill;
 - entry quote, observed fee and settlement value in cents per contract;
+  binary-only ex ante break-even joint probability and EV/lower-bound EV,
+  with scalar settlements excluded from binary forecast economic calibration;
 - construction style, comparator group and independent thesis cluster.
 
 It *rejects* unknown market families, unverified research source status,
