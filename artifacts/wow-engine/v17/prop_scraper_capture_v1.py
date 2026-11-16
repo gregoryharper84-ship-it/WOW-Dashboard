@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+from http.client import HTTPException
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -98,7 +99,16 @@ def _read(url: str, *, limit: int, content_type: str,
             mime = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
             if mime != content_type:
                 raise PropScrapeHold("PROP_SCRAPE_CONTENT_TYPE_INVALID")
+            declared_length = response.headers.get("Content-Length")
+            if declared_length is not None:
+                if (not isinstance(declared_length, str)
+                        or re.fullmatch(r"[0-9]{1,15}", declared_length) is None):
+                    raise PropScrapeHold("PROP_SCRAPE_SOURCE_UNREACHABLE")
+                if int(declared_length) > limit:
+                    raise PropScrapeHold("PROP_SCRAPE_PAYLOAD_INVALID")
             data = response.read(limit + 1)
+            if declared_length is not None and len(data) != int(declared_length):
+                raise PropScrapeHold("PROP_SCRAPE_SOURCE_UNREACHABLE")
     except PropScrapeHold:
         raise
     except HTTPError as exc:
@@ -109,7 +119,7 @@ def _read(url: str, *, limit: int, content_type: str,
         else:
             code = "PROP_SCRAPE_HTTP_REJECTED"
         raise PropScrapeHold(code) from exc
-    except (URLError, OSError, TimeoutError) as exc:
+    except (URLError, OSError, TimeoutError, HTTPException) as exc:
         raise PropScrapeHold("PROP_SCRAPE_SOURCE_UNREACHABLE") from exc
     if not isinstance(data, bytes) or not data or len(data) > limit:
         raise PropScrapeHold("PROP_SCRAPE_PAYLOAD_INVALID")
@@ -128,7 +138,7 @@ def _research_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list) or len(raw) > MAX_ROWS:
         raise PropScrapeHold("PROP_SCRAPE_PARSER_INVALID")
     result: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, float]] = set()
+    seen: set[tuple[str, str, str, float, str]] = set()
     for row in raw:
         if not isinstance(row, Mapping) or not set(row) <= _ALLOWED_ROW_FIELDS:
             raise PropScrapeHold("PROP_SCRAPE_AUTHORITY_INJECTION")
@@ -137,10 +147,16 @@ def _research_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         line = row.get("display_line")
         if (not all(isinstance(x, str) and 0 < len(x.strip()) <= 100
                     for x in (name, stat, period))
-                or type(line) not in (float, int) or not math.isfinite(line)
-                or not 0 < line <= 10000):
+                or type(line) not in (float, int)
+                or not 0 < line <= 10000 or not math.isfinite(line)):
+
             raise PropScrapeHold("PROP_SCRAPE_ROW_INVALID")
-        key = (name.strip(), stat.strip(), period.strip(), float(line))
+        fixture = row.get("fixture_text")
+        if fixture is not None and not isinstance(fixture, str):
+            raise PropScrapeHold("PROP_SCRAPE_ROW_INVALID")
+        fixture_label = (fixture or "").strip()[:150]
+        key = (name.strip(), stat.strip(), period.strip(),
+               float(line), fixture_label)
         if key in seen:
             raise PropScrapeHold("PROP_SCRAPE_DUPLICATE_ROW")
         seen.add(key)
@@ -149,7 +165,7 @@ def _research_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             "stat_type_display": key[1],
             "period_display": key[2],
             "line_display": key[3],
-            "fixture_text_unverified": str(row.get("fixture_text") or "")[:150],
+            "fixture_text_unverified": key[4],
             "canonical_player_id": None,
             "canonical_event_id": None,
             "book": None,
@@ -158,6 +174,104 @@ def _research_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         })
     return result
 
+
+
+def _validated_robots(robots_text: str, url: str) -> None:
+    """Require a recognizable policy for our agent, not parser default-allow.
+
+    urllib.robotparser does not implement '*' and '
+                         parse_html: Callable[[bytes], Mapping[str, Any]],
+                         captured_at: datetime,
+                         opener: Callable[..., Any]) -> dict[str, Any]:
+    """Internal tested worker; caller supplies an independently approved permit."""
+    if permit.automated_fetch_authorized is not True:
+        raise PropScrapeHold("PROP_SCRAPE_RIGHTS_NOT_APPROVED")
+    origin = _safe_url(url)
+    if url not in permit.allowed_urls:
+        raise PropScrapeHold("PROP_SCRAPE_URL_NOT_APPROVED")
+    robots_url = origin + "/robots.txt"
+    robots_bytes = _read(robots_url, limit=MAX_ROBOTS_BYTES,
+                         content_type="text/plain", opener=opener)
+    try:
+        robots_text = robots_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED") from exc
+    _validated_robots(robots_text, url)
+    html = _read(url, limit=MAX_HTML_BYTES,
+                 content_type="text/html", opener=opener)
+    try:
+        parsed = parse_html(html)
+    except PropScrapeHold:
+        raise
+    except Exception as exc:
+        raise PropScrapeHold("PROP_SCRAPE_PARSER_FAILED") from exc
+    rows = _research_rows(parsed)
+    return {
+        "schema": SCHEMA,
+        "status": "RESEARCH_ROWS_PARSED" if rows else "RESEARCH_EMPTY_NOT_NO_SLATE",
+        "source_id": permit.source_id,
+        "source_url": url,
+        "rights_receipt_id": permit.rights_receipt_id,
+        "captured_at": _utc(captured_at),
+        "html_sha256": sha256(html).hexdigest(),
+        "request_count": 2,
+        "row_count": len(rows),
+        "rows": rows,
+        "source_identity_verified": False,
+        "pregame_snapshot_verified": False,
+        "historical_training_authorized": False,
+        "market_quote_verified": False,
+        "probability_publishable": False,
+        "production_write_authorized": False,
+        "can_execute": False,
+    }
+
+
+def scrape_approved_once(source_id: str, url: str, *,
+                         parse_html: Callable[[bytes], Mapping[str, Any]],
+                         captured_at: datetime | None = None) -> dict[str, Any]:
+    """Only code-reviewed sources can fetch. No retries, storage or scheduling."""
+    permit = APPROVED_LIVE_SCRAPE_SOURCES.get(source_id)
+    if permit is None:
+        raise PropScrapeHold("PROP_SCRAPE_SOURCE_NOT_APPROVED")
+    opener = build_opener(_NoRedirects()).open
+    return _capture_with_permit(
+        permit=permit, url=url, parse_html=parse_html,
+        captured_at=captured_at or datetime.now(timezone.utc), opener=opener,
+    )
+ path pattern semantics;
+    hold on any such directive rather than silently treating it literally.
+    """
+    valid_directives = {
+        "user-agent", "allow", "disallow", "crawl-delay", "request-rate",
+        "sitemap", "host",
+    }
+    clean: list[str] = []
+    for raw in robots_text.splitlines():
+        line = raw.partition("#")[0].strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
+        key, _, value = line.partition(":")
+        key, value = key.strip().lower(), value.strip()
+        if key not in valid_directives or (key == "user-agent" and not value):
+            raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
+        if key in {"allow", "disallow"} and (
+                "*" in value or "$" in value
+                or "%2a" in value.lower() or "%24" in value.lower()):
+            raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
+        clean.append(line)
+    robots = RobotFileParser()
+    robots.parse(clean)
+    selected = next(
+        (entry for entry in robots.entries if entry.applies_to(USER_AGENT)),
+        robots.default_entry,
+    )
+    if selected is None or not selected.rulelines:
+        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
+    if not robots.can_fetch(USER_AGENT, url):
+        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_DISALLOW")
 
 def _capture_with_permit(*, permit: SourceScrapePermit, url: str,
                          parse_html: Callable[[bytes], Mapping[str, Any]],
