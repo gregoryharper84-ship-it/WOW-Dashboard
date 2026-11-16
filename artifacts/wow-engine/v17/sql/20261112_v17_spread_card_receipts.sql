@@ -97,11 +97,6 @@ create table if not exists public.wow_v17_spread_card_receipts (
         and p_cover <= calibrated_upper_bound
         and calibrated_upper_bound < 1
     ),
-    constraint wow_v17_spread_card_receipts_pregame check (
-        model_timestamp < event_start_time_utc
-        and quote_observed_at_utc < event_start_time_utc
-        and source_snapshot_timestamp <= model_timestamp
-    ),
     constraint wow_v17_spread_card_receipts_event_state check (
         event_state in ('SCHEDULED', 'PREGAME')
     ),
@@ -124,6 +119,40 @@ create table if not exists public.wow_v17_spread_card_receipts (
         can_execute = false
     )
 );
+
+-- The temporal constraint is installed after CREATE TABLE so an already-
+-- existing validation/staging relation is upgraded fail-closed as well.
+-- A quote/model created after the event, or a market quote observed only
+-- after model scoring, cannot be an immutable pregame probability receipt.
+alter table public.wow_v17_spread_card_receipts
+    drop constraint if exists wow_v17_spread_card_receipts_pregame;
+alter table public.wow_v17_spread_card_receipts
+    add constraint wow_v17_spread_card_receipts_pregame check (
+        source_snapshot_timestamp <= model_timestamp
+        and quote_observed_at_utc <= model_timestamp
+        and model_timestamp <= created_at
+        and created_at < event_start_time_utc
+    );
+
+-- DEFAULT now() alone permits a privileged writer to supply an arbitrary
+-- earlier timestamp. Own creation time on the server before CHECK enforcement.
+create or replace function public.wow_v17_spread_receipt_server_created_at()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $
+begin
+    new.created_at := pg_catalog.clock_timestamp();
+    return new;
+end;
+$;
+
+drop trigger if exists trg_wow_v17_spread_receipts_server_created_at
+    on public.wow_v17_spread_card_receipts;
+create trigger trg_wow_v17_spread_receipts_server_created_at
+    before insert on public.wow_v17_spread_card_receipts
+    for each row execute function public.wow_v17_spread_receipt_server_created_at();
 
 alter table public.wow_v17_spread_card_receipts enable row level security;
 
@@ -169,6 +198,8 @@ revoke all on table public.wow_v17_spread_card_receipts from anon, authenticated
 
 -- Deterministic rollback (only after release verification confirms no retained
 -- pregame receipt is still required for grading or postmortem):
+-- drop trigger if exists trg_wow_v17_spread_receipts_server_created_at on public.wow_v17_spread_card_receipts;
+-- drop function if exists public.wow_v17_spread_receipt_server_created_at();
 -- drop trigger if exists trg_wow_v17_spread_receipts_no_delete on public.wow_v17_spread_card_receipts;
 -- drop trigger if exists trg_wow_v17_spread_receipts_no_update on public.wow_v17_spread_card_receipts;
 -- drop function if exists public.wow_v17_block_spread_receipt_change();
