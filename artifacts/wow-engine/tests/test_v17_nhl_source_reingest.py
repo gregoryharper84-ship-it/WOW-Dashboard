@@ -249,6 +249,23 @@ class _RPCQuery:
             if receipt.get("season") != season or receipt.get("can_execute") is not False:
                 return response({"status": "BLOCKED", "code": "NHL_SOURCE_TIMELINE_INCOMPLETE", "can_execute": False})
             target = db.rows.setdefault(fitted.TIMELINE_RECEIPT_TABLE, [])
+            current = next((r for r in target if r.get("season") == season), None)
+            if current:
+                prior = datetime.fromisoformat(
+                    str(current["schedule_retrieved_at"]).replace("Z", "+00:00")
+                )
+                offered = datetime.fromisoformat(
+                    str(receipt["schedule_retrieved_at"]).replace("Z", "+00:00")
+                )
+                if offered < prior or (
+                    offered == prior
+                    and current["schedule_digest"] != receipt.get("schedule_digest")
+                ):
+                    return response({
+                        "status": "BLOCKED",
+                        "code": "NHL_SOURCE_TIMELINE_STALE_SCHEDULE",
+                        "can_execute": False,
+                    })
             target[:] = [r for r in target if r.get("season") != season]
             target.append(receipt)
             db.operations.append((fitted.TIMELINE_RECEIPT_TABLE, "rpc_timeline", 1))
