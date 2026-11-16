@@ -300,3 +300,44 @@ def test_same_player_stat_line_different_fixture_remains_distinct():
     receipt = capture(parse=lambda _: {"rows": [first, second]})
     assert receipt["row_count"] == 2
     assert receipt["rows"][0]["fixture_text_unverified"] != receipt["rows"][1]["fixture_text_unverified"]
+
+
+def test_second_wildcard_group_blocks_even_when_first_allows():
+    policy = (b"User-agent: *\nAllow: /research/\n\n"
+              b"User-agent: *\nDisallow: /research/\n")
+    fetch, seen = opener(robots=policy)
+    holds("PROP_SCRAPE_ROBOTS_UNVERIFIED", lambda: capture(fetch=fetch))
+    assert seen == ["https://example.org/robots.txt"]
+
+
+@pytest.mark.parametrize("policy", [
+    b"User-agent: *\nAllow: /research/\nDisallow: /research/player-props\n",
+    b"User-agent: *\nDisallow: /research/\nAllow: /research/player-props\n",
+])
+def test_conflicting_matching_robots_rules_hold_before_html(policy):
+    fetch, seen = opener(robots=policy)
+    holds("PROP_SCRAPE_ROBOTS_UNVERIFIED", lambda: capture(fetch=fetch))
+    assert seen == ["https://example.org/robots.txt"]
+
+
+def test_consistent_allow_prefixes_still_collect():
+    policy = b"User-agent: *\nAllow: /research/\nAllow: /research/player-props\n"
+    fetch, seen = opener(robots=policy)
+    result = capture(fetch=fetch)
+    assert result["row_count"] == 1
+    assert seen == ["https://example.org/robots.txt", URL]
+
+
+def test_consistent_disallow_prefixes_still_block():
+    policy = b"User-agent: *\nDisallow: /research/\nDisallow: /research/player-props\n"
+    fetch, seen = opener(robots=policy)
+    holds("PROP_SCRAPE_ROBOTS_DISALLOW", lambda: capture(fetch=fetch))
+    assert seen == ["https://example.org/robots.txt"]
+
+
+def test_nonmatching_disallow_does_not_change_allowed_path():
+    policy = b"User-agent: *\nAllow: /research/\nDisallow: /admin/\n"
+    fetch, seen = opener(robots=policy)
+    result = capture(fetch=fetch)
+    assert result["row_count"] == 1
+    assert seen == ["https://example.org/robots.txt", URL]
