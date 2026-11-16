@@ -152,3 +152,12 @@ def test_dashboard_absent_execution_flag_holds_registration():
     )
     assert summary["registered_observed_n"] == 0
     assert summary["routes"][0]["first_blocker"] == "EXECUTION_AUTHORITY_UNVERIFIED"
+
+
+def test_nonstring_or_blank_blocker_list_cannot_prove_registration():
+    safe = route_row(lifecycle_status="PRODUCTION_REGISTERED", blockers=[],
+                     production_numerical_authority=True, action_canary_verified=True)
+    for malformed in ([None], [""], ["  "], [42]):
+        result = view([route_row(**{**safe, "blockers": malformed})])
+        assert result["registered_observed_n"] == 0
+        assert result["routes"][0]["first_blocker"] == "ROUTE_BLOCKERS_UNVERIFIED"
