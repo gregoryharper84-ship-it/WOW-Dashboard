@@ -245,6 +245,41 @@ def normalize_game(
 
 SETTLED_SCHEDULE_STATES = frozenset({"FINAL", "OFF"})
 UNSETTLED_SCHEDULE_STATES = frozenset({"FUT", "PRE", "SCHED", "LIVE", "CRIT"})
+_SCHEDULE_IDENTITY_KEYS = ("official_event_id", "event_start_time", "game_type")
+
+
+def merge_equivalent_schedule_events(
+    existing: Mapping[str, Any],
+    incoming: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reconcile two club-schedule views of one official event.
+
+    Official NHL snapshots may report the same completed game as FINAL and later
+    as OFF. That lifecycle change is not an identity conflict. Any other field
+    mismatch remains fail-closed as ``NHL_DUPLICATE_GAME_CONFLICT``.
+    """
+    if dict(existing) == dict(incoming):
+        return dict(incoming)
+    prior_state = str(existing.get("game_state") or "")
+    incoming_state = str(incoming.get("game_state") or "")
+    equivalent_settlement = (
+        prior_state in SETTLED_SCHEDULE_STATES
+        and incoming_state in SETTLED_SCHEDULE_STATES
+        and all(
+            existing.get(key) == incoming.get(key) for key in _SCHEDULE_IDENTITY_KEYS
+        )
+    )
+    if not equivalent_settlement:
+        raise NHLCandidateError(
+            "NHL_DUPLICATE_GAME_CONFLICT",
+            str(incoming.get("official_event_id") or existing.get("official_event_id") or ""),
+        )
+    return {
+        **dict(incoming),
+        "game_state": (
+            "OFF" if "OFF" in (prior_state, incoming_state) else "FINAL"
+        ),
+    }
 
 
 def _fetch_team_season_schedule_body(
@@ -399,9 +434,10 @@ def fetch_season_schedule_events(
         for event in events:
             event_id = event["official_event_id"]
             existing = by_id.get(event_id)
-            if existing is not None and existing != event:
-                raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
-            by_id[event_id] = event
+            if existing is not None:
+                by_id[event_id] = merge_equivalent_schedule_events(existing, event)
+            else:
+                by_id[event_id] = event
     ordered = sorted(
         by_id.values(),
         key=lambda row: (row["event_start_time"], row["official_event_id"]),
@@ -445,24 +481,7 @@ def fetch_season_reingest_corpus(
                         and incoming_neutral != prior_neutral
                     ):
                         raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
-                    if existing_event != event:
-                        prior_state = existing_event["game_state"]
-                        incoming_state = event["game_state"]
-                        equivalent_settlement = (
-                            prior_state in SETTLED_SCHEDULE_STATES
-                            and incoming_state in SETTLED_SCHEDULE_STATES
-                            and all(
-                                existing_event.get(key) == event.get(key)
-                                for key in ("official_event_id", "event_start_time", "game_type")
-                            )
-                        )
-                        if not equivalent_settlement:
-                            raise NHLCandidateError("NHL_DUPLICATE_GAME_CONFLICT", event_id)
-                        event = {
-                            **event,
-                            "game_state": ("OFF" if "OFF" in (prior_state, incoming_state)
-                                           else "FINAL"),
-                        }
+                    event = merge_equivalent_schedule_events(existing_event, event)
                 else:
                     if type(raw.get("neutralSite")) is bool:
                         neutral_by_id[event_id] = raw["neutralSite"]
@@ -816,6 +835,7 @@ __all__ = [
     "fetch_team_season_schedule_events",
     "fit_nhl_candidate",
     "game_record",
+    "merge_equivalent_schedule_events",
     "normalize_game",
     "normalize_schedule_event",
     "reconstruct_training_rows",

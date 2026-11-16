@@ -159,6 +159,63 @@ def test_duplicate_official_game_must_reconcile_exactly(monkeypatch):
     assert caught.value.code == "NHL_DUPLICATE_GAME_CONFLICT"
 
 
+def test_schedule_events_treat_final_and_off_as_one_settled_identity(monkeypatch):
+    """Club schedule snapshots may flip FINAL→OFF; coverage must not conflict."""
+    final_event = {
+        "official_event_id": "2026020001",
+        "event_start_time": "2026-01-01T00:00:00+00:00",
+        "game_state": "FINAL",
+        "game_type": 2,
+    }
+    off_event = {
+        **final_event,
+        "game_state": "OFF",
+    }
+    calls = {
+        "BOS": ([final_event], "2026-11-16T00:00:00+00:00"),
+        "NYR": ([off_event], "2026-11-16T00:00:01+00:00"),
+    }
+    monkeypatch.setattr(
+        nhl,
+        "fetch_team_season_schedule_events",
+        lambda team, year, session=None, timeout=20, strict=False: calls[team],
+    )
+    ordered, stamp = nhl.fetch_season_schedule_events(
+        2025, teams=("BOS", "NYR"), session=object(), strict=True
+    )
+    assert stamp == "2026-11-16T00:00:01+00:00"
+    assert len(ordered) == 1
+    assert ordered[0]["official_event_id"] == "2026020001"
+    assert ordered[0]["game_state"] == "OFF"
+
+
+def test_schedule_events_still_reject_true_identity_conflicts(monkeypatch):
+    left = {
+        "official_event_id": "2026020002",
+        "event_start_time": "2026-01-01T00:00:00+00:00",
+        "game_state": "FINAL",
+        "game_type": 2,
+    }
+    right = {
+        **left,
+        "event_start_time": "2026-01-01T03:00:00+00:00",
+    }
+    calls = {
+        "BOS": ([left], "2026-11-16T00:00:00+00:00"),
+        "NYR": ([right], "2026-11-16T00:00:01+00:00"),
+    }
+    monkeypatch.setattr(
+        nhl,
+        "fetch_team_season_schedule_events",
+        lambda team, year, session=None, timeout=20, strict=False: calls[team],
+    )
+    with pytest.raises(nhl.NHLCandidateError) as caught:
+        nhl.fetch_season_schedule_events(
+            2025, teams=("BOS", "NYR"), session=object(), strict=True
+        )
+    assert caught.value.code == "NHL_DUPLICATE_GAME_CONFLICT"
+
+
 def test_reconstruction_uses_prior_settled_games_only_and_no_market_features():
     games = synthetic_seasons()
     rows, records = nhl.reconstruct_training_rows(games)
