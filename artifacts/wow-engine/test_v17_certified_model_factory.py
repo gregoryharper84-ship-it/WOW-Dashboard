@@ -329,3 +329,8 @@ def test_nba_nonblank_replay_versions_required_before_research_ready(monkeypatch
             assert receipt["rank_eligible"] is False
             assert receipt["probability_publishable"] is False
             assert receipt["can_execute"] is False
+
+
+def test_nhl_research_screen_failed_has_canonical_failure_code():
+    registry = (Path(__file__).resolve().parent / "docs" / "failure_codes.md").read_text(encoding="utf-8")
+    assert "| `RESEARCH_SCREEN_FAILED` |" in registry
