@@ -33,7 +33,7 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
 
     Inputs require underlying_market_count, entry_cents and payout_cents. Optional:
     settlement_day, position_id, market_details, settlement_payout_cents.
-    Missing facts stay unknown. Total payout != settlement payout must be
+    Missing fees stay unknown: results are payout minus entry BEFORE unobserved fees. Total payout != settlement payout must be
     reconciled from actual orders, not classified as a sporting settlement.
     If target_day is given, only explicitly date-tagged matching rows are included;
     missing-date rows remain in the excluded count, not assigned to the target day.
@@ -83,21 +83,23 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
         net = returned - entry
         if returned > 0 and net < 0:
             cash_return_loss += 1
-        included.append({"count": count, "entry": entry, "payout": returned, "net": net})
+        included.append({"count": count, "entry": entry, "payout": returned, "net_before_fees": net})
 
     buckets: dict[int, dict[str, int]] = defaultdict(
-        lambda: {"positions": 0, "profitable_positions": 0, "entry_cents": 0,
-                 "payout_cents": 0, "net_cents": 0})
+        lambda: {"positions": 0, "positive_before_fees_positions": 0, "entry_cents": 0,
+                 "payout_cents": 0, "net_before_fees_cents": 0})
     for row in included:
         group = buckets[row["count"]]
         group["positions"] += 1
-        group["profitable_positions"] += int(row["net"] > 0)
+        group["positive_before_fees_positions"] += int(row["net_before_fees"] > 0)
         group["entry_cents"] += row["entry"]
         group["payout_cents"] += row["payout"]
-        group["net_cents"] += row["net"]
+        group["net_before_fees_cents"] += row["net_before_fees"]
 
     return {
         "analysis_stage": "POSTMORTEM_RESEARCH",
+        "economics_basis": "PAYOUT_MINUS_ENTRY_BEFORE_UNOBSERVED_FEES",
+        "fees_observed": False,
         "scope": "SNAPSHOT" if target_day is None else "SOURCE_REPORTED_DAY_NOT_AUTHENTICATED",
         "target_day": target_day,
         "snapshot_rows": len(rows),
@@ -106,12 +108,12 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
         "missing_settlement_day_rows": missing_date,
         "missing_market_details_rows": missing_details,
         "missing_stable_position_id_rows": missing_id,
-        "positive_payout_negative_net_rows": cash_return_loss,
+        "positive_payout_negative_before_fees_rows": cash_return_loss,
         "total_vs_settlement_payout_mismatch_rows": payout_settlement_mismatch,
         "entry_cents": sum(r["entry"] for r in included),
         "payout_cents": sum(r["payout"] for r in included),
-        "net_cents": sum(r["net"] for r in included),
-        "profitable_positions": sum(r["net"] > 0 for r in included),
+        "net_before_fees_cents": sum(r["net_before_fees"] for r in included),
+        "positive_before_fees_positions": sum(r["net_before_fees"] > 0 for r in included),
         "by_market_count": {str(k): buckets[k] for k in sorted(buckets)},
         "leg_outcomes": "UNVERIFIED_DO_NOT_INFER",
         "joint_probabilities": "NOT_AVAILABLE_DO_NOT_BACKFILL",
