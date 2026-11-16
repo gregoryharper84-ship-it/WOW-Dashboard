@@ -12,7 +12,6 @@ can_execute = False (immutable)
 """
 from __future__ import annotations
 
-import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -134,44 +133,74 @@ def test_sirt_ncaaf_post_kickoff_clock_denies_scoring():
 # ============================================================================
 # 2. SPREAD RECEIPT ADMISSION & LINE DISTRIBUTION INVARIANTS
 # ============================================================================
+# These tests call the actually deployed card admission boundary. They do not
+# pretend to exercise the as-yet-unmerged spread-receipt SQL relation (#2633).
+from v17.spread_card_admission import spread_card_admission
+
+
+def _spread_admission_receipt(**overrides):
+    row = {
+        "sport": "NFL",
+        "event_id": "TEST_SPREAD_EVENT",
+        "exact_line_side": "HOME",
+        "exact_signed_spread": -3.5,
+        "settlement_basis": "FULL_GAME_INCLUDING_OVERTIME",
+        "controlling_spread_specialist": "TEST_ONLY_SPREAD_SPECIALIST",
+        "model_artifact_version": "TEST_ONLY_ARTIFACT",
+        "model_timestamp": "2026-11-16T17:00:00+00:00",
+        "p_cover": 0.52,
+        "p_push": 0.05,
+        "p_not_cover": 0.43,
+        "calibrated_lower_bound": 0.45,
+        "lower_bound_required": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "can_execute": False,
+    }
+    row.update(overrides)
+    return row
+
+
+def _check_spread_admission(**overrides):
+    return spread_card_admission(
+        _spread_admission_receipt(**overrides),
+        requested_event_id="TEST_SPREAD_EVENT",
+        requested_side="HOME",
+        requested_signed_spread=-3.5,
+    )
+
 
 def test_sirt_spread_distribution_triplet_must_be_strictly_normalized():
-    """SIRT Acceptance: Spread distribution requires p_cover + p_push + p_not_cover == 1.0."""
-    valid_triplet = (0.52, 0.05, 0.43)
-    assert math.isclose(sum(valid_triplet), 1.0, abs_tol=1e-9)
+    """A real admission call must reject a nonnormalized cover/push/noncover triplet."""
+    valid = _check_spread_admission()
+    assert valid["status"] == "PASS"
+    assert valid["card_admission_eligible"] is True
+    assert valid["can_execute"] is False
 
-    invalid_triplet = (0.52, 0.05, 0.40)  # sums to 0.97
-    assert not math.isclose(sum(invalid_triplet), 1.0, abs_tol=1e-9)
-
-
-def test_sirt_spread_interior_bounds_contract():
-    """SIRT Acceptance: Calibrated lower and upper bounds must be strictly interior (0, 1)."""
-    p_cover = 0.54
-    lower = 0.46
-    upper = 0.62
-
-    # Invariant: 0 < lower <= p_cover <= upper < 1
-    assert 0 < lower <= p_cover <= upper < 1
-
-    # Negative test: boundary violations fail closed
-    bad_lower = 0.0
-    assert not (0 < bad_lower <= p_cover)
-
-    bad_upper = 1.0
-    assert not (p_cover <= bad_upper < 1)
-
-    inverted = 0.58  # lower > p_cover
-    assert not (0 < inverted <= p_cover)
+    invalid = _check_spread_admission(p_not_cover=0.40)
+    assert invalid["status"] == "BLOCKED"
+    assert invalid["card_admission_eligible"] is False
+    assert "SPREAD_ADMISSION:PROBABILITY_DISTRIBUTION_NOT_NORMALIZED" in invalid["blockers"]
 
 
-def test_sirt_spread_receipt_immutable_can_execute_false():
-    """SIRT Acceptance: can_execute must be false at all layers of spread receipt processing."""
-    schema_sql_path = V17_DIR / "sql" / "20261112_v17_spread_card_receipts.sql"
-    if schema_sql_path.exists():
-        sql_content = schema_sql_path.read_text(encoding="utf-8")
-        assert "can_execute boolean not null default false" in sql_content
-        assert "constraint wow_v17_spread_card_receipts_never_execute check (\n        can_execute = false\n    )" in sql_content
-        assert "revoke all on table public.wow_v17_spread_card_receipts from anon, authenticated;" in sql_content
+def test_sirt_spread_required_lower_bound_fails_closed_at_card_admission():
+    """The existing real admission boundary rejects missing/nonfinite lower bounds.
+
+    Full interior upper/lower coherence is a #2633 receipt-registry/SQL test,
+    not a claim made by this independent standalone fixture.
+    """
+    for missing in (None, float("inf"), float("nan")):
+        blocked = _check_spread_admission(calibrated_lower_bound=missing)
+        assert blocked["card_admission_eligible"] is False
+        assert "SPREAD_ADMISSION:LOWER_BOUND_REQUIRED" in blocked["blockers"]
+
+
+def test_sirt_spread_can_execute_false_at_actual_card_admission_boundary():
+    """Real card admission refuses an execution-enabled purported receipt."""
+    blocked = _check_spread_admission(can_execute=True)
+    assert blocked["status"] == "BLOCKED"
+    assert blocked["can_execute"] is False
+    assert "SPREAD_ADMISSION:CAN_EXECUTE_INVARIANT_VIOLATION" in blocked["blockers"]
 
 
 # ============================================================================
