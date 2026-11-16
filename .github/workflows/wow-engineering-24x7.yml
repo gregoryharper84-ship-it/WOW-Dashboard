@@ -35,6 +35,10 @@ on:
       - ".github/workflows/wow-engineering-24x7.yml"
       - "artifacts/wow-engine/v17/engineering_24x7_selector.py"
       - "artifacts/wow-engine/test_engineering_24x7_selector.py"
+      - "artifacts/wow-engine/v17/engineering_dispatch_manifest.json"
+      - ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+      - ".github/workflows/wow-v17-engineering-specialist-support.yml"
+      - ".github/workflows/wow-v17-24h-engineering-closure-loop.yml"
       - "artifacts/wow-engine/v17/engineering_delivery_pipeline.py"
       - "artifacts/wow-engine/test_engineering_delivery_pipeline.py"
 
@@ -62,6 +66,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install workflow parser
+        run: python -m pip install PyYAML==6.0.3
       - name: Verify deterministic 24x7 admission tests
         run: |
           python artifacts/wow-engine/test_engineering_24x7_selector.py -v
@@ -103,6 +112,7 @@ jobs:
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
             --runs "$RUNNER_TEMP/engineering-runs.json" \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
             --output "$RUNNER_TEMP/engineering-plan.json"
           {
             echo "### Read-only live intake proof (NO DISPATCH)"
@@ -148,6 +158,7 @@ jobs:
       incident: ${{ steps.plan.outputs.incident }}
       pr: ${{ steps.plan.outputs.pr }}
       sha: ${{ steps.plan.outputs.sha }}
+      lease_group: ${{ steps.plan.outputs.lease_group }}
     steps:
       - name: Checkout protected main only
         uses: actions/checkout@v4
@@ -211,20 +222,23 @@ jobs:
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
             --runs "$RUNNER_TEMP/engineering-runs.json" \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
             --output "$RUNNER_TEMP/engineering-plan.json" "${args[@]}"
           action=$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")
           incident=$(jq -r '.incident // ""' "$RUNNER_TEMP/engineering-plan.json")
           pr=$(jq -r '.pr // ""' "$RUNNER_TEMP/engineering-plan.json")
           sha=$(jq -r '.head_sha // ""' "$RUNNER_TEMP/engineering-plan.json")
+          lease_group=$(jq -r '.lease_group // ""' "$RUNNER_TEMP/engineering-plan.json")
           [[ "$action" == "IDLE" || "$action" == "BUILD" || "$action" == "RESUME_PR" ]] || exit 2
           {
-            printf 'action=%s\nincident=%s\npr=%s\nsha=%s\n' "$action" "$incident" "$pr" "$sha"
+            printf 'action=%s\nincident=%s\npr=%s\nsha=%s\nlease_group=%s\n' "$action" "$incident" "$pr" "$sha" "$lease_group"
           } >> "$GITHUB_OUTPUT"
           {
             echo "## WOW Engineering — 24x7 execution intake"
             echo "- Action: $action"
             echo "- Canonical issue: ${incident:-none}"
             echo "- Existing PR: ${pr:-none}"
+            echo "- Domain writer lease: ${lease_group:-none}"
             echo "- Protected main: $GITHUB_SHA"
             echo "- Cutover enabled: ${{ vars.WOW_24X7_ACTIVE == 'true' }}"
             echo "- Old writers retired: ${{ vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true' }}"
@@ -342,11 +356,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INCIDENT: ${{ needs.select.outputs.incident }}
+          LEASE_GROUP: ${{ needs.select.outputs.lease_group }}
           PROVIDER: ${{ vars.WOW_24X7_CODING_PROVIDER }}
           RETRY_AFTER_RUN_ID: ${{ inputs.retry_after_run_id }}
         shell: bash
         run: |
           set -euo pipefail
+          # Retire legacy admission first, then drain the ENTIRE workflow,
+          # including independent-provider jobs queued behind the writer mutex.
+          # A job-level flag cannot revoke runs admitted before cutover.
+          for legacy_workflow in wow-v17-engineering-provider-dispatcher.yml wow-v17-engineering-specialist-support.yml; do
+            legacy_pending=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$legacy_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' | jq -s -e '
+                if length > 0 and all(.[]; type == "array") and ([.[][]] | length < 1000)
+                then [.[][] | select(.status != "completed")] | length
+                else error("LEGACY_RUN_HISTORY_INCOMPLETE") end')
+            if [ "$legacy_pending" -gt 0 ]; then
+              echo "::notice::LEGACY_PROVIDER_DRAIN_PENDING; dispatch held"
+              exit 0
+            fi
+          done
           [[ "$INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
           case "$PROVIDER" in
             openai) worker=wow-v17-chatgpt-engineering-worker.yml ;;
@@ -394,10 +423,17 @@ jobs:
           fi
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/issues.json" --prs "$RUNNER_TEMP/prs.json" \
-            --runs "$RUNNER_TEMP/runs.json" --target "$INCIDENT" \
+            --runs "$RUNNER_TEMP/runs.json" --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --target "$INCIDENT" \
             --output "$RUNNER_TEMP/current-plan.json" "${retry_args[@]}"
           if [ "$(jq -r '.action' "$RUNNER_TEMP/current-plan.json")" != "BUILD" ]; then
             echo "::notice::ISSUE_ALREADY_OWNED_OR_ATTEMPTED: issue $INCIDENT"
+            exit 0
+          fi
+          current_lease_group=$(jq -r '.lease_group // ""' "$RUNNER_TEMP/current-plan.json")
+          [[ "$LEASE_GROUP" =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || exit 2
+          if [ "$current_lease_group" != "$LEASE_GROUP" ]; then
+            echo "::notice::P0_LEASE_GROUP_CHANGED; dispatch held"
             exit 0
           fi
           # Refresh both providers under the existing global writer mutex.
@@ -436,7 +472,7 @@ jobs:
           # The current provider worker still independently owns all execution
           # guards, quotas and remote-writer reconciliation.
           gh workflow run "$worker" -R "$GITHUB_REPOSITORY" \
-            --ref main -f target_incident="$INCIDENT" -f lease_group=GLOBAL
+            --ref main -f target_incident="$INCIDENT" -f lease_group="$LEASE_GROUP"
           # Keep the mutex until the new run is actually visible in GitHub.
           # Unseen dispatch is a typed failure, never evidence of success.
           for observation in 1 2 3 4 5 6; do
