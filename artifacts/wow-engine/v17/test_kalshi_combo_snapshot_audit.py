@@ -34,6 +34,16 @@ def test_nonzero_payout_is_not_necessarily_economic_success():
     assert out["profitable_positions"] == 0
 
 
+def test_total_payout_is_not_the_same_as_settlement_payout():
+    out = audit_snapshot([
+        {"underlying_market_count": 2, "entry_cents": 1000,
+         "payout_cents": 1600, "settlement_payout_cents": 0},
+    ])
+    assert out["total_vs_settlement_payout_mismatch_rows"] == 1
+    assert out["profitable_positions"] == 1
+    assert out["leg_outcomes"] == "UNVERIFIED_DO_NOT_INFER"
+
+
 def test_day_filter_excludes_unknown_dates_rather_than_claiming_daily_results():
     out = audit_snapshot([
         {"underlying_market_count": 2, "entry_cents": 100, "payout_cents": 200},
