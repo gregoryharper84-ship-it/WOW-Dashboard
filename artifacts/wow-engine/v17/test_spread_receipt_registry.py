@@ -150,28 +150,53 @@ def test_a_naive_timestamp_is_rejected_rather_than_assumed_utc():
 class _RecordingQuery:
     def __init__(self, client):
         self.client = client
+        self._upsert_rows = None
+        self._selected_key = None
 
     def upsert(self, rows, on_conflict=None, ignore_duplicates=False):
-        self.client.upserts.append(
-            {
-                "rows": [dict(row) for row in rows],
-                "on_conflict": on_conflict,
-                "ignore_duplicates": ignore_duplicates,
-            }
-        )
+        self._upsert_rows = [dict(row) for row in rows]
+        self.client.upserts.append({
+            "rows": self._upsert_rows,
+            "on_conflict": on_conflict,
+            "ignore_duplicates": ignore_duplicates,
+        })
+        return self
+
+    def select(self, *_columns):
+        return self
+
+    def eq(self, field, value):
+        assert field == "receipt_key"
+        self._selected_key = value
+        return self
+
+    def limit(self, _count):
         return self
 
     def execute(self):
         if self.client.fail:
             raise RuntimeError("relation missing")
-        return SimpleNamespace(data=[])
+        if self._upsert_rows is not None:
+            for row in self._upsert_rows:
+                # Simulate ON CONFLICT DO NOTHING against the actual stored hash.
+                self.client.records.setdefault(row["receipt_key"], row)
+            return SimpleNamespace(data=[])
+        if self.client.omit_readback:
+            return SimpleNamespace(data=[])
+        stored = self.client.records.get(self._selected_key)
+        return SimpleNamespace(data=(
+            [{"receipt_key": stored["receipt_key"],
+              "content_sha256": stored["content_sha256"]}] if stored else []
+        ))
 
 
 class _RecordingClient:
-    def __init__(self, *, fail=False):
+    def __init__(self, *, fail=False, omit_readback=False):
         self.fail = fail
+        self.omit_readback = omit_readback
         self.upserts = []
         self.touched = []
+        self.records = {}
 
     def table(self, name):
         self.touched.append(name)
@@ -188,7 +213,7 @@ def test_persist_is_insert_only_and_idempotent_on_the_receipt_key():
     assert first["updates_allowed"] is False
     assert first["can_execute"] is False
     assert first["receipt_key"] == second["receipt_key"]
-    assert client.touched == [registry.TABLE, registry.TABLE]
+    assert client.touched == [registry.TABLE] * 4
     assert len(client.upserts) == 2
     for call in client.upserts:
         assert call["on_conflict"] == "receipt_key"
@@ -201,6 +226,34 @@ def test_persistence_failure_is_typed_and_never_silently_dropped():
     assert result["status"] == "PERSISTENCE_UNAVAILABLE"
     assert result["code"] == "SPREAD_RECEIPT_PERSISTENCE_UNAVAILABLE:RuntimeError"
     assert result["updates_allowed"] is False
+
+
+
+def test_conflicting_same_key_never_claims_a_new_immutable_receipt():
+    client = _RecordingClient()
+    original = registry.persist_certified_spread_receipt(client, _candidate())
+    altered = registry.persist_certified_spread_receipt(
+        client, _candidate(p_cover=0.55, p_not_cover=0.43)
+    )
+    assert original["status"] == "PERSISTED"
+    assert altered["status"] == "PERSISTENCE_CONFLICT"
+    assert altered["code"] == "SPREAD_RECEIPT_CONTENT_CONFLICT"
+    assert altered["can_execute"] is False
+    assert "admission" not in altered
+    assert len(client.records) == 1
+    assert next(iter(client.records.values()))["content_sha256"] == original["content_sha256"]
+    # A byte-for-byte idempotent retry can still be verified.
+    identical = registry.persist_certified_spread_receipt(client, _candidate())
+    assert identical["status"] == "PERSISTED"
+
+
+def test_unverified_readback_never_counts_as_persisted():
+    client = _RecordingClient(omit_readback=True)
+    result = registry.persist_certified_spread_receipt(client, _candidate())
+    assert result["status"] == "PERSISTENCE_UNVERIFIED"
+    assert result["code"] == "SPREAD_RECEIPT_PERSISTENCE_UNVERIFIED"
+    assert result["can_execute"] is False
+    assert "admission" not in result
 
 
 class _ReadClient:
