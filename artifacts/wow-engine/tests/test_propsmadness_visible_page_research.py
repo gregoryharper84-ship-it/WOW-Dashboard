@@ -131,3 +131,16 @@ def test_no_network_no_training_or_execution_boundaries_in_module():
 def test_malformed_query_string_gets_typed_hold():
     with pytest.raises(VisiblePageHold, match="PM_VISIBLE_URL_INVALID"):
         parsed(url=URL + "&broken")
+
+
+def test_does_not_attribute_next_players_panel_to_expected_player():
+    other_panel = BODY.replace("Ada Example", "Other Player")
+    with pytest.raises(VisiblePageHold, match="PM_VISIBLE_LINE_OR_ODDS_MISSING"):
+        parsed("Ada Example\n" + other_panel)
+
+
+@pytest.mark.parametrize("bad_under", ["-100000", "-137.5", "-137X"])
+def test_under_odds_must_be_complete_numeric_token(bad_under):
+    with pytest.raises(VisiblePageHold, match="PM_VISIBLE_LINE_OR_ODDS_MISSING"):
+        parsed(BODY.replace('\n-137\n<button aria-label="Track',
+                            '\n' + bad_under + '\n<button aria-label="Track'))
