@@ -1574,3 +1574,30 @@ def test_fitted_candidate_requires_quantified_validation_metrics(metric, bad):
     with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
         nhl._verify_candidate(candidate)
     assert "NHL_FITTED_VALIDATION_METRICS_INVALID" in caught.value.blockers
+
+
+def test_overflowing_validation_metric_is_typed_invalid_not_python_abort():
+    # Oversized ints raise OverflowError on float(); must stay on the typed path.
+    candidate = _candidate_row()
+    metrics = dict(candidate["validation_metrics"])
+    metrics["calibrated_brier"] = 10**400
+    candidate["validation_metrics"] = metrics
+    with pytest.raises(nhl.NHLFittedSpecialistError) as caught:
+        nhl._verify_candidate(candidate)
+    assert "NHL_FITTED_VALIDATION_METRICS_INVALID" in caught.value.blockers
+
+
+def test_registry_loader_recovers_after_overflowing_newest_metric():
+    newest = _candidate_row()
+    metrics = dict(newest["validation_metrics"])
+    metrics["calibrated_brier"] = 10**400
+    newest["validation_metrics"] = metrics
+    newest["created_at"] = "2026-11-18T00:00:00+00:00"
+    prior = _candidate_row()
+    prior["created_at"] = "2026-11-17T00:00:00+00:00"
+    selected = nhl.load_nhl_fitted_candidate(
+        _DB(candidates=[newest, prior]), as_of_utc=NOW
+    )
+    assert selected.created_at == datetime.fromisoformat(prior["created_at"])
+    assert selected.publication_capable is False
+    assert selected.research_screen_pass is True
