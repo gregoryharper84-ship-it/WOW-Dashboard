@@ -18,7 +18,7 @@ Keep ownership in existing source-rights #1933, feasibility #2018, and first NFL
 HOLD for unsupported URL/market, duplicate player panels, mismatched player, malformed lines, prices or hit rates, ambiguous timestamp or overlarge page. Missing rows do not prove no games. All outputs preserve false source_rights_verified, historical_training_authorized, probability_publishable, production_write_authorized, and can_execute. There is no network, storage, scheduler, credential handler, or score route in this module.
 
 ## Tests
-Local TDD: 7 expected failures from an unimplemented stub, then 14 fixture tests passed. Code review reproduced 4 additional failures involving cross-player panel contamination and truncated odds; after the bounded parser repair, **18 fixture tests passed** (2026-11-16). No actual vendor page is in the test corpus. Hosted CI and protected merge are separate.
+Local TDD: 7 expected failures from an unimplemented stub, then 14 fixture tests passed. Code review reproduced 4 additional failures involving cross-player panel contamination and truncated odds; after the bounded parser repair 18 tests passed; a further Windows CRLF regression failed before normalization and then brought the suite to **19 fixture tests passed** (2026-11-16). No actual vendor page is in the test corpus. Hosted CI and protected merge are separate.
 
 Run from artifacts/wow-engine:
 PYTHONPATH=. python -m pytest -q tests/test_propsmadness_visible_page_research.py
