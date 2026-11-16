@@ -149,7 +149,6 @@ def _research_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     for x in (name, stat, period))
                 or type(line) not in (float, int)
                 or not 0 < line <= 10000 or not math.isfinite(line)):
-
             raise PropScrapeHold("PROP_SCRAPE_ROW_INVALID")
         fixture = row.get("fixture_text")
         if fixture is not None and not isinstance(fixture, str):
@@ -177,72 +176,12 @@ def _research_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _validated_robots(robots_text: str, url: str) -> None:
-    """Require a recognizable policy for our agent, not parser default-allow.
+    """Require an applicable policy instead of relying on default-allow.
 
-    urllib.robotparser does not implement '*' and '
-                         parse_html: Callable[[bytes], Mapping[str, Any]],
-                         captured_at: datetime,
-                         opener: Callable[..., Any]) -> dict[str, Any]:
-    """Internal tested worker; caller supplies an independently approved permit."""
-    if permit.automated_fetch_authorized is not True:
-        raise PropScrapeHold("PROP_SCRAPE_RIGHTS_NOT_APPROVED")
-    origin = _safe_url(url)
-    if url not in permit.allowed_urls:
-        raise PropScrapeHold("PROP_SCRAPE_URL_NOT_APPROVED")
-    robots_url = origin + "/robots.txt"
-    robots_bytes = _read(robots_url, limit=MAX_ROBOTS_BYTES,
-                         content_type="text/plain", opener=opener)
-    try:
-        robots_text = robots_bytes.decode("utf-8")
-    except UnicodeError as exc:
-        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED") from exc
-    _validated_robots(robots_text, url)
-    html = _read(url, limit=MAX_HTML_BYTES,
-                 content_type="text/html", opener=opener)
-    try:
-        parsed = parse_html(html)
-    except PropScrapeHold:
-        raise
-    except Exception as exc:
-        raise PropScrapeHold("PROP_SCRAPE_PARSER_FAILED") from exc
-    rows = _research_rows(parsed)
-    return {
-        "schema": SCHEMA,
-        "status": "RESEARCH_ROWS_PARSED" if rows else "RESEARCH_EMPTY_NOT_NO_SLATE",
-        "source_id": permit.source_id,
-        "source_url": url,
-        "rights_receipt_id": permit.rights_receipt_id,
-        "captured_at": _utc(captured_at),
-        "html_sha256": sha256(html).hexdigest(),
-        "request_count": 2,
-        "row_count": len(rows),
-        "rows": rows,
-        "source_identity_verified": False,
-        "pregame_snapshot_verified": False,
-        "historical_training_authorized": False,
-        "market_quote_verified": False,
-        "probability_publishable": False,
-        "production_write_authorized": False,
-        "can_execute": False,
-    }
-
-
-def scrape_approved_once(source_id: str, url: str, *,
-                         parse_html: Callable[[bytes], Mapping[str, Any]],
-                         captured_at: datetime | None = None) -> dict[str, Any]:
-    """Only code-reviewed sources can fetch. No retries, storage or scheduling."""
-    permit = APPROVED_LIVE_SCRAPE_SOURCES.get(source_id)
-    if permit is None:
-        raise PropScrapeHold("PROP_SCRAPE_SOURCE_NOT_APPROVED")
-    opener = build_opener(_NoRedirects()).open
-    return _capture_with_permit(
-        permit=permit, url=url, parse_html=parse_html,
-        captured_at=captured_at or datetime.now(timezone.utc), opener=opener,
-    )
- path pattern semantics;
-    hold on any such directive rather than silently treating it literally.
+    The standard robot parser treats '*' and '$' in paths literally, so
+    unsupported wildcard directives are held rather than silently ignored.
     """
-    valid_directives = {
+    directives = {
         "user-agent", "allow", "disallow", "crawl-delay", "request-rate",
         "sitemap", "host",
     }
@@ -255,7 +194,7 @@ def scrape_approved_once(source_id: str, url: str, *,
             raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
         key, _, value = line.partition(":")
         key, value = key.strip().lower(), value.strip()
-        if key not in valid_directives or (key == "user-agent" and not value):
+        if key not in directives or (key == "user-agent" and not value):
             raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
         if key in {"allow", "disallow"} and (
                 "*" in value or "$" in value
@@ -290,12 +229,7 @@ def _capture_with_permit(*, permit: SourceScrapePermit, url: str,
         robots_text = robots_bytes.decode("utf-8")
     except UnicodeError as exc:
         raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED") from exc
-    if not re.search(r"(?im)^\s*User-agent\s*:", robots_text):
-        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_UNVERIFIED")
-    robots = RobotFileParser()
-    robots.parse(robots_text.splitlines())
-    if not robots.can_fetch(USER_AGENT, url):
-        raise PropScrapeHold("PROP_SCRAPE_ROBOTS_DISALLOW")
+    _validated_robots(robots_text, url)
     html = _read(url, limit=MAX_HTML_BYTES,
                  content_type="text/html", opener=opener)
     try:
