@@ -178,3 +178,70 @@ def test_genuine_snapshot_write_value_error_still_fails_the_run(monkeypatch: pyt
     )
     assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
     assert result["snapshot_write_failed"] == 1
+
+
+
+def test_rotating_forward_acquisition_covers_all_pages_without_blank_windows(monkeypatch: pytest.MonkeyPatch):
+    candidates = [_candidate(f"Quarterback {idx}") for idx in range(5)]
+    _install(monkeypatch, candidates)
+    # Five candidates in pages of two: rotations must cover all three pages,
+    # then wrap. The old run_number % 10 strategy silently skipped later pages.
+    for rotation, expected_offset, expected_count, expected_next in (
+        (0, 0, 2, 2),
+        (1, 2, 2, 4),
+        (2, 4, 1, None),
+        (3, 0, 2, 2),
+        (9, 0, 2, 2),
+    ):
+        db = _DB()
+        result = subject.acquire_nfl_forward_evidence_batch(
+            subject.NFLForwardEvidenceRequest(
+                requested_date="2026-09-28", candidate_rotation=rotation, max_candidates=2,
+            ),
+            db=db, now=NOW, http_get=lambda *_a, **_k: object(),
+        )
+        assert result["candidate_offset"] == expected_offset
+        assert result["window_candidate_n"] == expected_count
+        assert result["persisted"] == expected_count
+        assert result["attempted"] == expected_count
+        assert result["next_offset"] == expected_next
+        assert result["rotation_page_n"] == 3
+        assert result["can_execute"] is False
+        assert result["probability_publishable"] is False
+
+
+def test_rotating_forward_acquisition_empty_slate_is_no_events_not_error(monkeypatch: pytest.MonkeyPatch):
+    _install(monkeypatch, [])
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(
+            requested_date="2026-09-28", candidate_rotation=999_999, max_candidates=2,
+        ),
+        db=_DB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["total_candidates"] == 0
+    assert result["window_candidate_n"] == 0
+    assert result["rotation_page_n"] == 0
+    assert result["next_offset"] is None
+    assert result["status"] == "COMPLETED"
+
+
+def test_legacy_explicit_offset_still_means_exact_offset_not_rotation(monkeypatch: pytest.MonkeyPatch):
+    _install(monkeypatch, [_candidate(f"Quarterback {idx}") for idx in range(5)])
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(
+            requested_date="2026-09-28", candidate_offset=3, max_candidates=2,
+        ),
+        db=_DB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["candidate_offset"] == 3
+    assert result["persisted"] == 2
+
+
+def test_explicit_offset_and_rotation_cannot_silently_override_each_other():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        subject.NFLForwardEvidenceRequest(
+            requested_date="2026-09-28",
+            candidate_offset=32,
+            candidate_rotation=1,
+        )
