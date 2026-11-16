@@ -1249,3 +1249,95 @@ def test_reingest_fail_closed_without_atomic_lease_rpc():
     assert outcome["code"] == "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE"
     assert db.rows.get("wow_d1_source_events", []) == []
     assert db.rows.get(fitted.TIMELINE_RECEIPT_TABLE, []) == []
+
+
+def test_atomic_season_claims_only_one_writer_under_contention():
+    db = _FakeDB()
+    tokens = ("writer-a-verified-20261116", "writer-b-verified-20261116")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda token: fitted.acquire_nhl_reingest_season_lease(
+                db, season=SEASON, lease_token=token
+            ),
+            tokens,
+        ))
+    assert sorted(result["status"] for result in results) == [
+        "BLOCKED", "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
+    ]
+    assert len(db.rows[fitted.REINGEST_LEASE_TABLE]) == 1
+    assert db.rows[fitted.REINGEST_LEASE_TABLE][0]["can_execute"] is False
+
+
+def test_superseded_season_token_cannot_append_or_overwrite_timeline():
+    db = _FakeDB()
+    old = "old-writer-verified-20261116"
+    new = "new-writer-verified-20261116"
+    first = fitted.acquire_nhl_reingest_season_lease(
+        db, season=SEASON, lease_token=old
+    )
+    assert first["status"] == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
+    old_lease = db.rows[fitted.REINGEST_LEASE_TABLE][0]
+    old_lease["expires_at"] = "2020-01-01T00:00:00+00:00"
+    second = fitted.acquire_nhl_reingest_season_lease(
+        db, season=SEASON, lease_token=new
+    )
+    assert second["status"] == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
+
+    source_attempt = db.rpc("wow_nhl_append_reingest_source_batch", {
+        "p_season": SEASON, "p_token": old,
+        "p_rows": [{"official_event_id": "TEST-STILL-UNWRITTEN"}],
+    }).execute().data
+    timeline_attempt = db.rpc("wow_nhl_persist_reingest_timeline", {
+        "p_season": SEASON, "p_token": old,
+        "p_receipt": {"season": SEASON, "can_execute": False},
+    }).execute().data
+
+    assert source_attempt["code"] == "NHL_SOURCE_REINGEST_LEASE_STALE"
+    assert timeline_attempt["code"] == "NHL_SOURCE_REINGEST_LEASE_STALE"
+    assert db.rows.get("wow_d1_source_events", []) == []
+    assert db.rows.get(fitted.TIMELINE_RECEIPT_TABLE, []) == []
+    old_release = fitted.release_nhl_reingest_season_lease(
+        db, season=SEASON, lease_token=old
+    )
+    assert old_release["status"] == "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED"
+    assert db.rows[fitted.REINGEST_LEASE_TABLE][0]["lease_token"] == new
+
+
+def test_nhl_full_season_source_writes_are_fenced_not_direct_upserts():
+    db = _FakeDB()
+    output = _run(db, teams=None)
+    assert output["status"] == "NHL_SOURCE_REINGEST_PERSISTED"
+    assert output["timeline_receipt_persisted"] is True
+    assert any(t == "wow_d1_source_events" and mode == "rpc_batch"
+               for t, mode, _ in db.operations)
+    assert any(t == fitted.TIMELINE_RECEIPT_TABLE and mode == "rpc_timeline"
+               for t, mode, _ in db.operations)
+    assert not any(t in {"wow_d1_source_events", fitted.TIMELINE_RECEIPT_TABLE}
+                   and mode in {"insert", "upsert", "delete"}
+                   for t, mode, _ in db.operations)
+
+
+def test_atomic_reingest_migration_is_service_role_only_with_fenced_writes():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "20261116_nhl_atomic_reingest_fencing.sql"
+    ).read_text(encoding="utf-8").lower()
+    rollback = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "20261116_nhl_atomic_reingest_fencing_rollback.sql"
+    ).read_text(encoding="utf-8").lower()
+    for name in (
+        "wow_nhl_claim_reingest_lease",
+        "wow_nhl_release_reingest_lease",
+        "wow_nhl_append_reingest_source_batch",
+        "wow_nhl_persist_reingest_timeline",
+    ):
+        assert name in migration
+        assert name in rollback
+    assert "security definer set search_path = ''" in migration
+    assert "for update" in migration
+    assert "on conflict (season) do update" in migration
+    assert "where public.wow_nhl_source_reingest_leases.expires_at <= v_now" in migration
+    assert "from public, anon, authenticated" in migration
+    assert "to service_role" in migration
+    assert "revoke insert, update on table public.wow_nhl_season_timeline_receipts" in migration
