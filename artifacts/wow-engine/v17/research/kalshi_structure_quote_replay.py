@@ -73,7 +73,7 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
         raise ValueError("MISSING_OR_DUPLICATE_MARKET_IDS")
     stat_families = row.get("component_stat_families")
     if not isinstance(stat_families, list) or len(stat_families) != len(ids) or any(
-        not isinstance(v, str) or not v.strip() or v.upper() == "UNKNOWN"
+        not isinstance(v, str) or not v.strip() or v.strip().upper() in {"UNKNOWN", "UNVERIFIED", "N/A"}
         for v in stat_families
     ):
         raise ValueError("MISSING_EXACT_STAT_FAMILIES")
@@ -90,6 +90,10 @@ def _check(row: dict[str, Any], cutoff: datetime) -> dict[str, Any]:
         raise ValueError("CHRONOLOGY_INVALID")
     if started < cutoff:
         raise ValueError("OUTSIDE_FORWARD_HOLDOUT")
+    # The fitted parameters must have been frozen before this evaluation
+    # cohort began, independently of the later pregame event chronology.
+    if not fit_cutoff < cutoff:
+        raise ValueError("FITTED_ON_HOLDOUT")
     p = _prob(row, "pregame_joint_probability")
     lb = row.get("pregame_joint_lower_bound")
     if isinstance(lb, bool) or not isinstance(lb, (int, float)) or not math.isfinite(float(lb)):
@@ -138,6 +142,8 @@ def replay(rows: list[dict[str, Any]], *, holdout_start_utc: str) -> dict[str, A
     cutoff = _utc(holdout_start_utc)
     eligible: list[dict[str, Any]] = []
     rejects: dict[str, int] = defaultdict(int)
+    # Reserve the first seen slip ID even when its row fails validation:
+    # an amended row cannot silently overwrite the first immutable source.
     ids: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
