@@ -61,7 +61,7 @@ def test_input_order_does_not_change_reconstruction_receipt():
 
 
 def test_most_recent_window_is_used_not_future_games():
-    rows = [game(-1, home_xg=20.0, away_xg=0.0)] + sample()
+    rows = [replace(game(-1, home_xg=20.0, away_xg=0.0), official_event_id="2026029998")] + sample()
     assert build(rows, window=5)["features"]["home_5v5_xgf_per_game"] == pytest.approx(3.0)
     assert build(rows, window=6)["features"]["home_5v5_xgf_per_game"] > 3
 
@@ -140,3 +140,29 @@ def test_settlement_timestamp_is_part_of_replay_fingerprint():
     first = rows[0]
     changed = [replace(first, settled_utc=(BASE + timedelta(hours=3, minutes=1)).isoformat())] + rows[1:]
     assert build(changed)["lineage_digest"] != build()["lineage_digest"]
+
+
+def test_whitespace_padded_duplicate_event_cannot_inflate_history():
+    rows = sample()[:4] + [replace(sample()[0], official_event_id=sample()[0].official_event_id + " ")] + sample()[5:]
+    with pytest.raises(NHLXGResearchError) as e:
+        build(rows)
+    assert e.value.code == "NHL_XG_EVENT_ID_INVALID"
+
+
+@pytest.mark.parametrize("event_id", ["2026020001 ", " 2026020001", "202602001", "202602000a", "2026030001", "", None])
+def test_reject_noncanonical_historical_event_ids(event_id):
+    rows = [replace(sample()[0], official_event_id=event_id)] + sample()[1:]
+    with pytest.raises(NHLXGResearchError) as e:
+        build(rows)
+    assert e.value.code == "NHL_XG_EVENT_ID_INVALID"
+
+
+@pytest.mark.parametrize("target", ["2026020999 ", "202602099", "202602O999", "2026030999", None])
+def test_reject_noncanonical_target_event_ids(target):
+    with pytest.raises(NHLXGResearchError) as e:
+        reconstruct_5v5_xg(
+            target_event_id=target, target_start_utc="2026-11-16T01:00:00Z",
+            as_of_utc="2026-11-15T20:00:00Z", home_team="BOS",
+            away_team="DAL", prior_games=sample(),
+        )
+    assert e.value.code == "NHL_XG_TARGET_INVALID"
