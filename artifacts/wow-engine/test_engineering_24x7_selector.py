@@ -29,6 +29,122 @@ def pr(number, incident, **extra):
 
 
 class Test24x7(unittest.TestCase):
+    def test_lease_cli_script_mode_without_pythonpath(self):
+        """The protected dispatch must resolve leases as a standalone script."""
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        manifest = {
+            "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+            "restoration": [
+                {"issue_number": 9, "severity": "P0", "priority_rank": 1,
+                 "execution_lane": "RAPID", "rapid_stream": "AUTONOMY_RESTORE",
+                 "lease_group": "P0_AUTONOMY_RESTORE",
+                 "conflict_keys": ["ENGINEERING_AUTONOMY"]},
+                {"issue_number": 10, "severity": "P1", "priority_rank": 2,
+                 "execution_lane": "STANDARD", "conflict_keys": ["SPORT_MODEL"]},
+            ],
+            "acceleration": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            manifest_path = Path(temp) / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            env = dict(os.environ)
+            env.pop("PYTHONPATH", None)
+            for incident, expected in ((9, "P0_AUTONOMY_RESTORE"), (10, "GLOBAL"),
+                                       (11, None)):
+                with self.subTest(incident=incident):
+                    result = subprocess.run(
+                        [sys.executable, str(FILE), "--manifest", str(manifest_path),
+                         "--lease-for-incident", str(incident)],
+                        cwd=temp, env=env, capture_output=True, text=True,
+                        check=False, timeout=15,
+                    )
+                    if expected is None:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(result.stdout, "")
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout.strip(), expected)
+
+
+    def test_file_spec_import_resolves_v17_validator_without_pythonpath(self):
+        """An absolute-path module import can resolve the same governed lease."""
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        manifest = {
+            "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+            "restoration": [{
+                "issue_number": 9, "severity": "P0", "priority_rank": 1,
+                "execution_lane": "RAPID", "rapid_stream": "AUTONOMY_RESTORE",
+                "lease_group": "P0_AUTONOMY_RESTORE",
+                "conflict_keys": ["ENGINEERING_AUTONOMY"],
+            }],
+            "acceleration": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            manifest_path = Path(temp) / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            env = dict(os.environ)
+            env.pop("PYTHONPATH", None)
+            program = (
+                "import importlib.util,json; from pathlib import Path; "
+                f"spec=importlib.util.spec_from_file_location('selector', {str(FILE)!r}); "
+                "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+                f"manifest=json.loads(Path({str(manifest_path)!r}).read_text()); "
+                "print(module.manifest_target_lease_group(manifest, 9))"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", program], cwd=temp, env=env,
+                capture_output=True, text=True, check=False, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "P0_AUTONOMY_RESTORE")
+
+    def test_manifest_domain_lease_is_bound_to_exact_approved_p0(self):
+        manifest = {
+            "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+            "restoration": [
+                {"issue_number": 9, "severity": "P0", "priority_rank": 1,
+                 "execution_lane": "RAPID", "rapid_stream": "AUTONOMY_RESTORE",
+                 "lease_group": "P0_AUTONOMY_RESTORE",
+                 "conflict_keys": ["ENGINEERING_AUTONOMY"]},
+                {"issue_number": 10, "severity": "P1", "priority_rank": 2,
+                 "execution_lane": "STANDARD", "conflict_keys": ["SPORT_MODEL"]},
+            ],
+            "acceleration": [],
+        }
+        self.assertEqual(mod.manifest_target_lease_group(manifest, 9),
+                         "P0_AUTONOMY_RESTORE")
+        self.assertEqual(mod.manifest_target_lease_group(manifest, 10), "GLOBAL")
+        with self.assertRaisesRegex(ValueError, "INCIDENT_NOT_IN_DISPATCH_MANIFEST"):
+            mod.manifest_target_lease_group(manifest, 11)
+        manifest["restoration"][0]["lease_group"] = "GLOBAL"
+        with self.assertRaisesRegex(ValueError, "P0_DOMAIN_LEASE_INVALID"):
+            mod.manifest_target_lease_group(manifest, 9)
+        manifest["restoration"][0]["lease_group"] = "P0_AUTONOMY_RESTORE"
+        manifest["can_execute"] = True
+        with self.assertRaises(ValueError):
+            mod.manifest_target_lease_group(manifest, 9)
+
+    def test_protected_24x7_dispatch_must_not_send_global_for_p0(self):
+        source = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
+                  "wow-engineering-24x7.yml").read_text(encoding="utf-8")
+        self.assertIn("--lease-for-incident", source)
+        self.assertIn("approved-issues.json", source)
+        # Shadow must enforce the same manifest as protected selection.
+        # A passing test on unregistered SIRT issue #1563 is false-green.
+        self.assertEqual(source.count('mv "$RUNNER_TEMP/approved-issues.json" "$RUNNER_TEMP/engineering-issues.json"'), 2)
+        self.assertIn('-f lease_group="$lease_group"', source)
+        self.assertNotIn("-f lease_group=GLOBAL", source)
+
     def test_production_priority_preempts_improvement(self):
         result = mod.plan([issue(8, "approved-improvement"), issue(9, "P0")], [])
         self.assertEqual((result["action"], result["incident"]), ("BUILD", 9))
