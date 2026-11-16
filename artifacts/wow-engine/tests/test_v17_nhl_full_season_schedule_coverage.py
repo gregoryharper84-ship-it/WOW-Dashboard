@@ -7,7 +7,7 @@ never self-attest completeness. can_execute=false; no probability publication.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -117,12 +117,58 @@ class _Query:
         return SimpleNamespace(data=matched)
 
 
+class _LeaseRPC:
+    """Minimal atomic database contract double for independent schedule tests."""
+    def __init__(self, db, name, params):
+        self.db, self.name, self.params = db, name, params
+
+    def execute(self):
+        season = self.params["p_season"]
+        token = self.params["p_token"]
+        rows = self.db.rows.setdefault(fitted.REINGEST_LEASE_TABLE, [])
+        if self.name == "wow_nhl_claim_reingest_lease":
+            now = datetime.now(timezone.utc)
+            current = next((r for r in rows if r["season"] == season), None)
+            if current and datetime.fromisoformat(current["expires_at"]) > now:
+                return SimpleNamespace(data={
+                    "status": "BLOCKED", "code": "NHL_SOURCE_REINGEST_IN_PROGRESS",
+                    "can_execute": False,
+                })
+            expires = (now + timedelta(minutes=15)).isoformat()
+            rows[:] = [r for r in rows if r["season"] != season]
+            rows.append({
+                "season": season, "lease_token": token,
+                "expires_at": expires, "acquired_at": now.isoformat(),
+                "can_execute": False,
+            })
+            return SimpleNamespace(data={
+                "status": "NHL_SOURCE_REINGEST_LEASE_ACQUIRED",
+                "season": season, "lease_token": token,
+                "expires_at": expires, "can_execute": False,
+            })
+        if self.name == "wow_nhl_release_reingest_lease":
+            previous = len(rows)
+            rows[:] = [r for r in rows if not (
+                r["season"] == season and r["lease_token"] == token
+            )]
+            return SimpleNamespace(data={
+                "status": ("NHL_SOURCE_REINGEST_LEASE_RELEASED"
+                           if len(rows) != previous
+                           else "NHL_SOURCE_REINGEST_LEASE_RELEASE_SKIPPED"),
+                "can_execute": False,
+            })
+        raise AssertionError("unexpected NHL RPC")
+
+
 class _FakeDB:
     def __init__(self):
         self.rows: dict[str, list[dict]] = {}
 
     def table(self, name):
         return _Query(self, name)
+
+    def rpc(self, name, params):
+        return _LeaseRPC(self, name, params)
 
 
 def _v2_row(raw: dict) -> dict:
@@ -310,19 +356,19 @@ def test_concurrent_reingest_lease_serializes_writers(monkeypatch):
     """Second writer for the same season must fail closed, not race."""
     db = _FakeDB()
     first = fitted.acquire_nhl_reingest_season_lease(
-        db, season=SEASON, lease_token="writer-a", now_utc=NOW
+        db, season=SEASON, lease_token="writer-a-verified-20261116", now_utc=NOW
     )
     assert first["status"] == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
     second = fitted.acquire_nhl_reingest_season_lease(
-        db, season=SEASON, lease_token="writer-b", now_utc=NOW
+        db, season=SEASON, lease_token="writer-b-verified-20261116", now_utc=NOW
     )
     assert second["status"] == "BLOCKED"
     assert second["code"] == "NHL_SOURCE_REINGEST_IN_PROGRESS"
     fitted.release_nhl_reingest_season_lease(
-        db, season=SEASON, lease_token="writer-a"
+        db, season=SEASON, lease_token="writer-a-verified-20261116"
     )
     third = fitted.acquire_nhl_reingest_season_lease(
-        db, season=SEASON, lease_token="writer-b", now_utc=NOW
+        db, season=SEASON, lease_token="writer-b-verified-20261116", now_utc=NOW
     )
     assert third["status"] == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
 
