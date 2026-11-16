@@ -839,6 +839,7 @@ def test_governed_receipt_completes_the_spread_row():
     assert payload["p_not_cover"] == 0.44
     assert payload["calibrated_probability_lower_bound"] == 0.47
     assert payload["selection_status"] == "QUALIFIED"
+    assert payload["evaluation_state"] == "SPREAD_CERTIFIED_RECEIPT_ADMITTED"
     assert payload["reason_codes"] == []
     assert payload["exact_signed_spread"] == -6.5
     assert payload["line_source"] == "APPEND_ONLY_MARKET_LEDGER"
@@ -861,6 +862,10 @@ def test_receipt_at_a_different_line_holds_the_row():
     assert rows[0]["row_status"] == "HELD"
     assert rows[0]["probability_publishable"] is False
     assert "SPREAD_ADMISSION:EXACT_LINE_MISMATCH" in payload["reason_codes"]
+    assert payload["spread_admission"]["status"] == "BLOCKED"
+    for absent in ("p_cover", "p_push", "p_not_cover",
+                   "calibrated_lower_bound", "calibrated_upper_bound"):
+        assert absent not in payload["spread_admission"]
     for absent in ("p_cover", "p_push", "p_not_cover"):
         assert absent not in payload
 
@@ -881,6 +886,8 @@ def test_receipt_for_a_started_event_holds_the_row():
     payload = rows[0]["result"]
     assert rows[0]["row_status"] == "HELD"
     assert "SPREAD_ADMISSION:EVENT_ALREADY_STARTED_OR_FINAL" in payload["reason_codes"]
+    assert "p_cover" not in payload["spread_admission"]
+    assert "p_push" not in payload["spread_admission"]
     assert "p_cover" not in payload
 
 
