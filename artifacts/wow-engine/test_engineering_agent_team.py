@@ -262,3 +262,20 @@ def test_controller_priority_cli_uses_real_ledger_contract(tmp_path) -> None:
     assert payload["incident_id"] == "PM-REPAIR"
     assert payload["frontier_allowed"] is False
     assert payload["can_execute"] is False
+
+
+def test_real_ledger_does_not_requeue_already_merged_pr_2565() -> None:
+    import json
+    from pathlib import Path
+
+    ledger_path = Path(__file__).parent / "v17" / "incident-ledger.json"
+    records = json.loads(ledger_path.read_text(encoding="utf-8"))["records"]
+    item = next(record for record in records if record["postmortem_id"] == "PM-2026-11-10-001")
+    assert item["state"] == "MERGED_PENDING_DEPLOY"
+    assert item["engineering_fixes"]["FIX-2026-11-10-001"]["state"] == "MERGED_PENDING_DEPLOY"
+    assert item["engineering_fixes"]["FIX-2026-11-10-001"]["merge_commit"] == (
+        "6018482f2bedf172b4a7a1014f2bfa1c2db95210"
+    )
+    decision = select_priority_incident(records, exclude_release=True)
+    assert decision.incident_id != "PM-2026-11-10-001"
+    assert decision.frontier_allowed is False
