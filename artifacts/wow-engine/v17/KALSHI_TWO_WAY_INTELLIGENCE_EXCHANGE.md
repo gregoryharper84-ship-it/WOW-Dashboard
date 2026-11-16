@@ -71,3 +71,49 @@ Absolute invariants: can_execute=false; capital_allocation=false; no live orders
 - `WOW_V17_KALSHI_SLIP_EXCHANGE_ENABLED` must remain unset/0 until production schema deployment and independent acceptance.
 - Validation Supabase schema received the base migration, service-role grant repair, and explicit non-null pregame timestamp repair. This does not establish production migration.
 - GPT editor sync requires human/Work-mode access to the actual editor and explicit fresh-chat canaries; neither editor can be assumed updated from GitHub files.
+
+## November 15 postmortem: frozen quote and grading research gates
+
+The November 15 cross-sport picks exposed three distinct failure paths:
+(a) a postponed NCAAB event remained on a proposed card; (b) an NFL outright
+probability was used as if it established a spread-cover probability; and
+(c) price-product examples were treated too readily as combination economics.
+
+Implemented in `v17/kalshi_combo_research.py` (research-only offline diagnostics):
+
+1. **Event validity:** Every leg needs a claimed official schedule receipt, a
+   SCHEDULED/PRE_GAME event status, and a status snapshot no older than
+   30 minutes at the quote instant. POSTPONED, LIVE, FINAL, missing, stale and
+   future status observations hold. An external string/receipt pointer is *not*
+   independently trusted merely because the caller supplied it.
+2. **Sporting market specialization:** Leg market family and fitted model
+   market family must agree; spreads and totals need their exact numeric lines.
+   Uncertified research or a moneyline specialist cannot qualify a spread,
+   total or player-prop calculation. An explicit settlement rule is required.
+3. **Dependence:** Two legs from the same official event cannot use the
+   independence shortcut. A separately calibrated joint receipt is still
+   required for any pair and no 3+ leg combo is promoted by this patch.
+4. **Economics:** A separately quoted Kalshi RFQ, all-in cost and payout,
+   calibrated joint lower bound and positive conservative return diagnostic
+   are needed even for a research-level economic assessment. A zero/negative
+   lower-bound result holds with a typed code. Price-product multiplication
+   is not an RFQ or a calibrated joint distribution.
+5. **Postmortems:** `grade_research_slip` compares immutable pregame receipt
+   identities with subsequent separately referenced official outcomes.
+   PUSH/VOID/POSTPONED/PENDING remain contract-dependent or unresolved.
+   Results do **not** imply a submitted Kalshi trade, verified market
+   settlement, independently attested result, realized P&L, or live orders.
+
+Regression tests live in `test_kalshi_combo_research.py` and cover the
+negative cases above, including duplicate frozen legs and late/unsourced
+results. This patch does **not** change the append-only two-way exchange API,
+model coefficients, thresholds, production routes, bankroll or
+`V17_TERMINAL_REDUCER`. The legacy Kalshi recovery hold is unchanged:
+`can_execute=false`, `KALSHI_COMBOS_ALLOWED=false`.
+
+Remaining deployment work belongs to existing PR #2670 and issue #2671:
+independent code/CI acceptance, approved protected merge, production
+migration + endpoint verification, and both GPT editor attestations.
+Other model-specific work remains with the existing spread (#2633)
+and cross-sport fitted-model owners. No historical selection should be
+relabeled as a certified prospectively validated pick merely because it won.
