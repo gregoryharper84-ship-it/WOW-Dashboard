@@ -805,7 +805,7 @@ def certified_spread_receipt(**overrides):
         "source_receipt_id": "receipt-spread-1",
         "provider_event_id": "rd-nfl-7001",
         "quote_sportsbook": "Pinnacle",
-        "quote_observed_at_utc": (FUTURE_DT - timedelta(hours=1)).isoformat(),
+        "quote_observed_at_utc": (FUTURE_DT - timedelta(hours=2)).isoformat(),
         "model_class": "CERTIFIED_FITTED",
         "model_version": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
         "calibration_version": "cal-v1",
@@ -855,7 +855,7 @@ def test_governed_receipt_completes_the_spread_row():
     [
         ({"provider_event_id": "OTHER_PROVIDER_EVENT"}, "SPREAD_RECEIPT_PROVIDER_EVENT_MISMATCH"),
         ({"quote_sportsbook": "OtherBook"}, "SPREAD_RECEIPT_BOOK_MISMATCH"),
-        ({"quote_observed_at_utc": (FUTURE_DT - timedelta(hours=2)).isoformat()},
+        ({"quote_observed_at_utc": (FUTURE_DT - timedelta(hours=1)).isoformat()},
          "SPREAD_RECEIPT_QUOTE_TIME_MISMATCH"),
         ({"quote_observed_at_utc": "not-a-date"}, "SPREAD_RECEIPT_QUOTE_TIME_MISMATCH"),
     ],
