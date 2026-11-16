@@ -152,6 +152,11 @@ def _normalized_spread_receipt(candidate: Mapping[str, Any]) -> dict[str, Any]:
         raise SpreadReceiptRejected(
             "RECEIPT_QUOTE_NOT_PREGAME", "quote must have been observed before the event start"
         )
+    if quote_observed_at > model_at:
+        raise SpreadReceiptRejected(
+            "RECEIPT_QUOTE_AFTER_MODEL",
+            "the exact market quote must have been observed no later than model scoring",
+        )
     if source_at > model_at:
         raise SpreadReceiptRejected(
             "RECEIPT_SOURCE_AFTER_MODEL", "source snapshot cannot postdate the model timestamp"
