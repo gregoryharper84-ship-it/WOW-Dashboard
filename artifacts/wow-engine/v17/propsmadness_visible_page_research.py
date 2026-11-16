@@ -89,10 +89,12 @@ def parse_user_visible_player_page(
     if len(headers) != 1:
         raise VisiblePageHold("PM_VISIBLE_PLAYER_AMBIGUOUS")
     segment = page_text[headers[0].end():headers[0].end() + MAX_PLAYER_BLOCK]
-    price = re.search(
+    price = re.match(
+        r'^\s*(?:G/F|F/G|F/C|C/F|PG|SG|SF|PF|G|F|C)\s*'
         r'<img\b[^>]{0,500}\balt="(?P<book>[^"<>]{1,64})"[^>]*>'
         r'\s*(?P<line>\d{1,4}(?:\.\d{1,2})?)\s*Pts\s*O\s*'
-        r'(?P<over>[+-]?\d{2,5})\s*U\s*(?P<under>[+-]?\d{2,5})',
+        r'(?P<over>[+-]?\d{2,5})\s*U\s*'
+        r'(?P<under>[+-]?\d{2,5})(?=\s|<|$)',
         segment,
     )
     if price is None:
