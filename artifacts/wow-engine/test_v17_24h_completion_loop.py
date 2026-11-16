@@ -243,7 +243,7 @@ def test_release_verifier_is_independently_scheduled_and_controller_does_not_res
     assert 'cron: "37 * * * *"' in verifier
     assert "engineering_agent_team.py priority)" in verifier
     assert "engineering_agent_team.py priority --exclude-release)" in loop
-    assert loop.index("action=\"RESUME_REPAIR_PR\"") < loop.index("action=\"REPAIR\"")
+    assert loop.index("action=\"RESUME_REPAIR_PR\"") < loop.index("action=\"REQUEST_ADMITTED_REPAIR\"")
     assert "can_execute: false" in loop
     assert "permission_profile: \":read-only\"" in verifier
 
