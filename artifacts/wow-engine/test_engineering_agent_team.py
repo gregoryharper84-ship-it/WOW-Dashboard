@@ -260,8 +260,8 @@ def test_controller_priority_cli_uses_real_ledger_contract(tmp_path) -> None:
     result = subprocess.run(command, capture_output=True, text=True, check=True)
     payload = json.loads(result.stdout)
     assert payload["incident_id"] == "PM-REPAIR"
+    assert payload["state"] == "FIX_IN_PROGRESS"
     assert payload["frontier_allowed"] is False
-    assert payload["can_execute"] is False
 
 
 def test_real_ledger_does_not_requeue_already_merged_pr_2565() -> None:
