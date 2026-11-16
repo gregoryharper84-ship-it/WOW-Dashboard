@@ -1172,9 +1172,11 @@ def test_reingest_detects_a_conflict_that_lands_after_the_preflight(monkeypatch)
 
     assert result["status"] == "BLOCKED"
     assert result["code"] == "NHL_SOURCE_IDENTITY_CONFLICT"
-    assert result["blocked_stage"] == "SOURCE_VERIFICATION"
+    # Token-fenced PostgreSQL writes reject the conflict before insertion
+    # instead of allowing it through to the older post-write replay check.
+    assert result["blocked_stage"] == "SOURCE_PERSISTENCE"
     assert result["provenance_complete"] is False
-    assert result["detail"]["conflicting_event_ids"] == [target]
+    assert result["detail"]["retryable"] is False
     assert len(rows) == 33
 
 
@@ -1219,7 +1221,7 @@ def test_reingest_maps_an_unexpected_post_write_verification_failure(monkeypatch
     written = db.rows.get("wow_d1_source_events") or []
     assert len(written) > 0
     assert any(
-        table == "wow_d1_source_events" and mode == "upsert" and count > 0
+        table == "wow_d1_source_events" and mode == "rpc_batch" and count > 0
         for table, mode, count in db.operations
     )
 
