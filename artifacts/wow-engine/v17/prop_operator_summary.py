@@ -68,8 +68,10 @@ def summarize_prop_routes(
         blockers = [str(x) for x in existing if isinstance(x, str) and x.strip()] if isinstance(existing, list) else []
         lifecycle = str(original.get("lifecycle_status") or "NOT_OBSERVED")
 
-        if original.get("can_execute") is True:
+        if payload.get("can_execute") is True or original.get("can_execute") is True:
             blocker = "EXECUTION_AUTHORITY_VIOLATION"
+        elif payload.get("can_execute") is not False:
+            blocker = "EXECUTION_AUTHORITY_UNVERIFIED"
         elif matches and len(matches) == 1 and original.get("can_execute") is not False:
             blocker = "EXECUTION_AUTHORITY_UNVERIFIED"
         elif stage_blocker:
@@ -104,7 +106,7 @@ def summarize_prop_routes(
         "route_n": len(output),
         "held_n": sum(x["state"] == "HOLD" for x in output),
         "registered_observed_n": sum(x["state"] == "REGISTERED_OBSERVED" for x in output),
-        "source_rights_independently_assessed": False,
+        "source_rights_status": "NOT_EVALUATED_BY_OPERATOR_VIEW",
         "operator_diagnostic_only": True,
         "probability_publishable": False,
         "authorizes_model_promotion": False,
