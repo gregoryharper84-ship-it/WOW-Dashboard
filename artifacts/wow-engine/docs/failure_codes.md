@@ -8,6 +8,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `D1_CANDIDATE_SOURCE_REVIEW_SELF_APPROVAL_FORBIDDEN` | D1 research candidate creation and team-state runner persistence | Model/runner-authored candidate payload attempted to assert independent source-review PASS. Persist REQUIRED/provenance-ready state and obtain governed source-rights acceptance separately; self-attested PASS is forbidden. | No |
 | `SOURCE_REVIEW_REQUIRED` | D1 frozen-candidate source-rights acceptance | Technical source lineage or training-readiness evidence exists, but governed independent source-review state is not PASS. Frozen mathematical replay remains diagnostic, not a source approval. | No |
 | `SOURCE_REVIEW_FAILED` | D1 frozen-candidate source-rights acceptance | Governed candidate source review explicitly failed; no certification or publication can follow from a replay receipt. | No |
 | `MODEL_FACTORY_RECIPE_UNSUPPORTED` | V17 research-only model factory | Requested sport/market is not on the explicit research recipe allowlist; no cross-market or cross-sport model fallback. Recovery class: RECIPE_IMPLEMENTATION_REQUIRED. | No |
