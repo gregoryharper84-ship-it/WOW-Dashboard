@@ -180,3 +180,15 @@ def test_ambiguous_route_retains_all_upstream_blockers_without_granting_authorit
     assert status["registered_observed_n"] == 0
     assert first["blockers"] == ["SOURCE_PERMISSION_REQUIRED", "MISSING_EVENT_ID"]
     assert second["blockers"] == ["FORWARD_CALIBRATION_REQUIRED", "MISSING_EVENT_ID"]
+
+
+def test_ambiguous_route_preserves_any_execution_violation():
+    first = route_row(blockers=["CERTIFICATION_PENDING"])
+    second = route_row(blockers=["SOURCE_LICENSE_PENDING"], can_execute=True)
+    status = view([first, second])
+    row = status["routes"][0]
+    assert row["state"] == "HOLD"
+    assert row["first_blocker"] == "EXECUTION_AUTHORITY_VIOLATION"
+    assert row["blockers"] == [
+        "EXECUTION_AUTHORITY_VIOLATION", "CERTIFICATION_PENDING", "SOURCE_LICENSE_PENDING"
+    ]
