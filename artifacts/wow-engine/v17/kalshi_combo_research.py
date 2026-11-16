@@ -95,6 +95,17 @@ class FrozenLeg:
     calibrated_probability: float
     calibrated_lower_bound: float
     calibration_status: str
+    # All fields below are mandatory for any *new* research diagnostic. Defaults
+    # intentionally hold historical/legacy callers rather than trust missing data.
+    market_family: str = ""
+    model_market_family: str = ""
+    model_class: str = ""
+    contract_settlement_rule: str = ""
+    market_line: Decimal | None = None
+    event_status: str = ""
+    event_status_source: str = ""
+    event_status_receipt_id: str = ""
+    event_status_at_utc: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -189,8 +200,34 @@ def evaluate_frozen_quote(q: FrozenComboQuote, quote_max_age_seconds: int = 180)
                 blockers.append("JOINT_RECEIPT_LOOKAHEAD_INVALID")
         if not 0 <= (evaluated_at - quote_at).total_seconds() <= quote_max_age_seconds:
             blockers.append("RFQ_QUOTE_STALE_OR_FUTURE")
+        if len({leg.event_id for leg in q.legs if isinstance(leg.event_id, str)}) < len(q.legs):
+            blockers.append("SAME_EVENT_CROSS_MARKET_DEPENDENCY_UNVERIFIED")
         for leg in q.legs:
             start, model_at = _utc(leg.event_start_utc), _utc(leg.model_asof_utc)
+            family = leg.market_family if isinstance(leg.market_family, str) else ""
+            if family not in {"MONEYLINE", "SPREAD", "TOTAL", "PLAYER_PROP", "OUTRIGHT"}:
+                blockers.append("MARKET_FAMILY_UNVERIFIED")
+            if leg.model_market_family != family or leg.model_class != "CERTIFIED_FITTED":
+                blockers.append("MARKET_SPECIFIC_FITTED_MODEL_UNVERIFIED")
+            if not isinstance(leg.contract_settlement_rule, str) or not leg.contract_settlement_rule.strip():
+                blockers.append("EXACT_CONTRACT_SETTLEMENT_UNVERIFIED")
+            if family in {"SPREAD", "TOTAL"}:
+                try:
+                    line = Decimal(str(leg.market_line))
+                    if not line.is_finite() or abs(line) > Decimal("10000"):
+                        raise ValueError("invalid line")
+                except (TypeError, InvalidOperation, ValueError):
+                    blockers.append("MARKET_SPECIFIC_EXACT_LINE_UNVERIFIED")
+            if leg.event_status not in {"SCHEDULED", "PRE_GAME"}:
+                blockers.append("OFFICIAL_PREGAME_STATUS_INVALID")
+            if leg.event_status_source != "OFFICIAL_SCHEDULE" or not isinstance(leg.event_status_receipt_id, str) or not leg.event_status_receipt_id.strip():
+                blockers.append("OFFICIAL_STATUS_RECEIPT_UNVERIFIED")
+            if leg.event_status_at_utc is None:
+                blockers.append("PREGAME_STATUS_SNAPSHOT_MISSING")
+            else:
+                observed = _utc(leg.event_status_at_utc)
+                if not 0 <= (quote_at - observed).total_seconds() <= 1800:
+                    blockers.append("PREGAME_STATUS_STALE_OR_FUTURE")
             if quote_at >= start or evaluated_at >= start or model_at > quote_at:
                 blockers.append("PREGAME_CHRONOLOGY_INVALID")
             if leg.calibration_status != "PASS" or not _prob(leg.calibrated_probability) or not _lower_bound(leg.calibrated_lower_bound):
@@ -209,5 +246,108 @@ def evaluate_frozen_quote(q: FrozenComboQuote, quote_max_age_seconds: int = 180)
         return ResearchVerdict("RESEARCH_HOLD_INSUFFICIENT_EVIDENCE", tuple(dict.fromkeys(blockers)), False)
     breakeven = float(cost / payout)
     lower_net = Decimal(str(q.joint_lower_bound)) * payout - cost
+    if lower_net <= 0:
+        return ResearchVerdict(
+            "RESEARCH_HOLD_NO_CONSERVATIVE_EDGE",
+            ("NO_CONSERVATIVE_ECONOMIC_EDGE", "KALSHI_RECOVERY_COMBOS_DISABLED"),
+            False, q.joint_probability, q.joint_lower_bound, breakeven, lower_net,
+        )
     return ResearchVerdict(RESEARCH_ONLY_STATUS, ("KALSHI_RECOVERY_COMBOS_DISABLED",), False,
                            q.joint_probability, q.joint_lower_bound, breakeven, lower_net)
+
+
+@dataclass(frozen=True)
+class ResearchLegSettlement:
+    """Frozen chat/research leg and separately sourced official result; not a trade."""
+    event_id: str
+    market_identity: str
+    pregame_receipt_id: str
+    pregame_locked_at_utc: datetime
+    event_start_utc: datetime
+    official_outcome: str | None = None
+    official_result_receipt_id: str | None = None
+    official_result_at_utc: datetime | None = None
+    exact_contract_settlement_rule: str | None = None
+
+
+@dataclass(frozen=True)
+class ResearchSlipGrade:
+    status: str
+    wins: int
+    losses: int
+    pending: int
+    settlement_dependent: int
+    blockers: tuple[str, ...]
+    official_outcomes_attested: bool = False
+    trade_submission_verified: bool = False
+    realized_pnl_verified: bool = False
+    can_execute: bool = False
+
+
+def grade_research_slip(legs: Iterable[ResearchLegSettlement]) -> ResearchSlipGrade:
+    """Grade frozen leg labels without inferring a live Kalshi market settlement.
+
+    Independent official-result receipt references are *claimed pointers*, not
+    cryptographic attestations or actual Kalshi fills. Push, void, postponed,
+    and pending contracts remain unresolved until exact contract rules resolve.
+    """
+    rows = list(legs)
+    blockers: list[str] = []
+    if not 2 <= len(rows) <= 20:
+        blockers.append("INVALID_RESEARCH_SLIP_SIZE")
+    keys: set[tuple[str, str]] = set()
+    receipt_ids: set[str] = set()
+    wins = losses = pending = settlement_dependent = 0
+    for leg in rows:
+        if not all(isinstance(x, str) and x.strip() for x in (leg.event_id, leg.market_identity, leg.pregame_receipt_id)):
+            blockers.append("FROZEN_LEG_IDENTITY_MISSING")
+            pending += 1
+            continue
+        key = (leg.event_id, leg.market_identity)
+        if key in keys or leg.pregame_receipt_id in receipt_ids:
+            blockers.append("DUPLICATE_FROZEN_LEG")
+        keys.add(key)
+        receipt_ids.add(leg.pregame_receipt_id)
+        try:
+            start = _utc(leg.event_start_utc)
+            locked = _utc(leg.pregame_locked_at_utc)
+            if locked >= start:
+                blockers.append("PREGAME_RECEIPT_LOOKAHEAD_INVALID")
+        except (TypeError, ValueError):
+            blockers.append("FROZEN_CHRONOLOGY_INVALID")
+            pending += 1
+            continue
+        outcome = leg.official_outcome
+        if outcome is None or outcome == "PENDING":
+            pending += 1
+        elif outcome in {"PUSH", "VOID", "POSTPONED"}:
+            settlement_dependent += 1
+        elif outcome in {"WIN", "LOSS"}:
+            try:
+                if (not isinstance(leg.official_result_receipt_id, str)
+                    or not leg.official_result_receipt_id.strip()
+                    or not leg.exact_contract_settlement_rule
+                    or leg.official_result_at_utc is None
+                    or _utc(leg.official_result_at_utc) < start):
+                    raise ValueError("unverified result")
+            except (TypeError, ValueError):
+                blockers.append("INDEPENDENT_RESULT_OR_SETTLEMENT_UNVERIFIED")
+                pending += 1
+                continue
+            wins += outcome == "WIN"
+            losses += outcome == "LOSS"
+        else:
+            blockers.append("UNRECOGNIZED_OFFICIAL_OUTCOME")
+            pending += 1
+    if blockers:
+        status = "RESEARCH_GRADE_HELD"
+    elif losses:
+        status = "RESEARCH_SLIP_LOST"
+    elif pending or settlement_dependent:
+        status = "RESEARCH_SLIP_UNRESOLVED"
+    else:
+        status = "RESEARCH_ALL_LEGS_WON_UNVERIFIED_TRADE"
+    return ResearchSlipGrade(
+        status, wins, losses, pending, settlement_dependent,
+        tuple(dict.fromkeys(blockers)),
+    )
