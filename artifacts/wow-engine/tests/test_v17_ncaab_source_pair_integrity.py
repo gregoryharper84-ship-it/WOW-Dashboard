@@ -1,0 +1,131 @@
+"""Tests that source rows cannot fabricate a valid NCAAB training event."""
+import pytest
+from v17.ncaab_source_pair_integrity import NCAABSourcePairError, validated_team_box_pair
+
+
+def row(side, team, source="a" * 64, season="2026", score="74", gid="401"):
+    return {"team_home_away": side, "team_id": team, "_source_sha256": source,
+            "_source_url": "https://example.test/team_box_2026.csv", "season": season,
+            "team_score": score, "game_id": gid}
+
+
+def test_complete_unambiguous_pair_is_accepted():
+    home, away = validated_team_box_pair("401", [row("home", "H"), row("away", "A", score="70")])
+    assert home["team_id"] == "H" and away["team_id"] == "A"
+
+
+def test_duplicate_home_does_not_select_first_record():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+        validated_team_box_pair("401", [row("home", "H"), row("home", "OTHER"), row("away", "A")])
+
+
+def test_same_team_on_both_sides_does_not_create_win_label():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_PARTICIPANT_COLLISION"):
+        validated_team_box_pair("401", [row("home", "H"), row("away", "H")])
+
+
+def test_cross_season_source_mix_is_rejected():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_PAIR_PROVENANCE_MISMATCH"):
+        validated_team_box_pair("401", [row("home", "H"), row("away", "A", season="2025")])
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_PAIR_PROVENANCE_MISMATCH"):
+        validated_team_box_pair("401", [row("home", "H"), row("away", "A", source="b" * 64)])
+
+
+def test_incomplete_or_unsettled_game_is_skipped_without_label():
+    assert validated_team_box_pair("401", [row("home", "H")]) is None
+    assert validated_team_box_pair("401", [row("home", "H"), row("away", "A", score="")]) is None
+
+
+def test_mismatched_row_identity_is_rejected():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_ID_CONFLICT"):
+        validated_team_box_pair("401", [row("home", "H"), row("away", "A", gid="402")])
+
+
+def _source_csv(team_rows):
+    import csv
+    import io
+    out = io.StringIO()
+    fields = ["game_id", "team_home_away", "team_id", "season", "team_score", "game_date_time", "game_date"]
+    writer = csv.DictWriter(out, fieldnames=fields)
+    writer.writeheader()
+    for t in team_rows:
+        writer.writerow({
+            "game_id": t["game_id"],
+            "team_home_away": t["team_home_away"],
+            "team_id": t["team_id"],
+            "season": t["season"],
+            "team_score": t["team_score"],
+            "game_date_time": "2026-02-01T18:00:00Z",
+            "game_date": "2026-02-01",
+        })
+    return out.getvalue().encode()
+
+
+def test_collector_rejects_duplicate_game_rows_before_training(monkeypatch):
+    from v17 import ncaab_sportsdataverse_candidate as collector
+
+    data = _source_csv([row("home", "H"), row("home", "X"), row("away", "A")])
+    class Reply:
+        status_code = 200
+        content = data
+    monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
+    with pytest.raises(collector.NCAABCandidateUnavailable) as caught:
+        collector.fetch_games(seasons=(2026,))
+    assert caught.value.code == "NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"
+    assert str(caught.value) == "game_id=401"
+
+
+def test_collector_preserves_unique_two_team_game(monkeypatch):
+    from v17 import ncaab_sportsdataverse_candidate as collector
+
+    data = _source_csv([row("home", "H"), row("away", "A", score="70")])
+    class Reply:
+        status_code = 200
+        content = data
+    monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
+    games, sources = collector.fetch_games(seasons=(2026,))
+    assert len(games) == 1 and len(sources) == 1
+    assert games[0]["home_team_id"] == "H" and games[0]["away_team_id"] == "A"
+
+
+def test_empty_source_group_is_not_a_game():
+    assert validated_team_box_pair("401", []) is None
+
+
+def test_two_rows_both_home_must_not_be_treated_as_unique_pair():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+        validated_team_box_pair("401", [row("home", "H"), row("home", "A")])
+
+
+def test_two_rows_both_away_must_not_be_treated_as_unique_pair():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_GAME_PAIR_AMBIGUOUS"):
+        validated_team_box_pair("401", [row("away", "H"), row("away", "A")])
+
+
+@pytest.mark.parametrize("bad_score", ["unknown", " ", "NaN", "Infinity", "-1", "74.5", "1e9999", "7__4"])
+def test_invalid_settlement_score_never_becomes_zero_score(bad_score):
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_SCORE_INVALID"):
+        validated_team_box_pair("401", [row("home", "H", score=bad_score), row("away", "A", score="70")])
+
+
+def test_tied_score_does_not_create_binary_winner_label():
+    with pytest.raises(NCAABSourcePairError, match="NCAAB_SOURCE_SCORE_TIE_UNSETTLED"):
+        validated_team_box_pair("401", [row("home", "H", score="74"), row("away", "A", score="74")])
+
+
+def test_integer_like_decimal_source_scores_are_accepted():
+    home, away = validated_team_box_pair("401", [row("home", "H", score="74.0"), row("away", "A", score="70.0")])
+    assert home["team_score"] == "74.0" and away["team_score"] == "70.0"
+
+
+@pytest.mark.parametrize("bad_score,code", [("unknown", "NCAAB_SOURCE_SCORE_INVALID"), ("7__4", "NCAAB_SOURCE_SCORE_INVALID"), ("74", "NCAAB_SOURCE_SCORE_TIE_UNSETTLED")])
+def test_collector_preserves_invalid_settlement_as_typed_hold(monkeypatch, bad_score, code):
+    from v17 import ncaab_sportsdataverse_candidate as collector
+    data = _source_csv([row("home", "H", score="74"), row("away", "A", score=bad_score)])
+    class Reply:
+        status_code = 200
+        content = data
+    monkeypatch.setattr(collector.requests, "get", lambda url, timeout: Reply())
+    with pytest.raises(collector.NCAABCandidateUnavailable) as caught:
+        collector.fetch_games(seasons=(2026,))
+    assert caught.value.code == code
