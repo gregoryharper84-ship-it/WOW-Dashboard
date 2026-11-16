@@ -130,7 +130,6 @@ def test_excluded_teams_do_not_change_selected_digest():
     assert build(rows) == build()
 
 
-
 def test_accepted_sequence_types_beyond_builtin_list_tuple():
     from collections import UserList
     assert build(UserList(sample())) == build(sample())
