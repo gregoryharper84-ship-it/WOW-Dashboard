@@ -218,3 +218,71 @@ def test_parser_exception_fails_typed():
     def broken(_):
         raise RuntimeError("schema drift")
     holds("PROP_SCRAPE_PARSER_FAILED", lambda: capture(parse=broken))
+
+
+def test_robots_unrelated_agent_does_not_authorize_html():
+    fetch, seen = opener(robots=b"User-agent: Googlebot\nAllow: /research/\n")
+    holds("PROP_SCRAPE_ROBOTS_UNVERIFIED", lambda: capture(fetch=fetch))
+    assert seen == ["https://example.org/robots.txt"]
+
+
+def test_robots_empty_group_and_invalid_directive_hold_before_html():
+    for policy in (
+        b"User-agent: *\n",
+        b"User-agent: *\nAllow /research/\n",
+        b"User-agent: *\nDisallow\n",
+    ):
+        fetch, seen = opener(robots=policy)
+        holds("PROP_SCRAPE_ROBOTS_UNVERIFIED", lambda: capture(fetch=fetch))
+        assert seen == ["https://example.org/robots.txt"]
+
+
+def test_large_integer_does_not_raise_overflow_error():
+    def bad(_):
+        item = rows()["rows"][0]
+        item["display_line"] = 10 ** 1000
+        return {"rows": [item]}
+    holds("PROP_SCRAPE_ROW_INVALID", lambda: capture(parse=bad))
+
+
+def test_chunked_body_incomplete_read_is_typed_hold():
+    from http.client import IncompleteRead
+
+    def fetch(request, *, timeout):
+        url = request.full_url
+        if url.endswith("/robots.txt"):
+            return Response(url, ROBOTS, mime="text/plain")
+        class Broken(Response):
+            def read(self, size):
+                raise IncompleteRead(b"<html>", 12)
+        return Broken(url, HTML, mime="text/html")
+
+    holds("PROP_SCRAPE_SOURCE_UNREACHABLE", lambda: capture(fetch=fetch))
+
+
+def test_truncated_robots_content_length_holds_before_html():
+    seen = []
+
+    def fetch(request, *, timeout):
+        url = request.full_url
+        seen.append(url)
+        if url.endswith("/robots.txt"):
+            out = Response(url, ROBOTS, mime="text/plain")
+            out.headers["Content-Length"] = str(len(ROBOTS) + 15)
+            return out
+        raise AssertionError("HTML fetch should never occur")
+
+    holds("PROP_SCRAPE_SOURCE_UNREACHABLE", lambda: capture(fetch=fetch))
+    assert seen == ["https://example.org/robots.txt"]
+
+
+def test_declared_oversize_content_length_returns_payload_hold():
+    def fetch(request, *, timeout):
+        url = request.full_url
+        if url.endswith("/robots.txt"):
+            return Response(url, ROBOTS, mime="text/plain")
+        out = Response(url, HTML, mime="text/html")
+        out.headers["Content-Length"] = str(1_000_002)
+        return out
+
+    holds("PROP_SCRAPE_PAYLOAD_INVALID", lambda: capture(fetch=fetch))
