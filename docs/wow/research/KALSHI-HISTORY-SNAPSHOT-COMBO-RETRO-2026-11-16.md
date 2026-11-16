@@ -218,3 +218,50 @@ and does not change production structure limits. A counterfactual
 comparison between nested and complementary strategies requires
 recorded pregame quotes, market IDs and exact independent settlement
 rules, not just email results.
+
+
+## 2026-11-16 follow-up: review repairs and dual-engine research packet
+
+**CodeRabbit findings repaired on the branch:**
+- All portfolio economics outputs were renamed to `net_before_fees_cents`,
+  `positive_before_fees_positions` and related explicit before-fee terms,
+  with `economics_basis=PAYOUT_MINUS_ENTRY_BEFORE_UNOBSERVED_FEES` and
+  `fees_observed=false`. A $0.01 before-fee positive is **not** proven
+  profitable after trading fees. Previous economic totals remain descriptive
+  payout-minus-entry arithmetic and may not represent actual net returns.
+- Multi-event cards preserve their overall type while identifying repeated
+  game and player exposures within a mixed-event set.
+- Exact settlement-rule and period identifiers must not be `UNKNOWN`,
+  `UNVERIFIED` or `N/A` before threshold nesting is labeled verified.
+- Padded unknown statistical families cannot enter replay.
+- Fitted training cutoff must strictly predate the forward holdout boundary,
+  not simply the individual event. The first occurrence of an immutable
+  slip ID reserves that ID even when its payload is incomplete; retrying a
+  corrected record requires a new immutable source ID and reconciliation.
+
+**Two-way research addition, without forged source provenance:**
+
+`artifacts/wow-engine/v17/research/kalshi_slip_learning_packet.py`
+compiles only aggregate code-level findings from the existing research-only
+topology and before-fee snapshot diagnostics. Both
+`LLP_TEAM_BETTING_ENGINE` and `WOW_BETTING_ENGINE` are listed as *intended*
+consumers, with a `source_host=null` and
+`origin_provenance=USER_ACCOUNT_NOTIFICATIONS_OR_UNVERIFIED_RESEARCH`.
+This is NOT an accepted payload for the shared API in unmerged PR #2670:
+it intentionally does not fabricate either engine's authenticated authorship,
+a user order ID, an RFQ, a model probability or verified data rights.
+
+The packet includes only typed `POSTMORTEM_RESEARCH` finding codes,
+cohort counts, and non-authoritative source classification. It cannot call
+the network or the database, and always returns
+`RESEARCH_PACKET_LOCAL_ONLY_NOT_PERSISTED`,
+`cross_host_published=false`, `model_feature_eligible=false`,
+`probability_publishable=false`, `can_execute=false`.
+
+**Release dependency:** PR #2670 remains separate and must first complete
+independent protected merge, production migration, deployment, server
+authentication and both live GPT editor GET/POST canaries. Future ingestion of
+personal source notices requires a separately approved user-origin provenance
+lane or independently engine-generated research synthesis. Under no
+circumstances post user-account observations as if their source_host were
+`LLP_TEAM_BETTING_ENGINE` or `WOW_BETTING_ENGINE`.
