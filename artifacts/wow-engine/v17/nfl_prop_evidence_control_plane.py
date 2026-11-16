@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping
 
 import httpx
 from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17 import memory_admission
@@ -51,6 +51,15 @@ class NFLForwardEvidenceRequest(BaseModel):
     requested_date: str
     candidate_offset: int = Field(default=0, ge=0, le=4000)
     max_candidates: int = Field(default=32, ge=1, le=64)
+    # Optional deterministic scheduler rotation; existing offset clients
+    # retain their exact historical semantics when this is absent.
+    candidate_rotation: int | None = Field(default=None, ge=0, le=2_147_483_647)
+
+    @model_validator(mode="after")
+    def _exclusive_paging(self) -> "NFLForwardEvidenceRequest":
+        if self.candidate_rotation is not None and self.candidate_offset != 0:
+            raise ValueError("candidate_rotation and candidate_offset are mutually exclusive")
+        return self
 
 
 def _aware(value: Any) -> datetime | None:
@@ -222,6 +231,8 @@ def acquire_nfl_forward_evidence_batch(
         "sport": SPORT,
         "requested_date": req.requested_date,
         "candidate_offset": req.candidate_offset,
+        "candidate_rotation": req.candidate_rotation,
+        "rotation_page_n": 0,
         "max_candidates": req.max_candidates,
         "total_candidates": 0,
         "window_candidate_n": 0,
@@ -247,7 +258,15 @@ def acquire_nfl_forward_evidence_batch(
         return result
 
     result["total_candidates"] = len(candidates)
-    start = min(req.candidate_offset, len(candidates))
+    page_n = (len(candidates) + req.max_candidates - 1) // req.max_candidates
+    result["rotation_page_n"] = page_n
+    if req.candidate_rotation is None:
+        start = min(req.candidate_offset, len(candidates))
+    else:
+        # Bound every scheduled batch to a real candidate page, including
+        # small slates; no fixed ten-page cap can starve the rest of a slate.
+        start = (req.candidate_rotation % page_n) * req.max_candidates if page_n else 0
+    result["candidate_offset"] = start
     end = min(start + req.max_candidates, len(candidates))
     window = candidates[start:end]
     result["window_candidate_n"] = len(window)
