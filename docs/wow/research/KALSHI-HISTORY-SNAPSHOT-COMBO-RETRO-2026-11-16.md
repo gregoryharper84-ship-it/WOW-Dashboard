@@ -14,8 +14,12 @@ model probabilities or leg outcomes from retrospective results.
 Snapshot-only observations:
 - Four **two-market** positions had positive net returns (4/4 profitable).
 - Four **three-or-more-market** positions were net-negative (0/4 profitable).
-- A three-market position had a positive cash payout but negative net economics:
+- A three-market position had a positive total payout but negative net economics:
   payout-positive and profitable are distinct outcomes.
+- Three positions showed **zero settlement payout but positive total payout**.
+  This can reflect sale/early exit or other payout accounting, but the mechanism
+  and whether the original legs won are unverified without order history.
+  Never classify these three as confirmed sporting wins.
 - The two groups each represented approximately half the observed entry cost. A
   positive group offset a negative group, leaving near-flat total snapshot economics.
 - With only eight unlinked positions and unknown prices, sports, legs, and cross-slip
@@ -50,6 +54,7 @@ Snapshot-only observations:
 - A position without expanded legs cannot enter leg win-rate, calibration, or
   model evaluation. No backfilling pregame estimates from winning tickets.
 - A gross payout smaller than entry remains a negative-economic result.
+- Total payout unequal to settlement payout must produce an explicit reconciliation flag; positive sales/proceeds are not settled leg success.
 - Duplicate stable position IDs cannot inflate win rate or return.
 - Same-game/participant/market legs must not be treated as independent.
 - No card-size preference becomes a production rule from eight observations.
