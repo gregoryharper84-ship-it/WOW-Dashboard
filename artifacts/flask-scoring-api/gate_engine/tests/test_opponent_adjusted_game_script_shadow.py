@@ -6,7 +6,6 @@ underlying scenario heuristic and downstream Poisson rates remain unfit.
 from __future__ import annotations
 
 import copy
-import math
 import unittest
 
 from gate_engine.universal_agent.lanes.wnba_props.game_script.game_environment import (
@@ -102,6 +101,14 @@ class OpponentAdjustedGameScriptTest(unittest.TestCase):
         revised["matchup"]["spread"] = -12.0
         revised["matchup"]["total_line"] = 170.0
         self.assertEqual(parse_game_environment(original), parse_game_environment(revised))
+
+    def test_opponent_path_runs_without_betting_lines(self):
+        item = _matched()
+        del item["matchup"]["spread"]
+        del item["matchup"]["total_line"]
+        env = parse_game_environment(item)
+        self.assertIsNotNone(env)
+        self.assertEqual(env.basis, "OPPONENT_ADJUSTED_UNFITTED_SHADOW")
 
     def test_home_away_swap_reverses_spread_not_total(self):
         original = _matched()
