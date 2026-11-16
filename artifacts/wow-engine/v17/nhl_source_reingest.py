@@ -27,7 +27,7 @@ from v17.nhl_provenance import (
     SOURCE_PROVENANCE_VERSION,
     provenance_envelope_hash,
 )
-from v17.d1_bulk_candidate_registry import persist_source_events_bulk
+from v17.d1_bulk_candidate_registry import persist_source_events_bulk_fenced
 from v17.d1_candidate_registry import D1RegistryError
 from v17.nhl_fitted_specialist import (
     NHLFittedSpecialistError,
@@ -434,7 +434,9 @@ def run_nhl_source_reingest(
 
     try:
         try:
-            persistence = persist_source_events_bulk(db, rows)
+            persistence = persist_source_events_bulk_fenced(
+                db, rows, season=effective_season, lease_token=lease_token
+            )
         except D1RegistryError as exc:
             return _blocked(
                 exc.code,
@@ -526,7 +528,9 @@ def run_nhl_source_reingest(
                     ingest_code_sha=sha,
                     schedule_coverage=schedule_coverage,
                 )
-                timeline_receipt = persist_nhl_season_timeline_receipt(db, receipt)
+                timeline_receipt = persist_nhl_season_timeline_receipt(
+                    db, receipt, lease_token=lease_token
+                )
             except NHLFittedSpecialistError as exc:
                 reason = None
                 if isinstance(exc.detail, Mapping):
