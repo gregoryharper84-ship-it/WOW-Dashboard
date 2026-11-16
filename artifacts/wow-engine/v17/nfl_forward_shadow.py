@@ -29,6 +29,7 @@ GRADE_SCHEMA_VERSION = "NFL_FORWARD_SHADOW_GRADE_V1"
 PREDICTION_TABLE = "wow_nfl_event_predictions"
 OUTCOME_TABLE = "wow_nfl_training_games"
 GRADE_TABLE = "wow_nfl_forward_shadow_grades"
+VERIFIED_GRADE_TABLE = "wow_nfl_forward_verified_grades"
 HEALTH_TABLE = "wow_nfl_forward_calibration_health"
 
 
@@ -337,6 +338,7 @@ _FORWARD_PAGE_KEYS = {
     PREDICTION_TABLE: "event_prediction_id",
     OUTCOME_TABLE: "game_id",
     GRADE_TABLE: "grade_id",
+    VERIFIED_GRADE_TABLE: "official_event_id",
 }
 
 
@@ -473,6 +475,22 @@ def persist_health(db: Any, health: Mapping[str, Any]) -> None:
     }).execute()
 
 
+def load_verified_grades(db: Any) -> list[ForwardGrade]:
+    """Read the private reconciled ledger; never replace it with fresh grades."""
+    fields = tuple(ForwardGrade.__dataclass_fields__)
+    rows = _paginate(db, VERIFIED_GRADE_TABLE, ','.join(fields))
+    grades = []
+    for row in rows:
+        try:
+            grade = ForwardGrade(**{field: row[field] for field in fields})
+        except (KeyError, TypeError) as exc:
+            raise NFLForwardShadowError('NFL_FORWARD_VERIFIED_GRADE_INVALID') from exc
+        if grade.can_execute is not False or grade.schema_version != GRADE_SCHEMA_VERSION:
+            raise NFLForwardShadowError('NFL_FORWARD_VERIFIED_GRADE_INVALID')
+        grades.append(grade)
+    return grades
+
+
 def run_forward_shadow(
     db: Any,
     *,
@@ -489,7 +507,10 @@ def run_forward_shadow(
     canonical = select_canonical_forward_predictions(prediction_rows)
     grades = grade_forward_predictions(canonical, load_outcome_rows(db))
     inserted = persist_new_grades(db, grades)
-    health = calibration_health(grades, min_forward=min_forward)
+    # A newly recomputed grade may disagree with an immutable historical row.
+    # Only the reconciled persisted view may contribute to a V2 health receipt.
+    verified_grades = load_verified_grades(db)
+    health = calibration_health(verified_grades, min_forward=min_forward)
     persist_health(db, health)
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
@@ -499,6 +520,8 @@ def run_forward_shadow(
         "prediction_rows_seen": len(prediction_rows),
         "canonical_events": len(canonical),
         "graded_events": len(grades),
+        "verified_graded_events": len(verified_grades),
+        "calibration_cohort_source": VERIFIED_GRADE_TABLE,
         "new_grades_persisted": inserted,
         "calibration_health": health,
         "automatic_certification": False,

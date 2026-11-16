@@ -222,10 +222,81 @@ class _ForwardPagedDB:
         return _ForwardPagedQuery(self, name)
 
 
+class _ForwardHealthDB(_ForwardPagedDB):
+    """PostgREST boundary double retaining real grading and health logic."""
+    def __init__(self, *, verified_count=99, missing_view=False):
+        from dataclasses import asdict
+        predictions = [_prediction_row(event_id=f'event-{i:03d}',
+                        prediction_id=f'prediction-{i:03d}', p=.7, lower=.6, upper=.8)
+                       for i in range(100)]
+        outcomes = [{'game_id': f'event-{i:03d}', 'home_score': 24 if i < 70 else 17,
+                     'away_score': 17 if i < 70 else 24, 'home_win': i < 70, 'tie': False}
+                    for i in range(100)]
+        grades = grade_forward_predictions(select_canonical_forward_predictions(predictions), outcomes)
+        super().__init__({
+            'wow_nfl_event_predictions': predictions,
+            'wow_nfl_training_games': outcomes,
+            'wow_nfl_forward_shadow_grades': [dict(asdict(g), grade_id=f'grade-{i:03d}')
+                                              for i, g in enumerate(grades)],
+            'wow_nfl_forward_verified_grades': [asdict(g) for g in grades[:verified_count]],
+        })
+        self.health_writes = []
+        self.missing_view = missing_view
+
+    def table(self, name):
+        if name == 'wow_nfl_forward_verified_grades' and self.missing_view:
+            raise RuntimeError('verified view missing or read denied')
+        if name == 'wow_nfl_forward_calibration_health':
+            db = self
+            class HealthWrite:
+                def insert(self, row):
+                    db.health_writes.append(dict(row))
+                    return self
+                def execute(self):
+                    return SimpleNamespace(data=db.health_writes[-1:])
+            return HealthWrite()
+        return super().table(name)
+
+
+@pytest.mark.parametrize('verified_count,expected_status', [
+    (99, 'INSUFFICIENT_FORWARD_EVIDENCE'), (100, 'PASS'), (0, 'INSUFFICIENT_FORWARD_EVIDENCE'),
+])
+def test_v2_producer_health_uses_only_verified_persisted_cohort(verified_count, expected_status):
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB(verified_count=verified_count)
+    result = shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert result['new_grades_persisted'] == 0
+    assert result['calibration_health']['graded_n'] == verified_count
+    assert result['calibration_health']['status'] == expected_status
+    assert result['calibration_health']['schema_version'] == 'NFL_FORWARD_CALIBRATION_HEALTH_V2'
+    assert db.health_writes[0]['graded_n'] == verified_count
+    assert db.health_writes[0]['can_execute'] is False
+    assert result['automatic_certification'] is False
+    assert result['automatic_promotion'] is False
+
+
+def test_missing_verified_view_cannot_persist_a_v2_health_receipt():
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB(missing_view=True)
+    with pytest.raises(RuntimeError, match='verified view missing'):
+        shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert db.health_writes == []
+
+
+def test_duplicate_verified_events_cannot_persist_a_v2_health_receipt():
+    from v17 import nfl_forward_shadow as shadow
+    db = _ForwardHealthDB()
+    db.rows['wow_nfl_forward_verified_grades'].append(db.rows['wow_nfl_forward_verified_grades'][0])
+    with pytest.raises(NFLForwardShadowError, match='ID_DUPLICATED'):
+        shadow.run_forward_shadow(db, settlement_refresh_fn=lambda _: {'status': 'COMPLETED'})
+    assert db.health_writes == []
+
+
 @pytest.mark.parametrize("table,key", [
     ("wow_nfl_event_predictions", "event_prediction_id"),
     ("wow_nfl_training_games", "game_id"),
     ("wow_nfl_forward_shadow_grades", "grade_id"),
+    ("wow_nfl_forward_verified_grades", "official_event_id"),
 ])
 def test_forward_pagination_is_deterministic_across_1000_row_boundary(table, key):
     data = [{key: f"id{i:04d}"} for i in reversed(range(1002))]
@@ -241,6 +312,7 @@ def test_forward_pagination_is_deterministic_across_1000_row_boundary(table, key
     ("wow_nfl_event_predictions", "event_prediction_id"),
     ("wow_nfl_training_games", "game_id"),
     ("wow_nfl_forward_shadow_grades", "grade_id"),
+    ("wow_nfl_forward_verified_grades", "official_event_id"),
 ])
 def test_forward_pagination_rejects_missing_and_duplicate_source_ids(table, key):
     for dataset, expected in [
