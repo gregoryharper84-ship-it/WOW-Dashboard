@@ -191,6 +191,8 @@ def normalize_game(
     if not game_state:
         return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", "gameState")
     if game_state not in {"FINAL", "OFF"}:
+        if game_state not in UNSETTLED_SCHEDULE_STATES:
+            return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", game_state)
         return None
     home = raw.get("homeTeam")
     away = raw.get("awayTeam")
@@ -304,7 +306,7 @@ def normalize_schedule_event(
     if not game_state:
         return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", "gameState")
     if game_state not in SETTLED_SCHEDULE_STATES | UNSETTLED_SCHEDULE_STATES:
-        return None
+        return _drop("NHL_SOURCE_GAME_STATE_UNVERIFIED", game_state)
     game_id = str(raw.get("id") or "").strip()
     start = str(raw.get("startTimeUTC") or "").strip()
     if not game_id or not start:
