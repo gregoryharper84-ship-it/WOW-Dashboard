@@ -67,7 +67,8 @@ def test_exact_candidate_receipt_clears_replay_only_after_governed_source_review
 
 
 def test_stale_or_failed_receipt_does_not_count():
-    row = _candidate()
+    # With source rights already reviewed, exercise only receipt identity/replay.
+    row = _candidate(source_review_status="PASS")
     stale = _receipt(row, candidate_id="22222222-2222-2222-2222-222222222222")
     failed = _receipt(row, replay_status="FAIL")
     for proof in (stale, failed):
