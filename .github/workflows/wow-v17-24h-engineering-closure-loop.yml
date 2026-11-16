@@ -188,14 +188,13 @@ jobs:
           SEVERITY: ${{ steps.decision.outputs.severity }}
         run: |
           set -euo pipefail
-          # P0 work may only be admitted by the existing manifest-backed rapid
-          # planner. Other severity lanes use the canonical provider dispatcher.
-          # Neither accepts a PM ledger ID as an unverified numeric issue target.
-          if [ "$SEVERITY" = "P0" ]; then
-            workflow=wow-v17-p0-rapid-dispatch.yml
-          else
-            workflow=wow-v17-engineering-provider-dispatcher.yml
-          fi
+          # The manifest-backed P0 planner runs independently every 15 minutes.
+          # Do not infer rapid eligibility from a PM ledger severity: a P0
+          # without an OPEN, RAPID GitHub issue is not an executable P0 target.
+          # Submit all controller repair intake through the existing provider
+          # authority; the scheduled rapid planner supplies real P0 leases.
+          # Neither path accepts a PM ledger ID as a worker target.
+          workflow=wow-v17-engineering-provider-dispatcher.yml
           active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --limit 40 \
             --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
           if [ "$active" -gt 0 ]; then
