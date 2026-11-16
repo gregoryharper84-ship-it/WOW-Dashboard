@@ -32,7 +32,9 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
     """Reconcile economics; never infer a dated cohort or leg success from UI payouts.
 
     Inputs require underlying_market_count, entry_cents and payout_cents. Optional:
-    settlement_day, position_id, market_details. Missing facts stay unknown.
+    settlement_day, position_id, market_details, settlement_payout_cents.
+    Missing facts stay unknown. Total payout != settlement payout must be
+    reconciled from actual orders, not classified as a sporting settlement.
     If target_day is given, only explicitly date-tagged matching rows are included;
     missing-date rows remain in the excluded count, not assigned to the target day.
     A date tag alone does not authenticate the platform settlement timestamp.
@@ -44,6 +46,7 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
     seen_ids: set[str] = set()
     included: list[dict[str, Any]] = []
     missing_date = missing_details = missing_id = cash_return_loss = 0
+    payout_settlement_mismatch = 0
     excluded_from_target = 0
     for row in rows:
         if not isinstance(row, dict):
@@ -73,6 +76,10 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
         if target_day is not None and settled_day != target_day:
             excluded_from_target += 1
             continue
+        if row.get("settlement_payout_cents") is not None:
+            settlement_payout = _cents(row, "settlement_payout_cents")
+            if settlement_payout != returned:
+                payout_settlement_mismatch += 1
         net = returned - entry
         if returned > 0 and net < 0:
             cash_return_loss += 1
@@ -100,6 +107,7 @@ def audit_snapshot(rows: list[dict[str, Any]], *, target_day: str | None = None)
         "missing_market_details_rows": missing_details,
         "missing_stable_position_id_rows": missing_id,
         "positive_payout_negative_net_rows": cash_return_loss,
+        "total_vs_settlement_payout_mismatch_rows": payout_settlement_mismatch,
         "entry_cents": sum(r["entry"] for r in included),
         "payout_cents": sum(r["payout"] for r in included),
         "net_cents": sum(r["net"] for r in included),
