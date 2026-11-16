@@ -292,7 +292,7 @@ def _verify_candidate(row: Mapping[str, Any]) -> NHLFittedCandidate:
         blockers.append("NHL_FITTED_ARTIFACT_EMBEDDED_IDENTITY_MISMATCH")
     if str(artifact.get("artifact_format") or "") != "STANDARDIZED_LOGISTIC_JSON_V1":
         blockers.append("NHL_FITTED_ARTIFACT_FORMAT_UNSUPPORTED")
-    if tuple(artifact.get("feature_names") or ()) != FEATURE_NAMES:
+    if not isinstance(artifact.get("feature_names"), list) or tuple(artifact["feature_names"]) != FEATURE_NAMES:
         blockers.append("NHL_FITTED_ARTIFACT_FEATURE_ORDER_MISMATCH")
     coefficients = artifact.get("coefficients")
     means = artifact.get("scaler_mean")
