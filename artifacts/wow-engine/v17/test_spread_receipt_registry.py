@@ -112,6 +112,15 @@ def test_a_quote_observed_after_kickoff_is_rejected():
     assert code == "RECEIPT_QUOTE_NOT_PREGAME"
 
 
+def test_a_quote_observed_after_model_but_before_kickoff_is_rejected():
+    # Original model time is START - 30 minutes; this quote is still pregame
+    # but could not have been consumed by the earlier scorer.
+    code = _rejection(
+        _candidate(quote_observed_at_utc=(START - timedelta(minutes=20)).isoformat())
+    )
+    assert code == "RECEIPT_QUOTE_AFTER_MODEL"
+
+
 def test_a_model_scored_after_kickoff_is_rejected():
     code = _rejection(_candidate(model_timestamp=(START + timedelta(minutes=1)).isoformat()))
     assert code == "RECEIPT_MODEL_TIMESTAMP_NOT_PREGAME"
@@ -254,6 +263,16 @@ def test_the_relation_declares_every_column_the_writer_emits():
     row, _admission = registry.admit_spread_receipt(_candidate())
     for column in row:
         assert f"    {column} " in sql, f"migration is missing writer column {column}"
+
+
+def test_spread_receipt_sql_enforces_timestamp_causality_and_server_creation():
+    sql = MIGRATION.read_text(encoding="utf-8")
+    assert "source_snapshot_timestamp <= model_timestamp" in sql
+    assert "quote_observed_at_utc <= model_timestamp" in sql
+    assert "model_timestamp <= created_at" in sql
+    assert "created_at < event_start_time_utc" in sql
+    assert "new.created_at := pg_catalog.clock_timestamp()" in sql
+    assert "before insert on public.wow_v17_spread_card_receipts" in sql
 
 
 def test_the_relation_pins_the_fail_closed_guards():
