@@ -56,7 +56,7 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
     assert "no discretionary model research while golden user journey is not PASS" in text
     assert 'elif [ "$product_health" != "PASS" ]; then' in text
     assert 'Golden user journey is not PASS; run independent product acceptance before discretionary model research.' in text
-    assert "existing manifest-backed rapid" in text
+    assert "manifest-backed P0 planner runs independently every 15 minutes" in text
     assert "no duplicate provider request" in text
 
 
