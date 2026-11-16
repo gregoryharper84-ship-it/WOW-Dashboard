@@ -65,6 +65,7 @@ def test_valid_synthetic_replay_has_only_descriptive_output():
 
 @pytest.mark.parametrize("field,value,reason", [
     ("component_stat_families", ["UNKNOWN", "POINTS"], "MISSING_EXACT_STAT_FAMILIES"),
+    ("component_stat_families", [" UNKNOWN ", "POINTS"], "MISSING_EXACT_STAT_FAMILIES"),
     ("component_market_ids", ["m1", "m1"], "MISSING_OR_DUPLICATE_MARKET_IDS"),
     ("calibration_status", "CANDIDATE_ONLY", "CALIBRATION_NOT_VERIFIED"),
     ("source_status", "UNVERIFIED_RESEARCH", "SOURCE_NOT_RECONCILED"),
@@ -131,3 +132,25 @@ def test_quote_after_fill_is_rejected_even_if_before_game():
     )])
     assert out["rows_eligible"] == 0
     assert out["reject_reasons"]["CHRONOLOGY_INVALID"] == 1
+
+
+def test_training_window_must_close_before_holdout_begins():
+    out = audit([record(
+        model_fit_cutoff_utc="2026-11-15T01:00:00Z",
+        prediction_at_utc="2026-11-15T02:00:00Z",
+        quote_at_utc="2026-11-15T02:10:00Z",
+        filled_at_utc="2026-11-15T02:12:00Z",
+    )])
+    assert out["rows_eligible"] == 0
+    assert out["reject_reasons"]["FITTED_ON_HOLDOUT"] == 1
+
+
+def test_first_source_occurrence_reserves_id_even_when_invalid():
+    out = audit([
+        record(component_stat_families=["UNKNOWN", "ASSISTS"]),
+        record(),
+    ])
+    assert out["rows_eligible"] == 0
+    assert out["reject_reasons"]["MISSING_EXACT_STAT_FAMILIES"] == 1
+    assert out["reject_reasons"]["DUPLICATE_SLIP_ID"] == 1
+    assert out["comparative_lift_established"] is False
