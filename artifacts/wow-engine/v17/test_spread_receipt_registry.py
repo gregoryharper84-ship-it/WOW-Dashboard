@@ -273,6 +273,13 @@ def test_spread_receipt_sql_enforces_timestamp_causality_and_server_creation():
     assert "created_at < event_start_time_utc" in sql
     assert "new.created_at := pg_catalog.clock_timestamp()" in sql
     assert "before insert on public.wow_v17_spread_card_receipts" in sql
+    # A single-dollar PL/pgSQL delimiter parses in no supported PostgreSQL
+    # release. Keep the actual DDL quote syntax under regression.
+    trigger_ddl = sql.split(
+        "create or replace function public.wow_v17_spread_receipt_server_created_at()", 1
+    )[1].split("drop trigger if exists trg_wow_v17_spread_receipts_server_created_at", 1)[0]
+    assert "as $$" in trigger_ddl
+    assert "$$;" in trigger_ddl
 
 
 def test_the_relation_pins_the_fail_closed_guards():
