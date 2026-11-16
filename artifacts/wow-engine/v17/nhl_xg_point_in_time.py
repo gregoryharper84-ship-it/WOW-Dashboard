@@ -107,7 +107,7 @@ def reconstruct_5v5_xg(
     target_start = _time(target_start_utc)
     if cutoff >= target_start:
         raise NHLXGResearchError("NHL_XG_CUTOFF_INVALID")
-    if not isinstance(prior_games, (list, tuple)):
+    if not isinstance(prior_games, Sequence) or isinstance(prior_games, (str, bytes, bytearray)):
         raise NHLXGResearchError("NHL_XG_HISTORY_INVALID")
 
     seen: set[str] = set()
@@ -160,7 +160,7 @@ def reconstruct_5v5_xg(
         "start": target_start.isoformat(), "as_of": cutoff.isoformat(),
         "window": window, "min_prior_games": min_prior_games,
         "records": [
-            (r.official_event_id, r.start_utc, r.captured_utc, r.home_team,
+            (r.official_event_id, r.start_utc, r.settled_utc, r.captured_utc, r.home_team,
              r.away_team, r.home_5v5_xg, r.away_5v5_xg, r.source_id, r.source_sha256)
             for r in sorted(selected.values(), key=lambda g: g.official_event_id)
         ],
