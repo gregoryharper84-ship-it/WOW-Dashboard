@@ -162,6 +162,7 @@ as $$
 declare
     v_holder text;
     v_expiry timestamptz;
+    v_written uuid;
 begin
     select lease_token, expires_at into v_holder, v_expiry
       from public.wow_nhl_source_reingest_leases
@@ -202,7 +203,19 @@ begin
            verified_at=excluded.verified_at,
            ingest_code_sha=excluded.ingest_code_sha,
            source=excluded.source,
-           can_execute=false;
+           can_execute=false
+       where public.wow_nhl_season_timeline_receipts.schedule_retrieved_at
+                 < excluded.schedule_retrieved_at
+          or (public.wow_nhl_season_timeline_receipts.schedule_retrieved_at
+                 = excluded.schedule_retrieved_at
+              and public.wow_nhl_season_timeline_receipts.schedule_digest
+                 = excluded.schedule_digest)
+    returning receipt_id into v_written;
+    if v_written is null then
+        return pg_catalog.jsonb_build_object(
+            'status','BLOCKED','code','NHL_SOURCE_TIMELINE_STALE_SCHEDULE',
+            'can_execute',false);
+    end if;
     return pg_catalog.jsonb_build_object(
         'status','NHL_SEASON_TIMELINE_RECEIPT_PERSISTED',
         'season',p_season,'written',1,'can_execute',false);
