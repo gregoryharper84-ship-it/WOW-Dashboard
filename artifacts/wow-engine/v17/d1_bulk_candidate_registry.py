@@ -115,6 +115,59 @@ def persist_source_events_bulk(db: Any, rows: list[dict[str, Any]]) -> dict[str,
     }
 
 
+
+def persist_source_events_bulk_fenced(
+    db: Any, rows: list[dict[str, Any]], *, season: int | str, lease_token: str
+) -> dict[str, Any]:
+    """Append NHL V2 source rows only through a token-fenced PG transaction.
+
+    Each batch takes the season-lease row lock in PostgreSQL before inserting.
+    Expired or superseded writers cannot append the next batch. Partial batches
+    may remain on transport failure and must be verified on retry; no update
+    or delete path exists for immutable source events.
+    """
+    rpc = getattr(db, "rpc", None)
+    if not callable(rpc):
+        raise D1RegistryError(
+            "NHL_SOURCE_REINGEST_LEASE_STORE_UNAVAILABLE", "fenced RPC unavailable"
+        )
+    sources = [_source_row(row) for row in rows]
+    written = 0
+    for batch in _chunks(sources):
+        try:
+            response = rpc("wow_nhl_append_reingest_source_batch", {
+                "p_season": str(season), "p_token": str(lease_token),
+                "p_rows": batch,
+            }).execute()
+        except Exception as exc:  # noqa: BLE001 - external RPC boundary
+            raise D1RegistryError(
+                "NHL_SOURCE_PERSISTENCE_FAILED",
+                f"fenced DB error {type(exc).__name__}",
+            ) from exc
+        data = getattr(response, "data", None)
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if not isinstance(data, Mapping) or data.get("can_execute") is not False:
+            raise D1RegistryError(
+                "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID", "invalid fenced RPC result"
+            )
+        if data.get("status") != "NHL_SOURCE_REINGEST_BATCH_PERSISTED":
+            raise D1RegistryError(
+                str(data.get("code") or "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID"),
+                "fenced source batch blocked",
+            )
+        n = data.get("written")
+        if type(n) is not int or not (0 <= n <= len(batch)):
+            raise D1RegistryError(
+                "NHL_SOURCE_REINGEST_LEASE_OUTPUT_INVALID", "invalid write count"
+            )
+        written += n
+    return {
+        "status": "D1_SOURCE_EVENTS_PERSISTED",
+        "source_events": {"attempted": len(sources), "written_or_existing": written},
+        "can_execute": False,
+    }
+
 def persist_candidate_package_bulk(db: Any, package: Mapping[str, Any]) -> dict[str, Any]:
     if package.get("can_execute") is not False or package.get("probability_publishable") is not False:
         raise D1RegistryError("D1_PACKAGE_GOVERNANCE_INVALID", "package must be inert")
@@ -155,4 +208,5 @@ __all__ = [
     "DEFAULT_BATCH_SIZE",
     "persist_candidate_package_bulk",
     "persist_source_events_bulk",
+    "persist_source_events_bulk_fenced",
 ]
