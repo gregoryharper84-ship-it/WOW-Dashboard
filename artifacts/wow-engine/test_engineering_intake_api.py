@@ -142,6 +142,41 @@ class IntakeTests(unittest.TestCase):
             m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
                           runner=run, sleep=lambda _: None)
 
+    def test_pr_nondecision_metadata_drift_does_not_stall_safe_inventory(self):
+        # PR comment counts and updated_at can change while the same incident
+        # claim, HEAD, target and lifecycle scope remain unchanged.
+        m = load()
+        first = {**row(100), 'body': 'Incident: #23',
+                 'updated_at': '2026-11-16T20:00:00Z', 'comments': 2}
+        second = {**first, 'updated_at': '2026-11-16T20:01:00Z',
+                  'comments': 3}
+        accepted = m.fetch_pages(
+            'gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
+            runner=FakeRun([[first], [second]]), sleep=lambda _: None,
+        )
+        self.assertEqual(accepted, [first])
+
+    def test_pr_changed_source_head_still_holds_every_output(self):
+        m = load()
+        first = {**row(100), 'body': 'Incident: #23',
+                 'head': {'sha': 'a' * 40, 'ref': 'fix/controller'}}
+        second = {**first, 'head': {'sha': 'b' * 40, 'ref': 'fix/controller'}}
+        with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
+            m.fetch_pages(
+                'gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
+                runner=FakeRun([[first], [second]]), sleep=lambda _: None,
+            )
+
+    def test_issue_timestamp_change_still_holds_issue_priority_evidence(self):
+        m = load()
+        first = {**row(7), 'updated_at': '2026-11-16T20:00:00Z'}
+        second = {**first, 'updated_at': '2026-11-16T20:01:00Z'}
+        with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
+            m.fetch_pages(
+                'gregoryharper84-ship-it/WOW-Dashboard', 'issues', '/issues',
+                runner=FakeRun([[first], [second]]), sleep=lambda _: None,
+            )
+
     def test_reordered_identical_inventory_is_complete(self):
         m = load()
         result = m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
