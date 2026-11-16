@@ -1392,3 +1392,48 @@ def test_strict_normalizer_never_silently_discards_unknown_regular_season_state(
         with pytest.raises(pipeline.NHLCandidateError) as caught:
             normalize()
         assert caught.value.code == "NHL_SOURCE_GAME_STATE_UNVERIFIED"
+
+
+@pytest.mark.parametrize(
+    ("older_at", "older_digest"),
+    [
+        ("2026-11-15T15:00:00Z", "c" * 64),
+        ("2026-11-16T15:00:00Z", "c" * 64),
+    ],
+)
+def test_older_nhl_schedule_cannot_replace_newer_fenced_timeline(older_at, older_digest):
+    # An earlier fetched schedule may arrive after a newer writer released its
+    # lease; live ownership alone cannot make stale source evidence authoritative.
+    db = _FakeDB()
+    token = "fenced-schedule-writer-20261116"
+    claimed = fitted.acquire_nhl_reingest_season_lease(
+        db, season=SEASON, lease_token=token
+    )
+    assert claimed["status"] == "NHL_SOURCE_REINGEST_LEASE_ACQUIRED"
+    def receipt(stamp, digest):
+        return {
+            "season": SEASON, "provenance_complete": True,
+            "season_scope": "FULL_SEASON",
+            "settled_events": [], "scheduled_events": [],
+            "schedule_digest": digest,
+            "schedule_retrieved_at": stamp, "verified_at": "2026-11-16T15:01:00Z",
+            "ingest_code_sha": INGEST_SHA, "source": "NHL_SOURCE_REINGEST",
+            "can_execute": False,
+        }
+
+    newer = db.rpc("wow_nhl_persist_reingest_timeline", {
+        "p_season": SEASON, "p_token": token,
+        "p_receipt": receipt("2026-11-16T15:00:00Z", "b" * 64)
+    }).execute().data
+    assert newer["status"] == "NHL_SEASON_TIMELINE_RECEIPT_PERSISTED"
+
+    stale = db.rpc("wow_nhl_persist_reingest_timeline", {
+        "p_season": SEASON, "p_token": token,
+        "p_receipt": receipt(older_at, older_digest)
+    }).execute().data
+    assert stale["status"] == "BLOCKED"
+    assert stale["code"] == "NHL_SOURCE_TIMELINE_STALE_SCHEDULE"
+    stored = db.rows[fitted.TIMELINE_RECEIPT_TABLE][0]
+    assert stored["schedule_digest"] == "b" * 64
+    assert stored["schedule_retrieved_at"] == "2026-11-16T15:00:00Z"
+    assert stored["can_execute"] is False
