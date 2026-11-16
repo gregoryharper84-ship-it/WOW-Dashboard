@@ -141,12 +141,12 @@ returns trigger
 language plpgsql
 security invoker
 set search_path = public
-as $
+as $$
 begin
     new.created_at := pg_catalog.clock_timestamp();
     return new;
 end;
-$;
+$$;
 
 drop trigger if exists trg_wow_v17_spread_receipts_server_created_at
     on public.wow_v17_spread_card_receipts;
