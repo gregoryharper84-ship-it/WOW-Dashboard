@@ -7,7 +7,7 @@ changing the controlling LLP specialist or V17_TERMINAL_REDUCER.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 import argparse, csv, gzip, io, json, os, sys, urllib.request
@@ -32,6 +32,35 @@ def paginate(q: Any, *, page_size: int = 500) -> list[dict[str,Any]]:
         if len(batch)<page_size:break
         start+=page_size
     return output
+
+
+def load_completed_history(db: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Use the canonical P2 tables without importing heavyweight serving models."""
+    games = paginate(db.table("wow_nfl_training_games").select("*").order("season").order("week").order("gameday").order("game_id"))
+    summaries = paginate(db.table("wow_nfl_game_team_summaries").select("*").order("game_id").order("team"))
+    if not games or not summaries:
+        raise RuntimeError("NFL_HISTORICAL_FEATURE_CONTEXT_UNAVAILABLE")
+    return games, summaries
+
+
+def prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, team: str, target_date: date) -> int:
+    """Count only completely scored earlier regular-season fixtures for a team."""
+    n = 0
+    for row in schedule_rows:
+        try:
+            row_season = int(float(str(row.get("season") or "0")))
+            day = date.fromisoformat(str(row.get("gameday") or "")[:10])
+        except (TypeError, ValueError):
+            continue
+        if row_season != season or day >= target_date:
+            continue
+        home_score = str(row.get("home_score") or "").strip()
+        away_score = str(row.get("away_score") or "").strip()
+        if not home_score or not away_score:
+            continue
+        if team in (str(row.get("home_team") or "").upper(), str(row.get("away_team") or "").upper()):
+            n += 1
+    return n
 
 
 def capture_clock_eligible(kickoff: str, now: datetime, horizon_hours: int=MAX_LOOKAHEAD_HOURS) -> bool:
@@ -160,9 +189,8 @@ def run_capture(db: Any, *, now: datetime, dry_run: bool = False) -> dict[str,An
     historical=_training_inputs(db)
     fitted=fit_research_challenger(historical)
     # Source/feature assembly must match the champion-owned prior-only builder.
-    from v17.nfl_team_event_specialist import _load_history, _prior_completed_count
     from nfl_event_prediction_features import build_prediction_feature_row
-    games,summaries=_load_history(db)
+    games,summaries=load_completed_history(db)
     existing=frozen=held=0
     for fixture in window:
         event_id=fixture["official_event_id"]
@@ -175,9 +203,9 @@ def run_capture(db: Any, *, now: datetime, dry_run: bool = False) -> dict[str,An
                          game_id=event_id,season=fixture["season"],week=fixture["week"],
                          gameday=fixture["gameday"],home_team=fixture["home_team"],away_team=fixture["away_team"],
                          schedule_content_sha256=snapshot["content_sha256"])
-            expected_h=_prior_completed_count(source_events,season=fixture["season"],team=fixture["home_team"],
+            expected_h=prior_completed_count(source_events,season=fixture["season"],team=fixture["home_team"],
                                                 target_date=datetime.fromisoformat(fixture["gameday"]).date())
-            expected_a=_prior_completed_count(source_events,season=fixture["season"],team=fixture["away_team"],
+            expected_a=prior_completed_count(source_events,season=fixture["season"],team=fixture["away_team"],
                                                 target_date=datetime.fromisoformat(fixture["gameday"]).date())
             if (int(feature["features"]["home_season_prior_games"])!=expected_h or
                 int(feature["features"]["away_season_prior_games"])!=expected_a):

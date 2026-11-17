@@ -64,3 +64,19 @@ def test_nflverse_final_must_match_original_hashed_snapshot_and_training_row():
     assert verify_nflverse_final(fixture,raw|{"home_score":"25"},training,snap) is None
     assert verify_nflverse_final(fixture,raw,training,snap|{"fetched_at":"2026-11-19T22:30:00Z"}) is None
     assert verify_nflverse_final(fixture,raw,training,snap|{"content_sha256":"bad"}) is None
+
+
+def test_no_heavy_champion_model_import_in_scheduled_runner():
+    source = (Path(__file__).parent / 'runner.py').read_text()
+    assert 'from v17.nfl_team_event_specialist import' not in source
+    assert 'from nfl_event_prediction_features import build_prediction_feature_row' in source
+
+
+def test_completed_prior_games_count_only_finished_pairs():
+    from runner import prior_completed_count
+    schedule = [
+        {'season':'2026','gameday':'2026-11-10','home_team':'HOU','away_team':'IND','home_score':'24','away_score':'21'},
+        {'season':'2026','gameday':'2026-11-12','home_team':'HOU','away_team':'TEN','home_score':'','away_score':'14'},
+        {'season':'2026','gameday':'2026-11-19','home_team':'HOU','away_team':'IND','home_score':'0','away_score':'0'},
+    ]
+    assert prior_completed_count(schedule, season=2026, team='HOU', target_date=datetime(2026,11,19).date()) == 1
