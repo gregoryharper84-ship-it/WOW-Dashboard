@@ -275,3 +275,24 @@ def test_second_gdelt_query_is_budget_blocked_without_fetch(monkeypatch):
     assert len(calls) == 1
     assert r["optional_news"]["status"] == "COMPLETE_WITH_BLOCKERS"
     assert r["optional_news"]["blocked_snapshots"][0]["source_code"] == "SOURCE_GDELT_RATE_BUDGET_EXCEEDED"
+
+
+def test_scout_schedule_degrades_without_paid_source_but_writes_a_receipt():
+    from pathlib import Path
+    import yaml
+    workflow_path = (Path(__file__).resolve().parents[2] /
+                     ".github/workflows/wow-v17-scout-source-refresh.yml")
+    content = workflow_path.read_text()
+    data = yaml.safe_load(content)
+    steps = data["jobs"]["refresh"]["steps"]
+    by_name = {x.get("name"): x for x in steps}
+    preflight = by_name["Check source credentials"]["run"]
+    assert 'if [ -n "$WOW_SCOUT_DATABASE_URL" ]; then' in preflight
+    assert '&& [ -n "$WOW_SPORTSDATAIO_API_KEY" ]' not in preflight
+    assert "Write blocked configuration receipt" in by_name
+    blocked = by_name["Write blocked configuration receipt"]["run"]
+    assert '"status": "BLOCKED_SOURCE_CONFIGURATION"' in blocked
+    assert '"source_code": "SOURCE_DATABASE_UNCONFIGURED"' in blocked
+    upload = by_name["Upload source refresh receipt"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["if-no-files-found"] == "error"
