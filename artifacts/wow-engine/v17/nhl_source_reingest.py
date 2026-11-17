@@ -122,7 +122,7 @@ def build_reingest_rows(
     sha = str(ingest_code_sha or "").strip()
     if len(sha) < 7:
         raise NHLSourceReingestError("NHL_INGEST_CODE_SHA_UNAVAILABLE")
-    if re.fullmatch(r"[0-9a-f]{7,64}", sha) is None:
+    if re.fullmatch(r"[0-9a-f]{7,40}", sha) is None:
         raise NHLSourceReingestError("NHL_INGEST_CODE_SHA_INVALID")
     if str(provenance_version or "").strip() != SOURCE_PROVENANCE_VERSION:
         raise NHLSourceReingestError("NHL_INGEST_PROVENANCE_VERSION_INVALID", provenance_version)
@@ -307,7 +307,7 @@ def run_nhl_source_reingest(
     sha = str(ingest_code_sha or os.getenv("RENDER_GIT_COMMIT") or "").strip()
     if len(sha) < 7:
         return _blocked("NHL_INGEST_CODE_SHA_UNAVAILABLE", stage="PROVENANCE")
-    if re.fullmatch(r"[0-9a-f]{7,64}", sha) is None:
+    if re.fullmatch(r"[0-9a-f]{7,40}", sha) is None:
         return _blocked("NHL_INGEST_CODE_SHA_INVALID", stage="PROVENANCE")
 
     if not dry_run and not _source_rights_approved(rights_approved):
