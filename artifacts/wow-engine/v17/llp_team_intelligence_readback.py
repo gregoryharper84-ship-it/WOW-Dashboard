@@ -205,10 +205,10 @@ def _spread_receipt_from_row(
     line = result.get("exact_signed_spread")
     # Same explicit convention spread_card_admission uses: a bare home line is
     # the home side. Nothing is invented when no line was saved.
-    if line is None and result.get("home_spread") is not None:
+    if line is None and result.get("home_spread") is not None and side in {"", "HOME"}:
         side = side or "HOME"
         line = result.get("home_spread")
-    if line is None and result.get("home_run_line") is not None:
+    if line is None and result.get("home_run_line") is not None and side in {"", "HOME"}:
         side = side or "HOME"
         line = result.get("home_run_line")
     return {
@@ -399,9 +399,9 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         receipts: list[dict[str, Any]] = []
         if winner_row is not None:
             receipts.append(_winner_receipt_from_row(winner_row, winner_event))
+        # Absence of a declared family is not proof of POINT_SPREAD.
         ungoverned_family = bool(
             spread_row is not None
-            and declared_family
             and declared_family not in _GOVERNED_SPREAD_FAMILIES
         )
         if spread_row is not None and not ungoverned_family:
