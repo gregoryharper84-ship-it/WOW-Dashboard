@@ -238,30 +238,41 @@ def _validated_features(
 
 
 def _validated_score(scored: Any) -> dict[str, Any]:
+    """Bind the published distribution to exact integer residual-sample counts."""
     if not isinstance(scored, Mapping):
         raise SpreadProducerUnavailable("MODEL_OUTPUT_INVALID", "scorer returned no mapping")
     try:
-        p_cover = float(scored["p_cover"])
-        p_push = float(scored["p_push"])
-        p_not_cover = float(scored["p_not_cover"])
-        cover_count = int(scored["cover_count"])
-        total = int(scored["distribution_sample_n"])
-    except (KeyError, TypeError, ValueError) as exc:
+        legs = tuple(scored[name] for name in ("p_cover", "p_push", "p_not_cover"))
+        counts = tuple(scored[name] for name in (
+            "cover_count", "push_count", "not_cover_count", "distribution_sample_n"
+        ))
+    except (KeyError, TypeError) as exc:
         raise SpreadProducerUnavailable(
-            "MODEL_OUTPUT_INVALID", "scorer output is missing a usable cover distribution"
+            "MODEL_OUTPUT_INVALID", "scorer output lacks full residual distribution provenance"
         ) from exc
-    legs = (p_cover, p_push, p_not_cover)
-    if not all(math.isfinite(leg) and 0.0 <= leg <= 1.0 for leg in legs):
+    if not all(_finite(value) and 0.0 <= float(value) <= 1.0 for value in legs):
         raise SpreadProducerUnavailable("MODEL_OUTPUT_INVALID", "cover distribution is not a probability")
-    if abs(sum(legs) - 1.0) > 1e-9:
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in counts):
+        raise SpreadProducerUnavailable(
+            "MODEL_OUTPUT_INVALID", "residual outcome counts must be exact integers"
+        )
+    cover, push, not_cover, total = counts
+    if total <= 0 or min(cover, push, not_cover) < 0 or cover + push + not_cover != total:
+        raise SpreadProducerUnavailable("MODEL_OUTPUT_INVALID", "residual counts do not partition the sample")
+    if abs(sum(float(x) for x in legs) - 1.0) > 1e-9:
         raise SpreadProducerUnavailable("MODEL_OUTPUT_INVALID", "cover distribution does not normalize")
-    if total <= 0 or not 0 <= cover_count <= total:
-        raise SpreadProducerUnavailable("MODEL_OUTPUT_INVALID", "cover counts are inconsistent")
+    for probability, count in zip(legs, (cover, push, not_cover)):
+        if not math.isclose(float(probability), count / total, rel_tol=0.0, abs_tol=1e-9):
+            raise SpreadProducerUnavailable(
+                "MODEL_OUTPUT_INVALID", "published probability disagrees with residual outcome count"
+            )
     return {
-        "p_cover": p_cover,
-        "p_push": p_push,
-        "p_not_cover": p_not_cover,
-        "cover_count": cover_count,
+        "p_cover": float(legs[0]),
+        "p_push": float(legs[1]),
+        "p_not_cover": float(legs[2]),
+        "cover_count": cover,
+        "push_count": push,
+        "not_cover_count": not_cover,
         "distribution_sample_n": total,
     }
 
@@ -441,6 +452,12 @@ def produce_pregame_receipt(
         )
     try:
         scored = _validated_score(raw_scored)
+        # A valid distribution from another fitted artifact or another sample
+        # size cannot be substituted for this artifact's residual population.
+        if scored["distribution_sample_n"] != len(artifact.calibration_residuals):
+            raise SpreadProducerUnavailable(
+                "MODEL_OUTPUT_INVALID", "distribution sample does not match certified artifact residuals"
+            )
     except SpreadProducerUnavailable as exc:
         return _held_row(
             event, sport=sport, codes=[exc.code], exact_line=float(evidence.home_spread)
