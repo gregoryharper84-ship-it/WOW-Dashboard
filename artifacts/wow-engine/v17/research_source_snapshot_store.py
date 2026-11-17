@@ -61,6 +61,12 @@ def persist_immutable_news_source_result(result: ResearchFetchResult) -> dict[st
     No new schema, writer controller, model or execution authority is added.
     """
     sid = news_snapshot_id_for(result)
+    # Required by the existing unique(provider, sport_key, capability,
+    # payload_hash) constraint: every observation, including every failure,
+    # must carry its specific captured timestamp inside the hashed payload.
+    if (not isinstance(result.data, dict) or
+            result.data.get("source_observed_at") != result.observed_at):
+        raise ValueError("NEWS_RECEIPT_PAYLOAD_PROVENANCE_MISSING")
     payload_hash = _payload_hash(result.data)
     with psycopg.connect(database_url()) as conn:
         with conn.cursor() as cur:
