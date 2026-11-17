@@ -26,6 +26,7 @@ def artifact():
     return {"sport":"NFL","model_artifact_version":"NFL_DYNAMIC_TEAM_STATE_LOGIT_V2_abc",
             "artifact_payload":model, "artifact_checksum":hash_payload(model),
             "calibrator_payload":{"method":"IDENTITY_RAW_PROBABILITY_V1","training_n":100,"bins":[]},
+            "calibrator_content_hash": hash_payload({"method":"IDENTITY_RAW_PROBABILITY_V1","training_n":100,"bins":[]}),
             "model_created_at_utc":"2026-11-16T12:00:00Z",
             "fit_cutoff_utc":"2026-10-01T00:00:00Z",
             "calibration_cutoff_utc":"2026-11-10T00:00:00Z",
@@ -134,6 +135,7 @@ def test_empirical_calibrator_matches_nearest_center_contract():
     a=artifact();a["calibrator_payload"]={"method":"EMPIRICAL_WILSON_BINS_V1","bins":[
         {"raw_mean":.20,"calibrated_probability":.30},
         {"raw_mean":.90,"calibrated_probability":.85}]}
+    a["calibrator_content_hash"] = hash_payload(a["calibrator_payload"])
     r=score_existing_team_state_candidate(features(),a)
     assert r["candidate_probability"]==pytest.approx(.85)
 
@@ -205,3 +207,12 @@ def test_identity_calibration_cannot_claim_precise_lower_bound():
     assert r["status"]=="SHADOW_CANDIDATE_ONLY"
     assert r["calibrated_lower_bound"] is None
     assert r["candidate_probability_is_certified"] is False
+
+
+def test_calibrator_tamper_and_missing_digest_are_rejected():
+    a=artifact();a["calibrator_payload"]["method"]="EMPIRICAL_WILSON_BINS_V1"
+    r=score_existing_team_state_candidate(features(),a)
+    assert r["status"]=="CALIBRATOR_HASH_MISMATCH"
+    assert r["candidate_probability"] is None
+    a=artifact();a.pop("calibrator_content_hash")
+    assert score_existing_team_state_candidate(features(),a)["status"]=="PROVENANCE_HASH_MISSING"
