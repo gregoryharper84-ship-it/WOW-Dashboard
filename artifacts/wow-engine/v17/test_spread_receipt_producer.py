@@ -8,8 +8,9 @@ import pytest
 
 from v17 import spread_receipt_producer as producer
 
-START = datetime(2026, 11, 12, 23, 0, tzinfo=timezone.utc)
-OBSERVED_AT = START - timedelta(hours=1)
+# Preserve genuine pregame chronology when CI runs on future dates.
+START = datetime.now(timezone.utc) + timedelta(hours=3)
+OBSERVED_AT = START - timedelta(hours=3)
 
 
 def _artifact_payload(**overrides):
@@ -55,9 +56,9 @@ def _market_rows(*, home_spread=-0.5, provider_event_id="rd-nfl-9101", start=STA
         "market_id": "2",
         "market_name": "spreads",
         "sportsbook": "Pinnacle",
-        "price_updated_at": (start - timedelta(hours=2)).isoformat(),
+        "price_updated_at": (start - timedelta(hours=4)).isoformat(),
         # A bound quote must have been actually observed, not merely re-timestamped.
-        "fetched_at": (start - timedelta(hours=2)).isoformat(),
+        "fetched_at": (start - timedelta(hours=4)).isoformat(),
         "is_live": False,
         "is_main_line": True,
         "is_available": True,
@@ -250,6 +251,45 @@ def test_ledger_rows_for_another_matchup_do_not_produce_a_line():
     assert result["rows"][0]["status"] == "HELD"
     assert result["rows"][0]["reason_codes"]
     assert "p_cover" not in result["rows"][0]
+    assert db.upserts == []
+
+
+def test_wall_clock_crossing_kickoff_during_scorer_holds_without_writing(monkeypatch):
+    from v17.spread_margin_challenger import score_home_spread
+
+    calls = iter([OBSERVED_AT + timedelta(minutes=1),
+                  START + timedelta(seconds=1)])
+    monkeypatch.setattr(producer, "_now", lambda: next(calls))
+    invoked = []
+
+    def scorer(artifact, features, *, home_spread):
+        invoked.append(True)
+        return score_home_spread(artifact, features, home_spread=home_spread)
+
+    db = _DB(_market_rows())
+    result = _run(db, scorer=scorer)
+    assert invoked == [True]
+    assert result["rows"][0]["status"] == "HELD"
+    assert result["rows"][0]["reason_codes"] == ["SPREAD_EVENT_ALREADY_STARTED"]
+    assert "p_cover" not in result["rows"][0]
+    assert db.upserts == []
+
+
+def test_backdated_model_clock_cannot_publish_after_actual_kickoff(monkeypatch):
+    monkeypatch.setattr(producer, "_now", lambda: START + timedelta(seconds=1))
+    db = _DB(_market_rows())
+    result = _run(db)
+    assert result["rows"][0]["status"] == "HELD"
+    assert result["rows"][0]["reason_codes"] == ["SPREAD_EVENT_ALREADY_STARTED"]
+    assert db.upserts == []
+
+
+def test_future_dated_model_clock_holds_before_any_scoring(monkeypatch):
+    monkeypatch.setattr(producer, "_now", lambda: OBSERVED_AT - timedelta(minutes=2))
+    db = _DB(_market_rows())
+    result = _run(db)
+    assert result["rows"][0]["status"] == "HELD"
+    assert result["rows"][0]["reason_codes"] == ["SPREAD_MODEL_TIMESTAMP_IN_FUTURE"]
     assert db.upserts == []
 
 
