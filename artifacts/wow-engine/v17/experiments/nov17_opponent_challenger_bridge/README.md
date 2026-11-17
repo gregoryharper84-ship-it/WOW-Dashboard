@@ -10,7 +10,7 @@ The existing fitted trainer is `v17/team_state_challenger_training.py` using pre
 
 ## Components
 
-- `opponent_challenger_bridge.score_existing_team_state_candidate`: requires the exact existing fitted JSON artifact, checksum, feature order, completed pregame feature vector, cutoff timestamps and source IDs. Reproduces its standardized logistic and selected identity/nearest-bin empirical calibrator. Preserves candidate-only status and **does not mint lower bounds**.
+- `opponent_challenger_bridge.score_existing_team_state_candidate`: requires the exact existing fitted JSON artifact, artifact checksum, independently retained calibrator checksum, feature order, completed pregame feature vector, cutoff timestamps and source IDs. Reproduces its standardized logistic and selected identity/nearest-bin empirical calibrator. Preserves candidate-only status and **does not mint lower bounds**.
 - `bridge_team_script_to_prop`: joins LLP team-event fitted leading/tied/trailing state probabilities with separately fitted WOW_PROP_LANE conditional count distributions. Validates sport, event, team, player, source, cutoff and state coverage. No implied-moneyline proxy; no hypothetical Poisson tails; no betting execution.
 - `build_paired_forward_row`: joins a frozen incumbent, separately frozen research candidate and independently settled result with exact event, selected side, market, settlement and chronology. Supports home/away conversion, produces paired Brier contributions; never certifies a model.
 - `offline_forward_shadow.py`: read-only local JSON CLI. Outputs JSON with candidate status and provenance limitations. Exits with code 2 when any candidate is unavailable.
@@ -23,7 +23,7 @@ python artifacts/wow-engine/v17/experiments/nov17_opponent_challenger_bridge/off
   /path/to/verified_frozen_artifact_and_feature_receipts.json --output /tmp/wow-forward-shadow.json
 ```
 
-Input format: `{"artifact": {...}, "features": [{...}]}`; see the tests for minimal synthetic fixtures. `artifact_payload` is the **existing** `STANDARDIZED_LOGISTIC_JSON_V1` with complete `feature_names`, `scaler_mean`, `scaler_scale`, `intercept`, `coefficients`, and `calibrator_payload` from the existing candidate. The manifest must carry a verified creation time, fit cutoff, calibration cutoff, created-before-snapshot evidence, and schema/feature content SHA-256. Claimed hashes and source IDs are not independently authenticated by this module; real source review must verify them before publishing results.
+Input format: `{"artifact": {...}, "features": [{...}]}`; see the tests for minimal synthetic fixtures. `artifact_payload` is the **existing** `STANDARDIZED_LOGISTIC_JSON_V1` with complete `feature_names`, `scaler_mean`, `scaler_scale`, `intercept`, `coefficients`, and `calibrator_payload` from the existing candidate. The manifest must carry a separately retained `calibrator_content_hash` (SHA-256 over canonical calibrator JSON), a verified creation time, fit cutoff, calibration cutoff, created-before-snapshot evidence, and schema/feature content SHA-256. Claimed hashes and source IDs are not independently authenticated by this module; real source review must verify them before publishing results.
 
 ## Superpowers build process — PLAN → TDD → VERIFY → REVIEW
 
