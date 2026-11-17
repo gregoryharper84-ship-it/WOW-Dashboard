@@ -413,6 +413,37 @@ def test_puck_line_row_is_held_and_never_relabelled_as_point_spread():
     assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
 
 
+def test_missing_spread_market_family_cannot_become_qualified_by_default():
+    saved = _spread_row(certified=True)
+    saved["detail"]["result"].pop("market_family")
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    assert len(view["events"]) == 1
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "HELD"
+    assert card["reason_codes"] == ["SPREAD_MARKET_FAMILY_NOT_YET_GOVERNED"]
+    assert card["probability_visible"] is False
+    assert "p_cover" not in card
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == (
+        "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+    )
+
+
+@pytest.mark.parametrize("fallback_field", ["home_spread", "home_run_line"])
+def test_away_spread_cannot_borrow_unsigned_home_fallback(fallback_field):
+    saved = _spread_row(certified=True, side="AWAY", line=None)
+    saved["detail"]["result"][fallback_field] = -3.5
+    event = llp._event_from_row(saved)
+    receipt = llp._spread_receipt_from_row(saved, event)
+    assert receipt["side"] == "AWAY"
+    assert receipt["exact_line"] is None
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    assert len(view["events"]) == 1
+    card = view["events"][0]["spread_card"]
+    assert card["status"] != "QUALIFIED"
+    assert card["probability_visible"] is False
+    assert "p_cover" not in card
+
+
 def test_two_competing_spread_theses_hold_the_card_row():
     first = _spread_row(certified=True, side="HOME", index=1)
     second = _spread_row(certified=True, side="AWAY", line=3.5, index=2)
