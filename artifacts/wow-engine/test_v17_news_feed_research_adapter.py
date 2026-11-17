@@ -26,9 +26,16 @@ def _article(**updates):
     return article
 
 
+def _streamed_json_response(body, status=200):
+    # MockTransport's Response(json=...) is pre-consumed and cannot be read via
+    # iter_raw. Exercise the actual production streaming contract instead.
+    return httpx.Response(status, headers={"Content-Type": "application/json"},
+                          stream=httpx.ByteStream(json.dumps(body).encode()))
+
+
 def _client(body, status=200):
     return httpx.Client(transport=httpx.MockTransport(
-        lambda request: httpx.Response(status, json=body)))
+        lambda request: _streamed_json_response(body, status)))
 
 
 def test_valid_discovery_is_unverified_nonpredictive(monkeypatch):
@@ -381,10 +388,10 @@ def test_private_key_sent_only_to_exact_provider_and_hostname(monkeypatch):
     def handler(request):
         seen.append((str(request.url), request.headers.get("Authorization")))
         if request.url.host == "api.gdeltproject.org":
-            return httpx.Response(200, json={"articles": [
+            return _streamed_json_response({"articles": [
                 {"url": STORY, "title": "Discovered",
                  "seendate": "20261116T174500Z"}]})
-        return httpx.Response(200, json={"articles": [_article()]})
+        return _streamed_json_response({"articles": [_article()]})
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         permitted = news.fetch_news_json(
             "NBA", "LICENSED_NEWS", FEED, client=client,
@@ -430,7 +437,7 @@ def test_public_news_provider_never_receives_other_providers_token(monkeypatch):
     monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_HOST", "feeds.example.org")
     def handler(req):
         assert req.headers.get("Authorization") is None
-        return httpx.Response(200, json={"articles": [_article()]})
+        return _streamed_json_response({"articles": [_article()]})
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         result = news.fetch_news_json(
             "NBA", "PUBLIC_NEWS", "https://public.example.org/stories.json",
