@@ -165,7 +165,7 @@ def test_optional_news_success_persists_as_source_snapshot(monkeypatch):
                         ResearchFetchResult(True, provider, sport, "news", "PUBLIC_WEB_RESEARCH",
                                             data={"articles": [_article()]}, code="SOURCE_FETCH_OK",
                                             prediction_authority=False, can_execute=False))
-    monkeypatch.setattr(scout, "persist_source_result", lambda result: {
+    monkeypatch.setattr(scout, "persist_immutable_news_source_result", lambda result: {
         "source_status": "OK", "source_code": result.code,
         "prediction_authority": result.prediction_authority,
         "can_execute": result.can_execute,
@@ -184,7 +184,7 @@ def test_optional_news_failure_and_persistence_errors_do_not_block_core(monkeypa
     monkeypatch.setattr(scout, "fetch_news_json", lambda *args:
                         ResearchFetchResult(True, "PUBLIC_NEWS", "basketball_nba", "news",
                                             "PUBLIC_WEB_RESEARCH", data={"articles": []}))
-    monkeypatch.setattr(scout, "persist_source_result",
+    monkeypatch.setattr(scout, "persist_immutable_news_source_result",
                         lambda r: (_ for _ in ()).throw(RuntimeError("secret")))
     r = scout.refresh(sports=("basketball_nba",))
     assert r["status"] == "COMPLETE"
@@ -269,7 +269,7 @@ def test_second_gdelt_query_is_budget_blocked_without_fetch(monkeypatch):
             True, "GDELT", sport, "news", "PUBLIC_WEB_RESEARCH",
             data={"articles": [_article()]}, code="SOURCE_FETCH_OK")
     monkeypatch.setattr(scout, "fetch_news_json", fake_fetch)
-    monkeypatch.setattr(scout, "persist_source_result",
+    monkeypatch.setattr(scout, "persist_immutable_news_source_result",
                         lambda r: {"source_status": "OK", "source_code": r.code})
     r = scout.refresh(sports=("basketball_nba", "americanfootball_nfl"))
     assert len(calls) == 1
@@ -296,3 +296,77 @@ def test_scout_schedule_degrades_without_paid_source_but_writes_a_receipt():
     upload = by_name["Upload source refresh receipt"]
     assert upload["if"] == "always()"
     assert upload["with"]["if-no-files-found"] == "error"
+
+
+
+def test_scheduled_news_discovery_declares_every_sport():
+    assert len(scout.DEFAULT_SPORTS) == 13
+    assert {news.normalize_sport(x) for x in scout.DEFAULT_SPORTS} == set(news.WEIGHT_PROFILES)
+
+
+def test_news_availability_timestamp_is_after_completed_fetch(monkeypatch):
+    moments = iter([
+        datetime(2026, 11, 16, 18, 0, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 11, 16, 18, 0, 1, 3, tzinfo=timezone.utc),
+    ])
+    monkeypatch.setattr(news, "_now", lambda: next(moments))
+    with _client({"articles": [_article()]}) as client:
+        result = news.fetch_news_json(
+            "NBA", "PUBLIC_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert result.ok
+    assert result.observed_at == "2026-11-16T18:00:01.000003Z"
+    assert result.data["source_observed_at"] == result.observed_at
+    assert result.data["articles"][0]["historical_pregame_eligible"] is False
+
+
+def test_news_snapshot_ids_are_time_specific_and_immutable_insert_only(monkeypatch):
+    from v17 import research_source_snapshot_store as store
+
+    base = {
+        "source_observed_at": "2026-11-16T18:00:00Z",
+        "articles": [_article()],
+    }
+    a = ResearchFetchResult(
+        True, "GDELT", "basketball_nba", "news", "PUBLIC_WEB_RESEARCH",
+        data=dict(base), code="SOURCE_FETCH_OK", observed_at="2026-11-16T18:00:00Z")
+    b = ResearchFetchResult(
+        True, "GDELT", "basketball_nba", "news", "PUBLIC_WEB_RESEARCH",
+        data={**base, "source_observed_at": "2026-11-16T18:01:00Z"},
+        code="SOURCE_FETCH_OK", observed_at="2026-11-16T18:01:00Z")
+    assert store.news_snapshot_id_for(a) != store.news_snapshot_id_for(b)
+    assert store.news_snapshot_id_for(a) == store.news_snapshot_id_for(a)
+
+    records = []
+    class Cursor:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def execute(self, sql, params): records.append((sql, params))
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def cursor(self): return Cursor()
+        def commit(self): records.append(("commit", None))
+    monkeypatch.setattr(store, "database_url", lambda: "postgresql://test-only")
+    monkeypatch.setattr(store.psycopg, "connect", lambda url: Conn())
+    first = store.persist_immutable_news_source_result(a)
+    second = store.persist_immutable_news_source_result(b)
+    assert first["snapshot_id"] != second["snapshot_id"]
+    assert first["source_observed_at"] == "2026-11-16T18:00:00Z"
+    assert all("on conflict (snapshot_id) do nothing" in sql.lower()
+               and "do update" not in sql.lower()
+               for sql, _ in records if sql != "commit")
+    assert first["prediction_authority"] is False
+    assert first["can_execute"] is False
+
+
+@pytest.mark.parametrize("observed_at", [
+    None, "not-an-iso-date", "2026-11-16T18:00:00",
+])
+def test_news_snapshot_rejects_invalid_temporal_provenance(observed_at):
+    from v17.research_source_snapshot_store import news_snapshot_id_for
+    candidate = ResearchFetchResult(
+        True, "GDELT", "basketball_nba", "news", "PUBLIC_WEB_RESEARCH",
+        data={"articles": []}, observed_at=observed_at)
+    with pytest.raises(ValueError, match="NEWS_RECEIPT"):
+        news_snapshot_id_for(candidate)
