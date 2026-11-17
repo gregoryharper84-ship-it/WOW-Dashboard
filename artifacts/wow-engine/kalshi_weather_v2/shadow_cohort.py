@@ -389,13 +389,23 @@ def _existing_sample_keys(client) -> set[str]:
     return keys
 
 
-def _settle_ready_predictions(client, http: ReadOnlyJsonClient, now: str, failures: list[str]) -> int:
+def _settle_ready_predictions(
+    client,
+    http: ReadOnlyJsonClient,
+    now: str,
+    failures: list[str],
+    *,
+    max_attempts: int | None = None,
+) -> int:
     outcome_prediction_ids = {
         str(row.get("prediction_id"))
         for row in _select_rows(client, "wow_kalshi_weather_outcomes", limit=5000)
         if row.get("prediction_id")
     }
     settled = 0
+    attempted = 0
+    if max_attempts is not None and max_attempts < 1:
+        return 0
     cutoff = _parse_utc(now) - timedelta(minutes=SETTLEMENT_GRACE_MINUTES)
     for prediction in _select_rows(client, "wow_kalshi_weather_predictions", limit=5000):
         prediction_id = str(prediction.get("prediction_id") or "")
@@ -413,6 +423,9 @@ def _settle_ready_predictions(client, http: ReadOnlyJsonClient, now: str, failur
         target_time = _parse_utc(window[len(prefix):])
         if target_time > cutoff:
             continue
+        if max_attempts is not None and attempted >= max_attempts:
+            break
+        attempted += 1
         index_city = station_id.split(":", 1)[1]
         try:
             settle_hourly_prediction(

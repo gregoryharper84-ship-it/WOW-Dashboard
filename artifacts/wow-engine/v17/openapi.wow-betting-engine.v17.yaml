@@ -663,13 +663,16 @@ components:
     AsyncNFLPickemSubmitRequest:
       type: object
       additionalProperties: false
-      required: [requested_slate_dates]
       properties:
         requested_slate_dates:
           type: array
-          minItems: 1
+          minItems: 0
           maxItems: 7
+          default: []
+          description: For date-mode full-week cards, include Thursday, Sunday and Monday.
           items: {type: string, format: date}
+        requested_season: {type: [integer, 'null'], minimum: 2000, maximum: 2100}
+        requested_week: {type: [integer, 'null'], minimum: 1, maximum: 18}
         requested_timezone: {type: string, default: America/Chicago}
         expected_game_count: {type: integer, minimum: 1, maximum: 32, default: 16}
         strategy_mode:
@@ -680,13 +683,16 @@ components:
     NFLPickemBoardRequest:
       type: object
       additionalProperties: false
-      required: [requested_slate_dates]
       properties:
         requested_slate_dates:
           type: array
-          minItems: 1
+          minItems: 0
           maxItems: 7
+          default: []
+          description: For date-mode full-week cards, include Thursday, Sunday and Monday.
           items: {type: string, format: date}
+        requested_season: {type: [integer, 'null'], minimum: 2000, maximum: 2100}
+        requested_week: {type: [integer, 'null'], minimum: 1, maximum: 18}
         requested_timezone: {type: string, default: America/Chicago}
         expected_game_count: {type: integer, minimum: 1, maximum: 32, default: 16}
         strategy_mode:

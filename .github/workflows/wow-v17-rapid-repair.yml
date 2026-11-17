@@ -109,6 +109,34 @@ jobs:
             --cov-report=term-missing:skip-covered \
             "${tests[@]}"
 
+      - name: Verify exact-head protected reviewer contracts
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::REVIEWER_HEAD_INVALID"; exit 1; }
+          git cat-file -e "$PR_HEAD_SHA^{commit}"
+          inventory="$(mktemp)"
+          review_tree="$RUNNER_TEMP/wow-review-exact-head-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'git worktree remove --force "$review_tree" >/dev/null 2>&1 || true; rm -f "$inventory"' EXIT
+          git diff --no-renames --name-only -z "$BASE...$PR_HEAD_SHA" > "$inventory"
+          if grep -zEq '^\.github/(workflows|scripts)/' "$inventory"; then
+            git worktree add --detach "$review_tree" "$PR_HEAD_SHA"
+            (
+              cd "$review_tree"
+              [ "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" ] || { echo "::error::REVIEWER_HEAD_MOVED"; exit 1; }
+              python -m pytest -q --tb=short -rs \
+                .github/scripts/tests/test_independent_source_review_receipt.py \
+                .github/scripts/tests/test_wow_v28_gemini_qa_bridge.py \
+                .github/scripts/tests/test_wow_v28_reviewer_app_preflight.py \
+                .github/scripts/tests/test_wow_simple_security_review.py
+            )
+          fi
+
       - name: Upload informational patch coverage to Codecov
         if: always() && hashFiles('artifacts/wow-engine/coverage.xml') != ''
         uses: codecov/codecov-action@v5

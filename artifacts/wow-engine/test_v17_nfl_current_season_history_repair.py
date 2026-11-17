@@ -68,6 +68,7 @@ def _model_result():
         "calibration_version": "test",
         "calibration_training_n": 100,
         "uncertainty_method": "test",
+        "can_execute": False,
     }
 
 
@@ -96,6 +97,7 @@ class _PredictionInsert:
         return self
 
     def execute(self):
+        """Fake client execute hook for the history-repair regression harness."""
         if self.mode == "select":
             matches = [
                 row for row in self.rows
@@ -123,7 +125,7 @@ class _DB:
         return self.predictions
 
 
-def _patch_model(monkeypatch):
+def _patch_model(monkeypatch, *, publishable=True):
     monkeypatch.setattr(
         specialist,
         "load_champion_model",
@@ -131,6 +133,7 @@ def _patch_model(monkeypatch):
             artifact_id="model-1",
             model_artifact_version="NFL_EVENT_V17_TEST",
             model_family="NFL_EVENT_V17_TEST",
+            probability_publishable=publishable,
         ),
     )
     monkeypatch.setattr(specialist, "score_feature_row", lambda model, row: _model_result())
@@ -138,9 +141,11 @@ def _patch_model(monkeypatch):
 
 
 def test_stale_current_season_history_refreshes_once_then_scores(monkeypatch):
+    """Stale history triggers one refresh, then scores with repaired evidence."""
     calls = {"features": 0, "refresh": 0}
 
     def feature_row(**kwargs):
+        """Build a minimal feature row for the repair/scoring test harness."""
         calls["features"] += 1
         return _feature(0, 1) if calls["features"] == 1 else _feature(2, 2)
 
@@ -165,6 +170,7 @@ def test_stale_current_season_history_refreshes_once_then_scores(monkeypatch):
 
 
 def test_refresh_must_close_exact_history_gap_or_route_remains_held(monkeypatch):
+    """Partial refresh that leaves the gap open keeps the route held."""
     calls = {"refresh": 0}
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(0, 1))
     monkeypatch.setattr(
@@ -185,6 +191,7 @@ def test_refresh_must_close_exact_history_gap_or_route_remains_held(monkeypatch)
 
 
 def test_refresh_source_failure_stays_typed_inputs_insufficient(monkeypatch):
+    """Refresh transport failure stays MODEL_INPUTS_INSUFFICIENT."""
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(0, 1))
 
     def fail_refresh(db, *, season):
@@ -197,6 +204,7 @@ def test_refresh_source_failure_stays_typed_inputs_insufficient(monkeypatch):
 
 
 def test_overcount_never_triggers_repair_or_model(monkeypatch):
+    """Overcounted history does not invent a repair or invoke the model."""
     monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(3, 2))
     monkeypatch.setattr(
         refresh,
@@ -311,3 +319,127 @@ def test_summary_refresh_materializes_only_nonzero_pbp_rows(monkeypatch):
     assert result["team_game_summaries_materialized"] == 1
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def test_unpublished_nfl_champion_never_stamps_artifact_false_green_or_reuse(monkeypatch):
+    """Real source artifact publishability FALSE must survive both insert and reuse."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=False)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    again = specialist.score_nfl_team_event(_req(), db=db)
+
+    assert len(db.predictions.rows) == 1
+    stored = db.predictions.rows[0]
+    assert first["event_prediction_id"] == again["event_prediction_id"]
+    assert first["prediction_reused"] is False
+    assert again["prediction_reused"] is True
+    # The immutable SQL prediction table has model_probability_publishable,
+    # but not a separate probability_publishable column. The nested fitted
+    # receipt and returned results carry both flags.
+    assert stored["model_probability_publishable"] is False
+    assert stored["can_execute"] is False
+    for record in (stored["model_output_snapshot"], first, again):
+        assert record["model_probability_publishable"] is False
+        assert record["probability_publishable"] is False
+        assert record["can_execute"] is False
+    assert stored["calibrated_home_probability"] == pytest.approx(0.60)
+    assert stored["calibrated_away_probability"] == pytest.approx(0.40)
+    assert first["calibrated_selection_probability"] == pytest.approx(0.60)
+    assert again["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+
+
+def test_nfl_missing_champion_publication_flag_fails_closed(monkeypatch):
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch)
+    monkeypatch.setattr(
+        specialist, "load_champion_model",
+        lambda db: SimpleNamespace(
+            artifact_id="model-1", model_artifact_version="NFL_EVENT_V17_TEST",
+            model_family="NFL_EVENT_V17_TEST",
+        ),
+    )
+    db = _DB()
+    result = specialist.score_nfl_team_event(_req(), db=db)
+    assert result["model_probability_publishable"] is False
+    assert result["probability_publishable"] is False
+    assert db.predictions.rows[0]["model_probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_reused_immutable_nfl_prediction_never_becomes_publishable_retroactively(monkeypatch):
+    """Promoting a champion later cannot attest a held historical row."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    db = _DB()
+    _patch_model(monkeypatch, publishable=False)
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    assert first["model_probability_publishable"] is False
+    assert first["probability_publishable"] is False
+    assert db.predictions.rows[0]["model_probability_publishable"] is False
+
+    # Simulate a separate, properly governed later lifecycle change. This test
+    # does not promote any real model, write a production DB row or change P.
+    _patch_model(monkeypatch, publishable=True)
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+    assert reused["prediction_reused"] is True
+    assert reused["event_prediction_id"] == first["event_prediction_id"]
+    assert reused["model_probability_publishable"] is False
+    assert reused["probability_publishable"] is False
+    assert reused["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+    assert db.predictions.rows[0]["model_probability_publishable"] is False
+    assert len(db.predictions.rows) == 1
+    assert reused["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "disagreement",
+    ("missing_row_flag", "missing_snapshot_model_flag", "missing_snapshot_publication_flag",
+     "row_held", "snapshot_held"),
+)
+def test_reused_nfl_prediction_requires_complete_stored_publication_evidence(
+    monkeypatch, disagreement,
+):
+    """Even a publishable champion cannot backfill absent or conflicting receipt flags."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=True)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    row = db.predictions.rows[0]
+    snapshot = row["model_output_snapshot"]
+    if disagreement == "missing_row_flag":
+        row.pop("model_probability_publishable")
+    elif disagreement == "missing_snapshot_model_flag":
+        snapshot.pop("model_probability_publishable")
+    elif disagreement == "missing_snapshot_publication_flag":
+        snapshot.pop("probability_publishable")
+    elif disagreement == "row_held":
+        row["model_probability_publishable"] = False
+    else:
+        snapshot["probability_publishable"] = False
+
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+    assert reused["prediction_reused"] is True
+    assert reused["event_prediction_id"] == first["event_prediction_id"]
+    assert reused["model_probability_publishable"] is False
+    assert reused["probability_publishable"] is False
+    assert reused["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+    assert reused["can_execute"] is False
+    assert len(db.predictions.rows) == 1
+
+
+def test_reused_nfl_prediction_holds_if_current_artifact_is_not_publishable(monkeypatch):
+    """Stored positive flags cannot override a later governed artifact hold."""
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch, publishable=True)
+    db = _DB()
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    assert first["model_probability_publishable"] is True
+    _patch_model(monkeypatch, publishable=False)
+    reused = specialist.score_nfl_team_event(_req(), db=db)
+    assert reused["prediction_reused"] is True
+    assert reused["model_probability_publishable"] is False
+    assert reused["probability_publishable"] is False
+    assert reused["calibrated_selection_probability"] == first["calibrated_selection_probability"]
+    assert db.predictions.rows[0]["model_probability_publishable"] is True
+    assert len(db.predictions.rows) == 1
+    assert reused["can_execute"] is False

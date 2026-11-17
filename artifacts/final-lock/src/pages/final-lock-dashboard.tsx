@@ -1,8 +1,9 @@
+import { apiFetch } from "@/lib/api";
+import { legacyAutofillUrl } from "@/lib/legacy-autofill";
 import { useState, useEffect, useCallback } from "react";
 import { Lock, Zap, History, RefreshCw, CheckCircle2, XCircle, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 
 
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 
 // PrizePicks payout formats with breakeven per-leg probabilities (from payout_context.py)
 const SLIP_FORMATS: Record<string, { breakeven: number; legs: number; label: string }> = {
@@ -338,6 +339,7 @@ export default function FinalLockDashboard() {
   const [historyOpen, setHistoryOpen] = useState(true);
   const [autofillQuery, setAutofillQuery] = useState("");
   const [autofillLoading, setAutofillLoading] = useState(false);
+  const [autofillMessage, setAutofillMessage] = useState("");
 
   // Recompute gate whenever form changes
   useEffect(() => {
@@ -362,7 +364,7 @@ export default function FinalLockDashboard() {
   const fetchHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
-      const res = await fetch("/api/lock-api/history", {
+      const res = await apiFetch("/api/lock-api/history", {
         headers: {},
       });
       if (res.ok) {
@@ -383,43 +385,19 @@ export default function FinalLockDashboard() {
   const handleAutofill = async () => {
     if (!autofillQuery.trim()) return;
     setAutofillLoading(true);
+    setAutofillMessage("");
     try {
-      // Parse "Player Name / Market" from query
       const parts = autofillQuery.split("/").map((s) => s.trim());
       const player = parts[0] || autofillQuery.trim();
-      const market = parts[1] || "";
-
-      const res = await fetch("/api/wow/l10/v2", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-                  },
-        body: JSON.stringify({ player_name: player, market }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const cand = data.candidate || data;
-        setForm((prev) => ({
-          ...prev,
-          player: cand.player_name ?? cand.player ?? player,
-          team: cand.team ?? prev.team,
-          opponent: cand.opponent ?? prev.opponent,
-          market: cand.market ?? market,
-          side: cand.side ?? prev.side,
-          pp_line: cand.pp_line != null ? String(cand.pp_line) : prev.pp_line,
-          sb_comp_line: cand.sb_comp_line != null ? String(cand.sb_comp_line) : prev.sb_comp_line,
-          sb_no_vig_prob: cand.sb_no_vig_prob != null ? String(cand.sb_no_vig_prob) : prev.sb_no_vig_prob,
-          model_probability: cand.model_probability != null ? String(cand.model_probability) : prev.model_probability,
-          shrinkage_probability: cand.shrinkage_probability ?? cand.usable_probability != null
-            ? String(cand.shrinkage_probability ?? cand.usable_probability)
-            : prev.shrinkage_probability,
-          proj_source1: cand.proj_source1 != null ? String(cand.proj_source1) : prev.proj_source1,
-          proj_source2: cand.proj_source2 != null ? String(cand.proj_source2) : prev.proj_source2,
-        }));
-      }
-    } catch {
-      // silent
+      const market = parts[1] || form.market;
+      const url = legacyAutofillUrl({ player, sport: form.sport, prop: market, line: form.pp_line, side: form.side });
+      const res = await apiFetch(url);
+      const data = await res.json();
+      if (!res.ok || data.ok !== true) throw new Error(data.error ?? data.message ?? data.code ?? `Legacy lookup failed (HTTP ${res.status})`);
+      setForm(prev => ({ ...prev, player: data.player ?? player, market: data.prop ?? market, sport: data.sport ?? prev.sport, pp_line: data.line != null ? String(data.line) : prev.pp_line }));
+      setAutofillMessage(`Legacy L10 evidence retrieved: ${data.rows ?? 0} rows from ${data.source ?? "unknown source"}. Raw history does not supply a V17 model probability.`);
+    } catch (error) {
+      setAutofillMessage(error instanceof Error ? error.message : "Legacy lookup failed.");
     } finally {
       setAutofillLoading(false);
     }
@@ -443,7 +421,7 @@ export default function FinalLockDashboard() {
         pick_count: form.pick_count,
       };
 
-      const res = await fetch("/api/lock-api/submit", {
+      const res = await apiFetch("/api/lock-api/submit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -509,19 +487,20 @@ export default function FinalLockDashboard() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        {autofillMessage && <p role="status" className="text-sm rounded-lg border border-border p-3">{autofillMessage}</p>}
         {/* Auto-fill bar */}
         <div className="bg-card border border-card-border rounded-xl p-4">
           <div className="flex items-center gap-2 mb-3">
             <Zap size={14} className="text-primary" />
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Auto-Fill from Gate Engine
+              Legacy L10 identity lookup
             </span>
           </div>
           <div className="flex gap-2">
             <Input
               value={autofillQuery}
               onChange={setAutofillQuery}
-              placeholder='e.g. "LeBron James / Points" — pull model data'
+              placeholder='e.g. "LeBron James / Points"'
               className="flex-1"
             />
             <button
@@ -545,7 +524,7 @@ export default function FinalLockDashboard() {
           </div>
           <p className="text-xs text-muted-foreground mt-2">
             Format: <code className="font-mono bg-muted px-1 py-0.5 rounded">Player Name / Market</code>.
-            Missing fields can be filled manually below.
+            Enter Sport and Exact line in the form below first. This retrieves historical evidence only.
           </p>
         </div>
 

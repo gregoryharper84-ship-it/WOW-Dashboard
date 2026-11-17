@@ -176,7 +176,9 @@ def test_nfl_pickem_action_uses_durable_submit_poll_in_single_canonical_domain()
     request_end = schema_text.index("    NFLPickemBoardRequest:\n", request_start)
     request = schema_text[request_start:request_end]
     assert "additionalProperties: false" in request
-    assert "required: [requested_slate_dates]" in request
+    assert "required: [requested_slate_dates]" not in request
+    assert "requested_season: {type: [integer, 'null'], minimum: 2000, maximum: 2100}" in request
+    assert "requested_week: {type: [integer, 'null'], minimum: 1, maximum: 18}" in request
     assert "maxItems: 7" in request
     assert "enum: [MAX_EXPECTED_CORRECT]" in request
     assert "idempotency_key: {type: [string, 'null'], minLength: 8, maxLength: 128}" in request

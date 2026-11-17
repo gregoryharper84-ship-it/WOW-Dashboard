@@ -42,97 +42,64 @@ def test_p0_parallel_rapid_dispatch_yaml_parses() -> None:
     assert data["permissions"]["issues"] == "read"
 
 
-def test_p0_rapid_provider_preflight_is_wired_before_dispatch() -> None:
+def test_p0_rapid_dispatch_reuses_single_provider_authority() -> None:
     text = WORKFLOW.read_text()
-    assert text.index("Preflight P0 engineering provider availability") < text.index(
-        "Dispatch idle domain-scoped writers"
-    )
-    assert "if: steps.provider_state.outputs.admit == 'true'" in text
-    assert "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED" in text
-    assert "PRIMARY_WORKER_INVENTORY_UNVERIFIED" in text
-    assert "provider_admission:" in text
+    dispatcher = (
+        ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+    ).read_text()
+    # The planner cannot infer *all* providers are down from the most recent
+    # OpenAI/Claude worker runs: that used to stop Gemini/Cursor arbitration
+    # before the authenticated control plane could even inspect its canary.
+    assert "Preflight P0 engineering provider availability" not in text
+    assert "steps.provider_state.outputs.admit" not in text
+    assert "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED" not in text
+    assert "PROVIDER_ADMISSION_CLEAR" not in text
+    assert "WOW_COPILOT_FALLBACK_BUDGET_APPROVED" not in text
+    assert "Submit idle sport leases to existing provider authority" in text
+    assert "gh workflow run wow-v17-engineering-provider-dispatcher.yml" in text
+    assert text.count("gh workflow run ") == 1
+    assert "DELEGATED_TO_EXISTING_PROVIDER_DISPATCHER" in text
+    assert "provider_execution_verified: false" in text
+    assert "dispatched_count_is_only_a_submission_receipt: true" in text
+    # This change does not delegate approval to the planner. Provider checks,
+    # remote writer fencing and consent remain inside the one control plane.
+    assert "gemini_canary_healthy()" in dispatcher
+    assert "engineering_remote_fallback.py guard" in dispatcher
+    assert "steps.remote_fence.outcome == 'success'" in dispatcher
+    assert "CIRCUIT_BREAKER" in dispatcher
+    assert "WOW_COPILOT_FALLBACK_ENABLED" in dispatcher
 
 
-import os
-import subprocess
-import tempfile
-import textwrap
+def test_rapid_dispatch_keeps_bounded_nonduplicated_lease_intake() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["dispatch"]["steps"]
+    submit = next(step for step in steps if step["name"].startswith("Submit idle"))
+    assert "if" not in submit
+    script = submit["run"]
+    assert 'if [ "$active_count" -gt 0 ]; then' in script
+    assert '"$GITHUB_REPOSITORY"' in script
+    assert 'gh workflow run wow-v17-engineering-provider-dispatcher.yml' in script
+    assert '--ref main' in script
+    assert "-f force_provider=auto" in script
+    assert '-f target_incident="$incident"' in script
+    assert '-f lease_group="$lease_group"' in script
+    assert "dispatched_count=" in script
+    assert "busy_count=" in script
+    # A single request per available canonical lease; no direct model calls,
+    # alternative credential route, or GitHub bypass identity.
+    assert "gemini " not in script
+    assert "claude " not in script
+    assert "curl " not in script
+    assert "git push" not in script
 
-import pytest
 
-
-@pytest.mark.parametrize(
-    "primary,secondary,code,fail_inventory,expected_admit,expected_reason,independent",
-    [
-        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED", False),
-        ("failure", "cancelled", "OPENAI_API_AUTH_FAILED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED", False),
-        ("failure", "success", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR", False),
-        ("failure", "failure", "OPENAI_API_RATE_LIMITED", False, "true", "PROVIDER_ADMISSION_CLEAR", False),
-        ("success", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR", False),
-        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", True, "false", "PRIMARY_WORKER_INVENTORY_UNVERIFIED", False),
-        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PRIMARY_ACCOUNT_BLOCKED_INDEPENDENT_ADMISSION_ONLY", True),
-        ("failure", "failure", "OPENAI_API_AUTH_FAILED", False, "true", "PRIMARY_ACCOUNT_BLOCKED_INDEPENDENT_ADMISSION_ONLY", True),
-    ],
-)
-def test_real_p0_provider_preflight_with_bounded_cli_fixtures(
-    primary, secondary, code, fail_inventory, expected_admit, expected_reason, independent,
-) -> None:
+def test_rapid_dispatch_preserves_source_and_terminal_safety() -> None:
     text = WORKFLOW.read_text()
-    part = text.split("      - name: Preflight P0 engineering provider availability", 1)[1]
-    script = textwrap.dedent(part.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
-    with tempfile.TemporaryDirectory() as tmpdir:
-        from pathlib import Path as _Path
-        root = _Path(tmpdir)
-        bin_dir = root / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text(
-            "#!/bin/bash\n"
-            "if [ \"$1\" = run ] && [ \"$2\" = list ]; then\n"
-            "  if [[ \"$*\" == *wow-v17-chatgpt-engineering-worker.yml* ]]; then\n"
-            "    if [ \"$FAKE_INVENTORY_FAILURE\" = true ]; then exit 1; fi\n"
-            "    printf '[{\"databaseId\":101,\"conclusion\":\"%s\"}]\\n' \"$FAKE_PRIMARY\"\n"
-            "  else\n"
-            "    printf '[{\"databaseId\":102,\"conclusion\":\"%s\"}]\\n' \"$FAKE_SECONDARY\"\n"
-            "  fi\n"
-            "elif [ \"$1\" = run ] && [ \"$2\" = view ]; then\n"
-            "  echo 'ERROR: Quota exceeded. Check your plan and billing details.'\n"
-            "else exit 70; fi\n"
-        )
-        gh.chmod(0o755)
-        python = bin_dir / "python"
-        python.write_text(
-            "#!/bin/bash\n"
-            "printf '{\"code\":\"%s\"}\\n' \"$FAKE_CODE\"\n"
-        )
-        python.chmod(0o755)
-        output = root / "github-output"
-        summary = root / "summary"
-        output.touch()
-        summary.touch()
-        env = dict(
-            os.environ,
-            PATH=str(bin_dir) + ":" + os.environ["PATH"],
-            GITHUB_OUTPUT=str(output),
-            GITHUB_STEP_SUMMARY=str(summary),
-            GITHUB_REPOSITORY="fixture/repo",
-            RUNNER_TEMP=str(root),
-            FAKE_PRIMARY=primary,
-            FAKE_SECONDARY=secondary,
-            FAKE_CODE=code,
-            FAKE_INVENTORY_FAILURE="true" if fail_inventory else "false",
-            INDEPENDENT_ENABLED="true" if independent else "",
-            INDEPENDENT_BUDGET_APPROVED="true" if independent else "",
-            INDEPENDENT_REPOSITORY="fixture/repo",
-            INDEPENDENT_MAX_ASSIGNMENTS="1",
-        )
-        result = subprocess.run(
-            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=10
-        )
-        assert result.returncode == 0, result.stderr
-        values = dict(
-            line.split("=", 1) for line in output.read_text().splitlines()
-        )
-        assert values["admit"] == expected_admit
-        assert values["reason"] == expected_reason
-        assert expected_reason in summary.read_text()
+    data = yaml.safe_load(text)
+    assert data["concurrency"]["group"] == "wow-v17-p0-rapid-dispatch"
+    assert data["permissions"]["contents"] == "read"
+    assert data["permissions"]["actions"] == "write"
+    assert "can_execute: false" in text
+    assert "terminal_authority: V17_TERMINAL_REDUCER" in text
+    assert "max_parallel_writers: 3" in text
+    assert "steps.provider_state." not in text

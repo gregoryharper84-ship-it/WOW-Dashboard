@@ -229,3 +229,23 @@ def test_persist_batch_reclaims_process_memory_after_rejection(monkeypatch):
         )
 
     assert calls == ["reclaim"]
+
+
+def test_runner_artifact_writer_rejects_source_review_self_approval_before_db_write():
+    db = _FakeDB()
+    candidate = _artifact()
+    candidate["source_review_status"] = "pAsS"
+    with pytest.raises(HTTPException) as caught:
+        _persist_team_state_batch(
+            db,
+            {
+                "table": "wow_d1_candidate_artifacts",
+                "rows": [candidate],
+                "on_conflict": "model_artifact_version",
+                "ignore_duplicates": True,
+            },
+        )
+    assert caught.value.status_code == 400
+    assert caught.value.detail["code"] == "D1_CANDIDATE_SOURCE_REVIEW_SELF_APPROVAL_FORBIDDEN"
+    assert caught.value.detail["can_execute"] is False
+    assert db.calls == []
