@@ -177,6 +177,17 @@ def build_nfl_pregame_features_with_audit(
                 "NFL_PREGAME_FEATURE_CUTOFF_INVALID", "prior gameday is not a valid date"
             ) from exc
 
+    # Exact names alone do not prove a compatible upstream feature contract.
+    # The fitted artifact must declare the same immutable schema version as
+    # the point-in-time feature row; never reinterpret a changed feature.
+    artifact_schema = str(getattr(artifact, "feature_schema_version", "") or "").strip()
+    row_schema = str(row.get("feature_schema_version") or "").strip()
+    if not artifact_schema or not row_schema or row_schema != artifact_schema:
+        raise SpreadChallengerUnavailable(
+            "NFL_PREGAME_FEATURE_SCHEMA_VERSION_MISMATCH",
+            "feature-row schema version is not the certified artifact schema",
+        )
+
     row_features = row.get("features")
     if not isinstance(row_features, Mapping):
         raise SpreadChallengerUnavailable(
