@@ -7,12 +7,11 @@ feature. Model probabilities and terminal/execution authority are untouched.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 import httpx
 
@@ -45,6 +44,16 @@ def _timestamp(raw: object) -> datetime | None:
     return value.astimezone(timezone.utc) if value.utcoffset() is not None else None
 
 
+def _gdelt_seen_at(raw: object) -> datetime | None:
+    """GDELT DOC ArtList seendate is discovery, NOT publisher date."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def _article_url(raw: object) -> str | None:
     """Validate article URL for evidence storage; never fetch it."""
     if not isinstance(raw, str):
@@ -72,11 +81,14 @@ def normalize_articles(
             continue
         url = _article_url(article.get("url"))
         published = _timestamp(article.get("published_at"))
+        # GDELT's seendate is when GDELT indexed the article, not publication.
+        gdelt_seen = _gdelt_seen_at(article.get("seendate")) if provider == "GDELT" else None
+        evidence_time = gdelt_seen if provider == "GDELT" else published
         title = article.get("title")
-        if not url or not published or not isinstance(title, str) or not title.strip():
+        if not url or not evidence_time or not isinstance(title, str) or not title.strip():
             continue
         # Publisher timestamps are claims and cannot establish prelock availability.
-        if published > observed_at + timedelta(minutes=1) or url in unique:
+        if evidence_time > observed_at + timedelta(minutes=1) or url in unique:
             continue
         unique.add(url)
         summary = article.get("summary")
@@ -85,7 +97,8 @@ def normalize_articles(
             "article_id": hashlib.sha256((provider + "|" + url).encode()).hexdigest()[:32],
             "source_url": url,
             "source_provider": provider,
-            "source_published_at_claim": published.isoformat().replace("+00:00", "Z"),
+            "source_published_at_claim": published.isoformat().replace("+00:00", "Z") if published else None,
+            "source_discovered_at_claim": gdelt_seen.isoformat().replace("+00:00", "Z") if gdelt_seen else None,
             "title": title.strip()[:300],
             "summary_excerpt": summary.strip()[:1000] if isinstance(summary, str) else "",
             "provider_event_id": str(provider_event_id)[:120] if provider_event_id is not None else None,
@@ -126,6 +139,15 @@ def fetch_news_json(
         return failure("SOURCE_TARGET_INVALID")
     if endpoint is None:
         return failure("SOURCE_TARGET_NOT_ALLOWLISTED")
+    if provider == "GDELT":
+        pieces = urlsplit(endpoint)
+        params = parse_qs(pieces.query)
+        if (pieces.hostname != "api.gdeltproject.org" or
+                pieces.path != "/api/v2/doc/doc" or
+                [x.lower() for x in params.get("mode", [])] != ["artlist"] or
+                [x.lower() for x in params.get("format", [])] != ["json"] or
+                not params.get("query")):
+            return failure("SOURCE_GDELT_QUERY_INVALID")
     acknowledged = license_ack if license_ack is not None else (
         os.environ.get("WOW_NEWS_FEED_LICENSE_ACK", "").lower() == "true"
     )
