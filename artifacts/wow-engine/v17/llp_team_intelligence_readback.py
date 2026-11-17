@@ -481,6 +481,32 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
                 ]))
                 for key in numerical_fields:
                     market.pop(key, None)
+        if "winner_row" in group["duplicate_lanes"]:
+            # Two winner source rows for one official event cannot be reduced
+            # into a single certified selection. Hold the visible winner
+            # market and remove the top-level receipt identity as well.
+            bundle["governed_winner_receipt_id"] = None
+            for market in bundle["markets"]:
+                if market.get("market_family") != "OUTRIGHT_WINNER":
+                    continue
+                market["status"] = "HELD_EVIDENCE_ONLY"
+                market["evidence_visible"] = False
+                market["upstream_probability_publishable"] = False
+                market["upstream_rank_eligible"] = False
+                market["probability_publishable"] = False
+                market["rank_eligible"] = False
+                market["reason_codes"] = list(dict.fromkeys([
+                    *(market.get("reason_codes") or []),
+                    "DUPLICATE_WINNER_THESIS_IN_PAGE",
+                ]))
+                for key in (
+                    "calibrated_probability",
+                    "calibrated_probability_lower_bound",
+                    "calibrated_probability_upper_bound",
+                    "calibrated_lower_bound",
+                    "calibrated_upper_bound",
+                ):
+                    market.pop(key, None)
         bundle["spread_card"] = spread_card
         bundle["market_coverage"] = {
             "OUTRIGHT_WINNER": (
