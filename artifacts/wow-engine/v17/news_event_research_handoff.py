@@ -162,13 +162,26 @@ def reconcile_news_handoff(
     if not verified:
         return finish("NEWS_DISCOVERY_UNVERIFIED")
 
-    # One group cannot masquerade as multiple independent confirmations.
+    # An article URL cannot be two independent publisher groups.
     unique = {}
+    url_groups = {}
     for fact in verified:
+        url = fact["source_url"]
+        if url in url_groups and url_groups[url] != fact["source_group"]:
+            return finish("NEWS_SOURCE_CONFLICT", conflicts=["SOURCE_URL_MULTI_GROUP"])
+        url_groups[url] = fact["source_group"]
         key = (fact["source_group"], fact["evidence_kind"], fact["subject_id"])
-        if key in unique and unique[key]["fact_value"] != fact["fact_value"]:
-            return finish("NEWS_SOURCE_CONFLICT", conflicts=["INTRA_SOURCE_CONFLICT"])
-        unique[key] = fact
+        prior = unique.get(key)
+        if prior is not None:
+            if prior["fact_value"] != fact["fact_value"]:
+                return finish("NEWS_SOURCE_CONFLICT", conflicts=["INTRA_SOURCE_CONFLICT"])
+            if prior["material_change"] != fact["material_change"]:
+                return finish("NEWS_SOURCE_CONFLICT", conflicts=["MATERIALITY_DISAGREEMENT"])
+            # Deterministic duplicate collapse regardless of input order.
+            if (fact["source_url"], fact["independent_review_ref"]) < (prior["source_url"], prior["independent_review_ref"]):
+                unique[key] = fact
+        else:
+            unique[key] = fact
     rows = sorted(unique.values(), key=lambda r: (
         r["evidence_kind"], r["subject_id"], r["source_group"], r["source_url"]
     ))
@@ -183,13 +196,15 @@ def reconcile_news_handoff(
         return finish("NEWS_CONTEXT_RESEARCH_ONLY", rows)
     for row in material:
         if row["evidence_kind"] in HIGH_IMPACT and row["source_class"] not in OFFICIAL_CLASSES:
-            groups = {
-                r["source_group"] for r in rows
+            confirmations = [
+                r for r in rows
                 if r["evidence_kind"] == row["evidence_kind"]
                 and r["subject_id"] == row["subject_id"]
                 and r["fact_value"] == row["fact_value"]
-            }
-            if len(groups) < 2:
+            ]
+            # Both distinct publisher URLs and distinct independent groups.
+            if (len({r["source_url"] for r in confirmations}) < 2
+                    or len({r["source_group"] for r in confirmations}) < 2):
                 return finish("NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED", rows)
     return finish("NEWS_RESEARCH_RESCORE_REQUESTED", rows, request=True)
 
