@@ -456,6 +456,19 @@ def test_two_competing_spread_theses_hold_the_card_row():
     assert "DUPLICATE_SPREAD_THESIS_IN_PAGE" in card["reason_codes"]
     assert card["probability_visible"] is False
     assert "p_cover" not in card
+    spread_market = next(
+        market for market in view["events"][0]["markets"]
+        if market["market_family"] == "POINT_SPREAD"
+    )
+    assert spread_market["status"] == "HELD_EVIDENCE_ONLY"
+    assert spread_market["evidence_visible"] is False
+    assert spread_market["upstream_probability_publishable"] is False
+    assert spread_market["upstream_rank_eligible"] is False
+    assert "DUPLICATE_SPREAD_THESIS_IN_PAGE" in spread_market["reason_codes"]
+    for field in ("p_cover", "p_push", "p_not_cover",
+                  "calibrated_probability_lower_bound",
+                  "calibrated_probability_upper_bound"):
+        assert field not in spread_market
 
 
 def test_real_producer_payload_written_by_daily_terminal_row_maps_exactly():
