@@ -107,6 +107,15 @@ def test_postmerge_release_requires_exactly_three_native_protected_checks():
     assert "optional_reviews=" in source
     assert "independent_scientific_model_certification: NOT_ESTABLISHED_BY_THIS_RECEIPT" in source
     assert "v4_exact_head_qa_release_checks: VERIFIED" not in source
+    # Bash backticks in a double-quoted echo cause command substitution,
+    # silently dropping the very head SHA the receipt purports to bind.
+    assert 'echo "- governed_pr_head_sha:' not in source
+    assert 'echo "- protected_main_merge_sha:' not in source
+    assert 'echo "`can_execute=false`"' not in source
+    assert "printf -- '- governed_pr_head_sha:" in source
+    assert "printf -- '- protected_main_merge_sha:" in source
+    assert "printf '%s" in source
+
     assert "verify_existing_pr_governance_receipt.py" not in source
     assert "Verify governance-producing workflow provenance" not in source
 
