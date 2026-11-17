@@ -222,6 +222,32 @@ def test_missing_exact_lines_do_not_fall_back_to_synthetic_grid():
     assert exc.value.code == "SPREAD_EXACT_LINE_EVIDENCE_UNAVAILABLE"
 
 
+def test_future_dated_quote_never_becomes_observed_pregame_line():
+    # Provider timestamps in the future are not observation receipts, even
+    # when they are before a future kickoff and say CURRENT/main/available.
+    now = datetime.now(timezone.utc)
+    start = now + timedelta(days=2)
+    forged = [
+        {**row,
+         "price_updated_at": (now + timedelta(hours=1)).isoformat(),
+         "fetched_at": (now + timedelta(hours=1)).isoformat()}
+        for row in _market_rows(start)
+    ]
+    evidence, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "future-nfl-event",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=forged,
+    )
+    assert evidence == {}
+    assert audit["blocker_counts"]["SPREAD_EXACT_LINE_PREGAME_QUOTE_UNAVAILABLE"] == 1
+    assert audit["can_execute"] is False
+
+
 def test_legacy_poststart_captured_close_cannot_override_pregame_spread():
     start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
     rows = _market_rows(start)
