@@ -375,10 +375,13 @@ def produce_pregame_receipt(
         start = _dt(event.get("event_start_time"))
     except (TypeError, ValueError):
         return _held_row(event, sport=sport, codes=["SPREAD_EVENT_START_INVALID"])
-    if observed_at >= start:
-        # No model work is spent on a started event: a late receipt is not a
-        # pregame receipt, and admission would hold it anyway.
+    # A historical caller-supplied observed_at is never proof of current
+    # pregame status. Reject both expired events and future-dated model clocks.
+    wall = _now()
+    if observed_at >= start or wall >= start:
         return _held_row(event, sport=sport, codes=["SPREAD_EVENT_ALREADY_STARTED"])
+    if observed_at > wall:
+        return _held_row(event, sport=sport, codes=["SPREAD_MODEL_TIMESTAMP_IN_FUTURE"])
 
     if line_binder is None:
         from v17.spread_forward_auto_canary import try_bind_exact_line
@@ -461,6 +464,20 @@ def produce_pregame_receipt(
     except SpreadProducerUnavailable as exc:
         return _held_row(
             event, sport=sport, codes=[exc.code], exact_line=float(evidence.home_spread)
+        )
+
+    # The feature provider and scorer may consume enough wall-clock time to
+    # cross kickoff. Do not construct or persist a retrospectively dated model.
+    wall = _now()
+    if wall >= start:
+        return _held_row(
+            event, sport=sport, codes=["SPREAD_EVENT_ALREADY_STARTED"],
+            exact_line=float(evidence.home_spread),
+        )
+    if observed_at > wall:
+        return _held_row(
+            event, sport=sport, codes=["SPREAD_MODEL_TIMESTAMP_IN_FUTURE"],
+            exact_line=float(evidence.home_spread),
         )
 
     try:
