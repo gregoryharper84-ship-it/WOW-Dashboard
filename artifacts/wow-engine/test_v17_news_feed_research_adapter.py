@@ -38,7 +38,7 @@ def test_public_source_returns_unverified_evidence_only(monkeypatch):
     assert result.can_execute is False and result.prediction_authority is False
     assert result.data["verified_event_count"] == 0
     assert result.data["source_observed_at"] == result.observed_at
-    assert "https://www.gdeltproject.org/" in result.data["attribution"]
+    assert result.data["attribution"] == "The GDELT Project (https://www.gdeltproject.org/)"
     item = result.data["articles"][0]
     assert item["source_url"] == ARTICLE
     assert item["source_published_at_claim"] is None
