@@ -12,11 +12,10 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
-HIGH_IMPACT = frozenset({
-    "INJURY_STATUS", "INACTIVE_STATUS", "STARTING_GOALIE_STATUS",
-    "STARTER_STATUS", "LINEUP_STATUS", "QB_STATUS", "MINUTES_LIMIT",
-    "ROTATION_STATUS", "PITCH_COUNT_LIMIT",
-})
+try:
+    from v17.scout_source_policy import HIGH_IMPACT_EVIDENCE as HIGH_IMPACT
+except ModuleNotFoundError:
+    from scout_source_policy import HIGH_IMPACT_EVIDENCE as HIGH_IMPACT
 OFFICIAL_CLASSES = frozenset({"LEAGUE_OFFICIAL", "TEAM_OFFICIAL"})
 
 
@@ -125,7 +124,7 @@ def reconcile_news_handoff(
         if not isinstance(fact, Mapping):
             continue
         url = fact.get("source_url")
-        if url not in article_urls or not _valid_https(url):
+        if not isinstance(url, str) or not _valid_https(url) or url not in article_urls:
             continue
         if fact.get("official_event_id") != event_id or fact.get("sport_key") != sport:
             continue
@@ -133,9 +132,11 @@ def reconcile_news_handoff(
         reviewed = _utc(fact.get("independently_reviewed_at_utc"))
         if published is None or reviewed is None or not published <= reviewed <= now or published >= kickoff or reviewed >= kickoff:
             continue
-        if not fact.get("independent_review_ref") or not fact.get("source_group"):
+        if not isinstance(fact.get("independent_review_ref"), str) or not fact["independent_review_ref"].strip():
             continue
-        if fact.get("source_class") not in OFFICIAL_CLASSES | {"PRIMARY_BEAT_REPORTER", "SECONDARY_MEDIA"}:
+        if not isinstance(fact.get("source_group"), str) or not fact["source_group"].strip():
+            continue
+        if not isinstance(fact.get("source_class"), str) or fact["source_class"] not in OFFICIAL_CLASSES | {"PRIMARY_BEAT_REPORTER", "SECONDARY_MEDIA"}:
             continue
         if fact.get("confirmed") is not True:
             continue
