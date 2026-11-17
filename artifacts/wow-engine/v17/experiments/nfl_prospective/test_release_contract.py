@@ -23,6 +23,7 @@ def test_scheduled_workflow_never_runs_mutations_on_pr():
     assert "github.ref == 'refs/heads/main'" in wf
     assert "wow_can_execute: \"false\"" in wf
     assert "run: python -m pytest" in wf
+    assert "--confcutdir=v17/experiments/nfl_prospective" in wf
     assert "secrets.supabase_service_role_key" in wf
     assert "cancel-in-progress: false" in wf
     assert "retention-days: 90" in wf
