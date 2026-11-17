@@ -354,6 +354,9 @@ def _artifact_payload():
 def test_the_provider_drives_a_complete_producer_run(monkeypatch):
     from v17.spread_receipt_producer import run_pregame_spread_production
 
+    # This is an as-of historical replay; simulate its original wall clock.
+    # Live production uses the real UTC clock and holds started events.
+    monkeypatch.setattr("v17.spread_receipt_producer._now", lambda: OBSERVED_AT)
     _patch(monkeypatch)
     db = _DB(_market_rows())
 
@@ -378,6 +381,7 @@ def test_the_provider_drives_a_complete_producer_run(monkeypatch):
 def test_a_thin_feature_sample_holds_the_row_rather_than_scoring(monkeypatch):
     from v17.spread_receipt_producer import run_pregame_spread_production
 
+    monkeypatch.setattr("v17.spread_receipt_producer._now", lambda: OBSERVED_AT)
     _patch(monkeypatch, row=_feature_row(exclusion_reasons=["AWAY_PRIOR_SAMPLE_THIN"]))
     db = _DB(_market_rows())
 
