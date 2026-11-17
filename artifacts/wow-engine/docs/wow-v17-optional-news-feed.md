@@ -45,6 +45,14 @@ WOW_SCOUT_DATABASE_URL is required to persist evidence. The existing Scout sched
       ]
     }
 
+### Free GDELT Project DOC 2.0 option
+
+The public GDELT Project DOC 2.0 ArtList JSON API is supported as a discovery source. It is NOT the separately hosted GDELT Cloud product. Set provider=GDELT, allowlist=gdeltproject.org, and supply an operator-approved URL such as:
+
+    https://api.gdeltproject.org/api/v2/doc/doc?query=NBA%20injury&mode=ArtList&format=json&maxrecords=5&timespan=24h
+
+Replace query with the chosen sport/news criteria, and verify feed limits and attribution at https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/ and https://gdeltproject.org/data.html. DOC API requests are rate-limited and may return HTTP 429; this Scout adapter does not retry. Only ONE GDELT query per refresh is permitted. Its seendate is recorded as source_discovered_at_claim, NOT as publication or availability-to-user time. No article is an official injury report or verified lineup. GDELT is broad news discovery, not complete 13-sport event coverage.
+
 All URLs must be HTTPS; feed endpoints must match the operator allowlist. Payload capped at 512000 decoded bytes, maximum five targets and 40 articles per target. Future, timestamp-free, duplicate, malformed or unsafe article URLs are excluded. Redirects are not followed. Failed optional news does not alter the structured-source status. An enabled but empty target list yields CONFIG_INVALID, not a healthy feed.
 
 ## Test command
