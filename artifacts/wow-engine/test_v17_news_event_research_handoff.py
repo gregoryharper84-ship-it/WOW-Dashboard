@@ -100,7 +100,11 @@ def test_beat_reporter_high_impact_requires_independent_confirmations():
     one = {**FACT, "source_class": "PRIMARY_BEAT_REPORTER", "source_group": "reporter-1"}
     assert _result(reviewed=[one])["research_status"] == "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED"
     second = {**one, "source_group": "reporter-2", "independent_review_ref": "source-review-2"}
-    assert _result(reviewed=[one, second])["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert _result(reviewed=[one, second])["research_status"] == "NEWS_SOURCE_CONFLICT"
+    distinct = "https://another-league.example/second-report"
+    with_distinct_article = {**DISCOVERY, "articles": DISCOVERY["articles"] + [{"source_url": distinct}]}
+    second = {**second, "source_url": distinct}
+    assert _result(discovery=with_distinct_article, reviewed=[one, second])["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
 
 
 def test_conflicting_sources_quarantined_before_rescore():
@@ -153,3 +157,28 @@ def test_scout_handoff_surfaces_context_without_promoting_probability():
     assert handoff["model_feature_eligible"] is False
     assert row["route"] == "LLP_TEAM_BETTING_ENGINE"
     assert row["can_execute"] is False
+
+
+def test_inconsistent_duplicate_materiality_quarantined_in_any_order():
+    duplicate = {**FACT, "material_change": False}
+    for evidence in ([FACT, duplicate], [duplicate, FACT]):
+        out = _result(reviewed=evidence)
+        assert out["research_status"] == "NEWS_SOURCE_CONFLICT"
+        assert out["source_conflicts"] == ["MATERIALITY_DISAGREEMENT"]
+        assert out["research_rescore_requested"] is False
+
+
+def test_bad_unhashable_json_fields_cannot_crash_discovery_or_candidates():
+    assert _result(reviewed=[{**FACT, "source_url": ["bad"]}])["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    assert _result(reviewed=[{**FACT, "source_class": {"bad": 1}}])["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    from v17.sport_scout_enrichment import enrich_candidate
+    row = enrich_candidate({**EVENT, "news_discovery_receipt": DISCOVERY,
+                            "news_reviewed_facts": [{**FACT, "source_url": ["bad"]}]}, "TEAM_EVENT")
+    assert row["news_research_handoff"]["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    assert row["can_execute"] is False
+
+
+def test_roof_status_secondary_requires_independent_corrob():
+    secondary = {**FACT, "evidence_kind": "ROOF_STATUS",
+                 "source_class": "SECONDARY_MEDIA", "source_group": "reporter-x"}
+    assert _result(reviewed=[secondary])["research_status"] == "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED"
