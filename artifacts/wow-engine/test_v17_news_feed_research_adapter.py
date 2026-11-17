@@ -312,16 +312,22 @@ def test_scheduled_news_discovery_declares_every_sport():
 
 
 def test_news_availability_timestamp_is_after_completed_fetch(monkeypatch):
-    moments = iter([
-        datetime(2026, 11, 16, 18, 0, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 11, 16, 18, 0, 1, 3, tzinfo=timezone.utc),
-    ])
-    monkeypatch.setattr(news, "_now", lambda: next(moments))
-    with _client({"articles": [_article()]}) as client:
+    events = []
+    def handler(request):
+        events.append("response_obtained")
+        return _streamed_json_response({"articles": [_article()]})
+    def recorded_time():
+        # Time must be stamped only AFTER the response has been acquired.
+        assert events == ["response_obtained"]
+        events.append("timestamp_recorded")
+        return datetime(2026, 11, 16, 18, 0, 1, 3, tzinfo=timezone.utc)
+    monkeypatch.setattr(news, "_now", recorded_time)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         result = news.fetch_news_json(
             "NBA", "PUBLIC_NEWS", FEED, client=client,
             allowed_domains=("example.org",), license_ack=True)
     assert result.ok
+    assert events == ["response_obtained", "timestamp_recorded"]
     assert result.observed_at == "2026-11-16T18:00:01.000003Z"
     assert result.data["source_observed_at"] == result.observed_at
     assert result.data["articles"][0]["historical_pregame_eligible"] is False
