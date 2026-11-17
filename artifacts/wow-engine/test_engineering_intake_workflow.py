@@ -15,13 +15,13 @@ class WorkflowIntakeTests(unittest.TestCase):
 
     def test_five_minute_intake_cannot_fan_out_after_every_workflow_completion(self):
         wf = (ROOT / '.github/workflows/wow-engineering-24x7.yml').read_text()
-        triggers = wf.split('\\non:\\n', 1)[1].split('\\npermissions:', 1)[0]
+        triggers = wf.split('\non:\n', 1)[1].split('\npermissions:', 1)[0]
         self.assertIn('cron: "*/5 * * * *"', triggers)
-        self.assertNotIn('\\n  workflow_run:', triggers)
-        self.assertIn('\\n  issues:', triggers)
-        self.assertIn('\\n  pull_request_target:', triggers)
-        self.assertIn('\\n  workflow_dispatch:', triggers)
-        self.assertIn('\\n  pull_request:', triggers)
+        self.assertNotIn('\n  workflow_run:', triggers)
+        self.assertIn('\n  issues:', triggers)
+        self.assertIn('\n  pull_request_target:', triggers)
+        self.assertIn('\n  workflow_dispatch:', triggers)
+        self.assertIn('\n  pull_request:', triggers)
         # The exact selector must still run for scheduled and owner-targeted
         # paths; disabling the fan-out is not disabling all autonomous work.
         self.assertIn("github.event_name != 'pull_request'", wf)
