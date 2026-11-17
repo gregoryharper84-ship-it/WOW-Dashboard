@@ -117,10 +117,12 @@ async def _oauth_identity(code: str, client: httpx.AsyncClient) -> dict:
 
 
 @app.get("/discord/oauth/callback")
-async def oauth_callback(request: Request, code: str = "", state: str = ""):
+async def oauth_callback(request: Request, code: str = "", state: str = "", iss: str = ""):
     cookie = request.cookies.get("wow_discord_oauth_state", "")
     if not state or not cookie or not hmac.compare_digest(state, cookie) or not _valid_state(state):
         return _error("DISCORD_OAUTH_STATE_INVALID", status=403)
+    if iss != "https://discord.com":
+        return _error("DISCORD_OAUTH_ISSUER_INVALID", status=403)
     if not code or not _oauth_configured():
         return _error("DISCORD_OAUTH_UNCONFIGURED_OR_DENIED", status=400)
     try:
