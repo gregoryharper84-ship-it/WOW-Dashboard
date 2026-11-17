@@ -436,6 +436,10 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
                 spread_reason = "SPREAD_RECEIPT_NOT_PROJECTED"
         bundle["daily_row_index"] = (source_row or {}).get("row_index")
         bundle["source_diagnostics"] = _source_failure_context(source_row or {})
+        # Winner and spread are independent source rows; a winner's diagnosis
+        # must never overwrite the spread's typed hold or explain its model.
+        if spread_row is not None:
+            bundle["spread_source_diagnostics"] = _source_failure_context(spread_row)
         if ungoverned_family:
             reported = _data(_data((spread_row or {}).get("detail")).get("result"))
             spread_card = _spread_card(
@@ -508,6 +512,45 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
                     "calibrated_upper_bound",
                 ):
                     market.pop(key, None)
+        # A single official event ID does not prove the same teams, sport and
+        # kickoff across independently persisted winner/spread source rows.
+        # In a conflict BOTH market rows remain visible but are nonnumerical;
+        # neither may inherit qualification from the other market.
+        if winner_event is not None and spread_event is not None:
+            fields = ("sport", "official_event_id", "home_team", "away_team", "event_start_time_utc")
+            def identity_key(source: Mapping[str, Any]) -> tuple[str, ...]:
+                return tuple(_token(source.get(field)).upper() for field in fields)
+            if identity_key(winner_event) != identity_key(spread_event):
+                reason = "CROSS_MARKET_EVENT_IDENTITY_MISMATCH"
+                bundle["governed_winner_receipt_id"] = None
+                for market in bundle["markets"]:
+                    market["status"] = "HELD_EVIDENCE_ONLY"
+                    market["evidence_visible"] = False
+                    market["upstream_probability_publishable"] = False
+                    market["upstream_rank_eligible"] = False
+                    market["probability_publishable"] = False
+                    market["rank_eligible"] = False
+                    market["reason_codes"] = list(dict.fromkeys([
+                        *(market.get("reason_codes") or []), reason,
+                    ]))
+                    for key in (
+                        "calibrated_probability", "calibrated_probability_lower_bound",
+                        "calibrated_probability_upper_bound", "calibrated_lower_bound",
+                        "calibrated_upper_bound", "p_cover", "p_push", "p_not_cover",
+                    ):
+                        market.pop(key, None)
+                spread_card["status"] = CARD_HELD
+                spread_card["probability_visible"] = False
+                spread_card["upstream_probability_publishable"] = False
+                spread_card["upstream_rank_eligible"] = False
+                spread_card["reason_codes"] = list(dict.fromkeys([
+                    *(spread_card.get("reason_codes") or []), reason,
+                ]))
+                for key in (
+                    "p_cover", "p_push", "p_not_cover",
+                    "calibrated_probability_lower_bound", "calibrated_probability_upper_bound",
+                ):
+                    spread_card.pop(key, None)
         bundle["spread_card"] = spread_card
         bundle["market_coverage"] = {
             "OUTRIGHT_WINNER": (
