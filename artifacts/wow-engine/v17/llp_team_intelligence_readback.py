@@ -454,14 +454,33 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
             spread_card["reason_codes"] = list(spread_card.get("reason_codes") or []) + [
                 "DUPLICATE_SPREAD_THESIS_IN_PAGE"
             ]
-            for key in (
+            numerical_fields = (
                 "p_cover",
                 "p_push",
                 "p_not_cover",
                 "calibrated_probability_lower_bound",
                 "calibrated_probability_upper_bound",
-            ):
+            )
+            for key in numerical_fields:
                 spread_card.pop(key, None)
+            # Card suppression alone is insufficient: consumers also inspect
+            # bundle.markets. A duplicated saved thesis must not retain a
+            # separately qualified/numeric market projection.
+            for market in bundle["markets"]:
+                if market.get("market_family") != "POINT_SPREAD":
+                    continue
+                market["status"] = "HELD_EVIDENCE_ONLY"
+                market["evidence_visible"] = False
+                market["upstream_probability_publishable"] = False
+                market["upstream_rank_eligible"] = False
+                market["probability_publishable"] = False
+                market["rank_eligible"] = False
+                market["reason_codes"] = list(dict.fromkeys([
+                    *(market.get("reason_codes") or []),
+                    "DUPLICATE_SPREAD_THESIS_IN_PAGE",
+                ]))
+                for key in numerical_fields:
+                    market.pop(key, None)
         bundle["spread_card"] = spread_card
         bundle["market_coverage"] = {
             "OUTRIGHT_WINNER": (
