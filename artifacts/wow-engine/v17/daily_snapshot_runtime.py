@@ -838,7 +838,13 @@ def _spread_lane_rows(
                 "provider_event_id": str(evidence.provider_event_id),
             })
         status = "HELD"
-        if evidence is not None and receipt is not None:
+        # A stored SCHEDULED receipt is historical evidence, not evidence
+        # that the game is still pregame. Recheck the wall clock after all
+        # external lookups and immediately before admission/publication.
+        if not _future(start):
+            payload["reason_codes"] = ["SPREAD_EVENT_NOT_PREGAME"]
+            payload["evaluation_state"] = "SPREAD_EVENT_NOT_PREGAME"
+        elif evidence is not None and receipt is not None:
             admission, eligible, blockers = _admit_certified_spread_receipt(
                 receipt,
                 event_id=event_id,
