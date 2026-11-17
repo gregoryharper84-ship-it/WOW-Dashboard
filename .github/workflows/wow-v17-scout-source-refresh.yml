@@ -25,15 +25,7 @@ jobs:
       WOW_FIRECRAWL_API_KEY: ${{ secrets.WOW_FIRECRAWL_API_KEY }}
       WOW_FIRECRAWL_ALLOWED_DOMAINS: ${{ vars.WOW_FIRECRAWL_ALLOWED_DOMAINS }}
       WOW_FIRECRAWL_TARGETS_JSON: ${{ vars.WOW_FIRECRAWL_TARGETS_JSON || '[]' }}
-      # Licensed/public JSON news discovery: off by default; never a scoring input.
-      WOW_NEWS_FEED_ENABLED: ${{ vars.WOW_NEWS_FEED_ENABLED || 'false' }}
-      WOW_NEWS_FEED_ALLOWED_DOMAINS: ${{ vars.WOW_NEWS_FEED_ALLOWED_DOMAINS }}
-      WOW_NEWS_FEED_TARGETS_JSON: ${{ vars.WOW_NEWS_FEED_TARGETS_JSON || '[]' }}
-      WOW_NEWS_FEED_LICENSE_ACK: ${{ vars.WOW_NEWS_FEED_LICENSE_ACK || 'false' }}
-      WOW_NEWS_FEED_API_KEY: ${{ secrets.WOW_NEWS_FEED_API_KEY }}
-      # Exact provider AND hostname must match before the secret is forwarded.
-      WOW_NEWS_FEED_API_KEY_PROVIDER: ${{ vars.WOW_NEWS_FEED_API_KEY_PROVIDER }}
-      WOW_NEWS_FEED_API_KEY_HOST: ${{ vars.WOW_NEWS_FEED_API_KEY_HOST }}
+      # Public GDELT Project research needs no API key, license flag or DB.
       WOW_CAN_EXECUTE: "false"
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +38,20 @@ jobs:
         run: pip install -r requirements.txt
       - name: Enforce research-only governance
         run: test "$WOW_CAN_EXECUTE" = "false"
+      - name: Public GDELT research discovery (independent of database)
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/gdelt-public-news"
+          python v17/public_gdelt_discovery.py --output "$RUNNER_TEMP/gdelt-public-news/receipt.json"
+          cat "$RUNNER_TEMP/gdelt-public-news/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload public news evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-gdelt-public-news-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gdelt-public-news/receipt.json
+          if-no-files-found: warn
+          retention-days: 90
       - name: Check source credentials
         id: credentials
         shell: bash
