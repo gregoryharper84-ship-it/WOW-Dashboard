@@ -29,7 +29,7 @@ Do not replace any with a generic fitter or market-implied probability.
 | 4 | Walk-forward/holdout validation | Scientific validation and frozen replay |
 | 5 | Calibrate and assess conservative bounds | Sport-specific fitted calibrator contract |
 | 6 | Prepare reproducible candidate evidence | Existing source review and replay path |
-| 7 | Independent certification and protected release | Existing QA/Release Apps and certified-model contract |
+| 7 | Independent *model* certification and governed protected-source release | Certified-model scientific/source-rights contract for publication; owner policy #1830 and three native ruleset checks for routine source merge |
 | 8 | Verify live Render, Action, Supabase, terminal/card path | Existing governed release/acceptance path, issue #1689 |
 
 The new module only helps organize Stage 1–6 research evidence via existing
@@ -62,18 +62,23 @@ Run from artifacts/wow-engine:
 
     python -m pytest -q test_v17_certified_model_factory.py
 
-Fourteen isolated local unit tests cover both sport paths, no cross-adapter
+Focused isolated unit tests cover both sport paths, no cross-adapter
 fallback, unsupported sport/market, bad SHA/seasons, typed blocker propagation,
 failed NHL research screen, malformed/absent candidate preflight, persisted NHL candidate identity, NBA nested replay readiness, nested
 promotion/publication flags, and exception sanitization. These are mocked
 contract tests, not DB-backed replay, full CI, model certification or
 production verification.
 
-Before merging a Class C change, run native NBA and NHL test suites,
-existing calibration and frozen-replay integration checks, negative source
-and chronology cases, exact-head CI, genuine independent QA/Release approval,
-and independent model certification. Do not weaken required checks or
-self-approve the original author.
+Before merging **inert Stage-A research source**, verify exact changed files,
+provenance, native NBA/NHL and frozen-replay regressions, negative source and
+chronology cases, and all three authenticated exact-head GitHub ruleset #24907422
+required checks. Use owner-authorized protected merge under active policy #1830
+and document rollback. Optional QA/Release App results remain genuine diagnostic
+evidence rather than routine premerge prerequisites. Never forge reviews or check
+results. Independently reviewed source-rights, candidate-bound replay,
+sport-specific calibration and scientific certification are **separate mandatory
+requirements for model promotion or numerical publication**, not achieved by
+merging the research adapter.
 
 **Next research action:** on an authorized validation DB, execute exact
 sport-native maintenance for NBA Winner and NHL Winner; compare returned
