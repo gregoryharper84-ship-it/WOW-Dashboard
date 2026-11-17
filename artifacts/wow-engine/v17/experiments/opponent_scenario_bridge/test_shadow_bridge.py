@@ -165,3 +165,26 @@ def test_huge_integer_weight_and_player_count_rejected():
 def test_scenario_event_favorite_side_and_phase_cannot_be_inferred():
     s=snapshot(favorite_side=None)
     assert evaluate_scenario_outcomes(s)['status']=='SCENARIO_INPUT_UNAVAILABLE'
+
+
+def test_utc_boundary_overflow_fails_closed_in_both_evaluators():
+    for bad in ('0001-01-01T00:00:00+01:00', '9999-12-31T23:59:59-01:00'):
+        for field in ('snapshot_at_utc', 'event_start_utc', 'scenario_fit_cutoff_utc'):
+            s = snapshot(**{field: bad})
+            assert evaluate_scenario_outcomes(s)['status'] == 'SCENARIO_INPUT_UNAVAILABLE'
+            assert evaluate_player_usage(s, player())['status'] == 'PLAYER_EVIDENCE_UNAVAILABLE'
+        assert evaluate_player_usage(
+            snapshot(), player(prop_fit_cutoff_utc=bad)
+        )['status'] == 'PLAYER_EVIDENCE_UNAVAILABLE'
+
+
+def test_extreme_finite_player_moments_fail_closed():
+    p = player()
+    p['scenario_counts'][0]['expected_count'] = 1e200
+    assert evaluate_player_usage(snapshot(), p)['status'] == 'PLAYER_EVIDENCE_UNAVAILABLE'
+
+    p = player()
+    for item in p['scenario_counts']:
+        item['count_variance'] = 1.7976931348623157e308
+    p['scenario_counts'][0]['expected_count'] = 1e154
+    assert evaluate_player_usage(snapshot(), p)['status'] == 'PLAYER_EVIDENCE_UNAVAILABLE'
