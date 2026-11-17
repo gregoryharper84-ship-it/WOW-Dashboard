@@ -184,18 +184,33 @@ def revision_regret_shadow(original: Mapping[str, Any], revised: Mapping[str, An
             or not original.get("slot_id") or original.get("slot_id") != revised.get("slot_id")
             or not _pregame(original, cutoff_key="forecast_at_utc")
             or not _pregame(revised, cutoff_key="forecast_at_utc")
-            or _utc(revised["forecast_at_utc"]) <= _utc(original["forecast_at_utc"])):
+            or _utc(revised["forecast_at_utc"]) <= _utc(original["forecast_at_utc"])
+            # A cross-event replacement cannot use the original candidate's
+            # already-known result, even if the replacement game is later.
+            or _utc(revised["forecast_at_utc"]) >= _utc(original["event_start_utc"])):
         return bad
     if (not revised.get("new_evidence_source_id") or not revised.get("revision_reason")
             or _utc(revised.get("new_evidence_at_utc")) is None
             or not (_utc(original["forecast_at_utc"]) < _utc(revised["new_evidence_at_utc"])
-                    <= _utc(revised["forecast_at_utc"]))):
+                    <= _utc(revised["forecast_at_utc"])
+                    and _utc(revised["new_evidence_at_utc"]) < _utc(original["event_start_utc"]))):
         return {**bad, "status": "REVISION_EVIDENCE_NOT_DOCUMENTED"}
     for rec in (original, revised):
         p, lb = _num(rec.get("predicted_probability"), 0, 1), _num(rec.get("calibrated_lower_bound"), 0, 1)
         if p is None or (lb is not None and lb > p) or not _identity(rec):
             return bad
+    same_target = (original.get("proposition_id") == revised.get("proposition_id")
+                   and original.get("market_family") == revised.get("market_family")
+                   and original.get("exact_line") == revised.get("exact_line")
+                   and _identity(original) == _identity(revised))
+    if same_target and (not isinstance(original.get("proposition_id"), str)
+                        or not original["proposition_id"].strip()
+                        or not isinstance(original.get("market_family"), str)
+                        or not original["market_family"].strip()
+                        or _num(original.get("exact_line")) is None):
+        return bad
     comparisons = []
+    settled_hits = []
     for rec in (original, revised):
         outcome = official_outcomes.get(str(rec.get("receipt_id")), {})
         final_at = _utc(outcome.get("finalized_at_utc"))
@@ -204,13 +219,14 @@ def revision_regret_shadow(original: Mapping[str, Any], revised: Mapping[str, An
                 or final_at is None or final_at < _utc(rec["event_start_utc"])
                 or type(outcome.get("hit")) is not bool):
             return {**bad, "status": "SETTLEMENT_UNVERIFIED"}
+        settled_hits.append(outcome["hit"])
         comparisons.append((rec["predicted_probability"] - int(outcome["hit"])) ** 2)
+    # One canonical outcome per exact event + proposition + market + line.
+    # Contradictory independent receipts must not fabricate ranking regret.
+    if same_target and settled_hits[0] != settled_hits[1]:
+        return {**bad, "status": "CONFLICTING_OFFICIAL_SETTLEMENT"}
     lb0 = _num(original.get("calibrated_lower_bound"), 0, 1)
     lb1 = _num(revised.get("calibrated_lower_bound"), 0, 1)
-    same_target = (original.get("proposition_id") == revised.get("proposition_id")
-                   and original.get("market_family") == revised.get("market_family")
-                   and original.get("exact_line") == revised.get("exact_line")
-                   and _identity(original) == _identity(revised))
     return _out("PAIRED_REVISION_DIAGNOSTIC", original_brier=comparisons[0],
                 revised_brier=comparisons[1], brier_regret=comparisons[1] - comparisons[0],
                 lower_bound_delta=lb1 - lb0 if same_target and lb0 is not None and lb1 is not None else None,
@@ -309,7 +325,12 @@ def chronological_holdout_shadow(rows: Sequence[Mapping[str, Any]], *,
         event, pred, fit, calibrator = (_utc(r.get(k)) for k in (
             "event_start_utc", "forecast_at_utc", "model_fit_cutoff_utc", "calibration_fit_cutoff_utc"))
         finalized = _utc(r.get("finalized_at_utc"))
-        key = (identity, r.get("proposition_id"), r.get("exact_line"))
+        proposition_id = r.get("proposition_id")
+        exact_line = _num(r.get("exact_line"))
+        if (not isinstance(proposition_id, str) or not proposition_id.strip()
+                or exact_line is None):
+            return bad
+        key = (identity, proposition_id.strip(), exact_line)
         if (identity is None or key in seen or not r.get("immutable_forecast_receipt_id")
                 or not r.get("source_snapshot_hash")
                 or not r.get("baseline_model_hash") or not r.get("challenger_model_hash")
