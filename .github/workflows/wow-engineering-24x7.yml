@@ -37,6 +37,9 @@ on:
       - "artifacts/wow-engine/test_engineering_24x7_selector.py"
       - "artifacts/wow-engine/v17/engineering_delivery_pipeline.py"
       - "artifacts/wow-engine/test_engineering_delivery_pipeline.py"
+      - "artifacts/wow-engine/v17/engineering_intake_api.py"
+      - "artifacts/wow-engine/test_engineering_intake_api.py"
+      - "artifacts/wow-engine/test_engineering_intake_workflow.py"
 
 permissions:
   actions: read
@@ -66,39 +69,18 @@ jobs:
         run: |
           python artifacts/wow-engine/test_engineering_24x7_selector.py -v
           python artifacts/wow-engine/test_engineering_delivery_pipeline.py -v
+          python artifacts/wow-engine/test_engineering_intake_api.py -q
+          python artifacts/wow-engine/test_engineering_intake_workflow.py -q
       - name: Exercise real GitHub intake in READ-ONLY shadow mode
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-            --jq '.[] | select(.pull_request == null)' | jq -s '.' \
-            > "$RUNNER_TEMP/engineering-issues.json"
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
-            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
-          # Authenticated workflow-run history is denial evidence only.
-          # Fail closed on inaccessible or incomplete API responses.
-          # Fully paginate provider run records; a possible API 1000-result
-          # search cap is incomplete evidence and must deny dispatch.
-          # Each read must succeed independently before any inventory is joined.
-          # A failed provider query must never disappear in a successful pipeline.
-          run_parts=()
-          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
-            part="$RUNNER_TEMP/${inventory_workflow}.json"
-            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs' \
-              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
-                               ([.[][]] | length < 1000) then
-                            [.[][] | {
-                              displayTitle: .display_title, createdAt: .created_at,
-                              updatedAt: .updated_at, status: .status,
-                              conclusion: .conclusion, databaseId: .id
-                            }]
-                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
-            run_parts+=("$part")
-          done
-          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json"
+          python artifacts/wow-engine/v17/engineering_intake_api.py \
+            --issues "$RUNNER_TEMP/engineering-issues.json" \
+            --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --runs "$RUNNER_TEMP/engineering-runs.json"
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
@@ -161,33 +143,10 @@ jobs:
         run: |
           set -euo pipefail
           # Never trust event payload as a coding instruction or perform PR-head checkout.
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-            --jq '.[] | select(.pull_request == null)' | jq -s '.' \
-            > "$RUNNER_TEMP/engineering-issues.json"
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
-            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
-          # Authenticated workflow-run history is denial evidence only.
-          # Fail closed on inaccessible or incomplete API responses.
-          # Fully paginate provider run records; a possible API 1000-result
-          # search cap is incomplete evidence and must deny dispatch.
-          # Each read must succeed independently before any inventory is joined.
-          # A failed provider query must never disappear in a successful pipeline.
-          run_parts=()
-          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
-            part="$RUNNER_TEMP/${inventory_workflow}.json"
-            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs' \
-              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
-                               ([.[][]] | length < 1000) then
-                            [.[][] | {
-                              displayTitle: .display_title, createdAt: .created_at,
-                              updatedAt: .updated_at, status: .status,
-                              conclusion: .conclusion, databaseId: .id
-                            }]
-                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
-            run_parts+=("$part")
-          done
-          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json"
+          python artifacts/wow-engine/v17/engineering_intake_api.py \
+            --issues "$RUNNER_TEMP/engineering-issues.json" \
+            --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --runs "$RUNNER_TEMP/engineering-runs.json"
       - name: Restoration-first deterministic single-target decision
         id: plan
         shell: bash
@@ -362,30 +321,10 @@ jobs:
           jq -e '.state == "open"' <<< "$issue" >/dev/null
           # Recheck current issues, PRs and both provider receipts after
           # acquiring the single-writer mutex. Deny if stale or already tried.
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-            --jq '.[] | select(.pull_request == null)' | jq -s '.' > "$RUNNER_TEMP/issues.json"
-          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
-            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/prs.json"
-          # Fully paginate provider run records; a possible API 1000-result
-          # search cap is incomplete evidence and must deny dispatch.
-          # Each read must succeed independently before any inventory is joined.
-          # A failed provider query must never disappear in a successful pipeline.
-          run_parts=()
-          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
-            part="$RUNNER_TEMP/${inventory_workflow}.json"
-            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs' \
-              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
-                               ([.[][]] | length < 1000) then
-                            [.[][] | {
-                              displayTitle: .display_title, createdAt: .created_at,
-                              updatedAt: .updated_at, status: .status,
-                              conclusion: .conclusion, databaseId: .id
-                            }]
-                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
-            run_parts+=("$part")
-          done
-          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/runs.json"
+          python artifacts/wow-engine/v17/engineering_intake_api.py \
+            --issues "$RUNNER_TEMP/issues.json" \
+            --prs "$RUNNER_TEMP/prs.json" \
+            --runs "$RUNNER_TEMP/runs.json"
           retry_args=()
           if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
             [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
@@ -405,22 +344,8 @@ jobs:
           # must not be mistaken for an unrelated newly admitted worker.
           # No command substitution around a multi-provider pipeline: failed
           # provider history must fail this exact-head dispatch recheck.
-          fresh_parts=()
-          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
-            part="$RUNNER_TEMP/fresh-${inventory_workflow}.json"
-            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs' \
-              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
-                               ([.[][]] | length < 1000) then
-                            [.[][] | {
-                              displayTitle: .display_title, createdAt: .created_at,
-                              updatedAt: .updated_at, status: .status,
-                              conclusion: .conclusion, databaseId: .id
-                            }]
-                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
-            fresh_parts+=("$part")
-          done
-          jq -s -e 'add // []' "${fresh_parts[@]}" > "$RUNNER_TEMP/fresh-runs.json"
+          python artifacts/wow-engine/v17/engineering_intake_api.py \
+            --runs "$RUNNER_TEMP/fresh-runs.json"
           fresh_rows=$(cat "$RUNNER_TEMP/fresh-runs.json")
           active=$(jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested")] | length' <<< "$fresh_rows")
           if [ "$active" -gt 0 ]; then
@@ -441,13 +366,9 @@ jobs:
           # Unseen dispatch is a typed failure, never evidence of success.
           for observation in 1 2 3 4 5 6; do
             sleep 2
-            observed=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$worker/runs?per_page=100" \
-              --jq '.workflow_runs' \
-              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
-                               ([.[][]] | length < 1000) then
-                            [.[][] | {databaseId: .id, displayTitle: .display_title,
-                                     status: .status}]
-                          else error("WORKER_RUN_HISTORY_TRUNCATED") end')
+            python artifacts/wow-engine/v17/engineering_intake_api.py \
+              --worker "$worker" --runs "$RUNNER_TEMP/observed-runs.json"
+            observed=$(cat "$RUNNER_TEMP/observed-runs.json")
             observed_new=$(jq --argjson prior "$prior_ids" --arg n "$INCIDENT" \
               '[.[] | . as $run | select(($prior | index($run.databaseId)) == null) | select(($run.displayTitle // "") | test("(^|\\s)incident=" + $n + "(\\s|$)"))] | length' <<< "$observed")
             if [ "$observed_new" -eq 1 ]; then
