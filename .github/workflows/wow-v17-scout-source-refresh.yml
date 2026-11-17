@@ -25,6 +25,12 @@ jobs:
       WOW_FIRECRAWL_API_KEY: ${{ secrets.WOW_FIRECRAWL_API_KEY }}
       WOW_FIRECRAWL_ALLOWED_DOMAINS: ${{ vars.WOW_FIRECRAWL_ALLOWED_DOMAINS }}
       WOW_FIRECRAWL_TARGETS_JSON: ${{ vars.WOW_FIRECRAWL_TARGETS_JSON || '[]' }}
+      # Licensed/public JSON news discovery: off by default; never a scoring input.
+      WOW_NEWS_FEED_ENABLED: ${{ vars.WOW_NEWS_FEED_ENABLED || 'false' }}
+      WOW_NEWS_FEED_ALLOWED_DOMAINS: ${{ vars.WOW_NEWS_FEED_ALLOWED_DOMAINS }}
+      WOW_NEWS_FEED_TARGETS_JSON: ${{ vars.WOW_NEWS_FEED_TARGETS_JSON || '[]' }}
+      WOW_NEWS_FEED_LICENSE_ACK: ${{ vars.WOW_NEWS_FEED_LICENSE_ACK || 'false' }}
+      WOW_NEWS_FEED_API_KEY: ${{ secrets.WOW_NEWS_FEED_API_KEY }}
       WOW_CAN_EXECUTE: "false"
     steps:
       - uses: actions/checkout@v4
