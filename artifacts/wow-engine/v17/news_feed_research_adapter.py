@@ -175,7 +175,10 @@ def fetch_news_json(
     own_client = client is None
     http = client or httpx.Client(timeout=12.0, follow_redirects=False)
     try:
-        with http.stream("GET", endpoint, headers=headers) as response:
+        # Force redirect rejection even when an injected caller client was
+        # configured to follow redirects. Do not forward a licensed token.
+        with http.stream("GET", endpoint, headers=headers, follow_redirects=False,
+                         timeout=12.0) as response:
             status = response.status_code
             if 300 <= status < 400:
                 return failure("SOURCE_REDIRECT_NOT_ALLOWED", status)
