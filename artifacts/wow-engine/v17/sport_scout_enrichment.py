@@ -12,11 +12,13 @@ from typing import Any
 
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from news_event_research_handoff import reconcile_news_handoff
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
@@ -40,6 +42,23 @@ def enrich_candidate(row: dict[str, Any], lane: str) -> dict[str, Any]:
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
     enriched["research_workers_may_create_probability"] = False
+    # The optional news artifact is discovery metadata, never fitted-model input.
+    # A reconciled research handoff can request (but cannot perform) rescoring.
+    if isinstance(row.get("news_discovery_receipt"), dict):
+        facts = row.get("news_reviewed_facts")
+        enriched["news_research_handoff"] = reconcile_news_handoff(
+            row["news_discovery_receipt"],
+            {
+                "sport_key": row.get("sport_key"),
+                "official_event_id": row.get("official_event_id"),
+                "event_start_utc": (
+                    row.get("event_start_utc")
+                    or row.get("commence_time")
+                    or (row.get("event_request") or {}).get("event_start_time_utc")
+                ),
+            },
+            facts if isinstance(facts, list) else [],
+        )
     enriched["can_execute"] = False
     return enriched
 
