@@ -138,3 +138,13 @@ def test_oauth_identity_scope_and_allowlist(monkeypatch):
     assert result["oauth_token_stored"] is False
     assert result["channel_content_access"] is False
     assert "some-token" not in str(result)
+
+
+def test_oauth_callback_rejects_non_discord_issuer(monkeypatch):
+    monkeypatch.setenv("WOW_DISCORD_OAUTH_STATE_SECRET", "s" * 40)
+    client = TestClient(bridge.app)
+    state = bridge._sign_state("a" * 40, int(time.time()))
+    client.cookies.set("wow_discord_oauth_state", state)
+    resp = client.get("/discord/oauth/callback", params={"code": "fake", "state": state, "iss": "https://fake.example"})
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "DISCORD_OAUTH_ISSUER_INVALID"
