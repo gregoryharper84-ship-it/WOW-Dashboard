@@ -102,6 +102,7 @@ def _fit_rows(rows: Sequence[Mapping[str, Any]], *, min_fit: int, min_cal: int):
             raise ValueError("NFL_FEATURE_DUPLICATE_OR_IDENTITY_INVALID")
         seen.add(ident)
         if season>_MODEL_SPLIT[1]:continue  # Never train or calibrate on 2026 outcome labels.
+        if r.get("target_outcome") == "TIE":continue  # NFL ties are not binary training labels.
         if r.get("target_outcome") not in ("HOME_WIN","AWAY_WIN") or not isinstance(order,list) or not order:
             raise ValueError("NFL_FEATURE_LABEL_OR_ORDER_INVALID")
         if names is None:names=order

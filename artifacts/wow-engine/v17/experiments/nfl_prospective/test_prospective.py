@@ -181,3 +181,14 @@ def test_postkickoff_database_created_forecast_is_not_graded():
     espn=dict(event_id="espn-7",date=f["event_start_time_utc"],home_team="HOU",away_team="IND",
               home_score=24,away_score=21,completed=True,source_sha256="f"*64)
     assert reconcile_two_sources(frozen,old,espn,NOW+timedelta(days=4)) is None
+
+
+def test_historical_nfl_ties_are_excluded_from_binary_training_not_fatal():
+    base = historical() + historical(18, season=2025)
+    tie = dict(historical(1, season=2023)[0])
+    tie['target_outcome'] = 'TIE'
+    expected = fit_research_challenger(base, min_fit=20, min_cal=12, fit_steps=45, cal_steps=30)
+    actual = fit_research_challenger(base + [tie], min_fit=20, min_cal=12, fit_steps=45, cal_steps=30)
+    assert actual['artifact_sha256'] == expected['artifact_sha256']
+    assert actual['training_rows'] == expected['training_rows']
+    assert actual['calibration_rows'] == expected['calibration_rows']
