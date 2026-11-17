@@ -54,7 +54,7 @@ Separate datasets are needed by market type and sport; a player-prop over at 5.5
 
 ## Regression coverage
 
-`test_learning_shadow.py`: synthetic tests for near-threshold won-by-one counts and missing projections, count-PMF CRPS, exact-line mismatch, pushes, invalid/stale timestamps, foreign event receipt, tied/leading/trailing mixture and Henry score-state monotonicity, immutable revision evidence, original-vs-revised loss, no auto-lock, Utah repeated across A/B/F, same raw event ID across different sports, cross-event narrative exposure, concentration warnings, no fabricated joint P, chronology and fit/calibration leakage, duplicate holdout identity, numeric NaNs, no probability mutation, and V17 execution/terminal invariants.
+`test_learning_shadow.py`: synthetic tests for near-threshold won-by-one counts and missing projections, count-PMF CRPS, exact-line mismatch, pushes, invalid/stale timestamps, foreign event receipt, tied/leading/trailing mixture and Henry score-state monotonicity, immutable revision evidence and same-target settlement conflict detection, original-vs-revised loss, no auto-lock, Utah repeated across A/B/F, same raw event ID across different sports, cross-event narrative exposure, concentration warnings, no fabricated joint P, chronology and fit/calibration leakage, required exact holdout proposition identity and finite line, duplicate holdout identity, numeric NaNs, no probability mutation, and V17 execution/terminal invariants.
 
 ## Acceptance sequence
 
