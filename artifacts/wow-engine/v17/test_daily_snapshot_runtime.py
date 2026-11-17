@@ -820,6 +820,46 @@ def certified_spread_receipt(**overrides):
     return receipt
 
 
+def test_started_event_with_previously_certified_spread_receipt_cannot_publish(monkeypatch):
+    """A stale SCHEDULED receipt never bypasses the current kickoff clock."""
+    from types import SimpleNamespace
+    from v17.daily_snapshot_runtime import _spread_lane_rows
+
+    db = DB()
+    moneyline = _nfl_spread_lane_fixture(db)
+    moneyline[0]["identity"]["event_start_time"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=5)
+    ).isoformat()
+    receipt = certified_spread_receipt()
+    evidence = SimpleNamespace(
+        home_spread=-6.5, sportsbook="Pinnacle",
+        quote_timestamp=receipt["quote_observed_at_utc"],
+        provider_event_id=receipt["provider_event_id"],
+    )
+    # The selected quote and stored receipt are valid in isolation. Only the
+    # current event clock prevents the formerly qualified row from publishing.
+    monkeypatch.setattr(
+        "v17.spread_forward_auto_canary.try_bind_exact_line",
+        lambda *_args, **_kwargs: {"evidence": evidence, "reason_codes": [],
+                                   "observed_rows": 2},
+    )
+    rows = _spread_lane_rows(
+        db, moneyline_rows=moneyline, requested_limit=6,
+        receipt_provider=lambda _db, **_kwargs: (receipt, None),
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    payload = row["result"]
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["rank_eligible"] is False
+    assert row["can_execute"] is False
+    assert payload["reason_codes"] == ["SPREAD_EVENT_NOT_PREGAME"]
+    for field in ("p_cover", "p_push", "p_not_cover",
+                  "calibrated_probability_lower_bound", "model_timestamp"):
+        assert field not in payload
+
+
 def test_governed_receipt_completes_the_spread_row():
     from v17.daily_snapshot_runtime import _spread_lane_rows
 
