@@ -47,7 +47,10 @@ def _dt(value: Any) -> datetime | None:
 def _finite(value: Any, low: float = 0.0, high: float | None = None) -> float | None:
     if type(value) not in (float, int):
         return None
-    n = float(value)
+    try:
+        n = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
     return n if isfinite(n) and n >= low and (high is None or n <= high) else None
 
 
@@ -88,9 +91,9 @@ def _validated(snapshot: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str] 
         ident, outcome = row.get("scenario_id"), row.get("outcome")
         w = _finite(row.get("weight"), 0, 1)
         if (not isinstance(ident, str) or not ident.strip() or ident != ident.strip() or ident in seen
-                or outcome not in _VALID_SPACES[space]
-                or row.get("home_game_state") not in _VALID_STATES
-                or row.get("away_game_state") not in _VALID_STATES
+                or not isinstance(outcome, str) or outcome not in _VALID_SPACES[space]
+                or not isinstance(row.get("home_game_state"), str) or row.get("home_game_state") not in _VALID_STATES
+                or not isinstance(row.get("away_game_state"), str) or row.get("away_game_state") not in _VALID_STATES
                 or w is None or w <= 0):
             return None
         seen.add(ident)
