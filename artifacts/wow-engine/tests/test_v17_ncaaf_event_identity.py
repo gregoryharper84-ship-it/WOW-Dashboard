@@ -508,3 +508,57 @@ def test_cfbd_neutral_site_is_raw_boolean_or_unknown_not_coerced():
         )
         assert result["neutral_site"] is expected
         assert result["prediction_authority"] is False
+        assert result["season"] == 2026
+
+
+def test_january_bowl_uses_requested_cfbd_season_not_calendar_year():
+    client = _Client([{
+        "id": "401762001",
+        "season": 2026,
+        "startDate": "2027-01-01T18:00:00Z",
+        "homeTeam": "Georgia",
+        "awayTeam": "Texas",
+    }])
+    result = identity.resolve_ncaaf_current_event_identity(
+        event_start_time="2027-01-01T18:00:00Z",
+        home_team="Georgia Bulldogs",
+        away_team="Texas Longhorns",
+        season=2026,
+        client=client,
+    )
+    assert client.calls == [(2026, "fbs")]
+    assert result["event_id"] == "401762001"
+    assert result["season"] == 2026
+    assert result["can_execute"] is False
+
+
+def test_season_below_cfbd_client_bound_is_invalid():
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="1999-10-10T18:00:00Z",
+            home_team="Georgia",
+            away_team="Texas",
+            season=1999,
+            client=_Client([]),
+        )
+    assert exc.value.code == "NCAAF_SEASON_INVALID"
+    assert exc.value.detail == "1999"
+
+
+def test_season_on_the_source_row_must_match_the_requested_season():
+    client = _Client([{
+        "id": "401762002",
+        "season": 2025,
+        "startDate": "2026-10-10T18:00:00Z",
+        "homeTeam": "Georgia",
+        "awayTeam": "Texas",
+    }])
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T18:00:00Z",
+            home_team="Georgia Bulldogs",
+            away_team="Texas Longhorns",
+            season=2026,
+            client=client,
+        )
+    assert exc.value.code == "NCAAF_SEASON_MISMATCH"

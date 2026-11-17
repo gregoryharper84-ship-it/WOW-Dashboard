@@ -26,6 +26,7 @@ _ALLOWED_ENDPOINTS = {
     "/ratings/srs",
     "/ratings/elo",
     "/ratings/fpi",
+    "/venues",
 }
 
 
@@ -144,3 +145,7 @@ class CFBDClient:
         if normalized == "elo" and week is not None:
             params["week"] = week
         return self.get(endpoint, params=params)
+
+    def venues(self) -> CFBDResponse:
+        """Fetch the CFBD venue catalog. Coordinates stay raw until a stored snapshot is hashed."""
+        return self.get("/venues", params={})

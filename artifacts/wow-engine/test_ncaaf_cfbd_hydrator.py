@@ -6,6 +6,7 @@ from ncaaf_cfbd_client import CFBDResponse
 from ncaaf_cfbd_hydrator import (
     hydrate_cfbd_player_stats_season,
     hydrate_cfbd_season,
+    hydrate_cfbd_venues,
     profile_cfbd_player_stats,
 )
 
@@ -64,6 +65,9 @@ class FakeCFBD:
             rows=[PLAYER_GAME],
         )
 
+    def venues(self):
+        return CFBDResponse(endpoint="/venues", params={}, rows=[{"id": 3806, "latitude": 37.354, "longitude": -79.177}])
+
     def ratings(self, family, *, year, week=None):
         endpoint = {"elo": "/ratings/elo", "sp": "/ratings/sp"}[family]
         return CFBDResponse(endpoint=endpoint, params={"year": year, **({"week": week} if week is not None else {})}, rows=[{"team": "A", "rating": 1.0}])
@@ -121,6 +125,18 @@ def test_full_season_rating_is_explicitly_blocked_from_pregame_feature_use():
     assert "RETROSPECTIVE_RATING_NOT_PREGAME_FEATURE" in season_rating.blocker_codes
 
 
+def test_venue_catalog_is_staged_without_becoming_a_feature():
+    snapshot = hydrate_cfbd_venues(FakeCFBD(), season=2026)
+    assert snapshot.endpoint == "/venues"
+    assert snapshot.season == 2026
+    assert snapshot.week is None
+    assert snapshot.can_execute is False
+    assert len(snapshot.payload_sha256) == 64
+    assert snapshot.response_rows[0]["id"] == 3806
+    with pytest.raises(ValueError):
+        hydrate_cfbd_venues(FakeCFBD(), season=1999)
+
+
 def test_invalid_week_contract_fails_closed():
     with pytest.raises(ValueError):
         hydrate_cfbd_season(FakeCFBD(), season=2025, weeks=[])
@@ -132,6 +148,11 @@ def test_staging_sql_is_internal_and_non_executable():
     sql = Path(__file__).with_name("ncaaf_cfbd_staging.sql").read_text()
     lowered = sql.lower()
     assert "enable row level security" in lowered
-    assert "revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated" in lowered
+    assert "revoke all on table public.wow_ncaaf_source_snapshots from public, anon, authenticated, service_role" in lowered
+    assert "grant select, insert on table public.wow_ncaaf_source_snapshots to service_role" in lowered
+    assert "before truncate" in lowered
     assert "can_execute boolean not null default false" in lowered
     assert "wow_ncaaf_source_never_execute" in lowered
+    assert "wow_ncaaf_reject_source_snapshot_mutation" in lowered
+    assert "before update or delete" in lowered
+    assert "revoke all on function public.wow_ncaaf_reject_source_snapshot_mutation() from public, anon, authenticated" in lowered

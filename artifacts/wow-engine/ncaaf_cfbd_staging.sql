@@ -20,7 +20,7 @@ create table if not exists public.wow_ncaaf_source_snapshots (
     blocker_codes jsonb not null default '[]'::jsonb,
     can_execute boolean not null default false,
     constraint wow_ncaaf_source_provider check (provider in ('CFBD')),
-    constraint wow_ncaaf_source_endpoint check (endpoint in ('/games','/games/players','/ratings/core','/ratings/sp','/ratings/srs','/ratings/elo','/ratings/fpi')),
+    constraint wow_ncaaf_source_endpoint check (endpoint in ('/games','/games/players','/ratings/core','/ratings/sp','/ratings/srs','/ratings/elo','/ratings/fpi','/venues')),
     constraint wow_ncaaf_source_params_object check (jsonb_typeof(request_params) = 'object'),
     constraint wow_ncaaf_source_rows_array check (jsonb_typeof(response_rows) = 'array'),
     constraint wow_ncaaf_source_blockers_array check (jsonb_typeof(blocker_codes) = 'array'),
@@ -38,11 +38,42 @@ alter table public.wow_ncaaf_source_snapshots
 alter table public.wow_ncaaf_source_snapshots
     add constraint wow_ncaaf_source_endpoint
     check (endpoint in ('/games','/games/players','/ratings/core','/ratings/sp',
-                       '/ratings/srs','/ratings/elo','/ratings/fpi'));
+                       '/ratings/srs','/ratings/elo','/ratings/fpi','/venues'));
 
 alter table public.wow_ncaaf_source_snapshots enable row level security;
-revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated;
-grant all on table public.wow_ncaaf_source_snapshots to service_role;
+revoke all on table public.wow_ncaaf_source_snapshots from public, anon, authenticated, service_role;
+grant select, insert on table public.wow_ncaaf_source_snapshots to service_role;
 
 comment on table public.wow_ncaaf_source_snapshots is
-  'Immutable-style research staging for raw NCAAF source responses. Staging does not certify model features or enable probability publication.';
+  'Immutable research staging for raw NCAAF source responses. Insert-only. Staging does not certify model features or enable probability publication.';
+
+-- Stored receipts are evidence. A later acquisition must insert a new hash
+-- or acknowledge the existing one. It must not rewrite retrieved_at, payload,
+-- or blockers on a row that has already been staged.
+create or replace function public.wow_ncaaf_reject_source_snapshot_mutation()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $$
+begin
+    raise exception 'NCAAF_SOURCE_SNAPSHOT_IMMUTABLE'
+        using errcode = '55000';
+end;
+$$;
+
+revoke all on function public.wow_ncaaf_reject_source_snapshot_mutation() from public, anon, authenticated;
+grant execute on function public.wow_ncaaf_reject_source_snapshot_mutation() to service_role;
+
+drop trigger if exists trg_wow_ncaaf_source_snapshot_immutable
+    on public.wow_ncaaf_source_snapshots;
+create trigger trg_wow_ncaaf_source_snapshot_immutable
+    before update or delete on public.wow_ncaaf_source_snapshots
+    for each row execute function public.wow_ncaaf_reject_source_snapshot_mutation();
+
+-- TRUNCATE does not fire a row-level UPDATE/DELETE trigger.
+drop trigger if exists trg_wow_ncaaf_source_snapshot_no_truncate
+    on public.wow_ncaaf_source_snapshots;
+create trigger trg_wow_ncaaf_source_snapshot_no_truncate
+    before truncate on public.wow_ncaaf_source_snapshots
+    for each statement execute function public.wow_ncaaf_reject_source_snapshot_mutation();
