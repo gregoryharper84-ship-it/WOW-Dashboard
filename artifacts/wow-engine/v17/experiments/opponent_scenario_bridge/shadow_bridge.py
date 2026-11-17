@@ -40,7 +40,7 @@ def _dt(value: Any) -> datetime | None:
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return dt.astimezone(timezone.utc) if dt.tzinfo else None
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 
@@ -161,10 +161,15 @@ def evaluate_player_usage(snapshot: Mapping[str, Any], prop: Mapping[str, Any]) 
         counts[sid] = (mean, var, tail)
     if set(counts) != {r["scenario_id"] for r in rows}:
         return invalid
-    expected = fsum(r["weight"] * counts[r["scenario_id"]][0] for r in rows)
-    variance = fsum(r["weight"] * (counts[r["scenario_id"]][1]
-                     + (counts[r["scenario_id"]][0] - expected) ** 2) for r in rows)
-    tail = fsum(r["weight"] * counts[r["scenario_id"]][2] for r in rows)
+    try:
+        expected = fsum(r["weight"] * counts[r["scenario_id"]][0] for r in rows)
+        variance = fsum(r["weight"] * (counts[r["scenario_id"]][1]
+                         + (counts[r["scenario_id"]][0] - expected) ** 2) for r in rows)
+        tail = fsum(r["weight"] * counts[r["scenario_id"]][2] for r in rows)
+    except (OverflowError, ValueError):
+        return invalid
+    if not all(isfinite(moment) for moment in (expected, variance, tail)):
+        return invalid
     return _base("PLAYER_USAGE_SHADOW", expected_count=expected, variance=variance,
                  p_over_exact_line=tail, player_id=prop["player_id"], exact_line=line,
                  scenario_count=len(rows), ranking_eligible=False,
