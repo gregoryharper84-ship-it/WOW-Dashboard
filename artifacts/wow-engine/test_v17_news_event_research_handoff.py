@@ -122,3 +122,29 @@ def test_blocked_source_returns_typed_receipt_without_throwing():
     assert out["research_status"] == "NEWS_DISCOVERY_BLOCKED"
     assert out["source_code"] == "SOURCE_HTTP_429"
     assert out["can_execute"] is False
+
+
+def test_malformed_or_stale_article_fails_closed():
+    assert _result(discovery={**DISCOVERY, "articles": None})["research_status"] == "NEWS_DISCOVERY_SHAPE_INVALID"
+    old = {**FACT, "publisher_published_at_utc": "2026-11-16T01:00:00Z"}
+    assert _result(reviewed=[old])["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+
+
+def test_scout_handoff_surfaces_context_without_promoting_probability():
+    from v17.sport_scout_enrichment import enrich_candidate
+    from datetime import timedelta
+    late_event = {**EVENT, "event_start_utc": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
+    candidate = {
+        "sport_key": late_event["sport_key"],
+        "official_event_id": late_event["official_event_id"],
+        "event_start_utc": late_event["event_start_utc"],
+        "news_discovery_receipt": DISCOVERY,
+        "news_reviewed_facts": [FACT],
+    }
+    row = enrich_candidate(candidate, "TEAM_EVENT")
+    handoff = row["news_research_handoff"]
+    assert handoff["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert handoff["model_rescore_verified"] is False
+    assert handoff["model_feature_eligible"] is False
+    assert row["route"] == "LLP_TEAM_BETTING_ENGINE"
+    assert row["can_execute"] is False
