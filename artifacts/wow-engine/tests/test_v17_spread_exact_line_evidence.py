@@ -81,6 +81,45 @@ def test_binder_accepts_one_unambiguous_main_line_pregame_spread():
     assert audit["can_execute"] is False
 
 
+@pytest.mark.parametrize("wrong_id", ["3", "5", "", None])
+def test_period_or_unknown_market_id_cannot_be_bound_as_full_game_spread(wrong_id):
+    start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
+    rows = [{**row, "market_id": wrong_id, "market_name": "spreads"}
+            for row in _market_rows(start)]
+    bound, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "event-1",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=rows,
+    )
+    assert bound == {}
+    assert audit["bound_event_n"] == 0
+    assert audit["blocker_counts"]["SPREAD_EVENT_NOT_FOUND"] == 1
+    assert audit["can_execute"] is False
+
+
+def test_fullgame_market_id_with_unrelated_name_must_hold():
+    start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
+    rows = [{**row, "market_id": "2", "market_name": "total"}
+            for row in _market_rows(start)]
+    bound, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "event-1",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=rows,
+    )
+    assert bound == {}
+    assert audit["blocker_counts"]["SPREAD_EVENT_NOT_FOUND"] == 1
+
+
 def test_binder_fails_closed_on_ambiguous_provider_event_identity():
     start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
     rows = _market_rows(start)
