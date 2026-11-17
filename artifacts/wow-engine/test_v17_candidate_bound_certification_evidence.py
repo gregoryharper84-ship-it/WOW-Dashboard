@@ -213,6 +213,7 @@ def test_candidate_verifier_separates_frozen_replay_from_source_rights(monkeypat
 def test_candidate_chronology_requires_explicit_timezone():
     import pytest
 
-    with pytest.raises(ValueError, match="CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE"):
-        evidence._iso("2026-09-20T20:00:00")
+    for invalid in ("2026-09-20T20:00:00", "not-a-timestamp"):
+        with pytest.raises(ValueError, match="CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE"):
+            evidence._iso(invalid)
     assert evidence._iso("2026-09-20T20:00:00-05:00") == "2026-09-21T01:00:00+00:00"

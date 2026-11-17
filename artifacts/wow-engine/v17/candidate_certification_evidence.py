@@ -23,7 +23,10 @@ def _hash(value: Any) -> str:
 
 
 def _iso(value: Any) -> str:
-    dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE") from exc
     if dt.tzinfo is None or dt.utcoffset() is None:
         raise ValueError("CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE")
     return dt.astimezone(timezone.utc).isoformat()
