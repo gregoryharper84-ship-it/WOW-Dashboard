@@ -16,6 +16,9 @@ try:
     from v17.scout_source_policy import HIGH_IMPACT_EVIDENCE as HIGH_IMPACT
 except ModuleNotFoundError:
     from scout_source_policy import HIGH_IMPACT_EVIDENCE as HIGH_IMPACT
+# Preserve the Scout policy classification, including ROOF_STATUS, and extend
+# it to other material player availability changes.
+HIGH_IMPACT = HIGH_IMPACT | frozenset({"INJURY_STATUS", "STARTING_GOALIE_STATUS", "ROTATION_STATUS"})
 OFFICIAL_CLASSES = frozenset({"LEAGUE_OFFICIAL", "TEAM_OFFICIAL"})
 
 
