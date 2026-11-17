@@ -186,25 +186,45 @@ def _pr_claim_signature(row):
 
 def fetch_pages(repo, kind, endpoint, *, runner=subprocess.run, sleep=time.sleep,
                 page_size=PAGE_SIZE):
-    """Reject issue/PR absence unless two full inventories agree."""
+    """Accept only consecutive complete, stable issue/PR inventories.
+
+    A live PR may legitimately change HEAD or ownership while two fully
+    validated enumerations are running. Retry that *whole* census a bounded
+    number of times; never dispatch from an unstable or partial inventory.
+    """
     first = _fetch_enumeration(repo, kind, endpoint, runner=runner, sleep=sleep,
                                page_size=page_size)
     if kind == 'runs':
         return first
-    second = _fetch_enumeration(repo, kind, endpoint, runner=runner, sleep=sleep,
-                                page_size=page_size)
     # Issue timestamps affect controller priority and still demand exact equality.
-    # For PRs, only compare decision-bearing claim fields. Comment counters and
-    # updated_at are not absent-PR evidence and must not starve all dispatches.
-    if kind == 'prs':
-        left = [_pr_claim_signature(row) for row in sorted(first, key=lambda row: row['number'])]
-        right = [_pr_claim_signature(row) for row in sorted(second, key=lambda row: row['number'])]
-    else:
-        left = sorted(first, key=lambda row: row['number'])
-        right = sorted(second, key=lambda row: row['number'])
-    if left != right:
-        raise IntakeFailure(f'ENGINEERING_INTAKE_INVENTORY_UNSTABLE {kind}')
-    return first
+    # PR comparisons omit nondecision comment counters and updated_at.
+    def decision_rows(rows):
+        return {
+            row['number']: _pr_claim_signature(row) if kind == 'prs' else row
+            for row in rows
+        }
+
+    for scan in range(2, 5):  # at most four complete, independently verified scans
+        second = _fetch_enumeration(repo, kind, endpoint, runner=runner, sleep=sleep,
+                                    page_size=page_size)
+        left = decision_rows(first)
+        right = decision_rows(second)
+        if left == right:
+            if scan > 2:
+                print(f'::notice::ENGINEERING_INTAKE_STABLE_AFTER_RETRY {kind} scan={scan}',
+                      file=sys.stderr)
+            return first
+        changed = sorted(key for key in left.keys() | right.keys()
+                         if left.get(key) != right.get(key))
+        print(f'::warning::ENGINEERING_INTAKE_SNAPSHOT_DRIFT {kind} scan={scan} '
+              f'changed_count={len(changed)} changed_ids={changed[:10]}',
+              file=sys.stderr)
+        if scan == 4:
+            raise IntakeFailure(f'ENGINEERING_INTAKE_INVENTORY_UNSTABLE {kind} '
+                                f'scans={scan} changed_count={len(changed)}')
+        first = second
+        sleep(0.25 * (scan - 1))
+    raise AssertionError('bounded inventory retry exhausted')
 
 
 def _write_json_atomic(target, rows):
