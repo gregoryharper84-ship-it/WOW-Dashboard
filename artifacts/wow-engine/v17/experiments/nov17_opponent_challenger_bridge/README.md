@@ -12,7 +12,7 @@ The existing fitted trainer is `v17/team_state_challenger_training.py` using pre
 
 - `opponent_challenger_bridge.score_existing_team_state_candidate`: requires the exact existing fitted JSON artifact, artifact checksum, independently retained calibrator checksum, feature order, completed pregame feature vector, cutoff timestamps and source IDs. Reproduces its standardized logistic and selected identity/nearest-bin empirical calibrator. Preserves candidate-only status and **does not mint lower bounds**.
 - `bridge_team_script_to_prop`: joins LLP team-event fitted leading/tied/trailing state probabilities with separately fitted WOW_PROP_LANE conditional count distributions. Validates sport, event, team, player, source, cutoff and state coverage. No implied-moneyline proxy; no hypothetical Poisson tails; no betting execution.
-- `build_paired_forward_row`: joins a frozen incumbent, separately frozen research candidate and independently settled result with exact event, selected side, market, settlement and chronology. Supports home/away conversion, produces paired Brier contributions; never certifies a model.
+- `build_paired_forward_row`: joins a frozen incumbent, separately frozen research candidate and independently settled result with exact event, selected side, full-game including-OT moneyline settlement, and chronology. Supports home/away conversion, returns comparator-compatible `outcome`, `champion_probability`, and `challenger_probability`, plus paired Brier contributions; never certifies a model.
 - `offline_forward_shadow.py`: read-only local JSON CLI. Outputs JSON with candidate status and provenance limitations. Exits with code 2 when any candidate is unavailable.
 
 ## Run
