@@ -301,6 +301,48 @@ def test_a_throwing_scorer_is_scorer_failed():
     assert result["rows"][0]["reason_codes"][0] == "MODEL_SCORER_FAILED"
 
 
+@pytest.mark.parametrize("overrides", [
+    {"cover_count": 3},
+    {"push_count": 1, "not_cover_count": 2},
+    {"p_cover": 0.5, "p_not_cover": 0.3},
+    {"cover_count": True},
+    {"push_count": 0.0},
+    {"distribution_sample_n": 6},
+])
+def test_scorer_distribution_must_match_exact_integer_outcome_counts(overrides):
+    from v17.spread_margin_challenger import score_home_spread
+
+    def contradictory(artifact, features, *, home_spread):
+        scored = score_home_spread(artifact, features, home_spread=home_spread)
+        scored.update(overrides)
+        return scored
+
+    db = _DB(_market_rows())
+    result = _run(db, scorer=contradictory)
+    assert result["rows"][0]["status"] == "HELD"
+    assert result["rows"][0]["reason_codes"] == ["MODEL_OUTPUT_INVALID"]
+    assert result["run_summary"]["receipts_persisted"] == 0
+    assert db.upserts == []
+
+
+def test_scorer_distribution_population_must_equal_certified_artifact_residuals():
+    from v17.spread_margin_challenger import score_home_spread
+
+    def foreign_population(artifact, features, *, home_spread):
+        scored = score_home_spread(artifact, features, home_spread=home_spread)
+        # A self-consistent distribution from a different 10-row population
+        # still cannot be passed off as this five-residual fitted artifact.
+        return {**scored, "cover_count": 4, "push_count": 0,
+                "not_cover_count": 6, "distribution_sample_n": 10,
+                "p_cover": 0.4, "p_push": 0.0, "p_not_cover": 0.6}
+
+    db = _DB(_market_rows())
+    result = _run(db, scorer=foreign_population)
+    assert result["rows"][0]["status"] == "HELD"
+    assert result["rows"][0]["reason_codes"] == ["MODEL_OUTPUT_INVALID"]
+    assert db.upserts == []
+
+
 def test_a_degenerate_distribution_is_rejected_by_the_write_boundary():
     # A +3.0 home line covers on every residual sample, so the bound is not
     # interior and the registry refuses the receipt instead of publishing 1.0.
