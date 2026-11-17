@@ -113,8 +113,16 @@ def _line_value(row: Mapping[str, Any]) -> float | None:
 
 
 def _market_is_spread(row: Mapping[str, Any]) -> bool:
+    """Accept only the provider-defined full-game spread ID and known name.
+
+    A generic 'spreads' label with another market_id can refer to a period,
+    derivative or alternate market, and must not become a full-game receipt.
+    """
     name = _token(row.get("market_name"))
-    return str(row.get("market_id") or "") == "2" or name in {"spread", "spreads", "pointspread", "handicap"}
+    return (
+        str(row.get("market_id") or "") == "2"
+        and name in {"spread", "spreads", "pointspread", "handicap"}
+    )
 
 
 def _group_market_events(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
