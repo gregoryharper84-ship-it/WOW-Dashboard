@@ -256,7 +256,7 @@ def _spread_receipt_from_row(
 def _spread_card(
     entry: Mapping[str, Any] | None,
     *,
-    missing_reason: str = "SPREAD_RECEIPT_NOT_SAVED_IN_DAILY_RUN",
+    missing_reason: str = "SPREAD_RECEIPT_NOT_VISIBLE_ON_PAGE",
     missing_status: str = CARD_MISSING_RECEIPT,
     declared_family: str | None = None,
     reported_line: Any = None,
@@ -326,7 +326,8 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
     """Page-preserving, read-only projection into one card entry per event.
 
     Saved MONEYLINE and SPREAD rows for the same canonical event are grouped so
-    the event appears once with both markets. Every event in the page carries an
+    the event appears once with both markets. Missing status means not visible
+    on this page; pagination alone cannot prove absent anywhere in the run. Every event in the page carries an
     explicit spread status: QUALIFIED, PROVISIONAL, HELD or MISSING_RECEIPT.
     Nothing is inferred: a missing line, side, settlement basis or distribution
     is a reason code, never a fabricated zero-spread or market-implied number.
@@ -408,7 +409,7 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
             receipts.append(_spread_receipt_from_row(spread_row, spread_event))
         source_row = winner_row if winner_row is not None else spread_row
         spread_entry: Mapping[str, Any] | None = None
-        spread_reason = "SPREAD_RECEIPT_NOT_SAVED_IN_DAILY_RUN"
+        spread_reason = "SPREAD_RECEIPT_NOT_VISIBLE_ON_PAGE"
         try:
             bundle = build_llp_team_intelligence_bundle(event=event, receipts=receipts)
         except (ValueError, TypeError, KeyError):
@@ -431,7 +432,7 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
                 (m for m in bundle["markets"] if m["market_family"] == "POINT_SPREAD"),
                 None,
             )
-            if spread_entry is None and spread_reason == "SPREAD_RECEIPT_NOT_SAVED_IN_DAILY_RUN":
+            if spread_entry is None and spread_reason == "SPREAD_RECEIPT_NOT_VISIBLE_ON_PAGE":
                 spread_reason = "SPREAD_RECEIPT_NOT_PROJECTED"
         bundle["daily_row_index"] = (source_row or {}).get("row_index")
         bundle["source_diagnostics"] = _source_failure_context(source_row or {})
@@ -511,13 +512,13 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         bundle["market_coverage"] = {
             "OUTRIGHT_WINNER": (
                 "RECEIPT_PRESENT_OR_HELD" if winner_row is not None
-                else "NO_WINNER_RECEIPT_IN_DAILY_RUN"
+                else "NO_WINNER_RECEIPT_ON_PAGE"
             ),
             "POINT_SPREAD": (
                 "RECEIPT_PRESENT" if not ungoverned_family and spread_row is not None
-                else "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+                else "NO_EXACT_SPREAD_RECEIPT_ON_PAGE"
             ),
-            "GAME_TOTAL": "NO_EXACT_TOTAL_RECEIPT_IN_DAILY_RUN",
+            "GAME_TOTAL": "NO_EXACT_TOTAL_RECEIPT_ON_PAGE",
         }
         summary[spread_card["status"]] = summary.get(spread_card["status"], 0) + 1
         projected.append(bundle)
