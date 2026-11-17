@@ -85,6 +85,8 @@ def _refresh_optional_news(sports: tuple[str, ...]) -> dict[str, Any]:
                 "prediction_authority": False, "can_execute": False}
 
     seen: set[tuple[str, str, str]] = set()
+    gdelt_targets = 0  # DOC API is rate-limited; one query per refresh.
+    matched_targets = 0
     for target in targets:
         if not isinstance(target, dict) or any(
             not isinstance(target.get(field), str) or not target[field].strip()
@@ -99,6 +101,13 @@ def _refresh_optional_news(sports: tuple[str, ...]) -> dict[str, Any]:
         if identity in seen:
             continue
         seen.add(identity)
+        matched_targets += 1
+        if provider.strip().upper() == "GDELT":
+            gdelt_targets += 1
+            if gdelt_targets > 1:
+                blocked.append({"source_status": "BLOCKED",
+                                "source_code": "SOURCE_GDELT_RATE_BUDGET_EXCEEDED"})
+                continue
         try:
             result = fetch_news_json(sport, provider, url)
         except Exception:
@@ -112,7 +121,8 @@ def _refresh_optional_news(sports: tuple[str, ...]) -> dict[str, Any]:
                        "source_code": "SOURCE_SNAPSHOT_PERSIST_FAILED",
                        "prediction_authority": False, "can_execute": False}
         (successful if result.ok and receipt.get("source_status") == "OK" else blocked).append(receipt)
-    return {"status": "COMPLETE_WITH_BLOCKERS" if blocked else "COMPLETE",
+    return {"status": ("NO_MATCHING_TARGETS" if not matched_targets else
+                        "COMPLETE_WITH_BLOCKERS" if blocked else "COMPLETE"),
             "successful_snapshots": successful, "blocked_snapshots": blocked,
             "prediction_authority": False, "can_execute": False}
 
