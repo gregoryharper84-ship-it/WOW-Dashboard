@@ -212,6 +212,13 @@ def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
         raise D1RegistryError("D1_CANDIDATE_LIFECYCLE_INVALID", str(raw.get("lifecycle_state")))
     if any(bool(raw.get(name)) for name in ("promoted", "active", "automatic_certification", "automatic_promotion")):
         raise D1RegistryError("D1_CANDIDATE_GOVERNANCE_FLAGS_INVALID", "candidate must remain inert")
+    # Candidate writers cannot grant independent source-rights acceptance.
+    source_review = str(raw.get("source_review_status") or "REQUIRED").strip().upper()
+    if source_review == "PASS":
+        raise D1RegistryError(
+            "D1_CANDIDATE_SOURCE_REVIEW_SELF_APPROVAL_FORBIDDEN",
+            "candidate ingestion cannot grant independent source approval",
+        )
     version = str(raw.get("model_artifact_version") or "").strip()
     checksum = str(raw.get("artifact_checksum") or "").strip().lower()
     if not version or len(checksum) != 64:
@@ -250,7 +257,7 @@ def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
         "calibration_rows": int(raw.get("calibration_rows") or 0),
         "test_rows": int(raw.get("test_rows") or 0),
         "research_screen_pass": bool(raw.get("research_screen_pass", False)),
-        "source_review_status": str(raw.get("source_review_status") or "REQUIRED").strip().upper(),
+        "source_review_status": source_review,
         "lifecycle_state": "CANDIDATE",
         "promoted": False,
         "active": False,
