@@ -198,10 +198,38 @@ def test_scenario_weights_not_silently_normalized():
 
 def test_revision_brier_regret_not_automatic_lock():
     r = revision_regret_shadow(version("original"), version("revised"),
-                               outcomes(original=True, revised=False))
+                               outcomes(original=True, revised=True))
     assert r["status"] == "PAIRED_REVISION_DIAGNOSTIC" and r["brier_regret"] > 0
     assert r["lower_bound_delta"] == pytest.approx(-.06)
     assert r["same_target"] and r["automatic_revision_lock"] is False
+
+
+def test_same_target_conflicting_official_outcomes_rejected():
+    r = revision_regret_shadow(version("original"), version("revised"),
+                               outcomes(original=True, revised=False))
+    assert r["status"] == "CONFLICTING_OFFICIAL_SETTLEMENT"
+    assert r["brier_regret"] is None
+
+
+def test_cross_event_replacement_after_original_start_rejected():
+    newer = version("revised", sport="NFL", official_event_id="next-week",
+                    proposition_id="another-bet", event_start_utc="2026-11-18T23:00:00Z",
+                    forecast_at_utc="2026-11-17T12:00:00Z",
+                    new_evidence_at_utc="2026-11-17T11:30:00Z")
+    r = revision_regret_shadow(version("original"), newer,
+                               outcomes(original=True, revised=False))
+    assert r["status"] == "REVISION_UNVERIFIED"
+    assert r["brier_regret"] is None
+
+
+def test_cross_event_new_evidence_after_original_start_rejected():
+    newer = version("revised", sport="NFL", official_event_id="next-week",
+                    proposition_id="another-bet", event_start_utc="2026-11-18T23:00:00Z",
+                    forecast_at_utc="2026-11-17T12:00:00Z",
+                    new_evidence_at_utc="2026-11-17T11:30:00Z")
+    r = revision_regret_shadow(version("original"), newer,
+                               outcomes(original=True, revised=False))
+    assert r["status"] != "PAIRED_REVISION_DIAGNOSTIC"
 
 
 def test_different_candidates_are_not_same_calibration_target():
@@ -301,6 +329,16 @@ def test_holdout_leakage_and_invalid_probabilities_rejected(change):
     assert evaluate([replay(**change)])["status"] == "HOLDOUT_INPUTS_INVALID"
 
 
+@pytest.mark.parametrize("change", [
+    {"proposition_id": None}, {"proposition_id": ""},
+    {"proposition_id": "   "}, {"exact_line": None},
+    {"exact_line": float("nan")}, {"exact_line": float("inf")},
+    {"exact_line": "0.5"},
+])
+def test_holdout_requires_exact_proposition_and_finite_line(change):
+    assert evaluate([replay(**change)])["status"] == "HOLDOUT_INPUTS_INVALID"
+
+
 def test_holdout_duplicate_identity_line_rejected():
     assert evaluate([replay(), replay(immutable_forecast_receipt_id="frozen-2")])["status"] == "HOLDOUT_INPUTS_INVALID"
 
@@ -318,7 +356,7 @@ def test_no_execution_or_terminal_redefinition():
     assert all(not out["production_publication_allowed"] for out in [
         score_prop_projection(prop(), settlement()), conditional_usage_shadow(scenario()),
         revision_regret_shadow(version("original"),version("revised"),
-                               outcomes(original=True,revised=False)),
+                               outcomes(original=True,revised=True)),
         slip_exposure_shadow([slip("X", [("NBA","1")])]),
         evaluate([replay()])])
 
