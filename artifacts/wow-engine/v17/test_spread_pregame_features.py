@@ -61,8 +61,10 @@ def _feature_row(**overrides):
     return row
 
 
-def _artifact(names=ARTIFACT_FEATURES):
-    return SimpleNamespace(feature_names=tuple(names))
+def _artifact(names=ARTIFACT_FEATURES, *, schema="NFL_P2_FEATURES_V1"):
+    return SimpleNamespace(
+        feature_names=tuple(names), feature_schema_version=schema
+    )
 
 
 def _patch(monkeypatch, *, identity=None, row=None, row_error=None):
@@ -137,6 +139,25 @@ def test_the_evidence_request_carries_canonical_identity(monkeypatch):
     assert request.requested_slate_date == "2026-11-12"
     assert request.requested_timezone == "America/New_York"
     assert request.settlement_basis == "FULL_GAME_INCLUDING_OVERTIME"
+
+
+@pytest.mark.parametrize("schema", ["NFL_P2_FEATURES_V2", "", None])
+def test_exact_feature_names_cannot_hide_schema_version_drift(monkeypatch, schema):
+    _patch(monkeypatch)
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        features_mod.build_nfl_pregame_features_with_audit(
+            object(), event=_event(), artifact=_artifact(schema=schema)
+        )
+    assert exc.value.code == "NFL_PREGAME_FEATURE_SCHEMA_VERSION_MISMATCH"
+
+
+def test_upstream_feature_schema_version_drift_blocks(monkeypatch):
+    _patch(monkeypatch, row=_feature_row(feature_schema_version="NFL_P2_FEATURES_V2"))
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        features_mod.build_nfl_pregame_features_with_audit(
+            object(), event=_event(), artifact=_artifact()
+        )
+    assert exc.value.code == "NFL_PREGAME_FEATURE_SCHEMA_VERSION_MISMATCH"
 
 
 def test_an_unresolved_event_is_inputs_insufficient(monkeypatch):
