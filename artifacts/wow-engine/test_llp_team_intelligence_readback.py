@@ -471,6 +471,30 @@ def test_two_competing_spread_theses_hold_the_card_row():
         assert field not in spread_market
 
 
+def test_duplicate_winner_rows_never_keep_the_first_receipt_numeric():
+    first = _row(index=0, certified=True)
+    other = _row(index=1, certified=True)
+    other["detail"]["result"]["source_receipt_id"] = "second-winner-receipt"
+    other["detail"]["result"]["selected_side"] = "NYG"
+    view = llp.project_llp_intelligence_page(_page([first, other]))
+    assert len(view["events"]) == 1
+    event = view["events"][0]
+    assert view["duplicate_lane_rows"] == 1
+    assert event["governed_winner_receipt_id"] is None
+    winner = next(m for m in event["markets"]
+                  if m["market_family"] == "OUTRIGHT_WINNER")
+    assert winner["status"] == "HELD_EVIDENCE_ONLY"
+    assert winner["evidence_visible"] is False
+    assert winner["upstream_probability_publishable"] is False
+    assert "DUPLICATE_WINNER_THESIS_IN_PAGE" in winner["reason_codes"]
+    for field in ("calibrated_probability",
+                  "calibrated_probability_lower_bound",
+                  "calibrated_probability_upper_bound",
+                  "calibrated_lower_bound", "calibrated_upper_bound"):
+        assert field not in winner
+    assert event["can_execute"] is False
+
+
 def test_real_producer_payload_written_by_daily_terminal_row_maps_exactly():
     """End-to-end mapping check against the actual producer and writer.
 
