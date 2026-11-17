@@ -189,6 +189,18 @@ def test_candidate_verifier_separates_frozen_replay_from_source_rights(monkeypat
         if not expected_source:
             assert "SOURCE_REVIEW_" in " ".join(response["blockers"])
 
+    # A timezone-naive feature timestamp cannot prove chronological pregame
+    # capture. The verifier returns a typed hold even if source review is PASS.
+    row["feature_as_of"] = "2026-09-19T20:00:00"
+    response = evidence.verify_candidate_certification_evidence(
+        DB(candidate), candidate["candidate_id"]
+    )
+    assert response["status"] == "CERTIFICATION_EVIDENCE_FAILED"
+    assert "CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE" in response["blockers"]
+    assert captured[-1][1] is False
+    assert response["probability_publishable"] is False
+    row["feature_as_of"] = "2026-09-19T20:00:00+00:00"
+
     # A missing replay object can never manufacture a PASS even if reviewed.
     replay_value[0] = None
     response = evidence.verify_candidate_certification_evidence(
@@ -196,3 +208,11 @@ def test_candidate_verifier_separates_frozen_replay_from_source_rights(monkeypat
     )
     assert response["status"] == "CERTIFICATION_EVIDENCE_FAILED"
     assert captured[-1][1] is False
+
+
+def test_candidate_chronology_requires_explicit_timezone():
+    import pytest
+
+    with pytest.raises(ValueError, match="CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE"):
+        evidence._iso("2026-09-20T20:00:00")
+    assert evidence._iso("2026-09-20T20:00:00-05:00") == "2026-09-21T01:00:00+00:00"

@@ -167,7 +167,7 @@ def test_identical_same_instant_source_rewrite_does_not_double_count():
 
 
 def test_frozen_corpus_replay_version_bumped_for_new_receipts():
-    assert evidence.VERIFIER_VERSION == "V17_CANDIDATE_BOUND_BINARY_REPLAY_V2"
+    assert evidence.VERIFIER_VERSION == "V17_CANDIDATE_BOUND_BINARY_REPLAY_V3"
 
 
 def test_frozen_candidate_missing_canonical_event_identity_fails():

@@ -14,7 +14,7 @@ from v17.model_source_entitlements import SOURCES, source_readiness
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
-VERIFIER_VERSION = "V17_CANDIDATE_BOUND_BINARY_REPLAY_V2"
+VERIFIER_VERSION = "V17_CANDIDATE_BOUND_BINARY_REPLAY_V3"
 RECEIPT_TABLE = "wow_d1_certification_evidence_receipts"
 
 
@@ -24,8 +24,8 @@ def _hash(value: Any) -> str:
 
 def _iso(value: Any) -> str:
     dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError("CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE")
     return dt.astimezone(timezone.utc).isoformat()
 
 
@@ -195,7 +195,11 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
             blockers.extend(readiness.blockers or ("MODEL_SOURCE_UNCLASSIFIED",))
         if row.get("market_features_used") is not False or row.get("can_execute") is not False:
             blockers.append("TRAINING_ROW_GOVERNANCE_INVALID")
-        start, as_of = _iso(row["event_start_time"]), _iso(row["feature_as_of"])
+        try:
+            start, as_of = _iso(row["event_start_time"]), _iso(row["feature_as_of"])
+        except (TypeError, ValueError, OverflowError):
+            blockers.append("CANDIDATE_TIMESTAMP_INVALID_OR_NAIVE")
+            continue
         if as_of >= start:
             blockers.append("BINARY_TEMPORAL_LEAKAGE")
         outcome = row.get("outcome_json") or {}
