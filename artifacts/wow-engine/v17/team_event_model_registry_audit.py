@@ -110,6 +110,16 @@ _DECLARED_CHAINS: dict[str, dict[str, Any]] = {
             "publication bridge. Champion promotion remains a runtime/database condition."
         ),
     },
+    "NBA": {
+        "fitted_module": "basketball_team_event_specialist",
+        "adapter_module": "v17.nba_current_pregame_scorer",
+        "scorer_symbol": "score_nba_team_event_request",
+        "model_artifact_loader": "v17.nba_current_pregame_scorer:resolve_nba_champion_artifact",
+        "notes": (
+            "Fitted basketball specialist with exact team identity and pregame feature hydration. "
+            "Champion promotion remains a runtime/database condition."
+        ),
+    },
     # These implementations remain useful research/shadow scorers, but they are
     # deliberately not advertised as fitted production artifacts. Their fitted
     # candidate pipelines and certification work are tracked separately below.
