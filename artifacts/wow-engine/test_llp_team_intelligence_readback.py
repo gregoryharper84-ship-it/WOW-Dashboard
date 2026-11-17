@@ -419,6 +419,22 @@ def test_spread_row_with_different_participants_is_held_on_identity_mismatch():
     assert card["status"] == "HELD"
     assert "CROSS_MARKET_EVENT_IDENTITY_MISMATCH" in card["reason_codes"]
     assert "p_cover" not in card
+    event = view["events"][0]
+    assert event["governed_winner_receipt_id"] is None
+    assert "spread_source_diagnostics" in event
+    for market in event["markets"]:
+        assert market["status"] == "HELD_EVIDENCE_ONLY"
+        assert market["evidence_visible"] is False
+        assert market["probability_publishable"] is False
+        assert market["rank_eligible"] is False
+        assert "CROSS_MARKET_EVENT_IDENTITY_MISMATCH" in market["reason_codes"]
+        for field in (
+            "p_cover", "p_push", "p_not_cover",
+            "calibrated_probability", "calibrated_probability_lower_bound",
+            "calibrated_probability_upper_bound",
+        ):
+            assert field not in market
+    assert event["can_execute"] is False
 
 
 def test_puck_line_row_is_held_and_never_relabelled_as_point_spread():
