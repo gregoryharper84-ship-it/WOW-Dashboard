@@ -105,15 +105,20 @@ def score_existing_team_state_candidate(
     cal = candidate_artifact.get("calibrator_payload")
     if not all(isinstance(v, Mapping) for v in (payload, vector, cal)):
         return {**bad, "status": "ARTIFACT_OR_FEATURE_MISSING"}
-    if not (_str(candidate_artifact.get("artifact_checksum")) and _str(feature_receipt.get("feature_content_hash"))):
+    if not (_str(candidate_artifact.get("artifact_checksum"))
+            and _str(candidate_artifact.get("calibrator_content_hash"))
+            and _str(feature_receipt.get("feature_content_hash"))):
         return {**bad, "status": "PROVENANCE_HASH_MISSING"}
     try:
         artifact_valid = hash_payload(payload) == candidate_artifact["artifact_checksum"]
         vector_valid = hash_payload(vector) == feature_receipt["feature_content_hash"]
+        calibrator_valid = hash_payload(cal) == candidate_artifact["calibrator_content_hash"]
     except (TypeError, ValueError):
         return {**bad, "status": "PROVENANCE_CONTENT_INVALID"}
     if not artifact_valid or not vector_valid:
         return {**bad, "status": "CONTENT_HASH_MISMATCH"}
+    if not calibrator_valid:
+        return {**bad, "status": "CALIBRATOR_HASH_MISMATCH"}
     if (payload.get("artifact_format") != "STANDARDIZED_LOGISTIC_JSON_V1"
             or payload.get("model_family") != MODEL_FAMILY):
         return {**bad, "status": "ARTIFACT_IDENTITY_INVALID"}
@@ -165,6 +170,7 @@ def score_existing_team_state_candidate(
                 snapshot_at_utc=feature_receipt["snapshot_at_utc"],
                 model_created_at_utc=candidate_artifact["model_created_at_utc"],
                 artifact_checksum=candidate_artifact["artifact_checksum"],
+                calibrator_content_hash=candidate_artifact["calibrator_content_hash"],
                 feature_content_hash=feature_receipt["feature_content_hash"],
                 feature_source_id=feature_receipt["feature_source_id"],
                 source_review_status=candidate_artifact.get("source_review_status"),
