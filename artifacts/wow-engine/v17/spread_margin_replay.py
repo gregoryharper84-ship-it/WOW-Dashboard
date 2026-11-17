@@ -428,7 +428,7 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
     return _paged_select(
         client,
         "wow_d1_training_rows",
-        "official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
+        "training_row_id,official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
         filters=(
             ("eq", "sport", "NCAAF"),
             ("eq", "model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY),
