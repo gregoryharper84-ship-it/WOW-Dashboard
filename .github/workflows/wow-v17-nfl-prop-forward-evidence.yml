@@ -16,7 +16,7 @@ concurrency:
 jobs:
   seed-forward-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
