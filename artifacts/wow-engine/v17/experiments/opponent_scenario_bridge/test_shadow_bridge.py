@@ -147,3 +147,21 @@ def test_duplicate_trimmed_scenario_identity_is_not_accepted():
 def test_player_fit_after_kickoff_not_allowed():
     p=player(prop_fit_cutoff_utc='2026-11-19T02:00:00Z')
     assert evaluate_player_usage(snapshot(),p)['status']=='PLAYER_EVIDENCE_UNAVAILABLE'
+
+
+def test_unhashable_outcome_and_state_rejected():
+    for field in ('outcome','home_game_state','away_game_state'):
+        s=snapshot();s['scenarios'][0][field]=[]
+        assert evaluate_scenario_outcomes(s)['status']=='SCENARIO_INPUT_UNAVAILABLE'
+
+
+def test_huge_integer_weight_and_player_count_rejected():
+    s=snapshot();s['scenarios'][0]['weight']=10**5000
+    assert evaluate_scenario_outcomes(s)['status']=='SCENARIO_INPUT_UNAVAILABLE'
+    p=player();p['scenario_counts'][0]['expected_count']=10**5000
+    assert evaluate_player_usage(snapshot(),p)['status']=='PLAYER_EVIDENCE_UNAVAILABLE'
+
+
+def test_scenario_event_favorite_side_and_phase_cannot_be_inferred():
+    s=snapshot(favorite_side=None)
+    assert evaluate_scenario_outcomes(s)['status']=='SCENARIO_INPUT_UNAVAILABLE'
