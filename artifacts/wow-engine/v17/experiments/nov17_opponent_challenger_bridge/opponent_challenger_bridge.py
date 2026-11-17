@@ -257,8 +257,13 @@ def build_paired_forward_row(incumbent: Mapping[str,Any],
             or chosen != settlement.get("selected_participant")
             or any(x.get("sport") != "NFL" for x in (incumbent,challenger,settlement))
             or incumbent.get("market_family") != "MONEYLINE"
-            or incumbent.get("market_period") != settlement.get("market_period")
-            or incumbent.get("settlement_basis") != settlement.get("settlement_basis")
+            # The fitted binary team-state head is full-game inclusive of OT.
+            # Comparing it with a first-half or regulation-only result changes
+            # the predicted proposition and corrupts Brier/log-loss.
+            or incumbent.get("market_period") != "FULL_GAME"
+            or settlement.get("market_period") != "FULL_GAME"
+            or incumbent.get("settlement_basis") != "INCLUDE_OT"
+            or settlement.get("settlement_basis") != "INCLUDE_OT"
             or incumbent.get("market_family") != settlement.get("market_family")
             or challenger.get("status") not in ("RESEARCH_SCREEN_FAILED","SHADOW_CANDIDATE_ONLY")
             or not all(_str(incumbent.get(k)) for k in ("receipt_id","model_artifact_hash","source_snapshot_hash"))
@@ -282,7 +287,9 @@ def build_paired_forward_row(incumbent: Mapping[str,Any],
         return bad
     y=int(settlement["outcome"])
     return _out("RESEARCH_ONLY_UNCALIBRATED_PAIR",baseline_probability=bp,
+                champion_probability=bp,
                 challenger_probability=cb,challenger_lower_bound=None,
+                outcome=bool(settlement["outcome"]),
                 baseline_lower_bound=lb,
                 baseline_brier=(bp-y)**2,challenger_brier=(cb-y)**2,
                 candidate_probability_is_certified=False,
