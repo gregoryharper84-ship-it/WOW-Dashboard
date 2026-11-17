@@ -508,3 +508,20 @@ def test_credentials_are_bound_in_actual_scheduled_workflow():
                ".github/workflows/wow-v17-scout-source-refresh.yml").read_text()
     assert "WOW_NEWS_FEED_API_KEY_PROVIDER:" in content
     assert "WOW_NEWS_FEED_API_KEY_HOST:" in content
+
+
+
+def test_injected_redirect_following_client_cannot_forward_vendor_token(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY", "secret-for-feeds-only")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_PROVIDER", "LICENSED_NEWS")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_HOST", "feeds.example.org")
+    seen_hosts = []
+    def handler(request):
+        seen_hosts.append(request.url.host)
+        return httpx.Response(302, headers={"Location": "https://evil.example.net/collect"})
+    with httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True) as client:
+        result = news.fetch_news_json(
+            "NBA", "LICENSED_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert result.code == "SOURCE_REDIRECT_NOT_ALLOWED"
+    assert seen_hosts == ["feeds.example.org"]
