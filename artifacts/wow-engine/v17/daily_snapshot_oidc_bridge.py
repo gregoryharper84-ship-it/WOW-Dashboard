@@ -45,7 +45,7 @@ class InternalDailySnapshotRequest(BaseModel):
 
     requested_slate_date: str
     requested_timezone: str = Field(min_length=1, max_length=64)
-    lanes: list[Literal["PROPS", "MONEYLINE"]] = Field(
+    lanes: list[Literal["PROPS", "MONEYLINE", "SPREAD"]] = Field(
         default_factory=lambda: ["MONEYLINE"]
     )
     max_props: int = Field(default=0, ge=0, le=12)

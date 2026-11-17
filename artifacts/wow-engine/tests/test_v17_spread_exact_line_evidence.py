@@ -81,6 +81,45 @@ def test_binder_accepts_one_unambiguous_main_line_pregame_spread():
     assert audit["can_execute"] is False
 
 
+@pytest.mark.parametrize("wrong_id", ["3", "5", "", None])
+def test_period_or_unknown_market_id_cannot_be_bound_as_full_game_spread(wrong_id):
+    start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
+    rows = [{**row, "market_id": wrong_id, "market_name": "spreads"}
+            for row in _market_rows(start)]
+    bound, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "event-1",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=rows,
+    )
+    assert bound == {}
+    assert audit["bound_event_n"] == 0
+    assert audit["blocker_counts"]["SPREAD_EVENT_NOT_FOUND"] == 1
+    assert audit["can_execute"] is False
+
+
+def test_fullgame_market_id_with_unrelated_name_must_hold():
+    start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
+    rows = [{**row, "market_id": "2", "market_name": "total"}
+            for row in _market_rows(start)]
+    bound, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "event-1",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=rows,
+    )
+    assert bound == {}
+    assert audit["blocker_counts"]["SPREAD_EVENT_NOT_FOUND"] == 1
+
+
 def test_binder_fails_closed_on_ambiguous_provider_event_identity():
     start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
     rows = _market_rows(start)
@@ -181,6 +220,32 @@ def test_missing_exact_lines_do_not_fall_back_to_synthetic_grid():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         evaluate_exact_line_candidate(_artifact(), [_row("e1", start, 7)], {})
     assert exc.value.code == "SPREAD_EXACT_LINE_EVIDENCE_UNAVAILABLE"
+
+
+def test_future_dated_quote_never_becomes_observed_pregame_line():
+    # Provider timestamps in the future are not observation receipts, even
+    # when they are before a future kickoff and say CURRENT/main/available.
+    now = datetime.now(timezone.utc)
+    start = now + timedelta(days=2)
+    forged = [
+        {**row,
+         "price_updated_at": (now + timedelta(hours=1)).isoformat(),
+         "fetched_at": (now + timedelta(hours=1)).isoformat()}
+        for row in _market_rows(start)
+    ]
+    evidence, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "future-nfl-event",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=forged,
+    )
+    assert evidence == {}
+    assert audit["blocker_counts"]["SPREAD_EXACT_LINE_PREGAME_QUOTE_UNAVAILABLE"] == 1
+    assert audit["can_execute"] is False
 
 
 def test_legacy_poststart_captured_close_cannot_override_pregame_spread():

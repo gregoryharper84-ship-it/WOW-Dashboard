@@ -99,7 +99,11 @@ def _quote_time(row: Mapping[str, Any]) -> datetime | None:
     # backdated provider time masquerade as pregame capture evidence.
     observed = _dt(row.get("fetched_at"))
     provider_updated = _dt(row.get("price_updated_at"))
-    if observed is None or (provider_updated is not None and provider_updated > observed):
+    if (observed is None
+            or observed > datetime.now(timezone.utc)
+            or (provider_updated is not None and provider_updated > observed)):
+        # A future-dated capture is not an observed market quote even if it
+        # precedes the event. Never re-label future provider timestamps as now.
         return None
     return observed
 
@@ -113,8 +117,16 @@ def _line_value(row: Mapping[str, Any]) -> float | None:
 
 
 def _market_is_spread(row: Mapping[str, Any]) -> bool:
+    """Accept only the provider-defined full-game spread ID and known name.
+
+    A generic 'spreads' label with another market_id can refer to a period,
+    derivative or alternate market, and must not become a full-game receipt.
+    """
     name = _token(row.get("market_name"))
-    return str(row.get("market_id") or "") == "2" or name in {"spread", "spreads", "pointspread", "handicap"}
+    return (
+        str(row.get("market_id") or "") == "2"
+        and name in {"spread", "spreads", "pointspread", "handicap"}
+    )
 
 
 def _group_market_events(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:

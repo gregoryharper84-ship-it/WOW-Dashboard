@@ -637,7 +637,7 @@ components:
         requested_timezone: {type: string, minLength: 1, maxLength: 64}
         lanes:
           type: array
-          items: {type: string, enum: [PROPS, MONEYLINE]}
+          items: {type: string, enum: [PROPS, MONEYLINE, SPREAD]}
           default: [PROPS, MONEYLINE]
         max_props: {type: integer, minimum: 0, maximum: 12, default: 6}
         max_team_events: {type: integer, minimum: 0, maximum: 12, default: 6}
@@ -652,7 +652,7 @@ components:
         requested_timezone: {type: string}
         lanes:
           type: array
-          items: {type: string, enum: [PROPS, MONEYLINE]}
+          items: {type: string, enum: [PROPS, MONEYLINE, SPREAD]}
           default: [PROPS, MONEYLINE]
         max_props: {type: integer, minimum: 0, maximum: 12, default: 6}
         max_team_events: {type: integer, minimum: 0, maximum: 12, default: 6}

@@ -98,6 +98,8 @@ def _common_result(
 ) -> dict[str, Any]:
     return {
         "status": "EXPERIMENT_CREATED",
+        # Market identity is explicit even when research-only publication is held.
+        "market_family": "POINT_SPREAD",
         "code": f"{sport}_SPREAD_FORWARD_SHADOW_COMPLETE",
         "sport": sport,
         "event_id": str(event_id),
