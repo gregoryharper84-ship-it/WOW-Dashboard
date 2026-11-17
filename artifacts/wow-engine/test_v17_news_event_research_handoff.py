@@ -133,13 +133,18 @@ def test_malformed_or_stale_article_fails_closed():
 def test_scout_handoff_surfaces_context_without_promoting_probability():
     from v17.sport_scout_enrichment import enrich_candidate
     from datetime import timedelta
-    late_event = {**EVENT, "event_start_utc": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
+    now = datetime.now(timezone.utc)
+    late_event = {**EVENT, "event_start_utc": (now + timedelta(days=1)).isoformat()}
+    fresh_discovery = {**DISCOVERY, "source_observed_at": (now - timedelta(hours=2)).isoformat()}
+    fresh_fact = {**FACT,
+                  "publisher_published_at_utc": (now - timedelta(hours=3)).isoformat(),
+                  "independently_reviewed_at_utc": (now - timedelta(hours=1)).isoformat()}
     candidate = {
         "sport_key": late_event["sport_key"],
         "official_event_id": late_event["official_event_id"],
         "event_start_utc": late_event["event_start_utc"],
-        "news_discovery_receipt": DISCOVERY,
-        "news_reviewed_facts": [FACT],
+        "news_discovery_receipt": fresh_discovery,
+        "news_reviewed_facts": [fresh_fact],
     }
     row = enrich_candidate(candidate, "TEAM_EVENT")
     handoff = row["news_research_handoff"]
