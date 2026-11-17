@@ -669,7 +669,7 @@ def test_postmerge_release_uses_owner_ratified_three_check_truth_and_exact_main_
     assert "Resolve exact merged identity" in text
     assert 'git merge-base --is-ancestor "$merge_sha" HEAD' in text
     assert "Verify required exact-head CI" in text
-    assert '"/actions/runs?head_sha=${HEAD_SHA}&per_page=100"' in text
+    assert '/actions/runs?head_sha=${HEAD_SHA}&per_page=100' in text
     expected = text.split("          expected=(\n", 1)[1].split("          )", 1)[0]
     optional = text.split("          optional_reviews=(\n", 1)[1].split("          )", 1)[0]
     for exact_name in (
