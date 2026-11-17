@@ -120,7 +120,6 @@ def fetch_news_json(
     license_ack: bool | None = None,
 ) -> ResearchFetchResult:
     """Fetch a specifically authorized JSON source, never arbitrary web content."""
-    now = _now()
     normalized = normalize_sport(sport_key)
     provider = provider.strip().upper() if isinstance(provider, str) else ""
     domains = (allowed_domains if allowed_domains is not None else
@@ -128,10 +127,15 @@ def fetch_news_json(
                    "WOW_NEWS_FEED_ALLOWED_DOMAINS", "").split(",") if x.strip()))
     endpoint = _safe_url(url, domains)
     def failure(code: str, status: int | None = None) -> ResearchFetchResult:
+        captured_at = _now().isoformat().replace("+00:00", "Z")
+        # The existing Scout SQL schema is unique on provider/sport/capability/
+        # payload_hash. Include capture time in every failure payload so a
+        # repeated outage is a distinct append-only observation, not a conflict.
         return ResearchFetchResult(
             False, provider or "NEWS_FEED", str(sport_key), "news",
-            SOURCE_CLASS, status=status, code=code,
-            observed_at=now.isoformat().replace("+00:00", "Z"),
+            SOURCE_CLASS, data={"source_observed_at": captured_at,
+                                "source_code": code, "evidence_only": True},
+            status=status, code=code, observed_at=captured_at,
             prediction_authority=False, can_execute=False,
         )
 
@@ -155,10 +159,19 @@ def fetch_news_json(
         return failure("SOURCE_LICENSE_ACK_REQUIRED")
 
     key = os.environ.get("WOW_NEWS_FEED_API_KEY", "")
-    # No query-string API credentials; HTTPS header only.
-    headers = {"Accept": "application/json"}
-    if key:
-        headers["Authorization"] = "Bearer " + key
+    key_provider = os.environ.get("WOW_NEWS_FEED_API_KEY_PROVIDER", "").strip().upper()
+    key_host = os.environ.get("WOW_NEWS_FEED_API_KEY_HOST", "").strip().lower().rstrip(".")
+    # Force no provider secret on the public GDELT service. Credential grants
+    # are bound to BOTH the exact provider AND origin hostname, never to a
+    # broad request allowlist or a shared API key for all news targets.
+    headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
+    if provider != "GDELT" and key:
+        if not key_provider or not key_host:
+            return failure("SOURCE_CREDENTIAL_SCOPE_UNCONFIGURED")
+        if provider == key_provider:
+            if urlsplit(endpoint).hostname != key_host:
+                return failure("SOURCE_CREDENTIAL_ORIGIN_MISMATCH")
+            headers["Authorization"] = "Bearer " + key
     own_client = client is None
     http = client or httpx.Client(timeout=12.0, follow_redirects=False)
     try:
@@ -172,8 +185,19 @@ def fetch_news_json(
                         "SOURCE_UPSTREAM_UNAVAILABLE" if status >= 500 else
                         "SOURCE_UPSTREAM_REJECTED")
                 return failure(code, status)
+            # Do not allow HTTPX's automatic decompression before the size
+            # check. A small gzip body can expand by orders of magnitude.
+            encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
+            if encoding not in ("", "identity"):
+                return failure("SOURCE_CONTENT_ENCODING_UNSUPPORTED", status)
+            try:
+                length = int(response.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length > MAX_NEWS_BODY_BYTES:
+                return failure("SOURCE_BODY_TOO_LARGE", status)
             data = bytearray()
-            for chunk in response.iter_bytes(chunk_size=65536):
+            for chunk in response.iter_raw(chunk_size=65536):
                 data.extend(chunk)
                 if len(data) > MAX_NEWS_BODY_BYTES:
                     return failure("SOURCE_BODY_TOO_LARGE", status)
