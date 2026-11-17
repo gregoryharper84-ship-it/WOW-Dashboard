@@ -370,3 +370,134 @@ def test_news_snapshot_rejects_invalid_temporal_provenance(observed_at):
         data={"articles": []}, observed_at=observed_at)
     with pytest.raises(ValueError, match="NEWS_RECEIPT"):
         news_snapshot_id_for(candidate)
+
+
+
+def test_private_key_sent_only_to_exact_provider_and_hostname(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY", "never-share-license-token")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_PROVIDER", "LICENSED_NEWS")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_HOST", "feeds.example.org")
+    seen = []
+    def handler(request):
+        seen.append((str(request.url), request.headers.get("Authorization")))
+        if request.url.host == "api.gdeltproject.org":
+            return httpx.Response(200, json={"articles": [
+                {"url": STORY, "title": "Discovered",
+                 "seendate": "20261116T174500Z"}]})
+        return httpx.Response(200, json={"articles": [_article()]})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        permitted = news.fetch_news_json(
+            "NBA", "LICENSED_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+        public = news.fetch_news_json(
+            "NBA", "GDELT",
+            "https://api.gdeltproject.org/api/v2/doc/doc?query=NBA&mode=ArtList&format=json",
+            client=client, allowed_domains=("gdeltproject.org",), license_ack=True)
+    assert permitted.ok and public.ok
+    assert seen[0][1] == "Bearer never-share-license-token"
+    assert seen[1][1] is None
+    assert all("never-share-license-token" not in str(x.to_dict()) for x in (permitted, public))
+
+
+def test_origin_mismatch_fails_before_network_and_does_not_leak(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY", "private-vendor-secret")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_PROVIDER", "LICENSED_NEWS")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_HOST", "different.example.org")
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda _: pytest.fail("unbound credential target was fetched"))) as client:
+        result = news.fetch_news_json(
+            "NBA", "LICENSED_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert result.code == "SOURCE_CREDENTIAL_ORIGIN_MISMATCH"
+    assert "private-vendor-secret" not in str(result.to_dict())
+
+
+def test_missing_credential_binding_fails_closed(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY", "private-vendor-secret")
+    monkeypatch.delenv("WOW_NEWS_FEED_API_KEY_PROVIDER", raising=False)
+    monkeypatch.delenv("WOW_NEWS_FEED_API_KEY_HOST", raising=False)
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda _: pytest.fail("unscoped vendor token target fetched"))) as client:
+        result = news.fetch_news_json(
+            "NBA", "LICENSED_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert result.code == "SOURCE_CREDENTIAL_SCOPE_UNCONFIGURED"
+
+
+def test_public_news_provider_never_receives_other_providers_token(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY", "private-vendor-secret")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_PROVIDER", "LICENSED_NEWS")
+    monkeypatch.setenv("WOW_NEWS_FEED_API_KEY_HOST", "feeds.example.org")
+    def handler(req):
+        assert req.headers.get("Authorization") is None
+        return httpx.Response(200, json={"articles": [_article()]})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = news.fetch_news_json(
+            "NBA", "PUBLIC_NEWS", "https://public.example.org/stories.json",
+            client=client, allowed_domains=("example.org",), license_ack=True)
+    assert result.ok
+
+
+def test_compressed_response_rejected_without_decoder_allocation():
+    import gzip
+    # Highly compressible payload: 16+ MiB decoded from a tiny input.
+    bomb = gzip.compress(json.dumps({"articles": [
+        _article(summary="x" * (16 * 1024 * 1024))]}).encode())
+    assert len(bomb) < news.MAX_NEWS_BODY_BYTES
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, content=bomb,
+                                 headers={"Content-Encoding": "gzip"}))) as client:
+        result = news.fetch_news_json(
+            "NBA", "PUBLIC_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert result.code == "SOURCE_CONTENT_ENCODING_UNSUPPORTED"
+    assert result.can_execute is False
+
+
+def test_oversized_content_length_rejected_without_streaming():
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, content=b"x",
+                                 headers={"Content-Length": str(news.MAX_NEWS_BODY_BYTES + 1)}))) as client:
+        result = news.fetch_news_json(
+            "NBA", "PUBLIC_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert result.code == "SOURCE_BODY_TOO_LARGE"
+
+
+def test_repeated_same_failure_has_unique_sql_content_hash(monkeypatch):
+    from v17 import research_source_snapshot_store as store
+    moments = iter([
+        datetime(2026, 11, 16, 18, 0, 0, 12345, tzinfo=timezone.utc),
+        datetime(2026, 11, 16, 18, 0, 1, 12345, tzinfo=timezone.utc),
+    ])
+    monkeypatch.setattr(news, "_now", lambda: next(moments))
+    with _client({"error": "rate limited"}, 429) as client:
+        first = news.fetch_news_json(
+            "NBA", "PUBLIC_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+        second = news.fetch_news_json(
+            "NBA", "PUBLIC_NEWS", FEED, client=client,
+            allowed_domains=("example.org",), license_ack=True)
+    assert first.code == second.code == "SOURCE_RATE_LIMITED"
+    assert first.data["source_observed_at"] == first.observed_at
+    assert second.data["source_observed_at"] == second.observed_at
+    assert store._payload_hash(first.data) != store._payload_hash(second.data)
+    assert store.news_snapshot_id_for(first) != store.news_snapshot_id_for(second)
+
+
+def test_news_store_rejects_absent_captured_timestamp_payload():
+    from v17 import research_source_snapshot_store as store
+    failed = ResearchFetchResult(
+        False, "GDELT", "basketball_nba", "news", "PUBLIC_WEB_RESEARCH",
+        data=None, code="SOURCE_RATE_LIMITED",
+        observed_at="2026-11-16T18:00:00Z")
+    with pytest.raises(ValueError, match="NEWS_RECEIPT_PAYLOAD_PROVENANCE_MISSING"):
+        store.persist_immutable_news_source_result(failed)
+
+
+def test_credentials_are_bound_in_actual_scheduled_workflow():
+    from pathlib import Path
+    content = (Path(__file__).resolve().parents[2] /
+               ".github/workflows/wow-v17-scout-source-refresh.yml").read_text()
+    assert "WOW_NEWS_FEED_API_KEY_PROVIDER:" in content
+    assert "WOW_NEWS_FEED_API_KEY_HOST:" in content
