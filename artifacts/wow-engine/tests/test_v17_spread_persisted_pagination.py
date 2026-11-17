@@ -33,7 +33,13 @@ class _FakeQuery:
 
     def execute(self):
         assert self._order_column is not None
-        ordered = sorted(self._rows, key=lambda row: str(row.get(self._order_column) or ""))
+        # Model the PostgREST composite order (each field ascending), not
+        # merely the first source-event ID; many source rows have that same ID.
+        sort_fields = [field.split(".")[0] for field in self._order_column.split(",")]
+        ordered = sorted(
+            self._rows,
+            key=lambda row: tuple(str(row.get(field) or "") for field in sort_fields),
+        )
         return SimpleNamespace(data=ordered[self._start : self._end + 1])
 
 
@@ -71,7 +77,32 @@ def test_persisted_ncaaf_loaders_page_by_unique_official_event_id(monkeypatch):
     assert len(loaded_features) == len(features)
     assert set(client.order_log) == {
         ("wow_ncaaf_training_games", "official_event_id"),
-        ("wow_d1_training_rows", "official_event_id"),
+        ("wow_d1_training_rows", "official_event_id.asc,training_row_id"),
+    }
+
+
+def test_duplicate_event_sources_on_page_boundary_reconcile_all_unique_row_ids(monkeypatch):
+    # More than one source instance per event is normal (34,050 rows / 3,615
+    # events). A nonunique ORDER BY official_event_id can silently skip/duplicate
+    # rows across independent OFFSET queries; retain every immutable instance.
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_PAGE_SIZE", 2)
+    event_id = "NCAAF:401523995"
+    sources = [
+        {"training_row_id": f"00000000-0000-4000-8000-{number:012d}",
+         "official_event_id": event_id}
+        for number in [6, 4, 1, 5, 3, 2]
+    ]
+    client = _FakeClient({"wow_d1_training_rows": sources})
+    fetched = replay._load_ncaaf_persisted_feature_rows(client)
+    assert len(fetched) == len(sources)
+    assert sorted(row["training_row_id"] for row in fetched) == sorted(
+        row["training_row_id"] for row in sources
+    )
+    assert [row["training_row_id"] for row in fetched] == sorted(
+        row["training_row_id"] for row in sources
+    )
+    assert set(client.order_log) == {
+        ("wow_d1_training_rows", "official_event_id.asc,training_row_id"),
     }
 
 
