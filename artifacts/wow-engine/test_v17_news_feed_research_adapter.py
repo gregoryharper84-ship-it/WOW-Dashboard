@@ -241,3 +241,37 @@ def test_gdelt_future_or_missing_seen_time_not_accepted():
     assert news.normalize_articles(
         {"articles": [{"url": STORY, "title": "missing", "published_at": "2026-11-16T17:45:00Z"}]},
         observed_at=NOW, provider="GDELT") == []
+
+
+def test_enabled_news_target_outside_selected_sports_is_not_complete(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_ENABLED", "true")
+    monkeypatch.setenv("WOW_NEWS_FEED_TARGETS_JSON", json.dumps([
+        {"sport_key": "basketball_nba", "provider": "PUBLIC_NEWS", "url": FEED}]))
+    monkeypatch.setattr(scout, "SPORTSDATAIO_CAPABILITIES", ())
+    monkeypatch.setattr(scout, "fetch_news_json", lambda *args: pytest.fail("outside sport scope"))
+    r = scout.refresh(sports=("americanfootball_nfl",))
+    assert r["optional_news"]["status"] == "NO_MATCHING_TARGETS"
+
+
+def test_second_gdelt_query_is_budget_blocked_without_fetch(monkeypatch):
+    monkeypatch.setenv("WOW_NEWS_FEED_ENABLED", "true")
+    monkeypatch.setenv("WOW_NEWS_FEED_TARGETS_JSON", json.dumps([
+        {"sport_key": "basketball_nba", "provider": "GDELT",
+         "url": "https://api.gdeltproject.org/api/v2/doc/doc?query=NBA&mode=ArtList&format=json"},
+        {"sport_key": "americanfootball_nfl", "provider": "GDELT",
+         "url": "https://api.gdeltproject.org/api/v2/doc/doc?query=NFL&mode=ArtList&format=json"},
+    ]))
+    monkeypatch.setattr(scout, "SPORTSDATAIO_CAPABILITIES", ())
+    calls = []
+    def fake_fetch(sport, provider, url):
+        calls.append(sport)
+        return ResearchFetchResult(
+            True, "GDELT", sport, "news", "PUBLIC_WEB_RESEARCH",
+            data={"articles": [_article()]}, code="SOURCE_FETCH_OK")
+    monkeypatch.setattr(scout, "fetch_news_json", fake_fetch)
+    monkeypatch.setattr(scout, "persist_source_result",
+                        lambda r: {"source_status": "OK", "source_code": r.code})
+    r = scout.refresh(sports=("basketball_nba", "americanfootball_nfl"))
+    assert len(calls) == 1
+    assert r["optional_news"]["status"] == "COMPLETE_WITH_BLOCKERS"
+    assert r["optional_news"]["blocked_snapshots"][0]["source_code"] == "SOURCE_GDELT_RATE_BUDGET_EXCEEDED"
