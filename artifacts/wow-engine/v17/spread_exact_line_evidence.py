@@ -99,7 +99,11 @@ def _quote_time(row: Mapping[str, Any]) -> datetime | None:
     # backdated provider time masquerade as pregame capture evidence.
     observed = _dt(row.get("fetched_at"))
     provider_updated = _dt(row.get("price_updated_at"))
-    if observed is None or (provider_updated is not None and provider_updated > observed):
+    if (observed is None
+            or observed > datetime.now(timezone.utc)
+            or (provider_updated is not None and provider_updated > observed)):
+        # A future-dated capture is not an observed market quote even if it
+        # precedes the event. Never re-label future provider timestamps as now.
         return None
     return observed
 
