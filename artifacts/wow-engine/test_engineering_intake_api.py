@@ -128,16 +128,16 @@ class IntakeTests(unittest.TestCase):
                 m = load()
                 # Row 4 closes after page one, shifting still-open row 2 out
                 # of the first enumeration. The second enumeration exposes it.
-                run = FakeRun([[row(4), row(3)], [row(1)],
-                               [row(3), row(2)], [row(1)]])
+                run = FakeRun(([[row(4), row(3)], [row(1)],
+                                [row(3), row(2)], [row(1)]]) * 2)
                 with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
                     m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', kind, '/items',
                                   runner=run, sleep=lambda _: None, page_size=2)
 
     def test_same_ids_with_changed_ownership_evidence_are_held(self):
         m = load()
-        run = FakeRun([[{**row(1), 'body': 'Incident: #23'}],
-                       [{**row(1), 'body': 'Incident: #24'}]])
+        run = FakeRun(([[{**row(1), 'body': 'Incident: #23'}],
+                        [{**row(1), 'body': 'Incident: #24'}]]) * 2)
         with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
             m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
                           runner=run, sleep=lambda _: None)
@@ -164,7 +164,7 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
             m.fetch_pages(
                 'gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
-                runner=FakeRun([[first], [second]]), sleep=lambda _: None,
+                runner=FakeRun([[first], [second]] * 2), sleep=lambda _: None,
             )
 
     def test_issue_timestamp_change_still_holds_issue_priority_evidence(self):
@@ -174,7 +174,7 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
             m.fetch_pages(
                 'gregoryharper84-ship-it/WOW-Dashboard', 'issues', '/issues',
-                runner=FakeRun([[first], [second]]), sleep=lambda _: None,
+                runner=FakeRun([[first], [second]] * 2), sleep=lambda _: None,
             )
 
     def test_reordered_identical_inventory_is_complete(self):
@@ -183,6 +183,50 @@ class IntakeTests(unittest.TestCase):
                               runner=FakeRun([[row(1), row(2)], [row(2), row(1)]]),
                               sleep=lambda _: None)
         self.assertEqual(result, [row(1), row(2)])
+
+    def test_pr_change_during_census_recovers_only_after_two_stable_complete_scans(self):
+        """A legitimate PR HEAD change is safe only after two later full scans agree."""
+        m = load()
+        before = {**row(100), 'body': 'Incident: #23',
+                  'head': {'sha': 'a' * 40, 'ref': 'fix/controller'}}
+        after = {**before, 'head': {'sha': 'b' * 40, 'ref': 'fix/controller'}}
+        run = FakeRun([[before], [after], [after]])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            result = m.fetch_pages(
+                'gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
+                runner=run, sleep=lambda _: None,
+            )
+        self.assertEqual(result, [after])
+        self.assertEqual(len(run.calls), 3)
+        self.assertIn('ENGINEERING_INTAKE_SNAPSHOT_DRIFT prs scan=2', err.getvalue())
+        self.assertIn('ENGINEERING_INTAKE_STABLE_AFTER_RETRY prs scan=3', err.getvalue())
+
+    def test_persistent_pr_churn_has_bounded_fail_closed_diagnostics(self):
+        m = load()
+        before = {**row(100), 'body': 'Incident: #23'}
+        after = {**before, 'body': 'Incident: #24'}
+        run = FakeRun([[before], [after]] * 2)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            with self.assertRaisesRegex(m.IntakeFailure,
+                                         'ENGINEERING_INTAKE_INVENTORY_UNSTABLE prs scans=4'):
+                m.fetch_pages('gregoryharper84-ship-it/WOW-Dashboard', 'prs', '/pulls',
+                              runner=run, sleep=lambda _: None)
+        self.assertEqual(len(run.calls), 4)
+        self.assertIn('changed_ids=[100]', err.getvalue())
+
+    def test_unstable_second_inventory_never_overwrites_prior_artifacts(self):
+        m = load()
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / 'prs.json'
+            dest.write_text('[{"sentinel":true}]')
+            before = {**row(100), 'body': 'Incident: #23'}
+            after = {**before, 'body': 'Incident: #24'}
+            with self.assertRaisesRegex(m.IntakeFailure, 'ENGINEERING_INTAKE_INVENTORY_UNSTABLE'):
+                m.collect(repo='gregoryharper84-ship-it/WOW-Dashboard', prs=dest,
+                          runner=FakeRun([[before], [after]] * 2), sleep=lambda _: None)
+            self.assertEqual(json.loads(dest.read_text()), [{'sentinel': True}])
 
     def test_duplicate_run_id_across_providers_is_rejected(self):
         m = load()
