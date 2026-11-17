@@ -29,7 +29,7 @@ Set the following in the existing Scout GitHub Actions environment ONLY after ve
 
 The example endpoint is NOT a real verified feed; do not enable it. The license ACK is an operator attestation, not legal approval. The adapter currently supports Bearer API tokens only. Providers with other auth schemes need separately reviewed adapters.
 
-WOW_SCOUT_DATABASE_URL is required to persist evidence. The existing Scout scheduled workflow additionally requires WOW_SPORTSDATAIO_API_KEY at its current preflight; without it the refresh step (including news) is SKIPPED. That limitation is tracked in #1484 / #1452 and is not resolved by this patch. No new schedules, billing, subscriptions or service credentials are created.
+WOW_SCOUT_DATABASE_URL is required to persist evidence. This PR changes the existing Scout workflow preflight so a configured database can continue optional permitted news acquisition even without a SportsDataIO key. Missing SportsDataIO is preserved as typed structured-source blockers, not green acquisition. Missing database configuration generates a BLOCKED_SOURCE_CONFIGURATION JSON receipt that the existing scheduled workflow uploads rather than silently skipping. This repairs the credential-skip symptom tracked by #1484 while preserving source failures. No new schedules, billing, subscriptions or service credentials are created.
 
 ### Source JSON shape
 
