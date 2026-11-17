@@ -328,8 +328,8 @@ jobs:
             echo
             echo "Provider: Deterministic GitHub/Render exact-SHA receipt"
             echo
-            echo "- governed_pr_head_sha: `$HEAD_SHA`"
-            echo "- protected_main_merge_sha: `$MERGE_SHA`"
+            printf -- '- governed_pr_head_sha: `%s`\n' "$HEAD_SHA"
+            printf -- '- protected_main_merge_sha: `%s`\n' "$MERGE_SHA"
             echo "- protected_three_exact_head_checks: VERIFIED"
             echo "- independent_scientific_model_certification: NOT_ESTABLISHED_BY_THIS_RECEIPT"
             echo
@@ -337,7 +337,7 @@ jobs:
             echo "$RESULT"
             echo '~~~'
             echo
-            echo "`can_execute=false`"
+            printf '%s\n' '`can_execute=false`'
           } > "$body"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
           cat "$body" >> "$GITHUB_STEP_SUMMARY"
