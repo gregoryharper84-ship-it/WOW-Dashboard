@@ -199,3 +199,45 @@ def test_news_disabled_by_default(monkeypatch):
     monkeypatch.setattr(scout, "fetch_news_json", lambda *a: pytest.fail("news unexpectedly enabled"))
     r = scout.refresh(sports=("basketball_nba",))
     assert "optional_news" not in r
+
+
+def test_gdelt_public_artlist_maps_seen_date_not_publication(monkeypatch):
+    monkeypatch.setattr(news, "_now", lambda: NOW)
+    endpoint = ("https://api.gdeltproject.org/api/v2/doc/doc?"
+                "query=NBA%20injury&mode=ArtList&format=json&maxrecords=5&timespan=24h")
+    body = {"articles": [{"url": STORY, "title": "Potential injury",
+                          "seendate": "20261116T174500Z", "domain": "official.example.com"}]}
+    with _client(body) as client:
+        result = news.fetch_news_json(
+            "basketball_nba", "GDELT", endpoint, client=client,
+            allowed_domains=("gdeltproject.org",), license_ack=True)
+    assert result.ok
+    article = result.data["articles"][0]
+    assert article["source_published_at_claim"] is None
+    assert article["source_discovered_at_claim"] == "2026-11-16T17:45:00Z"
+    assert article["official_event_identity_verified"] is False
+    assert article["historical_pregame_eligible"] is False
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://evil.example.com/api/v2/doc/doc?query=NBA&mode=ArtList&format=json",
+    "https://api.gdeltproject.org/api/v2/doc/doc?query=NBA&mode=TimelineVol&format=json",
+    "https://api.gdeltproject.org/api/v2/doc/doc?query=NBA&mode=ArtList&format=RSS",
+    "https://api.gdeltproject.org/api/v2/doc/doc?mode=ArtList&format=json",
+])
+def test_gdelt_query_contract_fail_closed(endpoint):
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: pytest.fail("invalid GDELT query fetched"))) as client:
+        result = news.fetch_news_json(
+            "NBA", "GDELT", endpoint, client=client,
+            allowed_domains=("gdeltproject.org", "example.com"), license_ack=True)
+    assert result.ok is False
+
+
+def test_gdelt_future_or_missing_seen_time_not_accepted():
+    assert news.normalize_articles(
+        {"articles": [{"url": STORY, "title": "future", "seendate": "20261117T174500Z"}]},
+        observed_at=NOW, provider="GDELT") == []
+    assert news.normalize_articles(
+        {"articles": [{"url": STORY, "title": "missing", "published_at": "2026-11-16T17:45:00Z"}]},
+        observed_at=NOW, provider="GDELT") == []
