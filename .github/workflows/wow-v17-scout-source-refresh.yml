@@ -31,6 +31,9 @@ jobs:
       WOW_NEWS_FEED_TARGETS_JSON: ${{ vars.WOW_NEWS_FEED_TARGETS_JSON || '[]' }}
       WOW_NEWS_FEED_LICENSE_ACK: ${{ vars.WOW_NEWS_FEED_LICENSE_ACK || 'false' }}
       WOW_NEWS_FEED_API_KEY: ${{ secrets.WOW_NEWS_FEED_API_KEY }}
+      # Exact provider AND hostname must match before the secret is forwarded.
+      WOW_NEWS_FEED_API_KEY_PROVIDER: ${{ vars.WOW_NEWS_FEED_API_KEY_PROVIDER }}
+      WOW_NEWS_FEED_API_KEY_HOST: ${{ vars.WOW_NEWS_FEED_API_KEY_HOST }}
       WOW_CAN_EXECUTE: "false"
     steps:
       - uses: actions/checkout@v4
