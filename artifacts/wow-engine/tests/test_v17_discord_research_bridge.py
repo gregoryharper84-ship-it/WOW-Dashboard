@@ -1,4 +1,5 @@
 """Offline acceptance: forged signatures, account boundaries, and research-only receipts."""
+import asyncio
 import importlib
 import json
 import sys
@@ -117,8 +118,7 @@ def test_oauth_callback_rejects_mismatched_state():
     assert r.status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_oauth_identity_scope_and_allowlist(monkeypatch):
+def test_oauth_identity_scope_and_allowlist(monkeypatch):
     monkeypatch.setenv("DISCORD_APPLICATION_ID", "a")
     monkeypatch.setenv("DISCORD_CLIENT_SECRET", "secret")
     monkeypatch.setenv("WOW_DISCORD_OAUTH_REDIRECT_URI", "https://example.org/callback")
@@ -130,8 +130,10 @@ async def test_oauth_identity_scope_and_allowlist(monkeypatch):
         if str(req.url).endswith("/users/@me"):
             return httpx.Response(200, json={"id": "777", "username": "owner"})
         return httpx.Response(200, json=[{"id": "42", "name": "sports", "permissions": "0"}])
-    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
-        result = await bridge._oauth_identity("code", client)
+    async def capture_identity():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+            return await bridge._oauth_identity("code", client)
+    result = asyncio.run(capture_identity())
     assert result["guilds"] == [{"id": "42", "name": "sports", "can_manage": False}]
     assert result["oauth_token_stored"] is False
     assert result["channel_content_access"] is False
