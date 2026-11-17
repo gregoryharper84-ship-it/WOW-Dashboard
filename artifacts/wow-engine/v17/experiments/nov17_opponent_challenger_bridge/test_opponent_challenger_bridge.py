@@ -216,3 +216,26 @@ def test_calibrator_tamper_and_missing_digest_are_rejected():
     assert r["candidate_probability"] is None
     a=artifact();a.pop("calibrator_content_hash")
     assert score_existing_team_state_candidate(features(),a)["status"]=="PROVENANCE_HASH_MISSING"
+
+
+def test_pair_rejects_first_half_or_missing_settlement_period():
+    c=score_existing_team_state_candidate(features(),artifact())
+    inc=incumbent();result=official_result()
+    inc["market_period"]=result["market_period"]="FIRST_HALF"
+    assert build_paired_forward_row(inc,c,result)["status"]=="INVALID_PAIR"
+    inc=incumbent();result=official_result()
+    inc.pop("market_period");result.pop("market_period")
+    assert build_paired_forward_row(inc,c,result)["status"]=="INVALID_PAIR"
+    inc=incumbent();result=official_result()
+    inc["settlement_basis"]=result["settlement_basis"]="REGULATION_ONLY"
+    assert build_paired_forward_row(inc,c,result)["status"]=="INVALID_PAIR"
+
+
+def test_pair_exposes_existing_champion_challenger_comparator_schema():
+    c=score_existing_team_state_candidate(features(),artifact())
+    out=build_paired_forward_row(incumbent(),c,official_result())
+    assert out["status"]=="RESEARCH_ONLY_UNCALIBRATED_PAIR"
+    assert out["outcome"] is True
+    assert out["champion_probability"]==pytest.approx(.63)
+    assert out["challenger_probability"]==pytest.approx(c["candidate_probability"])
+    assert out["certification_eligible"] is False
