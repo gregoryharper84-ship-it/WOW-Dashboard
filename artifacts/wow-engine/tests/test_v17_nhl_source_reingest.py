@@ -1360,7 +1360,7 @@ def test_atomic_reingest_migration_is_service_role_only_with_fenced_writes():
     assert "revoke insert, update on table public.wow_nhl_season_timeline_receipts" in migration
 
 
-@pytest.mark.parametrize("bad_sha", ["ggggggg", "a" * 65, "a" * 39 + "g", "a" * 7 + " " + "g"])
+@pytest.mark.parametrize("bad_sha", ["ggggggg", "a" * 41, "a" * 65, "a" * 39 + "g", "a" * 7 + " " + "g"])
 def test_invalid_nhl_ingest_commit_sha_blocks_before_dry_run(bad_sha):
     db = _FakeDB()
     result = reingest.run_nhl_source_reingest(
@@ -1374,7 +1374,7 @@ def test_invalid_nhl_ingest_commit_sha_blocks_before_dry_run(bad_sha):
     assert db.rows == {}
 
 
-@pytest.mark.parametrize("bad_sha", ["ggggggg", "a" * 65, "a" * 39 + "g"])
+@pytest.mark.parametrize("bad_sha", ["ggggggg", "a" * 41, "a" * 65, "a" * 39 + "g"])
 def test_invalid_nhl_ingest_commit_sha_cannot_build_v2_source_rows(bad_sha):
     with pytest.raises(reingest.NHLSourceReingestError) as caught:
         reingest.build_reingest_rows(
