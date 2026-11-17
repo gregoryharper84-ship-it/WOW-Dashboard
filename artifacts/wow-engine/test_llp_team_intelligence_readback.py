@@ -7,7 +7,9 @@ from fastapi import Depends, FastAPI
 from v17 import llp_team_intelligence_readback as llp
 from v17 import daily_snapshot_runtime as daily
 
-START = datetime(2026, 11, 12, 23, 0, tzinfo=timezone.utc)
+# Synthetic pregame fixture must remain pre-kickoff when CI is rerun.
+# An explicit historical instant is inappropriate for wall-clock admission tests.
+START = datetime.now(timezone.utc) + timedelta(minutes=20)
 
 
 def _row(*, sport="NFL", index=0, certified=False):
