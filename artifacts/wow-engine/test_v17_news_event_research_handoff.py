@@ -108,8 +108,11 @@ def test_beat_reporter_high_impact_requires_independent_confirmations():
 
 
 def test_conflicting_sources_quarantined_before_rescore():
-    other = {**FACT, "source_group": "team", "source_class": "TEAM_OFFICIAL", "fact_value": "ACTIVE"}
-    out = _result(reviewed=[FACT, other])
+    second_url = "https://other.example/team-roster"
+    other = {**FACT, "source_url": second_url, "source_group": "team",
+             "source_class": "TEAM_OFFICIAL", "fact_value": "ACTIVE"}
+    discovery = {**DISCOVERY, "articles": DISCOVERY["articles"] + [{"source_url": second_url}]}
+    out = _result(discovery=discovery, reviewed=[FACT, other])
     assert out["research_status"] == "NEWS_SOURCE_CONFLICT"
     assert out["research_rescore_requested"] is False
     assert out["source_conflicts"] == ["CONTRADICTORY_SOURCE_FACTS"]
