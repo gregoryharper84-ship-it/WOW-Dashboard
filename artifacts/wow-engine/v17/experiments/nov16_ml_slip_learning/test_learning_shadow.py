@@ -126,6 +126,23 @@ def test_prop_under_and_push_settlement():
     assert score_prop_projection(prop(exact_line=9), settlement())["hit"] is None
 
 
+def test_under_near_threshold_exact_integer_and_half_integer():
+    half = score_prop_projection(prop(side="UNDER", exact_line=9.5), settlement(actual_count=9))
+    integer = score_prop_projection(prop(side="UNDER", exact_line=10), settlement(actual_count=9))
+    for rec in (half, integer):
+        assert rec["hit"] is True
+        assert rec["near_threshold"] is True
+        assert rec["distance_to_threshold_increments"] == 0
+        assert rec["discrete_increments_above"] is None
+
+
+def test_under_with_larger_margin_not_flagged_as_near_threshold():
+    rec = score_prop_projection(prop(side="UNDER", exact_line=10.5), settlement(actual_count=6))
+    assert rec["hit"] is True
+    assert rec["distance_to_threshold_increments"] == 4
+    assert rec["near_threshold"] is False
+
+
 def test_user_prop_line_not_substitutable_for_revised_line():
     assert score_prop_projection(prop(exact_line=5.5, market_id="davion-assists"),
                                  settlement(market_id="davion-assists", actual_count=10))["hit"] is True
