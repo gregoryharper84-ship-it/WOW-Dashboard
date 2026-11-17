@@ -31,7 +31,7 @@ SOURCE_CLASS = "PUBLIC_WEB_RESEARCH"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return datetime.now(timezone.utc)
 
 
 def _timestamp(raw: object) -> datetime | None:
@@ -173,7 +173,7 @@ def fetch_news_json(
                         "SOURCE_UPSTREAM_REJECTED")
                 return failure(code, status)
             data = bytearray()
-            for chunk in response.iter_bytes():
+            for chunk in response.iter_bytes(chunk_size=65536):
                 data.extend(chunk)
                 if len(data) > MAX_NEWS_BODY_BYTES:
                     return failure("SOURCE_BODY_TOO_LARGE", status)
@@ -183,17 +183,19 @@ def fetch_news_json(
             return failure("SOURCE_INVALID_JSON", status)
         if not isinstance(parsed, dict) or not isinstance(parsed.get("articles"), list):
             return failure("SOURCE_OUTPUT_INVALID", status)
-        articles = normalize_articles(parsed, observed_at=now, provider=provider)
+        captured_at = _now()  # Availability in this process is no earlier than response completion.
+        articles = normalize_articles(parsed, observed_at=captured_at, provider=provider)
         if not articles:
             return failure("SOURCE_NO_VALID_NEWS", status)
         return ResearchFetchResult(
             True, provider, str(sport_key), "news", SOURCE_CLASS,
             data={"articles": articles, "feed_endpoint": endpoint,
+                  "source_observed_at": captured_at.isoformat().replace("+00:00", "Z"),
                   "news_schema": "wow.v17.news_discovery.v1",
                   "verified_event_count": 0,
                   "evidence_only": True},
             status=status, code="SOURCE_FETCH_OK",
-            observed_at=now.isoformat().replace("+00:00", "Z"),
+            observed_at=captured_at.isoformat().replace("+00:00", "Z"),
             endpoint=endpoint, prediction_authority=False, can_execute=False,
         )
     except httpx.TimeoutException:
