@@ -50,7 +50,7 @@ def test_public_source_returns_unverified_evidence_only(monkeypatch):
 
 def test_every_supported_sport_has_one_query_and_rotation_is_complete():
     assert len(runner.SPORT_QUERIES) == len(news.WEIGHT_PROFILES) == 13
-    assert set(x for x, _ in runner.SPORT_QUERIES) == set(news.WEIGHT_PROFILES)
+    assert {news.normalize_sport(x) for x, _ in runner.SPORT_QUERIES} == set(news.WEIGHT_PROFILES)
     start = datetime(2026, 11, 16, 0, tzinfo=timezone.utc)
     sequence = [runner.selection(start + timedelta(hours=6*i))[0] for i in range(13)]
     assert len(set(sequence)) == 13
