@@ -109,9 +109,12 @@ def reconcile_news_handoff(
     if source_seen is None or source_seen > now or source_seen >= kickoff:
         return finish("NEWS_DISCOVERY_TIME_INVALID")
 
+    articles = discovery.get("articles")
+    if not isinstance(articles, list):
+        return finish("NEWS_DISCOVERY_SHAPE_INVALID")
     article_urls = {
         article.get("source_url")
-        for article in discovery.get("articles", ())
+        for article in articles
         if isinstance(article, dict) and _valid_https(article.get("source_url"))
     }
     if not article_urls:
@@ -136,9 +139,13 @@ def reconcile_news_handoff(
             continue
         if fact.get("confirmed") is not True:
             continue
-        if not isinstance(fact.get("evidence_kind"), str) or not fact.get("evidence_kind"):
+        if not isinstance(fact.get("evidence_kind"), str) or not 0 < len(fact["evidence_kind"]) <= 80:
             continue
-        if not isinstance(fact.get("fact_value"), str) or not fact.get("fact_value"):
+        if not isinstance(fact.get("fact_value"), str) or not 0 < len(fact["fact_value"]) <= 250:
+            continue
+        max_age_mins = {"LEAGUE_OFFICIAL": 720, "TEAM_OFFICIAL": 360,
+                        "PRIMARY_BEAT_REPORTER": 240, "SECONDARY_MEDIA": 360}[fact["source_class"]]
+        if (now - published).total_seconds() > max_age_mins * 60:
             continue
         verified.append({
             "source_url": url,
