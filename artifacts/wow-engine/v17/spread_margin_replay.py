@@ -434,7 +434,10 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
             ("eq", "model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY),
             ("eq", "feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION),
         ),
-        order="official_event_id",
+        # Multiple immutable source instances share one official event ID.
+        # Unique training_row_id removes ambiguity at OFFSET page boundaries;
+        # one composite order avoids client versions that overwrite .order().
+        order="official_event_id.asc,training_row_id",
         read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
         page_size=NCAAF_PERSISTED_PAGE_SIZE,
     )
