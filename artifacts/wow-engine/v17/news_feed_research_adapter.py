@@ -1,238 +1,173 @@
-"""Optional licensed JSON news discovery for existing WOW V17 Scout snapshots.
+"""Public GDELT Project news discovery; never an official sport or model source.
 
-This adapter captures bounded, untrusted publisher claims for research only.
-No article is an independently verified injury, lineup, official event or model
-feature. Model probabilities and terminal/execution authority are untouched.
+Single endpoint, no credentials, no provider registry, no paid-source path.
+Articles are unverified discovery metadata, not historical pregame features.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
 try:
     from v17.firecrawl_research_adapter import _safe_url
     from v17.research_source_adapters import ResearchFetchResult
-    from v17.web_intelligence_sport_profiles import normalize_sport, WEIGHT_PROFILES
+    from v17.web_intelligence_sport_profiles import WEIGHT_PROFILES, normalize_sport
 except ModuleNotFoundError:
     from firecrawl_research_adapter import _safe_url
     from research_source_adapters import ResearchFetchResult
-    from web_intelligence_sport_profiles import normalize_sport, WEIGHT_PROFILES
+    from web_intelligence_sport_profiles import WEIGHT_PROFILES, normalize_sport
 
-MAX_NEWS_TARGETS = 5
-MAX_NEWS_BODY_BYTES = 512_000
-MAX_NEWS_ITEMS = 40
+PROVIDER = "GDELT"
 SOURCE_CLASS = "PUBLIC_WEB_RESEARCH"
+GDELT_HOST = "api.gdeltproject.org"
+GDELT_PATH = "/api/v2/doc/doc"
+MAX_NEWS_BODY_BYTES = 256_000
+MAX_NEWS_ITEMS = 30
+ALLOWED_QUERY_KEYS = {"query", "mode", "format", "timespan", "maxrecords", "sort"}
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _timestamp(raw: object) -> datetime | None:
-    if not isinstance(raw, str) or not raw.strip():
-        return None
+def _seen_at(value: object) -> datetime | None:
     try:
-        value = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return value.astimezone(timezone.utc) if value.utcoffset() is not None else None
-
-
-def _gdelt_seen_at(raw: object) -> datetime | None:
-    """GDELT DOC ArtList seendate is discovery, NOT publisher date."""
-    if not isinstance(raw, str):
-        return None
-    try:
-        return datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc) if isinstance(value, str) else None
     except ValueError:
         return None
 
 
-def _article_url(raw: object) -> str | None:
-    """Validate article URL for evidence storage; never fetch it."""
-    if not isinstance(raw, str):
-        return None
-    try:
-        hostname = (urlsplit(raw).hostname or "").lower().rstrip(".")
-    except ValueError:
-        return None
-    return _safe_url(raw, (hostname,)) if hostname else None
-
-
-def normalize_articles(
-    payload: object,
-    *,
-    observed_at: datetime,
-    provider: str,
-) -> list[dict]:
-    """Normalize canonical feed JSON; never trust publisher identity/status."""
+def normalize_articles(payload: object, *, observed_at: datetime) -> list[dict]:
+    """Keep just GDELT article metadata, never download the underlying story."""
     if not isinstance(payload, dict) or not isinstance(payload.get("articles"), list):
         return []
-    unique: set[str] = set()
-    results: list[dict] = []
-    for article in payload["articles"][:MAX_NEWS_ITEMS]:
-        if not isinstance(article, dict):
+    output = []
+    seen_urls: set[str] = set()
+    for record in payload["articles"][:MAX_NEWS_ITEMS]:
+        if not isinstance(record, dict):
             continue
-        url = _article_url(article.get("url"))
-        published = _timestamp(article.get("published_at"))
-        # GDELT's seendate is when GDELT indexed the article, not publication.
-        gdelt_seen = _gdelt_seen_at(article.get("seendate")) if provider == "GDELT" else None
-        evidence_time = gdelt_seen if provider == "GDELT" else published
-        title = article.get("title")
-        if not url or not evidence_time or not isinstance(title, str) or not title.strip():
+        raw_url, title = record.get("url"), record.get("title")
+        if not isinstance(raw_url, str) or not isinstance(title, str) or not title.strip():
             continue
-        # Publisher timestamps are claims and cannot establish prelock availability.
-        if evidence_time > observed_at + timedelta(minutes=1) or url in unique:
+        try:
+            host = (urlsplit(raw_url).hostname or "").lower().rstrip(".")
+            url = _safe_url(raw_url, (host,)) if host else None
+        except ValueError:
+            url = None
+        seen_at = _seen_at(record.get("seendate"))
+        if not url or not seen_at or seen_at > observed_at + timedelta(minutes=1) or url in seen_urls:
             continue
-        unique.add(url)
-        summary = article.get("summary")
-        provider_event_id = article.get("event_id")
-        results.append({
-            "article_id": hashlib.sha256((provider + "|" + url).encode()).hexdigest()[:32],
+        seen_urls.add(url)
+        output.append({
+            "article_id": hashlib.sha256(("GDELT|" + url).encode()).hexdigest()[:32],
             "source_url": url,
-            "source_provider": provider,
-            "source_published_at_claim": published.isoformat().replace("+00:00", "Z") if published else None,
-            "source_discovered_at_claim": gdelt_seen.isoformat().replace("+00:00", "Z") if gdelt_seen else None,
+            "source_provider": PROVIDER,
+            "source_discovered_at_claim": seen_at.isoformat().replace("+00:00", "Z"),
+            "source_published_at_claim": None,
             "title": title.strip()[:300],
-            "summary_excerpt": summary.strip()[:1000] if isinstance(summary, str) else "",
-            "provider_event_id": str(provider_event_id)[:120] if provider_event_id is not None else None,
             "official_event_identity_verified": False,
             "publisher_claim_verified": False,
             "historical_pregame_eligible": False,
             "evidence_only": True,
         })
-    return results
+    return output
 
 
-def fetch_news_json(
-    sport_key: str,
-    provider: str,
-    url: str,
-    *,
-    client: httpx.Client | None = None,
-    allowed_domains: tuple[str, ...] | None = None,
-    license_ack: bool | None = None,
-) -> ResearchFetchResult:
-    """Fetch a specifically authorized JSON source, never arbitrary web content."""
-    normalized = normalize_sport(sport_key)
-    provider = provider.strip().upper() if isinstance(provider, str) else ""
-    domains = (allowed_domains if allowed_domains is not None else
-               tuple(x.strip().lower() for x in os.environ.get(
-                   "WOW_NEWS_FEED_ALLOWED_DOMAINS", "").split(",") if x.strip()))
-    endpoint = _safe_url(url, domains)
-    def failure(code: str, status: int | None = None) -> ResearchFetchResult:
-        captured_at = _now().isoformat().replace("+00:00", "Z")
-        # The existing Scout SQL schema is unique on provider/sport/capability/
-        # payload_hash. Include capture time in every failure payload so a
-        # repeated outage is a distinct append-only observation, not a conflict.
+def fetch_gdelt_news(sport_key: str, url: str, *, client: httpx.Client | None = None) -> ResearchFetchResult:
+    """One bounded read of official GDELT Project DOC 2.0 ArtList JSON."""
+    def blocked(code: str, status: int | None = None) -> ResearchFetchResult:
+        seen = _now().isoformat().replace("+00:00", "Z")
         return ResearchFetchResult(
-            False, provider or "NEWS_FEED", str(sport_key), "news",
-            SOURCE_CLASS, data={"source_observed_at": captured_at,
-                                "source_code": code, "evidence_only": True},
-            status=status, code=code, observed_at=captured_at,
+            False, PROVIDER, sport_key, "news", SOURCE_CLASS,
+            data={"source_observed_at": seen, "source_code": code, "evidence_only": True,
+                  "attribution": "The GDELT Project (https://www.gdeltproject.org/)"},
+            observed_at=seen, code=code, status=status,
             prediction_authority=False, can_execute=False,
         )
 
-    if normalized not in WEIGHT_PROFILES or not re.fullmatch(r"[A-Z0-9_-]{2,40}", provider):
-        return failure("SOURCE_TARGET_INVALID")
+    if normalize_sport(sport_key) not in WEIGHT_PROFILES:
+        return blocked("SOURCE_TARGET_INVALID")
+    endpoint = _safe_url(url, (GDELT_HOST,))
     if endpoint is None:
-        return failure("SOURCE_TARGET_NOT_ALLOWLISTED")
-    if provider == "GDELT":
-        pieces = urlsplit(endpoint)
-        params = parse_qs(pieces.query)
-        if (pieces.hostname != "api.gdeltproject.org" or
-                pieces.path != "/api/v2/doc/doc" or
-                [x.lower() for x in params.get("mode", [])] != ["artlist"] or
-                [x.lower() for x in params.get("format", [])] != ["json"] or
-                not params.get("query")):
-            return failure("SOURCE_GDELT_QUERY_INVALID")
-    acknowledged = license_ack if license_ack is not None else (
-        os.environ.get("WOW_NEWS_FEED_LICENSE_ACK", "").lower() == "true"
-    )
-    if not acknowledged:
-        return failure("SOURCE_LICENSE_ACK_REQUIRED")
+        return blocked("SOURCE_TARGET_NOT_ALLOWLISTED")
+    parsed = urlsplit(endpoint)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    if (parsed.hostname != GDELT_HOST or parsed.path != GDELT_PATH or
+        set(params) - ALLOWED_QUERY_KEYS or
+        [x.lower() for x in params.get("mode", [])] != ["artlist"] or
+        [x.lower() for x in params.get("format", [])] != ["json"] or
+        len(params.get("query", [])) != 1 or
+        not params["query"][0].strip() or len(params["query"][0]) > 300 or
+        any(len(v) != 1 for v in params.values())):
+        return blocked("SOURCE_GDELT_QUERY_INVALID")
+    if "maxrecords" in params:
+        try:
+            count = int(params["maxrecords"][0])
+        except ValueError:
+            return blocked("SOURCE_GDELT_QUERY_INVALID")
+        if not 1 <= count <= MAX_NEWS_ITEMS:
+            return blocked("SOURCE_GDELT_QUERY_INVALID")
 
-    key = os.environ.get("WOW_NEWS_FEED_API_KEY", "")
-    key_provider = os.environ.get("WOW_NEWS_FEED_API_KEY_PROVIDER", "").strip().upper()
-    key_host = os.environ.get("WOW_NEWS_FEED_API_KEY_HOST", "").strip().lower().rstrip(".")
-    # Force no provider secret on the public GDELT service. Credential grants
-    # are bound to BOTH the exact provider AND origin hostname, never to a
-    # broad request allowlist or a shared API key for all news targets.
-    headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
-    if provider != "GDELT" and key:
-        if not key_provider or not key_host:
-            return failure("SOURCE_CREDENTIAL_SCOPE_UNCONFIGURED")
-        if provider == key_provider:
-            if urlsplit(endpoint).hostname != key_host:
-                return failure("SOURCE_CREDENTIAL_ORIGIN_MISMATCH")
-            headers["Authorization"] = "Bearer " + key
-    own_client = client is None
-    http = client or httpx.Client(timeout=12.0, follow_redirects=False)
+    owned = client is None
+    http = client or httpx.Client(timeout=12, follow_redirects=False)
     try:
-        # Force redirect rejection even when an injected caller client was
-        # configured to follow redirects. Do not forward a licensed token.
-        with http.stream("GET", endpoint, headers=headers, follow_redirects=False,
-                         timeout=12.0) as response:
+        # No Authorization, cookies, commercial tokens or redirects.
+        with http.stream("GET", endpoint,
+                         headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+                         follow_redirects=False, timeout=12) as response:
             status = response.status_code
             if 300 <= status < 400:
-                return failure("SOURCE_REDIRECT_NOT_ALLOWED", status)
+                return blocked("SOURCE_REDIRECT_NOT_ALLOWED", status)
             if status >= 400:
-                code = ("SOURCE_RATE_LIMITED" if status == 429 else
-                        "SOURCE_AUTH_FAILED" if status in (401, 403) else
-                        "SOURCE_UPSTREAM_UNAVAILABLE" if status >= 500 else
-                        "SOURCE_UPSTREAM_REJECTED")
-                return failure(code, status)
-            # Do not allow HTTPX's automatic decompression before the size
-            # check. A small gzip body can expand by orders of magnitude.
-            encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
-            if encoding not in ("", "identity"):
-                return failure("SOURCE_CONTENT_ENCODING_UNSUPPORTED", status)
+                reason = ("SOURCE_RATE_LIMITED" if status == 429 else
+                          "SOURCE_UPSTREAM_UNAVAILABLE" if status >= 500 else
+                          "SOURCE_UPSTREAM_REJECTED")
+                return blocked(reason, status)
+            if response.headers.get("Content-Encoding", "identity").strip().lower() not in ("", "identity"):
+                return blocked("SOURCE_CONTENT_ENCODING_UNSUPPORTED", status)
             try:
-                length = int(response.headers.get("Content-Length", "0"))
+                declared = int(response.headers.get("Content-Length", "0"))
             except ValueError:
-                length = 0
-            if length > MAX_NEWS_BODY_BYTES:
-                return failure("SOURCE_BODY_TOO_LARGE", status)
+                declared = 0
+            if declared > MAX_NEWS_BODY_BYTES:
+                return blocked("SOURCE_BODY_TOO_LARGE", status)
             data = bytearray()
             for chunk in response.iter_raw(chunk_size=65536):
                 data.extend(chunk)
                 if len(data) > MAX_NEWS_BODY_BYTES:
-                    return failure("SOURCE_BODY_TOO_LARGE", status)
+                    return blocked("SOURCE_BODY_TOO_LARGE", status)
         try:
-            parsed = json.loads(data)
+            payload = json.loads(data)
         except (ValueError, UnicodeDecodeError):
-            return failure("SOURCE_INVALID_JSON", status)
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("articles"), list):
-            return failure("SOURCE_OUTPUT_INVALID", status)
-        captured_at = _now()  # Availability in this process is no earlier than response completion.
-        articles = normalize_articles(parsed, observed_at=captured_at, provider=provider)
+            return blocked("SOURCE_INVALID_JSON", status)
+        if not isinstance(payload, dict) or not isinstance(payload.get("articles"), list):
+            return blocked("SOURCE_OUTPUT_INVALID", status)
+        observed = _now()
+        articles = normalize_articles(payload, observed_at=observed)
         if not articles:
-            return failure("SOURCE_NO_VALID_NEWS", status)
+            return blocked("SOURCE_NO_VALID_NEWS", status)
+        stamp = observed.isoformat().replace("+00:00", "Z")
         return ResearchFetchResult(
-            True, provider, str(sport_key), "news", SOURCE_CLASS,
-            data={"articles": articles, "feed_endpoint": endpoint,
-                  "source_observed_at": captured_at.isoformat().replace("+00:00", "Z"),
-                  "news_schema": "wow.v17.news_discovery.v1",
-                  "verified_event_count": 0,
-                  "evidence_only": True},
-            status=status, code="SOURCE_FETCH_OK",
-            observed_at=captured_at.isoformat().replace("+00:00", "Z"),
+            True, PROVIDER, sport_key, "news", SOURCE_CLASS,
+            data={"source_observed_at": stamp, "articles": articles,
+                  "attribution": "The GDELT Project (https://www.gdeltproject.org/)",
+                  "verified_event_count": 0, "evidence_only": True},
+            code="SOURCE_FETCH_OK", status=status, observed_at=stamp,
             endpoint=endpoint, prediction_authority=False, can_execute=False,
         )
     except httpx.TimeoutException:
-        return failure("SOURCE_TIMEOUT")
+        return blocked("SOURCE_TIMEOUT")
     except httpx.HTTPError:
-        return failure("SOURCE_HTTP_ERROR")
+        return blocked("SOURCE_HTTP_ERROR")
+    except httpx.StreamError:
+        return blocked("SOURCE_STREAM_ERROR")
     finally:
-        if own_client:
+        if owned:
             http.close()
 
 
-__all__ = ["fetch_news_json", "normalize_articles", "MAX_NEWS_TARGETS",
-           "MAX_NEWS_BODY_BYTES", "MAX_NEWS_ITEMS"]
+__all__ = ["fetch_gdelt_news", "normalize_articles", "MAX_NEWS_BODY_BYTES", "MAX_NEWS_ITEMS"]
