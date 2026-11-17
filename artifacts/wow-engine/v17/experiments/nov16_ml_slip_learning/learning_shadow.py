@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from math import isfinite, log
+from math import ceil, isfinite, log
 from typing import Any, Mapping, Sequence
 
 CAN_EXECUTE = False
@@ -65,7 +65,8 @@ def score_prop_projection(pregame: Mapping[str, Any], settlement: Mapping[str, A
     """
     base = _out("UNVERIFIED_PROP_GRADE", hit=None, projection_absolute_error=None,
                 projection_signed_error=None, margin_vs_line=None,
-                discrete_increments_above=None, predictive_crps=None, distribution_status="NOT_SUPPLIED")
+                discrete_increments_above=None, distance_to_threshold_increments=None,
+                predictive_crps=None, distribution_status="NOT_SUPPLIED")
     if (_identity(pregame) is None or _identity(pregame) != _identity(settlement)
             or not _pregame(pregame)
             or not str(pregame.get("receipt_id") or "").strip()
@@ -87,6 +88,9 @@ def score_prop_projection(pregame: Mapping[str, Any], settlement: Mapping[str, A
     projection = pregame.get("projected_mean")
     projected = _num(projection, 0) if projection is not None else None
     increment = int(actual - (int(line) + 1)) if side == "OVER" and actual > line else None
+    # Distance from the nearest winning count, for either direction.
+    under_increment = int((ceil(line) - 1) - actual) if side == "UNDER" and actual < line else None
+    threshold_distance = increment if side == "OVER" else under_increment
     pmf = pregame.get("predictive_count_pmf")
     crps, distribution_status = None, "NOT_SUPPLIED"
     if pmf is not None:
@@ -105,10 +109,11 @@ def score_prop_projection(pregame: Mapping[str, Any], settlement: Mapping[str, A
     return _out("GRADED_RESEARCH_ONLY", hit=None if push else hit, push=push,
                 actual_count=actual, exact_line=line, margin_vs_line=actual - line,
                 discrete_increments_above=increment,
+                distance_to_threshold_increments=threshold_distance,
                 projection_absolute_error=abs(projected - actual) if projected is not None else None,
                 projection_signed_error=projected - actual if projected is not None else None,
                 receipt_id=pregame["receipt_id"], settlement_source_id=settlement["source_id"],
-                near_threshold=(increment == 0 if increment is not None else False),
+                near_threshold=(threshold_distance == 0 if threshold_distance is not None else False),
                 near_threshold_implies_median=False,
                 predictive_crps=crps, distribution_status=distribution_status)
 
