@@ -56,8 +56,8 @@ def test_all_three_sports_get_read_only_winner_context(sport):
     event = value["events"][0]
     assert event["sport"] == sport
     assert event["markets"][0]["status"] == "GOVERNED_RECEIPT_VISIBLE"
-    assert event["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
-    assert event["market_coverage"]["GAME_TOTAL"] == "NO_EXACT_TOTAL_RECEIPT_IN_DAILY_RUN"
+    assert event["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_ON_PAGE"
+    assert event["market_coverage"]["GAME_TOTAL"] == "NO_EXACT_TOTAL_RECEIPT_ON_PAGE"
     assert value["source_mutated"] is False and value["nfl_pickem_mutated"] is False
 
 
@@ -366,14 +366,33 @@ def test_research_spread_receipt_is_provisional_and_never_numeric():
     assert view["spread_card_summary"]["provisional"] == 1
 
 
+def test_single_page_never_claims_other_pages_lack_the_spread_receipt():
+    # The next page may contain the other lane for exactly this event.
+    row = _row(certified=True)
+    first_page = _page([row])
+    first_page["next_offset"] = 1
+    first_page["returned"] = 1
+    first_page["offset"] = 0
+    view = llp.project_llp_intelligence_page(first_page)
+    card = view["events"][0]["spread_card"]
+    assert card["status"] == "MISSING_RECEIPT"
+    assert card["reason_codes"] == ["SPREAD_RECEIPT_NOT_VISIBLE_ON_PAGE"]
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == (
+        "NO_EXACT_SPREAD_RECEIPT_ON_PAGE"
+    )
+    assert view["source_next_offset"] == 1
+    assert view["board_complete"] is False
+    assert card["probability_visible"] is False
+
+
 def test_missing_spread_receipt_is_visible_not_hidden():
     view = llp.project_llp_intelligence_page(_page([_row(certified=True)]))
     card = view["events"][0]["spread_card"]
     assert card["status"] == "MISSING_RECEIPT"
-    assert card["reason_codes"] == ["SPREAD_RECEIPT_NOT_SAVED_IN_DAILY_RUN"]
+    assert card["reason_codes"] == ["SPREAD_RECEIPT_NOT_VISIBLE_ON_PAGE"]
     assert card["exact_line"] is None and card["selected_side"] is None
     assert "p_cover" not in card
-    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_ON_PAGE"
     assert view["spread_card_summary"]["missing_receipt"] == 1
 
 
@@ -412,7 +431,7 @@ def test_puck_line_row_is_held_and_never_relabelled_as_point_spread():
     assert card["declared_market_family"] == "PUCK_LINE"
     assert card["reported_exact_line"] == -1.5
     assert "p_cover" not in card
-    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+    assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == "NO_EXACT_SPREAD_RECEIPT_ON_PAGE"
 
 
 def test_missing_spread_market_family_cannot_become_qualified_by_default():
@@ -426,7 +445,7 @@ def test_missing_spread_market_family_cannot_become_qualified_by_default():
     assert card["probability_visible"] is False
     assert "p_cover" not in card
     assert view["events"][0]["market_coverage"]["POINT_SPREAD"] == (
-        "NO_EXACT_SPREAD_RECEIPT_IN_DAILY_RUN"
+        "NO_EXACT_SPREAD_RECEIPT_ON_PAGE"
     )
 
 
