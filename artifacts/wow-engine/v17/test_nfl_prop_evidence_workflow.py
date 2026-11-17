@@ -36,3 +36,5 @@ def test_nfl_hourly_evidence_producer_includes_thursday_on_tuesday_without_extra
     assert 'issue_oidc_token' in source
     assert 'automatic_certification' in source and 'automatic_promotion' in source
     assert 'probability_publishable' in source and 'WOW_CAN_EXECUTE: "false"' in source
+    # Three bounded 180-second POSTs plus OIDC and health may exceed 10 minutes.
+    assert 'timeout-minutes: 12' in source
