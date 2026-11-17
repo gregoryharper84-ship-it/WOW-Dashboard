@@ -222,14 +222,17 @@ def test_cross_event_replacement_after_original_start_rejected():
     assert r["brier_regret"] is None
 
 
-def test_cross_event_new_evidence_after_original_start_rejected():
+def test_cross_event_replacement_before_original_start_still_allowed():
     newer = version("revised", sport="NFL", official_event_id="next-week",
                     proposition_id="another-bet", event_start_utc="2026-11-18T23:00:00Z",
-                    forecast_at_utc="2026-11-17T12:00:00Z",
-                    new_evidence_at_utc="2026-11-17T11:30:00Z")
-    r = revision_regret_shadow(version("original"), newer,
-                               outcomes(original=True, revised=False))
-    assert r["status"] != "PAIRED_REVISION_DIAGNOSTIC"
+                    forecast_at_utc="2026-11-16T22:00:00Z",
+                    new_evidence_at_utc="2026-11-16T21:30:00Z")
+    settled = outcomes(original=True, revised=False)
+    settled["revised"]["finalized_at_utc"] = "2026-11-19T02:30:00Z"
+    r = revision_regret_shadow(version("original"), newer, settled)
+    assert r["status"] == "PAIRED_REVISION_DIAGNOSTIC"
+    assert r["same_target"] is False
+    assert r["automatic_revision_lock"] is False
 
 
 def test_different_candidates_are_not_same_calibration_target():
