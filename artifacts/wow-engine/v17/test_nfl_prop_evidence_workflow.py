@@ -13,3 +13,12 @@ def test_nfl_prop_forward_evidence_workflow_preserves_fail_closed_authority():
     assert "automatic_promotion" in text
     assert "probability_publishable" in text
     assert "can_execute" in text
+
+
+
+def test_nfl_hourly_producer_rotates_over_actual_candidate_page_count():
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / ".github" / "workflows" / "wow-v17-nfl-prop-forward-evidence.yml").read_text()
+    assert 'candidate_rotation' in source
+    assert 'GITHUB_RUN_NUMBER % 10' not in source
+    assert '"max_candidates":32' in source

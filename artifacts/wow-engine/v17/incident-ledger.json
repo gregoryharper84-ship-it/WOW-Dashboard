@@ -280,13 +280,13 @@
       "title": "Main-scoped admit-release poisons checksPass when QA policy is absent",
       "severity": "P0",
       "domain": "deployment / CI / release admission",
-      "state": "FIX_IN_PROGRESS",
+      "state": "MERGED_PENDING_DEPLOY",
       "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-11-10-001__admit-release-missing-qa-policy-checkspass-poison.md",
       "engineering_fix_ids": [
         "FIX-2026-11-10-001"
       ],
       "created_utc": "2026-11-10T15:45:00Z",
-      "updated_utc": "2026-11-10T16:10:00Z",
+      "updated_utc": "2026-11-10T18:39:12Z",
       "primary_subsystem": "DEPLOYMENT_RUNTIME",
       "workflow_stage": "ENGINEERING",
       "current_owner": "ENGINEERING_AGENT",
@@ -297,16 +297,18 @@
         "FIX-2026-11-10-001": {
           "title": "Neutralize absent QA policy on main admission",
           "risk": "Class P",
-          "state": "FIX_IN_PROGRESS",
+          "state": "MERGED_PENDING_DEPLOY",
           "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-11-10-001__neutralize-absent-qa-policy-on-main-admission.md",
           "created_utc": "2026-11-10T15:45:00Z",
-          "updated_utc": "2026-11-10T16:10:00Z",
+          "updated_utc": "2026-11-10T18:39:12Z",
           "implementation_owner": "ENGINEERING_AGENT",
           "rollback": "Revert the merge commit for FIX-2026-11-10-001.",
-          "pull_request": 2565
+          "pull_request": 2565,
+        "merge_commit": "6018482f2bedf172b4a7a1014f2bfa1c2db95210",
+        "release_note": "GitHub confirms PR #2565 merged at 2026-11-10T18:39:12Z; current production deployment and independent acceptance are not yet verified."
         }
       }
     }
   ],
-  "updated_utc": "2026-11-10T16:10:00Z"
+  "updated_utc": "2026-11-10T18:39:12Z"
 }
