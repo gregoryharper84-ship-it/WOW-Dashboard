@@ -5,18 +5,24 @@ from datetime import date
 from typing import Any
 try:
     from v17.research_source_adapters import SPORTSDATAIO_CAPABILITIES, sportsdataio_fetch
-    from v17.research_source_snapshot_store import persist_source_result
+    from v17.research_source_snapshot_store import persist_source_result, persist_immutable_news_source_result
     from v17.firecrawl_research_adapter import MAX_TARGETS_PER_REFRESH, fetch_firecrawl_page
 except ModuleNotFoundError:
     from research_source_adapters import SPORTSDATAIO_CAPABILITIES, sportsdataio_fetch
-    from research_source_snapshot_store import persist_source_result
+    from research_source_snapshot_store import persist_source_result, persist_immutable_news_source_result
     from firecrawl_research_adapter import MAX_TARGETS_PER_REFRESH, fetch_firecrawl_page
 try:
     from v17.news_feed_research_adapter import MAX_NEWS_TARGETS, fetch_news_json
 except ModuleNotFoundError:
     from news_feed_research_adapter import MAX_NEWS_TARGETS, fetch_news_json
 
-DEFAULT_SPORTS = ("americanfootball_ncaaf","americanfootball_nfl","baseball_mlb","basketball_nba","basketball_wnba")
+# News targets may cover all 13 sports. Structured SportsDataIO capabilities
+# remain restricted to those expressly declared by that adapter.
+DEFAULT_SPORTS = (
+    "americanfootball_nfl", "basketball_nba", "icehockey_nhl",
+    "americanfootball_ncaaf", "baseball_mlb", "basketball_wnba",
+    "basketball_ncaab", "soccer", "tennis", "golf", "mma", "boxing", "cricket",
+)
 
 
 def _refresh_optional_firecrawl(sports: tuple[str, ...]) -> dict[str, Any]:
@@ -115,7 +121,7 @@ def _refresh_optional_news(sports: tuple[str, ...]) -> dict[str, Any]:
                             "prediction_authority": False, "can_execute": False})
             continue
         try:
-            receipt = persist_source_result(result)
+            receipt = persist_immutable_news_source_result(result)
         except Exception:
             receipt = {"provider": provider, "sport_key": sport, "source_status": "BLOCKED",
                        "source_code": "SOURCE_SNAPSHOT_PERSIST_FAILED",
