@@ -6,6 +6,7 @@ calibrate, qualify, approve, or execute any wager.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,71 @@ def _attach_sibling_snapshot(payload: dict[str, Any], source: Path) -> dict[str,
     return attach_snapshot_evidence(payload, snapshot)
 
 
+def _attach_sibling_news(payload: dict[str, Any], source: Path) -> dict[str, Any]:
+    """Attach one same-run GDELT discovery receipt, never a verified model feature.
+
+    GDELT is a link discovery service, not an injury/lineup oracle. Reviewed
+    event facts must still be independently sourced by the controlling lane.
+    This additive bridge only places its metadata in the existing Scout
+    candidate handoff; failure never authorizes a score or a wager.
+    """
+    news_path = source.parent / "public-gdelt-receipt.json"
+    if not news_path.exists():
+        return payload
+    def status(code: str, *, touched: int = 0, digest: str | None = None) -> dict[str, Any]:
+        out = dict(payload)
+        out["public_news_discovery_bridge"] = {
+            "status": code, "candidates_touched": touched,
+            "source_sha256": digest, "prediction_authority": False,
+            "model_feature_eligible": False, "can_execute": False,
+        }
+        return out
+
+    try:
+        # Public metadata receipt is capped; no third-party article bodies.
+        if news_path.stat().st_size > 512_000:
+            return status("NEWS_RECEIPT_OVERSIZED")
+        raw = news_path.read_bytes()
+        discovery = json.loads(raw)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return status("NEWS_RECEIPT_UNREADABLE")
+    if (not isinstance(discovery, dict)
+            or discovery.get("schema_version") != "wow.v17.public_news_receipt.v1"
+            or discovery.get("can_execute") is not False
+            or discovery.get("prediction_authority") is not False
+            or discovery.get("source_status") not in ("OK", "BLOCKED")
+            or not isinstance(discovery.get("sport_key"), str)
+            or not isinstance(discovery.get("articles"), list)
+            or len(discovery["articles"]) > 30):
+        return status("NEWS_RECEIPT_INVALID")
+    digest = hashlib.sha256(raw).hexdigest()
+    handoff = payload.get("model_handoff")
+    if not isinstance(handoff, dict):
+        return status("NEWS_NO_SCOUT_HANDOFF", digest=digest)
+    updated_handoff = dict(handoff)
+    touched = 0
+    for lane in ("team_event_candidates", "prop_candidates"):
+        rows = handoff.get(lane)
+        if not isinstance(rows, list):
+            continue
+        updated = []
+        for row in rows:
+            if not isinstance(row, dict):
+                updated.append(row)
+                continue
+            item = dict(row)
+            if (item.get("sport_key") == discovery["sport_key"]
+                    and "news_discovery_receipt" not in item):
+                item["news_discovery_receipt"] = discovery
+                touched += 1
+            updated.append(item)
+        updated_handoff[lane] = updated
+    out = status("NEWS_DISCOVERY_ATTACHED" if touched else "NEWS_NO_MATCHING_SPORT",
+                 touched=touched, digest=digest)
+    out["model_handoff"] = updated_handoff
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -111,6 +177,7 @@ def main() -> int:
     target = Path(args.output)
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload = _attach_sibling_snapshot(payload, source)
+    payload = _attach_sibling_news(payload, source)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -125,6 +192,8 @@ def main() -> int:
         "snapshot_identity_policy": bridge.get("identity_policy", "NOT_PRESENT"),
         "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
         "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
+        "news_bridge_status": enriched.get("public_news_discovery_bridge", {}).get("status", "NOT_PRESENT"),
+        "news_candidates_touched": enriched.get("public_news_discovery_bridge", {}).get("candidates_touched", 0),
         "can_execute": False,
     }))
     return 0
