@@ -92,6 +92,12 @@ def test_blocked_news_source_poses_no_eligibility(tmp_path):
     result = enrich_handoff(_attach_sibling_news(payload, _write(tmp_path, receipt)))
     news = result["model_handoff"]["team_event_candidates"][0]["news_research_handoff"]
     assert news["research_status"] == "NEWS_DISCOVERY_BLOCKED"
+    assert result["public_news_discovery_bridge"]["status"] == "NEWS_SOURCE_BLOCKED"
+    assert result["public_news_discovery_bridge"]["source_code"] == "SOURCE_RATE_LIMITED"
+    assert result["public_news_discovery_bridge"]["article_count"] == 0
+    assert result["model_handoff"]["team_event_candidates"][0]["news_intelligence_status"] == "NEWS_DISCOVERY_BLOCKED"
+    assert result["model_handoff"]["team_event_candidates"][0]["news_latest_verified_at_utc"] is None
+    assert result["model_handoff"]["team_event_candidates"][0]["news_model_rescore_verified"] is False
     assert news["research_rescore_requested"] is False
     assert result["can_execute"] is False
 

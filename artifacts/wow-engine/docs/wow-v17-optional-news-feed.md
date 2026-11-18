@@ -68,3 +68,30 @@ artifact. Any future licensed source must be a separately reviewed PR.
 
 \`V17_TERMINAL_REDUCER\` remains sole terminal authority and
 \`can_execute=false\`. No betting or Pick'em entry is submitted.
+
+
+## November 18, 2026 — recovery status and limits
+
+Production receipts from source-refresh run 44375341142 and Multi-Scout
+44369679104 independently show \`SOURCE_RATE_LIMITED\` with zero articles.
+The Multi-Scout bridge also reported \`NEWS_NO_MATCHING_SPORT\` and zero
+candidates touched. The source-refresh job's structured acquisition was skipped
+because \`WOW_SCOUT_DATABASE_URL\` was empty. Neither workflow-wide SUCCESS
+nor a successful upload establishes an operational public news feed.
+
+This repair supplies an explicit, bounded six-second 429 retry, typed health
+failure steps, article counts and 90-day receipt retention. Nightly Multi-Scout
+uses its own future canonical candidate manifest for one active-sport choice;
+it never invents news, executes more than two GDELT requests per run, or turns
+the discovery receipt into a verified publisher claim. The independent
+source-refresh workflow retains its original fixed 13-sport rotation. This
+does not certify same-day news coverage across active leagues.
+
+The morning report includes a per-pick \`news_feed_audit\` with the source
+status, latest independently verified timestamp (null unless independently
+established), and \`model_rescore_verified=false\`. No headline can be
+treated as a fitted scoring feature. True acceptance still requires actual
+nonempty source receipts; authoritative publisher/team/league verification;
+canonical event mapping; post-update fitted-specialist rerun with immutable
+before/after hash and pregame receipt; protected release checks; and independent
+production readback. \`can_execute=false\` remains enforced.
