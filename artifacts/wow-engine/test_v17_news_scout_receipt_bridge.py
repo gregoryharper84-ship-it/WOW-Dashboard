@@ -69,6 +69,9 @@ def test_public_gdelt_news_is_attached_but_cannot_promote_model(tmp_path):
     assert bridge["candidates_touched"] == 1
     assert len(bridge["source_sha256"]) == 64
     assert bridge["model_feature_eligible"] is False
+    assert attached["model_handoff"]["team_event_candidates"][0]["public_news_discovery_sha256"] == bridge["source_sha256"]
+    assert "news_discovery_receipt" not in attached["model_handoff"]["team_event_candidates"][0]
+    assert attached["public_news_discovery_receipt"]["articles"] == receipt["articles"]
     result = enrich_handoff(attached)
     nba = result["model_handoff"]["team_event_candidates"][0]
     nfl = result["model_handoff"]["prop_candidates"][0]
@@ -99,7 +102,7 @@ def test_cross_sport_news_does_not_leak_between_events(tmp_path):
     attached = _attach_sibling_news(payload, _write(tmp_path, receipt))
     assert attached["public_news_discovery_bridge"]["status"] == "NEWS_NO_MATCHING_SPORT"
     assert attached["public_news_discovery_bridge"]["candidates_touched"] == 0
-    assert "news_discovery_receipt" not in attached["model_handoff"]["team_event_candidates"][0]
+    assert "public_news_discovery_sha256" not in attached["model_handoff"]["team_event_candidates"][0]
 
 
 def test_malformed_forged_or_oversized_news_receipts_fail_closed(tmp_path):
@@ -114,7 +117,7 @@ def test_malformed_forged_or_oversized_news_receipts_fail_closed(tmp_path):
         candidate = {**receipt, **change}
         result = _attach_sibling_news(payload, _write(tmp_path, candidate))
         assert result["public_news_discovery_bridge"]["status"] == "NEWS_RECEIPT_INVALID"
-        assert "news_discovery_receipt" not in result["model_handoff"]["team_event_candidates"][0]
+        assert "public_news_discovery_sha256" not in result["model_handoff"]["team_event_candidates"][0]
     (tmp_path / "public-gdelt-receipt.json").write_text("{not-json", encoding="utf-8")
     assert _attach_sibling_news(payload, tmp_path / "model-handoff.json")[
         "public_news_discovery_bridge"]["status"] == "NEWS_RECEIPT_UNREADABLE"
@@ -136,3 +139,21 @@ def test_existing_independent_news_review_is_not_overwritten(tmp_path):
 def test_news_artifact_absence_keeps_legacy_handoff_exact(tmp_path):
     payload, _ = _fixture()
     assert _attach_sibling_news(payload, tmp_path / "model-handoff.json") is payload
+
+
+def test_many_candidates_reference_one_bounded_public_receipt(tmp_path):
+    payload, receipt = _fixture()
+    one = payload["model_handoff"]["team_event_candidates"][0]
+    payload["model_handoff"]["team_event_candidates"] = [
+        {**one, "official_event_id": f"NBA-SAMPLE-{i}"} for i in range(400)
+    ]
+    attached = _attach_sibling_news(payload, _write(tmp_path, receipt))
+    assert attached["public_news_discovery_bridge"]["candidates_touched"] == 400
+    digest = attached["public_news_discovery_bridge"]["source_sha256"]
+    assert all(row["public_news_discovery_sha256"] == digest
+               and "news_discovery_receipt" not in row
+               for row in attached["model_handoff"]["team_event_candidates"])
+    # Original article URL is serialized only once, not 400 times.
+    assert json.dumps(attached).count("https://reporter.example/sports/news") == 1
+    assert len(json.dumps(attached)) < 250_000
+    assert attached["can_execute"] is False
