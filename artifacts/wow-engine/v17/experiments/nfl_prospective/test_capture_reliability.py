@@ -61,3 +61,37 @@ def test_workflow_avoids_minute_zero_and_alarms_after_grading():
     assert "NFL_PROSPECTIVE_ALL_ELIGIBLE_HELD" in workflow
     assert 'retention-days: 90' in workflow
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
+
+
+def test_all_held_receipt_explains_why_without_raw_exception_details():
+    import runner
+    assert hasattr(runner, "capture_hold_reason"), "runner must classify an evidence hold"
+    assert runner.capture_hold_reason(ValueError("NFL_TARGET_EVENT_FEATURE_MISMATCH")) == "NFL_TARGET_EVENT_FEATURE_MISMATCH"
+    assert runner.capture_hold_reason(ValueError("SECRET=untrusted")) == "NFL_CAPTURE_FEATURE_INVALID"
+    assert runner.capture_hold_reason(KeyError("password")) == "NFL_CAPTURE_INPUT_MISSING"
+    counts = {"NFL_TARGET_EVENT_FEATURE_MISMATCH": 1, "NFL_CAPTURE_INPUT_MISSING": 1}
+    result = status_from_counts(2, 0, 0, 2, hold_reason_counts=counts)
+    assert result["status"] == "EVIDENCE_ALL_HELD"
+    assert result["run_ok"] is False
+    assert result["evidence_hold_reason_counts"] == {
+        "NFL_CAPTURE_INPUT_MISSING": 1, "NFL_TARGET_EVENT_FEATURE_MISMATCH": 1
+    }
+    assert "password" not in repr(result) and "SECRET" not in repr(result)
+    assert result["can_execute"] is False
+
+
+def test_hold_reason_counts_cannot_launder_impossible_accounting_or_unknown_codes():
+    from runner import status_from_counts
+    result = status_from_counts(
+        2, 0, 0, 2,
+        hold_reason_counts={"NFL_TARGET_EVENT_FEATURE_MISMATCH": 1}
+    )
+    assert result["status"] == "CAPTURE_ACCOUNTING_INCONSISTENT"
+    assert result["run_ok"] is False
+    invalid = status_from_counts(
+        1, 0, 0, 1,
+        hold_reason_counts={"untrusted user raw string": 1}
+    )
+    assert invalid["status"] == "CAPTURE_ACCOUNTING_INCONSISTENT"
+    assert invalid["run_ok"] is False
+    assert "untrusted" not in repr(invalid)
