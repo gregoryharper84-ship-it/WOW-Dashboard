@@ -163,11 +163,11 @@ jobs:
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with open(summary_path, "a", encoding="utf-8") as report:
-                  report.write("## WOW V17 Phase 1 restoration signal\\n")
-                  report.write(f"- Status: {restoration_phase1['restoration_status']}\\n")
-                  report.write(f"- Signal: {restoration_phase1['signal']}\\n")
-                  report.write(f"- Completed/held: {restoration_phase1['rows_completed']}/{restoration_phase1['rows_held']}\\n")
-                  report.write("- Product acceptance: NOT ESTABLISHED (no model certification claim)\\n")
+                  report.write("## WOW V17 Phase 1 restoration signal\n")
+                  report.write(f"- Status: {restoration_phase1['restoration_status']}\n")
+                  report.write(f"- Signal: {restoration_phase1['signal']}\n")
+                  report.write(f"- Completed/held: {restoration_phase1['rows_completed']}/{restoration_phase1['rows_held']}\n")
+                  report.write("- Product acceptance: NOT ESTABLISHED (no model certification claim)\n")
 
           print(json.dumps({
               "watcher_mode": "HOURLY_CANONICAL_FULL_SLATE_REFRESH",
