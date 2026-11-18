@@ -50,6 +50,56 @@ def _timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+
+def _validated_server_hydration(
+    hydrated: Any, event_start_time: str,
+) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
+    """Fail-close the server-source boundary; never promote caller evidence.
+
+    This checks the chronology and identity of an already server-owned
+    response, not that a server producer or independent certification exists.
+    Full feature, lineup, model and certification checks remain downstream.
+    """
+    if not isinstance(hydrated, Mapping):
+        return None
+    package = hydrated.get("feature_package") or hydrated
+    lineup = hydrated.get("lineup_evidence")
+    if not isinstance(package, Mapping) or not isinstance(lineup, Mapping) or not lineup:
+        return None
+    audit = package.get("feature_audit")
+    if not isinstance(audit, Mapping):
+        return None
+    if not (
+        audit.get("server_owned") is True
+        or audit.get("source_authority") in ("SERVER_CANONICAL", "SERVER_OWNED")
+    ):
+        return None
+    # Both attestation and replay are required by the existing feature scorer.
+    if (
+        audit.get("timestamp_attestation") != "VERIFIED"
+        or audit.get("source_replay_status") != "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS"
+    ):
+        return None
+    source_id = str(package.get("source_snapshot_id") or "").strip()
+    if not source_id:
+        return None
+    if hydrated.get("source_snapshot_id") not in (None, source_id):
+        return None
+    event_at = _timestamp(event_start_time)
+    feature_at = _timestamp(
+        audit.get("as_of") or audit.get("feature_timestamp")
+        or package.get("feature_as_of") or audit.get("captured_at")
+    )
+    if (
+        event_at is None
+        or feature_at is None
+        or feature_at >= event_at
+        or feature_at > datetime.now(timezone.utc)
+    ):
+        return None
+    return package, lineup, source_id
+
+
 def _hold(
     code: str,
     blocker: str | tuple[str, ...],
@@ -873,41 +923,28 @@ def score_nba_team_event_request(
     evidence = getattr(req, "sport_specific_evidence", None)
     evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
 
-    feature_package = evidence_map.get("feature_package") or evidence_map.get("current_feature_package")
-    lineup_evidence = evidence_map.get("lineup_evidence")
-    if not isinstance(feature_package, Mapping) and all(
-        k in evidence_map for k in ("features", "feature_audit")
-    ):
-        feature_package = evidence_map
-
+    # Request-provided feature packages, rotations and source IDs have no
+    # hydration authority. Only the registered server producer may supply them.
+    feature_package = None
+    lineup_evidence = None
+    server_snapshot_id = None
     server_hydrated = False
-    if hasattr(event_api, "hydrate_nba_features") and callable(event_api.hydrate_nba_features):
+    hydrate = getattr(event_api, "hydrate_nba_features", None)
+    if callable(hydrate):
         try:
-            hydrated_pkg = event_api.hydrate_nba_features(req)
-            if isinstance(hydrated_pkg, Mapping):
-                candidate_pkg = hydrated_pkg.get("feature_package") or hydrated_pkg
-                audit = candidate_pkg.get("feature_audit") if isinstance(candidate_pkg, Mapping) else {}
-                if not isinstance(audit, Mapping):
-                    audit = hydrated_pkg.get("feature_audit") if isinstance(hydrated_pkg.get("feature_audit"), Mapping) else {}
-
-                is_server_owned = audit.get("server_owned") is True or audit.get("source_authority") in ("SERVER_CANONICAL", "SERVER_OWNED")
-                is_attested = audit.get("timestamp_attestation") == "VERIFIED" or audit.get("source_replay_status") == "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS"
-
-                # Independent chronology verification: feature timestamp must precede event start
-                as_of = str(audit.get("as_of") or candidate_pkg.get("feature_as_of") or audit.get("captured_at") or "")
-                start_time = str(
-                    getattr(req, "event_start_time_utc", "")
-                    or getattr(req, "event_start_time", "")
-                    or evidence_map.get("event_start_time_utc", "")
-                    or ""
-                )
-                chronology_valid = bool(as_of and start_time and as_of < start_time) if (as_of and start_time) else False
-
-                if is_server_owned and is_attested and chronology_valid:
-                    feature_package = candidate_pkg
-                    lineup_evidence = hydrated_pkg.get("lineup_evidence") or lineup_evidence
-                    server_hydrated = True
+            server_evidence = hydrate(req)
+            event_start = str(
+                getattr(req, "event_start_time_utc", "")
+                or getattr(req, "event_start_time", "")
+                or ""
+            )
+            verified = _validated_server_hydration(server_evidence, event_start)
+            if verified is not None:
+                feature_package, lineup_evidence, server_snapshot_id = verified
+                server_hydrated = True
         except Exception:
+            # A producer fault never authorizes fallback to caller-supplied
+            # features; preserve a typed canonical-hydration HOLD.
             server_hydrated = False
 
     if canonical_hydration_required:
@@ -941,7 +978,7 @@ def score_nba_team_event_request(
         away_team_alias=str(getattr(req, "away_team", "") or evidence_map.get("away_team_alias", "")),
         current_feature_package=feature_package,
         lineup_evidence=lineup_evidence,
-        source_snapshot_id=getattr(req, "source_snapshot_id", None) or evidence_map.get("source_snapshot_id"),
+        source_snapshot_id=server_snapshot_id,
         client=client,
         identity_resolver=resolve_nba_current_event_identity,
         calibration_artifact_resolver=resolve_nba_calibrator_artifact,
