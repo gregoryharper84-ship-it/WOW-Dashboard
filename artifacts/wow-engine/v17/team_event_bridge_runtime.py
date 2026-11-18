@@ -214,12 +214,86 @@ def missing_bridge_inputs(req: Any, registration: TeamEventBridgeRegistration) -
 def _finite_probability(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except OverflowError:
+        return False
     return isfinite(parsed) and 0.0 <= parsed <= 1.0
+
+
+def _validate_fitted_registry_bridge_output(
+    req: Any, result: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate NHL fitted-registry packages without inventing provenance.
+
+    Identity-calibrator holds intentionally omit calibrated bounds. Those must
+    remain typed holds, not be reclassified as MODEL_OUTPUT_INVALID. Empirical
+    packages still go through the full governed scoring contract.
+    """
+    blockers = [str(item) for item in (result.get("blockers") or []) if str(item or "").strip()]
+    identity_hold = (
+        "NHL_CALIBRATED_LOWER_BOUND_UNAVAILABLE" in blockers
+        and str(result.get("calibration_method") or "") == "IDENTITY_RAW_PROBABILITY_V1"
+        and result.get("calibrated_lower_bound") is None
+        and result.get("calibrated_upper_bound") is None
+    )
+    required_fields = (
+        "candidate_id",
+        "immutable_model_timestamp",
+        "calibration_method",
+        "calibration_version",
+        "source_snapshot_id",
+        "source_snapshot_timestamp",
+        "outcome_space",
+    )
+    missing = [
+        f"{field.upper()}_REQUIRED"
+        for field in required_fields
+        if not str(result.get(field) or "").strip()
+    ]
+    if not (
+        str(result.get("prediction_id") or "").strip()
+        or str(result.get("candidate_id") or "").strip()
+    ):
+        missing.append("PREDICTION_ID_OR_CANDIDATE_ID_REQUIRED")
+    if missing:
+        raise _model_failure_detail(
+            req,
+            code=MODEL_OUTPUT_INVALID,
+            blocker=missing[0],
+            status_code=409,
+            extra={"missing_fields": missing, "model_invoked": True},
+        )
+    if identity_hold:
+        out = dict(result)
+        out["rank_eligible"] = False
+        out["probability_publishable"] = False
+        out["can_execute"] = False
+        return out
+    audit = validate_governed_scoring_package(result)
+    if audit.status != PASS:
+        code = audit.status if audit.status != MODEL_OUTPUT_INVALID else MODEL_OUTPUT_INVALID
+        raise _model_failure_detail(
+            req,
+            code=code,
+            blocker=(audit.blockers[0] if audit.blockers else "GOVERNED_PACKAGE_INVALID"),
+            status_code=409,
+            extra={"governed_package_audit": audit.as_dict()},
+        )
+    out = dict(result)
+    out["rank_eligible"] = bool(result.get("rank_eligible") is True and audit.rank_eligible)
+    out["probability_publishable"] = bool(
+        result.get("probability_publishable") is True and audit.scoring_allowed
+    )
+    out["can_execute"] = False
+    return out
 
 
 def _validate_standard_bridge_output(req: Any, result: dict[str, Any]) -> dict[str, Any]:
     """Validate the canonical package for newly registered non-MLB adapters."""
+    if result.get("fitted_registry_scoring") is True:
+        return _validate_fitted_registry_bridge_output(req, result)
+
     audit = validate_governed_scoring_package(result)
     if audit.status != PASS:
         # Stale governed packages have their own typed status in the scoring
@@ -418,8 +492,21 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
         registered = registration is not None
         probe = probe_sport(sport)
         certification, certification_id = certification_state(sport, registered=registered)
+        # NBA may be registered while canonical server hydration is still absent.
+        # Keep the typed scorer failure, but do not report health as UP.
+        nba_hydration_blocked = registered and sport == "NBA"
+        scoring_blockers = (
+            ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+            if nba_hydration_blocked else []
+        )
         health[sport] = {
-            "status": "UP" if registered else MODEL_UNAVAILABLE,
+            "status": (
+                "BLOCKED" if nba_hydration_blocked
+                else "UP" if registered
+                else MODEL_UNAVAILABLE
+            ),
+            "request_scoring_path_ready": bool(registered and not nba_hydration_blocked),
+            "readiness_blockers": scoring_blockers,
             "registered": registered,
             "registered_capability": registered,
             "registry_state": resolve_state(sport, registered=registered, probe=probe),
@@ -623,6 +710,43 @@ def _register_nfl_bridge_if_available() -> bool:
     return True
 
 
+def _register_nba_bridge_if_available() -> bool:
+    """Additive registration for the fitted NBA current-pregame bridge.
+
+    NBA has an independent fitted basketball candidate/training/calibration
+    pipeline, official event and team identity, and a pregame scorer. If the
+    adapter or scorer cannot be imported, the bridge is not registered and the
+    route fails closed.
+    """
+    if os.getenv("WOW_V17_NBA_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+    try:
+        from v17.nba_current_pregame_scorer import score_nba_team_event_request
+    except Exception:  # noqa: BLE001 - absence is an audit answer, not a crash
+        return False
+
+    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = True) -> dict[str, Any]:
+        # The shared dispatcher's historical default can explicitly forward
+        # False despite this wrapper's True default. No NBA caller-evidence
+        # shortcut is certified; force server hydration on every registered path.
+        return score_nba_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=True,
+        )
+
+    register_team_event_bridge(
+        "NBA",
+        adapter_name="V17_NBA_TEAM_EVENT_BRIDGE",
+        controlling_specialist="NBA_GAME_WIN_PROBABILITY_EXPERT_V1",
+        scorer=scorer,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS["NBA"],
+        standard_package_validation=False,
+        supported_regimes=(REGULAR_SEASON,),
+    )
+    return True
+
+
 def install_team_event_bridge_runtime() -> dict[str, Any]:
     """Install the authoritative production registry exactly once."""
     global _INSTALLED
@@ -657,6 +781,7 @@ def install_team_event_bridge_runtime() -> dict[str, Any]:
     # condition, and with no promoted champion the scorer still fails closed as
     # MODEL_UNAVAILABLE at score time.
     _register_nfl_bridge_if_available()
+    _register_nba_bridge_if_available()
 
     _base_runtime.score_team_event_request = score_registered_team_event_request
     _install_health_overlay()
