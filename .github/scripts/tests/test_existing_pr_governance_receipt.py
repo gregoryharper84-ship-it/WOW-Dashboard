@@ -302,7 +302,7 @@ gh() {
             "GITHUB_REPOSITORY": REPOSITORY,
             "GITHUB_OUTPUT": str(outputs),
             "EVENT_NAME": "workflow_run",
-            "REVIEW_ACTIVE": "true",
+            "QA_MODE": "independent",
             "SOURCE_RUN_ID": "40062800000",
             "SOURCE_RUN_ATTEMPT": "1",
             "SOURCE_CONCLUSION": "success",
@@ -338,8 +338,8 @@ POLICY_ARTIFACT = {"artifacts": [{"name": "wow-v17-qa-policy-40062800000-1"}]}
     ("overrides", "reason"),
     [
         # Observed in run 40062825503: QA completion while source review is inactive.
-        ({"REVIEW_ACTIVE": "", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
-        ({"REVIEW_ACTIVE": "false", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
+        ({"QA_MODE": "legacy", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
+        ({"QA_MODE": "legacy", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
         ({"SOURCE_CONCLUSION": "failure"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:failure"),
         ({"SOURCE_CONCLUSION": "skipped"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:skipped"),
         ({"SOURCE_CONCLUSION": ""}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:none"),
@@ -354,9 +354,19 @@ def test_inapplicable_workflow_run_exits_neutrally_without_receipt(overrides, re
     assert "EXISTING_PR_NUMBER_INVALID" not in result.stderr
 
 
+@pytest.mark.parametrize(("mode", "code"), [
+    ("", "QA_REVIEW_MODE_UNCONFIGURED"),
+    ("unknown", "QA_REVIEW_MODE_INVALID"),
+])
+def test_route_rejects_missing_or_invalid_canonical_mode(run_route_step, mode, code):
+    result, outputs = run_route_step(QA_MODE=mode)
+    assert result.returncode != 0 and code in result.stderr
+    assert outputs == {}
+
+
 @pytest.mark.parametrize("event", ["pull_request_target", "workflow_dispatch"])
 def test_direct_pr_events_are_always_applicable(event, run_route_step):
-    result, outputs = run_route_step(EVENT_NAME=event, REVIEW_ACTIVE="", SOURCE_RUN_ID="", SOURCE_CONCLUSION="")
+    result, outputs = run_route_step(EVENT_NAME=event, QA_MODE="legacy", SOURCE_RUN_ID="", SOURCE_CONCLUSION="")
 
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
@@ -371,7 +381,7 @@ def test_authenticated_exact_attempt_canary_wakes_certifier_global_off(run_route
     }
     expected = {"artifacts": POLICY_ARTIFACT["artifacts"] + [exact]}
     result, outputs = run_route_step(
-        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps(expected),
+        QA_MODE="legacy", TEST_ARTIFACTS_JSON=json.dumps(expected),
     )
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
@@ -391,7 +401,7 @@ def test_unbound_or_duplicate_canary_remains_neutral(change, run_route_step):
     if change == "duplicate":
         payload.append(dict(exact))
     result, outputs = run_route_step(
-        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps({"artifacts": payload}),
+        QA_MODE="legacy", TEST_ARTIFACTS_JSON=json.dumps({"artifacts": payload}),
     )
     assert result.returncode == 0, result.stderr
     assert outputs == {
@@ -446,7 +456,7 @@ def run_release_check(run_route_step, *, event_prs=None, api_prs=None, api_check
     inventory = inventory if inventory is not None else [pr]
     return run_route_step(
         EVENT_NAME="check_run",
-        REVIEW_ACTIVE="",
+        QA_MODE="legacy",
         CHECK_RUN_PRS=json.dumps(event_prs),
         TEST_RELEASE_CHECK_RUN_JSON=json.dumps(api_check),
         TEST_RELEASE_PR_JSON=json.dumps(pr),
@@ -2409,7 +2419,7 @@ def test_v4_class_a_historical_certifier_is_not_release_dependency():
     gate = TRUSTED_GATE.read_text(encoding="utf-8")
     release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     morning = MORNING_GREEN_WORKFLOW.read_text(encoding="utf-8")
-    assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
+    assert "WOW_QA_MODE" in workflow
     assert "--deterministic-class-a" in workflow
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
     assert "verify_existing_pr_governance_receipt.py" in gate
