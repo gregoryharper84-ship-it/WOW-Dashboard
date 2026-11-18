@@ -12,6 +12,8 @@ on:
       - "artifacts/wow-engine/v17/daily_snapshot_runtime.py"
       - "artifacts/wow-engine/tests/test_v17_team_event_recoverable_holds.py"
       - "artifacts/wow-engine/tests/test_v17_team_event_recoverable_refresh.py"
+      - "artifacts/wow-engine/tests/test_v17_phase1_restoration_signal.py"
+      - "artifacts/wow-engine/v17/phase1_restoration_signal.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
@@ -42,6 +44,7 @@ jobs:
           python -m pytest -q
           tests/test_v17_team_event_recoverable_holds.py
           tests/test_v17_team_event_recoverable_refresh.py
+          tests/test_v17_phase1_restoration_signal.py
           test_v17_github_oidc.py
 
   refresh:
@@ -59,6 +62,9 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Assert non-execution governance and OIDC context
         shell: bash
         run: |
@@ -148,8 +154,24 @@ jobs:
           if cross_reconciliation.get("row_reconciliation") != "PASS":
               raise AssertionError("TEAM_EVENT_RECOVERABLE_REFRESH_CROSS_SPORT_RECONCILIATION_FAILED")
 
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd() / "artifacts/wow-engine"))
+          from v17.phase1_restoration_signal import classify_refresh_run
+
+          restoration_phase1 = classify_refresh_run(result)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as report:
+                  report.write("## WOW V17 Phase 1 restoration signal\\n")
+                  report.write(f"- Status: {restoration_phase1['restoration_status']}\\n")
+                  report.write(f"- Signal: {restoration_phase1['signal']}\\n")
+                  report.write(f"- Completed/held: {restoration_phase1['rows_completed']}/{restoration_phase1['rows_held']}\\n")
+                  report.write("- Product acceptance: NOT ESTABLISHED (no model certification claim)\\n")
+
           print(json.dumps({
               "watcher_mode": "HOURLY_CANONICAL_FULL_SLATE_REFRESH",
+              "phase1_restoration": restoration_phase1,
               "run_id": result.get("run_id"),
               "run_status": result.get("run_status"),
               "rows_completed": reconciliation.get("rows_completed"),
