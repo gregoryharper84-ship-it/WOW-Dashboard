@@ -10,8 +10,11 @@ from nfl_event_data_p1 import CapturedAsset, DATASET_INJURIES, _scan_csv
 
 
 def _capture(tmp_path):
-    body = ("season,team,week,season_type,gsis_id,position,report_status,practice_status,date_modified\\n"
-            "2026,IND,12,REG,00-1234,RB,Questionable,Limited,2026-11-18T00:00:00Z\\n").replace("\\n", "\n").encode()
+    body = "\n".join([
+        "season,team,week,season_type,gsis_id,position,report_status,practice_status,date_modified",
+        "2026,IND,12,REG,00-1234,RB,Questionable,Limited,2026-11-18T00:00:00Z",
+        "",
+    ]).encode()
     local = tmp_path / "injuries_2026.csv"
     local.write_bytes(body)
     return CapturedAsset(
@@ -108,5 +111,43 @@ def test_empty_source_is_not_written_even_when_persistence_requested(monkeypatch
     )
     monkeypatch.setattr(runtime, "_preserve_raw", lambda *_: pytest.fail("empty must not touch Storage"))
     monkeypatch.setattr(runtime, "_snapshot_id", lambda *_: pytest.fail("empty must not touch DB"))
+    with pytest.raises(RuntimeError, match="NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE"):
+        runtime.refresh_nfl_injury_source(season=2026, db=object(), persist=True)
+
+
+
+@pytest.mark.parametrize("empty_row", ["", ",,,,,,,,"])
+def test_header_only_or_blank_injury_rows_cannot_be_persisted(tmp_path, monkeypatch, empty_row):
+    """A CSV record count of one may be an all-empty record, not an injury."""
+    base = _capture(tmp_path)
+    header = "season,team,week,season_type,gsis_id,position,report_status,practice_status,date_modified\n"
+    body = (header + empty_row + "\n").encode()
+    Path(base.local_path).write_bytes(body)
+    columns, row_count = _scan_csv(Path(base.local_path), DATASET_INJURIES)
+    assert row_count in {0, 1}  # _scan_csv can count an empty comma-delimited record
+    captured = replace(
+        base, content_sha256=hashlib.sha256(body).hexdigest(),
+        byte_count=len(body), row_count=row_count,
+        column_names=columns,
+        source_status="CAPTURED" if row_count else "CAPTURED_EMPTY",
+    )
+    monkeypatch.setattr(runtime, "download_asset", lambda *_: captured)
+    monkeypatch.setattr(runtime, "_preserve_raw", lambda *_: pytest.fail("blank CSV must not reach Storage"))
+    monkeypatch.setattr(runtime, "_snapshot_id", lambda *_: pytest.fail("blank CSV must not reach database"))
+
+    with pytest.raises(RuntimeError, match="NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE"):
+        runtime.refresh_nfl_injury_source(season=2026, db=object(), persist=True)
+    with pytest.raises(RuntimeError, match="NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE"):
+        runtime.refresh_nfl_injury_source(season=2026)
+
+
+def test_incomplete_row_after_valid_row_is_not_accepted(tmp_path, monkeypatch):
+    base = _capture(tmp_path)
+    with Path(base.local_path).open("a", encoding="utf-8") as handle:
+        handle.write("2026,IND,12,REG,00-9999\n")
+    byte_content = Path(base.local_path).read_bytes()
+    captured = replace(base, content_sha256=hashlib.sha256(byte_content).hexdigest(), row_count=2)
+    monkeypatch.setattr(runtime, "download_asset", lambda *_: captured)
+    monkeypatch.setattr(runtime, "_preserve_raw", lambda *_: pytest.fail("malformed source must not persist"))
     with pytest.raises(RuntimeError, match="NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE"):
         runtime.refresh_nfl_injury_source(season=2026, db=object(), persist=True)
