@@ -1008,12 +1008,10 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
                               if step.get("name") == "Mint dedicated semantic reviewer App token")
 
     assert "github.ref == 'refs/heads/main'" in workflow
-    # Preserve the four bounded native regression admission triggers;
-    # trusted governance gate was deliberately removed to prevent QA loops.
-    assert parsed["on"]["workflow_run"]["workflows"] == [
-        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate",
-    ]
+    # One canonical QA completion source; exact-head native CI is preflighted
+    # before the reviewer so the separate workflows cannot multiply reviews.
+    assert parsed["on"]["workflow_run"]["workflows"] == ["wow-verify"]
+    assert "Wait for exact-head native CI before reviewer" in workflow
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
@@ -1022,7 +1020,8 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "WOW_QA_MODE" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_PR" in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA" in workflow
     assert "Select exact-head review policy" in workflow
