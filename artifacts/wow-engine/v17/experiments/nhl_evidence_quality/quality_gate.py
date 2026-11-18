@@ -51,6 +51,19 @@ GOALIE_SAVES_ROLES = frozenset({
     "OPPONENT_SHOT_VOLUME", "OPPONENT_DEFENSE_5V5", "REST_AND_AVAILABILITY",
     "MARKET_OFFER",
 })
+# Typed source-content checks. Source labels and hashes alone cannot establish
+# a measurement exists. These are candidate research-contract units, not fitted
+# coefficients or approved source entitlements.
+ROLE_REQUIRED_METRICS = {
+    "TEAM_SHOT_QUALITY": ("home_xgf_per60", "away_xgf_per60", "home_high_danger_for_per60", "away_high_danger_for_per60"),
+    "OPPONENT_DEFENSE_5V5": ("home_xga_per60", "away_xga_per60", "home_high_danger_against_per60", "away_high_danger_against_per60"),
+    "SPECIAL_TEAMS": ("home_pp_rate", "away_pp_rate", "home_pk_rate", "away_pk_rate"),
+    "REST_AND_AVAILABILITY": ("home_rest_days", "away_rest_days"),
+    "GOALIE_FORM": ("home_goalie_save_rate", "away_goalie_save_rate", "home_goalie_gsax_per60", "away_goalie_gsax_per60"),
+    "OPPONENT_PROP_SUPPRESSION": ("opponent_allowed_stat_per60",),
+}
+RATE_METRICS = frozenset({"home_pp_rate", "away_pp_rate", "home_pk_rate", "away_pk_rate", "home_goalie_save_rate", "away_goalie_save_rate"})
+PLAYER_ROLE_IDS = frozenset({"PLAYER_TOI_PP", "PLAYER_OPPORTUNITY", "LINE_ASSIGNMENT", "PLAYER_AVAILABILITY", "GOALIE_WORKLOAD", "MARKET_OFFER"})
 PROP_TYPES = frozenset({"GOALS", "ASSISTS", "POINTS", "SHOTS_ON_GOAL", "GOALIE_SAVES"})
 OPPORTUNITY_METRICS = {
     "GOALS": ("ixg_per60", "shot_attempts_per60"),
@@ -121,14 +134,26 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
     start, snapshot = _utc(card.get("event_start_utc")), _utc(card.get("snapshot_at_utc"))
     if start is None or snapshot is None or snapshot >= start:
         blockers.add("NHL_PREGAME_CHRONOLOGY_INVALID")
+    home, away = card.get("home"), card.get("away")
+    if (not isinstance(home, str) or not re.fullmatch(r"[A-Z]{3}", home)
+            or not isinstance(away, str) or not re.fullmatch(r"[A-Z]{3}", away)
+            or home == away):
+        blockers.add("NHL_CARD_OPPONENT_IDENTITY_INVALID")
     if not isinstance(card.get("pregame_receipt_id"), str) or not card["pregame_receipt_id"].strip():
         blockers.add("NHL_PREGAME_RECEIPT_MISSING")
     if not _hash(card.get("pregame_source_hash")):
         blockers.add("NHL_PREGAME_SOURCE_HASH_INVALID")
     if family == "FULL_GAME_ML":
+        if card.get("predicted_winner") not in (home, away) or not isinstance(card.get("predicted_winner"), str):
+            blockers.add("NHL_ML_SELECTED_SIDE_INVALID")
         if card.get("settlement_basis") != "FULL_GAME_INCLUDING_OT_SO":
             blockers.add("NHL_ML_SETTLEMENT_BASIS_INVALID")
     if family == "PLAYER_PROP":
+        if (not isinstance(card.get("team"), str) or not isinstance(card.get("opponent"), str)
+                or card.get("team") not in (home, away)
+                or card.get("opponent") not in (home, away)
+                or card.get("team") == card.get("opponent")):
+            blockers.add("NHL_PROP_OPPONENT_IDENTITY_INVALID")
         if not isinstance(card.get("stat_type"), str) or card.get("stat_type") not in PROP_TYPES or not (
             isinstance(card.get("player_id"), str) and card["player_id"].isdigit()
         ):
@@ -161,6 +186,8 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
         if role in observed:
             blockers.add("NHL_EVIDENCE_DUPLICATE_ROLE")
         observed.add(role)
+        if (item.get("home") != home or item.get("away") != away):
+            blockers.add("NHL_EVIDENCE_OPPONENT_IDENTITY_MISMATCH")
         if (item.get("official_event_id") != card.get("official_event_id")
                 or not isinstance(item.get("provider"), str)
                 or not item["provider"].strip()
@@ -173,11 +200,31 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
             blockers.add("NHL_EVIDENCE_TIME_INVALID")
         elif snapshot - as_of > timedelta(minutes=ROLE_MAX_AGE_MINUTES[role]):
             blockers.add("NHL_EVIDENCE_STALE_" + role)
-        if (family == "PLAYER_PROP" and role in {
-            "PLAYER_TOI_PP", "PLAYER_OPPORTUNITY", "LINE_ASSIGNMENT",
-            "PLAYER_AVAILABILITY", "GOALIE_WORKLOAD",
-        } and item.get("player_id") != card.get("player_id")):
-            blockers.add("NHL_EVIDENCE_PLAYER_IDENTITY_MISMATCH")
+        if family == "PLAYER_PROP" and role in PLAYER_ROLE_IDS:
+            if item.get("player_id") != card.get("player_id"):
+                blockers.add("NHL_EVIDENCE_PLAYER_IDENTITY_MISMATCH")
+            if item.get("team") != card.get("team") or item.get("opponent") != card.get("opponent"):
+                blockers.add("NHL_EVIDENCE_PLAYER_OPPONENT_MISMATCH")
+        if role in ROLE_REQUIRED_METRICS:
+            metrics = item.get("metrics")
+            keys = ROLE_REQUIRED_METRICS[role]
+            if (not isinstance(metrics, Mapping) or any(
+                not _number(metrics.get(k), minimum=-100) or
+                (k in RATE_METRICS and float(metrics[k]) > 1)
+                for k in keys
+            )):
+                blockers.add("NHL_EVIDENCE_ROLE_METRICS_MISSING_OR_INVALID_" + role)
+        if role == "GOALIE_STARTERS":
+            if not all(isinstance(item.get(k), str) and item[k].isdigit() and int(item[k]) > 0
+                       for k in ("home_goalie_id", "away_goalie_id")):
+                blockers.add("NHL_EVIDENCE_GOALIE_IDS_MISSING")
+        if role == "LINE_ASSIGNMENT" and family == "PLAYER_PROP":
+            if not (isinstance(item.get("line_id"), str) and item["line_id"].strip()
+                    and type(item.get("power_play_unit")) is int and 0 <= item["power_play_unit"] <= 2):
+                blockers.add("NHL_EVIDENCE_LINE_ASSIGNMENT_INVALID")
+        if role == "PLAYER_AVAILABILITY" and family == "PLAYER_PROP":
+            if item.get("availability") != "CONFIRMED_ACTIVE":
+                blockers.add("NHL_EVIDENCE_PLAYER_NOT_CONFIRMED_ACTIVE")
         if role == "PLAYER_OPPORTUNITY" and family == "PLAYER_PROP":
             fields = OPPORTUNITY_METRICS.get(card.get("stat_type")) if isinstance(card.get("stat_type"), str) else None
             metrics = item.get("metrics")
@@ -200,7 +247,9 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(metrics, Mapping) or not _number(metrics.get("opponent_sog_for_per60")):
                 blockers.add("NHL_OPPONENT_SHOT_VOLUME_MISSING")
         if role == "MARKET_OFFER" and family == "PLAYER_PROP":
-            if (item.get("player_id") != card.get("player_id")
+            if (not _number(item.get("price_decimal"), minimum=1.00001)
+                    or item.get("offer_status") != "OPEN"
+                    or item.get("player_id") != card.get("player_id")
                     or item.get("market_id") != card.get("market_id")
                     or item.get("exact_line") != card.get("exact_line")
                     or item.get("side") != card.get("side")
