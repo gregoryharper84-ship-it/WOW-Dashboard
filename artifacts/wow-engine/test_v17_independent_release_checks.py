@@ -2025,18 +2025,18 @@ def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):
         run_(m.TRUSTED_GOVERNANCE_CHECK, rid=90)
     )
 
-    # OFF -> ON: a genuine legacy QA pass cannot satisfy the now-active policy.
-    proc, runner, _ = _run_decide(
-        fake_gh, REL_WF, routes,
-        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "true",
-         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_QA_POLICY": json.dumps(legacy)},
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
-    assert decision["conclusion"] == "failure"
-    assert "RELEASE_QA_REVIEW_POLICY_LEGACY_AFTER_ACTIVATION" in decision["findings"]
+    # A legacy-mode QA receipt (no semantic review) is refused outright: the review
+    # path is derived per PR, so legacy is no longer a reachable mode. No decision is published.
+    for flag in ("true", "false"):
+        proc, runner, _ = _run_decide(
+            fake_gh, REL_WF, routes,
+            {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": flag,
+             "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_QA_POLICY": json.dumps(legacy)},
+        )
+        assert proc.returncode != 0 and "::error::RELEASE_QA_REVIEW_MODE_INVALID:legacy" in proc.stdout
+        assert not (runner / "decisions" / "decision-7.json").exists()
 
-    # ON -> OFF: a later flag change cannot downgrade the producing QA run.
+    # A flag value cannot downgrade the producing QA run.
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, routes,
         {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "false",
@@ -2067,96 +2067,76 @@ def test_activated_qa_review_requires_its_separate_provider_credential():
     assert "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in proc.stdout
 
 
-@pytest.mark.parametrize(
-    ("global_active", "canary_requested", "canary_pr", "canary_sha", "event", "expected"),
-    [
-        ("false", "false", "", "", "workflow_dispatch", ("legacy", "false")),
-        ("false", "true", "7", HEAD, "workflow_dispatch", ("canary", "true")),
-        ("true", "false", "", "", "workflow_run", ("independent", "true")),
-        ("true", "true", "7", HEAD, "workflow_dispatch", ("independent", "true")),
-    ],
-)
-def test_qa_review_policy_selector_is_scoped_and_staged(
-    tmp_path, global_active, canary_requested, canary_pr, canary_sha, event, expected,
-):
+def _select_step(tmp_path, *, selection, canary="false", legacy_review="", legacy_zero="", rc=0):
+    """Run the real policy step with a stubbed selector (cwd holds a fake tool path)."""
+    tool = tmp_path / "artifacts/wow-engine/v17/independent_release_checks.py"
+    tool.parent.mkdir(parents=True, exist_ok=True)
+    tool.write_text("import os, sys\nsys.stdout.write(os.environ['STUB_SELECTION'])\n"
+                    "sys.exit(int(os.environ.get('STUB_RC', '0')))\n")
     output = tmp_path / "outputs"
     proc = subprocess.run(
         ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
         env=dict(
-            os.environ,
-            REVIEW_ACTIVATION=global_active,
-            CANARY_REQUESTED=canary_requested,
-            CANARY_PR=canary_pr,
-            CANARY_SHA=canary_sha,
-            EVENT=event,
-            PR_NUMBER="7",
-            HEAD_SHA=HEAD,
-            GITHUB_OUTPUT=str(output),
+            os.environ, STUB_SELECTION=selection, STUB_RC=str(rc), CANARY_REQUESTED=canary,
+            LEGACY_REVIEW_FLAG=legacy_review, LEGACY_ZERO_CREDIT_FLAG=legacy_zero,
+            GITHUB_REPOSITORY=REPO, PR_NUMBER="7", HEAD_SHA=HEAD, GITHUB_OUTPUT=str(output),
+            GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"),
         ),
-        capture_output=True,
-        text=True,
+        cwd=tmp_path, capture_output=True, text=True,
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    assert (values["mode"], values["review_active"]) == expected
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+    return proc, values
 
 
-@pytest.mark.parametrize(("event", "pr", "sha"), [
-    ("workflow_run", "7", HEAD),
-    ("workflow_dispatch", "8", HEAD),
-    ("workflow_dispatch", "7", OLD),
-    ("workflow_dispatch", "7", "not-a-sha"),
+def _selection(path):
+    return json.dumps({
+        "path": path, "mode": {"deterministic_class_a": "zero_credit", "scoped_independent": "independent"}.get(path, path),
+        "head_sha": HEAD, "base_sha": OLD, "diff_sha256": "d" * 64, "policy_sha256": "e" * 64, "reasons": [],
+    })
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("deterministic_class_a", ("zero_credit", "false", "true")),
+    ("scoped_independent", ("independent", "true", "false")),
 ])
-def test_qa_canary_policy_selector_rejects_unapproved_target(tmp_path, event, pr, sha):
-    proc = subprocess.run(
-        ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
-        env=dict(
-            os.environ,
-            REVIEW_ACTIVATION="false",
-            CANARY_REQUESTED="true",
-            CANARY_PR="7",
-            CANARY_SHA=HEAD,
-            EVENT=event,
-            PR_NUMBER=pr,
-            HEAD_SHA=sha,
-            GITHUB_OUTPUT=str(tmp_path / "outputs"),
-        ),
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode != 0
-    assert "::error::QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD" in proc.stdout \
-        or "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH" in proc.stdout
+@pytest.mark.parametrize("legacy", [("", ""), ("true", "true"), ("false", "false"), ("enabled", "True ")])
+def test_qa_policy_path_is_derived_and_no_legacy_flag_can_select_or_conflict(tmp_path, path, expected, legacy):
+    proc, values = _select_step(tmp_path, selection=_selection(path), legacy_review=legacy[0], legacy_zero=legacy[1])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (values["mode"], values["review_active"], values["zero_credit_active"]) == expected
+    assert values["global_review_active"] == "false"
+    # Legacy variables are never silently dropped: any value is reported, none changes the path.
+    assert ("QA_LEGACY_REVIEW_FLAGS_IGNORED" in proc.stdout) == (legacy != ("", ""))
+    assert "QA_REVIEW_MODES_CONFLICT" not in proc.stdout
 
 
-@pytest.mark.parametrize("activation", ["True", "enabled", "false "])
-def test_qa_review_policy_selector_rejects_unknown_global_activation(tmp_path, activation):
-    proc = subprocess.run(
-        ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
-        env=dict(
-            os.environ,
-            REVIEW_ACTIVATION=activation,
-            CANARY_REQUESTED="false",
-            EVENT="workflow_dispatch",
-            PR_NUMBER="7",
-            HEAD_SHA=HEAD,
-            GITHUB_OUTPUT=str(tmp_path / "outputs"),
-        ),
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode != 0 and "::error::QA_REVIEW_POLICY_INVALID" in proc.stdout
+@pytest.mark.parametrize("canary", ["true"])
+def test_qa_canary_input_is_retired_and_selects_nothing(tmp_path, canary):
+    proc, values = _select_step(tmp_path, selection=_selection("scoped_independent"), canary=canary)
+    assert proc.returncode != 0 and "::error::QA_REVIEW_CANARY_RETIRED" in proc.stdout
+    assert values == {}
 
 
-def test_release_review_policy_selector_rejects_unknown_activation(fake_gh):
+@pytest.mark.parametrize("selection, rc", [
+    (json.dumps({"mode": "legacy"}), 0),
+    (json.dumps({"mode": "canary"}), 0),
+    (json.dumps({"mode": ""}), 0),
+    ("not json", 0),
+    (_selection("scoped_independent"), 1),
+])
+def test_qa_policy_selection_failure_or_unknown_mode_publishes_no_path(tmp_path, selection, rc):
+    proc, values = _select_step(tmp_path, selection=selection, rc=rc)
+    assert proc.returncode != 0 and values == {}
+
+
+def test_release_ignores_legacy_flag_values_and_uses_only_the_qa_receipt(fake_gh):
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, _routes_for_pr(_evidence_runs()),
         {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "enabled",
-         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+         "ZERO_CREDIT_ACTIVATION": "True ", "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
     )
-    assert proc.returncode != 0
-    assert "::error::QA_REVIEW_POLICY_INVALID" in proc.stdout
-    assert not (runner / "decisions" / "decision-7.json").exists()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (runner / "decisions" / "decision-7.json").exists()
 
 
 def test_publish_refuses_a_decision_that_claims_authority(fake_gh):

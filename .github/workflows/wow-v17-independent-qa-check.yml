@@ -144,53 +144,46 @@ jobs:
         if: steps.target.outputs.pr_number != ''
         shell: bash
         env:
-          REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
-          ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          GH_TOKEN: ${{ github.token }}
           CANARY_REQUESTED: ${{ inputs.independent_review_canary }}
-          CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
-          CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
-          EVENT: ${{ github.event_name }}
+          LEGACY_REVIEW_FLAG: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
+          LEGACY_ZERO_CREDIT_FLAG: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
-          case "${REVIEW_ACTIVATION:-}" in
-            true) global_active=true ;;
-            ""|false) global_active=false ;;
-            *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
+          # One derived path per PR from exact-head evidence and the protected-main
+          # allowlist (this job runs from protected main). No flag can select, weaken
+          # or conflict with the path. Any error selects scoped independent review.
+          [ "${CANARY_REQUESTED:-false}" != "true" ] || {
+            echo "::error::QA_REVIEW_CANARY_RETIRED: review path is derived per PR; the canary input is superseded."; exit 1;
+          }
+          selection=$(python artifacts/wow-engine/v17/independent_release_checks.py \
+            select-review-path --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --expected-head "$HEAD_SHA")
+          mode=$(jq -er '.mode' <<<"$selection")
+          case "$mode" in
+            zero_credit) review_active=false; zero_credit_active=true ;;
+            independent) review_active=true;  zero_credit_active=false ;;
+            *) echo "::error::QA_REVIEW_PATH_INVALID"; exit 1 ;;
           esac
-          case "${ZERO_CREDIT_ACTIVATION:-}" in
-            true) zero_credit_active=true ;;
-            ""|false) zero_credit_active=false ;;
-            *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
-          esac
-          if [ "$zero_credit_active" = "true" ] && [ "$global_active" = "true" ]; then
-            echo "::error::QA_REVIEW_MODES_CONFLICT"; exit 1
+          # Legacy repository variables no longer select a path. Record, never silently drop.
+          legacy_ignored=false
+          [ -z "${LEGACY_REVIEW_FLAG:-}" ] && [ -z "${LEGACY_ZERO_CREDIT_FLAG:-}" ] || legacy_ignored=true
+          if [ "$legacy_ignored" = "true" ]; then
+            echo "::warning::QA_LEGACY_REVIEW_FLAGS_IGNORED: WOW_QA_INDEPENDENT_REVIEW_ACTIVE='${LEGACY_REVIEW_FLAG:-}' WOW_QA_ZERO_CREDIT_MODE='${LEGACY_ZERO_CREDIT_FLAG:-}' no longer select a review path."
           fi
-          if [ "$zero_credit_active" = "true" ]; then
-            [ "${CANARY_REQUESTED:-false}" != "true" ] || { echo "::error::QA_ZERO_CREDIT_CANARY_CONFLICT"; exit 1; }
-            mode=zero_credit
-          elif [ "$global_active" = "true" ]; then
-            mode=independent
-          elif [ "${CANARY_REQUESTED:-false}" = "true" ]; then
-            [ "$EVENT" = "workflow_dispatch" ] || {
-              echo "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH"; exit 1;
-            }
-            [[ "${CANARY_PR:-}" =~ ^[1-9][0-9]*$ ]] &&
-              [[ "${CANARY_SHA:-}" =~ ^[a-f0-9]{40}$ ]] &&
-              [ "$PR_NUMBER" = "$CANARY_PR" ] &&
-              [ "$HEAD_SHA" = "$CANARY_SHA" ] || {
-              echo "::error::QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD"; exit 1;
-            }
-            mode=canary
-          else
-            mode=legacy
-          fi
-          active=false
-          [ "$mode" != "independent" ] && [ "$mode" != "canary" ] || active=true
+          {
+            echo "## QA review path"
+            echo "- path: $(jq -r .path <<<"$selection") (mode $mode)"
+            echo "- head $(jq -r .head_sha <<<"$selection") base $(jq -r .base_sha <<<"$selection")"
+            echo "- diff_sha256 $(jq -r .diff_sha256 <<<"$selection")"
+            echo "- policy_sha256 $(jq -r .policy_sha256 <<<"$selection")"
+            echo "- legacy flags ignored: $legacy_ignored"
+            echo "- reasons: $(jq -c .reasons <<<"$selection")"
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "review_active=$active" >> "$GITHUB_OUTPUT"
-          echo "global_review_active=$global_active" >> "$GITHUB_OUTPUT"
+          echo "review_active=$review_active" >> "$GITHUB_OUTPUT"
+          echo "global_review_active=false" >> "$GITHUB_OUTPUT"
           echo "zero_credit_active=$zero_credit_active" >> "$GITHUB_OUTPUT"
 
       - name: Build immutable QA review-policy receipt
