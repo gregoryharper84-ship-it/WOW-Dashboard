@@ -5,6 +5,7 @@ Does not connect to user accounts via self-bots or read channel history.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -16,7 +17,7 @@ from urllib.parse import urlencode
 import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 app = FastAPI(title="WOW V17 Discord Research Intake", docs_url=None, redoc_url=None, openapi_url=None)
@@ -109,7 +110,7 @@ async def _oauth_identity(code: str, client: httpx.AsyncClient) -> dict:
     return {
         "status": "authorized_identity_discovery_only",
         "user": {"id": identity["id"], "username": identity.get("username")},
-        "guilds": [{"id": g["id"], "name": g["name"], "can_manage": bool(int(g.get("permissions", "0")) & 0x20)}
+        "guilds": [{"id": g["id"], "name": g["name"], "can_manage": bool(int(g.get("permissions", "0")) & 0x28)}
                    for g in rows if isinstance(g, dict) and "id" in g and "name" in g],
         "channel_content_access": False, "oauth_token_stored": False,
         "can_execute": False,
@@ -141,7 +142,7 @@ def _verify_signature(body: bytes, signature: str, timestamp: str) -> bool:
     key = os.getenv("DISCORD_PUBLIC_KEY", "")
     try:
         at = int(timestamp)
-        if not (0 <= time.time() - at <= 300):
+        if abs(time.time() - at) > 300:
             return False
         pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(key))
         pub.verify(bytes.fromhex(signature), timestamp.encode("utf-8") + body)
@@ -160,14 +161,27 @@ def _ephemeral(message: str) -> dict:
 
 
 def _extract_signal(payload: dict) -> dict:
-    actor = payload.get("member", {}).get("user") or payload.get("user") or {}
+    member = payload.get("member") or {}
+    if not isinstance(member, dict):
+        raise ValueError("DISCORD_MEMBER_INVALID")
+    actor = member.get("user") or payload.get("user") or {}
+    if not isinstance(actor, dict):
+        raise ValueError("DISCORD_ACTOR_INVALID")
     if not _allowed_user(str(actor.get("id", ""))):
         raise ValueError("DISCORD_ACTOR_NOT_ALLOWED")
     data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        raise ValueError("DISCORD_COMMAND_INVALID")
     if data.get("type") != 3 or data.get("name") != COMMAND_NAME:
         raise ValueError("DISCORD_COMMAND_UNSUPPORTED")
     mid = str(data.get("target_id", ""))
-    msg = (data.get("resolved") or {}).get("messages", {}).get(mid)
+    resolved = data.get("resolved") or {}
+    if not isinstance(resolved, dict):
+        raise ValueError("DISCORD_RESOLVED_INVALID")
+    messages = resolved.get("messages") or {}
+    if not isinstance(messages, dict):
+        raise ValueError("DISCORD_MESSAGES_INVALID")
+    msg = messages.get(mid)
     if not isinstance(msg, dict) or not mid.isdecimal():
         raise ValueError("DISCORD_MESSAGE_MISSING")
     content = msg.get("content")
@@ -214,8 +228,39 @@ def _persist_signal(signal: dict) -> bool:
     return created
 
 
+async def _edit_deferred_response(application_id: str, token: str, message: str) -> bool:
+    """Edit only the ephemeral original response; never post to server channels."""
+    url = f"{DISCORD_API}/webhooks/{application_id}/{token}/messages/@original"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            response = await client.patch(url, json={
+                "content": message[:1900], "allowed_mentions": {"parse": []},
+            })
+        return response.status_code in (200, 204)
+    except httpx.HTTPError:
+        return False
+
+
+async def _finish_receipt(signal: dict, application_id: str, token: str) -> None:
+    """Persist outside the request/event loop, then provide the actual result.
+
+    This is best-effort background delivery, NOT a durable queue. A process crash
+    after defer can lose the receipt; do not claim success until DB commit returns.
+    """
+    try:
+        created = await asyncio.to_thread(_persist_signal, signal)
+        if created:
+            message = ("WOW: research-only source receipt saved (fingerprint and provenance; "
+                       "no content archived). No prediction or bet was generated.")
+        else:
+            message = "WOW: this interaction was already received; no duplicate created."
+    except Exception:
+        message = "WOW: research storage unavailable. Nothing was saved."
+    await _edit_deferred_response(application_id, token, message)
+
+
 @app.post("/discord/interactions")
-async def discord_interactions(request: Request):
+async def discord_interactions(request: Request, background_tasks: BackgroundTasks):
     raw = await request.body()
     if len(raw) > MAX_INTERACTION_BYTES:
         return _error("DISCORD_INTERACTION_TOO_LARGE", status=413)
@@ -234,15 +279,19 @@ async def discord_interactions(request: Request):
         return _ephemeral("WOW: unsupported Discord interaction. No research was saved.")
     try:
         signal = _extract_signal(interaction)
-        created = _persist_signal(signal)
     except ValueError:
         return _ephemeral("WOW: message could not be accepted. Check account access and message content.")
-    except Exception:
-        # No exception details or private text in public response or logs.
-        return _ephemeral("WOW: research storage unavailable. Nothing was saved.")
-    if created:
-        return _ephemeral("WOW: research-only source receipt saved (message fingerprint and provenance; no content archived). No prediction or bet was generated.")
-    return _ephemeral("WOW: this interaction was already received; no duplicate created.")
+    app_id = str(interaction.get("application_id") or "")
+    token = interaction.get("token")
+    if (not app_id.isdecimal()
+            or app_id != os.getenv("DISCORD_APPLICATION_ID", "")
+            or not isinstance(token, str)
+            or not (1 <= len(token) <= 512)):
+        return _ephemeral("WOW: interaction application configuration unavailable. Nothing was saved.")
+    # Respond within Discord's three-second requirement, even when DB is slow.
+    # The background task can only edit the original ephemeral response.
+    background_tasks.add_task(_finish_receipt, signal, app_id, token)
+    return {"type": 5, "data": {"flags": 64}}
 
 
 @app.get("/healthz")
