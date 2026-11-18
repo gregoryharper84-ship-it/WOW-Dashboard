@@ -119,7 +119,12 @@ def inspect_captured_injuries(
                 or len(fieldnames) != len(columns)):
             return hold("NFLVERSE_INJURY_SCHEMA_INVALID")
         rows = list(reader)
-        if any(row.get(None) is not None for row in rows):
+        if any(
+            row.get(None) is not None
+            or len(row) != len(fieldnames)
+            or any(value is None for value in row.values())
+            for row in rows
+        ):
             return hold("NFLVERSE_INJURY_SCHEMA_INVALID")
     except (UnicodeError, csv.Error):
         return hold("NFLVERSE_INJURY_SCHEMA_INVALID")
