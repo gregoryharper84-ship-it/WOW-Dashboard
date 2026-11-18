@@ -250,3 +250,27 @@ def test_malformed_event_id_in_cohort_yields_invalid_not_exception():
     r = audit_cohort([a], {})
     assert r["verified_grades"] == 0
     assert r["scientifically_certified"] is False
+
+
+def test_canonical_event_tokens_must_match_frozen_teams():
+    bad = frozen(official_event_id="2026_11_NYJ_NE", provider_event_id="2026_11_NYJ_NE")
+    a = audit_forecast(bad)
+    assert a["ok"] is False
+    assert "CANONICAL_EVENT_TEAM_CONTRADICTION" in a["reasons"]
+
+
+def test_paired_cohort_rejects_mixed_incumbent_model_versions():
+    second = frozen(official_event_id="2026_11_NYJ_NE", provider_event_id="2026_11_NYJ_NE",
+                    home_team="NE", away_team="NYJ", selected_participant="NE")
+    second["research_metadata"]["incumbent"]["model_version"] = "CHAMPION_V2"
+    result = audit_cohort([frozen(), second], {})
+    assert result["status"] == "MIXED_INCUMBENT_MODEL_VERSION"
+    assert result["paired_count"] == 0
+
+
+def test_unhashable_model_artifact_digest_returns_invalid_not_exception():
+    bad = frozen()
+    bad["research_metadata"]["model_artifact_sha256"] = []
+    report = audit_cohort([bad], {})
+    assert report["status"] == "MODEL_ARTIFACT_DIGEST_INVALID"
+    assert report["verified_grades"] == 0
