@@ -267,13 +267,14 @@ jobs:
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
+          REVIEW_MODE: ${{ steps.policy.outputs.mode }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
           python .github/scripts/independent_source_review_receipt.py \
-            --capture --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
+            --capture --policy-mode "$REVIEW_MODE" --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
             --head-sha "$HEAD_SHA" --output "$RUNNER_TEMP/source-review-input.json"
           jq -e --arg sha "$HEAD_SHA" '.pr.head.sha == $sha' \
             "$RUNNER_TEMP/source-review-input.json" >/dev/null
