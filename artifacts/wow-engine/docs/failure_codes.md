@@ -258,10 +258,6 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_NATIVE_CI_PAYLOAD_INVALID` | QA one-wakeup native CI preflight | Check-run response lacks a valid required-check inventory; no inference or review PASS. Recovery class: SOURCE_CONTRACT_REPAIR. | N/A |
 | `QA_NATIVE_CI_FAILED` | QA one-wakeup native CI preflight | A required exact-head Actions App check has a terminal nonpass result, suffixed with the required check name; do not call the reviewer. Recovery class: CI_SOURCE_REPAIR. | N/A |
 | `QA_NATIVE_CI_INCOMPLETE` | QA one-wakeup native CI preflight | Not all three exact-head Actions App checks reached success within the bounded wait; no review is initiated. Recovery class: CI_SOURCE_DIAGNOSIS, no blind retry. | N/A |
-| `REVIEW_POLICY_MODE_UNCONFIGURED` | V17 governance dispatcher / preflight | Required `WOW_QA_MODE` is unset; do not dispatch another review or classify reduced assurance. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
-| `REVIEW_POLICY_MODE_INVALID` | V17 governance dispatcher / preflight | Required single mode is not one of `independent`, `zero_credit`, or `legacy`; fail closed and do not dispatch. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
-| `QA_ZERO_CREDIT_CANARY_CONFLICT` | QA mode selection | Zero-credit mode and independent-review canary were requested simultaneously. | N/A |
-| `QA_ZERO_CREDIT_POLICY_INVALID` | QA and Release mode selection | The zero-credit activation variable has a value other than empty, false, or true. | N/A |
 | `QA_ZERO_CREDIT_POLICY_NOT_ENABLED` | QA evidence | Zero-credit receipt is presented without the explicitly activated reduced-assurance policy. | N/A |
 | `QA_ZERO_CREDIT_POLICY_CONFLICT` | QA evidence | Zero-credit receipt conflicts with active adversarial-review requirement or review-active evidence. | N/A |
 | `QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED` | QA evidence | Zero-credit procedure carries a purported independent source-review artifact; zero-credit cannot claim one. | N/A |
@@ -749,3 +745,10 @@ Read-only research diagnostics only: the codes below have **no probability rank 
 | `NHL_SOURCE_RIGHTS_HOLD` | NHL append-only source re-ingest (`v17/nhl_source_reingest.py`) | Live persistence of NHL schedule/result rows is held until an explicit source-rights approval (`WOW_NHL_SOURCE_RIGHTS_APPROVED` or authorized `rights_approved=True`). API reachability is not commercial training permission. Dry-run remains available. Recovery: `SOURCE_RIGHTS` decision by an independent rights owner; never scrape or invent rights. Not a fitted-model capability error. | No |
 | `NHL_SOURCE_REINGEST_IN_PROGRESS` | NHL append-only source re-ingest lease (`wow_nhl_source_reingest_leases`) | Another season-scoped writer holds the re-ingest lease. Fail closed rather than racing append-only identities. Recovery: retry after the active lease expires or is released. Not a fitted-model capability error. | No |
 | `NHL_SOURCE_TIMELINE_INCOMPLETE` / `SOURCE_TIMELINE_SCHEDULE_COVERAGE_INCOMPLETE` | NHL fitted timeline receipt (`v17/nhl_fitted_specialist.py`) | Settled V2 rows do not exactly match the independently sourced schedule settled-ID set, or schedule digest/scheduled-events coverage is missing. A partial settled subset cannot self-attest `FULL_SEASON`. Recovery: re-acquire official schedule coverage including scheduled/unsettled games, then re-ingest. Not permission to fabricate history. | No |
+
+## Single-mode governance dispatcher configuration failures
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `REVIEW_POLICY_MODE_UNCONFIGURED` | V17 governance dispatcher / preflight | Required `WOW_QA_MODE` is unset; do not dispatch another review or classify reduced assurance. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
+| `REVIEW_POLICY_MODE_INVALID` | V17 governance dispatcher / preflight | Required single mode is not one of `independent`, `zero_credit`, or `legacy`; fail closed and do not dispatch. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
