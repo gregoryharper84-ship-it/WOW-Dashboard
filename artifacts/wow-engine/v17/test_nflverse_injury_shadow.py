@@ -162,3 +162,13 @@ def test_malformed_rows_and_duplicate_columns_are_typed_holds(tmp_path):
     Path(asset.local_path).write_bytes(overflow)
     corrupt = replace(asset, content_sha256=hashlib.sha256(overflow).hexdigest())
     assert inspect(corrupt)["blocker"] == "NFLVERSE_INJURY_SCHEMA_INVALID"
+
+
+def test_truncated_csv_row_is_schema_failure_not_implicit_clearance(tmp_path):
+    asset = capture(tmp_path, "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T17:00:00Z\n")
+    truncated = (HEADER + "2026,IND,12,REG,00-1234\n").encode()
+    Path(asset.local_path).write_bytes(truncated)
+    corrupt = replace(asset, content_sha256=hashlib.sha256(truncated).hexdigest())
+    result = inspect(corrupt)
+    assert result["blocker"] == "NFLVERSE_INJURY_SCHEMA_INVALID"
+    assert result["available_for_scoring"] is False
