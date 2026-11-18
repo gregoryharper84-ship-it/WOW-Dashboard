@@ -261,6 +261,37 @@ def install_nfl_hydration_startup(app: Any, *, db_client_fn: Any) -> None:
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     
+
+def _has_usable_injury_records(path: str | Path) -> bool:
+    """Reject blank/header-only and malformed injury CSV before persistence.
+
+    The generic downloader counts CSV records, including empty records; its
+    row_count alone cannot prove that an injury record exists. This validation
+    applies to the injury-only refresh and never establishes report completeness
+    or participation availability.
+    """
+    try:
+        with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fields = reader.fieldnames or []
+            required = {"season", "week", "team", "gsis_id", "position", "report_status", "practice_status"}
+            if (len(fields) != len(set(fields))
+                    or not required.issubset(set(fields))
+                    or not ({"season_type", "game_type"} & set(fields))):
+                return False
+            found = False
+            for row in reader:
+                if not row or row.get(None) is not None or any(v is None for v in row.values()):
+                    return False
+                if not all(str(row.get(key) or "").strip() for key in ("season", "week", "team", "gsis_id")):
+                    return False
+                if not str(row.get("season_type") or row.get("game_type") or "").strip():
+                    return False
+                found = True
+            return found
+    except (OSError, UnicodeError, csv.Error, TypeError, ValueError):
+        return False
+
 def refresh_nfl_injury_source(
     *,
     season: int,
@@ -289,7 +320,8 @@ def refresh_nfl_injury_source(
         capture = download_asset(asset, Path(temp_dir))
         if capture.dataset_name != DATASET_INJURIES or capture.season != season:
             raise RuntimeError("NFL_INJURY_SOURCE_CAPTURE_SCOPE_CONFLICT")
-        if capture.row_count <= 0 or capture.source_status != "CAPTURED":
+        if (capture.row_count <= 0 or capture.source_status != "CAPTURED"
+                or not _has_usable_injury_records(capture.local_path)):
             raise RuntimeError("NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE")
         snapshot_id = None
         raw_uri = None
