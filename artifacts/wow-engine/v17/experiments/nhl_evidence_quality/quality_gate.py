@@ -209,7 +209,7 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
             metrics = item.get("metrics")
             keys = ROLE_REQUIRED_METRICS[role]
             if (not isinstance(metrics, Mapping) or any(
-                not _number(metrics.get(k), minimum=-100) or
+                not _number(metrics.get(k), minimum=-10 if k.endswith("gsax_per60") else 0) or
                 (k in RATE_METRICS and float(metrics[k]) > 1)
                 for k in keys
             )):
