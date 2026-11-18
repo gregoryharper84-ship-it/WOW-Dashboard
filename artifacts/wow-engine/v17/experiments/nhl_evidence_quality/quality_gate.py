@@ -107,7 +107,7 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(card, Mapping):
         return _result("NHL_EVIDENCE_HOLD", blockers=["NHL_CARD_INVALID"])
     family = card.get("market_family")
-    if family not in REQUIRED_ROLES:
+    if not isinstance(family, str) or family not in REQUIRED_ROLES:
         blockers.add("NHL_MARKET_FAMILY_INVALID")
     if not _valid_id(card.get("official_event_id")):
         blockers.add("NHL_OFFICIAL_EVENT_ID_INVALID")
@@ -122,7 +122,7 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
         if card.get("settlement_basis") != "FULL_GAME_INCLUDING_OT_SO":
             blockers.add("NHL_ML_SETTLEMENT_BASIS_INVALID")
     if family == "PLAYER_PROP":
-        if card.get("stat_type") not in PROP_TYPES or not (
+        if not isinstance(card.get("stat_type"), str) or card.get("stat_type") not in PROP_TYPES or not (
             isinstance(card.get("player_id"), str) and card["player_id"].isdigit()
         ):
             blockers.add("NHL_PROP_IDENTITY_INVALID")
@@ -142,7 +142,7 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
             blockers.add("NHL_EVIDENCE_ROW_INVALID")
             continue
         role = item.get("role")
-        if role not in ROLE_MAX_AGE_MINUTES:
+        if not isinstance(role, str) or role not in ROLE_MAX_AGE_MINUTES:
             blockers.add("NHL_EVIDENCE_ROLE_INVALID")
             continue
         if role in observed:
@@ -161,9 +161,9 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
         elif snapshot - as_of > timedelta(minutes=ROLE_MAX_AGE_MINUTES[role]):
             blockers.add("NHL_EVIDENCE_STALE_" + role)
         if role == "PLAYER_OPPORTUNITY" and family == "PLAYER_PROP":
-            fields = OPPORTUNITY_METRICS.get(card.get("stat_type"), ())
+            fields = OPPORTUNITY_METRICS.get(card.get("stat_type")) if isinstance(card.get("stat_type"), str) else None
             metrics = item.get("metrics")
-            if not isinstance(metrics, Mapping) or any(not _number(metrics.get(k)) for k in fields):
+            if not isinstance(metrics, Mapping) or not fields or any(not _number(metrics.get(k)) for k in fields):
                 blockers.add("NHL_PLAYER_OPPORTUNITY_METRICS_MISSING")
         if role == "PLAYER_TOI_PP" and family == "PLAYER_PROP":
             metrics = item.get("metrics")
