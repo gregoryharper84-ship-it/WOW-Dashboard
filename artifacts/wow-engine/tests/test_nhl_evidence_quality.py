@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from v17.experiments.nhl_evidence_quality.quality_gate import (
     REQUIRED_ROLES,
     GOALIE_SAVES_ROLES,
+    ROLE_REQUIRED_METRICS,
     audit_nhl_ml_loss_tails,
     screen_nhl_pregame_evidence,
 )
@@ -24,14 +25,25 @@ def card(family="PLAYER_PROP"):
     for role in sorted(REQUIRED_ROLES[family]):
         item = {
             "role": role, "official_event_id": EVENT, "provider": "synthetic-fixture",
+            "home": "BOS", "away": "LAK",
             "source_hash": HEX, "as_of_utc": "2026-11-17T18:00:00Z",
             "captured_at_utc": "2026-11-17T18:10:00Z",
         }
         if role in {"MARKET_OFFER", "PLAYER_TOI_PP", "PLAYER_OPPORTUNITY", "LINE_ASSIGNMENT", "PLAYER_AVAILABILITY", "GOALIE_WORKLOAD"}:
-            item["player_id"] = "8478402"
+            item.update(player_id="8478402", team="BOS", opponent="LAK")
+        if role in ROLE_REQUIRED_METRICS:
+            item["metrics"] = {k: (0.5 if k.endswith("_rate") else 2.3)
+                               for k in ROLE_REQUIRED_METRICS[role]}
+        if role == "GOALIE_STARTERS":
+            item.update(home_goalie_id="8479990", away_goalie_id="8479991")
+        if role == "LINE_ASSIGNMENT":
+            item.update(line_id="L1", power_play_unit=1)
+        if role == "PLAYER_AVAILABILITY":
+            item["availability"] = "CONFIRMED_ACTIVE"
         if role == "MARKET_OFFER":
             item.update(market_id="synthetic-market", exact_line=2.5,
-                        side="OVER", book="synthetic-book")
+                        side="OVER", book="synthetic-book",
+                        price_decimal=1.91, offer_status="OPEN")
         if role == "PLAYER_TOI_PP":
             item["metrics"] = {"toi_minutes_per_game": 17.5,
                                "pp_toi_minutes_per_game": 3.2}
@@ -40,6 +52,8 @@ def card(family="PLAYER_PROP"):
         source.append(item)
     return {
         "market_family": family, "official_event_id": EVENT,
+        "home": "BOS", "away": "LAK", "predicted_winner": "BOS",
+        "team": "BOS", "opponent": "LAK",
         "event_start_utc": START, "snapshot_at_utc": SNAP,
         "pregame_receipt_id": "synthetic-frozen-forecast", "pregame_source_hash": HEX,
         "goalie_status": "CONFIRMED", "trusted_goalie_receipt_id": "synthetic-external-registry",
@@ -197,11 +211,12 @@ def test_goalie_saves_has_separate_workload_and_opponent_shot_sources():
         if not any(x["role"] == role for x in c["source_evidence"]):
             x = {
                 "role": role, "official_event_id": EVENT, "provider": "synthetic-fixture",
+                "home": "BOS", "away": "LAK",
                 "source_hash": HEX, "as_of_utc": "2026-11-17T18:00:00Z",
                 "captured_at_utc": "2026-11-17T18:10:00Z",
             }
             if role == "GOALIE_WORKLOAD":
-                x["player_id"] = c["player_id"]
+                x.update(player_id=c["player_id"], team=c["team"], opponent=c["opponent"])
                 x["metrics"] = {"shots_against_per60": 28.1, "minutes_per_start": 58.1}
             if role == "OPPONENT_SHOT_VOLUME":
                 x["metrics"] = {"opponent_sog_for_per60": 30.2}
@@ -212,3 +227,42 @@ def test_goalie_saves_has_separate_workload_and_opponent_shot_sources():
     c2 = deepcopy(c)
     next(x for x in c2["source_evidence"] if x["role"] == "GOALIE_WORKLOAD")["metrics"] = {}
     assert "NHL_GOALIE_WORKLOAD_METRICS_MISSING" in screen_nhl_pregame_evidence(c2)["blockers"]
+
+
+def test_source_hash_without_required_hockey_metrics_is_not_sufficient():
+    for role in ("TEAM_SHOT_QUALITY", "OPPONENT_DEFENSE_5V5", "GOALIE_FORM", "SPECIAL_TEAMS"):
+        c = card("FULL_GAME_ML")
+        next(x for x in c["source_evidence"] if x["role"] == role)["metrics"] = {}
+        out = screen_nhl_pregame_evidence(c)
+        assert out["status"] == "NHL_EVIDENCE_HOLD"
+        assert "NHL_EVIDENCE_ROLE_METRICS_MISSING_OR_INVALID_" + role in out["blockers"]
+
+
+def test_opponent_and_offered_price_required_not_just_valid_event_id():
+    c = card()
+    item = next(x for x in c["source_evidence"] if x["role"] == "OPPONENT_PROP_SUPPRESSION")
+    item["away"] = "EDM"
+    out = screen_nhl_pregame_evidence(c)
+    assert "NHL_EVIDENCE_OPPONENT_IDENTITY_MISMATCH" in out["blockers"]
+    c = card()
+    market = next(x for x in c["source_evidence"] if x["role"] == "MARKET_OFFER")
+    market.pop("price_decimal")
+    assert "NHL_EXACT_OFFER_SOURCE_MISMATCH" in screen_nhl_pregame_evidence(c)["blockers"]
+
+
+def test_missing_actual_starter_ids_or_active_skater_hold():
+    c = card("FULL_GAME_ML")
+    starter = next(x for x in c["source_evidence"] if x["role"] == "GOALIE_STARTERS")
+    starter.pop("home_goalie_id")
+    assert "NHL_EVIDENCE_GOALIE_IDS_MISSING" in screen_nhl_pregame_evidence(c)["blockers"]
+    c = card()
+    player = next(x for x in c["source_evidence"] if x["role"] == "PLAYER_AVAILABILITY")
+    player["availability"] = "QUESTIONABLE"
+    assert "NHL_EVIDENCE_PLAYER_NOT_CONFIRMED_ACTIVE" in screen_nhl_pregame_evidence(c)["blockers"]
+
+
+def test_wrong_team_player_opportunity_rejected_even_when_event_matches():
+    c = card()
+    row = next(x for x in c["source_evidence"] if x["role"] == "PLAYER_OPPORTUNITY")
+    row["team"] = "LAK"
+    assert "NHL_EVIDENCE_PLAYER_OPPONENT_MISMATCH" in screen_nhl_pregame_evidence(c)["blockers"]
