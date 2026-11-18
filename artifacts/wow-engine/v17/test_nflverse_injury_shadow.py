@@ -172,3 +172,18 @@ def test_truncated_csv_row_is_schema_failure_not_implicit_clearance(tmp_path):
     result = inspect(corrupt)
     assert result["blocker"] == "NFLVERSE_INJURY_SCHEMA_INVALID"
     assert result["available_for_scoring"] is False
+
+
+def test_report_timestamp_after_source_capture_fails_even_when_before_inspection(tmp_path):
+    """A later row cannot already exist inside an earlier immutable capture."""
+    asset = capture(
+        tmp_path,
+        "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T18:15:00Z\n",
+        fetched_at="2026-11-18T18:00:00+00:00",
+    )
+    result = inspect(asset)
+    assert result["blocker"] == "NFLVERSE_INJURY_REPORT_TIMESTAMP_UNVERIFIED"
+    assert result["reported_designation"] is None
+    assert result["reported_at"] is None
+    assert result["available_for_scoring"] is False
+    assert result["can_execute"] is False
