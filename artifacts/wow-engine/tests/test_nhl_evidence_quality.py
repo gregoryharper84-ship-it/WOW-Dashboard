@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from v17.experiments.nhl_evidence_quality.quality_gate import (
     REQUIRED_ROLES,
+    GOALIE_SAVES_ROLES,
     audit_nhl_ml_loss_tails,
     screen_nhl_pregame_evidence,
 )
@@ -26,6 +27,8 @@ def card(family="PLAYER_PROP"):
             "source_hash": HEX, "as_of_utc": "2026-11-17T18:00:00Z",
             "captured_at_utc": "2026-11-17T18:10:00Z",
         }
+        if role in {"MARKET_OFFER", "PLAYER_TOI_PP", "PLAYER_OPPORTUNITY", "LINE_ASSIGNMENT", "PLAYER_AVAILABILITY", "GOALIE_WORKLOAD"}:
+            item["player_id"] = "8478402"
         if role == "MARKET_OFFER":
             item.update(market_id="synthetic-market", exact_line=2.5,
                         side="OVER", book="synthetic-book")
@@ -175,3 +178,37 @@ def test_no_fake_full_slate_coverage_and_execution():
     assert out["can_execute"] is False
     assert out["model_certification_change"] is False
     assert audit_nhl_ml_loss_tails([])["status"] == "NHL_ML_AUDIT_HOLD"
+
+
+def test_player_specific_source_cannot_switch_players():
+    c = card()
+    usage = next(x for x in c["source_evidence"] if x["role"] == "PLAYER_TOI_PP")
+    usage["player_id"] = "9999999"
+    assert "NHL_EVIDENCE_PLAYER_IDENTITY_MISMATCH" in screen_nhl_pregame_evidence(c)["blockers"]
+
+
+def test_goalie_saves_has_separate_workload_and_opponent_shot_sources():
+    c = card()
+    c["stat_type"] = "GOALIE_SAVES"
+    c["source_evidence"] = [
+        x for x in c["source_evidence"] if x["role"] in GOALIE_SAVES_ROLES
+    ]
+    for role in GOALIE_SAVES_ROLES:
+        if not any(x["role"] == role for x in c["source_evidence"]):
+            x = {
+                "role": role, "official_event_id": EVENT, "provider": "synthetic-fixture",
+                "source_hash": HEX, "as_of_utc": "2026-11-17T18:00:00Z",
+                "captured_at_utc": "2026-11-17T18:10:00Z",
+            }
+            if role == "GOALIE_WORKLOAD":
+                x["player_id"] = c["player_id"]
+                x["metrics"] = {"shots_against_per60": 28.1, "minutes_per_start": 58.1}
+            if role == "OPPONENT_SHOT_VOLUME":
+                x["metrics"] = {"opponent_sog_for_per60": 30.2}
+            c["source_evidence"].append(x)
+    r = screen_nhl_pregame_evidence(c)
+    assert r["status"] == "NHL_RESEARCH_EVIDENCE_PRECHECK_PASSED"
+    assert "PLAYER_TOI_PP" not in r["missing_roles"]
+    c2 = deepcopy(c)
+    next(x for x in c2["source_evidence"] if x["role"] == "GOALIE_WORKLOAD")["metrics"] = {}
+    assert "NHL_GOALIE_WORKLOAD_METRICS_MISSING" in screen_nhl_pregame_evidence(c2)["blockers"]
