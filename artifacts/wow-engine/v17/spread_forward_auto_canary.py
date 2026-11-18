@@ -16,9 +16,15 @@ from zoneinfo import ZoneInfo
 import httpx
 import requests
 
+from v17 import spread_market_evidence as market_evidence
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
+from v17.rundown_market_ledger import PROVIDER as EXACT_LINE_LEDGER_PROVIDER
+from v17.rundown_market_ledger import TABLE as EXACT_LINE_LEDGER_TABLE
+from v17.spread_exact_line_evidence import bind_exact_home_spreads
 from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow, run_wnba_forward_shadow
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
+from v17.spread_market_evidence import SPORT_KEYS as SPREAD_SPORT_KEYS
+from v17.spread_market_evidence import SpreadMarketEvidenceError
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -32,6 +38,15 @@ ESPN_SCOREBOARDS = {
 }
 DEFAULT_HORIZON_DAYS = {"NFL": 14, "WNBA": 15}
 NFL_SCHEDULE_TIMEZONE = ZoneInfo("America/New_York")
+# The auto canary scores the real quoted line or nothing. A neutral/synthetic
+# line is never substituted for a missing market quote.
+EXACT_LINE_SOURCE = "APPEND_ONLY_MARKET_LEDGER"
+EXACT_LINE_WINDOW_HOURS = 24
+_EXACT_LINE_COLUMNS = (
+    "provider_event_id,sport_key,event_start_utc,market_id,market_name,"
+    "participant_type,participant_name,selection,line_value,sportsbook,"
+    "price_updated_at,fetched_at,snapshot_kind,is_live,is_main_line,is_available"
+)
 
 
 def _governance() -> dict[str, Any]:
@@ -351,6 +366,241 @@ def discover_future_wnba_stats_event(
     )
 
 
+def _read_pregame_spread_observations(
+    db: Any, *, sport: str, event_start_time: str
+) -> list[dict[str, Any]]:
+    """Read the append-only exact-spread observations around one event start.
+
+    Read-only and bounded to a symmetric window. Observations are evidence only:
+    they never become a model feature or a probability.
+    """
+    sport_key = SPREAD_SPORT_KEYS.get(sport)
+    if sport_key is None:
+        raise SpreadChallengerUnavailable(
+            f"{sport}_SPREAD_CANARY_SPORT_UNSUPPORTED",
+            f"no governed spread market is configured for {sport}",
+        )
+    try:
+        start = _utc(event_start_time)
+    except (TypeError, ValueError) as exc:
+        raise SpreadChallengerUnavailable(
+            f"{sport}_SPREAD_CANARY_EVENT_START_INVALID",
+            "canary event start time must be timezone-aware to bind an exact line",
+        ) from exc
+    try:
+        window = timedelta(hours=EXACT_LINE_WINDOW_HOURS)
+        response = (
+            db.table(EXACT_LINE_LEDGER_TABLE)
+            .select(_EXACT_LINE_COLUMNS)
+            .eq("provider", EXACT_LINE_LEDGER_PROVIDER)
+            .eq("sport_key", sport_key)
+            .gte("event_start_utc", (start - window).isoformat())
+            .lte("event_start_utc", (start + window).isoformat())
+            .execute()
+        )
+    except SpreadChallengerUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - typed acquisition boundary
+        raise SpreadChallengerUnavailable(
+            f"{sport}_SPREAD_CANARY_EXACT_LINE_LEDGER_UNAVAILABLE",
+            f"market ledger read failed: {type(exc).__name__}",
+        ) from exc
+    rows = getattr(response, "data", None) or []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _slate_date_for(event_start_time: str, *, sport: str) -> str:
+    """Return the governed provider slate date for one event start.
+
+    The market provider expresses a slate as a US/Eastern calendar date, so a
+    late kickoff that is already the next UTC day still belongs to the same slate.
+    """
+    try:
+        start = _utc(event_start_time)
+    except (TypeError, ValueError) as exc:
+        raise SpreadChallengerUnavailable(
+            f"{sport}_SPREAD_CANARY_EVENT_START_INVALID",
+            "canary event start time must be timezone-aware to resolve its slate",
+        ) from exc
+    return start.astimezone(NFL_SCHEDULE_TIMEZONE).date().isoformat()
+
+
+def collect_canary_spread_snapshot(
+    db: Any, *, sport: str, event: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist one bounded exact-spread snapshot for the event's slate.
+
+    Collection writes quote evidence only. It cannot create a sporting
+    probability, and a failed or empty collection never becomes a stand-in line.
+    """
+    normalized = str(sport).upper()
+    slate_date = _slate_date_for(str(event.get("event_start_time") or ""), sport=normalized)
+    try:
+        result = dict(
+            market_evidence.collect_spread_snapshot(
+                db, sport=normalized, slate_date=slate_date
+            )
+        )
+    except SpreadChallengerUnavailable:
+        raise
+    except SpreadMarketEvidenceError as exc:
+        # Preserve the upstream typed reason instead of collapsing it.
+        raise SpreadChallengerUnavailable(
+            f"{normalized}_SPREAD_CANARY_MARKET_COLLECTION_FAILED",
+            f"upstream={exc.code}; {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - typed acquisition boundary
+        raise SpreadChallengerUnavailable(
+            f"{normalized}_SPREAD_CANARY_MARKET_COLLECTION_FAILED",
+            f"exact spread collection failed: {type(exc).__name__}",
+        ) from exc
+    return {
+        **result,
+        "slate_date": slate_date,
+        "collection_source": EXACT_LINE_SOURCE,
+        "probability_publishable": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+def _bind_from_ledger(
+    db: Any, *, sport: str, event: dict[str, Any]
+) -> tuple[Any, dict[str, Any], int]:
+    """Read the persisted ledger and bind at most one exact home line."""
+    rows = _read_pregame_spread_observations(
+        db, sport=sport, event_start_time=str(event.get("event_start_time") or "")
+    )
+    evidence_by_event, diagnostics = bind_exact_home_spreads(
+        sport=sport,
+        event_identities=[
+            {
+                "event_id": str(event.get("raw_event_id") or "").strip(),
+                "event_start_time": str(event.get("event_start_time") or ""),
+                "home_team": str(event.get("home_team") or ""),
+                "away_team": str(event.get("away_team") or ""),
+            }
+        ],
+        market_rows=rows,
+    )
+    return evidence_by_event.get(str(event.get("raw_event_id") or "").strip()), diagnostics, len(rows)
+
+
+def resolve_canary_exact_line(
+    db: Any, *, sport: str, event: dict[str, Any], collect: bool = True
+) -> dict[str, Any]:
+    """Bind one deterministic pregame home line to the discovered event.
+
+    The persisted ledger is read first so an already-quoted event costs no
+    provider call. On a miss one bounded slate collection runs, then the bind is
+    retried. A stand-in line is never returned: no bound quote is a typed blocker,
+    because a synthetic line would turn a research row into a false receipt.
+    """
+    normalized = str(sport).upper()
+    if not str(event.get("raw_event_id") or "").strip():
+        raise SpreadChallengerUnavailable(
+            f"{normalized}_SPREAD_CANARY_EVENT_IDENTITY_INCOMPLETE",
+            "canary event identity is required to bind an exact line",
+        )
+
+    evidence, diagnostics, observed_rows = _bind_from_ledger(
+        db, sport=normalized, event=event
+    )
+    collection: dict[str, Any] | None = None
+    if evidence is None and collect:
+        collection = collect_canary_spread_snapshot(db, sport=normalized, event=event)
+        evidence, diagnostics, observed_rows = _bind_from_ledger(
+            db, sport=normalized, event=event
+        )
+
+    if evidence is None:
+        raise SpreadChallengerUnavailable(
+            f"{normalized}_SPREAD_CANARY_EXACT_LINE_UNAVAILABLE",
+            (
+                "no unambiguous pregame exact spread line is bound to this event; "
+                f"blockers={diagnostics.get('blocker_counts')} "
+                f"observed_rows={observed_rows} "
+                f"collection={'none' if collection is None else collection.get('status')} "
+                f"collection_rows={0 if collection is None else collection.get('rows_written')}"
+            ),
+        )
+    return {
+        "evidence": evidence,
+        "collection": collection,
+        "observed_rows": observed_rows,
+        "blockers": dict(diagnostics.get("blocker_counts") or {}),
+    }
+
+
+def try_bind_exact_line(db: Any, *, sport: str, event: dict[str, Any]) -> dict[str, Any]:
+    """Non-raising, read-only exact-line lookup for a row-producing caller.
+
+    A Daily run must not spend a provider budget or write market evidence on a
+    per-event path, so this never collects. Missing, ambiguous or unreachable
+    evidence is returned as typed reason codes instead of an exception.
+    """
+    normalized = str(sport or "").strip().upper()
+    if not normalized:
+        return {
+            "evidence": None,
+            "observed_rows": 0,
+            "reason_codes": ["SPREAD_EVENT_SPORT_UNIDENTIFIED"],
+            "blocker_counts": {},
+        }
+    try:
+        evidence, diagnostics, observed_rows = _bind_from_ledger(
+            db, sport=normalized, event=event
+        )
+    except SpreadChallengerUnavailable as exc:
+        return {
+            "evidence": None,
+            "observed_rows": 0,
+            "reason_codes": [exc.code],
+            "blocker_counts": {},
+        }
+    if evidence is not None:
+        return {
+            "evidence": evidence,
+            "observed_rows": observed_rows,
+            "reason_codes": [],
+            "blocker_counts": {},
+        }
+    counts = dict(diagnostics.get("blocker_counts") or {})
+    codes = sorted(counts) or (
+        ["SPREAD_EXACT_LINE_NOT_OBSERVED"] if observed_rows == 0
+        else ["SPREAD_EXACT_LINE_UNAVAILABLE"]
+    )
+    return {
+        "evidence": None,
+        "observed_rows": observed_rows,
+        "reason_codes": codes,
+        "blocker_counts": counts,
+    }
+
+
+def _exact_line_binding(evidence: Any, *, sport: str) -> dict[str, Any]:
+    """Expose the bound line provenance without granting it any authority."""
+    try:
+        line = float(evidence.home_spread)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SpreadChallengerUnavailable(
+            f"{sport}_SPREAD_CANARY_EXACT_LINE_UNAVAILABLE",
+            "bound exact spread line is not a finite number",
+        ) from exc
+    return {
+        "exact_line_source": EXACT_LINE_SOURCE,
+        "exact_line_side": "HOME",
+        "exact_signed_spread": line,
+        "exact_line_sportsbook": str(getattr(evidence, "sportsbook", "") or ""),
+        "exact_line_quote_timestamp": str(getattr(evidence, "quote_timestamp", "") or ""),
+        "exact_line_provider_event_id": str(getattr(evidence, "provider_event_id", "") or ""),
+        "synthetic_line_used": False,
+        "spread_line_used_as_feature": False,
+        "market_probability_substitution_used": False,
+        "can_execute": False,
+    }
+
+
 def _deferred(sport: str, *, provider: str | None = None) -> dict[str, Any]:
     provider = provider or ("NFL_CANONICAL_SCHEDULE_SNAPSHOT" if sport == "NFL" else "ESPN_SCOREBOARD")
     return {
@@ -374,17 +624,23 @@ def run_nfl_spread_auto_canary(
     event = discover_future_nfl_canonical_event(db)
     if event is None:
         return _deferred("NFL")
+    acquisition = resolve_canary_exact_line(db, sport="NFL", event=event)
+    evidence = acquisition["evidence"]
     result = run_nfl_forward_shadow(
         db,
         event_id=event["raw_event_id"],
         event_start_time=event["event_start_time"],
         home_team=event["home_team"],
         away_team=event["away_team"],
-        home_spread=0.0,
+        home_spread=float(evidence.home_spread),
     )
     return {
         **result,
         "canary_identity": event,
+        "exact_line_evidence": evidence.payload(),
+        "exact_line_collection": acquisition["collection"],
+        "exact_line_observed_rows": acquisition["observed_rows"],
+        **_exact_line_binding(evidence, sport="NFL"),
         "identity_provider": "NFL_CANONICAL_SCHEDULE_SNAPSHOT",
         "identity_acquisition_location": "BACKEND_RUNTIME",
         **_governance(),
@@ -405,6 +661,8 @@ def run_wnba_spread_auto_canary(
         event = discover_future_wnba_stats_event(fetcher=stats_fetcher)
     if event is None:
         return _deferred("WNBA")
+    acquisition = resolve_canary_exact_line(db, sport="WNBA", event=event)
+    evidence = acquisition["evidence"]
     provider = str(event.get("identity_provider") or "ESPN_SCOREBOARD")
     if provider in {
         "WNBA_STATS_SCOREBOARD_V3",
@@ -423,11 +681,15 @@ def run_wnba_spread_auto_canary(
         event_start_time=event["event_start_time"],
         home_team_id=home_team_id,
         away_team_id=away_team_id,
-        home_spread=0.0,
+        home_spread=float(evidence.home_spread),
     )
     return {
         **result,
         "canary_identity": event,
+        "exact_line_evidence": evidence.payload(),
+        "exact_line_collection": acquisition["collection"],
+        "exact_line_observed_rows": acquisition["observed_rows"],
+        **_exact_line_binding(evidence, sport="WNBA"),
         "identity_provider": provider,
         "identity_acquisition_location": "BACKEND_RUNTIME",
         **_governance(),
@@ -435,9 +697,14 @@ def run_wnba_spread_auto_canary(
 
 
 __all__ = [
+    "EXACT_LINE_SOURCE",
+    "EXACT_LINE_WINDOW_HOURS",
+    "collect_canary_spread_snapshot",
     "discover_future_espn_event",
     "discover_future_nfl_canonical_event",
     "discover_future_wnba_stats_event",
+    "resolve_canary_exact_line",
     "run_nfl_spread_auto_canary",
     "run_wnba_spread_auto_canary",
+    "try_bind_exact_line",
 ]

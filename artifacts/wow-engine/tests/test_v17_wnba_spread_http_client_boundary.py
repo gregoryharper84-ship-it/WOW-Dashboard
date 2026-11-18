@@ -87,18 +87,64 @@ def test_auto_canary_does_not_reuse_requests_fetcher_for_stats_fallback(monkeypa
 
     monkeypatch.setattr(canary, "discover_future_espn_event", espn)
     monkeypatch.setattr(canary, "discover_future_wnba_stats_event", stats)
+    # The canary must score the real quoted line, so the ledger read is stubbed
+    # with ordinary two-sided main-line observations.
     monkeypatch.setattr(
         canary,
-        "run_wnba_forward_shadow",
-        lambda _db, **_kwargs: {
+        "_read_pregame_spread_observations",
+        lambda *_args, **_kwargs: [
+            {
+                "provider_event_id": "rd-wnba-9001",
+                "sport_key": "basketball_wnba",
+                "event_start_utc": FUTURE.isoformat(),
+                "market_id": "2",
+                "market_name": "spreads",
+                "participant_type": "home",
+                "participant_name": "Minnesota Lynx",
+                "selection": "Minnesota Lynx",
+                "line_value": -3.0,
+                "sportsbook": "Pinnacle",
+                "price_updated_at": NOW.isoformat(),
+                "fetched_at": NOW.isoformat(),
+                "snapshot_kind": "CURRENT",
+                "is_live": False,
+                "is_main_line": True,
+                "is_available": True,
+            },
+            {
+                "provider_event_id": "rd-wnba-9001",
+                "sport_key": "basketball_wnba",
+                "event_start_utc": FUTURE.isoformat(),
+                "market_id": "2",
+                "market_name": "spreads",
+                "participant_type": "away",
+                "participant_name": "Phoenix Mercury",
+                "selection": "Phoenix Mercury",
+                "line_value": 3.0,
+                "sportsbook": "Pinnacle",
+                "price_updated_at": NOW.isoformat(),
+                "fetched_at": NOW.isoformat(),
+                "snapshot_kind": "CURRENT",
+                "is_live": False,
+                "is_main_line": True,
+                "is_available": True,
+            },
+        ],
+    )
+    scored = {}
+
+    def shadow_run(_db, **kwargs):
+        scored.update(kwargs)
+        return {
             "status": "EXPERIMENT_CREATED",
             "code": "WNBA_SPREAD_FORWARD_SHADOW_COMPLETE",
             "sport": "WNBA",
             "p_cover": 0.5,
             "p_push": 0.0,
             "p_not_cover": 0.5,
-        },
-    )
+        }
+
+    monkeypatch.setattr(canary, "run_wnba_forward_shadow", shadow_run)
 
     result = canary.run_wnba_spread_auto_canary(
         object(),
@@ -106,6 +152,9 @@ def test_auto_canary_does_not_reuse_requests_fetcher_for_stats_fallback(monkeypa
         stats_fetcher=stats_fetcher,
     )
     assert seen["stats_fetcher"] is stats_fetcher
+    assert scored["home_spread"] == -3.0
+    assert result["exact_line_source"] == "APPEND_ONLY_MARKET_LEDGER"
+    assert result["synthetic_line_used"] is False
     assert result["identity_provider"] == "WNBA_STATS_SCOREBOARD_V3"
     assert result["probability_publishable"] is False
     assert result["automatic_certification"] is False

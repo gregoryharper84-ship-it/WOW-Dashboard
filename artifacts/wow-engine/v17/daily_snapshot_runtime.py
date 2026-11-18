@@ -60,7 +60,11 @@ class DailySnapshotRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requested_slate_date: str
     requested_timezone: str = Field(min_length=1, max_length=64)
-    lanes: list[Literal["PROPS", "MONEYLINE"]] = Field(default_factory=lambda: ["PROPS", "MONEYLINE"])
+    # SPREAD is opt-in research only: it persists the ledger's exact line and a
+    # typed hold. It never publishes a probability and is not a default lane.
+    lanes: list[Literal["PROPS", "MONEYLINE", "SPREAD"]] = Field(
+        default_factory=lambda: ["PROPS", "MONEYLINE"]
+    )
     max_props: int = Field(default=6, ge=0, le=12)
     max_team_events: int = Field(default=6, ge=0, le=12)
     # COMPACT is the normal client contract: full per-row evidence is persisted
@@ -673,6 +677,216 @@ def _cross_sport_moneyline_rows(
     return rows, scan
 
 
+SPREAD_LANE = "SPREAD"
+
+
+def load_certified_spread_receipt(
+    db: Any, *, sport: str, event_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read the newest governed spread receipt for one event, or a reason code.
+
+    The registry module owns the relation name and the read contract so the
+    writer and the Daily lane cannot drift apart.
+    """
+    from v17.spread_receipt_registry import read_certified_spread_receipt
+
+    return read_certified_spread_receipt(db, sport=sport, event_id=event_id)
+
+
+def _admit_certified_spread_receipt(
+    receipt: dict[str, Any],
+    *,
+    event_id: str,
+    sport: str,
+    home_line: float,
+    settlement_basis: str | None,
+) -> tuple[dict[str, Any], bool, list[str]]:
+    """Admit one candidate receipt against the ledger-bound exact line.
+
+    The receipt's own declared side and line are the thesis; the ledger line is
+    the market truth it must match. An away side is the definitional opposite of
+    the quoted home line, never an independently invented number.
+    """
+    from v17.spread_card_admission import spread_card_admission
+
+    blockers: list[str] = []
+    side = str(
+        receipt.get("exact_line_side") or receipt.get("spread_side") or ""
+    ).strip().upper()
+    if str(receipt.get("sport") or "").strip().upper() != sport:
+        blockers.append("SPREAD_RECEIPT_SPORT_MISMATCH")
+    if not settlement_basis or str(receipt.get("settlement_basis") or "") != settlement_basis:
+        blockers.append("SPREAD_RECEIPT_SETTLEMENT_BASIS_MISMATCH")
+    expected_line = float(home_line) if side != "AWAY" else -float(home_line)
+    admission = spread_card_admission(
+        receipt,
+        requested_event_id=event_id,
+        requested_side=side,
+        requested_signed_spread=expected_line,
+    )
+    blockers.extend(admission["blockers"])
+    eligible = admission["card_admission_eligible"] is True and not blockers
+    return admission, eligible, list(dict.fromkeys(blockers))
+
+
+def _spread_lane_rows(
+    db: Any,
+    *,
+    moneyline_rows: list[dict[str, Any]],
+    requested_limit: int,
+    receipt_provider: Any = None,
+) -> list[dict[str, Any]]:
+    """One explicit research row per event identity already proven on the slate.
+
+    The lane binds the append-only ledger's exact pregame quote and nothing else.
+    It never fits or invokes a model, never invents a side, line or probability,
+    and never writes market evidence. A row completes only when an already-
+    governed receipt passes ``spread_card_admission`` against that exact line;
+    otherwise it terminates HELD with typed reason codes so the event stays
+    visible instead of being silently omitted.
+    """
+    from v17.spread_forward_auto_canary import try_bind_exact_line
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in moneyline_rows:
+        if source.get("lane") != "MONEYLINE" or len(rows) >= requested_limit:
+            continue
+        identity = source.get("identity") or {}
+        event_id = str(identity.get("official_event_id") or "").strip()
+        if not event_id or event_id in seen:
+            continue
+        seen.add(event_id)
+        result = source.get("result") or {}
+        sport = str(
+            identity.get("sport") or result.get("sport") or result.get("league") or ""
+        ).strip().upper()
+        start = identity.get("event_start_time") or identity.get("commence_time_utc")
+        lookup = try_bind_exact_line(
+            db,
+            sport=sport,
+            event={
+                "raw_event_id": event_id,
+                "event_start_time": start,
+                "home_team": identity.get("home_team"),
+                "away_team": identity.get("away_team"),
+            },
+        )
+        evidence = lookup["evidence"]
+        provider = receipt_provider or load_certified_spread_receipt
+        receipt: dict[str, Any] | None = None
+        receipt_reason: str | None = None
+        if evidence is not None:
+            try:
+                receipt, receipt_reason = provider(
+                    db, sport=sport, event_id=event_id
+                )
+            except Exception as exc:  # noqa: BLE001 - typed registry boundary
+                receipt, receipt_reason = None, (
+                    f"SPREAD_RECEIPT_REGISTRY_UNAVAILABLE:{type(exc).__name__}"
+                )
+        payload: dict[str, Any] = {
+            "sport": sport or None,
+            "market_family": "POINT_SPREAD",
+            "settlement_basis": _settlement_basis(sport) if sport else None,
+            "selection_status": "HELD",
+            "evaluation_state": "SPREAD_MODEL_UNCERTIFIED",
+            "reason_codes": list(lookup["reason_codes"])
+            or ["SPREAD_SELECTION_REQUIRES_CERTIFIED_MODEL"],
+            "line_source": None,
+            "exact_line_side": None,
+            "exact_signed_spread": None,
+            "sportsbook": None,
+            "quote_timestamp": None,
+            "provider_event_id": None,
+            "market_evidence_observed_rows": lookup["observed_rows"],
+            # No probability is produced here, so none may be reported.
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+        if evidence is not None:
+            payload.update({
+                "line_source": "APPEND_ONLY_MARKET_LEDGER",
+                "exact_line_side": "HOME",
+                "exact_signed_spread": float(evidence.home_spread),
+                "home_spread": float(evidence.home_spread),
+                "sportsbook": str(evidence.sportsbook),
+                "quote_timestamp": str(evidence.quote_timestamp),
+                "provider_event_id": str(evidence.provider_event_id),
+            })
+        status = "HELD"
+        if evidence is not None and receipt is not None:
+            admission, eligible, blockers = _admit_certified_spread_receipt(
+                receipt,
+                event_id=event_id,
+                sport=sport,
+                home_line=float(evidence.home_spread),
+                settlement_basis=payload["settlement_basis"],
+            )
+            payload["spread_admission"] = admission
+            if eligible:
+                status = "COMPLETED"
+                payload.update({
+                    "exact_line_side": admission["exact_line_side"],
+                    "exact_signed_spread": admission["exact_signed_spread"],
+                    "source_receipt_id": receipt.get("source_receipt_id"),
+                    "controlling_spread_specialist": admission["controlling_spread_specialist"],
+                    "model_artifact_version": admission["model_artifact_version"],
+                    "model_class": receipt.get("model_class"),
+                    "model_version": (
+                        receipt.get("model_version")
+                        or receipt.get("model_family")
+                        or admission["model_artifact_version"]
+                    ),
+                    "calibration_version": receipt.get("calibration_version"),
+                    "model_timestamp": admission["model_timestamp"],
+                    "source_snapshot_timestamp": receipt.get("source_snapshot_timestamp"),
+                    "terminal_authority": (
+                        receipt.get("terminal_authority")
+                        or receipt.get("global_terminal_authority")
+                    ),
+                    "controlling_engine_identity": receipt.get("controlling_engine_identity"),
+                    "p_cover": admission["p_cover"],
+                    "p_push": admission["p_push"],
+                    "p_not_cover": admission["p_not_cover"],
+                    "calibrated_probability_lower_bound": receipt.get(
+                        "calibrated_lower_bound",
+                        receipt.get("calibrated_probability_lower_bound"),
+                    ),
+                    "calibrated_probability_upper_bound": receipt.get(
+                        "calibrated_upper_bound",
+                        receipt.get("calibrated_probability_upper_bound"),
+                    ),
+                    "selection_status": "QUALIFIED",
+                    "reason_codes": [],
+                    "probability_publishable": True,
+                    "rank_eligible": True,
+                })
+                if admission["exact_line_side"] == "HOME":
+                    payload["home_spread"] = admission["exact_signed_spread"]
+            else:
+                payload["selection_status"] = "HELD"
+                payload["reason_codes"] = blockers
+        elif evidence is not None and receipt_reason:
+            payload["reason_codes"] = [receipt_reason]
+        rows.append(
+            _terminal_row(
+                SPREAD_LANE,
+                {
+                    "official_event_id": event_id,
+                    "event_start_time": start,
+                    "home_team": identity.get("home_team"),
+                    "away_team": identity.get("away_team"),
+                    "sport": sport or None,
+                },
+                payload,
+                assert_no_terminal_upgrade(reduce_row_terminal([status])),
+            )
+        )
+    return rows
+
+
 def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """Apply official-publication proof without erasing the sporting output."""
     guard = evaluate_team_event_official_publication(result)
@@ -914,6 +1128,20 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             if cross_sport_audit["reconciliation"]["row_reconciliation"] != "PASS":
                 blockers.append("RUN_INVALID_CROSS_SPORT_ROW_RECONCILIATION")
 
+    if "SPREAD" in requested_lanes:
+        if "MONEYLINE" not in requested_lanes:
+            # The spread lane reuses the winner lane's proven event identities; it
+            # never runs its own discovery, provider spend or model fit.
+            blockers.append("SPREAD_LANE_REQUIRES_MONEYLINE_SLATE")
+        else:
+            rows.extend(
+                _spread_lane_rows(
+                    db,
+                    moneyline_rows=list(rows),
+                    requested_limit=req.max_team_events,
+                )
+            )
+
     prop_counts = _acquisition_counts(prop_acquisition)
     true_zero_upstream = (
         "PROPS" in requested_lanes
@@ -930,7 +1158,11 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         elif "PROPS" not in requested_lanes:
             blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
 
-    requested_limits = {"PROPS": req.max_props, "MONEYLINE": req.max_team_events}
+    requested_limits = {
+        "PROPS": req.max_props,
+        "MONEYLINE": req.max_team_events,
+        "SPREAD": req.max_team_events,
+    }
     lane_reconciliation = {
         lane: _lane_reconciliation(
             rows,
