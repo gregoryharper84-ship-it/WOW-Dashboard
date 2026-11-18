@@ -21,6 +21,7 @@ def signed(monkeypatch):
     key = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
     monkeypatch.setenv("DISCORD_PUBLIC_KEY", key)
     monkeypatch.setenv("WOW_DISCORD_ALLOWED_USER_IDS", "777")
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "1572359272317063259")
     client = TestClient(bridge.app)
 
     def post(payload, timestamp=None):
@@ -33,7 +34,7 @@ def signed(monkeypatch):
 
 
 def sample_message(actor="777", body="NBA player ruled out before tipoff"):
-    return {"type": 2, "id": "999555", "guild_id": "1111", "channel_id": "2222",
+    return {"type": 2, "id": "999555", "application_id": "1572359272317063259", "token": "interaction-test-token", "guild_id": "1111", "channel_id": "2222",
             "member": {"user": {"id": actor}}, "data": {"type": 3,
             "name": bridge.COMMAND_NAME, "target_id": "3333", "resolved": {"messages": {"3333": {
                 "content": body, "timestamp": "2026-11-17T19:00:00Z", "author": {"id": "888"}}}}}}
@@ -63,17 +64,29 @@ def test_disallowed_user_never_written(signed, monkeypatch):
 def test_no_storage_fails_closed(signed, monkeypatch):
     _, post = signed
     monkeypatch.delenv("WOW_DISCORD_DATABASE_URL", raising=False)
+    edits = []
+    async def edit(_app, _token, message):
+        edits.append(message)
+        return True
+    monkeypatch.setattr(bridge, "_edit_deferred_response", edit)
     r = post(sample_message())
-    assert "Nothing was saved" in r.json()["data"]["content"]
+    assert r.json() == {"type": 5, "data": {"flags": 64}}
+    assert len(edits) == 1
+    assert "Nothing was saved" in edits[0]
 
 
 def test_received_signal_never_contains_raw_text(signed, monkeypatch):
     _, post = signed
-    seen = []
+    seen, edits = [], []
     monkeypatch.setattr(bridge, "_persist_signal", lambda s: seen.append(s) or True)
+    async def edit(_app, _token, message):
+        edits.append(message)
+        return True
+    monkeypatch.setattr(bridge, "_edit_deferred_response", edit)
     raw = "Secret info, possible NBA availability"
     r = post(sample_message(body=raw))
-    assert "receipt saved" in r.json()["data"]["content"]
+    assert r.json() == {"type": 5, "data": {"flags": 64}}
+    assert "receipt saved" in edits[0]
     assert len(seen) == 1
     assert raw not in str(seen[0])
     assert seen[0]["content_sha256"] and len(seen[0]["content_sha256"]) == 64
@@ -84,8 +97,14 @@ def test_received_signal_never_contains_raw_text(signed, monkeypatch):
 
 def test_duplicate_receipt_says_not_created(signed, monkeypatch):
     _, post = signed
+    edits = []
     monkeypatch.setattr(bridge, "_persist_signal", lambda s: False)
-    assert "no duplicate" in post(sample_message()).json()["data"]["content"]
+    async def edit(_app, _token, message):
+        edits.append(message)
+        return True
+    monkeypatch.setattr(bridge, "_edit_deferred_response", edit)
+    assert post(sample_message()).json()["type"] == 5
+    assert "no duplicate" in edits[0]
 
 
 def test_message_content_missing_cannot_save(signed, monkeypatch):
@@ -148,3 +167,59 @@ def test_oauth_callback_rejects_non_discord_issuer(monkeypatch):
     resp = client.get("/discord/oauth/callback", params={"code": "fake", "state": state, "iss": "https://fake.example"})
     assert resp.status_code == 403
     assert resp.json()["code"] == "DISCORD_OAUTH_ISSUER_INVALID"
+
+
+def test_signature_tolerates_small_future_clock_skew(signed):
+    _, post = signed
+    assert post({"type": 1}, timestamp=int(time.time())+2).json() == {"type": 1}
+
+
+def test_null_member_falls_back_to_user(signed, monkeypatch):
+    _, post = signed
+    signal = sample_message()
+    signal["member"] = None
+    signal["user"] = {"id": "777"}
+    captured = []
+    monkeypatch.setattr(bridge, "_persist_signal", lambda s: captured.append(s) or True)
+    async def edit(_app, _token, _message):
+        return True
+    monkeypatch.setattr(bridge, "_edit_deferred_response", edit)
+    assert post(signal).json()["type"] == 5
+    assert captured[0]["actor_id"] == "777"
+
+
+def test_null_messages_rejected_as_bad_input(signed, monkeypatch):
+    _, post = signed
+    signal = sample_message()
+    signal["data"]["resolved"]["messages"] = None
+    monkeypatch.setattr(bridge, "_persist_signal", lambda s: pytest.fail("unexpected persistence"))
+    r = post(signal)
+    assert r.json()["type"] == 4
+    assert "could not be accepted" in r.json()["data"]["content"]
+
+
+def test_wrong_application_never_persists(signed, monkeypatch):
+    _, post = signed
+    signal = sample_message()
+    signal["application_id"] = "1572359272317063260"
+    monkeypatch.setattr(bridge, "_persist_signal", lambda s: pytest.fail("wrong app"))
+    r = post(signal)
+    assert r.json()["type"] == 4
+    assert "configuration unavailable" in r.json()["data"]["content"]
+
+
+def test_database_work_is_threaded(signed, monkeypatch):
+    _, post = signed
+    import threading
+    caller = threading.get_ident()
+    observed = []
+    def save(_):
+        observed.append(threading.get_ident())
+        return True
+    async def edit(_app, _token, _message):
+        return True
+    monkeypatch.setattr(bridge, "_persist_signal", save)
+    monkeypatch.setattr(bridge, "_edit_deferred_response", edit)
+    assert post(sample_message()).json()["type"] == 5
+    assert len(observed) == 1
+    assert observed[0] != caller
