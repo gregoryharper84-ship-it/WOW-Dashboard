@@ -350,8 +350,27 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/wow-multiscout"
-          python v17/public_gdelt_discovery.py --output "$RUNNER_TEMP/wow-multiscout/public-gdelt-receipt.json"
+          python v17/public_gdelt_discovery.py \
+            --candidate-manifest "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
+            --output "$RUNNER_TEMP/wow-multiscout/public-gdelt-receipt.json"
           # This is link discovery only, never publisher verification or a fitted input.
+      - name: Report same-run news acquisition health (nonblocking)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout" / "public-gdelt-receipt.json"
+          r = json.loads(p.read_text()) if p.exists() else {}
+          status, code = r.get("source_status", "MISSING"), r.get("source_code", "RECEIPT_MISSING")
+          articles = len(r.get("articles") or [])
+          print(f"WOW_NEWS_SOURCE_STATUS={status} code={code} sport={r.get('sport_key')} articles={articles} selection={r.get('selection_policy')}")
+          if status != "OK" or not articles:
+              print(f"::warning title=WOW News Feed Degraded::status={status} code={code} articles={articles}")
+              raise SystemExit(1)
+          PY
       - name: Enrich handoff with sport-specialist Scout teams
         if: always()
         shell: bash
@@ -396,6 +415,7 @@ jobs:
           name: ${{ steps.delivery.outputs.artifact_name }}-discovery
           path: |
             ${{ runner.temp }}/wow-multiscout/model-handoff.json
+            ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
@@ -486,6 +506,12 @@ jobs:
               f"- Sportsbooks/bookmakers observed: **{len(books)}**",
               f"- Team/event Scout candidates: **{len(h.get('team_event_candidates', []))}**",
               f"- Prop Scout evidence rows: **{len(h.get('prop_candidates', []))}**",
+              f"- Public news discovery status: **{data.get('public_news_discovery_bridge', {}).get('source_status') or 'NOT_VERIFIED'}**",
+              f"- Public news discovery code: `{data.get('public_news_discovery_bridge', {}).get('source_code') or 'NOT_VERIFIED'}`",
+              f"- Public news bridge status: `{data.get('public_news_discovery_bridge', {}).get('status') or 'NOT_PRESENT'}`",
+              f"- Public news article count: **{data.get('public_news_discovery_bridge', {}).get('article_count', 0)}**",
+              f"- Public news candidates matched: **{data.get('public_news_discovery_bridge', {}).get('candidates_touched', 0)}**",
+              "- Verified news-triggered model rescore: **not established**",
               f"- Reconciled Scout candidate rows: **{recon.get('candidate_rows_total', 0)}**",
               f"- Mapped prop rows sent to governed prop lane: **{mapping.get('mapped_prop_rows', 0)}**",
               f"- Duplicate prop observations collapsed: **{mapping.get('duplicate_prop_rows', 0)}**",
@@ -533,6 +559,7 @@ jobs:
           name: ${{ steps.delivery.outputs.artifact_name }}
           path: |
             ${{ runner.temp }}/wow-multiscout/model-handoff.json
+            ${{ runner.temp }}/wow-multiscout/public-gdelt-receipt.json
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
