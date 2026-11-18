@@ -758,24 +758,16 @@ def score_ncaab_team_event_request(
     evidence = getattr(req, "sport_specific_evidence", None)
     evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
 
-    get_client = getattr(event_api, "get_client", None)
-    client = get_client() if callable(get_client) else getattr(event_api, "client", None)
-    if client is None and (hasattr(event_api, "table") or hasattr(event_api, "rpc")):
-        client = event_api
-
+    # The available hydrate_pregame(event, settled_games) is research-only;
+    # it is not a server query adapter and cannot be called as (req, client).
+    # Until a trusted event/history producer is bound, never swallow an import
+    # failure or treat caller evidence as a canonical hydrated feature source.
     features = evidence_map.get("features") or evidence_map.get("feature_package")
-    if not features and client is not None:
-        try:
-            from v17.ncaab_pregame_hydration import hydrate_ncaab_pregame_features
-            features = hydrate_ncaab_pregame_features(req, client=client)
-        except Exception:
-            features = None
-
     if not features:
         raise _model_failure_detail(
             req,
             code=MODEL_INPUTS_INSUFFICIENT,
-            blocker="NCAAB_PREGAME_EVIDENCE_INSUFFICIENT",
+            blocker="NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
             status_code=422,
             extra={
                 "model_invoked": False,
