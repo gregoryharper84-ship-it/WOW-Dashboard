@@ -653,3 +653,47 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_daily_snapshot_reports_stage_progression_and_held_scoring_run_status(monkeypatch):
+    """A completed workflow with all rows held must report ALL_HELD scoring_run_status."""
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    # Scorer returns held result with insufficient inputs
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: {
+            "code": "MODEL_INPUTS_INSUFFICIENT",
+            "blockers": ["SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT"],
+            "model_invoked": False,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
+        db=DB(),
+        market_api=Market(),
+        event_api=Event(),
+    )
+    assert result["run_status"] == "COMPLETED"
+    assert result["scoring_run_status"] == "ALL_HELD_ZERO_EVALUATED"
+    progression = result["stage_progression"]
+    assert progression["discovered"] == 1
+    assert progression["hydrated"] == 0
+    assert progression["model_evaluated"] == 0
+    assert progression["certified"] == 0
+    assert progression["publishable"] == 0
+    by_sport = result["stage_progression_by_sport"]
+    assert "MLB" in by_sport
+    assert by_sport["MLB"]["discovered"] == 1
+    assert by_sport["MLB"]["model_evaluated"] == 0
+    assert "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT" in by_sport["MLB"]["failure_codes"]
+    lane_rec = result["lane_reconciliation"]["MONEYLINE"]
+    assert lane_rec["scoring_run_status"] == "ALL_HELD_ZERO_EVALUATED"
+

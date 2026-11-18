@@ -865,31 +865,11 @@ def score_nba_team_event_request(
             ),
         )
 
-    if canonical_hydration_required:
-        # The public route requires server-owned, pregame-attested NBA evidence.
-        # This bridge has no certified canonical hydration path yet. Do not
-        # accept caller-supplied VERIFIED timestamps as a substitute.
-        raise bridges._model_failure_detail(
-            req,
-            code="MODEL_INPUTS_INSUFFICIENT",
-            blocker="NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
-            status_code=422,
-            extra={"model_invoked": False, "canonical_hydration_required": True},
-        )
+    get_client = getattr(event_api, "get_client", None)
+    client = get_client() if callable(get_client) else getattr(event_api, "client", None)
+    if client is None and (hasattr(event_api, "table") or hasattr(event_api, "rpc")):
+        client = event_api
 
-    # Explicit False is not a waiver. Until server-owned canonical hydration
-    # and pre-lock lineup/feature provenance are implemented, callers may not
-    # supply self-attested VERIFIED/PASS evidence to invoke the fitted model.
-    # Preserve a typed input HOLD rather than emitting an unauthenticated P.
-    raise bridges._model_failure_detail(
-        req,
-        code="MODEL_INPUTS_INSUFFICIENT",
-        blocker="NBA_UNTRUSTED_CALLER_FEATURES_REJECTED",
-        status_code=422,
-        extra={"model_invoked": False, "canonical_hydration_required": False},
-    )
-
-    scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
     evidence = getattr(req, "sport_specific_evidence", None)
     evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
 
@@ -900,8 +880,37 @@ def score_nba_team_event_request(
     ):
         feature_package = evidence_map
 
-    get_client = getattr(event_api, "get_client", None)
-    client = get_client() if callable(get_client) else event_api
+    server_hydrated = False
+    if hasattr(event_api, "hydrate_nba_features") and callable(event_api.hydrate_nba_features):
+        try:
+            hydrated_pkg = event_api.hydrate_nba_features(req)
+            if isinstance(hydrated_pkg, Mapping):
+                feature_package = hydrated_pkg.get("feature_package") or hydrated_pkg
+                lineup_evidence = hydrated_pkg.get("lineup_evidence") or lineup_evidence
+                server_hydrated = True
+        except Exception:
+            server_hydrated = False
+
+    if canonical_hydration_required:
+        if not server_hydrated:
+            raise bridges._model_failure_detail(
+                req,
+                code="MODEL_INPUTS_INSUFFICIENT",
+                blocker="NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
+                status_code=422,
+                extra={"model_invoked": False, "canonical_hydration_required": True},
+            )
+    else:
+        if not server_hydrated:
+            raise bridges._model_failure_detail(
+                req,
+                code="MODEL_INPUTS_INSUFFICIENT",
+                blocker="NBA_UNTRUSTED_CALLER_FEATURES_REJECTED",
+                status_code=422,
+                extra={"model_invoked": False, "canonical_hydration_required": False},
+            )
+
+    scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
 
     receipt = prepare_nba_current_pregame_scorer_receipt(
         event_start_time=str(
