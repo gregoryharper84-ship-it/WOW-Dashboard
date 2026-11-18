@@ -95,3 +95,50 @@ nonempty source receipts; authoritative publisher/team/league verification;
 canonical event mapping; post-update fitted-specialist rerun with immutable
 before/after hash and pregame receipt; protected release checks; and independent
 production readback. \`can_execute=false\` remains enforced.
+
+### November 18, 2026 — measured 429 penalty and paced retry policy
+
+The fixed six-second retry was replaced after direct measurement of the
+DOC 2.0 endpoint from this runtime. Every probe below was a single
+\`NBA injury\` ArtList request; each returned HTTP 429 with the body
+"Please limit requests to one every 5 seconds" and **no \`Retry-After\`
+header**.
+
+| Silence before the request | Result |
+| --- | --- |
+| 0 s | 429 |
+| 45 s | 429 |
+| 90 s | 429 |
+| 135 s | 429 |
+| 735 s (12.3 min) | 429 |
+| 688 s (11.5 min), different egress after a runtime restart | **200, 5 articles** |
+
+The penalty is therefore not the advertised five-second interval: it outlived
+12 minutes of silence from the same address. The first success arrived 11.5
+minutes after the last refused request, but the container restart also changed
+the egress address, so this run cannot separate elapsed time from a fresh
+per-IP allowance. Treat the block as a sustained per-IP penalty whose floor is
+minutes, not seconds. Three scheduled source-refresh runs earlier the same day
+(10:27Z, 18:58Z, and the 02:5xZ slot) each received 429 on their **first**
+request from separate GitHub-hosted runner addresses, so a fresh runner IP is
+not by itself a remedy.
+
+Consequent policy in \`v17/public_gdelt_discovery.py\`:
+
+- \`RETRY_DELAYS_SECONDS = (900,)\` with \`MAX_TOTAL_WAIT_SECONDS = 1200\`:
+  one paced retry just past the measured floor, so at most two requests per
+  run. A shorter first step (120s) was rejected because it sits below the
+  735s refusal floor and would be the same wasted call as the old 6s sleep.
+- Any \`Retry-After\` the source does send is parsed (delta-seconds or
+  HTTP-date) and lengthens the step rather than being ignored; the value is
+  capped at one hour.
+- The receipt now records \`attempts\` (delay before, HTTP status, source code,
+  observed timestamp), \`total_wait_seconds\` and \`retry_policy\`, so an operator
+  can see what was actually waited and tried.
+- Injected clients and offline tests still make exactly one call, so no test or
+  local caller pays the paced wait.
+- A final 429 still produces \`source_status=BLOCKED\`; pacing raises the chance
+  of a nonempty receipt and never implies a successful acquisition.
+
+This remains discovery metadata with \`model_feature_eligible=false\`,
+\`model_rescore_verified=false\` and \`can_execute=false\`.
