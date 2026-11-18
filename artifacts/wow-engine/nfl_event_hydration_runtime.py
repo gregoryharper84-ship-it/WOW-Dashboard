@@ -289,6 +289,8 @@ def refresh_nfl_injury_source(
         capture = download_asset(asset, Path(temp_dir))
         if capture.dataset_name != DATASET_INJURIES or capture.season != season:
             raise RuntimeError("NFL_INJURY_SOURCE_CAPTURE_SCOPE_CONFLICT")
+        if capture.row_count <= 0 or capture.source_status != "CAPTURED":
+            raise RuntimeError("NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE")
         snapshot_id = None
         raw_uri = None
         if persist:
