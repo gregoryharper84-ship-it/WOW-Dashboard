@@ -215,6 +215,9 @@ def test_goalie_saves_has_separate_workload_and_opponent_shot_sources():
                 "source_hash": HEX, "as_of_utc": "2026-11-17T18:00:00Z",
                 "captured_at_utc": "2026-11-17T18:10:00Z",
             }
+            if role in ROLE_REQUIRED_METRICS:
+                x["metrics"] = {k: (0.5 if k.endswith("_rate") else 2.3)
+                                for k in ROLE_REQUIRED_METRICS[role]}
             if role == "GOALIE_WORKLOAD":
                 x.update(player_id=c["player_id"], team=c["team"], opponent=c["opponent"])
                 x["metrics"] = {"shots_against_per60": 28.1, "minutes_per_start": 58.1}
@@ -266,3 +269,12 @@ def test_wrong_team_player_opportunity_rejected_even_when_event_matches():
     row = next(x for x in c["source_evidence"] if x["role"] == "PLAYER_OPPORTUNITY")
     row["team"] = "LAK"
     assert "NHL_EVIDENCE_PLAYER_OPPONENT_MISMATCH" in screen_nhl_pregame_evidence(c)["blockers"]
+
+
+def test_invalid_rate_scale_and_negative_percentage_do_not_pass():
+    c = card("FULL_GAME_ML")
+    row = next(x for x in c["source_evidence"] if x["role"] == "SPECIAL_TEAMS")
+    row["metrics"]["home_pp_rate"] = -0.1
+    assert "NHL_EVIDENCE_ROLE_METRICS_MISSING_OR_INVALID_SPECIAL_TEAMS" in screen_nhl_pregame_evidence(c)["blockers"]
+    row["metrics"]["home_pp_rate"] = 52.0
+    assert "NHL_EVIDENCE_ROLE_METRICS_MISSING_OR_INVALID_SPECIAL_TEAMS" in screen_nhl_pregame_evidence(c)["blockers"]
