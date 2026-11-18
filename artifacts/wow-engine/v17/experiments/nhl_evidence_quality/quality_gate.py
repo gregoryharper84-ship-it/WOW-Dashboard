@@ -31,6 +31,8 @@ ROLE_MAX_AGE_MINUTES = {
     "LINE_ASSIGNMENT": 3 * 60,
     "PLAYER_AVAILABILITY": 3 * 60,
     "MARKET_OFFER": 60,
+    "GOALIE_WORKLOAD": 36 * 60,
+    "OPPONENT_SHOT_VOLUME": 36 * 60,
 }
 REQUIRED_ROLES = {
     "FULL_GAME_ML": frozenset({
@@ -40,16 +42,21 @@ REQUIRED_ROLES = {
     "PLAYER_PROP": frozenset({
         "OFFICIAL_FIXTURE", "PLAYER_TOI_PP", "PLAYER_OPPORTUNITY",
         "OPPONENT_PROP_SUPPRESSION", "LINE_ASSIGNMENT",
-        "PLAYER_AVAILABILITY", "GOALIE_STARTERS", "MARKET_OFFER",
+        "PLAYER_AVAILABILITY", "GOALIE_STARTERS", "GOALIE_FORM",
+        "SPECIAL_TEAMS", "REST_AND_AVAILABILITY", "MARKET_OFFER",
     }),
 }
+GOALIE_SAVES_ROLES = frozenset({
+    "OFFICIAL_FIXTURE", "GOALIE_STARTERS", "GOALIE_FORM", "GOALIE_WORKLOAD",
+    "OPPONENT_SHOT_VOLUME", "OPPONENT_DEFENSE_5V5", "REST_AND_AVAILABILITY",
+    "MARKET_OFFER",
+})
 PROP_TYPES = frozenset({"GOALS", "ASSISTS", "POINTS", "SHOTS_ON_GOAL", "GOALIE_SAVES"})
 OPPORTUNITY_METRICS = {
     "GOALS": ("ixg_per60", "shot_attempts_per60"),
     "ASSISTS": ("assists_per60", "potential_assists_per60"),
     "POINTS": ("ixg_per60", "potential_assists_per60"),
     "SHOTS_ON_GOAL": ("sog_per60", "shot_attempts_per60"),
-    "GOALIE_SAVES": ("opponent_sog_for_per60", "projected_goalie_workload"),
 }
 
 
@@ -132,6 +139,8 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
                 not card["market_id"].strip()):
             blockers.add("NHL_PROP_EXACT_MARKET_INVALID")
 
+    required = (GOALIE_SAVES_ROLES if family == "PLAYER_PROP" and
+                card.get("stat_type") == "GOALIE_SAVES" else REQUIRED_ROLES.get(family, frozenset()))
     observed: set[str] = set()
     evidence = card.get("source_evidence")
     if not isinstance(evidence, (list, tuple)):
@@ -160,6 +169,11 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
             blockers.add("NHL_EVIDENCE_TIME_INVALID")
         elif snapshot - as_of > timedelta(minutes=ROLE_MAX_AGE_MINUTES[role]):
             blockers.add("NHL_EVIDENCE_STALE_" + role)
+        if (family == "PLAYER_PROP" and role in {
+            "PLAYER_TOI_PP", "PLAYER_OPPORTUNITY", "LINE_ASSIGNMENT",
+            "PLAYER_AVAILABILITY", "GOALIE_WORKLOAD",
+        } and item.get("player_id") != card.get("player_id")):
+            blockers.add("NHL_EVIDENCE_PLAYER_IDENTITY_MISMATCH")
         if role == "PLAYER_OPPORTUNITY" and family == "PLAYER_PROP":
             fields = OPPORTUNITY_METRICS.get(card.get("stat_type")) if isinstance(card.get("stat_type"), str) else None
             metrics = item.get("metrics")
@@ -171,14 +185,25 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
                 not _number(metrics.get(k)) for k in ("toi_minutes_per_game", "pp_toi_minutes_per_game")
             ):
                 blockers.add("NHL_PLAYER_USAGE_METRICS_MISSING")
+        if role == "GOALIE_WORKLOAD" and family == "PLAYER_PROP":
+            metrics = item.get("metrics")
+            if not isinstance(metrics, Mapping) or any(
+                not _number(metrics.get(k)) for k in ("shots_against_per60", "minutes_per_start")
+            ):
+                blockers.add("NHL_GOALIE_WORKLOAD_METRICS_MISSING")
+        if role == "OPPONENT_SHOT_VOLUME" and family == "PLAYER_PROP":
+            metrics = item.get("metrics")
+            if not isinstance(metrics, Mapping) or not _number(metrics.get("opponent_sog_for_per60")):
+                blockers.add("NHL_OPPONENT_SHOT_VOLUME_MISSING")
         if role == "MARKET_OFFER" and family == "PLAYER_PROP":
-            if (item.get("market_id") != card.get("market_id")
+            if (item.get("player_id") != card.get("player_id")
+                    or item.get("market_id") != card.get("market_id")
                     or item.get("exact_line") != card.get("exact_line")
                     or item.get("side") != card.get("side")
                     or not isinstance(item.get("book"), str) or not item["book"].strip()):
                 blockers.add("NHL_EXACT_OFFER_SOURCE_MISMATCH")
 
-    missing = sorted(REQUIRED_ROLES.get(family, frozenset()) - observed)
+    missing = sorted(required - observed)
     if missing:
         blockers.add("NHL_EVIDENCE_REQUIRED_ROLES_MISSING")
     # Official starter confirmation is controlled by the existing trusted provider
