@@ -53,7 +53,7 @@ jobs:
         run: pip install 'pytest>=8,<9' 'psycopg[binary]>=3.2,<4'
       - name: Compile and validate research-only contracts
         working-directory: artifacts/wow-engine
-        run: python -m pytest -q --confcutdir=v17/experiments/nfl_prospective v17/experiments/nfl_prospective/test_prospective.py v17/experiments/nfl_prospective/test_runner.py v17/experiments/nfl_prospective/test_release_contract.py v17/experiments/nfl_prospective/test_integrity_pg.py
+        run: python -m pytest -q --confcutdir=v17/experiments/nfl_prospective v17/experiments/nfl_prospective/test_prospective.py v17/experiments/nfl_prospective/test_runner.py v17/experiments/nfl_prospective/test_release_contract.py v17/experiments/nfl_prospective/test_integrity_pg.py v17/experiments/nfl_prospective/test_capture_reliability.py
 
   capture-and-grade:
     name: Freeze NFL prospective shadow and independently reconcile finals
