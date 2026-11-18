@@ -175,13 +175,17 @@ def _row_sport(row: dict[str, Any]) -> str:
 
 
 def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Count only verified consumed features, not absence of an input error.
+
+    MODEL_UNAVAILABLE is a model-stage HOLD, not evidence that feature
+    hydration failed. Missing proof remains uncounted rather than guessed.
+    """
     result = row.get("result") or {}
     code = str(result.get("code") or result.get("model_status") or result.get("terminal_status") or "")
     blockers = [str(b) for b in (result.get("blockers") or [])]
     if not blockers and code:
         blockers = [code]
-
-    unhydrated_markers = (
+    input_failures = (
         "MODEL_INPUTS_INSUFFICIENT",
         "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT",
         "RUN_INVALID_ACQUISITION_INCOMPLETE",
@@ -195,13 +199,31 @@ def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
         "NBA_UNTRUSTED_CALLER_FEATURES_REJECTED",
         "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE",
         "NBA_CURRENT_FEATURES_INVALID",
-        "MODEL_UNAVAILABLE",
+        "NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
     )
-    if any(code == m or any(m in b for b in blockers) for m in unhydrated_markers):
+    if any(code == m or any(m in b for b in blockers) for m in input_failures):
         return False, blockers
     if result.get("hydration_status") not in (None, "", "PASS"):
         return False, blockers
-    return True, blockers
+
+    receipt = result.get("feature_consumption_receipt")
+    verified_consumption = (
+        isinstance(receipt, dict)
+        and receipt.get("consumption_verification_status") == "VERIFIED"
+        and receipt.get("receipt_complete") is True
+    )
+    # An approved terminal result is independently protected by the existing
+    # official-publication guard; a bare model_invoked/PASS flag is not.
+    guard = result.get("official_publication_guard")
+    verified_terminal = (
+        row.get("row_status") == "COMPLETED"
+        and isinstance(guard, dict)
+        and guard.get("official_publication_allowed") is True
+        and result.get("terminal_label") == "FINAL_APPROVED"
+        and result.get("global_terminal_authority") == "V17_TERMINAL_REDUCER"
+        and result.get("can_execute") is False
+    )
+    return bool(verified_consumption or verified_terminal), blockers
 
 
 def _is_row_model_evaluated(row: dict[str, Any], hydrated: bool) -> bool:
@@ -239,59 +261,39 @@ def _is_row_model_evaluated(row: dict[str, Any], hydrated: bool) -> bool:
 
 
 def _is_row_certified(row: dict[str, Any], evaluated: bool) -> bool:
-    if not evaluated:
+    """Count a governing terminal approval, never a self-described cert flag.
+
+    The monitor is not a certificate authority. A bare PASS, certified=True,
+    certification_id, or unauthenticated receipt cannot assert certification.
+    """
+    if not evaluated or row.get("row_status") != "COMPLETED":
         return False
     result = row.get("result") or {}
-    code = str(result.get("code") or result.get("model_status") or "")
-    blockers = [str(b) for b in (result.get("blockers") or [])]
-    uncertified_markers = (
-        "SHADOW",
-        "RESEARCH_ONLY",
-        "MODEL_RESEARCH_ONLY_HOLD",
-        "CERTIFICATION_REPLAY_REQUIRED",
-        "CERTIFICATION_INACTIVE",
-        "TEAM_EVENT_SPECIALIST_NOT_CERTIFIED",
-        "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
-        "NBA_CONTROLLING_SPECIALIST_NOT_CERTIFIED",
-        "CERTIFICATION_RESOLUTION_FAILED",
-        "OFFICIAL_PUBLICATION_NOT_CERTIFIED",
-        "UNCERTIFIED",
-    )
-    if any(m in code or any(m in b for b in blockers) for m in uncertified_markers):
-        return False
-    if str(result.get("evidence_grade") or "").startswith("RESEARCH_ONLY"):
+    if (
+        result.get("model_invoked") is not True
+        or result.get("terminal_label") != "FINAL_APPROVED"
+        or result.get("global_terminal_authority") != "V17_TERMINAL_REDUCER"
+        or result.get("can_execute") is not False
+        or result.get("probability_publishable") is not True
+        or result.get("rank_eligible") is not True
+        or row.get("probability_publishable") is not True
+        or row.get("rank_eligible") is not True
+    ):
         return False
     guard = result.get("official_publication_guard")
-    if isinstance(guard, dict) and guard.get("official_publication_allowed") is False:
+    if not (
+        isinstance(guard, dict)
+        and guard.get("official_publication_allowed") is True
+        and guard.get("status") == "PASS"
+        and guard.get("terminal_authority") == "V17_TERMINAL_REDUCER"
+    ):
         return False
-
-    # Affirmative evidence from the governing certification or terminal record is strictly required.
-    cert_status = str(
-        result.get("certification_status")
-        or result.get("model_certification_status")
-        or result.get("official_certification_status")
-        or (isinstance(guard, dict) and guard.get("certification_status"))
-        or ""
-    ).upper().strip()
-    has_affirmative_status = cert_status in (
-        "CERTIFIED",
-        "PROSPECTIVELY_CERTIFIED",
-        "CERTIFIED_ACTIVE",
-        "CERTIFIED_PRODUCTION",
-        "PASS",
-    )
-    has_affirmative_flag = (
-        result.get("certified") is True
-        or result.get("model_certified") is True
-        or (isinstance(guard, dict) and guard.get("certified") is True)
-    )
-    has_cert_receipt = bool(
-        result.get("certification_receipt")
-        or result.get("certification_id")
-        or result.get("governed_certification_receipt")
-        or (isinstance(guard, dict) and guard.get("certification_receipt"))
-    )
-    return bool(has_affirmative_status or has_affirmative_flag or has_cert_receipt)
+    # Re-evaluate the complete deterministic publication contract, rather
+    # than trusting a copied or caller-provided guard label.
+    try:
+        return evaluate_team_event_official_publication(result).get("official_publication_allowed") is True
+    except (TypeError, ValueError, KeyError):
+        return False
 
 
 def _is_row_publishable(row: dict[str, Any], certified: bool) -> bool:
