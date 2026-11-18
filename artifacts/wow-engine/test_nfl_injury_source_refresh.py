@@ -93,3 +93,14 @@ def test_download_failure_propagates_without_writes(monkeypatch):
     monkeypatch.setattr(runtime, "_preserve_raw", lambda *_: pytest.fail("must not write Storage"))
     with pytest.raises(RuntimeError, match="NFL_SOURCE_DOWNLOAD_FAILED"):
         runtime.refresh_nfl_injury_source(season=2026, db=object(), persist=True)
+
+
+def test_empty_source_is_not_written_even_when_persistence_requested(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "download_asset",
+        lambda *_: replace(_capture(), row_count=0, source_status="CAPTURED_EMPTY"),
+    )
+    monkeypatch.setattr(runtime, "_preserve_raw", lambda *_: pytest.fail("empty must not touch Storage"))
+    monkeypatch.setattr(runtime, "_snapshot_id", lambda *_: pytest.fail("empty must not touch DB"))
+    with pytest.raises(RuntimeError, match="NFL_INJURY_SOURCE_CAPTURE_EMPTY_OR_UNUSABLE"):
+        runtime.refresh_nfl_injury_source(season=2026, db=object(), persist=True)
