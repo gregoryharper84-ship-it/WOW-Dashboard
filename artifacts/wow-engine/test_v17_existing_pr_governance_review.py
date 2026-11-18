@@ -388,7 +388,9 @@ def test_global_off_semantic_canary_requires_unique_current_attempt_receipt():
     content = WORKFLOW.read_text(encoding="utf-8")
     assert "SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}" in content
     assert '[ "$SOURCE_CONCLUSION" = "success" ] || neutral' in content
-    assert 'if [ "$REVIEW_ACTIVE" != "true" ]; then' in content
+    assert 'if [ "$QA_MODE" != "independent" ]; then' in content
+    assert "WOW_QA_MODE" in content
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in content
     assert "wow-v17-independent-source-review-" in content
     assert '(.expired == false and' in content
     assert '(.name | endswith($suffix))' in content
