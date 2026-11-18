@@ -50,7 +50,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
+          LEGACY_REVIEW_FLAG: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
+          LEGACY_ZERO_CREDIT_FLAG: ${{ vars.WOW_QA_ZERO_CREDIT_MODE || '' }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
@@ -63,6 +64,9 @@ jobs:
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests || fromJson('[]')) }}
         run: |
           set -euo pipefail
+          if [ -n "${LEGACY_REVIEW_FLAG:-}" ] || [ -n "${LEGACY_ZERO_CREDIT_FLAG:-}" ]; then
+            echo "::warning::QA_LEGACY_REVIEW_FLAGS_IGNORED: legacy review variables have no effect on admission."
+          fi
           # A workflow_run event carries no PR identity of its own. Only a successful
           # QA run that resolved an exact-head target can supply one; every other
           # completion is inapplicable and exits neutrally instead of manufacturing
@@ -84,20 +88,18 @@ jobs:
               echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
             }
             [ "$targeted" -gt 0 ] || neutral "SOURCE_QA_RUN_HAD_NO_EXACT_HEAD_TARGET"
-            # A whitelisted manual semantic-review canary is allowed to
-            # produce exact-head evidence while global review is off.
-            # Deterministic-only runs have no source-review artifact, and
-            # remain neutral; downstream steps check identity and full diff.
-            if [ "$REVIEW_ACTIVE" != "true" ]; then
-              suffix="-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
-              semantic_count=$(jq -e --arg suffix "$suffix" \
-                '[.artifacts[] | select(.expired == false and
-                 (.name | startswith("wow-v17-independent-source-review-")) and
-                 (.name | endswith($suffix)))] | length' <<<"$artifacts") || {
-                echo "SOURCE_REVIEW_CANARY_INVENTORY_INVALID" >&2; exit 1;
-              }
-              [ "$semantic_count" -eq 1 ] || neutral "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"
-            fi
+            # The review path is derived per PR by the QA workflow; no variable selects it.
+            # A semantic-review artifact exists only when QA took the scoped independent path.
+            # Deterministic-only runs have no source-review artifact and remain neutral here;
+            # downstream steps check identity and the full diff.
+            suffix="-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+            semantic_count=$(jq -e --arg suffix "$suffix" \
+              '[.artifacts[] | select(.expired == false and
+               (.name | startswith("wow-v17-independent-source-review-")) and
+               (.name | endswith($suffix)))] | length' <<<"$artifacts") || {
+              echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+            }
+            [ "$semantic_count" -eq 1 ] || neutral "NO_EXACT_SEMANTIC_REVIEW_ARTIFACT_DETERMINISTIC_OR_INACTIVE"
           elif [ "$EVENT_NAME" = "check_run" ]; then
             [ "$CHECK_RUN_APP_ID" = "5245853" ] &&
               [ "$CHECK_RUN_NAME" = "WOW Release Authority exact-head" ] &&
@@ -614,7 +616,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}
-          ZERO_CREDIT_MODE: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
@@ -742,7 +743,7 @@ jobs:
             # A narrowly preapproved ordinary training diff may consume only genuine
             # exact-head deterministic QA and Release App evidence in zero-credit mode.
             # The receipt explicitly denies any claim of semantic source review.
-            if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
+            if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" --deterministic-class-a
             elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then

@@ -16,8 +16,10 @@ or probability authority. ``can_execute`` is always false.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import re
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote
 
@@ -120,9 +122,33 @@ def _sha256_json(value: Any) -> str:
     ).hexdigest()
 
 
-def policy_sha256(allowlist: frozenset[str]) -> str:
-    """Hash of the exact policy applied: selector version plus the main-branch allowlist."""
-    return _sha256_json({"selector_version": SELECTOR_VERSION, "class_a_allowlist": sorted(allowlist)})
+def selector_source_sha256() -> str:
+    """Digest of this module's executed source: every classification rule above."""
+    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+
+
+def policy_sha256(allowlist: frozenset[str], *, source_sha256: str | None = None) -> str:
+    """Hash of the policy actually applied: the selector implementation plus the main-branch allowlist.
+
+    Binding the source digest (not only a version string) means editing any classification
+    rule changes the advertised fingerprint without a manual version bump.
+    """
+    return _sha256_json({
+        "selector_version": SELECTOR_VERSION,
+        "selector_source_sha256": source_sha256 if source_sha256 is not None else selector_source_sha256(),
+        "class_a_allowlist": sorted(allowlist),
+    })
+
+
+def load_class_a_allowlist(repo_root: Path) -> frozenset[str]:
+    """The one canonical Class A allowlist, read from the protected-main checkout."""
+    script = Path(repo_root) / ".github/scripts/verify_existing_pr_governance_receipt.py"
+    spec = importlib.util.spec_from_file_location("_qa_selector_class_a_policy", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("CLASS_A_ALLOWLIST_UNLOADABLE")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(module.CLASS_A_EXACT_PATHS)
 
 
 def diff_sha256(files: list[Mapping[str, Any]]) -> str:

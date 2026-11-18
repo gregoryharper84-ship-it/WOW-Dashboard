@@ -50,7 +50,9 @@ def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permi
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
     assert "workflows: [wow-v17-independent-qa-check]" not in workflow.split("\npermissions:", 1)[0]
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    # The review path is derived by the QA workflow. This workflow only warns about the legacy variable.
+    assert 'REVIEW_ACTIVE" != "true"' not in workflow
+    assert "QA_LEGACY_REVIEW_FLAGS_IGNORED" in workflow
     assert "wow-v17-independent-source-review" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
@@ -301,7 +303,6 @@ gh() {
             "GITHUB_REPOSITORY": REPOSITORY,
             "GITHUB_OUTPUT": str(outputs),
             "EVENT_NAME": "workflow_run",
-            "REVIEW_ACTIVE": "true",
             "SOURCE_RUN_ID": "40062800000",
             "SOURCE_RUN_ATTEMPT": "1",
             "SOURCE_CONCLUSION": "success",
@@ -337,8 +338,9 @@ POLICY_ARTIFACT = {"artifacts": [{"name": "wow-v17-qa-policy-40062800000-1"}]}
     ("overrides", "reason"),
     [
         # Observed in run 40062825503: QA completion while source review is inactive.
-        ({"REVIEW_ACTIVE": "", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
-        ({"REVIEW_ACTIVE": "false", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
+        # A policy-only (deterministic) QA run is neutral whatever a legacy variable says.
+        ({"LEGACY_REVIEW_FLAG": "", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "NO_EXACT_SEMANTIC_REVIEW_ARTIFACT_DETERMINISTIC_OR_INACTIVE"),
+        ({"LEGACY_REVIEW_FLAG": "true", "LEGACY_ZERO_CREDIT_FLAG": "true", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "NO_EXACT_SEMANTIC_REVIEW_ARTIFACT_DETERMINISTIC_OR_INACTIVE"),
         ({"SOURCE_CONCLUSION": "failure"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:failure"),
         ({"SOURCE_CONCLUSION": "skipped"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:skipped"),
         ({"SOURCE_CONCLUSION": ""}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:none"),
@@ -355,7 +357,7 @@ def test_inapplicable_workflow_run_exits_neutrally_without_receipt(overrides, re
 
 @pytest.mark.parametrize("event", ["pull_request_target", "workflow_dispatch"])
 def test_direct_pr_events_are_always_applicable(event, run_route_step):
-    result, outputs = run_route_step(EVENT_NAME=event, REVIEW_ACTIVE="", SOURCE_RUN_ID="", SOURCE_CONCLUSION="")
+    result, outputs = run_route_step(EVENT_NAME=event, SOURCE_RUN_ID="", SOURCE_CONCLUSION="")
 
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
@@ -363,21 +365,22 @@ def test_direct_pr_events_are_always_applicable(event, run_route_step):
 
 
 
-def test_authenticated_exact_attempt_canary_wakes_certifier_global_off(run_route_step):
+@pytest.mark.parametrize("legacy", [("", ""), ("false", "false"), ("true", "true"), ("enabled", "True ")])
+def test_exact_attempt_semantic_review_artifact_wakes_certifier_for_any_legacy_flag(legacy, run_route_step):
     exact = {
         "name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1",
         "expired": False,
     }
     expected = {"artifacts": POLICY_ARTIFACT["artifacts"] + [exact]}
     result, outputs = run_route_step(
-        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps(expected),
+        LEGACY_REVIEW_FLAG=legacy[0], LEGACY_ZERO_CREDIT_FLAG=legacy[1], TEST_ARTIFACTS_JSON=json.dumps(expected),
     )
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
 
 
 @pytest.mark.parametrize("change", ["expired", "older_attempt", "duplicate"])
-def test_unbound_or_duplicate_canary_remains_neutral(change, run_route_step):
+def test_unbound_or_duplicate_semantic_review_artifact_remains_neutral(change, run_route_step):
     exact = {
         "name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1",
         "expired": False,
@@ -390,18 +393,24 @@ def test_unbound_or_duplicate_canary_remains_neutral(change, run_route_step):
     if change == "duplicate":
         payload.append(dict(exact))
     result, outputs = run_route_step(
-        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps({"artifacts": payload}),
+        TEST_ARTIFACTS_JSON=json.dumps({"artifacts": payload}),
     )
     assert result.returncode == 0, result.stderr
     assert outputs == {
         "applicable": "false",
-        "reason": "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY",
+        "reason": "NO_EXACT_SEMANTIC_REVIEW_ARTIFACT_DETERMINISTIC_OR_INACTIVE",
     }
 
 
-def test_targeted_successful_qa_run_is_applicable(run_route_step):
+def test_targeted_successful_qa_run_is_applicable_only_with_its_semantic_review_artifact(run_route_step):
+    # Policy artifact only = the deterministic path: neutral (the Release check event carries it).
     result, outputs = run_route_step(TEST_ARTIFACTS_JSON=json.dumps(POLICY_ARTIFACT))
-
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "false", "reason": "NO_EXACT_SEMANTIC_REVIEW_ARTIFACT_DETERMINISTIC_OR_INACTIVE"}
+    exact = {"name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1", "expired": False}
+    result, outputs = run_route_step(
+        TEST_ARTIFACTS_JSON=json.dumps({"artifacts": POLICY_ARTIFACT["artifacts"] + [exact]}),
+    )
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
 
@@ -445,7 +454,6 @@ def run_release_check(run_route_step, *, event_prs=None, api_prs=None, api_check
     inventory = inventory if inventory is not None else [pr]
     return run_route_step(
         EVENT_NAME="check_run",
-        REVIEW_ACTIVE="",
         CHECK_RUN_PRS=json.dumps(event_prs),
         TEST_RELEASE_CHECK_RUN_JSON=json.dumps(api_check),
         TEST_RELEASE_PR_JSON=json.dumps(pr),
@@ -2408,7 +2416,7 @@ def test_v4_class_a_historical_certifier_is_not_release_dependency():
     gate = TRUSTED_GATE.read_text(encoding="utf-8")
     release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     morning = MORNING_GREEN_WORKFLOW.read_text(encoding="utf-8")
-    assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
+    assert "ZERO_CREDIT_MODE:-false" not in workflow  # deterministic receipt is no longer flag-gated
     assert "--deterministic-class-a" in workflow
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
     assert "verify_existing_pr_governance_receipt.py" in gate

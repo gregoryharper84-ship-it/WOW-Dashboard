@@ -928,7 +928,9 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
     if wf == QA_WF:
         workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
-        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
+        # Job admission is independent of any legacy review variable.
+        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in workflow["jobs"]["qa"]["if"]
+        assert "WOW_QA_ZERO_CREDIT_MODE" not in workflow["jobs"]["qa"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
@@ -942,7 +944,7 @@ def _workflow_on(path):
 def test_prless_workflow_run_skips_qa_before_target_resolution():
     job_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
     assert "github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]" in job_if
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in job_if
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in job_if and "WOW_QA_ZERO_CREDIT_MODE" not in job_if
     script = _step_script(QA_WF, "Resolve one exact-head QA target")
     assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in script
 
@@ -1004,8 +1006,9 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert "workflow_dispatch" in certifier
     assert "workflow_dispatch" in gate
     qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
-    assert "wow-v17-trusted-governance-gate" in qa_if
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
+    # The governance completion event is not a QA trigger, so the retired flag-based exclusion is gone.
+    assert "wow-v17-trusted-governance-gate" not in qa and "wow-v17-trusted-governance-gate" not in qa_if
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in qa_if and "WOW_QA_ZERO_CREDIT_MODE" not in qa_if
     assert "github.event.workflow_run.pull_requests[0]" in qa_if
 
 
@@ -2095,11 +2098,14 @@ def _selection(path):
     })
 
 
+_LEGACY_VALUES = ["", "false", "true", "enabled", "True "]
+
+
 @pytest.mark.parametrize("path, expected", [
     ("deterministic_class_a", ("zero_credit", "false", "true")),
     ("scoped_independent", ("independent", "true", "false")),
 ])
-@pytest.mark.parametrize("legacy", [("", ""), ("true", "true"), ("false", "false"), ("enabled", "True ")])
+@pytest.mark.parametrize("legacy", [(a, b) for a in _LEGACY_VALUES for b in _LEGACY_VALUES])
 def test_qa_policy_path_is_derived_and_no_legacy_flag_can_select_or_conflict(tmp_path, path, expected, legacy):
     proc, values = _select_step(tmp_path, selection=_selection(path), legacy_review=legacy[0], legacy_zero=legacy[1])
     assert proc.returncode == 0, proc.stdout + proc.stderr

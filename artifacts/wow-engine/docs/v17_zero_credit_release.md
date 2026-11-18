@@ -85,7 +85,13 @@ The selection records `head_sha`, `base_sha`, `diff_sha256` and `policy_sha256` 
 plus the main-branch allowlist). QA and Release both fail closed if the selection is missing,
 stale, or not deterministic while `zero_credit` is claimed.
 
-`WOW_QA_INDEPENDENT_REVIEW_ACTIVE` and `WOW_QA_ZERO_CREDIT_MODE` no longer select a path in the QA and
-Release workflows. If set, the QA job emits `QA_LEGACY_REVIEW_FLAGS_IGNORED` and records it in the run
-summary. The independent-review canary input is retired (`QA_REVIEW_CANARY_RETIRED`). The governance
-dispatcher and `wow-v17-existing-pr-governance-review.yml` still read the legacy variables (follow-up).
+`WOW_QA_INDEPENDENT_REVIEW_ACTIVE` and `WOW_QA_ZERO_CREDIT_MODE` no longer select a path or admit a job
+anywhere: not in the QA job `if:`, the QA and Release policy steps, `wow-v17-existing-pr-governance-review.yml`
+(route step and Class A receipt), or the governance dispatcher (which derives zero-credit mode per PR from the
+same selector). Any value, valid or not, only produces `QA_LEGACY_REVIEW_FLAGS_IGNORED` (a recorded warning;
+the dispatcher also reports `legacy_review_flags_ignored`). A regression matrix proves every unset/false/true/
+both/invalid combination yields identical selection and admission, and a repository scan fails if any new
+consumer of the variables appears. The independent-review canary input is retired (`QA_REVIEW_CANARY_RETIRED`).
+
+`policy_sha256` hashes the selector module's own source digest, the selector version and the main-branch Class A
+allowlist, so editing any classification rule changes the fingerprint without a manual version bump.

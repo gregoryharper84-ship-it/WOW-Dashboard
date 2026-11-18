@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import governance_dispatcher as policy  # noqa: E402
+import qa_review_path_selector as review_path_selector  # noqa: E402
+from agent_identity_policy import governance_trust_roots, is_trust_root  # noqa: E402
 
 REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
@@ -769,6 +771,38 @@ def required_evidence_ready(check_runs_for_head: list[dict], head_sha: str) -> b
     return True
 
 
+LEGACY_REVIEW_FLAG_NAMES = ("WOW_QA_ZERO_CREDIT_MODE", "WOW_QA_INDEPENDENT_REVIEW_ACTIVE")
+
+
+def derive_review_path(client: Any, head_sha: str, files: list[dict]) -> dict[str, Any]:
+    """Exact-head review path for one PR, from the protected-main selector. Never raises.
+
+    Any failure selects scoped independent review (zero_credit_mode False), the stricter path.
+    """
+    try:
+        root = Path(__file__).resolve().parents[3]
+        allowlist = review_path_selector.load_class_a_allowlist(root)
+        governance = frozenset(governance_trust_roots(root))
+        records = [row for row in files if isinstance(row, dict)]
+        content_types: dict[str, str | None] = {}
+        if (
+            records and len(records) <= review_path_selector.MAX_FILES
+            and all(isinstance(r.get("filename"), str) and r["filename"] in allowlist for r in records)
+        ):
+            def fetch(path: str) -> tuple[int, Any]:
+                return client.request("GET", "/" + path)
+            content_types = review_path_selector.fetch_content_types(
+                REPOSITORY, head_sha, [r["filename"] for r in records], fetch,
+            )
+        return review_path_selector.select_review_path(
+            records, allowlist=allowlist, content_types=content_types,
+            trust_root_fn=lambda path: is_trust_root(path, governance),
+            declared_changed_files=len(files) if isinstance(files, list) else None,
+        )
+    except Exception:  # noqa: BLE001 - fail toward more review, never less
+        return {"path": review_path_selector.PATH_SCOPED, "reasons": ["SELECTOR_ERROR"]}
+
+
 def reconcile(
     *,
     client: GitHub,
@@ -777,7 +811,6 @@ def reconcile(
     controller_run_id: str,
     controller_run_attempt: int = 1,
     source_sha: str,
-    zero_credit_mode: bool = False,
 ) -> dict[str, Any]:
     if not SHA_RE.fullmatch(source_sha):
         raise DispatchError("CONTROLLER_SOURCE_SHA_INVALID")
@@ -793,8 +826,6 @@ def reconcile(
     ):
         raise DispatchError("CONTROLLER_RUN_ATTEMPT_INVALID")
     _journal_key()
-    if not isinstance(zero_credit_mode, bool):
-        raise DispatchError("ZERO_CREDIT_POLICY_INVALID")
     owner_id, owner_login = _owner(client)
     workflows = list_workflows(client)
     wip_by_role = count_wip(client, workflows) if workflows else {role: 0 for role in WORKFLOWS}
@@ -819,6 +850,11 @@ def reconcile(
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
             available_roles = set(workflows)
+            # Derived per PR and head; no repository variable participates.
+            zero_credit_mode = (
+                derive_review_path(client, head_sha, files).get("path")
+                == review_path_selector.PATH_DETERMINISTIC
+            )
 
             # Decide static eligibility before scanning costly PR-lifetime
             # role history. A definite HOLD or DONE cannot be changed by
@@ -1013,14 +1049,10 @@ def main() -> int:
     run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
     source_sha = os.getenv("GITHUB_SHA", "")
     input_pr = os.getenv("INPUT_PR_NUMBER", "").strip() or None
-    zero_credit_setting = os.getenv("WOW_QA_ZERO_CREDIT_MODE", "")
-    paid_review_setting = os.getenv("WOW_QA_INDEPENDENT_REVIEW_ACTIVE", "")
-    if zero_credit_setting not in {"", "false", "true"} or paid_review_setting not in {"", "false", "true"}:
-        print(json.dumps({"action": "HOLD", "finding": "REVIEW_POLICY_SETTING_INVALID", "can_execute": False}))
-        return 2
-    if zero_credit_setting == "true" and paid_review_setting == "true":
-        print(json.dumps({"action": "HOLD", "finding": "REVIEW_POLICY_MODES_CONFLICT", "can_execute": False}))
-        return 2
+    # Legacy review variables no longer select a path. Report, never act on, any value.
+    legacy_flags_ignored = sorted(n for n in LEGACY_REVIEW_FLAG_NAMES if os.getenv(n, "") != "")
+    if legacy_flags_ignored:
+        print("::warning::QA_LEGACY_REVIEW_FLAGS_IGNORED: " + ",".join(legacy_flags_ignored), file=sys.stderr)
     if not run_number.isdigit() or not run_id.isdigit() or not run_attempt.isdigit():
         print(json.dumps({"action": "HOLD", "finding": "CONTROLLER_RUN_IDENTITY_INVALID"}))
         return 2
@@ -1032,11 +1064,11 @@ def main() -> int:
             controller_run_id=run_id,
             controller_run_attempt=int(run_attempt),
             source_sha=source_sha,
-            zero_credit_mode=(zero_credit_setting == "true"),
         )
     except DispatchError as exc:
         print(json.dumps({"action": "HOLD", "finding": str(exc), "can_execute": False}))
         return 1
+    result["legacy_review_flags_ignored"] = legacy_flags_ignored
     print(json.dumps(result, sort_keys=True))
     return 0
 

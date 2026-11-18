@@ -255,3 +255,69 @@ def test_workflows_derive_the_path_and_no_flag_selects_it():
     assert "QA_LEGACY_REVIEW_FLAGS_IGNORED" in step
     for var in ("WOW_QA_ZERO_CREDIT_MODE", "WOW_QA_INDEPENDENT_REVIEW_ACTIVE"):
         assert var not in release_wf
+
+
+# ---- policy fingerprint is bound to the implementation, not a version string -------
+def test_policy_hash_binds_the_selector_implementation():
+    base = sel.policy_sha256(ALLOW)
+    assert base == sel.policy_sha256(ALLOW, source_sha256=sel.selector_source_sha256())
+    assert base != sel.policy_sha256(ALLOW, source_sha256="0" * 64)
+
+
+def test_editing_a_classification_rule_changes_the_fingerprint_without_a_version_bump(tmp_path):
+    import importlib.util
+    source = (ROOT / "artifacts/wow-engine/v17/qa_review_path_selector.py").read_text()
+    edited = source.replace("MAX_FILES = 100", "MAX_FILES = 101")
+    assert edited != source and 'SELECTOR_VERSION = "1"' in edited
+    path = tmp_path / "edited_selector.py"
+    path.write_text(edited)
+    spec = importlib.util.spec_from_file_location("edited_selector_for_hash_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.SELECTOR_VERSION == sel.SELECTOR_VERSION
+    assert module.policy_sha256(ALLOW) != sel.policy_sha256(ALLOW)
+
+
+def test_load_class_a_allowlist_reads_the_protected_main_script():
+    assert sel.load_class_a_allowlist(ROOT) == ALLOW
+
+
+# ---- no component may act on a legacy review variable (fail-closed consumer scan) ---
+LEGACY_NAMES = ("WOW_QA_ZERO_CREDIT_MODE", "WOW_QA_INDEPENDENT_REVIEW_ACTIVE")
+# Warning-only sites. A new consumer anywhere else fails here until it is made inert.
+WARNING_ONLY_SITES = {
+    ".github/workflows/wow-v17-independent-qa-check.yml",
+    ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+    ".github/workflows/wow-v17-governance-dispatcher.yml",
+    "artifacts/wow-engine/v17/governance_dispatcher_github.py",
+}
+
+
+def _scanned_files():
+    for pattern in (".github/workflows/*.y*ml", ".github/actions/**/*.y*ml", ".github/scripts/*.py",
+                    "artifacts/wow-engine/**/*.py", "artifacts/*/**/*.py"):
+        for path in ROOT.glob(pattern):
+            rel = path.relative_to(ROOT).as_posix()
+            if path.is_file() and "/tests/" not in rel and not path.name.startswith("test_"):
+                yield rel, path.read_text(encoding="utf-8", errors="replace")
+
+
+def test_legacy_review_variables_have_no_consumer_outside_the_warning_only_sites():
+    users = {rel for rel, text in _scanned_files() if any(n in text for n in LEGACY_NAMES)}
+    assert users <= WARNING_ONLY_SITES, sorted(users - WARNING_ONLY_SITES)
+
+
+def test_no_workflow_condition_or_branch_reads_a_legacy_variable():
+    for rel, text in _scanned_files():
+        if not rel.startswith(".github/workflows/"):
+            continue
+        for line in text.splitlines():
+            if any(n in line for n in LEGACY_NAMES):
+                stripped = line.strip()
+                if "::warning::QA_LEGACY_REVIEW_FLAGS_IGNORED" in stripped:
+                    continue  # the recorded warning itself
+                assert not stripped.startswith("if:") and "&&" not in stripped and "||" not in stripped.replace("|| ''", ""), (rel, stripped)
+                # Only ever mapped into an environment value for the warning.
+                assert "vars." in stripped and stripped.split(":", 1)[0].strip() in {
+                    "LEGACY_REVIEW_FLAG", "LEGACY_ZERO_CREDIT_FLAG", *LEGACY_NAMES,
+                }, (rel, stripped)

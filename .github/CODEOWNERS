@@ -31,6 +31,7 @@
 /artifacts/wow-engine/v17/governance_dispatcher.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher_github.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/qa_review_path_selector.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/persistent_worker_safety.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/amrt_authenticated_worker_handoff.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/amrt_closure_gate.py @gregoryharper84-ship-it

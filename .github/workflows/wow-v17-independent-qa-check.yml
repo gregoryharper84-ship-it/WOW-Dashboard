@@ -55,7 +55,7 @@ jobs:
   qa:
     # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
     # not red. Once bound, a missing key fails closed in the identity step below.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]) && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || (vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0])
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15
