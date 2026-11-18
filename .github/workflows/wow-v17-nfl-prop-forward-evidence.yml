@@ -16,7 +16,7 @@ concurrency:
 jobs:
   seed-forward-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
@@ -57,8 +57,9 @@ jobs:
           rotation="${GITHUB_RUN_NUMBER}"
           today="$(TZ=America/Chicago date +%F)"
           tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
+          third_day="$(TZ=America/Chicago date -d '+2 days' +%F)"
 
-          for slate_date in "${today}" "${tomorrow}"; do
+          for slate_date in "${today}" "${tomorrow}" "${third_day}"; do
             body="$(printf '{"requested_date":"%s","candidate_offset":0,"candidate_rotation":%s,"max_candidates":32}' "${slate_date}" "${rotation}")"
             oidc_token="$(issue_oidc_token)"
             http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 180 \

@@ -31,6 +31,7 @@ from v17.first_six_open_data_maintenance import install_first_six_open_data_main
 from v17.ncaaf_prop_history_maintenance import install_ncaaf_prop_history_maintenance_route
 from v17.ncaaf_result_form_candidate import NCAAFResultFormUnavailable, train_and_persist as train_result_form_candidate
 from v17.nhl_model_maintenance import install_nhl_model_maintenance_route
+from v17.nhl_source_reingest import install_nhl_source_reingest_route
 from v17.spread_certification_replay_route import install_spread_certification_replay_route
 from v17.spread_margin_replay_route import install_spread_margin_replay_route
 from v17.team_event_certification_replay import install_team_event_certification_replay_route
@@ -287,6 +288,7 @@ def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any,
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     install_nhl_model_maintenance_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
+    install_nhl_source_reingest_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
     install_first_six_open_data_maintenance_routes(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
