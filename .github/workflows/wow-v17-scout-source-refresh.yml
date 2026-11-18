@@ -44,6 +44,23 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gdelt-public-news"
           python v17/public_gdelt_discovery.py --output "$RUNNER_TEMP/gdelt-public-news/receipt.json"
           cat "$RUNNER_TEMP/gdelt-public-news/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Report public news acquisition health (nonblocking)
+        if: always()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "gdelt-public-news" / "receipt.json"
+          receipt = json.loads(p.read_text()) if p.exists() else {}
+          status = receipt.get("source_status", "MISSING")
+          code = receipt.get("source_code", "RECEIPT_MISSING")
+          articles = len(receipt.get("articles") or [])
+          print(f"WOW_NEWS_SOURCE_STATUS={status} code={code} articles={articles}")
+          if status != "OK" or not articles:
+              print(f"::warning title=WOW News Feed Degraded::news_status={status} code={code} articles={articles}")
+              raise SystemExit(1)
+          PY
       - name: Upload public news evidence receipt
         if: always()
         uses: actions/upload-artifact@v4

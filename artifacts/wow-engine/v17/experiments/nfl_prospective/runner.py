@@ -68,10 +68,49 @@ def capture_clock_eligible(kickoff: str, now: datetime, horizon_hours: int=MAX_L
     return k is not None and n is not None and n<k<=n+timedelta(hours=horizon_hours)
 
 
-def status_from_counts(eligible: int, frozen: int, existing: int, held: int) -> dict[str,Any]:
+# Only fixed, research-only codes can leave the capture runner. Never report
+# external exception text or data values in retained public CI artifacts.
+CAPTURE_HOLD_CODES = frozenset({
+    "NFL_SEASON_PRIOR_HISTORY_MISMATCH",
+    "NFL_TARGET_EVENT_FEATURE_MISMATCH",
+    "NFL_FEATURE_CHRONOLOGY_INVALID",
+    "NFL_FEATURE_SOURCE_MANIFEST_INVALID",
+    "NFL_TARGET_FEATURE_VECTOR_INVALID",
+    "NFL_PREGAME_CUTOFF_INVALID",
+    "NFL_SOURCE_SNAPSHOT_STALE_OR_INVALID",
+    "NFL_CAPTURE_INPUT_MISSING",
+    "NFL_CAPTURE_FEATURE_INVALID",
+})
+
+
+def capture_hold_reason(exc: Exception) -> str:
+    if isinstance(exc, KeyError):
+        return "NFL_CAPTURE_INPUT_MISSING"
+    if isinstance(exc, ValueError) and str(exc) in CAPTURE_HOLD_CODES:
+        return str(exc)
+    return "NFL_CAPTURE_FEATURE_INVALID"
+
+
+def status_from_counts(
+    eligible: int, frozen: int, existing: int, held: int,
+    *, hold_reason_counts: Mapping[str, int] | None = None,
+) -> dict[str,Any]:
     # An entirely held eligible slate is NOT a successful capture.
     # Empty windows and already-frozen cohorts are normal and idempotent.
-    if any(type(n) is not int or n < 0 for n in (eligible, frozen, existing, held)) or eligible != frozen + existing + held:
+    accounting_ok = (all(type(n) is int and n >= 0 for n in (eligible, frozen, existing, held))
+                     and eligible == frozen + existing + held)
+    if hold_reason_counts is not None:
+        accounting_ok = (
+            accounting_ok
+            and isinstance(hold_reason_counts, Mapping)
+            and all(
+                isinstance(key, str) and key in CAPTURE_HOLD_CODES
+                and type(value) is int and value > 0
+                for key, value in hold_reason_counts.items()
+            )
+            and sum(hold_reason_counts.values()) == held
+        )
+    if not accounting_ok:
         status = "CAPTURE_ACCOUNTING_INCONSISTENT"
     elif eligible == 0:
         status = "NO_EVENTS_IN_CAPTURE_WINDOW"
@@ -81,7 +120,7 @@ def status_from_counts(eligible: int, frozen: int, existing: int, held: int) -> 
         status = "EXISTING_OR_HELD"
     else:
         status = "EVIDENCE_ALL_HELD"
-    return {"status": status, "run_ok": status not in {
+    out = {"status": status, "run_ok": status not in {
                 "CAPTURE_ACCOUNTING_INCONSISTENT", "EVIDENCE_ALL_HELD"},
             "capture_window_hours": MAX_LOOKAHEAD_HOURS,
             "eligible_events": eligible, "new_forecasts": frozen,
@@ -89,6 +128,11 @@ def status_from_counts(eligible: int, frozen: int, existing: int, held: int) -> 
             "can_execute": False, "model_promoted": False,
             "probability_publishable": False, "certification_eligible": False,
             "terminal_authority": TERMINAL_AUTHORITY}
+    if hold_reason_counts is not None and accounting_ok:
+        out["evidence_hold_reason_counts"] = {
+            code: hold_reason_counts[code] for code in sorted(hold_reason_counts)
+        }
+    return out
 
 def make_capture_receipt(row: Mapping[str,Any], incumbent: Mapping[str,Any] | None) -> dict[str,Any]:
     out=dict(row); meta=dict(row.get("research_metadata") or {})
@@ -205,6 +249,13 @@ def run_capture(db: Any, *, now: datetime, dry_run: bool = False) -> dict[str,An
     from nfl_event_prediction_features import build_prediction_feature_row
     games,summaries=load_completed_history(db)
     existing=frozen=held=0
+    hold_reason_counts: dict[str, int] = {}
+
+    def record_hold(code: str) -> None:
+        nonlocal held
+        held += 1
+        hold_reason_counts[code] = hold_reason_counts.get(code, 0) + 1
+
     for fixture in window:
         event_id=fixture["official_event_id"]
         old=(db.table(TABLE).select("shadow_id,prediction_created_at,source_feature_hash,grade_source_manifest")
@@ -222,10 +273,10 @@ def run_capture(db: Any, *, now: datetime, dry_run: bool = False) -> dict[str,An
                                                 target_date=datetime.fromisoformat(fixture["gameday"]).date())
             if (int(feature["features"]["home_season_prior_games"])!=expected_h or
                 int(feature["features"]["away_season_prior_games"])!=expected_a):
-                held+=1;continue
+                record_hold("NFL_SEASON_PRIOR_HISTORY_MISMATCH");continue
             rec=score_future_event(fitted,fixture,feature,at,schedule_snapshot=snapshot)
-        except (ValueError,KeyError,TypeError):
-            held+=1;continue
+        except (ValueError,KeyError,TypeError) as exc:
+            record_hold(capture_hold_reason(exc));continue
         incumbent_rows=(db.table("wow_nfl_event_predictions")
                         .select("event_prediction_id,model_version,calibrated_home_probability,created_at,event_start_time_utc,official_event_id")
                         .eq("official_event_id",event_id).order("created_at",desc=True).limit(100).execute().data or [])
@@ -238,7 +289,9 @@ def run_capture(db: Any, *, now: datetime, dry_run: bool = False) -> dict[str,An
             if _ts(inserted[0].get("created_at")) is None or _ts(inserted[0]["created_at"])>=_ts(rec["event_start_time_utc"]):
                 raise RuntimeError("NFL_DB_CREATED_POST_KICKOFF")
         frozen+=1
-    result=status_from_counts(len(window),frozen,existing,held)
+    result=status_from_counts(
+        len(window),frozen,existing,held,hold_reason_counts=hold_reason_counts
+    )
     result["model_artifact_sha256"]=fitted["artifact_sha256"]
     result["dry_run"]=bool(dry_run)
     return result
