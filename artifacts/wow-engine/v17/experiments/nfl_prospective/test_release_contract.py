@@ -24,7 +24,15 @@ def test_scheduled_workflow_never_runs_mutations_on_pr():
     assert "wow_can_execute: \"false\"" in wf
     assert "run: python -m pytest" in wf
     assert "--confcutdir=v17/experiments/nfl_prospective" in wf
+    assert 'pythonpath: "."' in wf
     assert "secrets.supabase_service_role_key" in wf
     assert "cancel-in-progress: false" in wf
     assert "retention-days: 90" in wf
     assert "git push" not in wf
+
+
+def test_clock_hardening_migration_uses_actual_trigger_execution_clock():
+    hardening = (ROOT/'migrations'/'20261117_nfl_prospective_clock_runtime_hardening.sql').read_text().lower()
+    assert 'clock_timestamp()' in hardening
+    assert 'statement_timestamp()' not in hardening
+    assert 'create or replace function public.wow_nfl_prospective_immutable_guard()' in hardening
