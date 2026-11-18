@@ -50,7 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
+          QA_MODE: ${{ vars.WOW_QA_MODE }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
@@ -63,6 +63,11 @@ jobs:
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests || fromJson('[]')) }}
         run: |
           set -euo pipefail
+          case "${QA_MODE:-}" in
+            independent|zero_credit|legacy) ;;
+            "") echo "QA_REVIEW_MODE_UNCONFIGURED" >&2; exit 1 ;;
+            *) echo "QA_REVIEW_MODE_INVALID" >&2; exit 1 ;;
+          esac
           # A workflow_run event carries no PR identity of its own. Only a successful
           # QA run that resolved an exact-head target can supply one; every other
           # completion is inapplicable and exits neutrally instead of manufacturing
@@ -88,7 +93,7 @@ jobs:
             # produce exact-head evidence while global review is off.
             # Deterministic-only runs have no source-review artifact, and
             # remain neutral; downstream steps check identity and full diff.
-            if [ "$REVIEW_ACTIVE" != "true" ]; then
+            if [ "$QA_MODE" != "independent" ]; then
               suffix="-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
               semantic_count=$(jq -e --arg suffix "$suffix" \
                 '[.artifacts[] | select(.expired == false and
@@ -614,7 +619,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}
-          ZERO_CREDIT_MODE: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          QA_MODE: ${{ vars.WOW_QA_MODE }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
@@ -742,7 +747,7 @@ jobs:
             # A narrowly preapproved ordinary training diff may consume only genuine
             # exact-head deterministic QA and Release App evidence in zero-credit mode.
             # The receipt explicitly denies any claim of semantic source review.
-            if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
+            if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ "$QA_MODE" = "zero_credit" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" --deterministic-class-a
             elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then

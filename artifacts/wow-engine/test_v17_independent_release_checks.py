@@ -912,11 +912,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 
 
 @pytest.mark.parametrize("wf, upstream", [
-    (QA_WF, [
-        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        # Do not restore the governance completion event: QA -> certifier -> trusted gate -> QA.
-        "wow-v17-change-impact-gate",
-    ]),
+    (QA_WF, ["wow-verify"]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
 def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
@@ -928,7 +924,7 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
     if wf == QA_WF:
         workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
-        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
+        assert "github.event.workflow_run.pull_requests[0]" in workflow["jobs"]["qa"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
@@ -942,7 +938,7 @@ def _workflow_on(path):
 def test_prless_workflow_run_skips_qa_before_target_resolution():
     job_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
     assert "github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]" in job_if
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in job_if
+    assert "WOW_QA_MODE" not in job_if
     script = _step_script(QA_WF, "Resolve one exact-head QA target")
     assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in script
 
@@ -1004,8 +1000,8 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert "workflow_dispatch" in certifier
     assert "workflow_dispatch" in gate
     qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
-    assert "wow-v17-trusted-governance-gate" in qa_if
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
+    assert "wow-v17-trusted-governance-gate" not in qa_if
+    assert "WOW_QA_MODE" not in qa_if
     assert "github.event.workflow_run.pull_requests[0]" in qa_if
 
 
@@ -1351,7 +1347,7 @@ def _run_decide(tmp, wf, routes, env_extra):
     env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FAKE_GH_ROUTES=str(tmp / "routes.json"),
                FAKE_GH_LOG=str(tmp / "gh.log"), GITHUB_REPOSITORY=REPO, RUNNER_TEMP=str(runner),
                GITHUB_OUTPUT=str(tmp / "out.txt"), GITHUB_STEP_SUMMARY=str(tmp / "summary.md"), GH_TOKEN="read-only",
-               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", REVIEW_ACTIVATION="false",
+               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", QA_MODE="legacy",
                SOURCE_REVIEW_ARTIFACT_ID="99", SOURCE_QA_RUN_ID="12345", SOURCE_QA_RUN_ATTEMPT="1",
                PYTHONPATH=f"{tmp}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
                FAKE_SOURCE_REVIEW=json.dumps(source), FAKE_QA_POLICY=json.dumps(qa_policy))
@@ -2028,7 +2024,7 @@ def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):
     # OFF -> ON: a genuine legacy QA pass cannot satisfy the now-active policy.
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, routes,
-        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "true",
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "QA_MODE": "independent",
          "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_QA_POLICY": json.dumps(legacy)},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -2039,7 +2035,7 @@ def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):
     # ON -> OFF: a later flag change cannot downgrade the producing QA run.
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, routes,
-        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "false",
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "QA_MODE": "legacy",
          "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_SOURCE_REVIEW_MODE": "missing"},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -2068,23 +2064,23 @@ def test_activated_qa_review_requires_its_separate_provider_credential():
 
 
 @pytest.mark.parametrize(
-    ("global_active", "canary_requested", "canary_pr", "canary_sha", "event", "expected"),
+    ("mode", "canary_requested", "canary_pr", "canary_sha", "event", "expected"),
     [
-        ("false", "false", "", "", "workflow_dispatch", ("legacy", "false")),
-        ("false", "true", "7", HEAD, "workflow_dispatch", ("canary", "true")),
-        ("true", "false", "", "", "workflow_run", ("independent", "true")),
-        ("true", "true", "7", HEAD, "workflow_dispatch", ("independent", "true")),
+        ("legacy", "false", "", "", "workflow_dispatch", ("legacy", "false")),
+        ("legacy", "true", "7", HEAD, "workflow_dispatch", ("canary", "true")),
+        ("independent", "false", "", "", "workflow_run", ("independent", "true")),
+        ("zero_credit", "false", "", "", "workflow_run", ("zero_credit", "false")),
     ],
 )
 def test_qa_review_policy_selector_is_scoped_and_staged(
-    tmp_path, global_active, canary_requested, canary_pr, canary_sha, event, expected,
+    tmp_path, mode, canary_requested, canary_pr, canary_sha, event, expected,
 ):
     output = tmp_path / "outputs"
     proc = subprocess.run(
         ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
         env=dict(
             os.environ,
-            REVIEW_ACTIVATION=global_active,
+            QA_MODE=mode,
             CANARY_REQUESTED=canary_requested,
             CANARY_PR=canary_pr,
             CANARY_SHA=canary_sha,
@@ -2112,7 +2108,7 @@ def test_qa_canary_policy_selector_rejects_unapproved_target(tmp_path, event, pr
         ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
         env=dict(
             os.environ,
-            REVIEW_ACTIVATION="false",
+            QA_MODE="legacy",
             CANARY_REQUESTED="true",
             CANARY_PR="7",
             CANARY_SHA=HEAD,
@@ -2129,13 +2125,13 @@ def test_qa_canary_policy_selector_rejects_unapproved_target(tmp_path, event, pr
         or "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH" in proc.stdout
 
 
-@pytest.mark.parametrize("activation", ["True", "enabled", "false "])
+@pytest.mark.parametrize("activation", ["", "True", "enabled", "independent "])
 def test_qa_review_policy_selector_rejects_unknown_global_activation(tmp_path, activation):
     proc = subprocess.run(
         ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
         env=dict(
             os.environ,
-            REVIEW_ACTIVATION=activation,
+            QA_MODE=activation,
             CANARY_REQUESTED="false",
             EVENT="workflow_dispatch",
             PR_NUMBER="7",
@@ -2145,17 +2141,19 @@ def test_qa_review_policy_selector_rejects_unknown_global_activation(tmp_path, a
         capture_output=True,
         text=True,
     )
-    assert proc.returncode != 0 and "::error::QA_REVIEW_POLICY_INVALID" in proc.stdout
+    assert proc.returncode != 0
+    code = "QA_REVIEW_MODE_UNCONFIGURED" if not activation else "QA_REVIEW_MODE_INVALID"
+    assert f"::error::{code}" in proc.stdout
 
 
 def test_release_review_policy_selector_rejects_unknown_activation(fake_gh):
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, _routes_for_pr(_evidence_runs()),
-        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "enabled",
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "QA_MODE": "enabled",
          "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
     )
     assert proc.returncode != 0
-    assert "::error::QA_REVIEW_POLICY_INVALID" in proc.stdout
+    assert "::error::QA_REVIEW_MODE_INVALID" in proc.stdout
     assert not (runner / "decisions" / "decision-7.json").exists()
 
 
@@ -2327,3 +2325,39 @@ def test_real_gather_includes_pr_body_for_required_incident_gate():
     routes[f"repos/{REPO}/pulls/7"][1]["body"] = "Parent: #1688"
     bad = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
     assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(bad)
+
+
+@pytest.mark.parametrize("mode", ["independent", "zero_credit"])
+def test_single_mode_rejects_canary_during_normal_or_zero_credit_policy(tmp_path, mode):
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
+        env=dict(os.environ, QA_MODE=mode, CANARY_REQUESTED="true", CANARY_PR="7",
+                 CANARY_SHA=HEAD, EVENT="workflow_dispatch", PR_NUMBER="7",
+                 HEAD_SHA=HEAD, GITHUB_OUTPUT=str(tmp_path / "output")),
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "::error::QA_REVIEW_CANARY_MODE_CONFLICT" in proc.stdout
+
+
+def test_single_repository_mode_wired_into_all_release_consumers():
+    paths = [
+        QA_WF, REL_WF,
+        ROOT / ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+        ROOT / ".github/workflows/wow-v17-governance-dispatcher.yml",
+        ROOT / "artifacts/wow-engine/v17/governance_dispatcher_github.py",
+    ]
+    for path in paths:
+        text = path.read_text()
+        assert "WOW_QA_MODE" in text
+        assert "WOW_QA_ZERO_CREDIT_MODE" not in text
+        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in text
+    assert _workflow_on(QA_WF)["workflow_run"]["workflows"] == ["wow-verify"]
+    qa = QA_WF.read_text()
+    assert "WOW_QA_GEMINI_FREE_TIER_CONFIRMED" in qa
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" in qa
+    assert "--source-review-artifact-id" in qa
+    assert "cancel-in-progress: false" in qa
+    assert "QA_REVIEW_MODE_UNCONFIGURED" in qa
+    assert "QA_REVIEW_MODE_UNCONFIGURED" in REL_WF.read_text()
+

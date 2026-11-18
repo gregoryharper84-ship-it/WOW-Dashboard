@@ -50,7 +50,8 @@ def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permi
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
     assert "workflows: [wow-v17-independent-qa-check]" not in workflow.split("\npermissions:", 1)[0]
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "WOW_QA_MODE" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in workflow
     assert "wow-v17-independent-source-review" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow

@@ -6,6 +6,18 @@ not an authority: it may request only the protected-main source-review, QA, and
 Release `workflow_dispatch` paths. It cannot publish checks, create reviews,
 approve or merge a PR, deploy, or change model/governance behavior.
 
+## Single QA policy migration (V28)
+
+The dispatcher, QA and Release Authority use the same repository-wide
+`WOW_QA_MODE` value: `independent`, `zero_credit`, or `legacy`.
+Missing or unknown values HOLD with a typed mode error. Only `independent`
+produces normal autonomous adversarial-review evidence; `zero_credit`
+cannot stand in for protected scientific or security approval. Restricted
+canary review is manual and exact-PR/head allowlisted only under `legacy`.
+Do not configure an environment-level override. Retire the old activation
+Booleans after protected merge and independent review. The dispatcher routes
+evidence but never approves, signs, merges, deploys, or incurs new provider spend.
+
 ## Preconditions and activation
 
 - Keep this controller on a separate non-owner-authored protected-source PR.

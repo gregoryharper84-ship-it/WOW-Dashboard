@@ -250,7 +250,11 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 |---|---|---|---:|
 | `QA_INPUT_HEAD_SHA_INVALID` | QA manual dispatch | Optional requested head SHA is malformed; no QA decision is published. | N/A |
 | `QA_INPUT_HEAD_SHA_STALE` | QA manual dispatch | Requested head SHA does not equal the current PR head; dispatch aborts. | N/A |
-| `QA_REVIEW_MODES_CONFLICT` | QA mode selection | Zero-credit and API-backed adversarial review flags are both true; neither mode is silently substituted. | N/A |
+| `QA_REVIEW_MODE_UNCONFIGURED` | QA / Release single-mode selection | Repository-level `WOW_QA_MODE` is unset or empty; no semantic reviewer call, release check, or approval is produced. Recovery class: OWNER_REPO_CONFIGURATION; set a single permitted value. | N/A |
+| `QA_REVIEW_MODE_INVALID` | QA / Release single-mode selection | `WOW_QA_MODE` is not exactly `independent`, `zero_credit`, or `legacy`; reject rather than coerce, infer, or fall back. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
+| `QA_REVIEW_CANARY_MODE_CONFLICT` | QA single-mode selection | Manual restricted canary requested while `WOW_QA_MODE` is not `legacy`; reject before inference. Recovery class: CONFIGURATION_CORRECTION. | N/A |
+| `REVIEW_POLICY_MODE_UNCONFIGURED` | V17 governance dispatcher / preflight | Required `WOW_QA_MODE` is unset; do not dispatch another review or classify reduced assurance. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
+| `REVIEW_POLICY_MODE_INVALID` | V17 governance dispatcher / preflight | Required single mode is not one of `independent`, `zero_credit`, or `legacy`; fail closed and do not dispatch. Recovery class: OWNER_REPO_CONFIGURATION. | N/A |
 | `QA_ZERO_CREDIT_CANARY_CONFLICT` | QA mode selection | Zero-credit mode and independent-review canary were requested simultaneously. | N/A |
 | `QA_ZERO_CREDIT_POLICY_INVALID` | QA and Release mode selection | The zero-credit activation variable has a value other than empty, false, or true. | N/A |
 | `QA_ZERO_CREDIT_POLICY_NOT_ENABLED` | QA evidence | Zero-credit receipt is presented without the explicitly activated reduced-assurance policy. | N/A |
@@ -266,7 +270,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_REVIEW_CANARY_REQUIRES_DISPATCH` | independent QA canary | Canary policy was requested from an event other than an explicit protected workflow dispatch. | N/A |
 | `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
 | `QA_TARGET_COUNT_INVALID` | independent QA | A protected QA invocation resolved anything other than one exact (PR, head) target; no source review or check is published. | N/A |
-| `QA_REVIEW_POLICY_INVALID` | independent QA / release | Independent-review activation is not one of the accepted empty, `false`, or `true` states; no decision/check is published. | N/A |
+| `QA_REVIEW_POLICY_INVALID` | independent QA / release (historical) | Retained for old dual-flag receipts only; current QA and Release classify missing/invalid `WOW_QA_MODE` with `QA_REVIEW_MODE_UNCONFIGURED` or `QA_REVIEW_MODE_INVALID`. | N/A |
 | `QA_REVIEW_POLICY_MODE_INVALID` | independent QA | The authenticated producing QA run has no supported immutable review mode. | N/A |
 | `QA_REVIEW_POLICY_MODE_CONFLICT` | independent QA | The evidence mode and review requirement disagree. | N/A |
 | `QA_REVIEW_POLICY_RUN_ID_INVALID` | independent QA | The authenticated QA policy receipt has no valid producing run identity. | N/A |
