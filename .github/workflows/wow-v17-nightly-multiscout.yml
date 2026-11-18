@@ -146,6 +146,7 @@ jobs:
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
           test_v17_news_scout_receipt_bridge.py
+          test_v17_news_active_slate.py
           tests/test_v17_market_evidence_sources.py
           tests/test_v17_market_evidence_acceptance.py
           tests/test_v17_market_evidence_provider_contracts.py
