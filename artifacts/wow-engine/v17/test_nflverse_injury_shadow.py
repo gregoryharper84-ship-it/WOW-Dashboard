@@ -147,3 +147,18 @@ def test_later_report_replaces_older_report_but_not_clearance(tmp_path):
     assert result["reported_designation"] == "QUESTIONABLE"
     assert result["status"] == "UNVERIFIED"
     assert result["available_for_scoring"] is False
+
+
+def test_malformed_rows_and_duplicate_columns_are_typed_holds(tmp_path):
+    asset = capture(tmp_path, "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T17:00:00Z\n")
+    # Duplicate header or extra CSV cell must not be interpreted as evidence.
+    duplicate_header = (HEADER.replace("date_modified", "report_status") +
+        "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,Out\n").encode()
+    Path(asset.local_path).write_bytes(duplicate_header)
+    corrupt = replace(asset, content_sha256=hashlib.sha256(duplicate_header).hexdigest())
+    assert inspect(corrupt)["blocker"] == "NFLVERSE_INJURY_SCHEMA_INVALID"
+
+    overflow = (HEADER + "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T17:00:00Z,EXTRA\n").encode()
+    Path(asset.local_path).write_bytes(overflow)
+    corrupt = replace(asset, content_sha256=hashlib.sha256(overflow).hexdigest())
+    assert inspect(corrupt)["blocker"] == "NFLVERSE_INJURY_SCHEMA_INVALID"
