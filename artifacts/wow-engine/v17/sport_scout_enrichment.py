@@ -43,6 +43,10 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
     enriched["research_workers_may_create_probability"] = False
+    enriched["news_intelligence_status"] = "NEWS_NOT_OBSERVED"
+    enriched["news_latest_verified_at_utc"] = None
+    enriched["news_model_rescore_verified"] = False
+    enriched["news_research_rescore_requested"] = False
     # The optional news artifact is discovery metadata, never fitted-model input.
     # A reconciled research handoff can request (but cannot perform) rescoring.
     discovery = row.get("news_discovery_receipt") if isinstance(row.get("news_discovery_receipt"), dict) else public_news
@@ -61,6 +65,8 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
             },
             facts if isinstance(facts, list) else [],
         )
+        enriched["news_intelligence_status"] = enriched["news_research_handoff"]["research_status"]
+        enriched["news_research_rescore_requested"] = enriched["news_research_handoff"]["research_rescore_requested"]
     enriched["can_execute"] = False
     return enriched
 
@@ -172,8 +178,16 @@ def _attach_sibling_news(payload: dict[str, Any], source: Path) -> dict[str, Any
                 touched += 1
             updated.append(item)
         updated_handoff[lane] = updated
-    out = status("NEWS_DISCOVERY_ATTACHED" if touched else "NEWS_NO_MATCHING_SPORT",
-                 touched=touched, digest=digest)
+    bridge_status = ("NEWS_SOURCE_BLOCKED" if discovery["source_status"] == "BLOCKED"
+                     else "NEWS_DISCOVERY_ATTACHED" if touched else "NEWS_NO_MATCHING_SPORT")
+    out = status(bridge_status, touched=touched, digest=digest)
+    out["public_news_discovery_bridge"].update({
+        "source_status": discovery["source_status"],
+        "source_code": discovery.get("source_code"),
+        "article_count": len(discovery["articles"]),
+        "source_observed_at": discovery.get("source_observed_at"),
+        "model_rescore_verified": False,
+    })
     out["model_handoff"] = updated_handoff
     if touched:
         out["public_news_discovery_receipt"] = discovery
@@ -205,6 +219,8 @@ def main() -> int:
         "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
         "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
         "news_bridge_status": enriched.get("public_news_discovery_bridge", {}).get("status", "NOT_PRESENT"),
+        "news_source_code": enriched.get("public_news_discovery_bridge", {}).get("source_code", "NOT_PRESENT"),
+        "news_article_count": enriched.get("public_news_discovery_bridge", {}).get("article_count", 0),
         "news_candidates_touched": enriched.get("public_news_discovery_bridge", {}).get("candidates_touched", 0),
         "can_execute": False,
     }))
