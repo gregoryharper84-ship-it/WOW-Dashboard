@@ -183,6 +183,7 @@ def _attach_sibling_news(payload: dict[str, Any], source: Path) -> dict[str, Any
     out = status(bridge_status, touched=touched, digest=digest)
     out["public_news_discovery_bridge"].update({
         "source_status": discovery["source_status"],
+        "sport_key": discovery["sport_key"],
         "source_code": discovery.get("source_code"),
         "article_count": len(discovery["articles"]),
         "source_observed_at": discovery.get("source_observed_at"),
