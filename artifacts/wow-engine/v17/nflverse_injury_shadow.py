@@ -143,7 +143,7 @@ def inspect_captured_injuries(
     parsed: list[tuple[datetime, str, str]] = []
     for row in same_scope:
         date = _datetime(row.get("date_modified"))
-        if date is None or date > now or date >= kickoff:
+        if date is None or date > fetched or date > now or date >= kickoff:
             return hold("NFLVERSE_INJURY_REPORT_TIMESTAMP_UNVERIFIED")
         parsed.append((date, _token(row.get("report_status")), _token(row.get("practice_status"))))
     latest = max(record[0] for record in parsed)
