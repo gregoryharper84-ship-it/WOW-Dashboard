@@ -175,7 +175,11 @@ def test_bad_unhashable_json_fields_cannot_crash_discovery_or_candidates():
     assert _result(reviewed=[{**FACT, "source_url": ["bad"]}])["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
     assert _result(reviewed=[{**FACT, "source_class": {"bad": 1}}])["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
     from v17.sport_scout_enrichment import enrich_candidate
-    row = enrich_candidate({**EVENT, "news_discovery_receipt": DISCOVERY,
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    future_event = {**EVENT, "event_start_utc": (now + timedelta(days=1)).isoformat()}
+    recent_discovery = {**DISCOVERY, "source_observed_at": (now - timedelta(hours=1)).isoformat()}
+    row = enrich_candidate({**future_event, "news_discovery_receipt": recent_discovery,
                             "news_reviewed_facts": [{**FACT, "source_url": ["bad"]}]}, "TEAM_EVENT")
     assert row["news_research_handoff"]["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
     assert row["can_execute"] is False
