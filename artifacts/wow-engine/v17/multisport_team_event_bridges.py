@@ -13,6 +13,7 @@ manufactured lower bound.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 from math import isfinite
 from typing import Any, Callable, Mapping
 
@@ -333,6 +334,17 @@ def _apply_governed_calibration(req: Any, package: Mapping[str, Any]) -> dict[st
     return out
 
 
+def _accepts_db_kwarg(fn: Any) -> bool:
+    try:
+        sig = inspect.signature(fn)
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == "db":
+                return True
+        return False
+    except (ValueError, TypeError):
+        return False
+
+
 def _score_one(
     sport: str,
     req: Any,
@@ -351,11 +363,8 @@ def _score_one(
         client = event_api
 
     try:
-        if sport == "NHL" and client is not None:
-            try:
-                raw_package = scorer(req, db=client)
-            except TypeError:
-                raw_package = scorer(req)
+        if sport == "NHL" and client is not None and _accepts_db_kwarg(scorer):
+            raw_package = scorer(req, db=client)
         else:
             raw_package = scorer(req)
     except NHLFittedSpecialistError as exc:

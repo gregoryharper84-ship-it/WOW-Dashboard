@@ -254,6 +254,8 @@ def _is_row_certified(row: dict[str, Any], evaluated: bool) -> bool:
         "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
         "NBA_CONTROLLING_SPECIALIST_NOT_CERTIFIED",
         "CERTIFICATION_RESOLUTION_FAILED",
+        "OFFICIAL_PUBLICATION_NOT_CERTIFIED",
+        "UNCERTIFIED",
     )
     if any(m in code or any(m in b for b in blockers) for m in uncertified_markers):
         return False
@@ -262,7 +264,34 @@ def _is_row_certified(row: dict[str, Any], evaluated: bool) -> bool:
     guard = result.get("official_publication_guard")
     if isinstance(guard, dict) and guard.get("official_publication_allowed") is False:
         return False
-    return True
+
+    # Affirmative evidence from the governing certification or terminal record is strictly required.
+    cert_status = str(
+        result.get("certification_status")
+        or result.get("model_certification_status")
+        or result.get("official_certification_status")
+        or (isinstance(guard, dict) and guard.get("certification_status"))
+        or ""
+    ).upper().strip()
+    has_affirmative_status = cert_status in (
+        "CERTIFIED",
+        "PROSPECTIVELY_CERTIFIED",
+        "CERTIFIED_ACTIVE",
+        "CERTIFIED_PRODUCTION",
+        "PASS",
+    )
+    has_affirmative_flag = (
+        result.get("certified") is True
+        or result.get("model_certified") is True
+        or (isinstance(guard, dict) and guard.get("certified") is True)
+    )
+    has_cert_receipt = bool(
+        result.get("certification_receipt")
+        or result.get("certification_id")
+        or result.get("governed_certification_receipt")
+        or (isinstance(guard, dict) and guard.get("certification_receipt"))
+    )
+    return bool(has_affirmative_status or has_affirmative_flag or has_cert_receipt)
 
 
 def _is_row_publishable(row: dict[str, Any], certified: bool) -> bool:

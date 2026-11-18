@@ -885,9 +885,28 @@ def score_nba_team_event_request(
         try:
             hydrated_pkg = event_api.hydrate_nba_features(req)
             if isinstance(hydrated_pkg, Mapping):
-                feature_package = hydrated_pkg.get("feature_package") or hydrated_pkg
-                lineup_evidence = hydrated_pkg.get("lineup_evidence") or lineup_evidence
-                server_hydrated = True
+                candidate_pkg = hydrated_pkg.get("feature_package") or hydrated_pkg
+                audit = candidate_pkg.get("feature_audit") if isinstance(candidate_pkg, Mapping) else {}
+                if not isinstance(audit, Mapping):
+                    audit = hydrated_pkg.get("feature_audit") if isinstance(hydrated_pkg.get("feature_audit"), Mapping) else {}
+
+                is_server_owned = audit.get("server_owned") is True or audit.get("source_authority") in ("SERVER_CANONICAL", "SERVER_OWNED")
+                is_attested = audit.get("timestamp_attestation") == "VERIFIED" or audit.get("source_replay_status") == "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS"
+
+                # Independent chronology verification: feature timestamp must precede event start
+                as_of = str(audit.get("as_of") or candidate_pkg.get("feature_as_of") or audit.get("captured_at") or "")
+                start_time = str(
+                    getattr(req, "event_start_time_utc", "")
+                    or getattr(req, "event_start_time", "")
+                    or evidence_map.get("event_start_time_utc", "")
+                    or ""
+                )
+                chronology_valid = bool(as_of and start_time and as_of < start_time) if (as_of and start_time) else False
+
+                if is_server_owned and is_attested and chronology_valid:
+                    feature_package = candidate_pkg
+                    lineup_evidence = hydrated_pkg.get("lineup_evidence") or lineup_evidence
+                    server_hydrated = True
         except Exception:
             server_hydrated = False
 

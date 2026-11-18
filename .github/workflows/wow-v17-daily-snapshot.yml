@@ -265,8 +265,6 @@ jobs:
               "serving_sha_preflight_matches_post": serving_preflight.get("serving_sha_preflight")
               == serving_sha_for_run,
           }
-          print(json.dumps(summary, sort_keys=True))
-
           prog = result.get("stage_progression_by_sport") or {}
           print("\n=== V17 SCORING STAGE PROGRESSION (discovered -> hydrated -> evaluated -> certified -> publishable) ===")
           print(f"{'SPORT':<10} | {'DISCOVERED':<11} | {'HYDRATED':<10} | {'EVALUATED':<10} | {'CERTIFIED':<10} | {'PUBLISHABLE':<12}")
@@ -277,6 +275,8 @@ jobs:
           print("-" * 75)
           print(f"{'TOTAL':<10} | {total_prog.get('discovered', 0):<11} | {total_prog.get('hydrated', 0):<10} | {total_prog.get('model_evaluated', 0):<10} | {total_prog.get('certified', 0):<10} | {total_prog.get('publishable', 0):<12}")
           print(f"Scoring Run Status: {result.get('scoring_run_status')}\n")
+
+          print(json.dumps(summary, sort_keys=True))
           PY
 
   nfl-full-slate-exact-once-acceptance:

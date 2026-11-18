@@ -800,7 +800,7 @@ def score_ncaab_team_event_request(
         "blockers": ["NCAAB_MODEL_CANDIDATE_UNCERTIFIED", "OFFICIAL_PUBLICATION_NOT_CERTIFIED"],
         "terminal_label": "MODEL_RESEARCH_ONLY_HOLD",
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
-        "model_invoked": True,
+        "model_invoked": False,
         "probability_publishable": False,
         "rank_eligible": False,
         "can_execute": False,
