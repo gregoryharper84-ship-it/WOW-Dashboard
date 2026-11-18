@@ -94,15 +94,26 @@ def plan_migration(ruleset: dict[str, Any]) -> dict[str, Any]:
     """Change only the two named checks, preserving every other branch rule."""
     _guard(ruleset)
     current = _contexts(ruleset)
-    if current != {**TO_KEEP, **TO_REMOVE}:
+    # The original seven-to-five migration is already partially applied in
+    # some installations: the observed live ruleset has only three native
+    # Actions checks. Restore the SAME prior five pinned App contexts, never
+    # infer a new security principal or discard an unfamiliar required check.
+    native_only = {name: app for name, app in TO_KEEP.items() if app == ACTIONS_APP}
+    if current not in ({**TO_KEEP, **TO_REMOVE}, native_only, TO_KEEP):
         raise MigrationBlocked("LIVE_REQUIRED_CHECK_INVENTORY_DRIFT")
     target = copy.deepcopy(ruleset)
     for rule in target["rules"]:
         if rule["type"] == "required_status_checks":
-            rule["parameters"]["required_status_checks"] = [
+            kept = [
                 entry for entry in rule["parameters"]["required_status_checks"]
                 if entry["context"] not in TO_REMOVE
             ]
+            if current == native_only:
+                kept.extend(
+                    {"context": name, "integration_id": app}
+                    for name, app in TO_KEEP.items() if name not in native_only
+                )
+            rule["parameters"]["required_status_checks"] = kept
     if _contexts(target) != TO_KEEP:
         raise MigrationBlocked("TARGET_FIVE_CHECK_INVARIANT_FAILED")
     return {
