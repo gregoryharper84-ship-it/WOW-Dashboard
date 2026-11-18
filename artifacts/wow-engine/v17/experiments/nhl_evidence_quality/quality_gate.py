@@ -139,8 +139,12 @@ def screen_nhl_pregame_evidence(card: Mapping[str, Any]) -> dict[str, Any]:
                 not card["market_id"].strip()):
             blockers.add("NHL_PROP_EXACT_MARKET_INVALID")
 
-    required = (GOALIE_SAVES_ROLES if family == "PLAYER_PROP" and
-                card.get("stat_type") == "GOALIE_SAVES" else REQUIRED_ROLES.get(family, frozenset()) if isinstance(family, str) else frozenset())
+    if family == "PLAYER_PROP" and card.get("stat_type") == "GOALIE_SAVES":
+        required = GOALIE_SAVES_ROLES
+    elif isinstance(family, str):
+        required = REQUIRED_ROLES.get(family, frozenset())
+    else:
+        required = frozenset()
     observed: set[str] = set()
     evidence = card.get("source_evidence")
     if not isinstance(evidence, (list, tuple)):
