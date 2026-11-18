@@ -1,0 +1,63 @@
+"""TDD: preserve an early NFL capture opportunity and expose evidence holds."""
+from datetime import datetime, timezone
+from pathlib import Path
+import re
+import sys
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from prospective import parse_fixture
+from runner import MAX_LOOKAHEAD_HOURS, capture_clock_eligible, status_from_counts
+
+
+def thursday():
+    return dict(game_id="2026_11_IND_HOU", season="2026", week="11",
+                gameday="2026-11-19", gametime="20:15", home_team="HOU",
+                away_team="IND", game_type="REG", home_score="", away_score="")
+
+
+def test_wednesday_morning_sweep_includes_real_thursday_night_game():
+    # 12:17 UTC Wednesday is 36h 58m before 01:15 UTC Friday kickoff.
+    sweep = datetime(2026, 11, 18, 12, 17, tzinfo=timezone.utc)
+    kickoff = "2026-11-20T01:15:00Z"
+    assert MAX_LOOKAHEAD_HOURS >= 38
+    assert capture_clock_eligible(kickoff, sweep)
+    event = parse_fixture(thursday(), sweep, horizon_hours=MAX_LOOKAHEAD_HOURS)
+    assert event is not None and event["official_event_id"] == "2026_11_IND_HOU"
+
+
+def test_extended_window_still_rejects_started_or_future_too_early():
+    sweep = datetime(2026, 11, 18, 12, 17, tzinfo=timezone.utc)
+    assert not capture_clock_eligible("2026-11-20T13:17:01Z", sweep)
+    assert not capture_clock_eligible("2026-11-18T12:17:00Z", sweep)
+    assert parse_fixture(thursday() | {"home_score": "7"}, sweep,
+                         horizon_hours=MAX_LOOKAHEAD_HOURS) is None
+
+
+def test_all_eligible_held_is_visible_and_fails_closed():
+    result = status_from_counts(2, 0, 0, 2)
+    assert result["status"] == "EVIDENCE_ALL_HELD"
+    assert result["run_ok"] is False
+    assert result["evidence_held"] == 2
+    assert result["can_execute"] is False
+
+
+def test_idle_and_already_frozen_still_count_as_healthy():
+    assert status_from_counts(0, 0, 0, 0)["run_ok"] is True
+    assert status_from_counts(1, 0, 1, 0)["run_ok"] is True
+    assert status_from_counts(2, 1, 0, 1)["run_ok"] is True
+
+
+def test_bad_capture_accounting_fails_closed():
+    result = status_from_counts(3, 1, 0, 1)
+    assert result["run_ok"] is False
+    assert result["status"] == "CAPTURE_ACCOUNTING_INCONSISTENT"
+
+
+def test_workflow_avoids_minute_zero_and_alarms_after_grading():
+    workflow = (HERE.parents[4] / ".github/workflows/wow-v17-nfl-prospective-shadow.yml").read_text()
+    assert re.search(r'cron:\s*["\']17 12,18 \* 9-12,1-2 \*["\']', workflow)
+    assert "Verify capture receipt is not all-held" in workflow
+    assert "NFL_PROSPECTIVE_ALL_ELIGIBLE_HELD" in workflow
+    assert 'retention-days: 90' in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
