@@ -10,6 +10,8 @@ on:
       - "artifacts/wow-engine/v17/research_source_snapshot_store.py"
       - "artifacts/wow-engine/v17/research_identity_reconciliation.py"
       - "artifacts/wow-engine/v17/scout_source_refresh.py"
+      - "artifacts/wow-engine/v17/news_feed_research_adapter.py"
+      - "artifacts/wow-engine/test_v17_news_feed_research_adapter.py"
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/test_v17_news_event_research_handoff.py"
@@ -27,6 +29,8 @@ on:
       - "artifacts/wow-engine/v17/research_source_snapshot_store.py"
       - "artifacts/wow-engine/v17/research_identity_reconciliation.py"
       - "artifacts/wow-engine/v17/scout_source_refresh.py"
+      - "artifacts/wow-engine/v17/news_feed_research_adapter.py"
+      - "artifacts/wow-engine/test_v17_news_feed_research_adapter.py"
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/test_v17_news_event_research_handoff.py"
@@ -61,10 +65,11 @@ jobs:
         run: >-
           python -m pytest -q
           test_v17_research_source_adapters.py
-          test_v17_firecrawl_research_adapter.py
-          test_v17_source_snapshot_identity.py
+          test_v17_news_feed_research_adapter.py
           test_v17_news_event_research_handoff.py
           tests/test_v17_sport_scout_teams.py
+          test_v17_firecrawl_research_adapter.py
+          test_v17_source_snapshot_identity.py
       - name: Verify direct refresh CLI imports fail closed without credentials
         env:
           WOW_SCOUT_DATABASE_URL: ""
