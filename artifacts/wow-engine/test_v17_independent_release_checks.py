@@ -2361,3 +2361,66 @@ def test_single_repository_mode_wired_into_all_release_consumers():
     assert "QA_REVIEW_MODE_UNCONFIGURED" in qa
     assert "QA_REVIEW_MODE_UNCONFIGURED" in REL_WF.read_text()
 
+
+
+@pytest.mark.parametrize(("case", "expected"), [
+    ("success", "QA_NATIVE_CI_READY"),
+    ("failed", "QA_NATIVE_CI_FAILED"),
+    ("missing", "QA_NATIVE_CI_INCOMPLETE"),
+    ("wrong_app", "QA_NATIVE_CI_INCOMPLETE"),
+    ("wrong_head", "QA_NATIVE_CI_INCOMPLETE"),
+    ("pending", "QA_NATIVE_CI_INCOMPLETE"),
+])
+def test_single_qa_wakeup_waits_for_exact_head_required_checks(tmp_path, case, expected):
+    native = ["WOW additional required regression", "WOW governed probability backend",
+              "WOW required-three regression"]
+    check_runs = [
+        {"name": name, "head_sha": HEAD, "app": {"id": 15368}, "id": index + 1,
+         "status": "completed", "conclusion": "success"}
+        for index, name in enumerate(native)
+    ]
+    if case == "failed":
+        check_runs[1]["conclusion"] = "failure"
+    elif case == "missing":
+        check_runs.pop()
+    elif case == "wrong_app":
+        check_runs[1]["app"]["id"] = 999
+    elif case == "wrong_head":
+        check_runs[1]["head_sha"] = OLD
+    elif case == "pending":
+        check_runs[1].update(status="in_progress", conclusion=None)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text('#!/bin/sh\necho "$FAKE_CHECKS"\n')
+    gh.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Wait for exact-head native CI before reviewer")],
+        env=dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                 FAKE_CHECKS=json.dumps({"check_runs": check_runs}),
+                 GITHUB_REPOSITORY=REPO, HEAD_SHA=HEAD, QA_CI_MAX_POLLS="1"),
+        capture_output=True, text=True,
+    )
+    assert ("::notice::QA_NATIVE_CI_READY" in proc.stdout) == (case == "success")
+    assert ("::error::" not in proc.stdout) == (case == "success")
+    assert (proc.returncode == 0) == (case == "success")
+    assert expected in proc.stdout
+
+
+def test_native_ci_preflight_rejects_invalid_poll_bound(tmp_path):
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Wait for exact-head native CI before reviewer")],
+        env=dict(os.environ, QA_CI_MAX_POLLS="0", HEAD_SHA=HEAD),
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "QA_NATIVE_CI_POLL_BOUND_INVALID" in proc.stdout
+
+
+def test_preflight_order_prevents_paid_inference_before_ci_ready():
+    workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
+    names = [s["name"] for s in workflow["jobs"]["qa"]["steps"]]
+    assert names.index("Resolve one exact-head QA target") < names.index("Wait for exact-head native CI before reviewer")
+    assert names.index("Wait for exact-head native CI before reviewer") < names.index("Run isolated read-only Gemini semantic review")
+    assert names.index("Preflight independent semantic reviewer before inference") < names.index("Run isolated read-only Gemini semantic review")
+

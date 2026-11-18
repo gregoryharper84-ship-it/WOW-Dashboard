@@ -129,6 +129,48 @@ jobs:
           echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
 
+      - name: Wait for exact-head native CI before reviewer
+        if: steps.target.outputs.pr_number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # One QA wake from wow-verify; bounded read-only wait for other native CI.
+          # The optional bound only shortens diagnostic/test runs, never relaxes acceptance.
+          limit="${QA_CI_MAX_POLLS:-60}"
+          [[ "$limit" =~ ^[1-9][0-9]*$ ]] && [ "$limit" -le 60 ] || {
+            echo "::error::QA_NATIVE_CI_POLL_BOUND_INVALID"; exit 1;
+          }
+          required=("WOW additional required regression" "WOW governed probability backend" "WOW required-three regression")
+          for attempt in $(seq 1 "$limit"); do
+            checks=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100") || {
+              echo "::error::QA_NATIVE_CI_READ_FAILED"; exit 1;
+            }
+            ready=true
+            for check_name in "${required[@]}"; do
+              result=$(jq -er --arg name "$check_name" --arg sha "$HEAD_SHA" \
+                '[.check_runs[] | select(.name == $name and .head_sha == $sha and .app.id == 15368)]
+                 | sort_by(.id) | last | if . == null then "missing" else
+                   (.status + "|" + (.conclusion // "")) end' <<<"$checks") || {
+                echo "::error::QA_NATIVE_CI_PAYLOAD_INVALID"; exit 1;
+              }
+              case "$result" in
+                completed\|success) ;;
+                completed\|failure|completed\|cancelled|completed\|timed_out|completed\|action_required|completed\|skipped|completed\|neutral)
+                  echo "::error::QA_NATIVE_CI_FAILED:$check_name"; exit 1 ;;
+                *) ready=false ;;
+              esac
+            done
+            if [ "$ready" = "true" ]; then
+              echo "::notice::QA_NATIVE_CI_READY: exact head $HEAD_SHA"
+              break
+            fi
+            [ "$attempt" -eq "$limit" ] || sleep 10
+          done
+          [ "$ready" = "true" ] || { echo "::error::QA_NATIVE_CI_INCOMPLETE"; exit 1; }
+
       - name: Mint checks-only App token
         id: app_token
         if: steps.target.outputs.pr_number != ''
