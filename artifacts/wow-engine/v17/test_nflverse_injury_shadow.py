@@ -104,3 +104,46 @@ def test_naive_unverified_and_malformed_schema(tmp_path):
     asset.local_path  # source is immutable capture record
     bad = replace(asset, season=2025)
     assert inspect(bad)["blocker"] == "NFLVERSE_INJURY_CAPTURE_SCOPE_MISMATCH"
+
+
+def test_missing_capture_file_holds(tmp_path):
+    asset = capture(tmp_path, "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T17:00:00Z\n")
+    Path(asset.local_path).unlink()
+    assert inspect(asset)["blocker"] == "NFLVERSE_INJURY_CAPTURE_UNREADABLE"
+
+
+def test_modified_bytes_with_matching_hash_but_invalid_schema(tmp_path):
+    asset = capture(tmp_path, "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T17:00:00Z\n")
+    bad = b"season,team,gsis_id\n2026,IND,00-1234\n"
+    Path(asset.local_path).write_bytes(bad)
+    asset = replace(asset, content_sha256=hashlib.sha256(bad).hexdigest())
+    assert inspect(asset)["blocker"] == "NFLVERSE_INJURY_SCHEMA_INVALID"
+
+
+def test_implicit_identity_and_postkickoff_are_rejected(tmp_path):
+    asset = capture(tmp_path, "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T17:00:00Z\n")
+    unresolved = inspect_captured_injuries(
+        asset, gsis_id="", team="IND", season=2026, week=12,
+        season_type="REG", official_event_id="2026_11_IND_HOU",
+        event_start_utc=START, now_utc=NOW,
+    )
+    assert unresolved["blocker"] == "NFLVERSE_INJURY_IDENTITY_UNRESOLVED"
+    after_kickoff = inspect_captured_injuries(
+        asset, gsis_id="00-1234", team="IND", season=2026, week=12,
+        season_type="REG", official_event_id="2026_11_IND_HOU",
+        event_start_utc=START, now_utc="2026-11-20T02:00:00Z",
+    )
+    assert after_kickoff["blocker"] == "NFLVERSE_INJURY_EVENT_OR_CAPTURE_TIME_UNVERIFIED"
+
+
+def test_later_report_replaces_older_report_but_not_clearance(tmp_path):
+    asset = capture(tmp_path, (
+        "2026,IND,12,REG,00-1234,A Player,RB,Out,DNP,2026-11-18T12:00:00Z\n"
+        "2026,IND,12,REG,00-1234,A Player,RB,Questionable,Limited,2026-11-18T17:00:00Z\n"
+    ))
+    result = inspect(asset)
+    assert result["blocker"] == "NFLVERSE_INJURY_RISK_RECHECK_REQUIRED"
+    assert result["source_row_n"] == 2
+    assert result["reported_designation"] == "QUESTIONABLE"
+    assert result["status"] == "UNVERIFIED"
+    assert result["available_for_scoring"] is False
