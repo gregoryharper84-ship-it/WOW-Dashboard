@@ -81,6 +81,10 @@ def audit_forecast(row: Mapping[str, Any]) -> dict[str, Any]:
     event = row.get("official_event_id")
     if not isinstance(event, str) or not IDENTITY_RE.fullmatch(event):
         reasons.append("EVENT_IDENTITY_INVALID")
+    else:
+        _, _, encoded_away, encoded_home = event.split("_", 3)
+        if encoded_away != row.get("away_team") or encoded_home != row.get("home_team"):
+            reasons.append("CANONICAL_EVENT_TEAM_CONTRADICTION")
     if (not isinstance(row.get("challenger_id"), str) or not row["challenger_id"]
             or row.get("model_family") != row.get("challenger_id")):
         reasons.append("CHALLENGER_MODEL_IDENTITY_INVALID")
@@ -238,10 +242,19 @@ def audit_cohort(rows: Sequence[Mapping[str, Any]], source_finals: Mapping[str, 
         return {**base,"status":"DUPLICATE_EVENT_OR_VERSION"}
     if len({r.get("challenger_id") for r in rows}) > 1 or len({r.get("model_family") for r in rows})>1:
         return {**base,"status":"MIXED_CHALLENGER_VERSION"}
-    hashes = {r.get("research_metadata",{}).get("model_artifact_sha256")
-              for r in rows if isinstance(r.get("research_metadata"),Mapping)}
-    if len(hashes)>1:
+    artifact_digests=[]
+    for row in rows:
+        meta=row.get("research_metadata")
+        digest=meta.get("model_artifact_sha256") if isinstance(meta,Mapping) else None
+        if not _sha(digest):
+            return {**base,"status":"MODEL_ARTIFACT_DIGEST_INVALID"}
+        artifact_digests.append(digest.lower())
+    if len(set(artifact_digests)) > 1:
         return {**base,"status":"MIXED_MODEL_ARTIFACT_VERSION"}
+    valid_incumbents = [r["research_metadata"]["incumbent"]["model_version"]
+                        for r in rows if audit_forecast(r)["paired_incumbent_eligible"] and audit_forecast(r)["ok"]]
+    if len(set(valid_incumbents)) > 1:
+        return {**base,"status":"MIXED_INCUMBENT_MODEL_VERSION"}
     if not isinstance(minimum_forward,int) or minimum_forward < 100:
         return {**base, "status":"MINIMUM_FORWARD_POLICY_INVALID"}
     audited = [audit_grade(r,source_finals.get(r.get("official_event_id"))) for r in rows]
