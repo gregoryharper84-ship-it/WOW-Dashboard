@@ -21,7 +21,7 @@ from prospective import (CHALLENGER_ID, CAN_EXECUTE, TERMINAL_AUTHORITY,
 
 TABLE = "wow_nfl_ml_challenger_forward_shadow"
 SOURCE_TABLE = "wow_nfl_source_snapshots"
-MAX_LOOKAHEAD_HOURS = 36
+MAX_LOOKAHEAD_HOURS = 48
 
 
 def paginate(q: Any, *, page_size: int = 500) -> list[dict[str,Any]]:
@@ -69,13 +69,26 @@ def capture_clock_eligible(kickoff: str, now: datetime, horizon_hours: int=MAX_L
 
 
 def status_from_counts(eligible: int, frozen: int, existing: int, held: int) -> dict[str,Any]:
-    return {"status":"NO_EVENTS_IN_CAPTURE_WINDOW" if eligible==0 else
-                     ("CAPTURED" if frozen>0 else "EXISTING_OR_HELD"),
-            "eligible_events":eligible,"new_forecasts":frozen,"already_frozen":existing,
-            "evidence_held":held,"can_execute":False,"model_promoted":False,
-            "probability_publishable":False,"certification_eligible":False,
-            "terminal_authority":TERMINAL_AUTHORITY}
-
+    # An entirely held eligible slate is NOT a successful capture.
+    # Empty windows and already-frozen cohorts are normal and idempotent.
+    if any(type(n) is not int or n < 0 for n in (eligible, frozen, existing, held)) or eligible != frozen + existing + held:
+        status = "CAPTURE_ACCOUNTING_INCONSISTENT"
+    elif eligible == 0:
+        status = "NO_EVENTS_IN_CAPTURE_WINDOW"
+    elif frozen > 0:
+        status = "CAPTURED"
+    elif existing > 0:
+        status = "EXISTING_OR_HELD"
+    else:
+        status = "EVIDENCE_ALL_HELD"
+    return {"status": status, "run_ok": status not in {
+                "CAPTURE_ACCOUNTING_INCONSISTENT", "EVIDENCE_ALL_HELD"},
+            "capture_window_hours": MAX_LOOKAHEAD_HOURS,
+            "eligible_events": eligible, "new_forecasts": frozen,
+            "already_frozen": existing, "evidence_held": held,
+            "can_execute": False, "model_promoted": False,
+            "probability_publishable": False, "certification_eligible": False,
+            "terminal_authority": TERMINAL_AUTHORITY}
 
 def make_capture_receipt(row: Mapping[str,Any], incumbent: Mapping[str,Any] | None) -> dict[str,Any]:
     out=dict(row); meta=dict(row.get("research_metadata") or {})
