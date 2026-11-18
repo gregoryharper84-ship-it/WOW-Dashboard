@@ -18,7 +18,7 @@ from v17.team_event_request_runtime import TeamEventRequest
 
 
 _START = "2026-11-20T17:00:00Z"
-_PRIOR = "2026-11-20T16:00:00Z"
+_PRIOR = "2026-11-18T16:00:00Z"
 
 
 def _server_payload(as_of: str = _PRIOR, *, with_lineup: bool = True):
@@ -104,6 +104,8 @@ def test_ncaab_missing_server_source_is_explicit_not_silently_import_held(monkey
     monkeypatch.setattr(bridges._base_runtime, "_run_mandatory_scout_research",
                         lambda _req: {"pass_scout_research_barrier": True})
     req = SimpleNamespace(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        candidate_family="OUTRIGHT_WINNER",
         sport="NCAAB", league="NCAAB", official_event_id="NCAAB:123",
         event_key="NCAAB:123", home_team="Alpha", away_team="Beta",
         event_start_time_utc=_START, sport_specific_evidence={},
