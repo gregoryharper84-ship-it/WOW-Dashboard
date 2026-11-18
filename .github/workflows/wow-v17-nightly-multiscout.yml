@@ -36,6 +36,8 @@ on:
       - "artifacts/wow-engine/v17/morning_scout_report.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
+      - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
+      - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
       - "artifacts/wow-engine/v17/scout_brain_edge_sync.py"
       - "artifacts/wow-engine/v17/supabase/functions/**"
@@ -70,6 +72,8 @@ on:
       - "artifacts/wow-engine/v17/sep16_evidence_handoff_rank_fix.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
+      - "artifacts/wow-engine/v17/public_gdelt_discovery.py"
+      - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
       - "artifacts/wow-engine/v17/scout_brain_edge_sync.py"
       - "artifacts/wow-engine/v17/supabase/functions/**"
@@ -141,6 +145,7 @@ jobs:
           test_v17_scout_source_degradation.py
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
+          test_v17_news_scout_receipt_bridge.py
           tests/test_v17_market_evidence_sources.py
           tests/test_v17_market_evidence_acceptance.py
           tests/test_v17_market_evidence_provider_contracts.py
@@ -339,6 +344,14 @@ jobs:
           else:
               print(f"nightly discovery blocked: {data.get('reason_code')}")
           PY
+      - name: Capture same-run public GDELT research metadata
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-multiscout"
+          python v17/public_gdelt_discovery.py --output "$RUNNER_TEMP/wow-multiscout/public-gdelt-receipt.json"
+          # This is link discovery only, never publisher verification or a fitted input.
       - name: Enrich handoff with sport-specialist Scout teams
         if: always()
         shell: bash
