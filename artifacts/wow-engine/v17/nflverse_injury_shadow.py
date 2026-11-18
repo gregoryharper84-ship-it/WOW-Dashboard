@@ -112,19 +112,24 @@ def inspect_captured_injuries(
         return hold("NFLVERSE_INJURY_CAPTURE_HASH_MISMATCH")
     try:
         reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
-        columns = set(reader.fieldnames or [])
-        if not REQUIRED.issubset(columns) or not ({"season_type", "game_type"} & columns):
+        fieldnames = reader.fieldnames or []
+        columns = set(fieldnames)
+        if (not REQUIRED.issubset(columns)
+                or not ({"season_type", "game_type"} & columns)
+                or len(fieldnames) != len(columns)):
             return hold("NFLVERSE_INJURY_SCHEMA_INVALID")
         rows = list(reader)
+        if any(row.get(None) is not None for row in rows):
+            return hold("NFLVERSE_INJURY_SCHEMA_INVALID")
     except (UnicodeError, csv.Error):
         return hold("NFLVERSE_INJURY_SCHEMA_INVALID")
 
     same_id = [r for r in rows if str(r.get("gsis_id") or "").strip() == identity["gsis_id"]]
     same_scope = [
         r for r in same_id
-        if r.get("team", "").strip().upper() == identity["team"]
-        and r.get("season", "").strip() == str(season)
-        and r.get("week", "").strip() == str(week)
+        if str(r.get("team") or "").strip().upper() == identity["team"]
+        and str(r.get("season") or "").strip() == str(season)
+        and str(r.get("week") or "").strip() == str(week)
         and _token(r.get("season_type") or r.get("game_type")) == identity["season_type"]
     ]
     if not same_scope:
