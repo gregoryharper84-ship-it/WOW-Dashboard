@@ -15,6 +15,7 @@ on:
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/test_v17_news_event_research_handoff.py"
+      - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/v17/sql/20260911_add_scout_source_snapshots_identity.sql"
       - "artifacts/wow-engine/test_v17_research_source_adapters.py"
       - "artifacts/wow-engine/test_v17_firecrawl_research_adapter.py"
@@ -34,6 +35,7 @@ on:
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/test_v17_news_event_research_handoff.py"
+      - "artifacts/wow-engine/test_v17_news_scout_receipt_bridge.py"
       - "artifacts/wow-engine/test_v17_research_source_adapters.py"
       - "artifacts/wow-engine/test_v17_firecrawl_research_adapter.py"
       - "artifacts/wow-engine/test_v17_source_snapshot_identity.py"
@@ -67,6 +69,7 @@ jobs:
           test_v17_research_source_adapters.py
           test_v17_news_feed_research_adapter.py
           test_v17_news_event_research_handoff.py
+          test_v17_news_scout_receipt_bridge.py
           tests/test_v17_sport_scout_teams.py
           test_v17_firecrawl_research_adapter.py
           test_v17_source_snapshot_identity.py
