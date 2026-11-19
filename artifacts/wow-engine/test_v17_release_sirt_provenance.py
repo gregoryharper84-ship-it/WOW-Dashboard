@@ -239,3 +239,30 @@ def test_ambiguous_timestamp_fails_closed():
     ev = evidence()
     ev["reviews"].append(dict(ev["reviews"][0]))
     assert "RELEASE_QA_SIRT_INDEPENDENT_EVIDENCE_INVALID" in decide(ev)
+
+
+def test_newer_qa_app_check_in_progress_revokes_older_success():
+    for conclusion, status in ((None, "queued"), (None, "in_progress"),
+                               ("failure", "completed")):
+        ev = evidence()
+        ev["check_runs"].append({
+            "name": checks.QA_CHECK, "head_sha": HEAD, "app_id": 111,
+            "id": 999999, "completed_at": None,
+            "status": status, "conclusion": conclusion,
+        })
+        assert "RELEASE_QA_FAILED" in decide(ev)
+
+
+def test_newer_foreign_qa_check_cannot_impersonate_distinct_app():
+    ev = evidence()
+    ev["check_runs"].append({
+        "name": checks.QA_CHECK, "head_sha": HEAD, "app_id": 999,
+        "id": 999999, "status": "completed", "conclusion": "success",
+    })
+    # The authenticated QA App's prior check still qualifies; an unrelated
+    # app cannot replace its identity. Exact source App is still required.
+    assert decide(ev) == []
+    ev["check_runs"] = [r for r in ev["check_runs"]
+                        if not (r.get("name") == checks.QA_CHECK
+                                and r.get("app_id") == 111)]
+    assert "RELEASE_QA_FOREIGN_SOURCE" in decide(ev)
