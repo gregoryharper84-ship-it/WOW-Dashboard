@@ -110,3 +110,20 @@ def test_forged_review_fields_never_gain_authority():
     assert result["status"] == "STRUCTURALLY_READY_FOR_INDEPENDENT_REPLAY"
     assert "reviewer_signed_approval" not in str(result["manifest"])
     assert result["automatic_certification"] is False
+
+
+def test_malformed_non_json_receipt_values_hold_instead_of_throwing():
+    from datetime import datetime, timezone
+    for field, value, expected in (
+        ("observed_at", datetime.now(timezone.utc), "CLASS_C_RECEIPT_TIME_INVALID"),
+        ("receipt_id", float("nan"), "CLASS_C_RECEIPT_ID_INVALID"),
+        ("status", {"non_json": object()}, "CLASS_C_RECEIPT_STATUS_INVALID"),
+    ):
+        evidence = receipts()
+        evidence["source_rights"][field] = value
+        result = build_class_c_evidence_preflight(candidate(), evidence)
+        assert result["status"] == "HOLD"
+        assert expected + ":source_rights" in result["blockers"]
+        assert "source_rights" not in result["manifest"]["receipts"]
+        assert result["automatic_certification"] is False
+        assert result["probability_publishable"] is False
