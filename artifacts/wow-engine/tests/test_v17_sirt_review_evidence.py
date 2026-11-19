@@ -236,3 +236,28 @@ def test_collector_changed_pr_head_returns_hold(monkeypatch):
     result = _collect_from_authenticated_records(monkeypatch, data)
     assert result["review_status"] == "HOLD"
     assert "SIRT_PR_IDENTITY_OR_HEAD_INVALID" in result["findings"]
+
+
+def test_collector_detects_pr_head_change_during_authenticated_reads(monkeypatch):
+    """An approval from before a force-push must never produce EVIDENCE_READY."""
+    from copy import deepcopy
+    from v17 import sirt_review_evidence
+    data = _authenticated_payloads()
+    pr_reads = {"count": 0}
+
+    def observed(path, token):
+        payload = deepcopy(data[path])
+        if path == "pulls/2732":
+            pr_reads["count"] += 1
+            if pr_reads["count"] == 2:
+                payload["head"]["sha"] = "b" * 40
+        return payload
+
+    monkeypatch.setattr(sirt_review_evidence, "github_json", observed)
+    outcome = sirt_review_evidence.collect_and_evaluate(
+        2732, SHA, 202, "local-test-credential"
+    )
+    assert pr_reads["count"] == 2  # an actual final exact-head readback
+    assert outcome["review_status"] == "HOLD"
+    assert outcome["code"] == "SIRT_PR_CHANGED_DURING_REVIEW"
+    assert outcome["merge_or_release_authorized"] is False
