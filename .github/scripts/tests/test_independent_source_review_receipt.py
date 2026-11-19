@@ -992,22 +992,20 @@ def test_qa_policy_rejects_pr_movement_checksum_and_canary_scope_replay():
         )
 
 
-def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
+def test_workflow_retired_capture_keeps_protected_main_qa_fail_closed():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
     steps = parsed["jobs"]["qa"]["steps"]
-    recheck = next(step for step in steps
-                   if step.get("name") == "Recheck PR head and diff after review")
-    review_step = next(step for step in steps
-                       if step.get("name") == "Run isolated read-only Gemini semantic review")
     publisher_step = next(step for step in steps
                           if step.get("name") == "Mint checks-only App token")
-    dedicated_app_step = next(step for step in steps
-                              if step.get("name") == "Mint dedicated semantic reviewer App token")
+    retired_step = next(step for step in steps
+                        if step.get("name") == "Reject retired independent capture mode")
+    terminal_step = next(step for step in steps
+                         if step.get("name") == "Preserve terminal QA decision for every resolved target")
+    final_publisher = next(step for step in steps
+                           if step.get("name") == "Publish exact-head check")
 
     assert "github.ref == 'refs/heads/main'" in workflow
-    # Preserve the four bounded native regression admission triggers;
-    # trusted governance gate was deliberately removed to prevent QA loops.
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
         "wow-v17-change-impact-gate",
@@ -1015,37 +1013,27 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
-    assert "WOW_QA_REVIEW_GEMINI_API_KEY" in workflow
-    assert "WOW_QA_GEMINI_FREE_TIER_CONFIRMED" in workflow
-    assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
-    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_PR" in workflow
-    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA" in workflow
     assert "Select exact-head review policy" in workflow
     assert "wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "independent_review_canary" in workflow
-    assert "wow_v28_gemini_qa_bridge.py review" in review_step["run"]
-    assert review_step["env"]["WOW_QA_REVIEW_GEMINI_API_KEY"] == (
-        "${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}"
-    )
-    assert "WOW_QA_APP_PRIVATE_KEY" not in str(review_step)
     assert publisher_step["with"]["permission-checks"] == "write"
-    assert dedicated_app_step["with"]["permission-pull-requests"] == "write"
-    assert "permission-checks" not in dedicated_app_step["with"]
-    assert "wow_v28_gemini_qa_bridge.py attest" in workflow
-    assert "wow_v28_gemini_qa_bridge.py verify" in workflow
-    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
-    assert "uses: ./.github/actions/wow-chatgpt-agent" not in workflow
+    assert retired_step["if"] == "steps.policy.outputs.review_active == 'true'"
+    assert "QA_LEGACY_INDEPENDENT_CAPTURE_RETIRED" in retired_step["run"]
+    assert "exit 1" in retired_step["run"]
+    assert "always()" in terminal_step["if"]
+    assert "QA_REVIEW_EXECUTION_FAILED" in terminal_step["run"]
+    assert "always()" in final_publisher["if"]
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" not in workflow
+    assert "wow_v28_gemini_qa_bridge.py" not in workflow
+    assert "--capture" not in workflow
     assert "write" not in parsed["permissions"].values()
     assert "write" not in (parsed["jobs"]["qa"].get("permissions") or {}).values()
     assert "checkout.*inputs" not in workflow
     assert "retention-days: 1" in workflow
     assert "github.run_id" in workflow and "github.run_attempt" in workflow
-    assert recheck["env"]["PR_NUMBER"] == "${{ steps.target.outputs.pr_number }}"
-    assert recheck["env"]["EXPECTED_HEAD_SHA"] == "${{ steps.target.outputs.head_sha }}"
-
 
 def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
     responses = [
@@ -1278,10 +1266,11 @@ def test_qa_producer_fails_closed_on_wrong_workflow_identity(field, value):
         )
 
 
-def test_both_qa_producer_payloads_use_pinned_workflow_id():
+def test_remaining_qa_policy_producer_uses_pinned_workflow_id():
     source = WORKFLOW.read_text(encoding="utf-8")
-    assert source.count("--argjson workflow_id 380562324") == 2
-    assert source.count("workflow_id:$workflow_id") == 2
+    # Only the QA policy producer remains. Capture producer is retired.
+    assert source.count("--argjson workflow_id 380562324") == 1
+    assert source.count("workflow_id:$workflow_id") == 1
     script = SCRIPT.read_text(encoding="utf-8")
     assert 'run.get("name") == WORKFLOW_NAME' not in script
     assert 'and workflow_id == WORKFLOW_ID' in script
