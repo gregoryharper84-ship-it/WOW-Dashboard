@@ -300,6 +300,7 @@ class PortfolioOptimizationResult:
     critical_leg_actions: tuple[dict[str, Any], ...] = ()
     probability_fields_mutated: bool = False
     research_preflight: dict[str, Any] | None = None
+    research_proposal_preflight: dict[str, Any] | None = None
     can_execute: bool = CAN_EXECUTE
 
 
@@ -717,6 +718,26 @@ def optimize_portfolio(
             seen_family[thesis_identity(leg)] += 1
         retained_portfolio.extend(kept)
 
+    # A stronger replacement is not automatically better evidenced.
+    # Keep the original proposal audit and independently re-audit the *final*
+    # returned portfolio after all structural replacements and shrinks.
+    proposal_preflight = preflight
+    if preflight is not None:
+        final_preflight = audit_research_slips(out, as_of_utc=research_as_of_utc or "")
+        for card_index, card in enumerate(out):
+            gov = card.setdefault("portfolio_governance", {})
+            proposal_review = proposal_preflight["cards"][card_index]
+            final_review = final_preflight["cards"][card_index]
+            gov["research_proposal_preflight"] = proposal_review
+            gov["research_preflight"] = final_review
+            gov["research_blockers"] = list(final_review["blockers"])
+            gov["original_research_blockers"] = list(proposal_review["blockers"])
+            gov["research_only"] = True
+            gov["portfolio_qualified"] = False
+            gov["portfolio_status"] = "HELD_RESEARCH_ONLY"
+            gov["can_execute"] = False
+        preflight = final_preflight
+
     probability_mutated = False
     for card in out:
         card_id = str(card.get("card_id") or "")
@@ -746,6 +767,7 @@ def optimize_portfolio(
         critical_leg_actions=tuple(critical_actions),
         probability_fields_mutated=probability_mutated,
         research_preflight=preflight,
+        research_proposal_preflight=proposal_preflight,
         can_execute=False,
     )
 
