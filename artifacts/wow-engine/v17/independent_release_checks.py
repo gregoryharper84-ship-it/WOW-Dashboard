@@ -947,6 +947,24 @@ def release_sirt_provenance_findings(ev: dict, *, governance_files: frozenset[st
         or ev.get("independent_review_active") is not False
         or ev.get("source_review") is not None):
         findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
+    # A signed QA receipt can be superseded by later source checks at the
+    # SAME SHA. Verify the current trusted App results, not just the QA
+    # decision or the earlier SIRT receipt. No regression suites are rerun.
+    runs = ev.get("check_runs")
+    for check_name in QA_EVIDENCE_CHECKS:
+        matches = [
+            run for run in runs if isinstance(run, dict)
+            and run.get("name") == check_name
+            and run.get("head_sha") == head
+            and str(run.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+            and type(run.get("id")) is int and run["id"] > 0
+        ] if isinstance(runs, list) else []
+        latest = max(matches, key=lambda run: run["id"], default=None)
+        if latest is None:
+            findings.append(f"QA_EVIDENCE_MISSING:{check_name}")
+        elif latest.get("status") != "completed" or latest.get("conclusion") != "success":
+            findings.append(f"QA_EVIDENCE_FAILED:{check_name}")
+
     receipt = ev.get("sirt_review_evidence")
     if not isinstance(receipt, dict):
         findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_MISSING")
@@ -956,15 +974,21 @@ def release_sirt_provenance_findings(ev: dict, *, governance_files: frozenset[st
         findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
         return sorted(set(findings))
     actual = ev.get("reviews") or []
+    # A later CHANGES_REQUESTED/DISMISSED supersedes an earlier APPROVED
+    # receipt. COMMENTED is discussion, not a disposition change.
+    disposition = [
+        r for r in actual if isinstance(r, dict)
+        and r.get("user") == reviewer.get("login")
+        and r.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+        and isinstance(r.get("submitted_at"), str)
+    ] if isinstance(actual, list) else []
+    latest_review = max(disposition, key=lambda r: r["submitted_at"], default=None)
     matched = (
-        isinstance(actual, list) and any(
-            isinstance(r, dict)
-            and r.get("user") == reviewer.get("login")
-            and r.get("state") == "APPROVED"
-            and r.get("commit_id") == head
-            and r.get("submitted_at") == reviewer.get("submitted_at")
-            for r in actual
-        )
+        latest_review is not None
+        and sum(r["submitted_at"] == latest_review["submitted_at"] for r in disposition) == 1
+        and latest_review.get("state") == "APPROVED"
+        and latest_review.get("commit_id") == head
+        and latest_review.get("submitted_at") == reviewer.get("submitted_at")
     )
     if (receipt.get("schema_version") != 1
         or receipt.get("review_status") != "EVIDENCE_READY"
