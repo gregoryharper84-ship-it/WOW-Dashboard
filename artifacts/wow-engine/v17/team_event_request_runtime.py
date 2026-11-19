@@ -521,12 +521,12 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
 def _matchup_discovery_for_request(req: TeamEventRequest) -> dict[str, Any]:
     """Shared read-only audit for serial and parallel research barriers."""
     return discover_matchup({
-        "sport_key": req.sport.strip().upper(),
-        "official_event_id": req.official_event_id,
-        "event_start_utc": req.event_start_time_utc,
-        "home_team": req.home_team,
-        "away_team": req.away_team,
-        "sport_specific_evidence": req.sport_specific_evidence,
+        "sport_key": str(getattr(req, "sport", "") or "").strip().upper(),
+        "official_event_id": getattr(req, "official_event_id", None),
+        "event_start_utc": getattr(req, "event_start_time_utc", None),
+        "home_team": getattr(req, "home_team", None),
+        "away_team": getattr(req, "away_team", None),
+        "sport_specific_evidence": getattr(req, "sport_specific_evidence", None),
     })
 
 
