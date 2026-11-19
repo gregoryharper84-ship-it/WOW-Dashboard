@@ -24,6 +24,7 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engineering_incident_identity import exact_incident_id  # noqa: E402
+from sirt_review_evidence import collect_and_evaluate as sirt_collect, decision as sirt_decision  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -303,7 +304,7 @@ def gather(
     ev["zero_credit_enabled"] = zero_credit_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
             errors.append("QA_REVIEW_POLICY_MODE_INVALID")
         else:
             independent_review_active = mode in {"independent", "canary"}
@@ -314,6 +315,28 @@ def gather(
             except (TypeError, ValueError):
                 errors.append("QA_REVIEW_POLICY_RUN_ID_INVALID")
     ev["independent_review_active"] = independent_review_active
+    # Separate authenticated SIRT observations are collected from GitHub by
+    # protected main, never accepted from the PR body or candidate artifacts.
+    ev["sirt_review_evidence"] = None
+    if (qa_review_policy or {}).get("mode") == "sirt":
+        token = os.environ.get("GH_TOKEN", "")
+        try:
+            reviewer_id = int(os.environ.get("WOW_SIRT_REVIEWER_USER_ID", ""))
+        except ValueError:
+            reviewer_id = 0
+        if reviewer_id <= 0 or not token:
+            ev["sirt_review_evidence"] = sirt_decision(
+                "SIRT_REVIEWER_IDENTITY_NOT_BOUND", sha=expected_head,
+            )
+        else:
+            try:
+                ev["sirt_review_evidence"] = sirt_collect(
+                    pr_number, expected_head, reviewer_id, token,
+                )
+            except Exception:  # noqa: BLE001 - authenticated upstream outage must HOLD
+                ev["sirt_review_evidence"] = sirt_decision(
+                    "SIRT_GITHUB_EVIDENCE_UNAVAILABLE", sha=expected_head,
+                )
     if independent_review_active:
         if source_review_data is not None:
             ev["source_review"] = {
@@ -743,7 +766,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
         scope = policy.get("canary_scope") if isinstance(policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
             # The protected-main certifier owns the narrow R-class allowlist.
@@ -820,7 +843,7 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
-    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit"}:
+    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
