@@ -13,12 +13,14 @@ from typing import Any
 
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from v17.matchup_discovery import discover_matchup
     from v17.news_event_research_handoff import reconcile_news_handoff
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from matchup_discovery import discover_matchup
     from news_event_research_handoff import reconcile_news_handoff
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
@@ -43,6 +45,9 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
     enriched["research_workers_may_create_probability"] = False
+    # Mandatory per-event review request: report what was actually screened,
+    # rather than treating a game-script hypothesis as completed research.
+    enriched["matchup_discovery"] = discover_matchup(enriched)
     enriched["news_intelligence_status"] = "NEWS_NOT_OBSERVED"
     enriched["news_latest_verified_at_utc"] = None
     enriched["news_model_rescore_verified"] = False
