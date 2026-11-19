@@ -126,6 +126,8 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
     if is_team_total and (not team or team not in {
             _text(leg.get("home_team_id")), _text(leg.get("away_team_id"))}):
         missing.append("selected_team_id")
+    if is_team_total and _text(details.get("selected_team_id")) != team:
+        missing.append("team_score_process_binding")
     sport = _text(leg.get("sport")).upper()
     basketball = sport in {
         "NBA", "NCAAB", "WNBA", "BASKETBALL_NBA", "BASKETBALL_NCAAB",
@@ -143,8 +145,6 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
         expected_key = "team_projected_score" if is_team_total else "projected_total_score"
         if _number(details.get(expected_key), minimum=0) is None:
             missing.append(expected_key)
-        if is_team_total and _text(details.get("selected_team_id")) != team:
-            missing.append("team_score_process_binding")
     seen = _time(details.get("context_observed_at_utc"))
     if (seen is None or seen > as_of or seen >= start
             or _text(details.get("sport")).upper() != _text(leg.get("sport")).upper()
