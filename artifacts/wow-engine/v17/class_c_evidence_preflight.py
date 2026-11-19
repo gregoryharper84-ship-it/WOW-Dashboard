@@ -109,10 +109,23 @@ def build_class_c_evidence_preflight(
             reasons.append("CLASS_C_RECEIPT_STATUS_INVALID:" + category)
         elif receipt.get("status") != "PASS":
             reasons.append("CLASS_C_EVIDENCE_NOT_PASS:" + category)
-        # Do not copy untrusted provider payload, credentials or approval claims.
-        if all(field in receipt for field in mandatory):
+        # Only validated candidate-bound primitives enter a canonical manifest.
+        # Bad types, NaN or arbitrary author-supplied objects produce HOLD, not
+        # serialization exceptions or a fabricated independent approval.
+        valid_receipt = (
+            _text(receipt.get("receipt_id"))
+            and isinstance(receipt.get("sha256"), str)
+            and SHA256_RE.fullmatch(receipt["sha256"]) is not None
+            and isinstance(receipt.get("subject_artifact_sha256"), str)
+            and receipt["subject_artifact_sha256"] == candidate.get("artifact_sha256")
+            and isinstance(receipt.get("head_sha"), str)
+            and receipt["head_sha"] == candidate.get("head_sha")
+            and _aware_timestamp(receipt.get("observed_at"))
+            and receipt.get("status") == "PASS"
+        )
+        if valid_receipt:
             required_receipts[category] = {field: receipt[field] for field in mandatory}
-            required_receipts[category]["claimed_status"] = receipt.get("status")
+            required_receipts[category]["claimed_status"] = "PASS"
 
     for category in evidence:
         if not isinstance(category, str) or category not in REQUIRED_EVIDENCE:
