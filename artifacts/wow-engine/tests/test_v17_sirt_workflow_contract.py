@@ -27,12 +27,15 @@ def test_release_independently_reads_same_protected_sirt_principal():
 
 def test_sirt_does_not_let_gemini_steps_run_or_sign():
     steps = _steps("wow-v17-independent-qa-check.yml")
-    for name in (
-        "Require isolated adversarial-review credential",
-        "Run isolated read-only Gemini semantic review",
-        "Build versioned exact-head review artifact",
-    ):
-        assert steps[name]["if"] == "steps.policy.outputs.review_active == 'true'"
+    assert steps["Require isolated adversarial-review credential"]["if"] == (
+        "steps.policy.outputs.review_active == 'true'"
+    )
+    assert steps["Run isolated read-only Gemini semantic review"]["if"] == (
+        "steps.policy.outputs.review_active == 'true' && steps.capture.outcome == 'success'"
+    )
+    assert steps["Build versioned exact-head review artifact"]["if"] == (
+        "steps.policy.outputs.review_active == 'true' && steps.review.outcome == 'success'"
+    )
     assert "QA_SIRT_INDEPENDENT_EVIDENCE" in (
         ROOT / "artifacts/wow-engine/v17/independent_release_checks.py"
     ).read_text()
