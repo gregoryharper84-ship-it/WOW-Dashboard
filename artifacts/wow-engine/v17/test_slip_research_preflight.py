@@ -228,6 +228,19 @@ def test_alias_reuse_is_blocked_across_ml_and_spread_label_variants():
     assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" in outcome["cards"][1]["blockers"]
 
 
+def test_player_market_alias_does_not_hide_duplicate_exact_stat():
+    a = prop("player-a", "nba-1", player="NBA-11")
+    b = deepcopy(a)
+    b["row_id"] = "player-b"
+    b["market_family"] = "PLAYER_POINTS"
+    b["market_quote"]["market_family"] = "PLAYER_POINTS"
+    assert exact_key(a) == exact_key(b)
+    result = audit_research_slips(cards(
+        [a, leg("other", "nba-other")],
+        [b, leg("third", "nba-third")]), as_of_utc=AS_OF)
+    assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" in result["cards"][1]["blockers"]
+
+
 def test_team_total_estimates_selected_team_not_both_combined():
     t = total("team-total", "nba-team", side="UNDER", line=115.5)
     t["market_family"] = "TEAM_TOTAL"
