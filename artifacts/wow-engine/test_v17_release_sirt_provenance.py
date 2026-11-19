@@ -15,6 +15,7 @@ def evidence():
         "repository": "gregoryharper84-ship-it/WOW-Dashboard",
         "pr_number": 2732, "expected_head_sha": HEAD, "owner_login": "repo-owner",
         "evidence_errors": [],
+        "files": ["docs/superpowers/plans/release-evidence.md"],
         "pr": {
             "head_sha": HEAD, "head_ref": "feature", "head_repo": "gregoryharper84-ship-it/WOW-Dashboard",
             "state": "open", "merged": False, "draft": False, "base_ref": "main",
@@ -140,3 +141,39 @@ def test_bound_policy_and_qa_roles_required():
     assert "RELEASE_IDENTITY_NOT_DISTINCT" in checks.release_findings(
         evidence(), qa_app_id="111", release_app_id="111"
     )
+
+
+def test_protected_nonowner_pr_requires_current_owner_approval():
+    ev = evidence()
+    trust_root = ".github/workflows/wow-v17-release-authority-check.yml"
+    ev["files"] = [trust_root]
+    governed = frozenset({trust_root})
+    missing = checks.release_findings(ev, qa_app_id="111", release_app_id="222",
+                                       governance_files=governed)
+    assert "RELEASE_QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in missing
+    ev["reviews"].append({
+        "user": "repo-owner", "state": "APPROVED",
+        "commit_id": HEAD, "submitted_at": "2026-11-19T13:02:00Z",
+    })
+    passed = checks.release_findings(ev, qa_app_id="111", release_app_id="222",
+                                      governance_files=governed)
+    assert "RELEASE_QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" not in passed
+    ev["reviews"].append({
+        "user": "repo-owner", "state": "DISMISSED",
+        "commit_id": HEAD, "submitted_at": "2026-11-19T13:03:00Z",
+    })
+    revoked = checks.release_findings(ev, qa_app_id="111", release_app_id="222",
+                                       governance_files=governed)
+    assert "RELEASE_QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in revoked
+
+
+def test_missing_changed_file_inventory_is_not_release_ready():
+    ev = evidence()
+    ev["files"] = []
+    assert "RELEASE_QA_FILES_EMPTY" in decide(ev)
+
+
+def test_invalid_policy_cannot_crash_or_pass():
+    ev = evidence()
+    ev["qa_review_policy"] = ["malformed"]
+    assert "RELEASE_QA_REVIEW_POLICY_MISSING" in decide(ev)
