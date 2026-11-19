@@ -33,6 +33,8 @@ def test_declared_daily_protected_main_refresh_uses_existing_workflow():
 def test_valid_genuine_backend_receipt_is_only_source_refresh_not_certification():
     m = _client()
     good = {"status": "NHL_SOURCE_REINGEST_PERSISTED", "season": "20262027",
+            "source_event_n": 450, "schedule_digest": "a" * 64,
+            "provenance_version": "NHL_SOURCE_PROVENANCE_V2", "ingest_code_sha": "b" * 40,
             "provenance_complete": True, "timeline_receipt_persisted": True,
             "automatic_certification": False, "automatic_promotion": False,
             "probability_publishable": False, "can_execute": False}
@@ -72,3 +74,26 @@ def test_typed_backend_failure_survives_no_write_fallback():
                                "automatic_promotion": False, "probability_publishable": False})
     assert out["status"] == "BLOCKED"
     assert out["code"] == "NHL_SOURCE_TIMELINE_INCOMPLETE"
+
+def test_unchanged_source_receipt_requires_schedule_and_provenance_fingerprint():
+    m = _client()
+    base = {"status": "NHL_SOURCE_REINGEST_PERSISTED", "season": "20262027",
+            "source_event_n": 450, "schedule_digest": "a" * 64,
+            "provenance_version": "NHL_SOURCE_PROVENANCE_V2",
+            "ingest_code_sha": "b" * 40,
+            "provenance_complete": True, "timeline_receipt_persisted": True,
+            "automatic_certification": False, "automatic_promotion": False,
+            "probability_publishable": False, "can_execute": False}
+    assert m.classify_response(base)["status"] == "SOURCE_TIMELINE_REFRESHED_REQUIRES_SCIENTIFIC_ACCEPTANCE"
+    for field in ("schedule_digest", "provenance_version", "ingest_code_sha", "source_event_n"):
+        altered = dict(base)
+        altered.pop(field)
+        result = m.classify_response(altered)
+        assert result["status"] == "BLOCKED", field
+
+
+def test_summary_fallback_survives_unexpected_client_crash():
+    content = WF.read_text()
+    assert "id: source_refresh" in content
+    assert "steps.source_refresh.outcome" in content
+    assert "NHL_SOURCE_REFRESH_RUNNER_FAILED" in content
