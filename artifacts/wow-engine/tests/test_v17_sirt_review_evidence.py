@@ -261,3 +261,20 @@ def test_collector_detects_pr_head_change_during_authenticated_reads(monkeypatch
     assert outcome["review_status"] == "HOLD"
     assert outcome["code"] == "SIRT_PR_CHANGED_DURING_REVIEW"
     assert outcome["merge_or_release_authorized"] is False
+
+
+def test_comment_after_approval_does_not_revoke_independent_review():
+    candidate = case()
+    candidate["reviews"].append(dict(
+        candidate["reviews"][0], id=72, state="COMMENTED",
+    ))
+    result = evaluate(**candidate)
+    assert result["review_status"] == "EVIDENCE_READY"
+    assert result["merge_or_release_authorized"] is False
+
+
+def test_changes_requested_after_comment_still_overrules_approval():
+    candidate = case()
+    candidate["reviews"].append(dict(candidate["reviews"][0], id=72, state="COMMENTED"))
+    candidate["reviews"].append(dict(candidate["reviews"][0], id=73, state="CHANGES_REQUESTED"))
+    hold(candidate, "SIRT_INDEPENDENT_EXACT_HEAD_APPROVAL_MISSING")

@@ -1356,7 +1356,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--head-ref")
     parser.add_argument("--attempt", type=int)
-    parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary", "zero_credit"))
+    parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary", "zero_credit", "sirt"))
     args = parser.parse_args(argv)
     try:
         if args.capture:

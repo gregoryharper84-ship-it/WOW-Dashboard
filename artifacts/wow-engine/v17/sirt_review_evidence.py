@@ -73,7 +73,8 @@ def evaluate(*, repository, expected_sha, pr, reviews, check_runs,
     for rid in sorted(auth_ids):
         candidate = [r for r in reviews if isinstance(r, dict)
                      and isinstance(r.get("user"), dict)
-                     and _int_id(r["user"].get("id")) == rid]
+                     and _int_id(r["user"].get("id")) == rid
+                     and r.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}]
         if not candidate:
             continue
         # Later GitHub review IDs supersede earlier approvals for that reviewer.
