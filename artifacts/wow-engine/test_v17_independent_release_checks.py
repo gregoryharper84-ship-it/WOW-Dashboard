@@ -1373,7 +1373,8 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
     prs = json.dumps([{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}])
     proc, runner, env = _run_decide(fake_gh, QA_WF, _routes_for_pr(_evidence_runs()),
                                     {"EVENT": event, "WR_PRS": prs if event == "workflow_run" else "null",
-                                     "INPUT_PR": "7" if event == "workflow_dispatch" else ""})
+                                     "INPUT_PR": "7" if event == "workflow_dispatch" else "",
+                                     "REVIEW_ACTIVE": "false"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "success" and decision["check_name"] == m.QA_CHECK
@@ -1383,11 +1384,7 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
         "POLICY_OUTCOME": "success",
         "POLICY_RECEIPT_OUTCOME": "success",
         "POLICY_ARTIFACT_OUTCOME": "success",
-        "CAPTURE_OUTCOME": "success",
-        "REVIEW_OUTCOME": "success",
-        "RECHECK_OUTCOME": "success",
-        "SOURCE_REVIEW_OUTCOME": "success",
-        "SOURCE_REVIEW_ARTIFACT_OUTCOME": "success",
+        "RETIRED_CAPTURE_OUTCOME": "skipped",
         "DECIDE_OUTCOME": "success",
     })
     terminal = subprocess.run(
@@ -1677,11 +1674,7 @@ def test_provider_failure_publishes_exact_head_qa_app_failure_after_prior_pass(f
         POLICY_OUTCOME="success",
         POLICY_RECEIPT_OUTCOME="success",
         POLICY_ARTIFACT_OUTCOME="success",
-        CAPTURE_OUTCOME="success",
-        REVIEW_OUTCOME="failure",
-        RECHECK_OUTCOME="skipped",
-        SOURCE_REVIEW_OUTCOME="skipped",
-        SOURCE_REVIEW_ARTIFACT_OUTCOME="skipped",
+        RETIRED_CAPTURE_OUTCOME="failure",
         DECIDE_OUTCOME="skipped",
     )
     terminal = subprocess.run(
@@ -1691,7 +1684,7 @@ def test_provider_failure_publishes_exact_head_qa_app_failure_after_prior_pass(f
     assert terminal.returncode == 0, terminal.stdout + terminal.stderr
     result = json.loads((runner / "wow-v17-qa-terminal-decision.json").read_text())
     assert result["head_sha"] == HEAD and result["conclusion"] == "failure"
-    assert "QA_REVIEW_EXECUTION_FAILED:review" in result["findings"]
+    assert "QA_REVIEW_EXECUTION_FAILED:retired_capture" in result["findings"]
 
     publish = subprocess.run(
         ["bash", "-c", _step_script(QA_WF, "Publish exact-head check")],
@@ -1850,7 +1843,7 @@ def test_qa_defers_without_publishing_while_exact_head_regression_is_running_the
 
     proc, runner, env = _run_decide(
         fake_gh, QA_WF, routes,
-        {"EVENT": "workflow_run", "INPUT_PR": ""},
+        {"EVENT": "workflow_run", "INPUT_PR": "", "REVIEW_ACTIVE": "false"},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "count=0" in Path(env["GITHUB_OUTPUT"]).read_text()
@@ -1880,7 +1873,7 @@ def test_qa_defers_without_publishing_while_exact_head_regression_is_running_the
     routes = _routes_for_pr(_evidence_runs([aggregate]))
     proc, runner, env = _run_decide(
         fake_gh, QA_WF, routes,
-        {"EVENT": "workflow_run", "INPUT_PR": ""},
+        {"EVENT": "workflow_run", "INPUT_PR": "", "REVIEW_ACTIVE": "false"},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
@@ -2056,15 +2049,16 @@ def test_missing_app_identity_fails_closed_and_publishes_nothing(wf, code, app_i
     assert proc.returncode != 0 and f"::error::{code}:" in proc.stdout
 
 
-def test_activated_qa_review_requires_its_separate_provider_credential():
+def test_retired_independent_capture_mode_fails_closed_without_provider():
+    # The old third-party capture is gone; selecting its policy must emit HOLD.
     proc = subprocess.run(
-        ["bash", "-c", _step_script(QA_WF, "Require isolated adversarial-review credential")],
-        env=dict(os.environ, KEY_PRESENT="false"),
+        ["bash", "-c", _step_script(QA_WF, "Reject retired independent capture mode")],
+        env=dict(os.environ),
         capture_output=True,
         text=True,
     )
     assert proc.returncode != 0
-    assert "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in proc.stdout
+    assert "::error::QA_LEGACY_INDEPENDENT_CAPTURE_RETIRED" in proc.stdout
 
 
 @pytest.mark.parametrize(
@@ -2206,7 +2200,12 @@ def test_every_phase_c_code_is_registered():
     registry = (ROOT / "artifacts/wow-engine/docs/failure_codes.md").read_text()
     section = registry.split("## Independent QA and Release Authority check codes", 1)[1].split("\n## ", 1)[0]
     registered = set(re.findall(r"^\| `([A-Z_]+)` \|", section, re.M))
-    assert emitted == registered, (emitted - registered, registered - emitted)
+    # Historical credential-missing code remains registered for old receipts,
+    # even though its retired provider step can no longer emit it.
+    retired_historical = {"QA_REVIEW_PROVIDER_CREDENTIAL_MISSING"}
+    assert emitted | retired_historical == registered, (
+        emitted - registered, registered - emitted - retired_historical
+    )
 
 
 # Credential isolation regression: GitHub Environments must be owner-configured
