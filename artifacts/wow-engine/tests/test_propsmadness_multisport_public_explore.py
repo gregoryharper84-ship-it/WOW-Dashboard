@@ -188,6 +188,84 @@ def test_no_user_consent_is_zero_request_and_http_429_stops_without_retry():
         fetch_public_one_shot("MLB", "strikeouts", personal_noncommercial_use_confirmed=True, urlopen=denied)
     assert urls == ["https://propsmadness.com/robots.txt"]
 
+
+def test_cli_user_initiated_page_can_reach_ephemeral_shared_research_handoff(monkeypatch, capsys):
+    from v17 import propsmadness_multisport_public_explore as module
+    receipt = parse_multisport_public_html(
+        page("NBA", "player-made-threes", "Threes", "2.5", "BOS", "NYK"),
+        sport="NBA", market="threes", fetched_at="2026-11-19T18:00:00Z",
+    )
+    calls = []
+
+    def one_public_page(sport, market, *, personal_noncommercial_use_confirmed):
+        calls.append((sport, market, personal_noncommercial_use_confirmed))
+        return receipt
+
+    monkeypatch.setattr(module, "fetch_public_one_shot", one_public_page)
+    monkeypatch.setattr(sys, "argv", [
+        "propsmadness_multisport_public_explore",
+        "--sport", "NBA", "--market", "threes",
+        "--confirm-personal-noncommercial-use", "--research-handoff",
+    ])
+    assert module.main() == 0
+    assert calls == [("NBA", "threes", True)]
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema"] == "WOW_PM_SHARED_INTELLIGENCE_RESEARCH_V1"
+    assert result["source_receipts"] == 1 and result["source_rows"] == 1
+    assert result["unique_prop_hints"] == 1
+    assert result["prop_discovery_hints"][0]["stat_type"] == "THREE_POINTERS_MADE"
+    assert result["prop_discovery_hints"][0]["official_identity_verified"] is False
+    assert result["verified_sporting_features"] == []
+    assert result["model_consumption_receipts"] == []
+    assert result["production_write_authorized"] is False
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_cli_handoff_rejects_forged_probability_and_remains_closed(monkeypatch, capsys):
+    from v17 import propsmadness_multisport_public_explore as module
+    receipt = parse_multisport_public_html(
+        page("NFL", "player-passing-yards", "Passing Yards", "220.5", "SEA", "CHI"),
+        sport="NFL", market="passing-yards", fetched_at="2026-11-19T18:00:00Z",
+    )
+    receipt["rows"][0]["model_probability"] = 0.9
+    monkeypatch.setattr(module, "fetch_public_one_shot", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(sys, "argv", [
+        "propsmadness_multisport_public_explore",
+        "--sport", "NFL", "--market", "passing-yards",
+        "--confirm-personal-noncommercial-use", "--research-handoff",
+    ])
+    assert module.main() == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "PUBLIC_SCRAPE_HOLD"
+    assert result["typed_blocker"] == "PM_HANDOFF_ROW_AUTHORITY_CONFLICT"
+    assert result["can_execute"] is False
+
+
+def test_cli_handoff_does_not_bypass_required_personal_use_confirmation(monkeypatch, capsys):
+    from v17 import propsmadness_multisport_public_explore as module
+    calls = []
+
+    def one_public_page(sport, market, *, personal_noncommercial_use_confirmed):
+        calls.append(personal_noncommercial_use_confirmed)
+        if not personal_noncommercial_use_confirmed:
+            raise PublicPageHold("PM_PUBLIC_USE_NOT_CONFIRMED")
+        raise AssertionError("unexpected scrape")
+
+    monkeypatch.setattr(module, "fetch_public_one_shot", one_public_page)
+    monkeypatch.setattr(sys, "argv", [
+        "propsmadness_multisport_public_explore",
+        "--sport", "NBA", "--market", "points", "--research-handoff",
+    ])
+    assert module.main() == 2
+    result = json.loads(capsys.readouterr().out)
+    assert calls == [False]
+    assert result["typed_blocker"] == "PM_PUBLIC_USE_NOT_CONFIRMED"
+    assert result["historical_training_authorized"] is False
+    assert result["can_execute"] is False
+
+
 def test_every_declared_market_has_a_non_authoritative_fixture_path():
     # No declared NBA/NFL/MLB/WNBA stat may rely on an unexercised alias.
     for sport, markets in MARKETS.items():
