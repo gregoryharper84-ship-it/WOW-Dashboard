@@ -1034,7 +1034,7 @@ def build_qa_review_policy(
     _positive_int(pr_number, "QA_POLICY_PR_NUMBER")
     _require(bool(SHA.fullmatch(head_sha)), "QA_POLICY_HEAD_INVALID")
     _require(isinstance(head_ref, str) and bool(head_ref), "QA_POLICY_HEAD_REF_INVALID")
-    _require(mode in {"legacy", "independent", "canary", "zero_credit"}, "QA_POLICY_MODE_INVALID")
+    _require(mode in {"legacy", "independent", "canary", "zero_credit", "sirt"}, "QA_POLICY_MODE_INVALID")
     _require(isinstance(run, Mapping), "QA_POLICY_RUN_INVALID")
     _positive_int(run.get("id"), "QA_POLICY_RUN_ID")
     attempt = _positive_int(run.get("run_attempt"), "QA_POLICY_RUN_ATTEMPT")
@@ -1103,7 +1103,7 @@ def verify_qa_review_policy(
     _require(isinstance(target.get("head_ref"), str) and bool(target["head_ref"]),
              "QA_POLICY_HEAD_REF_INVALID")
     policy_mode = artifact.get("mode")
-    _require(policy_mode in {"legacy", "independent", "canary", "zero_credit"}, "QA_POLICY_MODE_INVALID")
+    _require(policy_mode in {"legacy", "independent", "canary", "zero_credit", "sirt"}, "QA_POLICY_MODE_INVALID")
     scope = artifact.get("canary_scope")
     if policy_mode == "canary":
         _require(
