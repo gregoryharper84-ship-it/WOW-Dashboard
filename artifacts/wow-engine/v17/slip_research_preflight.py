@@ -18,6 +18,18 @@ RESEARCH_CLASS = "RESEARCH_ONLY_UNCERTIFIED"
 _TOTALS = {"GAME_TOTAL", "TEAM_TOTAL", "TOTAL", "OVER_UNDER"}
 _PROPS = {"PLAYER_PROP", "PLAYER_POINTS", "PLAYER_REBOUNDS", "PLAYER_ASSISTS", "PROP"}
 _STANDARD_MAX_LEGS = 3
+_MARKET_ALIASES = {
+    "ML": "MONEYLINE", "MONEYLINE": "MONEYLINE",
+    "SPREAD": "POINT_SPREAD", "POINT_SPREAD": "POINT_SPREAD",
+    "TOTAL": "GAME_TOTAL", "OVER_UNDER": "GAME_TOTAL", "GAME_TOTAL": "GAME_TOTAL",
+    "PROP": "PLAYER_PROP", "PLAYER_PROP": "PLAYER_PROP",
+}
+
+
+def _market(raw: Any) -> str:
+    key = _text(raw).upper()
+    return _MARKET_ALIASES.get(key, key)
+
 
 
 def _time(raw: Any) -> datetime | None:
@@ -50,7 +62,7 @@ def exact_key(leg: Mapping[str, Any]) -> tuple[str, ...] | None:
     """Bind cross-sport, exact event/market/period/side/line/player thesis."""
     sport = _text(leg.get("sport")).upper()
     event = _text(leg.get("official_event_id"))
-    market = _text(leg.get("market_family")).upper()
+    market = _market(leg.get("market_family"))
     side = _text(leg.get("side")).upper()
     period = _text(leg.get("market_period")).upper()
     if not all((sport, event, market, side, period)):
@@ -58,6 +70,8 @@ def exact_key(leg: Mapping[str, Any]) -> tuple[str, ...] | None:
     return (sport, event, market, period, side,
             _line_key(leg.get("exact_line")),
             _text(leg.get("official_player_id")).casefold(),
+            _text(leg.get("stat_type")).upper(),
+            _text(leg.get("selected_team_id")).upper(),
             _text(leg.get("settlement_basis")).upper())
 
 
@@ -65,9 +79,22 @@ def _quote_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
     quote = leg.get("market_quote")
     if not isinstance(quote, Mapping):
         return ["EXACT_MARKET_QUOTE_MISSING"]
-    for field in ("sport", "official_event_id", "market_family", "side", "market_period", "settlement_basis"):
+    for field in ("sport", "official_event_id", "side", "market_period", "settlement_basis"):
         if _text(quote.get(field)).upper() != _text(leg.get(field)).upper():
             return ["EXACT_MARKET_QUOTE_IDENTITY_MISMATCH"]
+    market = _market(leg.get("market_family"))
+    if _market(quote.get("market_family")) != market:
+        return ["EXACT_MARKET_QUOTE_IDENTITY_MISMATCH"]
+    if market in _PROPS:
+        if not _text(leg.get("official_player_id")) or not _text(leg.get("stat_type")):
+            return ["PROP_PLAYER_OR_STAT_ID_MISSING"]
+        if (_text(quote.get("official_player_id")) != _text(leg.get("official_player_id"))
+                or _text(quote.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()):
+            return ["PROP_QUOTE_PLAYER_STAT_MISMATCH"]
+    if market == "TEAM_TOTAL":
+        if (not _text(leg.get("selected_team_id"))
+                or _text(quote.get("selected_team_id")) != _text(leg.get("selected_team_id"))):
+            return ["TEAM_TOTAL_QUOTE_TEAM_MISMATCH"]
     if _line_key(quote.get("exact_line")) != _line_key(leg.get("exact_line")):
         return ["EXACT_MARKET_QUOTE_LINE_MISMATCH"]
     qtime = _time(quote.get("quoted_at_utc"))
@@ -94,6 +121,11 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
               "lineup_scenario_source_id", "rest_travel_source_id",
               "tail_scenario_source_id")
     missing = [k for k in fields if not _text(details.get(k))]
+    is_team_total = _market(leg.get("market_family")) == "TEAM_TOTAL"
+    team = _text(leg.get("selected_team_id"))
+    if is_team_total and (not team or team not in {
+            _text(leg.get("home_team_id")), _text(leg.get("away_team_id"))}):
+        missing.append("selected_team_id")
     sport = _text(leg.get("sport")).upper()
     basketball = sport in {
         "NBA", "NCAAB", "WNBA", "BASKETBALL_NBA", "BASKETBALL_NCAAB",
@@ -108,8 +140,11 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
         # their *own* scoring process. No basketball possessions x PPP bridge.
         if not _text(details.get("sport_score_process_source_id")):
             missing.append("sport_score_process_source_id")
-        if _number(details.get("projected_total_score"), minimum=0) is None:
-            missing.append("projected_total_score")
+        expected_key = "team_projected_score" if is_team_total else "projected_total_score"
+        if _number(details.get(expected_key), minimum=0) is None:
+            missing.append(expected_key)
+        if is_team_total and _text(details.get("selected_team_id")) != team:
+            missing.append("team_score_process_binding")
     seen = _time(details.get("context_observed_at_utc"))
     if (seen is None or seen > as_of or seen >= start
             or _text(details.get("sport")).upper() != _text(leg.get("sport")).upper()
@@ -125,9 +160,16 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
         home_ppp = _number(details.get("home_adjusted_ppp"), minimum=0.000001)
         away_ppp = _number(details.get("away_adjusted_ppp"), minimum=0.000001)
         if all(x is not None for x in (possessions, home_ppp, away_ppp)):
-            estimate = possessions * (home_ppp + away_ppp)
+            if is_team_total:
+                estimate = possessions * (home_ppp if team == _text(leg.get("home_team_id"))
+                                          else away_ppp) if team else None
+            else:
+                estimate = possessions * (home_ppp + away_ppp)
     else:
-        estimate = _number(details.get("projected_total_score"), minimum=0)
+        estimate = _number(
+            details.get("team_projected_score" if is_team_total else "projected_total_score"),
+            minimum=0,
+        )
     if estimate is not None and line is not None:
         if ((side == "OVER" and estimate <= line)
                 or (side == "UNDER" and estimate >= line)):
@@ -146,6 +188,7 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
         and _text(distribution.get("official_event_id")) == _text(leg.get("official_event_id"))
         and _line_key(distribution.get("exact_line")) == _line_key(leg.get("exact_line"))
         and _text(distribution.get("side")).upper() == _text(leg.get("side")).upper()
+        and (not is_team_total or _text(distribution.get("selected_team_id")) == team)
     )
     return (
         (["TOTAL_CONTEXT_MISSING"] if any(x != "point_estimate_opposes_selected_side" for x in missing) else [])
@@ -157,6 +200,8 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
 def _player_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     if not _text(leg.get("official_player_id")):
         return ["PROP_PLAYER_ID_UNVERIFIED"]
+    if not _text(leg.get("stat_type")):
+        return ["PROP_STAT_ID_UNVERIFIED"]
     roster = leg.get("player_roster_evidence")
     if not isinstance(roster, Mapping):
         return ["PROP_ROSTER_EVIDENCE_MISSING"]
@@ -239,7 +284,7 @@ def audit_research_slips(
                 reasons.append("PREGAME_CHRONOLOGY_UNVERIFIED")
             if _text(leg.get("market_family")).upper() not in _TOTALS | _PROPS | {"MONEYLINE", "ML", "POINT_SPREAD", "SPREAD"}:
                 reasons.append("MARKET_FAMILY_UNSUPPORTED")
-            market = _text(leg.get("market_family")).upper()
+            market = _market(leg.get("market_family"))
             if market in _TOTALS | _PROPS | {"POINT_SPREAD", "SPREAD"} and _number(leg.get("exact_line")) is None:
                 reasons.append("EXACT_LINE_MISSING")
             if not _text(leg.get("settlement_basis")):
