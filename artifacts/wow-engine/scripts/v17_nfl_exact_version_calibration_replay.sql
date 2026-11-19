@@ -35,6 +35,7 @@ WITH rows AS (
   SELECT model_version, count(*)::int AS grades,
          count(DISTINCT official_event_id)::int AS events,
          count(DISTINCT event_prediction_id)::int AS predictions,
+         count(*) FILTER (WHERE NULLIF(btrim(model_version),'') IS NULL)::int AS missing_model_versions,
          count(*) FILTER (WHERE valid_probability IS NOT TRUE)::int AS invalid_probabilities,
          count(*) FILTER (WHERE valid_probability IS TRUE AND
                    (abs(replay_brier-stored_brier) > 1e-9 OR
@@ -49,7 +50,7 @@ WITH rows AS (
   FROM scored GROUP BY model_version
 )
 SELECT metrics.*, ece.replay_ece,
-       CASE WHEN grades <> events OR grades <> predictions
+       CASE WHEN missing_model_versions <> 0 OR grades <> events OR grades <> predictions
                  OR invalid_probabilities <> 0 OR metric_row_mismatches <> 0
             THEN 'EXACT_VERSION_REPLAY_INPUT_OR_METRIC_CONFLICT'
             WHEN grades < 100 THEN 'EXACT_VERSION_FORWARD_SAMPLE_INSUFFICIENT'
