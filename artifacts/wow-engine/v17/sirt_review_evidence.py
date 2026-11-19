@@ -141,13 +141,20 @@ def collect_and_evaluate(pr_number, expected_sha, reviewer_id, token):
     if (not isinstance(repo, dict) or not isinstance(commit, dict)
         or not isinstance(checks, dict) or not isinstance(reviews, list)
         or not isinstance(checks.get("check_runs"), list)
-        or checks.get("total_count", 0) > 100 or len(reviews) >= 100):
+        or not isinstance(repo.get("owner"), dict)
+        or (commit.get("author") is not None and not isinstance(commit.get("author"), dict))
+        or type(checks.get("total_count")) is not int or checks["total_count"] < 0):
+        return decision("SIRT_EVIDENCE_INVALID", sha=expected_sha)
+    if (checks["total_count"] > 100
+        or checks["total_count"] != len(checks["check_runs"])
+        or len(reviews) >= 100):
         return decision("SIRT_EVIDENCE_PAGINATION_INCOMPLETE", sha=expected_sha)
+    head_author = commit.get("author")
     return evaluate(
         repository=REPO, expected_sha=expected_sha, pr=pr, reviews=reviews,
         check_runs=checks["check_runs"], authorized_reviewer_ids={reviewer_id},
-        owner_id=(repo.get("owner") or {}).get("id"),
-        head_commit_author_id=(commit.get("author") or {}).get("id"),
+        owner_id=repo["owner"].get("id"),
+        head_commit_author_id=head_author.get("id") if head_author else None,
     )
 
 
