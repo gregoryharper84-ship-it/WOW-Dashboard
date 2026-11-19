@@ -49,3 +49,16 @@ def test_audit_never_certifies_publishes_or_executes():
                   "FALSE AS can_execute",
                   "INDEPENDENT_CERTIFICATION_RECEIPT_UNPROVEN"):
         assert token in sql
+
+def test_certification_cannot_link_another_calibrator_or_unverified_digest():
+    sql = SQL.read_text()
+    assert "cert.calibration_artifact_id = c.calibrator_id::text" in sql
+    assert "cert.calibration_method = c.calibration_method" in sql
+    assert "cert.calibration_sha256 = c.fit_metrics_json->>'calibration_artifact_sha256'" in sql
+    assert "NULLIF(cert.calibration_sha256,'') IS NOT NULL" not in sql
+
+
+def test_health_absence_never_erases_observed_grade_audit():
+    sql = SQL.read_text()
+    assert "LEFT JOIN latest_health h ON TRUE" in sql
+    assert "CROSS JOIN latest_health h" not in sql
