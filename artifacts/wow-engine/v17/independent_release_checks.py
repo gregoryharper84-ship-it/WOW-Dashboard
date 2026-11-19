@@ -24,6 +24,7 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engineering_incident_identity import exact_incident_id  # noqa: E402
+from sirt_review_evidence import collect_and_evaluate as sirt_collect, decision as sirt_decision  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -232,6 +233,7 @@ def gather(
     current_review_active: bool = False,
     independent_review_active: bool = True,
     zero_credit_enabled: bool = False,
+    sirt_enabled: bool = False,
     source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -301,9 +303,10 @@ def gather(
     ev["qa_review_policy"] = qa_review_policy
     ev["current_review_active"] = current_review_active
     ev["zero_credit_enabled"] = zero_credit_enabled
+    ev["sirt_enabled"] = sirt_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
             errors.append("QA_REVIEW_POLICY_MODE_INVALID")
         else:
             independent_review_active = mode in {"independent", "canary"}
@@ -314,6 +317,28 @@ def gather(
             except (TypeError, ValueError):
                 errors.append("QA_REVIEW_POLICY_RUN_ID_INVALID")
     ev["independent_review_active"] = independent_review_active
+    # Separate authenticated SIRT observations are collected from GitHub by
+    # protected main, never accepted from the PR body or candidate artifacts.
+    ev["sirt_review_evidence"] = None
+    if (qa_review_policy or {}).get("mode") == "sirt":
+        token = os.environ.get("GH_TOKEN", "")
+        try:
+            reviewer_id = int(os.environ.get("WOW_SIRT_REVIEWER_USER_ID", ""))
+        except ValueError:
+            reviewer_id = 0
+        if reviewer_id <= 0 or not token:
+            ev["sirt_review_evidence"] = sirt_decision(
+                "SIRT_REVIEWER_IDENTITY_NOT_BOUND", sha=expected_head,
+            )
+        else:
+            try:
+                ev["sirt_review_evidence"] = sirt_collect(
+                    pr_number, expected_head, reviewer_id, token,
+                )
+            except Exception:  # noqa: BLE001 - authenticated upstream outage must HOLD
+                ev["sirt_review_evidence"] = sirt_decision(
+                    "SIRT_GITHUB_EVIDENCE_UNAVAILABLE", sha=expected_head,
+                )
     if independent_review_active:
         if source_review_data is not None:
             ev["source_review"] = {
@@ -743,7 +768,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
         scope = policy.get("canary_scope") if isinstance(policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
             # The protected-main certifier owns the narrow R-class allowlist.
@@ -765,6 +790,63 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                     or target.get("head_sha") != head
                     or target.get("head_ref") != (pr.get("head_ref") or "")):
                 findings.append("QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH")
+        elif mode == "sirt":
+            # Protected-main gather independently fetches SIRT from GitHub;
+            # caller-authored JSON or a PR-body flag cannot create this receipt.
+            if (
+                ev.get("sirt_enabled") is not True
+                or ev.get("current_review_active") is True
+                or ev.get("zero_credit_enabled") is True
+                or ev.get("independent_review_active") is not False
+                or ev.get("source_review") is not None
+            ):
+                findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
+            if not isinstance(target, dict) or (
+                target.get("pr_number") != ev.get("pr_number")
+                or target.get("head_sha") != head
+                or target.get("head_ref") != (pr.get("head_ref") or "")
+            ) or scope is not None:
+                findings.append("QA_SIRT_REVIEW_POLICY_TARGET_MISMATCH")
+            receipt = ev.get("sirt_review_evidence")
+            if not isinstance(receipt, dict):
+                findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_MISSING")
+            else:
+                reviewer = receipt.get("reviewer")
+                actual_reviews = ev.get("reviews") or []
+                same_approved_review = (
+                    isinstance(reviewer, dict)
+                    and any(
+                        isinstance(review, dict)
+                        and review.get("user") == reviewer.get("login")
+                        and review.get("state") == "APPROVED"
+                        and review.get("commit_id") == head
+                        and review.get("submitted_at") == reviewer.get("submitted_at")
+                        for review in actual_reviews
+                    )
+                )
+                if (
+                    receipt.get("schema_version") != 1
+                    or receipt.get("review_status") != "EVIDENCE_READY"
+                    or receipt.get("code") != "SIRT_SOURCE_REVIEW_EVIDENCE_READY"
+                    or receipt.get("head_sha") != head
+                    or receipt.get("required_check_names") != list(REQUIRED_REGRESSION_CHECKS)
+                    or receipt.get("findings") != []
+                    or receipt.get("independent_scientific_acceptance_required") is not True
+                    or receipt.get("protected_release_authority_required") is not True
+                    or receipt.get("can_execute") is not False
+                    or receipt.get("merge_or_release_authorized") is not False
+                    or receipt.get("model_certified") is not False
+                    or receipt.get("probability_publishable") is not False
+                    or not same_approved_review
+                    or type(reviewer.get("id")) is not int
+                    or reviewer["id"] <= 0
+                    or type(reviewer.get("user_id")) is not int
+                    or reviewer["user_id"] <= 0
+                    or reviewer["user_id"] == pr.get("author_id")
+                    or str(reviewer.get("login") or "").casefold() == str(ev.get("owner_login") or "").casefold()
+                    or reviewer.get("commit_id") != head
+                ):
+                    findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
         elif mode == "legacy":
             if ev.get("independent_review_active") is not False:
                 findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
@@ -808,6 +890,128 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     return sorted(set(findings))
 
 
+def release_sirt_provenance_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> list[str]:
+    """Verify authenticated SIRT evidence without repeating QA's whole suite.
+
+    Only this source-reviewed, exact-head SIRT mode may take this lightweight
+    path. Every other review mode preserves full existing QA re-derivation.
+    No caller-controlled approval can replace the separately signed QA check.
+    """
+    findings: list[str] = []
+    for error in ev.get("evidence_errors") or []:
+        findings.append(f"QA_EVIDENCE_INCOMPLETE:{error}")
+    pr = ev.get("pr") or {}
+    head = str(pr.get("head_sha") or "")
+    expected = str(ev.get("expected_head_sha") or "")
+    if not SHA_RE.fullmatch(head) or not SHA_RE.fullmatch(expected):
+        findings.append("QA_HEAD_INVALID")
+    elif head != expected:
+        findings.append("QA_HEAD_STALE")
+    if pr.get("state") != "open" or pr.get("merged") is not False:
+        findings.append("QA_PR_NOT_OPEN")
+    if pr.get("draft") is not False:
+        findings.append("QA_PR_DRAFT")
+    if pr.get("base_ref") != "main":
+        findings.append("QA_PR_BASE_NOT_MAIN")
+    if pr.get("head_repo") != ev.get("repository"):
+        findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    if not _canonical_incident_present(pr.get("body")):
+        findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
+    files = ev.get("files")
+    if not isinstance(files, list) or not files:
+        findings.append("QA_FILES_EMPTY")
+    else:
+        if governance_files is None:
+            governance_files = frozenset(governance_trust_roots(REPO_ROOT))
+        if (
+            any(is_trust_root(str(filename), governance_files) for filename in files)
+            and pr.get("author") != ev.get("owner_login")
+            and not _owner_approved_at_head(ev, head)
+        ):
+            # Re-read live, authenticated owner authorization. A post-QA
+            # dismissal must not leave an otherwise green Release receipt.
+            findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
+    policy = ev.get("qa_review_policy")
+    if not isinstance(policy, dict):
+        policy = {}
+    target = policy.get("target")
+    if (policy.get("mode") != "sirt" or not isinstance(target, dict)
+        or target.get("pr_number") != ev.get("pr_number")
+        or target.get("head_sha") != head
+        or target.get("head_ref") != pr.get("head_ref")
+        or policy.get("canary_scope") is not None):
+        findings.append("QA_SIRT_REVIEW_POLICY_TARGET_MISMATCH")
+    if (ev.get("sirt_enabled") is not True
+        or ev.get("current_review_active") is True
+        or ev.get("zero_credit_enabled") is True
+        or ev.get("independent_review_active") is not False
+        or ev.get("source_review") is not None):
+        findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
+    # A signed QA receipt can be superseded by later source checks at the
+    # SAME SHA. Verify the current trusted App results, not just the QA
+    # decision or the earlier SIRT receipt. No regression suites are rerun.
+    runs = ev.get("check_runs")
+    for check_name in QA_EVIDENCE_CHECKS:
+        matches = [
+            run for run in runs if isinstance(run, dict)
+            and run.get("name") == check_name
+            and run.get("head_sha") == head
+            and str(run.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+            and type(run.get("id")) is int and run["id"] > 0
+        ] if isinstance(runs, list) else []
+        latest = max(matches, key=lambda run: run["id"], default=None)
+        if latest is None:
+            findings.append(f"QA_EVIDENCE_MISSING:{check_name}")
+        elif latest.get("status") != "completed" or latest.get("conclusion") != "success":
+            findings.append(f"QA_EVIDENCE_FAILED:{check_name}")
+
+    receipt = ev.get("sirt_review_evidence")
+    if not isinstance(receipt, dict):
+        findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_MISSING")
+        return sorted(set(findings))
+    reviewer = receipt.get("reviewer")
+    if not isinstance(reviewer, dict):
+        findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
+        return sorted(set(findings))
+    actual = ev.get("reviews") or []
+    # A later CHANGES_REQUESTED/DISMISSED supersedes an earlier APPROVED
+    # receipt. COMMENTED is discussion, not a disposition change.
+    disposition = [
+        r for r in actual if isinstance(r, dict)
+        and r.get("user") == reviewer.get("login")
+        and r.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+        and isinstance(r.get("submitted_at"), str)
+    ] if isinstance(actual, list) else []
+    latest_review = max(disposition, key=lambda r: r["submitted_at"], default=None)
+    matched = (
+        latest_review is not None
+        and sum(r["submitted_at"] == latest_review["submitted_at"] for r in disposition) == 1
+        and latest_review.get("state") == "APPROVED"
+        and latest_review.get("commit_id") == head
+        and latest_review.get("submitted_at") == reviewer.get("submitted_at")
+    )
+    if (receipt.get("schema_version") != 1
+        or receipt.get("review_status") != "EVIDENCE_READY"
+        or receipt.get("code") != "SIRT_SOURCE_REVIEW_EVIDENCE_READY"
+        or receipt.get("head_sha") != head
+        or receipt.get("required_check_names") != list(REQUIRED_REGRESSION_CHECKS)
+        or receipt.get("findings") != []
+        or receipt.get("independent_scientific_acceptance_required") is not True
+        or receipt.get("protected_release_authority_required") is not True
+        or any(receipt.get(flag) is not False for flag in (
+            "can_execute", "merge_or_release_authorized", "model_certified", "probability_publishable"
+        ))
+        or not matched
+        or type(reviewer.get("id")) is not int or reviewer["id"] <= 0
+        or type(reviewer.get("user_id")) is not int or reviewer["user_id"] <= 0
+        or reviewer["user_id"] == pr.get("author_id")
+        or not isinstance(reviewer.get("login"), str)
+        or reviewer["login"].casefold() == str(ev.get("owner_login") or "").casefold()
+        or reviewer.get("commit_id") != head):
+        findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
+    return sorted(set(findings))
+
+
 def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
                      governance_files: frozenset[str] | None = None) -> list[str]:
     findings: list[str] = []
@@ -815,21 +1019,40 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
         findings.append("RELEASE_APP_IDENTITY_UNBOUND")
     elif str(qa_app_id) == str(release_app_id):
         findings.append("RELEASE_IDENTITY_NOT_DISTINCT")
-    # Defence in depth: Release independently re-derives every QA condition.
-    findings += [f"RELEASE_{f}" for f in qa_findings(ev, governance_files=governance_files)]
+    # SIRT already has an authenticated, exact-head QA decision from a distinct
+    # App. Release independently checks *provenance* instead of rerunning every
+    # deterministic QA predicate. All other modes retain the old fail-closed
+    # re-derivation until their own receipt contracts have proven parity.
     policy = ev.get("qa_review_policy")
+    mode = policy.get("mode") if isinstance(policy, dict) else None
+    qa_evidence_findings = (
+        release_sirt_provenance_findings(ev, governance_files=governance_files) if mode == "sirt"
+        else qa_findings(ev, governance_files=governance_files)
+    )
+    findings += [f"RELEASE_{f}" for f in qa_evidence_findings]
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
-    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit"}:
+    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
-    qa = _latest(runs, QA_CHECK, head, qa_app_id) if str(qa_app_id).isdigit() else None
+    if mode == "sirt" and str(qa_app_id).isdigit():
+        # A queued or failing newer QA run supersedes a completed old PASS.
+        # The Release App checks the latest source-App evidence by GitHub ID.
+        matches = [
+            run for run in runs if isinstance(run, dict)
+            and run.get("name") == QA_CHECK and run.get("head_sha") == head
+            and str(run.get("app_id")) == str(qa_app_id)
+            and type(run.get("id")) is int and run["id"] > 0
+        ] if isinstance(runs, list) else []
+        qa = max(matches, key=lambda run: run["id"], default=None)
+    else:
+        qa = _latest(runs, QA_CHECK, head, qa_app_id) if str(qa_app_id).isdigit() else None
     if qa is None:
         if any(r.get("name") == QA_CHECK and r.get("head_sha") == head for r in runs):
             findings.append("RELEASE_QA_FOREIGN_SOURCE")
         findings.append("RELEASE_QA_MISSING")
-    elif qa.get("conclusion") != "success":
+    elif qa.get("conclusion") != "success" or qa.get("status") != "completed":
         findings.append("RELEASE_QA_FAILED")
     return sorted(set(findings))
 
@@ -870,6 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--expected-head", required=True)
     g.add_argument("--legacy-review-policy", action="store_true")
     g.add_argument("--zero-credit-policy-enabled", action="store_true")
+    g.add_argument("--sirt-review-policy-enabled", action="store_true")
     g.add_argument("--source-review-json", type=Path)
     g.add_argument("--source-review-run-json", type=Path)
     g.add_argument("--source-review-artifact-id", type=int)
@@ -962,6 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
             zero_credit_enabled=args.zero_credit_policy_enabled,
+            sirt_enabled=args.sirt_review_policy_enabled,
             source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,

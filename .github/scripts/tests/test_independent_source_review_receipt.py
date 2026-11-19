@@ -732,8 +732,9 @@ def test_release_superseded_mode_does_not_neutralize_current_exact_head():
     assert "disposition" not in current
 
 
-def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path):
-    policy = qa_policy("canary")
+@pytest.mark.parametrize("mode", ["canary", "sirt"])
+def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path, mode):
+    policy = qa_policy(mode)
     run_path = tmp_path / "run.json"
     run_path.write_text(json.dumps(PRODUCER_RUN), encoding="utf-8")
     output = tmp_path / review.QA_POLICY_ARTIFACT_NAME
@@ -741,11 +742,11 @@ def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path
         "--write-policy", "--run", str(run_path), "--output", str(output),
         "--repository", review.CANONICAL_REPOSITORY, "--pr-number", "1822",
         "--head-sha", HEAD, "--head-ref", "copilot/fix", "--attempt", "1",
-        "--policy-mode", "canary",
+        "--policy-mode", mode,
     ])
     assert result == 0
     written = json.loads(output.read_text(encoding="utf-8"))
-    assert written["mode"] == "canary" and written["canary_scope"] == policy["canary_scope"]
+    assert written["mode"] == mode and written["canary_scope"] == policy["canary_scope"]
     assert output.with_suffix(output.suffix + ".sha256").read_text().strip()
 
 
