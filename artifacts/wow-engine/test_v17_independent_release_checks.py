@@ -716,15 +716,37 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
         "Select exact-head review policy",
         "Build immutable QA review-policy receipt",
         "Upload immutable QA review-policy receipt",
-        "Decide at exact head (read-only)",
     ):
         assert steps[name]["if"] == "steps.target.outputs.pr_number != ''"
+    assert steps["Decide at exact head (read-only)"]["if"] == (
+        "steps.target.outputs.pr_number != '' && "
+        "(steps.policy.outputs.review_active != 'true' || "
+        "(steps.capture.outcome == 'success' && steps.review.outcome == 'success'))"
+    )
     # The original Release classifier already neutralizes a successful QA
     # job whose terminal outcome upload is deliberately skipped.
     assert steps["Upload terminal QA outcome"]["if"].startswith(
         "always() && steps.target.outputs.pr_number != ''"
     )
 
+
+
+
+def test_provider_hold_is_published_at_pr_head_without_failing_main_job():
+    workflow = yaml.load(QA_WF.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    assert steps["Capture complete exact-head source evidence"]["continue-on-error"] == "true"
+    assert steps["Run isolated read-only Gemini semantic review"]["continue-on-error"] == "true"
+    for name in ("Run isolated read-only Gemini semantic review",
+                 "Recheck PR head and diff after review",
+                 "Build versioned exact-head review artifact",
+                 "Upload short-lived exact-head review receipt"):
+        assert "steps." in steps[name]["if"] and "outcome == 'success'" in steps[name]["if"]
+    terminal = steps["Preserve terminal QA decision for every resolved target"]
+    assert terminal["if"].startswith("always() && ")
+    assert "QA_REVIEW_EXECUTION_FAILED:$failed_step" in terminal["run"]
+    assert "continue-on-error" not in steps["Publish exact-head check"]
+    assert "QA_CHECK_PUBLISH_FAILED" in steps["Publish exact-head check"]["run"]
 
 
 @pytest.mark.parametrize(("status", "body", "suffix"), [
