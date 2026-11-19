@@ -7,6 +7,7 @@ registers, publishes, ranks, or executes a probability.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from fastapi import FastAPI
@@ -83,17 +84,43 @@ def _evidence_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
 
 
 def _candidate_bound_passes(receipts: Sequence[Mapping[str, Any]]) -> set[tuple[str, str, str, str]]:
-    passes: set[tuple[str, str, str, str]] = set()
-    for row in receipts:
-        if str(row.get("source_review_status") or "").strip().upper() != "PASS":
-            continue
-        if str(row.get("replay_status") or "").strip().upper() != "PASS":
-            continue
-        identity = _evidence_identity(row)
-        if identity[0] and identity[1] and len(identity[2]) == 64 and len(identity[3]) == 64:
-            passes.add(identity)
-    return passes
+    """Only latest, uncontradicted exact-candidate scientific evidence may pass.
 
+    A later or earlier explicit FAIL against the same frozen artifact remains
+    material; never resurrect a stale PASS by iterating an append-only ledger.
+    Missing/naive/ambiguous receipt chronology fails closed.
+    """
+    latest: dict[tuple[str, str, str, str], tuple[datetime, str, str]] = {}
+    revoked: set[tuple[str, str, str, str]] = set()
+    for row in receipts:
+        identity = _evidence_identity(row)
+        if not (identity[0] and identity[1] and len(identity[2]) == 64 and len(identity[3]) == 64):
+            continue
+        source = str(row.get("source_review_status") or "").strip().upper()
+        replay = str(row.get("replay_status") or "").strip().upper()
+        if "FAIL" in (source, replay):
+            revoked.add(identity)
+        try:
+            raw = row.get("created_at")
+            if not isinstance(raw, str):
+                raise ValueError("missing receipt timestamp")
+            recorded = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if recorded.utcoffset() is None:
+                raise ValueError("naive receipt timestamp")
+            recorded = recorded.astimezone(timezone.utc)
+        except (ValueError, TypeError, OverflowError):
+            revoked.add(identity)
+            continue
+        previous = latest.get(identity)
+        if previous is None or recorded > previous[0]:
+            latest[identity] = (recorded, source, replay)
+        elif recorded == previous[0]:
+            revoked.add(identity)
+
+    return {
+        identity for identity, (_, source, replay) in latest.items()
+        if identity not in revoked and source == "PASS" and replay == "PASS"
+    }
 
 def _latest_by_lane(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
     latest: dict[tuple[str, str, str], dict[str, Any]] = {}
