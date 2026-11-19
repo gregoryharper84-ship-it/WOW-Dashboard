@@ -425,6 +425,7 @@ jobs:
           REVIEW_MODE: ${{ steps.policy.outputs.mode }}
           GLOBAL_REVIEW_ACTIVE: ${{ steps.policy.outputs.global_review_active }}
           ZERO_CREDIT_ACTIVE: ${{ steps.policy.outputs.zero_credit_active }}
+          SIRT_ACTIVATION: ${{ vars.WOW_QA_SIRT_VERIFICATION_ACTIVE }}
           SOURCE_REVIEW_ARTIFACT_ID: ${{ steps.source_review_artifact.outputs.artifact-id }}
         run: |
           set -euo pipefail
@@ -435,6 +436,7 @@ jobs:
             --qa-policy-json "$RUNNER_TEMP/wow-v17-qa-review-policy.json")
           [ "${GLOBAL_REVIEW_ACTIVE:-false}" != "true" ] || args+=(--current-review-active)
           [ "${ZERO_CREDIT_ACTIVE:-false}" != "true" ] || args+=(--zero-credit-policy-enabled)
+          [ "${SIRT_ACTIVATION:-false}" != "true" ] || args+=(--sirt-review-policy-enabled)
           if [ "$REVIEW_ACTIVE" = "true" ]; then
             [[ "$SOURCE_REVIEW_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || {
               echo "::error::SOURCE_REVIEW_ARTIFACT_ID_MISSING"; exit 1;
