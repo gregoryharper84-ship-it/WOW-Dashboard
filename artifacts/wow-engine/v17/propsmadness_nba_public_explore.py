@@ -121,7 +121,7 @@ class _AnchorsAndTokens(HTMLParser):
             self._anchor = {"href": dict(attrs).get("href", ""), "text": []}
 
     def handle_data(self, data: str) -> None:
-        if self._skip:
+        if self._skip or self._hidden_tags:
             return
         val = " ".join(data.split())
         if not val:
@@ -198,7 +198,7 @@ class _VisibleTableReader(HTMLParser):
             self._anchor = {"href": dict(attrs).get("href") or "", "text": []}
 
     def handle_data(self, data: str) -> None:
-        if self._skip or self._cell is None:
+        if self._skip or self._hidden_tags or self._cell is None:
             return
         value = " ".join(data.split())
         if not value:
