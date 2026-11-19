@@ -265,6 +265,10 @@ jobs:
       - name: Capture complete exact-head source evidence
         id: capture
         if: steps.policy.outputs.review_active == 'true'
+        # A draft/invalid source PR gets an exact-head signed QA HOLD, not
+        # a failed protected-main CI check, when the QA App publishes it.
+        # Preserve steps.capture.outcome=failure for the terminal reducer.
+        continue-on-error: true
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -292,7 +296,7 @@ jobs:
 
       - name: Run isolated read-only Gemini semantic review
         id: review
-        if: steps.policy.outputs.review_active == 'true'
+        if: steps.policy.outputs.review_active == 'true' && steps.capture.outcome == 'success'
         # The PR-head signed QA check, not this main-branch workflow job,
         # records a semantic reviewer/provider HOLD. Preserve step.outcome=failure
         # for the unconditional terminal reducer and PR-head check publisher.
@@ -408,7 +412,7 @@ jobs:
 
       - name: Decide at exact head (read-only)
         id: decide
-        if: steps.target.outputs.pr_number != '' && (steps.policy.outputs.review_active != 'true' || steps.review.outcome == 'success')
+        if: steps.target.outputs.pr_number != '' && (steps.policy.outputs.review_active != 'true' || (steps.capture.outcome == 'success' && steps.review.outcome == 'success'))
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
