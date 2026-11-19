@@ -28,6 +28,7 @@ IGNORED_PARTS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytes
 
 GOVERNANCE_TESTS = (
     "tests/test_v17_governance_parity_contract.py",
+    "test_v17_class_c_evidence_preflight.py",
     "test_v17_zero_credit_release.py",
     "tests/test_v17_full_board_typed_failure_preservation.py",
     "tests/test_v17_card_immutable_receipt_gate.py",
