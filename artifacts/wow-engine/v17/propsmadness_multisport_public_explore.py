@@ -275,13 +275,32 @@ def main() -> int:
     parser.add_argument("--sport", required=True, choices=list(MARKETS))
     parser.add_argument("--market", required=True)
     parser.add_argument("--confirm-personal-noncommercial-use", action="store_true")
+    parser.add_argument(
+        "--research-handoff", action="store_true",
+        help="In-memory WOW/LLP discovery hints only; never model inputs or stored data",
+    )
     args = parser.parse_args()
     try:
         receipt = fetch_public_one_shot(
             args.sport, args.market,
             personal_noncommercial_use_confirmed=args.confirm_personal_noncommercial_use,
         )
-        print(json.dumps(receipt, sort_keys=True))
+        output = receipt
+        if args.research_handoff:
+            # Lazy import avoids circular imports; the handoff remains a pure
+            # validation of this single public discovery receipt, not scoring.
+            from v17.propsmadness_intelligence_handoff import (
+                IntelligenceHandoffHold, build_shared_intelligence_handoff,
+            )
+            try:
+                output = build_shared_intelligence_handoff([receipt])
+            except IntelligenceHandoffHold as exc:
+                print(json.dumps({
+                    "status": "PUBLIC_SCRAPE_HOLD", "typed_blocker": exc.code,
+                    "historical_training_authorized": False, "can_execute": False,
+                }, sort_keys=True))
+                return 2
+        print(json.dumps(output, sort_keys=True))
         return 0 if receipt["row_count"] else 2
     except PublicPageHold as exc:
         print(json.dumps({
