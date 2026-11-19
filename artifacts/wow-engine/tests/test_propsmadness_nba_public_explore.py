@@ -133,6 +133,38 @@ def test_live_style_table_cells_parse_without_hidden_payload_or_authority():
     assert parse(b"<table>" + wrong + b"</table>", market="threes")["row_count"] == 0
 
 
+
+def test_explicitly_hidden_public_tables_and_legacy_rows_remain_unseen():
+    row = (b'<tr><td>1</td><td><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">'
+           b'A. Sample</a><span>BOS vs NYK</span></td><td>2.5</td>'
+           b'<td>graph</td><td>1/4</td><td>2.2</td></tr>')
+    for html in (
+        b"<table hidden>" + row + b"</table>",
+        b'<div style="display: none"><table>' + row + b"</table></div>",
+        b'<section aria-hidden="true"><table>' + row + b"</table></section>",
+        b'<table><tr style="visibility:hidden">' + row.replace(b"<tr>", b"").replace(b"</tr>", b"") + b"</tr></table>",
+        b'<div hidden><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">'
+        b'A. Sample</a><span>Threes 2.5 &#183; BOS vs NYK</span></div>',
+    ):
+        receipt = parse(html, market="threes")
+        assert receipt["row_count"] == 0, html
+        assert receipt["rows"] == []
+        assert receipt["historical_training_authorized"] is False
+        assert receipt["can_execute"] is False
+
+
+def test_table_reader_keeps_integer_valued_lines_with_other_valid_lines():
+    def row(player, line):
+        return (f'<tr><td>1</td><td><a href="/nba?market=player-made-threes&amp;match=77&amp;player={player}">'
+                f'P. {player}</a><span>BOS vs NYK</span></td><td>{line}</td>'
+                '<td>graph</td><td>1/4</td><td>2.2</td></tr>').encode()
+    receipt = parse(b'<table>' + row(55, '2') + row(56, '3.5') + b'</table>', market="threes")
+    assert receipt["row_count"] == 2
+    assert sorted(r["line"] for r in receipt["rows"]) == [2.0, 3.5]
+    assert all(r["model_probability"] is None for r in receipt["rows"])
+    assert receipt["probability_publishable"] is False
+
+
 def test_changing_stat_or_third_party_url_is_not_a_valid_prop():
     assert parse(PAGE.replace(b"Points 23.5", b"Rebounds 23.5"))["row_count"] == 1
     assert parse(PAGE.replace(b"market=player-points", b"market=player-rebounds"))["row_count"] == 0
