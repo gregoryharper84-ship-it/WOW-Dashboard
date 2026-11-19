@@ -227,3 +227,92 @@ def test_workflows_wire_solo_verified_opt_in_with_mutual_exclusion():
     rel_decide = rel_steps["Decide at exact head (read-only)"]
     assert "WOW_QA_SOLO_VERIFICATION_ACTIVE" in str(rel_decide["env"]["SOLO_VERIFIED_ACTIVATION"])
     assert "--solo-verified-policy-enabled" in rel_decide["run"]
+
+
+def test_gather_solo_verified_mode_collects_and_fails_closed_on_missing_token_or_outage(monkeypatch):
+    def fake_fetch(path: str):
+        if path == f"repos/{sav.REPO}":
+            return 200, {"owner": {"login": "gregoryharper84-ship-it", "id": 285088163}}
+        if path == f"repos/{sav.REPO}/pulls/2740":
+            return 200, {
+                "number": 2740,
+                "body": "Incident: #2020",
+                "state": "open",
+                "draft": False,
+                "merged": False,
+                "head": {"sha": HEAD, "ref": "feature/solo-test", "repo": {"full_name": sav.REPO}},
+                "base": {"ref": "main"},
+                "user": {"login": "gregoryharper84-ship-it", "id": 285088163},
+                "changed_files": 1,
+            }
+        if path.startswith(f"repos/{sav.REPO}/pulls/2740/files"):
+            return 200, [{"filename": ROUTINE_FILE, "status": "modified"}]
+        if path.startswith(f"repos/{sav.REPO}/commits/{HEAD}/check-runs"):
+            return 200, {
+                "total_count": len(irc.QA_EVIDENCE_CHECKS),
+                "check_runs": [
+                    {
+                        "id": idx + 1,
+                        "name": name,
+                        "head_sha": HEAD,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "app": {"id": 15368},
+                    }
+                    for idx, name in enumerate(irc.QA_EVIDENCE_CHECKS)
+                ],
+            }
+        if path.startswith(f"repos/{sav.REPO}/actions/"):
+            return 200, {"total_count": 0, "workflow_runs": []}
+        if path.startswith(f"repos/{sav.REPO}/pulls/2740/reviews"):
+            return 200, []
+        return 404, {}
+
+    # Missing GH_TOKEN fails closed inside gather()
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("WOW_QA_APP_ID", "not-an-int")
+    monkeypatch.setenv("WOW_RELEASE_APP_ID", "not-an-int")
+    ev_no_tok = irc.gather(
+        sav.REPO,
+        2740,
+        HEAD,
+        fetch=fake_fetch,
+        qa_review_policy=_policy(mode="solo_verified", head=HEAD),
+        solo_verified_enabled=True,
+    )
+    assert ev_no_tok["solo_verification_evidence"]["code"] == "SOLO_GITHUB_EVIDENCE_UNAVAILABLE"
+    assert "QA_SOLO_VERIFIED_EVIDENCE_INVALID" in irc.qa_findings(ev_no_tok)
+
+    # Upstream exception inside solo_collect fails closed
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    monkeypatch.setenv("WOW_QA_APP_ID", QA_APP_ID)
+    monkeypatch.setenv("WOW_RELEASE_APP_ID", RELEASE_APP_ID)
+    monkeypatch.setattr(irc, "solo_collect", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("api down")))
+    ev_err = irc.gather(
+        sav.REPO,
+        2740,
+        HEAD,
+        fetch=fake_fetch,
+        qa_review_policy=_policy(mode="solo_verified", head=HEAD),
+        solo_verified_enabled=True,
+    )
+    assert ev_err["solo_verification_evidence"]["code"] == "SOLO_GITHUB_EVIDENCE_UNAVAILABLE"
+
+    # Happy path inside gather() populates valid solo_verification_evidence
+    monkeypatch.setattr(irc, "solo_collect", lambda *a, **kw: _solo_receipt(head=HEAD))
+    ev_ok = irc.gather(
+        sav.REPO,
+        2740,
+        HEAD,
+        fetch=fake_fetch,
+        qa_review_policy=_policy(mode="solo_verified", head=HEAD),
+        solo_verified_enabled=True,
+    )
+    assert ev_ok["solo_verification_evidence"]["code"] == "SOLO_R_EVIDENCE_READY"
+    assert irc.qa_findings(ev_ok) == []
+
+
+def test_solo_verified_policy_target_mismatch_fails_closed():
+    ev = _base_ev()
+    ev["qa_review_policy"]["target"]["head_ref"] = "other-branch"
+    assert "QA_SOLO_VERIFIED_POLICY_TARGET_MISMATCH" in irc.qa_findings(ev)

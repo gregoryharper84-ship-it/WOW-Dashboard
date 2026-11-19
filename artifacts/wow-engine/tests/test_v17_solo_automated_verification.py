@@ -465,3 +465,247 @@ def test_collect_and_evaluate_happy_path_r_class_via_cli(capsys):
     assert out["verification_status"] == "EVIDENCE_READY"
     assert out["code"] == "SOLO_R_EVIDENCE_READY"
     assert out["can_execute"] is False
+
+
+# ---------------------------------------------------------------------------
+# 6. Exhaustive edge-case, HTTP hardening, rename & CLI receipt coverage
+# ---------------------------------------------------------------------------
+
+def test_model_artifact_suffix_under_v17_classifies_as_class_c():
+    c = sav.classify_change_scope(["artifacts/wow-engine/v17/weights/nba_fitted.joblib"])
+    assert c["change_class"] == "C"
+    assert "artifacts/wow-engine/v17/weights/nba_fitted.joblib" in c["model_calibration_paths"]
+
+
+def test_evaluate_rejects_invalid_targets_evidence_pr_owner_and_non_green_check():
+    bad_repo = sav.evaluate(
+        repository="other/repo",
+        expected_sha=HEAD,
+        pr=_pr(),
+        files=[ROUTINE_FILE],
+        check_runs=_check_runs(include_codeql=False),
+        owner_id=OWNER_ID,
+        qa_app_id=QA_APP_ID,
+        release_app_id=RELEASE_APP_ID,
+    )
+    assert bad_repo["code"] == "SOLO_TARGET_INVALID"
+
+    bad_types = sav.evaluate(
+        repository=sav.REPO,
+        expected_sha=HEAD,
+        pr="not-a-dict",
+        files=[ROUTINE_FILE],
+        check_runs=[],
+        owner_id=OWNER_ID,
+        qa_app_id=QA_APP_ID,
+        release_app_id=RELEASE_APP_ID,
+    )
+    assert bad_types["code"] == "SOLO_EVIDENCE_INVALID"
+
+    non_green = _check_runs(include_codeql=False)
+    non_green[0]["conclusion"] = "failure"
+    bad_pr = sav.evaluate(
+        repository=sav.REPO,
+        expected_sha=HEAD,
+        pr=_pr(draft=True),
+        files=[ROUTINE_FILE],
+        check_runs=non_green,
+        owner_id=0,
+        qa_app_id=QA_APP_ID,
+        release_app_id=RELEASE_APP_ID,
+    )
+    assert bad_pr["verification_status"] == "HOLD"
+    assert "SOLO_PR_IDENTITY_OR_HEAD_INVALID" in bad_pr["findings"]
+    assert "SOLO_OWNER_IDENTITY_INVALID" in bad_pr["findings"]
+    assert any(f.startswith("SOLO_REQUIRED_CHECK_NOT_GREEN:") for f in bad_pr["findings"])
+
+
+def test_adversarial_calibration_and_external_admin_receipt_negative_fields():
+    adv_bad = sav._validate_adversarial_receipt(
+        _adversarial_receipt(
+            schema_version=2,
+            head_sha=OTHER_HEAD,
+            status="FAIL",
+            passed_count=0,
+            failed_count=1,
+            negative_cases_verified=[],
+            unresolved_high_critical_findings=2,
+            payload_sha256="not-hex",
+        ),
+        HEAD,
+    )
+    assert set(adv_bad) >= {
+        "SOLO_ADVERSARIAL_RECEIPT_INVALID",
+        "SOLO_ADVERSARIAL_RECEIPT_HEAD_MISMATCH",
+        "SOLO_ADVERSARIAL_TESTS_NOT_PASSED",
+        "SOLO_ADVERSARIAL_NEGATIVE_CASES_MISSING",
+        "SOLO_UNRESOLVED_SECURITY_FINDINGS",
+        "SOLO_ADVERSARIAL_RECEIPT_DIGEST_INVALID",
+    }
+
+    cal_bad = sav._validate_calibration_replay_receipt(
+        _calibration_receipt(
+            schema_version=2,
+            head_sha=OTHER_HEAD,
+            status="DRIFT",
+            model_version="",
+            artifact_sha256="bad",
+            calibrated_lower_bound_sha256="bad",
+            source_snapshot_sha256="bad",
+            chronology_verified=False,
+        ),
+        HEAD,
+    )
+    assert set(cal_bad) >= {
+        "SOLO_CALIBRATION_REPLAY_RECEIPT_INVALID",
+        "SOLO_CALIBRATION_REPLAY_HEAD_MISMATCH",
+        "SOLO_CALIBRATION_REPLAY_NOT_CONSISTENT",
+        "SOLO_CALIBRATION_REPLAY_MODEL_VERSION_MISSING",
+        "SOLO_CALIBRATION_REPLAY_DIGEST_INVALID:artifact_sha256",
+        "SOLO_CALIBRATION_REPLAY_DIGEST_INVALID:calibrated_lower_bound_sha256",
+        "SOLO_CALIBRATION_REPLAY_DIGEST_INVALID:source_snapshot_sha256",
+        "SOLO_CALIBRATION_REPLAY_INTEGRITY_FAILED",
+    }
+
+    ok_non_map, bad_non_map = sav._validate_external_admin_attestation(
+        "not-a-map", expected_sha=HEAD, owner_id=OWNER_ID, author_id=OWNER_ID, head_commit_author_id=OWNER_ID
+    )
+    assert ok_non_map is False
+    assert bad_non_map == ["SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID"]
+
+    ok_bad_att, bad_att = sav._validate_external_admin_attestation(
+        _external_admin(verified=False, head_sha=OTHER_HEAD, attestation_sha256="short"),
+        expected_sha=HEAD,
+        owner_id=OWNER_ID,
+        author_id=OWNER_ID,
+        head_commit_author_id=OWNER_ID,
+    )
+    assert ok_bad_att is False
+    assert bad_att == ["SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID"]
+
+
+def test_http_no_redirect_and_response_size_limit():
+    handler = sav.NoRedirect()
+    assert handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example") is None
+
+    class _FakeResp:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def read(self, n: int = -1) -> bytes:
+            return self._payload[:n]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _FakeOpener:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def open(self, req, timeout=15):
+            return _FakeResp(self._payload)
+
+    with patch.object(sav, "build_opener", return_value=_FakeOpener(b'{"ok":true}')):
+        assert sav.github_json("pulls/1", "tok") == {"ok": True}
+
+    with patch.object(sav, "build_opener", return_value=_FakeOpener(b"x" * 2_000_001)):
+        with pytest.raises(ValueError, match="SOLO_GITHUB_RESPONSE_LIMIT"):
+            sav.github_json("pulls/1", "tok")
+
+
+def test_collect_and_evaluate_edge_cases_and_rename_escalation():
+    assert sav.collect_and_evaluate(
+        0, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+    )["code"] == "SOLO_TARGET_INVALID"
+
+    assert sav.collect_and_evaluate(
+        2740, HEAD, token="", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+    )["code"] == "SOLO_GITHUB_EVIDENCE_UNAVAILABLE"
+
+    with patch.object(sav, "github_json", side_effect=ValueError("boom")):
+        assert sav.collect_and_evaluate(
+            2740, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+        )["code"] == "SOLO_GITHUB_EVIDENCE_UNAVAILABLE"
+
+    # Malformed PR record -> SOLO_EVIDENCE_INVALID
+    with patch.object(sav, "github_json", side_effect=[{}, {}, {}, [], {"total_count": 0, "check_runs": []}, {}]):
+        assert sav.collect_and_evaluate(
+            2740, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+        )["code"] == "SOLO_EVIDENCE_INVALID"
+
+    # Malformed repo/checks -> SOLO_EVIDENCE_INVALID
+    with patch.object(sav, "github_json", side_effect=[_pr(), "bad-repo", {}, [], {}, _pr()]):
+        assert sav.collect_and_evaluate(
+            2740, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+        )["code"] == "SOLO_EVIDENCE_INVALID"
+
+    # Malformed file row -> SOLO_EVIDENCE_INVALID
+    with patch.object(
+        sav,
+        "github_json",
+        side_effect=[_pr(), {"owner": {"id": OWNER_ID}}, {}, ["bad-row"], {"total_count": 0, "check_runs": []}, _pr()],
+    ):
+        assert sav.collect_and_evaluate(
+            2740, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+        )["code"] == "SOLO_EVIDENCE_INVALID"
+
+    # Renamed file with previous_filename escalates R-allowlist path to P (fails closed without adversarial receipt)
+    renamed_files = [{"filename": ROUTINE_FILE, "status": "renamed", "previous_filename": "old/path.md"}]
+    with patch.object(
+        sav,
+        "github_json",
+        side_effect=[
+            _pr(),
+            {"owner": {"id": OWNER_ID}},
+            {"author": {"id": OWNER_ID}},
+            renamed_files,
+            {"total_count": 4, "check_runs": _check_runs(include_codeql=False)},
+            _pr(),
+        ],
+    ):
+        res = sav.collect_and_evaluate(
+            2740, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+        )
+    assert res["verification_status"] == "HOLD"
+    assert res["change_class"] == "P"
+
+
+def test_cli_loads_receipt_files_and_rejects_malformed_json(tmp_path, capsys):
+    adv_path = tmp_path / "adv.json"
+    cal_path = tmp_path / "cal.json"
+    ext_path = tmp_path / "ext.json"
+    adv_path.write_text(json.dumps(_adversarial_receipt()), encoding="utf-8")
+    cal_path.write_text(json.dumps(_calibration_receipt()), encoding="utf-8")
+    ext_path.write_text(json.dumps(_external_admin()), encoding="utf-8")
+
+    responses = [
+        _pr(sha=HEAD),
+        {"owner": {"id": OWNER_ID}},
+        {"author": {"id": OWNER_ID}},
+        [{"filename": MODEL_FILE, "status": "modified"}],
+        {"total_count": 5, "check_runs": _check_runs(include_codeql=True)},
+        _pr(sha=HEAD),
+    ]
+    with patch.object(sav, "github_json", side_effect=responses), patch.dict(
+        "os.environ", {"GH_TOKEN": "tok", "WOW_QA_APP_ID": str(QA_APP_ID), "WOW_RELEASE_APP_ID": str(RELEASE_APP_ID)}
+    ):
+        rc = sav.main([
+            "--pr", "2740", "--head-sha", HEAD,
+            "--adversarial-receipt", str(adv_path),
+            "--calibration-replay-receipt", str(cal_path),
+            "--external-admin-attestation", str(ext_path),
+        ])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["code"] == "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY"
+
+    # Non-object JSON receipt fails closed with exit code 1
+    bad_path = tmp_path / "bad.json"
+    bad_path.write_text("[]", encoding="utf-8")
+    rc_bad = sav.main(["--pr", "2740", "--head-sha", HEAD, "--adversarial-receipt", str(bad_path)])
+    out_bad = json.loads(capsys.readouterr().out)
+    assert rc_bad == 1
+    assert out_bad["code"] == "SOLO_EVIDENCE_INVALID"
