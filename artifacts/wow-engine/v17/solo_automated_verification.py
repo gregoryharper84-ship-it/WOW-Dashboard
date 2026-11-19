@@ -292,7 +292,13 @@ def _validate_external_admin_attestation(
         bad.append("SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID")
     if admin_id is not None and admin_id in {owner_id, author_id, head_commit_author_id}:
         bad.append("SOLO_EXTERNAL_ADMIN_NOT_INDEPENDENT")
-    return (not bad), bad
+    # A self-declared JSON object and a syntactically shaped SHA-256 are not
+    # an authenticated independent issuer or a verified signature.  No
+    # trusted external attestation verifier is configured in this design.
+    # Hold rather than let an owner-authored receipt impersonate one.
+    if not bad:
+        bad.append("SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID")
+    return False, bad
 
 
 def decision(
@@ -305,11 +311,9 @@ def decision(
     assurance_level: str = "HOLD",
     administration_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    ready = code in {
-        "SOLO_R_EVIDENCE_READY",
-        "SOLO_PROTECTED_EVIDENCE_READY",
-        "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY",
-    }
+    # Only deterministic R evidence is ready without independently attested
+    # governance. P/C cannot be promoted by this owner-administered verifier.
+    ready = code == "SOLO_R_EVIDENCE_READY"
     audit = administration_audit or {
         "execution_isolated_from_pr_code": True,
         "distinct_qa_release_apps": False,
@@ -470,32 +474,16 @@ def evaluate(
             administration_audit=audit,
         )
 
-    if independent_admin_proven:
-        return decision(
-            "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY",
-            sha=expected_sha,
-            change_class=change_class,
-            checks=REQUIRED_NATIVE_CHECKS,
-            assurance_level="AUTOMATED_PROTECTED_VERIFICATION_EXTERNAL_ADMIN",
-            administration_audit=audit,
-        )
-
-    if require_independent_admin or not allow_solo_owner_admin_for_protected:
-        return decision(
-            "SOLO_PROTECTED_INDEPENDENT_ADMIN_UNPROVEN",
-            sha=expected_sha,
-            change_class=change_class,
-            findings=["SOLO_INDEPENDENT_ADMIN_NOT_PROVEN"],
-            checks=REQUIRED_NATIVE_CHECKS,
-            administration_audit=audit,
-        )
-
+    # Fail closed for every protected P/C change. An environment toggle
+    # cannot self-approve a protected release, and the supplied external
+    # attestation lacks an independently authenticated issuer. Keep both
+    # legacy function arguments for callers, but neither grants authority.
     return decision(
-        "SOLO_PROTECTED_EVIDENCE_READY",
+        "SOLO_PROTECTED_INDEPENDENT_ADMIN_UNPROVEN",
         sha=expected_sha,
         change_class=change_class,
+        findings=["SOLO_INDEPENDENT_ADMIN_NOT_PROVEN"],
         checks=REQUIRED_NATIVE_CHECKS,
-        assurance_level="SOLO_AUTOMATED_PROTECTED_VERIFICATION_OWNER_ADMIN",
         administration_audit=audit,
     )
 
