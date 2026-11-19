@@ -193,13 +193,17 @@ def _has_measurement(value: Any) -> bool:
     return True
 
 
-def _conflicting_observations(rows: list[Any], checks: list[str]) -> bool:
+def _conflicting_observations(rows: list[Any], checks: list[str], metric: str) -> bool:
     """Quarantine unreconciled same-tier disagreement about the same subject.
 
     Rows with explicitly distinct subjects (e.g., home and away goalie) are
     compared separately. Numeric disagreement is flagged for research review;
     this layer does not decide materiality or invent reconciliation.
     """
+    if metric == "exact_current_quote":
+        # Opposite book sides and differing prices are competing quotes,
+        # not a contradictory player/lineup fact.
+        return False
     observations: dict[tuple[str, str, str], str] = {}
     for row, check in zip(rows, checks):
         if check != "RESEARCH_SOURCE_SCREENED" or not isinstance(row, dict):
@@ -276,7 +280,7 @@ def discover_matchup(candidate: dict[str, Any], *, now: datetime | None = None) 
         if not rows:
             continue
         checks = [_screen_row(row, candidate, event_start, now, metric) for row in rows] if event_start else ["EVENT_TIME_MISSING"]
-        if "CONFLICT_QUARANTINED" in checks or _conflicting_observations(rows, checks):
+        if "CONFLICT_QUARANTINED" in checks or _conflicting_observations(rows, checks, metric):
             failures[metric] = "CONFLICT_QUARANTINED"
         elif metric == "confirmed_starting_goalies" and not any(
             check == "RESEARCH_SOURCE_SCREENED" for check in checks
