@@ -174,3 +174,19 @@ def test_interactive_team_event_barrier_also_attaches_matchup_audit(monkeypatch)
     assert result["matchup_discovery"]["profile"] == "HOCKEY"
     assert "confirmed_starting_goalies" in result["matchup_discovery"]["missing_critical_features"]
     assert result["matchup_discovery"]["can_execute"] is False
+
+
+def test_nhl_goalie_confirmation_requires_two_distinct_official_providers():
+    c = candidate()
+    one = row(source_class="TEAM_OFFICIAL")
+    one["evidence_type"] = "STARTING_GOALIE_STATUS"
+    c["matchup_metric_evidence"] = {"confirmed_starting_goalies": [one]}
+    first = discover_matchup(c, now=NOW)
+    assert first["invalid_or_stale_features"]["confirmed_starting_goalies"] == (
+        "TWO_INDEPENDENT_OFFICIAL_GOALIE_SOURCES_REQUIRED"
+    )
+    second = {**one, "source_class": "LEAGUE_OFFICIAL", "source_id": "league-2"}
+    c["matchup_metric_evidence"]["confirmed_starting_goalies"].append(second)
+    reviewed = discover_matchup(c, now=NOW)
+    assert "confirmed_starting_goalies" in reviewed["screened_features"]
+    assert reviewed["prediction_authority"] is False
