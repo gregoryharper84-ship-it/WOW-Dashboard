@@ -8,6 +8,7 @@ controlling specialist's own source, fit, calibration and receipt validation.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from math import isfinite
 from typing import Any
 
@@ -166,8 +167,67 @@ def _metric_rows(candidate: dict[str, Any]) -> dict[str, Any]:
     return metrics
 
 
+HIGH_IMPACT_METRIC_TYPES = {
+    "availability_and_lineups": "LINEUP_STATUS",
+    "usage_or_opportunity_shift": "ROTATION_STATUS",
+    "depth_and_rotation": "ROTATION_STATUS",
+    "minutes_and_foul_rotation": "MINUTES_LIMIT",
+    "confirmed_starting_goalies": "STARTING_GOALIE_STATUS",
+    "starting_eleven_and_fixture_congestion": "LINEUP_STATUS",
+    "short_notice_and_camp_changes": "STARTER_STATUS",
+}
+
+
+def _has_measurement(value: Any) -> bool:
+    """An observed zero or False is valid; empty placeholders are not."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple, set)):
+        return bool(value) and any(_has_measurement(v) for v in (
+            value.values() if isinstance(value, dict) else value
+        ))
+    if isinstance(value, float):
+        return isfinite(value)
+    return True
+
+
+def _conflicting_observations(rows: list[Any], checks: list[str]) -> bool:
+    """Quarantine unreconciled same-tier disagreement about the same subject.
+
+    Rows with explicitly distinct subjects (e.g., home and away goalie) are
+    compared separately. Numeric disagreement is flagged for research review;
+    this layer does not decide materiality or invent reconciliation.
+    """
+    observations: dict[tuple[str, str, str], str] = {}
+    for row, check in zip(rows, checks):
+        if check != "RESEARCH_SOURCE_SCREENED" or not isinstance(row, dict):
+            continue
+        tier = COMMON_SOURCE_RULES[str(row["source_class"]).upper()].trust_tier
+        subject = str(row.get("subject_id") or row.get("participant_id")
+                      or row.get("side") or "EVENT")
+        measurement = row.get("value") if _has_measurement(row.get("value")) else row.get("values")
+        items = measurement.items() if isinstance(measurement, dict) else (("", measurement),)
+        for key, value in items:
+            signature = (tier, subject, str(key))
+            serialized = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+            prior = observations.setdefault(signature, serialized)
+            if prior != serialized:
+                return True
+    return False
+
+
+def _confirmed_goalie_pair(row: dict[str, Any]) -> bool:
+    """Each official source must identify *both* starters by side."""
+    values = row.get("values") or row.get("value")
+    return (isinstance(values, dict)
+            and _has_measurement(values.get("home"))
+            and _has_measurement(values.get("away")))
+
+
 def _screen_row(row: Any, candidate: dict[str, Any], event_start: datetime,
-                now: datetime) -> str:
+                now: datetime, metric: str) -> str:
     if not isinstance(row, dict):
         return "INVALID_EVIDENCE_SHAPE"
     official_id = str(candidate.get("official_event_id") or "")
@@ -186,14 +246,12 @@ def _screen_row(row: Any, candidate: dict[str, Any], event_start: datetime,
     source_class = str(row.get("source_class") or "").upper()
     if source_class not in COMMON_SOURCE_RULES:
         return "SOURCE_CLASS_INVALID"
-    if ("value" not in row and not isinstance(row.get("values"), dict)) or (
-        row.get("value") is None and not row.get("values")
-    ):
+    if not (_has_measurement(row.get("value")) or _has_measurement(row.get("values"))):
         return "MEASUREMENT_MISSING"
     age = (now - captured).total_seconds() / 60
     quality = evidence_quality(source_class, age_minutes=age,
                                confirmed=row.get("confirmed") is True,
-                               evidence_type=row.get("evidence_type"))
+                               evidence_type=HIGH_IMPACT_METRIC_TYPES.get(metric) or row.get("evidence_type"))
     if not quality["research_usable"]:
         return "STALE_OR_UNCONFIRMED_SOURCE"
     return "RESEARCH_SOURCE_SCREENED"
@@ -217,16 +275,23 @@ def discover_matchup(candidate: dict[str, Any], *, now: datetime | None = None) 
         rows = raw if isinstance(raw, list) else [raw] if raw is not None else []
         if not rows:
             continue
-        checks = [_screen_row(row, candidate, event_start, now) for row in rows] if event_start else ["EVENT_TIME_MISSING"]
-        if "CONFLICT_QUARANTINED" in checks:
+        checks = [_screen_row(row, candidate, event_start, now, metric) for row in rows] if event_start else ["EVENT_TIME_MISSING"]
+        if "CONFLICT_QUARANTINED" in checks or _conflicting_observations(rows, checks):
             failures[metric] = "CONFLICT_QUARANTINED"
+        elif metric == "confirmed_starting_goalies" and not any(
+            check == "RESEARCH_SOURCE_SCREENED" for check in checks
+        ):
+            # Preserve the primary identity/freshness failure instead of
+            # masking it behind a missing two-source goalie confirmation.
+            failures[metric] = checks[0]
         elif metric == "confirmed_starting_goalies":
             # NHL research screening requires two distinct official providers.
             # A solitary beat report or projected lineup is not confirmation.
             official_sources = {
                 str(row["source_id"]) for row, check in zip(rows, checks)
                 if check == "RESEARCH_SOURCE_SCREENED"
-                and row.get("source_class") in ("LEAGUE_OFFICIAL", "TEAM_OFFICIAL")
+                and str(row.get("source_class") or "").upper() in ("LEAGUE_OFFICIAL", "TEAM_OFFICIAL")
+                and _confirmed_goalie_pair(row)
             }
             if len(official_sources) >= 2:
                 screened.append(metric)
