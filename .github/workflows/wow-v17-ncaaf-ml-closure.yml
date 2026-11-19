@@ -2,6 +2,11 @@ name: wow-v17-ncaaf-ml-closure
 
 on:
   workflow_dispatch:
+    inputs:
+      candidate_id:
+        description: "Exact NCAAF D1 candidate_id to verify (defaults to the pinned candidate)"
+        required: false
+        default: ""
   push:
     branches:
       - main
@@ -28,7 +33,7 @@ jobs:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      NCAAF_CANDIDATE_ID: "87f4a425-7ae6-44fd-84a0-56aaf145d6af"
+      NCAAF_CANDIDATE_ID: ${{ inputs.candidate_id || '87f4a425-7ae6-44fd-84a0-56aaf145d6af' }}
     steps:
       - name: Assert governance
         shell: bash
