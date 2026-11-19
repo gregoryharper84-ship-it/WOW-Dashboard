@@ -71,9 +71,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check Gemini review bridge contract
-        run: python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
-
       - name: Require this role's App identity
         shell: bash
         env:
@@ -244,174 +241,18 @@ jobs:
             ${{ runner.temp }}/wow-v17-qa-review-policy.json
             ${{ runner.temp }}/wow-v17-qa-review-policy.json.sha256
 
-      - name: Require isolated adversarial-review credential
-        id: review_credential
+      # Legacy Gemini capture is retired; independent/canary review modes
+      # cannot be silently downgraded to a deterministic solo PASS. This
+      # explicit failure is converted by the terminal step into a signed
+      # exact-head QA HOLD, with no third-party inference or billing.
+      - name: Reject retired independent capture mode
+        id: retired_capture
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
-        env:
-          KEY_PRESENT: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' }}
         run: |
           set -euo pipefail
-          [ "${KEY_PRESENT:-false}" = "true" ] || {
-            echo "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING"; exit 1;
-          }
-
-      - name: Preflight independent semantic reviewer before inference
-        if: steps.policy.outputs.review_active == 'true'
-        shell: bash
-        env:
-          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
-          WOW_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}
-          WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
-          WOW_QA_GEMINI_FREE_TIER_CONFIRMED: ${{ vars.WOW_QA_GEMINI_FREE_TIER_CONFIRMED }}
-        run: |
-          set -euo pipefail
-          [ "${WOW_QA_GEMINI_FREE_TIER_CONFIRMED:-}" = "true" ] || {
-            echo "::error::GEMINI_FREE_TIER_UNVERIFIED"; exit 1;
-          }
-          [ "${WOW_QA_GEMINI_MODEL:-}" = "gemini-3.8-flash" ] || {
-            echo "::error::GEMINI_CONFIG_INVALID"; exit 1;
-          }
-          python .github/scripts/wow_v28_reviewer_app_preflight.py
-
-      - name: Capture complete exact-head source evidence
-        id: capture
-        if: steps.policy.outputs.review_active == 'true'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          python .github/scripts/independent_source_review_receipt.py \
-            --capture --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" --output "$RUNNER_TEMP/source-review-input.json"
-          jq -e --arg sha "$HEAD_SHA" '.pr.head.sha == $sha' \
-            "$RUNNER_TEMP/source-review-input.json" >/dev/null
-          cp "$RUNNER_TEMP/source-review-input.json" .wow-independent-source-review-input.json
-          jq -nce \
-            --arg id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg name "$GITHUB_WORKFLOW" --argjson workflow_id 380562324 \
-            --arg path ".github/workflows/wow-v17-independent-qa-check.yml" \
-            --arg event "$GITHUB_EVENT_NAME" --arg branch "$GITHUB_REF_NAME" \
-            --arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA" \
-            '{id:$id|tonumber,run_attempt:$attempt,name:$name,workflow_id:$workflow_id,path:$path,event:$event,
-              head_branch:$branch,repository:$repository,head_sha:$head_sha}' \
-            > "$RUNNER_TEMP/source-review-run.json"
-          echo "diff_sha=$(jq -r .diff_sha256 "$RUNNER_TEMP/source-review-input.json")" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$(jq -r .pr.head.ref "$RUNNER_TEMP/source-review-input.json")" >> "$GITHUB_OUTPUT"
-
-      - name: Run isolated read-only Gemini semantic review
-        id: review
-        if: steps.policy.outputs.review_active == 'true'
-        shell: bash
-        env:
-          WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
-          WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
-          WOW_QA_GEMINI_FREE_TIER_CONFIRMED: ${{ vars.WOW_QA_GEMINI_FREE_TIER_CONFIRMED }}
-        run: |
-          set -euo pipefail
-          python .github/scripts/wow_v28_gemini_qa_bridge.py review \
-            --input "$RUNNER_TEMP/source-review-input.json" \
-            --output "$RUNNER_TEMP/gemini-review-result.json"
-          echo "structured_output=$(jq -c . "$RUNNER_TEMP/gemini-review-result.json")" >> "$GITHUB_OUTPUT"
-
-      - name: Recheck PR head and diff after review
-        id: recheck
-        if: steps.policy.outputs.review_active == 'true'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-          EXPECTED_HEAD_REF: ${{ steps.capture.outputs.head_ref }}
-        run: |
-          set -euo pipefail
-          python .github/scripts/independent_source_review_receipt.py \
-            --capture --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
-            --head-sha "$EXPECTED_HEAD_SHA" --output "$RUNNER_TEMP/source-review-recheck.json"
-          [ "$(jq -r .diff_sha256 "$RUNNER_TEMP/source-review-input.json")" = \
-            "$(jq -r .diff_sha256 "$RUNNER_TEMP/source-review-recheck.json")" ] || {
-            echo "::error::SOURCE_REVIEW_DIFF_MOVED_DURING_ANALYSIS"; exit 1;
-          }
-          jq -e --arg ref "$EXPECTED_HEAD_REF" \
-            '.pr.head.ref == $ref' "$RUNNER_TEMP/source-review-recheck.json" >/dev/null || {
-            echo "::error::SOURCE_REVIEW_HEAD_REF_MOVED_DURING_ANALYSIS"; exit 1;
-          }
-
-      - name: Build versioned exact-head review artifact
-        id: source_review
-        if: steps.policy.outputs.review_active == 'true'
-        shell: bash
-        env:
-          RESULT: ${{ steps.review.outputs.structured_output }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-          HEAD_REF: ${{ steps.capture.outputs.head_ref }}
-        run: |
-          set -euo pipefail
-          printf '%s\n' "$RESULT" > "$RUNNER_TEMP/source-review-result.json"
-          python .github/scripts/independent_source_review_receipt.py \
-            --build --input "$RUNNER_TEMP/source-review-input.json" \
-            --result "$RUNNER_TEMP/source-review-result.json" \
-            --run "$RUNNER_TEMP/source-review-run.json" \
-            --output "$RUNNER_TEMP/wow-v17-independent-source-review.json" \
-            --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" --head-ref "$HEAD_REF"
-          decision=$(jq -r .review.decision "$RUNNER_TEMP/wow-v17-independent-source-review.json")
-          [ "$decision" = "PASS" ] || {
-            echo "::error::INDEPENDENT_SOURCE_REVIEW_REJECTED";
-          }
-
-      - name: Upload short-lived exact-head review receipt
-        id: source_review_artifact
-        if: steps.policy.outputs.review_active == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: wow-v17-independent-source-review-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          if-no-files-found: error
-          retention-days: 1
-          path: |
-            ${{ runner.temp }}/wow-v17-independent-source-review.json
-            ${{ runner.temp }}/wow-v17-independent-source-review.json.sha256
-
-      - name: Mint dedicated semantic reviewer App token
-        id: reviewer_app
-        if: steps.source_review_artifact.outputs.artifact-id != ''
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: ${{ vars.WOW_REVIEWER_APP_ID }}
-          private-key: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}
-          repositories: WOW-Dashboard
-          permission-pull-requests: write
-
-      - name: Submit Gemini App review at exact PR head
-        id: reviewer_attest
-        if: steps.source_review_artifact.outputs.artifact-id != ''
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          REVIEWER_APP_TOKEN: ${{ steps.reviewer_app.outputs.token }}
-          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
-        run: |
-          set -euo pipefail
-          python .github/scripts/wow_v28_gemini_qa_bridge.py attest \
-            --input "$RUNNER_TEMP/source-review-input.json" \
-            --artifact "$RUNNER_TEMP/wow-v17-independent-source-review.json"
-
-      - name: Verify Gemini App attestation before QA decision
-        id: reviewer_verify
-        if: steps.source_review_artifact.outputs.artifact-id != ''
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
-        run: |
-          set -euo pipefail
-          python .github/scripts/wow_v28_gemini_qa_bridge.py verify \
-            --input "$RUNNER_TEMP/source-review-input.json" \
-            --artifact "$RUNNER_TEMP/wow-v17-independent-source-review.json"
+          echo "::error::QA_LEGACY_INDEPENDENT_CAPTURE_RETIRED: authenticated independent review replacement not yet available"
+          exit 1
 
       - name: Decide at exact head (read-only)
         id: decide
@@ -429,7 +270,6 @@ jobs:
           GLOBAL_REVIEW_ACTIVE: ${{ steps.policy.outputs.global_review_active }}
           ZERO_CREDIT_ACTIVE: ${{ steps.policy.outputs.zero_credit_active }}
           SOLO_VERIFIED_ACTIVE: ${{ steps.policy.outputs.solo_verified_active }}
-          SOURCE_REVIEW_ARTIFACT_ID: ${{ steps.source_review_artifact.outputs.artifact-id }}
         run: |
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
@@ -441,16 +281,9 @@ jobs:
           [ "${ZERO_CREDIT_ACTIVE:-false}" != "true" ] || args+=(--zero-credit-policy-enabled)
           [ "${SOLO_VERIFIED_ACTIVE:-false}" != "true" ] || args+=(--solo-verified-policy-enabled)
           if [ "$REVIEW_ACTIVE" = "true" ]; then
-            [[ "$SOURCE_REVIEW_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || {
-              echo "::error::SOURCE_REVIEW_ARTIFACT_ID_MISSING"; exit 1;
-            }
-            args+=(--source-review-json "$RUNNER_TEMP/wow-v17-independent-source-review.json"
-              --source-review-run-json "$RUNNER_TEMP/source-review-run.json"
-              --source-review-artifact-id "$SOURCE_REVIEW_ARTIFACT_ID"
-              --source-review-producer-context)
-          else
-            args+=(--legacy-review-policy)
+            echo "::error::QA_LEGACY_INDEPENDENT_CAPTURE_RETIRED"; exit 1
           fi
+          args+=(--legacy-review-policy)
           python "$tool" "${args[@]}" > "$evidence"
           readiness=$(python "$tool" classify-release-readiness --evidence "$evidence")
           disposition=$(jq -er '.disposition' <<<"$readiness")
@@ -478,12 +311,7 @@ jobs:
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
           POLICY_RECEIPT_OUTCOME: ${{ steps.policy_receipt.outcome }}
           POLICY_ARTIFACT_OUTCOME: ${{ steps.policy_artifact.outcome }}
-          REVIEW_CREDENTIAL_OUTCOME: ${{ steps.review_credential.outcome }}
-          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
-          REVIEW_OUTCOME: ${{ steps.review.outcome }}
-          RECHECK_OUTCOME: ${{ steps.recheck.outcome }}
-          SOURCE_REVIEW_OUTCOME: ${{ steps.source_review.outcome }}
-          SOURCE_REVIEW_ARTIFACT_OUTCOME: ${{ steps.source_review_artifact.outcome }}
+          RETIRED_CAPTURE_OUTCOME: ${{ steps.retired_capture.outcome }}
           DECIDE_OUTCOME: ${{ steps.decide.outcome }}
           DECIDE_COUNT: ${{ steps.decide.outputs.count }}
         run: |
@@ -494,14 +322,10 @@ jobs:
           decision="$RUNNER_TEMP/decisions/decision-$PR_NUMBER.json"
           if [ ! -s "$decision" ]; then
             failed_step=qa_decision_unavailable
-            for step in review_credential policy capture review recheck source_review decide; do
+            for step in retired_capture policy decide; do
               case "$step" in
-                review_credential) outcome="${REVIEW_CREDENTIAL_OUTCOME:-skipped}" ;;
+                retired_capture) outcome="${RETIRED_CAPTURE_OUTCOME:-skipped}" ;;
                 policy) outcome="${POLICY_OUTCOME:-skipped}" ;;
-                capture) outcome="${CAPTURE_OUTCOME:-skipped}" ;;
-                review) outcome="${REVIEW_OUTCOME:-skipped}" ;;
-                recheck) outcome="${RECHECK_OUTCOME:-skipped}" ;;
-                source_review) outcome="${SOURCE_REVIEW_OUTCOME:-skipped}" ;;
                 decide) outcome="${DECIDE_OUTCOME:-skipped}" ;;
               esac
               if [ "$outcome" = "failure" ]; then failed_step=$step; break; fi
@@ -509,7 +333,6 @@ jobs:
             if [ "$failed_step" = "qa_decision_unavailable" ]; then
               if [ "$POLICY_RECEIPT_OUTCOME" = "failure" ]; then failed_step=policy_receipt
               elif [ "$POLICY_ARTIFACT_OUTCOME" = "failure" ]; then failed_step=policy_artifact
-              elif [ "$SOURCE_REVIEW_ARTIFACT_OUTCOME" = "failure" ]; then failed_step=source_review_artifact
               fi
             fi
             echo "::error::QA_REVIEW_EXECUTION_FAILED:$failed_step"
