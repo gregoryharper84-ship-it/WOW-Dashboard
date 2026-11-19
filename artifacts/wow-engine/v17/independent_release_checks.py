@@ -890,6 +890,88 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     return sorted(set(findings))
 
 
+def release_sirt_provenance_findings(ev: dict) -> list[str]:
+    """Verify authenticated SIRT evidence without repeating QA's whole suite.
+
+    Only this source-reviewed, exact-head SIRT mode may take this lightweight
+    path. Every other review mode preserves full existing QA re-derivation.
+    No caller-controlled approval can replace the separately signed QA check.
+    """
+    findings: list[str] = []
+    for error in ev.get("evidence_errors") or []:
+        findings.append(f"QA_EVIDENCE_INCOMPLETE:{error}")
+    pr = ev.get("pr") or {}
+    head = str(pr.get("head_sha") or "")
+    expected = str(ev.get("expected_head_sha") or "")
+    if not SHA_RE.fullmatch(head) or not SHA_RE.fullmatch(expected):
+        findings.append("QA_HEAD_INVALID")
+    elif head != expected:
+        findings.append("QA_HEAD_STALE")
+    if pr.get("state") != "open" or pr.get("merged") is not False:
+        findings.append("QA_PR_NOT_OPEN")
+    if pr.get("draft") is not False:
+        findings.append("QA_PR_DRAFT")
+    if pr.get("base_ref") != "main":
+        findings.append("QA_PR_BASE_NOT_MAIN")
+    if pr.get("head_repo") != ev.get("repository"):
+        findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    if not _canonical_incident_present(pr.get("body")):
+        findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
+    policy = ev.get("qa_review_policy") or {}
+    target = policy.get("target") if isinstance(policy, dict) else None
+    if (policy.get("mode") != "sirt" or not isinstance(target, dict)
+        or target.get("pr_number") != ev.get("pr_number")
+        or target.get("head_sha") != head
+        or target.get("head_ref") != pr.get("head_ref")
+        or policy.get("canary_scope") is not None):
+        findings.append("QA_SIRT_REVIEW_POLICY_TARGET_MISMATCH")
+    if (ev.get("sirt_enabled") is not True
+        or ev.get("current_review_active") is True
+        or ev.get("zero_credit_enabled") is True
+        or ev.get("independent_review_active") is not False
+        or ev.get("source_review") is not None):
+        findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
+    receipt = ev.get("sirt_review_evidence")
+    if not isinstance(receipt, dict):
+        findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_MISSING")
+        return sorted(set(findings))
+    reviewer = receipt.get("reviewer")
+    if not isinstance(reviewer, dict):
+        findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
+        return sorted(set(findings))
+    actual = ev.get("reviews") or []
+    matched = (
+        isinstance(actual, list) and any(
+            isinstance(r, dict)
+            and r.get("user") == reviewer.get("login")
+            and r.get("state") == "APPROVED"
+            and r.get("commit_id") == head
+            and r.get("submitted_at") == reviewer.get("submitted_at")
+            for r in actual
+        )
+    )
+    if (receipt.get("schema_version") != 1
+        or receipt.get("review_status") != "EVIDENCE_READY"
+        or receipt.get("code") != "SIRT_SOURCE_REVIEW_EVIDENCE_READY"
+        or receipt.get("head_sha") != head
+        or receipt.get("required_check_names") != list(REQUIRED_REGRESSION_CHECKS)
+        or receipt.get("findings") != []
+        or receipt.get("independent_scientific_acceptance_required") is not True
+        or receipt.get("protected_release_authority_required") is not True
+        or any(receipt.get(flag) is not False for flag in (
+            "can_execute", "merge_or_release_authorized", "model_certified", "probability_publishable"
+        ))
+        or not matched
+        or type(reviewer.get("id")) is not int or reviewer["id"] <= 0
+        or type(reviewer.get("user_id")) is not int or reviewer["user_id"] <= 0
+        or reviewer["user_id"] == pr.get("author_id")
+        or not isinstance(reviewer.get("login"), str)
+        or reviewer["login"].casefold() == str(ev.get("owner_login") or "").casefold()
+        or reviewer.get("commit_id") != head):
+        findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
+    return sorted(set(findings))
+
+
 def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
                      governance_files: frozenset[str] | None = None) -> list[str]:
     findings: list[str] = []
@@ -897,8 +979,16 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
         findings.append("RELEASE_APP_IDENTITY_UNBOUND")
     elif str(qa_app_id) == str(release_app_id):
         findings.append("RELEASE_IDENTITY_NOT_DISTINCT")
-    # Defence in depth: Release independently re-derives every QA condition.
-    findings += [f"RELEASE_{f}" for f in qa_findings(ev, governance_files=governance_files)]
+    # SIRT already has an authenticated, exact-head QA decision from a distinct
+    # App. Release independently checks *provenance* instead of rerunning every
+    # deterministic QA predicate. All other modes retain the old fail-closed
+    # re-derivation until their own receipt contracts have proven parity.
+    mode = (ev.get("qa_review_policy") or {}).get("mode")
+    qa_evidence_findings = (
+        release_sirt_provenance_findings(ev) if mode == "sirt"
+        else qa_findings(ev, governance_files=governance_files)
+    )
+    findings += [f"RELEASE_{f}" for f in qa_evidence_findings]
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
