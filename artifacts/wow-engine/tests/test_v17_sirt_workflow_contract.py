@@ -36,3 +36,13 @@ def test_sirt_does_not_let_gemini_steps_run_or_sign():
     assert "QA_SIRT_INDEPENDENT_EVIDENCE" in (
         ROOT / "artifacts/wow-engine/v17/independent_release_checks.py"
     ).read_text()
+
+
+def test_sirt_opt_in_is_bound_to_both_exact_head_decisions():
+    for workflow in (
+        "wow-v17-independent-qa-check.yml",
+        "wow-v17-release-authority-check.yml",
+    ):
+        step = _steps(workflow)["Decide at exact head (read-only)"]
+        assert "WOW_QA_SIRT_VERIFICATION_ACTIVE" in str(step["env"])
+        assert "--sirt-review-policy-enabled" in step["run"]
