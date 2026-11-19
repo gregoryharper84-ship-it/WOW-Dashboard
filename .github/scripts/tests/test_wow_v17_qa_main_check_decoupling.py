@@ -29,6 +29,21 @@ class QaMainCheckDecouplingTests(unittest.TestCase):
         self.assertIn("continue-on-error: true", review)
         self.assertIn("python .github/scripts/wow_v28_gemini_qa_bridge.py review", review)
 
+    def test_source_capture_failure_is_a_pr_head_hold_not_a_main_deploy_failure(self):
+        capture = step(self.source, "Capture complete exact-head source evidence",
+                       "Run isolated read-only Gemini semantic review")
+        self.assertIn("continue-on-error: true", capture)
+        review = step(self.source, "Run isolated read-only Gemini semantic review",
+                      "Recheck PR head and diff after review")
+        self.assertIn("steps.capture.outcome == 'success'", review)
+        decide = step(self.source, "Decide at exact head (read-only)",
+                      "Preserve terminal QA decision for every resolved target")
+        self.assertIn("steps.capture.outcome == 'success'", decide)
+        terminal = step(self.source, "Preserve terminal QA decision for every resolved target",
+                        "Upload terminal QA outcome")
+        self.assertIn("CAPTURE_OUTCOME: ${{ steps.capture.outcome }}", terminal)
+        self.assertIn("QA_REVIEW_EXECUTION_FAILED:$failed_step", terminal)
+
     def test_source_review_pipeline_runs_only_for_successful_real_model_review(self):
         stages = [
             ("Recheck PR head and diff after review",
