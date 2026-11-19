@@ -239,7 +239,9 @@ def inventory_render_writers(workflow_texts: Any) -> dict[str, Any]:
     )
     holders = sorted(
         name for name, text in workflow_texts.items()
-        if name != CONTROLLER_FILENAME and isinstance(text, str) and "RENDER_API_KEY" in text
+        if name != CONTROLLER_FILENAME
+        and isinstance(text, str)
+        and any(key in text for key in ("RENDER_API_KEY", "WOW_RENDER_SYNC_KEY"))
     )
     return {
         "complete": not foreign,
