@@ -103,6 +103,7 @@ jobs:
         uses: actions/checkout@v4
         continue-on-error: true
       - name: Call existing authenticated NHL timeline re-ingest
+        id: source_refresh
         if: steps.checkout.outcome == 'success'
         run: python artifacts/wow-engine/v17/nhl_timeline_refresh_client.py
         continue-on-error: true
@@ -114,6 +115,9 @@ jobs:
           if [ "${{ steps.checkout.outcome }}" != "success" ]; then
             echo "::warning::NHL_SOURCE_REFRESH_CHECKOUT_UNAVAILABLE"
             echo "NHL_SOURCE_REFRESH_CHECKOUT_UNAVAILABLE; scientific_certification=false; can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.source_refresh.outcome }}" != "success" ]; then
+            echo "::warning::NHL_SOURCE_REFRESH_RUNNER_FAILED"
+            echo "NHL_SOURCE_REFRESH_RUNNER_FAILED; scientific_certification=false; can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   maintain:
