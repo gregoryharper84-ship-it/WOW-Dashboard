@@ -40,3 +40,9 @@ def test_replay_is_non_authorizing_and_contains_no_mutations():
         "FALSE AS can_execute", "REQUIRES_INDEPENDENT_REVIEW",
     ):
         assert required in sql
+
+
+def test_replay_fails_closed_on_blank_model_version():
+    sql = SQL.read_text()
+    assert "NULLIF(btrim(model_version),'') IS NULL" in sql
+    assert "missing_model_versions <> 0" in sql
