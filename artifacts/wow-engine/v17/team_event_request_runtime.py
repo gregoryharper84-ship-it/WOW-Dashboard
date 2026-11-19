@@ -27,6 +27,7 @@ from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
+from v17.matchup_discovery import discover_matchup
 from v17.v17_candidate_envelopes import V17TeamEventCandidateEnvelope, V17GovernedProbabilityPackage, DataUnavailable
 
 CAN_EXECUTE = False
@@ -510,7 +511,19 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
     reconciler_out = _run(RESEARCH_RECONCILER, {"research_reports": reports, "team_jobs_ok": team_jobs_ok, "evidence_present": isinstance(candidate.get("evidence"), dict), "event_start_present": bool(candidate.get("event_start_utc"))})
     if reconciler_out.status != "SUCCEEDED":
         raise _scout_research_barrier_blocked(req, RESEARCH_RECONCILER, reconciler_out.blockers)
-    return {"status": "SUCCEEDED", "stages": stages}
+    # Run the same mandatory matchup review for focused/interactive requests.
+    # Missing research evidence remains visible; only the controlling fitted
+    # model determines whether its own certified inputs permit scoring.
+    matchup = discover_matchup({
+        "sport_key": req.sport.strip().upper(),
+        "official_event_id": req.official_event_id,
+        "event_start_utc": req.event_start_time_utc,
+        "home_team": req.home_team,
+        "away_team": req.away_team,
+        "sport_specific_evidence": req.sport_specific_evidence,
+    })
+    return {"status": "SUCCEEDED", "stages": stages,
+            "matchup_discovery": matchup}
 
 
 def _build_team_event_envelope(
