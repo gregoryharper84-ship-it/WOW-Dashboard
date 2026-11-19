@@ -146,6 +146,7 @@ jobs:
         env:
           REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
           ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          SIRT_ACTIVATION: ${{ vars.WOW_QA_SIRT_VERIFICATION_ACTIVE }}
           CANARY_REQUESTED: ${{ inputs.independent_review_canary }}
           CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
           CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
@@ -164,10 +165,20 @@ jobs:
             ""|false) zero_credit_active=false ;;
             *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
           esac
+          case "${SIRT_ACTIVATION:-}" in
+            true) sirt_active=true ;;
+            ""|false) sirt_active=false ;;
+            *) echo "::error::QA_SIRT_POLICY_INVALID"; exit 1 ;;
+          esac
+          if [ "$sirt_active" = "true" ] && { [ "$zero_credit_active" = "true" ] || [ "$global_active" = "true" ] || [ "${CANARY_REQUESTED:-false}" = "true" ]; }; then
+            echo "::error::QA_SIRT_REVIEW_MODES_CONFLICT"; exit 1
+          fi
           if [ "$zero_credit_active" = "true" ] && [ "$global_active" = "true" ]; then
             echo "::error::QA_REVIEW_MODES_CONFLICT"; exit 1
           fi
-          if [ "$zero_credit_active" = "true" ]; then
+          if [ "$sirt_active" = "true" ]; then
+            mode=sirt
+          elif [ "$zero_credit_active" = "true" ]; then
             [ "${CANARY_REQUESTED:-false}" != "true" ] || { echo "::error::QA_ZERO_CREDIT_CANARY_CONFLICT"; exit 1; }
             mode=zero_credit
           elif [ "$global_active" = "true" ]; then
@@ -407,6 +418,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          WOW_SIRT_REVIEWER_USER_ID: ${{ vars.WOW_SIRT_REVIEWER_USER_ID }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           REVIEW_ACTIVE: ${{ steps.policy.outputs.review_active }}
