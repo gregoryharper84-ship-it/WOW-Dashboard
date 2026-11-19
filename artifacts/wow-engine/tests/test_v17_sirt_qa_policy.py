@@ -18,6 +18,7 @@ def sample():
         },
         "files": ["docs/superpowers/specs/proof.md"],
         "source_review": None,
+        "sirt_enabled": True,
         "independent_review_active": False,
         "current_review_active": False,
         "sirt_review_evidence": None,
@@ -100,3 +101,24 @@ def test_sirt_missing_reviewer_id_holds():
 def test_sirt_required_checks_match_canonical_policy_order():
     from v17.sirt_review_evidence import REQUIRED
     assert REQUIRED == qa.REQUIRED_REGRESSION_CHECKS
+
+
+def test_sirt_inactive_policy_rejects_previous_pass_receipt():
+    ev = sample()
+    ev["sirt_review_evidence"] = ready_receipt()
+    ev["sirt_enabled"] = False
+    assert "QA_SIRT_REVIEW_POLICY_CONFLICT" in qa.qa_findings(ev)
+
+
+def test_sirt_receipt_cannot_overlap_gemini_activation():
+    ev = sample()
+    ev["sirt_review_evidence"] = ready_receipt()
+    ev["current_review_active"] = True
+    assert "QA_SIRT_REVIEW_POLICY_CONFLICT" in qa.qa_findings(ev)
+
+
+def test_sirt_receipt_cannot_overlap_zero_credit_activation():
+    ev = sample()
+    ev["sirt_review_evidence"] = ready_receipt()
+    ev["zero_credit_enabled"] = True
+    assert "QA_SIRT_REVIEW_POLICY_CONFLICT" in qa.qa_findings(ev)
