@@ -37,6 +37,7 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
+from v17.matchup_discovery import discover_matchup
 from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 from v17.cross_sport_evidence_integrity import (
     CRITICAL_STATUS_CONTRACT,
@@ -473,7 +474,20 @@ def score_registered_team_event_request(
     else:
         result = dict(result)
         result["can_execute"] = False
-    return _attach_feature_consumption_receipt(req, registration, result)
+    scored = _attach_feature_consumption_receipt(req, registration, result)
+    # All registered specialists share this read-only research coverage audit.
+    # The discovery layer cannot change the scorer's fitted numeric outputs or
+    # certify an absent/unverified feature merely because research was requested.
+    if "matchup_discovery" not in scored:
+        scored["matchup_discovery"] = discover_matchup({
+            "sport_key": sport,
+            "official_event_id": getattr(req, "official_event_id", None),
+            "event_start_time_utc": getattr(req, "event_start_time_utc", None),
+            "home_team": getattr(req, "home_team", None),
+            "away_team": getattr(req, "away_team", None),
+            "sport_specific_evidence": getattr(req, "sport_specific_evidence", None),
+        })
+    return scored
 
 
 def team_event_bridge_health() -> dict[str, dict[str, Any]]:
