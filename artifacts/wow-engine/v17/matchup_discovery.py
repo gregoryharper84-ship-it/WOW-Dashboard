@@ -95,13 +95,70 @@ def feature_requirements(sport_key: str) -> dict[str, tuple[str, ...]]:
 
 
 def _metric_rows(candidate: dict[str, Any]) -> dict[str, Any]:
-    # Same evidence payload for nightly and interactive ingress; no new provider.
+    """Reuse existing sourced research and same-event market rows when possible.
+
+    Raw stats, odds and implied market probabilities never leave this screen.
+    The metric names must already be supplied by a provider/research adapter:
+    the audit does not fabricate metrics from team names or a bookmaker line.
+    """
     raw = candidate.get("matchup_metric_evidence")
     if not isinstance(raw, dict):
         specific = candidate.get("sport_specific_evidence")
-        if isinstance(specific, dict):
-            raw = specific.get("matchup_metric_evidence")
-    return raw if isinstance(raw, dict) else {}
+        raw = specific.get("matchup_metric_evidence") if isinstance(specific, dict) else None
+    metrics = dict(raw) if isinstance(raw, dict) else {}
+
+    # Existing research-domain evidence can carry typed feature observations.
+    domains = candidate.get("research_domain_evidence")
+    if isinstance(domains, dict):
+        for domain_rows in domains.values():
+            rows = domain_rows if isinstance(domain_rows, list) else [domain_rows]
+            for evidence in rows:
+                if not isinstance(evidence, dict):
+                    continue
+                named = evidence.get("matchup_metrics")
+                if not isinstance(named, dict):
+                    continue
+                for name, value in named.items():
+                    if name in metrics or value is None or value == {}:
+                        continue
+                    metrics[name] = {
+                        "official_event_id": evidence.get("official_event_id"),
+                        "home_team": evidence.get("home_team"),
+                        "away_team": evidence.get("away_team"),
+                        "source_id": evidence.get("source_id") or evidence.get("source_provider"),
+                        "source_class": evidence.get("source_class"),
+                        "captured_at": evidence.get("captured_at"),
+                        "confirmed": evidence.get("confirmed") is True,
+                        "value": value,
+                    }
+
+    # Reuse the existing event-scoped bookmaker feed only for a timestamped
+    # *exact* quote. No opener/movement, price comparison or market probability
+    # is inferred from one quote or from a line without its market identity.
+    if "exact_current_quote" not in metrics:
+        for quote in candidate.get("market_evidence") or []:
+            if not isinstance(quote, dict):
+                continue
+            key = str(quote.get("market_key") or "").lower()
+            if key not in ("h2h", "spreads", "totals") and not key.startswith("player_"):
+                continue
+            if key != "h2h" and quote.get("point") is None:
+                continue
+            if not (quote.get("bookmaker") and quote.get("outcome_name")
+                    and quote.get("price") is not None):
+                continue
+            if not (quote.get("market_last_update") or quote.get("bookmaker_last_update")):
+                continue
+            metrics["exact_current_quote"] = {
+                "official_event_id": candidate.get("official_event_id"),
+                "source_id": quote["bookmaker"],
+                "source_class": "SPORTSBOOK_FEED",
+                "captured_at": quote.get("market_last_update") or quote.get("bookmaker_last_update"),
+                "confirmed": True,
+                "value": {"market_key": key, "side": str(quote["outcome_name"])},
+            }
+            break
+    return metrics
 
 
 def _screen_row(row: Any, candidate: dict[str, Any], event_start: datetime,
