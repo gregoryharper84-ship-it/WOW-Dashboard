@@ -3,6 +3,7 @@ name: wow-v17-nhl-model-maintenance
 on:
   schedule:
     - cron: "20 14 * * 1"
+    - cron: "15 11 * * *"
   workflow_dispatch:
   push:
     branches:
@@ -16,6 +17,7 @@ on:
       - "artifacts/wow-engine/v17/d1_candidate_registry.py"
       - "artifacts/wow-engine/v17/d1_bulk_candidate_registry.py"
       - "artifacts/wow-engine/v17/nhl_model_maintenance.py"
+      - "artifacts/wow-engine/v17/nhl_timeline_refresh_client.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_binary_candidate_lifecycle.py"
@@ -24,6 +26,7 @@ on:
       - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
       - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_nhl_workflow_oidc_refresh_contract.py"
+      - "artifacts/wow-engine/tests/test_v17_nhl_timeline_refresh_client.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
   pull_request:
     paths:
@@ -78,13 +81,45 @@ jobs:
           test_v17_nhl_candidate_pipeline.py
           test_v17_nhl_model_maintenance.py
           test_v17_nhl_workflow_oidc_refresh_contract.py
+          tests/test_v17_nhl_timeline_refresh_client.py
           test_v17_capability_build_registry.py
           test_v17_github_oidc.py
 
+  refresh-timeline:
+    name: Refresh NHL source timeline (research only)
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Check out approved protected main
+        id: checkout
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Call existing authenticated NHL timeline re-ingest
+        if: steps.checkout.outcome == 'success'
+        run: python artifacts/wow-engine/v17/nhl_timeline_refresh_client.py
+        continue-on-error: true
+      - name: Record blocked checkout without hiding failure
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: |
+          if [ "${{ steps.checkout.outcome }}" != "success" ]; then
+            echo "::warning::NHL_SOURCE_REFRESH_CHECKOUT_UNAVAILABLE"
+            echo "NHL_SOURCE_REFRESH_CHECKOUT_UNAVAILABLE; scientific_certification=false; can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   maintain:
     name: Advance NHL research candidate evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    needs: verify
+    if: (github.event_name == 'schedule' && github.event.schedule == '20 14 * * 1') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [verify, refresh-timeline]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
