@@ -716,9 +716,18 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
         "Select exact-head review policy",
         "Build immutable QA review-policy receipt",
         "Upload immutable QA review-policy receipt",
-        "Decide at exact head (read-only)",
     ):
         assert steps[name]["if"] == "steps.target.outputs.pr_number != ''"
+    # The revised decision stage must skip capture/review failures, while
+    # the always() terminal stage publishes their signed, exact-head HOLD.
+    assert steps["Decide at exact head (read-only)"]["if"] == (
+        "steps.target.outputs.pr_number != '' && "
+        "(steps.policy.outputs.review_active != 'true' || "
+        "(steps.capture.outcome == 'success' && steps.review.outcome == 'success'))"
+    )
+    terminal = steps["Preserve terminal QA decision for every resolved target"]
+    assert terminal["if"] == "always() && steps.target.outputs.pr_number != ''"
+    assert "QA_REVIEW_EXECUTION_FAILED:$failed_step" in terminal["run"]
     # The original Release classifier already neutralizes a successful QA
     # job whose terminal outcome upload is deliberately skipped.
     assert steps["Upload terminal QA outcome"]["if"].startswith(
