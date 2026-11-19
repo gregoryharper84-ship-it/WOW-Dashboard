@@ -17,6 +17,10 @@ from typing import Any, Mapping
 ACTION_ORIGIN = "https://wow-governed-probability-engine.onrender.com"
 SOURCE_ROUTE = "/internal/v17/nhl-source-reingest"
 TRANSIENT_HTTP = frozenset({404, 502, 503, 504})
+# Leave >=5 minutes for workflow cleanup/typed summary before the 20-minute job timeout.
+MAX_REFRESH_TOTAL_SECONDS = 900
+MAX_REQUEST_SECONDS = 600
+MIN_RETRY_HEADROOM_SECONDS = 15
 CAN_EXECUTE = False
 
 
@@ -97,18 +101,28 @@ def _token() -> str:
 def call_protected_reingest() -> dict[str, Any]:
     """Bounded retry only for endpoint/deploy transitions, never 401/403."""
     url = ACTION_ORIGIN + SOURCE_ROUTE
+    deadline = time.monotonic() + MAX_REFRESH_TOTAL_SECONDS
     for attempt in range(3):
+        if deadline - time.monotonic() <= MIN_RETRY_HEADROOM_SECONDS:
+            return blocked("NHL_SOURCE_REFRESH_DEADLINE_EXCEEDED")
         try:
+            # OIDC is minted per retry. Never spend more than the remaining
+            # guarded budget, even when a remote POST hangs or returns late.
+            token = _token()
+            remaining = deadline - time.monotonic()
+            if remaining <= MIN_RETRY_HEADROOM_SECONDS:
+                return blocked("NHL_SOURCE_REFRESH_DEADLINE_EXCEEDED")
+            request_timeout = min(MAX_REQUEST_SECONDS, remaining - MIN_RETRY_HEADROOM_SECONDS)
             request = urllib.request.Request(
                 url,
                 data=b"",
                 method="POST",
                 headers={
-                    "Authorization": "Bearer " + _token(),
+                    "Authorization": "Bearer " + token,
                     "Content-Type": "application/json",
                 },
             )
-            with urllib.request.urlopen(request, timeout=900) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 return classify_response(json.load(response))
         except urllib.error.HTTPError as exc:
             if exc.code not in TRANSIENT_HTTP or attempt == 2:
@@ -119,7 +133,8 @@ def call_protected_reingest() -> dict[str, Any]:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return blocked("NHL_SOURCE_REFRESH_RESPONSE_OR_AUTH_INVALID")
         if attempt < 2:
-            time.sleep(5)
+            # Do not allow backoff to exceed the overall deadline.
+            time.sleep(min(5, max(0, deadline - time.monotonic() - MIN_RETRY_HEADROOM_SECONDS)))
     return blocked("NHL_SOURCE_REFRESH_ATTEMPTS_EXHAUSTED")
 
 
