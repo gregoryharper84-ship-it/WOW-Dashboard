@@ -190,3 +190,43 @@ def test_nhl_goalie_confirmation_requires_two_distinct_official_providers():
     reviewed = discover_matchup(c, now=NOW)
     assert "confirmed_starting_goalies" in reviewed["screened_features"]
     assert reviewed["prediction_authority"] is False
+
+
+def test_shared_registered_sport_bridge_adds_audit_without_changing_scorer(monkeypatch):
+    from v17 import team_event_bridge_runtime as bridge
+    from v17 import team_event_request_runtime as runtime
+
+    req = runtime.TeamEventRequest(
+        requester_host_identity="LLP_TEAM_BETTING_ENGINE",
+        research_run_id="shared-bridge-matchup",
+        requested_slate_date="2026-11-19",
+        requested_timezone="UTC",
+        event_key="nhl-evt-10",
+        official_event_id="evt-10",
+        event_start_time_utc=START,
+        sport="NHL",
+        league="NHL",
+        settlement_basis="OFFICIAL_FINAL_RESULT",
+        home_team="Home",
+        away_team="Away",
+        source_snapshot_id="snapshot-10",
+    )
+    monkeypatch.setitem(
+        bridge.TEAM_EVENT_BRIDGES, "NHL",
+        bridge.TeamEventBridgeRegistration(
+            sport="NHL", adapter_name="UNIT_TEST_ONLY",
+            controlling_specialist="UNIT_TEST_SPECIALIST",
+            required_inputs=(),
+            scorer=lambda *_args, **_kwargs: {"can_execute": False, "test_scorer_value": 7},
+            standard_package_validation=False,
+        )
+    )
+    monkeypatch.setattr(
+        bridge, "_attach_feature_consumption_receipt",
+        lambda _req, _registration, result: dict(result),
+    )
+    result = bridge.score_registered_team_event_request(req, event_api=None)
+    assert result["test_scorer_value"] == 7
+    assert result["matchup_discovery"]["profile"] == "HOCKEY"
+    assert result["matchup_discovery"]["review_requested"] is True
+    assert result["can_execute"] is False
