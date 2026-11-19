@@ -21,6 +21,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 |---|---|---|---:|
 | `SIRT_TARGET_INVALID` | SIRT source review observer | Malformed repository/PR or expected head; reject before API calls. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
 | `SIRT_EVIDENCE_INVALID` | SIRT source review observer | Authenticated GitHub response has invalid identity/check structure. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_PR_CHANGED_DURING_REVIEW` | SIRT source review observer | PR head, draft, state, or bound identity changed while authenticated review/check evidence was collected. **Recovery:** rerun exact-head review only after stable PR identity; always HOLD. | No |
 | `SIRT_REVIEWER_IDENTITY_NOT_BOUND` | SIRT source review observer | Protected reviewer ID, owner, or head author unavailable or ambiguous. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
 | `SIRT_REVIEWER_NOT_INDEPENDENT` | SIRT source review observer | Reviewer is PR author, repository owner, or head commit author. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
 | `SIRT_INDEPENDENT_EXACT_HEAD_APPROVAL_MISSING` | SIRT source review observer | No current APPROVED review by the uniquely bound independent GitHub principal at exact SHA. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
