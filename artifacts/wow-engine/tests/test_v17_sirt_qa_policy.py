@@ -122,3 +122,37 @@ def test_sirt_receipt_cannot_overlap_zero_credit_activation():
     ev["sirt_review_evidence"] = ready_receipt()
     ev["zero_credit_enabled"] = True
     assert "QA_SIRT_REVIEW_POLICY_CONFLICT" in qa.qa_findings(ev)
+
+
+
+def test_sirt_activation_fences_legacy_and_other_historical_review_modes():
+    # Pre-activation QA decisions remain append-only on GitHub. Once a
+    # protected environment activates SIRT, none can be reused as authority.
+    for mode in ("legacy", "independent", "canary", "zero_credit"):
+        ev = sample()
+        ev["qa_review_policy"]["mode"] = mode
+        ev["sirt_review_evidence"] = ready_receipt()
+        qa_findings = qa.qa_findings(ev)
+        assert "QA_SIRT_REVIEW_POLICY_CONFLICT" in qa_findings, mode
+        release_findings = qa.release_findings(
+            ev, qa_app_id="101", release_app_id="202"
+        )
+        assert "RELEASE_QA_SIRT_REVIEW_POLICY_CONFLICT" in release_findings, mode
+
+
+def test_sirt_activation_requires_current_review_policy_receipt():
+    ev = sample()
+    ev["qa_review_policy"] = None
+    ev["sirt_review_evidence"] = ready_receipt()
+    assert "QA_SIRT_REVIEW_POLICY_CONFLICT" in qa.qa_findings(ev)
+    assert "RELEASE_QA_SIRT_REVIEW_POLICY_CONFLICT" in qa.release_findings(
+        ev, qa_app_id="101", release_app_id="202"
+    )
+
+
+def test_sirt_disabled_does_not_retroactively_change_legacy_policy():
+    ev = sample()
+    ev["sirt_enabled"] = False
+    ev["qa_review_policy"]["mode"] = "legacy"
+    ev["source_review"] = None
+    assert "QA_SIRT_REVIEW_POLICY_CONFLICT" not in qa.qa_findings(ev)
