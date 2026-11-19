@@ -917,8 +917,10 @@ def release_sirt_provenance_findings(ev: dict) -> list[str]:
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
     if not _canonical_incident_present(pr.get("body")):
         findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
-    policy = ev.get("qa_review_policy") or {}
-    target = policy.get("target") if isinstance(policy, dict) else None
+    policy = ev.get("qa_review_policy")
+    if not isinstance(policy, dict):
+        policy = {}
+    target = policy.get("target")
     if (policy.get("mode") != "sirt" or not isinstance(target, dict)
         or target.get("pr_number") != ev.get("pr_number")
         or target.get("head_sha") != head
@@ -983,7 +985,7 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     # App. Release independently checks *provenance* instead of rerunning every
     # deterministic QA predicate. All other modes retain the old fail-closed
     # re-derivation until their own receipt contracts have proven parity.
-    mode = (ev.get("qa_review_policy") or {}).get("mode")
+    mode = policy.get("mode") if isinstance(policy, dict) else None
     qa_evidence_findings = (
         release_sirt_provenance_findings(ev) if mode == "sirt"
         else qa_findings(ev, governance_files=governance_files)
