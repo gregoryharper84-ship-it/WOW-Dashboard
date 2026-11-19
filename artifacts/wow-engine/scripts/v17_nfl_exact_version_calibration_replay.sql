@@ -14,9 +14,21 @@ WITH rows AS (
          CASE WHEN valid_probability IS TRUE
               THEN power(p-y,2) END AS replay_brier,
          CASE WHEN valid_probability IS TRUE
-              THEN -(y*ln(p)+(1-y)*ln(1-p)) END AS replay_log_loss,
+              THEN -(y*ln(greatest(1e-12::double precision, least(p, (1.0 - 1e-12::double precision))))
+                    +(1-y)*ln(1.0 - greatest(1e-12::double precision, least(p, (1.0 - 1e-12::double precision))))) END AS replay_log_loss,
          CASE WHEN valid_probability IS TRUE
-              THEN least(9,floor(p*10)::int) END AS decile
+              THEN CASE
+                WHEN p >= 0.0 AND p < 0.1 THEN 0
+                WHEN p >= 0.1 AND p < 0.2 THEN 1
+                WHEN p >= 0.2 AND p < 0.3 THEN 2
+                WHEN p >= 0.3 AND p < 0.4 THEN 3
+                WHEN p >= 0.4 AND p < 0.5 THEN 4
+                WHEN p >= 0.5 AND p < 0.6 THEN 5
+                WHEN p >= 0.6 AND p < 0.7 THEN 6
+                WHEN p >= 0.7 AND p < 0.8 THEN 7
+                WHEN p >= 0.8 AND p < 0.9 THEN 8
+                WHEN p >= 0.9 AND p <= 1.0 THEN 9
+              END END AS decile
   FROM rows
 ), bins AS (
   SELECT model_version, decile, count(*)::double precision AS n,
