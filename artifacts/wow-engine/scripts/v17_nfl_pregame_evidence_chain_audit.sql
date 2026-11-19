@@ -47,7 +47,12 @@ WITH latest_health AS (
              AND cert.independent_verification_status = 'PASS'
              AND cert.probability_publishable IS TRUE
              AND cert.can_execute IS FALSE
-             AND NULLIF(cert.calibration_sha256,'') IS NOT NULL
+             AND cert.calibration_artifact_id = c.calibrator_id::text
+             AND cert.calibration_method = c.calibration_method
+             -- Until the NFL calibrator row carries a comparable,
+             -- independently governed digest, the audit must fail closed.
+             -- source_data_hash is NOT the calibrator artifact checksum.
+             AND cert.calibration_sha256 = c.fit_metrics_json->>'calibration_artifact_sha256'
          ) AS independent_certification_receipt_ok
   FROM public.wow_nfl_forward_verified_grades g
   LEFT JOIN public.wow_nfl_event_predictions p
@@ -95,5 +100,5 @@ SELECT pv.*, h.generated_at AS global_health_generated_at,
        FALSE AS audit_authorizes_certification,
        FALSE AS audit_authorizes_publication,
        FALSE AS can_execute
-FROM per_version pv CROSS JOIN latest_health h
+FROM per_version pv LEFT JOIN latest_health h ON TRUE
 ORDER BY pv.verified_grades DESC, pv.model_version;
