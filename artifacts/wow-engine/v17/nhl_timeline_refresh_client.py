@@ -53,10 +53,24 @@ def classify_response(payload: Any) -> dict[str, Any]:
         return blocked("NHL_SOURCE_TIMELINE_RECEIPT_NOT_PERSISTED")
     if not re.fullmatch(r"[0-9]{8}", str(payload.get("season") or "")):
         return blocked("NHL_SOURCE_REFRESH_SEASON_IDENTITY_INVALID")
+    # The backend itself performs source identity and persistence validation.
+    # Check that its readback carries the minimum immutable provenance keys;
+    # the client does NOT mint or approve that provenance independently.
+    if not re.fullmatch(r"[a-f0-9]{64}", str(payload.get("schedule_digest") or "")):
+        return blocked("NHL_SOURCE_REFRESH_SCHEDULE_DIGEST_UNVERIFIED")
+    if payload.get("provenance_version") != "NHL_SOURCE_PROVENANCE_V2":
+        return blocked("NHL_SOURCE_REFRESH_PROVENANCE_VERSION_UNVERIFIED")
+    if not re.fullmatch(r"[a-f0-9]{7,40}", str(payload.get("ingest_code_sha") or "")):
+        return blocked("NHL_SOURCE_REFRESH_INGEST_SHA_UNVERIFIED")
+    n = payload.get("source_event_n")
+    if type(n) is not int or n < 0 or n > 1600:
+        return blocked("NHL_SOURCE_REFRESH_SOURCE_COUNT_INVALID")
     return {
         "status": "SOURCE_TIMELINE_REFRESHED_REQUIRES_SCIENTIFIC_ACCEPTANCE",
         "season": str(payload["season"]),
-        "source_event_n": payload.get("source_event_n"),
+        "source_event_n": n,
+        "schedule_digest": str(payload["schedule_digest"]),
+        "ingest_code_sha": str(payload["ingest_code_sha"]),
         "timeline_receipt_persisted": True,
         "automatic_certification": False,
         "automatic_promotion": False,
