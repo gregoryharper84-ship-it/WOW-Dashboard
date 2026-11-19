@@ -8,6 +8,7 @@ controlling specialist's own source, fit, calibration and receipt validation.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any
 
 try:
@@ -140,24 +141,28 @@ def _metric_rows(candidate: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(quote, dict):
                 continue
             key = str(quote.get("market_key") or "").lower()
-            if key not in ("h2h", "spreads", "totals") and not key.startswith("player_"):
-                continue
-            if key != "h2h" and quote.get("point") is None:
+            if key not in ("h2h", "spreads", "totals") and not key.startswith(("player_", "pitcher_", "batter_")):
                 continue
             if not (quote.get("bookmaker") and quote.get("outcome_name")
                     and quote.get("price") is not None):
                 continue
+            try:
+                if not isfinite(float(quote["price"])):
+                    continue
+                if key != "h2h" and not isfinite(float(quote["point"])):
+                    continue
+            except (ValueError, TypeError, OverflowError, KeyError):
+                continue
             if not (quote.get("market_last_update") or quote.get("bookmaker_last_update")):
                 continue
-            metrics["exact_current_quote"] = {
+            metrics.setdefault("exact_current_quote", []).append({
                 "official_event_id": candidate.get("official_event_id"),
                 "source_id": quote["bookmaker"],
                 "source_class": "SPORTSBOOK_FEED",
                 "captured_at": quote.get("market_last_update") or quote.get("bookmaker_last_update"),
                 "confirmed": True,
                 "value": {"market_key": key, "side": str(quote["outcome_name"])},
-            }
-            break
+            })
     return metrics
 
 
