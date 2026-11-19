@@ -17,9 +17,9 @@ Crucial honesty invariants:
   from PR code and distinct App-token boundaries, NOT independent human review
   and NOT independent administration when the sole repository owner administers
   both Apps and environments. By default (``require_independent_admin=True``),
-  P/C changes HOLD with ``SOLO_PROTECTED_INDEPENDENT_ADMIN_UNPROVEN`` unless
-  independent administration is proven or an explicit protected-environment
-  solo-owner-admin policy is intentionally enabled.
+  P/C changes HOLD with ``SOLO_PROTECTED_INDEPENDENT_ADMIN_UNPROVEN``.
+  An owner-admin opt-in or unsigned external-admin JSON is not independent
+  approval; neither can authorize a protected change.
 - Automated source verification NEVER authorizes merge, deployment, fitted
   model certification, probability publication, or live execution.
   ``can_execute`` is always False. ``V17_TERMINAL_REDUCER`` remains sole
