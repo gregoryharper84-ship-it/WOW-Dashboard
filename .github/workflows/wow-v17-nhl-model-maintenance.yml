@@ -38,6 +38,7 @@ on:
       - "artifacts/wow-engine/v17/d1_candidate_registry.py"
       - "artifacts/wow-engine/v17/d1_bulk_candidate_registry.py"
       - "artifacts/wow-engine/v17/nhl_model_maintenance.py"
+      - "artifacts/wow-engine/v17/nhl_timeline_refresh_client.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_binary_candidate_lifecycle.py"
@@ -46,6 +47,7 @@ on:
       - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
       - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_nhl_workflow_oidc_refresh_contract.py"
+      - "artifacts/wow-engine/tests/test_v17_nhl_timeline_refresh_client.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
 
 permissions:
