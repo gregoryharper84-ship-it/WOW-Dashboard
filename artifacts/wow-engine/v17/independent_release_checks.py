@@ -24,6 +24,7 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engineering_incident_identity import exact_incident_id  # noqa: E402
+from sirt_review_evidence import collect_and_evaluate as sirt_collect, decision as sirt_decision  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -232,6 +233,7 @@ def gather(
     current_review_active: bool = False,
     independent_review_active: bool = True,
     zero_credit_enabled: bool = False,
+    sirt_enabled: bool = False,
     source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -301,9 +303,10 @@ def gather(
     ev["qa_review_policy"] = qa_review_policy
     ev["current_review_active"] = current_review_active
     ev["zero_credit_enabled"] = zero_credit_enabled
+    ev["sirt_enabled"] = sirt_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
             errors.append("QA_REVIEW_POLICY_MODE_INVALID")
         else:
             independent_review_active = mode in {"independent", "canary"}
@@ -314,6 +317,28 @@ def gather(
             except (TypeError, ValueError):
                 errors.append("QA_REVIEW_POLICY_RUN_ID_INVALID")
     ev["independent_review_active"] = independent_review_active
+    # Separate authenticated SIRT observations are collected from GitHub by
+    # protected main, never accepted from the PR body or candidate artifacts.
+    ev["sirt_review_evidence"] = None
+    if (qa_review_policy or {}).get("mode") == "sirt":
+        token = os.environ.get("GH_TOKEN", "")
+        try:
+            reviewer_id = int(os.environ.get("WOW_SIRT_REVIEWER_USER_ID", ""))
+        except ValueError:
+            reviewer_id = 0
+        if reviewer_id <= 0 or not token:
+            ev["sirt_review_evidence"] = sirt_decision(
+                "SIRT_REVIEWER_IDENTITY_NOT_BOUND", sha=expected_head,
+            )
+        else:
+            try:
+                ev["sirt_review_evidence"] = sirt_collect(
+                    pr_number, expected_head, reviewer_id, token,
+                )
+            except Exception:  # noqa: BLE001 - authenticated upstream outage must HOLD
+                ev["sirt_review_evidence"] = sirt_decision(
+                    "SIRT_GITHUB_EVIDENCE_UNAVAILABLE", sha=expected_head,
+                )
     if independent_review_active:
         if source_review_data is not None:
             ev["source_review"] = {
@@ -739,11 +764,18 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     if not files:
         findings.append("QA_FILES_EMPTY")
     policy = ev.get("qa_review_policy")
+    # Activation must dominate historical policy artifacts, including a
+    # previously successful legacy/zero-credit/Gemini review or no receipt.
+    # Reuse the existing typed conflict; never upgrade a stale PASS.
+    if ev.get("sirt_enabled") is True and (
+        not isinstance(policy, dict) or policy.get("mode") != "sirt"
+    ):
+        findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
     if policy is not None:
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
         scope = policy.get("canary_scope") if isinstance(policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
             # The protected-main certifier owns the narrow R-class allowlist.
@@ -765,6 +797,63 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                     or target.get("head_sha") != head
                     or target.get("head_ref") != (pr.get("head_ref") or "")):
                 findings.append("QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH")
+        elif mode == "sirt":
+            # Protected-main gather independently fetches SIRT from GitHub;
+            # caller-authored JSON or a PR-body flag cannot create this receipt.
+            if (
+                ev.get("sirt_enabled") is not True
+                or ev.get("current_review_active") is True
+                or ev.get("zero_credit_enabled") is True
+                or ev.get("independent_review_active") is not False
+                or ev.get("source_review") is not None
+            ):
+                findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
+            if not isinstance(target, dict) or (
+                target.get("pr_number") != ev.get("pr_number")
+                or target.get("head_sha") != head
+                or target.get("head_ref") != (pr.get("head_ref") or "")
+            ) or scope is not None:
+                findings.append("QA_SIRT_REVIEW_POLICY_TARGET_MISMATCH")
+            receipt = ev.get("sirt_review_evidence")
+            if not isinstance(receipt, dict):
+                findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_MISSING")
+            else:
+                reviewer = receipt.get("reviewer")
+                actual_reviews = ev.get("reviews") or []
+                same_approved_review = (
+                    isinstance(reviewer, dict)
+                    and any(
+                        isinstance(review, dict)
+                        and review.get("user") == reviewer.get("login")
+                        and review.get("state") == "APPROVED"
+                        and review.get("commit_id") == head
+                        and review.get("submitted_at") == reviewer.get("submitted_at")
+                        for review in actual_reviews
+                    )
+                )
+                if (
+                    receipt.get("schema_version") != 1
+                    or receipt.get("review_status") != "EVIDENCE_READY"
+                    or receipt.get("code") != "SIRT_SOURCE_REVIEW_EVIDENCE_READY"
+                    or receipt.get("head_sha") != head
+                    or receipt.get("required_check_names") != list(REQUIRED_REGRESSION_CHECKS)
+                    or receipt.get("findings") != []
+                    or receipt.get("independent_scientific_acceptance_required") is not True
+                    or receipt.get("protected_release_authority_required") is not True
+                    or receipt.get("can_execute") is not False
+                    or receipt.get("merge_or_release_authorized") is not False
+                    or receipt.get("model_certified") is not False
+                    or receipt.get("probability_publishable") is not False
+                    or not same_approved_review
+                    or type(reviewer.get("id")) is not int
+                    or reviewer["id"] <= 0
+                    or type(reviewer.get("user_id")) is not int
+                    or reviewer["user_id"] <= 0
+                    or reviewer["user_id"] == pr.get("author_id")
+                    or str(reviewer.get("login") or "").casefold() == str(ev.get("owner_login") or "").casefold()
+                    or reviewer.get("commit_id") != head
+                ):
+                    findings.append("QA_SIRT_INDEPENDENT_EVIDENCE_INVALID")
         elif mode == "legacy":
             if ev.get("independent_review_active") is not False:
                 findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
@@ -820,7 +909,7 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
-    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit"}:
+    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
@@ -870,6 +959,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--expected-head", required=True)
     g.add_argument("--legacy-review-policy", action="store_true")
     g.add_argument("--zero-credit-policy-enabled", action="store_true")
+    g.add_argument("--sirt-review-policy-enabled", action="store_true")
     g.add_argument("--source-review-json", type=Path)
     g.add_argument("--source-review-run-json", type=Path)
     g.add_argument("--source-review-artifact-id", type=int)
@@ -962,6 +1052,7 @@ def main(argv: list[str] | None = None) -> int:
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
             zero_credit_enabled=args.zero_credit_policy_enabled,
+            sirt_enabled=args.sirt_review_policy_enabled,
             source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,

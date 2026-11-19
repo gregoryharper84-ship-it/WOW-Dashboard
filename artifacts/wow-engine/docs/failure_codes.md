@@ -19,6 +19,17 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `SIRT_TARGET_INVALID` | SIRT source review observer | Malformed repository/PR or expected head; reject before API calls. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_EVIDENCE_INVALID` | SIRT source review observer | Authenticated GitHub response has invalid identity/check structure. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_PR_CHANGED_DURING_REVIEW` | SIRT source review observer | PR head, draft, state, or bound identity changed while authenticated review/check evidence was collected. **Recovery:** rerun exact-head review only after stable PR identity; always HOLD. | No |
+| `SIRT_REVIEWER_IDENTITY_NOT_BOUND` | SIRT source review observer | Protected reviewer ID, owner, or head author unavailable or ambiguous. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_REVIEWER_NOT_INDEPENDENT` | SIRT source review observer | Reviewer is PR author, repository owner, or head commit author. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_INDEPENDENT_EXACT_HEAD_APPROVAL_MISSING` | SIRT source review observer | No current APPROVED review by the uniquely bound independent GitHub principal at exact SHA. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_REQUIRED_CHECK_MISSING` | SIRT source review observer | Required native check absent or from a wrong GitHub App/commit. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_REQUIRED_CHECK_NOT_GREEN` | SIRT source review observer | Latest pinned native check not successfully completed. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_GITHUB_EVIDENCE_UNAVAILABLE` | SIRT source review observer | Authenticated GitHub request failed; do not accept local unverified substitute. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_EVIDENCE_PAGINATION_INCOMPLETE` | SIRT source review observer | Evidence inventory exceeds retrieved pages or is malformed. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
+| `SIRT_EVIDENCE_HOLD` | SIRT source review observer | One or more verified identity, review or native-check findings. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | No |
 | `NFL_EXACT_VERSION_EVIDENCE_CONSISTENT` | NFL independent read-only exact-version forward evidence observer | Validated 100+ exact-version model/artifact/grade rows have arithmetic and chronology consistent with the supplied health receipt. Informational evidence only: independent certification, publication, and production Action remain unproven. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
 | `NFL_EXACT_VERSION_COHORT_MISMATCH` | NFL independent read-only exact-version forward evidence observer | A verified-grade row has a different expected model version, model artifact ID, or artifact checksum. Recovery: obtain immutable exact-artifact verified rows; do not borrow another champion's health. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
 | `NFL_FORWARD_EVIDENCE_INSUFFICIENT` | NFL independent read-only exact-version forward evidence observer | Fewer than the existing 100 required verified grades, or fewer than the declared minimum. Recovery: acquire genuine additional settled prospective grades. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
@@ -248,6 +259,12 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 
 | Code | Owning lane/stage | Exact condition | Rank eligible? |
 |---|---|---|---:|
+| `QA_SIRT_INDEPENDENT_EVIDENCE_MISSING` | Existing independent QA | SIRT mode selected but no authenticated GitHub review receipt is present. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | N/A |
+| `QA_SIRT_INDEPENDENT_EVIDENCE_INVALID` | Existing independent QA | Receipt fails exact-head, nonauthor, GitHub review or nonauthorizing invariant. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | N/A |
+| `QA_SIRT_REVIEW_POLICY_CONFLICT` | Existing independent QA | SIRT mode improperly overlaps Gemini/source-review activation. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | N/A |
+| `QA_SIRT_REVIEW_POLICY_TARGET_MISMATCH` | Existing independent QA | SIRT QA policy target does not match authenticated current PR/head. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | N/A |
+| `QA_SIRT_REVIEW_MODES_CONFLICT` | Existing QA workflow | SIRT activation conflicts with Gemini, zero-credit or canary review mode. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | N/A |
+| `QA_SIRT_POLICY_INVALID` | Existing QA workflow | Malformed opt-in review-mode variable. **Recovery:** repair authentic upstream evidence or protected settings; always HOLD. | N/A |
 | `QA_INPUT_HEAD_SHA_INVALID` | QA manual dispatch | Optional requested head SHA is malformed; no QA decision is published. | N/A |
 | `QA_INPUT_HEAD_SHA_STALE` | QA manual dispatch | Requested head SHA does not equal the current PR head; dispatch aborts. | N/A |
 | `QA_REVIEW_MODES_CONFLICT` | QA mode selection | Zero-credit and API-backed adversarial review flags are both true; neither mode is silently substituted. | N/A |
