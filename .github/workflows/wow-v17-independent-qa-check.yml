@@ -293,6 +293,11 @@ jobs:
       - name: Run isolated read-only Gemini semantic review
         id: review
         if: steps.policy.outputs.review_active == 'true'
+        # The PR-head signed QA check, not this main-branch workflow job,
+        # records a semantic reviewer/provider HOLD. Preserve step.outcome=failure
+        # for the unconditional terminal reducer and PR-head check publisher.
+        # An inability to publish that check still fails this job.
+        continue-on-error: true
         shell: bash
         env:
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
@@ -307,7 +312,7 @@ jobs:
 
       - name: Recheck PR head and diff after review
         id: recheck
-        if: steps.policy.outputs.review_active == 'true'
+        if: steps.policy.outputs.review_active == 'true' && steps.review.outcome == 'success'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -330,7 +335,7 @@ jobs:
 
       - name: Build versioned exact-head review artifact
         id: source_review
-        if: steps.policy.outputs.review_active == 'true'
+        if: steps.policy.outputs.review_active == 'true' && steps.review.outcome == 'success'
         shell: bash
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
@@ -354,7 +359,7 @@ jobs:
 
       - name: Upload short-lived exact-head review receipt
         id: source_review_artifact
-        if: steps.policy.outputs.review_active == 'true'
+        if: steps.policy.outputs.review_active == 'true' && steps.review.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-independent-source-review-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -403,7 +408,7 @@ jobs:
 
       - name: Decide at exact head (read-only)
         id: decide
-        if: steps.target.outputs.pr_number != ''
+        if: steps.target.outputs.pr_number != '' && (steps.policy.outputs.review_active != 'true' || steps.review.outcome == 'success')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
