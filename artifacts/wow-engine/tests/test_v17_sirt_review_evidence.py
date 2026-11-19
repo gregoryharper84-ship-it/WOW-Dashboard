@@ -136,3 +136,21 @@ def test_unidentified_head_commit_author():
     c = case()
     c["head_commit_author_id"] = None
     hold(c, "SIRT_REVIEWER_IDENTITY_NOT_BOUND")
+
+
+def test_nonstring_expected_sha_is_typed_hold():
+    c = case()
+    c["expected_sha"] = None
+    assert evaluate(**c)["code"] == "SIRT_TARGET_INVALID"
+
+
+def test_malformed_head_dict_is_typed_hold():
+    c = case()
+    c["pr"]["head"] = "garbled"
+    hold(c, "SIRT_PR_IDENTITY_OR_HEAD_INVALID")
+
+
+def test_malformed_check_app_is_missing_trusted_check():
+    c = case()
+    c["check_runs"][0]["app"] = "forged"
+    hold(c, "SIRT_REQUIRED_CHECK_MISSING:" + REQUIRED[0])
