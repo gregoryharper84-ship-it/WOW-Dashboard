@@ -48,7 +48,11 @@ def evidence():
             "name": checks.QA_CHECK, "head_sha": HEAD, "app_id": 111,
             "id": 100, "completed_at": "2026-11-19T13:01:00Z",
             "status": "completed", "conclusion": "success",
-        }],
+        }] + [{
+            "name": name, "head_sha": HEAD, "app_id": checks.GITHUB_ACTIONS_APP_ID,
+            "id": 101 + i, "completed_at": "2026-11-19T13:00:00Z",
+            "status": "completed", "conclusion": "success",
+        } for i, name in enumerate(checks.QA_EVIDENCE_CHECKS)],
     }
 
 
@@ -177,3 +181,61 @@ def test_invalid_policy_cannot_crash_or_pass():
     ev = evidence()
     ev["qa_review_policy"] = ["malformed"]
     assert "RELEASE_QA_REVIEW_POLICY_MISSING" in decide(ev)
+
+
+def test_current_exact_head_regression_supersedes_prior_green():
+    for changed_status, changed_conclusion in (
+        ("completed", "failure"),
+        ("in_progress", None),
+        ("queued", None),
+    ):
+        ev = evidence()
+        check_name = checks.QA_EVIDENCE_CHECKS[0]
+        ev["check_runs"].append({
+            "name": check_name,
+            "head_sha": HEAD,
+            "app_id": checks.GITHUB_ACTIONS_APP_ID,
+            "id": 99999, "completed_at": None,
+            "status": changed_status, "conclusion": changed_conclusion,
+        })
+        assert "RELEASE_QA_EVIDENCE_FAILED:" + check_name in decide(ev)
+
+
+def test_missing_or_wrong_app_regression_holds():
+    for variant in ("missing", "foreign", "stale"):
+        ev = evidence()
+        check_name = checks.QA_EVIDENCE_CHECKS[0]
+        check = next(x for x in ev["check_runs"] if x["name"] == check_name)
+        if variant == "missing":
+            ev["check_runs"].remove(check)
+        elif variant == "foreign":
+            check["app_id"] = 99999
+        else:
+            check["head_sha"] = "b" * 40
+        assert "RELEASE_QA_EVIDENCE_MISSING:" + check_name in decide(ev)
+
+
+def test_review_challenge_or_dismissal_after_qa_revokes_receipt():
+    for state in ("CHANGES_REQUESTED", "DISMISSED"):
+        ev = evidence()
+        reviewer = ev["sirt_review_evidence"]["reviewer"]
+        ev["reviews"].append({
+            "user": reviewer["login"], "state": state,
+            "commit_id": HEAD, "submitted_at": "2026-11-19T13:05:00Z",
+        })
+        assert "RELEASE_QA_SIRT_INDEPENDENT_EVIDENCE_INVALID" in decide(ev)
+
+
+def test_trailing_comment_does_not_revoke_independent_approval():
+    ev = evidence()
+    ev["reviews"].append({
+        "user": "independent-reviewer", "state": "COMMENTED",
+        "commit_id": HEAD, "submitted_at": "2026-11-19T13:06:00Z",
+    })
+    assert decide(ev) == []
+
+
+def test_ambiguous_timestamp_fails_closed():
+    ev = evidence()
+    ev["reviews"].append(dict(ev["reviews"][0]))
+    assert "RELEASE_QA_SIRT_INDEPENDENT_EVIDENCE_INVALID" in decide(ev)
