@@ -24,6 +24,10 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engineering_incident_identity import exact_incident_id  # noqa: E402
+from solo_automated_verification import (  # noqa: E402
+    collect_and_evaluate as solo_collect,
+    decision as solo_decision,
+)
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -232,6 +236,7 @@ def gather(
     current_review_active: bool = False,
     independent_review_active: bool = True,
     zero_credit_enabled: bool = False,
+    solo_verified_enabled: bool = False,
     source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -301,9 +306,10 @@ def gather(
     ev["qa_review_policy"] = qa_review_policy
     ev["current_review_active"] = current_review_active
     ev["zero_credit_enabled"] = zero_credit_enabled
+    ev["solo_verified_enabled"] = solo_verified_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "solo_verified"}:
             errors.append("QA_REVIEW_POLICY_MODE_INVALID")
         else:
             independent_review_active = mode in {"independent", "canary"}
@@ -314,6 +320,43 @@ def gather(
             except (TypeError, ValueError):
                 errors.append("QA_REVIEW_POLICY_RUN_ID_INVALID")
     ev["independent_review_active"] = independent_review_active
+    # Solo-maintainer automated verification is collected directly from GitHub
+    # by protected main, never accepted from the PR body or candidate artifacts.
+    ev["solo_verification_evidence"] = None
+    if (qa_review_policy or {}).get("mode") == "solo_verified":
+        token = os.environ.get("GH_TOKEN", "")
+        try:
+            qa_id = int(os.environ.get("WOW_QA_APP_ID", ""))
+        except ValueError:
+            qa_id = 0
+        try:
+            rel_id = int(os.environ.get("WOW_RELEASE_APP_ID", ""))
+        except ValueError:
+            rel_id = 0
+        allow_solo_owner = os.environ.get("WOW_QA_SOLO_OWNER_ADMIN_ACCEPTED", "").lower() == "true"
+        if not token:
+            ev["solo_verification_evidence"] = solo_decision(
+                "SOLO_GITHUB_EVIDENCE_UNAVAILABLE",
+                sha=expected_head,
+                findings=["SOLO_GITHUB_EVIDENCE_UNAVAILABLE"],
+            )
+        else:
+            try:
+                ev["solo_verification_evidence"] = solo_collect(
+                    pr_number,
+                    expected_head,
+                    token=token,
+                    qa_app_id=qa_id,
+                    release_app_id=rel_id,
+                    require_independent_admin=not allow_solo_owner,
+                    allow_solo_owner_admin_for_protected=allow_solo_owner,
+                )
+            except Exception:  # noqa: BLE001 - upstream outage must HOLD
+                ev["solo_verification_evidence"] = solo_decision(
+                    "SOLO_GITHUB_EVIDENCE_UNAVAILABLE",
+                    sha=expected_head,
+                    findings=["SOLO_GITHUB_EVIDENCE_UNAVAILABLE"],
+                )
     if independent_review_active:
         if source_review_data is not None:
             ev["source_review"] = {
@@ -739,11 +782,17 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     if not files:
         findings.append("QA_FILES_EMPTY")
     policy = ev.get("qa_review_policy")
+    # Activation must dominate historical policy artifacts (legacy/zero-credit/
+    # Gemini or missing receipt); never upgrade a stale PASS.
+    if ev.get("solo_verified_enabled") is True and (
+        not isinstance(policy, dict) or policy.get("mode") != "solo_verified"
+    ):
+        findings.append("QA_SOLO_VERIFIED_POLICY_CONFLICT")
     if policy is not None:
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
         scope = policy.get("canary_scope") if isinstance(policy, dict) else None
-        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit", "solo_verified"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
         elif mode == "zero_credit":
             # The protected-main certifier owns the narrow R-class allowlist.
@@ -765,6 +814,56 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                     or target.get("head_sha") != head
                     or target.get("head_ref") != (pr.get("head_ref") or "")):
                 findings.append("QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH")
+        elif mode == "solo_verified":
+            # Protected-main gather independently evaluates solo automated
+            # verification; PR-body flags or caller JSON cannot forge it.
+            if (
+                ev.get("solo_verified_enabled") is not True
+                or ev.get("current_review_active") is True
+                or ev.get("zero_credit_enabled") is True
+                or ev.get("independent_review_active") is not False
+                or ev.get("source_review") is not None
+            ):
+                findings.append("QA_SOLO_VERIFIED_POLICY_CONFLICT")
+            if (
+                not isinstance(target, dict)
+                or target.get("pr_number") != ev.get("pr_number")
+                or target.get("head_sha") != head
+                or target.get("head_ref") != (pr.get("head_ref") or "")
+                or scope is not None
+            ):
+                findings.append("QA_SOLO_VERIFIED_POLICY_TARGET_MISMATCH")
+            receipt = ev.get("solo_verification_evidence")
+            if not isinstance(receipt, dict):
+                findings.append("QA_SOLO_VERIFIED_EVIDENCE_MISSING")
+            else:
+                valid_codes = {
+                    "SOLO_R_EVIDENCE_READY",
+                    "SOLO_PROTECTED_EVIDENCE_READY",
+                    "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY",
+                }
+                audit = receipt.get("administration_audit")
+                if (
+                    receipt.get("schema_version") != 1
+                    or receipt.get("verification_status") != "EVIDENCE_READY"
+                    or receipt.get("code") not in valid_codes
+                    or receipt.get("head_sha") != head
+                    or receipt.get("required_check_names") != list(REQUIRED_REGRESSION_CHECKS)
+                    or receipt.get("findings") != []
+                    or receipt.get("independent_human_review_performed") is not False
+                    or receipt.get("independent_scientific_acceptance_required") is not True
+                    or receipt.get("protected_release_authority_required") is not True
+                    or receipt.get("merge_or_release_authorized") is not False
+                    or receipt.get("model_certified") is not False
+                    or receipt.get("probability_publishable") is not False
+                    or receipt.get("can_execute") is not False
+                    or receipt.get("dry_run_only") is not True
+                    or not isinstance(audit, dict)
+                    or audit.get("execution_isolated_from_pr_code") is not True
+                    or audit.get("distinct_qa_release_apps") is not True
+                    or audit.get("independent_human_review_performed") is not False
+                ):
+                    findings.append("QA_SOLO_VERIFIED_EVIDENCE_INVALID")
         elif mode == "legacy":
             if ev.get("independent_review_active") is not False:
                 findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
@@ -820,7 +919,7 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
-    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit"}:
+    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit", "solo_verified"}:
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
@@ -839,7 +938,9 @@ def decision(kind: str, findings: list[str], ev: dict) -> dict[str, Any]:
     # only the superseded commit and can never overwrite the current head's check.
     head = ev.get("expected_head_sha")
     passed = not findings
-    no_api = (ev.get("qa_review_policy") or {}).get("mode") == "zero_credit"
+    policy_mode = (ev.get("qa_review_policy") or {}).get("mode")
+    no_api = policy_mode == "zero_credit"
+    solo_mode = policy_mode == "solo_verified"
     return {
         "check_name": QA_CHECK if kind == "qa" else RELEASE_CHECK,
         "head_sha": head,
@@ -847,6 +948,7 @@ def decision(kind: str, findings: list[str], ev: dict) -> dict[str, Any]:
         "findings": findings,
         "title": ("PASS" if passed else f"HOLD: {len(findings)} finding(s)") + f" at {str(head)[:12]}",
         "summary": (("ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source review performed. Exact-head evidence satisfied. No merge/deploy authority. can_execute=false." if no_api else
+                     "SOLO-MAINTAINER AUTOMATED VERIFICATION ONLY; no independent human review performed. Exact-head App-isolated evidence satisfied. No merge, deploy, or model-certification authority. can_execute=false." if solo_mode else
                      "All exact-head conditions satisfied. Evidence only: not merge, deployment or "
                      "probability authority. can_execute=false.") if passed else
                     "Typed findings:\n" + "\n".join(f"- `{f}`" for f in findings) +
@@ -870,6 +972,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--expected-head", required=True)
     g.add_argument("--legacy-review-policy", action="store_true")
     g.add_argument("--zero-credit-policy-enabled", action="store_true")
+    g.add_argument("--solo-verified-policy-enabled", action="store_true")
     g.add_argument("--source-review-json", type=Path)
     g.add_argument("--source-review-run-json", type=Path)
     g.add_argument("--source-review-artifact-id", type=int)
@@ -962,6 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
             zero_credit_enabled=args.zero_credit_policy_enabled,
+            solo_verified_enabled=args.solo_verified_policy_enabled,
             source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,

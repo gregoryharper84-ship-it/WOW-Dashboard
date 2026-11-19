@@ -234,8 +234,12 @@ jobs:
           INPUT_HEAD_SHA: ${{ inputs.head_sha }}
           QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+          WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          WOW_RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+          WOW_QA_SOLO_OWNER_ADMIN_ACCEPTED: ${{ vars.WOW_QA_SOLO_OWNER_ADMIN_ACCEPTED }}
           REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
           ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          SOLO_VERIFIED_ACTIVATION: ${{ vars.WOW_QA_SOLO_VERIFICATION_ACTIVE }}
           SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || inputs.qa_run_id }}
           SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.qa_run_attempt }}
         run: |
@@ -290,7 +294,13 @@ jobs:
             ""|false) zero_credit_active=false ;;
             *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
           esac
+          case "${SOLO_VERIFIED_ACTIVATION:-}" in
+            true) solo_verified_active=true ;;
+            ""|false) solo_verified_active=false ;;
+            *) echo "::error::QA_SOLO_VERIFIED_POLICY_INVALID"; exit 1 ;;
+          esac
           [ "$zero_credit_active" != "true" ] || gather_args+=(--zero-credit-policy-enabled)
+          [ "$solo_verified_active" != "true" ] || gather_args+=(--solo-verified-policy-enabled)
           [ "$current_review_active" != "true" ] || gather_args+=(--current-review-active)
           [ "$review_mode" != "legacy" ] || gather_args+=(--legacy-review-policy)
           python "$tool" "${gather_args[@]}" > "$ev"

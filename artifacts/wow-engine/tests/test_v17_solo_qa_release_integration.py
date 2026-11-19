@@ -1,0 +1,229 @@
+"""E2E integration tests wiring solo_verified into QA, Release, policy receipts & workflows."""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "artifacts/wow-engine/v17"))
+
+import independent_release_checks as irc  # noqa: E402
+import solo_automated_verification as sav  # noqa: E402
+
+_RECEIPT_SPEC = importlib.util.spec_from_file_location(
+    "_solo_receipt_mod",
+    REPO_ROOT / ".github/scripts/independent_source_review_receipt.py",
+)
+assert _RECEIPT_SPEC and _RECEIPT_SPEC.loader
+receipt_mod = importlib.util.module_from_spec(_RECEIPT_SPEC)
+_RECEIPT_SPEC.loader.exec_module(receipt_mod)
+
+HEAD = "c" * 40
+QA_APP_ID = "5245832"
+RELEASE_APP_ID = "5245853"
+ROUTINE_FILE = "artifacts/wow-engine/learning/README.md"
+
+
+def _qa_run():
+    return {
+        "id": 987654321,
+        "run_attempt": 1,
+        "name": "wow-v17-independent-qa-check",
+        "workflow_id": 380562324,
+        "path": ".github/workflows/wow-v17-independent-qa-check.yml",
+        "event": "workflow_run",
+        "head_branch": "main",
+        "repository": sav.REPO,
+        "head_sha": "d" * 40,
+    }
+
+
+def _policy(mode: str = "solo_verified", head: str = HEAD):
+    return receipt_mod.build_qa_review_policy(
+        repository=sav.REPO,
+        pr_number=2740,
+        head_sha=head,
+        head_ref="feature/solo-test",
+        mode=mode,
+        run=_qa_run(),
+        now=datetime(2026, 11, 19, 20, 0, tzinfo=timezone.utc),
+    )
+
+
+def _solo_receipt(head: str = HEAD, **overrides):
+    rec = sav.decision(
+        "SOLO_R_EVIDENCE_READY",
+        sha=head,
+        change_class="R",
+        checks=sav.REQUIRED_NATIVE_CHECKS,
+        assurance_level="SOLO_AUTOMATED_DETERMINISTIC_VERIFICATION",
+        administration_audit={
+            "execution_isolated_from_pr_code": True,
+            "distinct_qa_release_apps": True,
+            "qa_app_id": int(QA_APP_ID),
+            "release_app_id": int(RELEASE_APP_ID),
+            "independent_administration_proven": False,
+            "independent_human_review_performed": False,
+            "owner_administered_apps": True,
+        },
+    )
+    rec.update(overrides)
+    return rec
+
+
+def _base_ev(head: str = HEAD, mode: str = "solo_verified", include_qa_check: bool = False):
+    runs = [
+        {
+            "id": i + 1,
+            "name": name,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "app_id": 15368,
+        }
+        for i, name in enumerate(irc.QA_EVIDENCE_CHECKS)
+    ]
+    if include_qa_check:
+        runs.append(
+            {
+                "id": 999,
+                "name": irc.QA_CHECK,
+                "head_sha": head,
+                "status": "completed",
+                "conclusion": "success",
+                "app_id": int(QA_APP_ID),
+            }
+        )
+    return {
+        "repository": sav.REPO,
+        "pr_number": 2740,
+        "expected_head_sha": head,
+        "evidence_errors": [],
+        "owner_login": "gregoryharper84-ship-it",
+        "pr": {
+            "number": 2740,
+            "body": "Incident: #2020\nSolo automated verification test.",
+            "state": "open",
+            "draft": False,
+            "merged": False,
+            "head_sha": head,
+            "head_ref": "feature/solo-test",
+            "head_repo": sav.REPO,
+            "base_ref": "main",
+            "author": "gregoryharper84-ship-it",
+            "author_id": 285088163,
+            "changed_files": 1,
+        },
+        "files": [ROUTINE_FILE],
+        "source_review_paths": [ROUTINE_FILE],
+        "zero_credit_disallowed_file_operations": [],
+        "check_runs": runs,
+        "native_workflow_runs": [],
+        "reviews": [],
+        "qa_review_policy": _policy(mode=mode, head=head),
+        "current_review_active": False,
+        "zero_credit_enabled": False,
+        "solo_verified_enabled": True,
+        "independent_review_active": False,
+        "source_review": None,
+        "solo_verification_evidence": _solo_receipt(head=head),
+    }
+
+
+def test_qa_review_policy_builds_and_verifies_solo_verified_mode():
+    now = datetime(2026, 11, 19, 20, 0, tzinfo=timezone.utc)
+    pol = _policy(mode="solo_verified")
+    assert pol["mode"] == "solo_verified"
+    assert pol["canary_scope"] is None
+    api_run = {
+        **_qa_run(),
+        "repository": {"full_name": sav.REPO},
+        "head_repository": {"full_name": sav.REPO},
+        "status": "completed",
+        "conclusion": "success",
+    }
+    receipt_mod.verify_qa_review_policy(
+        pol,
+        run=api_run,
+        expected_repository=sav.REPO,
+        expected_pr_number=2740,
+        expected_head_sha=HEAD,
+        expected_attempt=1,
+        now=now,
+    )
+
+
+def test_qa_and_release_pass_for_valid_solo_verified_evidence_with_honest_summary():
+    ev = _base_ev(include_qa_check=True)
+    qa_f = irc.qa_findings(ev)
+    assert qa_f == []
+    qa_dec = irc.decision("qa", qa_f, ev)
+    assert qa_dec["conclusion"] == "success"
+    assert "no independent human review performed" in qa_dec["summary"]
+    assert qa_dec["can_execute"] is False
+    assert qa_dec["merge_or_release_authorized"] is False
+
+    rel_f = irc.release_findings(ev, qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID)
+    assert rel_f == []
+    rel_dec = irc.decision("release", rel_f, ev)
+    assert rel_dec["conclusion"] == "success"
+    assert rel_dec["can_execute"] is False
+
+
+def test_solo_verified_activation_dominates_legacy_or_missing_policy():
+    ev = _base_ev(mode="legacy")
+    ev["solo_verified_enabled"] = True
+    findings = irc.qa_findings(ev)
+    assert "QA_SOLO_VERIFIED_POLICY_CONFLICT" in findings
+
+    ev_missing = _base_ev()
+    ev_missing["qa_review_policy"] = None
+    assert "QA_SOLO_VERIFIED_POLICY_CONFLICT" in irc.qa_findings(ev_missing)
+
+
+def test_solo_verified_rejects_forged_evidence_and_mode_conflicts():
+    # Claiming independent_human_review_performed=True must fail closed
+    ev_forged = _base_ev()
+    ev_forged["solo_verification_evidence"] = _solo_receipt(independent_human_review_performed=True)
+    assert "QA_SOLO_VERIFIED_EVIDENCE_INVALID" in irc.qa_findings(ev_forged)
+
+    # Missing evidence fails closed
+    ev_missing = _base_ev()
+    ev_missing["solo_verification_evidence"] = None
+    assert "QA_SOLO_VERIFIED_EVIDENCE_MISSING" in irc.qa_findings(ev_missing)
+
+    # Overlapping zero_credit or current_review_active fails closed
+    ev_conflict = _base_ev()
+    ev_conflict["zero_credit_enabled"] = True
+    assert "QA_SOLO_VERIFIED_POLICY_CONFLICT" in irc.qa_findings(ev_conflict)
+
+    # Release rejects foreign QA App check even if QA findings pass
+    ev_foreign = _base_ev(include_qa_check=True)
+    ev_foreign["check_runs"][-1]["app_id"] = int(RELEASE_APP_ID)
+    rel_f = irc.release_findings(ev_foreign, qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID)
+    assert "RELEASE_QA_FOREIGN_SOURCE" in rel_f
+    assert "RELEASE_QA_MISSING" in rel_f
+
+
+def test_workflows_wire_solo_verified_opt_in_with_mutual_exclusion():
+    qa_wf = yaml.safe_load((REPO_ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text())
+    rel_wf = yaml.safe_load((REPO_ROOT / ".github/workflows/wow-v17-release-authority-check.yml").read_text())
+
+    qa_steps = {s["name"]: s for s in qa_wf["jobs"]["qa"]["steps"] if "name" in s}
+    policy_step = qa_steps["Select exact-head review policy"]
+    assert "WOW_QA_SOLO_VERIFICATION_ACTIVE" in str(policy_step["env"]["SOLO_VERIFIED_ACTIVATION"])
+    assert "QA_SOLO_VERIFIED_MODES_CONFLICT" in policy_step["run"]
+    assert "mode=solo_verified" in policy_step["run"]
+
+    decide_step = qa_steps["Decide at exact head (read-only)"]
+    assert "--solo-verified-policy-enabled" in decide_step["run"]
+    assert "WOW_QA_SOLO_OWNER_ADMIN_ACCEPTED" in decide_step["env"]
+
+    rel_steps = {s["name"]: s for s in rel_wf["jobs"]["release"]["steps"] if "name" in s}
+    rel_decide = rel_steps["Decide at exact head (read-only)"]
+    assert "WOW_QA_SOLO_VERIFICATION_ACTIVE" in str(rel_decide["env"]["SOLO_VERIFIED_ACTIVATION"])
+    assert "--solo-verified-policy-enabled" in rel_decide["run"]
