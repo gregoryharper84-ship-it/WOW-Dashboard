@@ -152,6 +152,36 @@ def test_totals_direction_sanity_rejects_mean_opposite_to_selected_side():
     assert out["cards"][0]["joint_probability"] is None
 
 
+def test_nhl_total_uses_goals_process_not_basketball_possessions():
+    nhl = leg("nhl-under", "nhl-1", sport="NHL",
+              market="GAME_TOTAL", side="UNDER", line=6.5)
+    nhl["total_evidence"] = dict(
+        sport="NHL", official_event_id="nhl-1",
+        context_observed_at_utc="2026-11-19T23:40:00Z",
+        source_receipt_id="synthetic-goals-context",
+        opponent_efficiency_source_id="nhl-defense",
+        lineup_scenario_source_id="nhl-goalie",
+        rest_travel_source_id="nhl-rest",
+        tail_scenario_source_id="nhl-goal-tails",
+        sport_score_process_source_id="nhl-fitted-goals-process",
+        projected_total_score=5.6,
+        fitted_total_distribution_receipt=dict(
+            sport="NHL", official_event_id="nhl-1",
+            side="UNDER", exact_line=6.5,
+            frozen_at_utc="2026-11-19T23:45:00Z",
+            immutable_pregame_receipt_id="synthetic-nhl-total",
+            fitted_model_hash="synthetic-nhl-fit",
+            calibration_receipt_id="synthetic-nhl-calibration",
+        ),
+    )
+    out = audit_research_slips(cards([nhl, leg("other", "nba-2")]), as_of_utc=AS_OF)
+    assert out["cards"][0]["blockers"] == []
+    assert out["cards"][0]["joint_probability"] is None
+    del nhl["total_evidence"]["sport_score_process_source_id"]
+    out = audit_research_slips(cards([nhl, leg("other", "nba-2")]), as_of_utc=AS_OF)
+    assert "TOTAL_CONTEXT_MISSING" in out["cards"][0]["blockers"]
+
+
 def test_exact_quote_and_pregame_time_cannot_be_replaced_by_narrative():
     x = leg("a", "nba-a")
     x["market_quote"]["quoted_at_utc"] = "2026-11-19T23:10:00Z"
