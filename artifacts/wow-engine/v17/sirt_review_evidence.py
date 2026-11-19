@@ -49,17 +49,20 @@ def evaluate(*, repository, expected_sha, pr, reviews, check_runs,
              authorized_reviewer_ids, owner_id, head_commit_author_id=None):
     """Assess authenticated GitHub API observations; never approve promotion."""
     bad = []
-    if repository != REPO or not SHA_RE.fullmatch(expected_sha):
+    if repository != REPO or not isinstance(expected_sha, str) or not SHA_RE.fullmatch(expected_sha):
         return decision("SIRT_TARGET_INVALID", sha=expected_sha, findings=["SIRT_TARGET_INVALID"])
     if not isinstance(pr, dict) or not isinstance(reviews, list) or not isinstance(check_runs, list):
         return decision("SIRT_EVIDENCE_INVALID", sha=expected_sha, findings=["SIRT_EVIDENCE_INVALID"])
-    head = pr.get("head") or {}
-    author_id = _int_id((pr.get("user") or {}).get("id"))
+    head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+    user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
+    base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+    head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    author_id = _int_id(user.get("id"))
     auth_ids = {x for x in authorized_reviewer_ids if _int_id(x) is not None}
     if (head.get("sha") != expected_sha or pr.get("state") != "open"
         or pr.get("draft") is not False or pr.get("merged_at") is not None
-        or (pr.get("base") or {}).get("ref") != "main"
-        or (head.get("repo") or {}).get("full_name") != repository
+        or base.get("ref") != "main"
+        or head_repo.get("full_name") != repository
         or author_id is None):
         bad.append("SIRT_PR_IDENTITY_OR_HEAD_INVALID")
     if len(auth_ids) != 1 or _int_id(owner_id) is None or _int_id(head_commit_author_id) is None:
@@ -69,7 +72,8 @@ def evaluate(*, repository, expected_sha, pr, reviews, check_runs,
     approved = None
     for rid in sorted(auth_ids):
         candidate = [r for r in reviews if isinstance(r, dict)
-                     and _int_id((r.get("user") or {}).get("id")) == rid]
+                     and isinstance(r.get("user"), dict)
+                     and _int_id(r["user"].get("id")) == rid]
         if not candidate:
             continue
         # Later GitHub review IDs supersede earlier approvals for that reviewer.
@@ -89,7 +93,8 @@ def evaluate(*, repository, expected_sha, pr, reviews, check_runs,
     for name in REQUIRED:
         matches = [c for c in check_runs if isinstance(c, dict)
                    and c.get("name") == name and c.get("head_sha") == expected_sha
-                   and _int_id((c.get("app") or {}).get("id")) == ACTIONS_APP]
+                   and isinstance(c.get("app"), dict)
+                   and _int_id(c["app"].get("id")) == ACTIONS_APP]
         if not matches:
             bad.append("SIRT_REQUIRED_CHECK_MISSING:" + name)
             continue
@@ -117,7 +122,8 @@ def github_json(path, token):
 
 def collect_and_evaluate(pr_number, expected_sha, reviewer_id, token):
     """Read identities from GitHub directly, never from candidate supplied data."""
-    if type(pr_number) is not int or pr_number <= 0 or not SHA_RE.fullmatch(expected_sha):
+    if (type(pr_number) is not int or pr_number <= 0
+        or not isinstance(expected_sha, str) or not SHA_RE.fullmatch(expected_sha)):
         return decision("SIRT_TARGET_INVALID", sha=expected_sha)
     try:
         pr = github_json(f"pulls/{pr_number}", token)
