@@ -236,6 +236,7 @@ jobs:
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
           REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
           ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          WOW_SIRT_REVIEWER_USER_ID: ${{ vars.WOW_SIRT_REVIEWER_USER_ID }}
           SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || inputs.qa_run_id }}
           SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.qa_run_attempt }}
         run: |
