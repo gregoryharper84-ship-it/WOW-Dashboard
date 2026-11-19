@@ -154,3 +154,10 @@ def test_malformed_check_app_is_missing_trusted_check():
     c = case()
     c["check_runs"][0]["app"] = "forged"
     hold(c, "SIRT_REQUIRED_CHECK_MISSING:" + REQUIRED[0])
+
+
+def test_github_credential_cannot_be_forwarded_on_redirect():
+    from v17.sirt_review_evidence import NoRedirect
+    assert NoRedirect().redirect_request(
+        None, None, 302, "redirect", {}, "https://attacker.example"
+    ) is None
