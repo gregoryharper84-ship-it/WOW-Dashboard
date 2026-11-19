@@ -47,22 +47,23 @@ class TestReviewerAppPreflight(unittest.TestCase):
 
 
 class TestReviewerPreflightWiring(unittest.TestCase):
-    def test_read_only_app_scope_and_no_cost_preflight_precede_gemini_inference(self):
+    def test_retired_qa_capture_requires_hold_without_gemini_or_reviewer_token(self):
         workflow = (Path(__file__).resolve().parents[2] / "workflows" /
                     "wow-v17-independent-qa-check.yml").read_text(encoding="utf-8")
-        gate = "- name: Preflight independent semantic reviewer before inference"
-        review = "- name: Run isolated read-only Gemini semantic review"
+        self.assertNotIn("- name: Run isolated read-only Gemini semantic review", workflow)
+        self.assertNotIn("- name: Preflight independent semantic reviewer before inference", workflow)
+        self.assertNotIn("WOW_QA_REVIEW_GEMINI_API_KEY", workflow)
+        self.assertNotIn("WOW_REVIEWER_APP_PRIVATE_KEY", workflow)
+        self.assertNotIn("wow_v28_reviewer_app_preflight.py", workflow)
+        self.assertNotIn("wow_v28_gemini_qa_bridge.py", workflow)
+        gate = "- name: Reject retired independent capture mode"
         self.assertEqual(workflow.count(gate), 1)
-        self.assertLess(workflow.index(gate), workflow.index(review))
         step = workflow.split(gate, 1)[1].split("\n      - name:", 1)[0]
         self.assertIn("if: steps.policy.outputs.review_active == 'true'", step)
-        self.assertIn("python .github/scripts/wow_v28_reviewer_app_preflight.py", step)
-        self.assertIn("WOW_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.WOW_REVIEWER_APP_PRIVATE_KEY }}", step)
-        self.assertIn("WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}", step)
-        self.assertIn("GEMINI_FREE_TIER_UNVERIFIED", step)
-        self.assertIn("GEMINI_CONFIG_INVALID", step)
-        self.assertNotIn("generateContent", step)
-
+        self.assertIn("QA_LEGACY_INDEPENDENT_CAPTURE_RETIRED", step)
+        self.assertIn("exit 1", step)
+        self.assertIn("Preserve terminal QA decision for every resolved target", workflow)
+        self.assertIn("Publish exact-head check", workflow)
 
 if __name__ == "__main__":
     unittest.main()
