@@ -316,3 +316,32 @@ def test_solo_verified_policy_target_mismatch_fails_closed():
     ev = _base_ev()
     ev["qa_review_policy"]["target"]["head_ref"] = "other-branch"
     assert "QA_SOLO_VERIFIED_POLICY_TARGET_MISMATCH" in irc.qa_findings(ev)
+
+
+def test_deprecated_gemini_capture_is_absent_and_independent_mode_fails_closed():
+    # The old Gemini source-review capture (and its credential) are retired
+    # rather than silently used by the solo-maintainer QA replacement.
+    workflow_path = REPO_ROOT / ".github/workflows/wow-v17-independent-qa-check.yml"
+    raw = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(raw)
+    qa_steps = workflow["jobs"]["qa"]["steps"]
+    names = [s.get("name", "") for s in qa_steps]
+    assert "Capture complete exact-head source evidence" not in names
+    assert "Run isolated read-only Gemini semantic review" not in names
+    assert "Submit Gemini App review at exact PR head" not in names
+    assert "WOW_QA_REVIEW_GEMINI_API_KEY" not in raw
+    assert "wow_v28_gemini_qa_bridge.py" not in raw
+    assert "--capture" not in raw
+
+    reject = next(s for s in qa_steps if s.get("name") == "Reject retired independent capture mode")
+    assert reject["if"] == "steps.policy.outputs.review_active == 'true'"
+    assert "QA_LEGACY_INDEPENDENT_CAPTURE_RETIRED" in reject["run"]
+    assert "exit 1" in reject["run"]
+
+    # Terminal QA HOLD must be published even when the retired path fails;
+    # never remove native exact-head checks or the existing release workflow.
+    terminal = next(s for s in qa_steps if s.get("name") == "Preserve terminal QA decision for every resolved target")
+    publish = next(s for s in qa_steps if s.get("name") == "Publish exact-head check")
+    assert "always()" in terminal["if"]
+    assert "always()" in publish["if"]
+    assert "QA_REVIEW_EXECUTION_FAILED" in terminal["run"]
