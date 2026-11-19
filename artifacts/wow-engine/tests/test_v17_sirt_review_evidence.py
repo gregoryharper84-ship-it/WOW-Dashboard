@@ -161,3 +161,78 @@ def test_github_credential_cannot_be_forwarded_on_redirect():
     assert NoRedirect().redirect_request(
         None, None, 302, "redirect", {}, "https://attacker.example"
     ) is None
+
+
+# Authenticated GitHub collection must return a typed HOLD for malformed
+# provider records, never crash the protected independent QA producer.
+def _authenticated_payloads():
+    from copy import deepcopy
+    c = deepcopy(case())
+    return {
+        "pulls/2732": c["pr"],
+        "": {"owner": {"id": c["owner_id"]}},
+        f"commits/{SHA}": {"author": {"id": c["head_commit_author_id"]}},
+        "pulls/2732/reviews?per_page=100": c["reviews"],
+        f"commits/{SHA}/check-runs?per_page=100": {
+            "total_count": len(c["check_runs"]), "check_runs": c["check_runs"],
+        },
+    }
+
+
+def _collect_from_authenticated_records(monkeypatch, data):
+    from copy import deepcopy
+    from v17 import sirt_review_evidence
+    monkeypatch.setattr(
+        sirt_review_evidence, "github_json",
+        lambda path, token: deepcopy(data[path]),
+    )
+    return sirt_review_evidence.collect_and_evaluate(
+        2732, SHA, 202, "local-test-credential",
+    )
+
+
+def test_collector_valid_authenticated_records_are_evidence_only(monkeypatch):
+    result = _collect_from_authenticated_records(monkeypatch, _authenticated_payloads())
+    assert result["review_status"] == "EVIDENCE_READY"
+    assert result["model_certified"] is False
+    assert result["merge_or_release_authorized"] is False
+
+
+def test_collector_malformed_repo_owner_returns_typed_hold(monkeypatch):
+    data = _authenticated_payloads()
+    data[""]["owner"] = "invalid"
+    result = _collect_from_authenticated_records(monkeypatch, data)
+    assert result["review_status"] == "HOLD"
+    assert result["code"] == "SIRT_EVIDENCE_INVALID"
+
+
+def test_collector_malformed_head_commit_author_returns_typed_hold(monkeypatch):
+    data = _authenticated_payloads()
+    data[f"commits/{SHA}"]["author"] = "invalid"
+    result = _collect_from_authenticated_records(monkeypatch, data)
+    assert result["review_status"] == "HOLD"
+    assert result["code"] == "SIRT_EVIDENCE_INVALID"
+
+
+def test_collector_malformed_check_count_returns_typed_hold(monkeypatch):
+    data = _authenticated_payloads()
+    data[f"commits/{SHA}/check-runs?per_page=100"]["total_count"] = "invalid"
+    result = _collect_from_authenticated_records(monkeypatch, data)
+    assert result["review_status"] == "HOLD"
+    assert result["code"] == "SIRT_EVIDENCE_INVALID"
+
+
+def test_collector_truncated_check_inventory_returns_hold(monkeypatch):
+    data = _authenticated_payloads()
+    data[f"commits/{SHA}/check-runs?per_page=100"]["total_count"] = 999
+    result = _collect_from_authenticated_records(monkeypatch, data)
+    assert result["review_status"] == "HOLD"
+    assert result["code"] == "SIRT_EVIDENCE_PAGINATION_INCOMPLETE"
+
+
+def test_collector_changed_pr_head_returns_hold(monkeypatch):
+    data = _authenticated_payloads()
+    data["pulls/2732"]["head"]["sha"] = "b" * 40
+    result = _collect_from_authenticated_records(monkeypatch, data)
+    assert result["review_status"] == "HOLD"
+    assert "SIRT_PR_IDENTITY_OR_HEAD_INVALID" in result["findings"]
