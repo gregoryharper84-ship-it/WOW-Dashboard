@@ -234,6 +234,7 @@ def test_team_total_estimates_selected_team_not_both_combined():
     t["selected_team_id"] = "HOME"
     t["market_quote"]["market_family"] = "TEAM_TOTAL"
     t["market_quote"]["selected_team_id"] = "HOME"
+    t["total_evidence"]["selected_team_id"] = "HOME"
     t["total_evidence"]["fitted_total_distribution_receipt"]["selected_team_id"] = "HOME"
     # Synthetic home expected score is 100 possessions x 1.10 PPP = 110,
     # not 220 both teams combined.
