@@ -220,6 +220,18 @@ def discover_matchup(candidate: dict[str, Any], *, now: datetime | None = None) 
         checks = [_screen_row(row, candidate, event_start, now) for row in rows] if event_start else ["EVENT_TIME_MISSING"]
         if "CONFLICT_QUARANTINED" in checks:
             failures[metric] = "CONFLICT_QUARANTINED"
+        elif metric == "confirmed_starting_goalies":
+            # NHL research screening requires two distinct official providers.
+            # A solitary beat report or projected lineup is not confirmation.
+            official_sources = {
+                str(row["source_id"]) for row, check in zip(rows, checks)
+                if check == "RESEARCH_SOURCE_SCREENED"
+                and row.get("source_class") in ("LEAGUE_OFFICIAL", "TEAM_OFFICIAL")
+            }
+            if len(official_sources) >= 2:
+                screened.append(metric)
+            else:
+                failures[metric] = "TWO_INDEPENDENT_OFFICIAL_GOALIE_SOURCES_REQUIRED"
         elif "RESEARCH_SOURCE_SCREENED" in checks:
             screened.append(metric)
         else:
