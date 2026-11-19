@@ -1036,12 +1036,23 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
-    qa = _latest(runs, QA_CHECK, head, qa_app_id) if str(qa_app_id).isdigit() else None
+    if mode == "sirt" and str(qa_app_id).isdigit():
+        # A queued or failing newer QA run supersedes a completed old PASS.
+        # The Release App checks the latest source-App evidence by GitHub ID.
+        matches = [
+            run for run in runs if isinstance(run, dict)
+            and run.get("name") == QA_CHECK and run.get("head_sha") == head
+            and str(run.get("app_id")) == str(qa_app_id)
+            and type(run.get("id")) is int and run["id"] > 0
+        ] if isinstance(runs, list) else []
+        qa = max(matches, key=lambda run: run["id"], default=None)
+    else:
+        qa = _latest(runs, QA_CHECK, head, qa_app_id) if str(qa_app_id).isdigit() else None
     if qa is None:
         if any(r.get("name") == QA_CHECK and r.get("head_sha") == head for r in runs):
             findings.append("RELEASE_QA_FOREIGN_SOURCE")
         findings.append("RELEASE_QA_MISSING")
-    elif qa.get("conclusion") != "success":
+    elif qa.get("conclusion") != "success" or qa.get("status") != "completed":
         findings.append("RELEASE_QA_FAILED")
     return sorted(set(findings))
 
