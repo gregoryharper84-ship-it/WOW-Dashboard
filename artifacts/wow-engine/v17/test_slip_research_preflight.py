@@ -50,8 +50,8 @@ def total(row, event, side="OVER", line=218.5):
         lineup_scenario_source_id="synthetic-lineups",
         rest_travel_source_id="synthetic-rest",
         tail_scenario_source_id="synthetic-tails",
-        projected_possessions=101.0,
-        home_adjusted_ppp=1.11, away_adjusted_ppp=1.10,
+        projected_possessions=100.0,
+        home_adjusted_ppp=1.10, away_adjusted_ppp=1.10,
         fitted_total_distribution_receipt=dict(
             sport="NBA", official_event_id=event, side=side,
             exact_line=line,
@@ -136,6 +136,20 @@ def test_totals_require_opponent_pace_lineups_rest_and_fitted_distribution_recei
     result = audit_research_slips(cards([philly, leg("heat", "heat")]), as_of_utc=AS_OF)
     assert result["cards"][0]["blockers"] == []
     assert result["cards"][0]["joint_probability_certified"] is False
+
+
+def test_totals_direction_sanity_rejects_mean_opposite_to_selected_side():
+    x = total("oakland", "oakland-asu", side="OVER", line=148.5)
+    # Supplied pace and adjusted-PPP suggest 220, so OVER 148.5 is
+    # direction-consistent (not certified or an authenticated fitted model).
+    out = audit_research_slips(cards([x, leg("other", "other")]), as_of_utc=AS_OF)
+    assert "TOTAL_POINT_ESTIMATE_CONTRADICTS_SIDE" not in out["cards"][0]["blockers"]
+    x["exact_line"] = 232.5
+    x["market_quote"]["exact_line"] = 232.5
+    x["total_evidence"]["fitted_total_distribution_receipt"]["exact_line"] = 232.5
+    out = audit_research_slips(cards([x, leg("other", "other")]), as_of_utc=AS_OF)
+    assert "TOTAL_POINT_ESTIMATE_CONTRADICTS_SIDE" in out["cards"][0]["blockers"]
+    assert out["cards"][0]["joint_probability"] is None
 
 
 def test_exact_quote_and_pregame_time_cannot_be_replaced_by_narrative():
