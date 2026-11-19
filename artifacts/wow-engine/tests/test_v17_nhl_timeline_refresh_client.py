@@ -97,3 +97,16 @@ def test_summary_fallback_survives_unexpected_client_crash():
     assert "id: source_refresh" in content
     assert "steps.source_refresh.outcome" in content
     assert "NHL_SOURCE_REFRESH_RUNNER_FAILED" in content
+
+
+def test_nhl_refresh_changes_trigger_pr_checks_as_well_as_main_push():
+    wf_text = WF.read_text()
+    assert "  pull_request:\\n" in wf_text
+    pr_section = wf_text.split("  pull_request:\\n", 1)[1].split("\\npermissions:", 1)[0]
+    push_section = wf_text.split("  push:\\n", 1)[1].split("  pull_request:\\n", 1)[0]
+    for name in (
+        "artifacts/wow-engine/v17/nhl_timeline_refresh_client.py",
+        "artifacts/wow-engine/tests/test_v17_nhl_timeline_refresh_client.py",
+    ):
+        assert name in push_section
+        assert name in pr_section
