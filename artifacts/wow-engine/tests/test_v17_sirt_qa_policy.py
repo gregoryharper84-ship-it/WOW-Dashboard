@@ -27,6 +27,8 @@ def sample():
             "canary_scope": None,
         },
         "check_runs": [],
+        "reviews": [{"user": "independent-sirt", "state": "APPROVED",
+                     "commit_id": SHA, "submitted_at": "2026-11-18T18:00:00Z"}],
     }
 
 
