@@ -53,6 +53,48 @@ def _source_url(market: str) -> str:
     return ROOT + "/nba/props/" + PUBLIC_PAGE_SLUGS.get(market, market)
 
 
+# These are explicit HTML visibility markers, not a claim that external CSS
+# or JavaScript-computed visibility can be reconstructed from source HTML.
+_HIDDEN_STYLE = re.compile(
+    r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))"
+    r"\s*(?:!important)?\s*(?=;|$)", re.I,
+)
+_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
+
+def _hidden_element(attrs: list[tuple[str, str | None]]) -> bool:
+    attributes = dict(attrs)
+    return (
+        "hidden" in attributes or "inert" in attributes
+        or (attributes.get("aria-hidden") or "").strip().lower() == "true"
+        or bool(_HIDDEN_STYLE.search(attributes.get("style") or ""))
+    )
+
+
+def _start_hidden_subtree(tags: list[str], tag: str,
+                          attrs: list[tuple[str, str | None]]) -> bool:
+    if tags or _hidden_element(attrs):
+        if tag not in _VOID_TAGS:
+            tags.append(tag)
+        return True
+    return False
+
+
+def _end_hidden_subtree(tags: list[str], tag: str) -> bool:
+    if not tags:
+        return False
+    # Handle nested same-name tags, hidden parent/child, and recover from
+    # malformed HTML without accidentally promoting hidden ancestor content.
+    if tag in tags:
+        while tags:
+            if tags.pop() == tag:
+                break
+    return True
+
+
 class PublicPageHold(RuntimeError):
     def __init__(self, code: str):
         self.code = code
@@ -65,8 +107,11 @@ class _AnchorsAndTokens(HTMLParser):
         self.tokens: list[tuple[str, str, str]] = []
         self._anchor: dict[str, Any] | None = None
         self._skip = 0
+        self._hidden_tags: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if _start_hidden_subtree(self._hidden_tags, tag, attrs):
+            return
         if tag in ("script", "style", "noscript", "svg", "template"):
             self._skip += 1
             return
@@ -87,6 +132,8 @@ class _AnchorsAndTokens(HTMLParser):
             self.tokens.append(("text", val, ""))
 
     def handle_endtag(self, tag: str) -> None:
+        if _end_hidden_subtree(self._hidden_tags, tag):
+            return
         if tag in ("script", "style", "noscript", "svg", "template"):
             self._skip = max(self._skip - 1, 0)
             return
@@ -133,8 +180,11 @@ class _VisibleTableReader(HTMLParser):
         self._cell: dict[str, Any] | None = None
         self._anchor: dict[str, Any] | None = None
         self._skip = 0
+        self._hidden_tags: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if _start_hidden_subtree(self._hidden_tags, tag, attrs):
+            return
         if tag in ("script", "style", "noscript", "svg", "template"):
             self._skip += 1
             return
@@ -158,6 +208,8 @@ class _VisibleTableReader(HTMLParser):
             self._anchor["text"].append(value)
 
     def handle_endtag(self, tag: str) -> None:
+        if _end_hidden_subtree(self._hidden_tags, tag):
+            return
         if tag in ("script", "style", "noscript", "svg", "template"):
             self._skip = max(0, self._skip - 1)
             return
@@ -216,9 +268,9 @@ def _visible_nba_table_rows(html: bytes, market: str) -> list[dict[str, Any]]:
         line_cell = " ".join(cells[2]["text"])
         if "UNLOCK" in line_cell.upper() or "LOCKED" in line_cell.upper():
             continue
-        # A valid NBA board line is decimal; odds and ranking figures are
-        # different fields. Never infer the line from L10/other cells.
-        line_match = re.search(r"(?<![A-Za-z0-9+-])(\d{1,3}\.5)\b", line_cell)
+        # Read only the first complete numeric token from the explicit line
+        # cell; allow integer/decimal lines without consuming signed odds or L10.
+        line_match = re.match(r"^\s*(\d{1,4}(?:\.\d{1,2})?)(?=\s|$)", line_cell)
         if not line_match:
             continue
         line = float(line_match[1])
