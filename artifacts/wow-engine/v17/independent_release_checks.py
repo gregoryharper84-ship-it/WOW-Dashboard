@@ -890,7 +890,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     return sorted(set(findings))
 
 
-def release_sirt_provenance_findings(ev: dict) -> list[str]:
+def release_sirt_provenance_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> list[str]:
     """Verify authenticated SIRT evidence without repeating QA's whole suite.
 
     Only this source-reviewed, exact-head SIRT mode may take this lightweight
@@ -917,6 +917,20 @@ def release_sirt_provenance_findings(ev: dict) -> list[str]:
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
     if not _canonical_incident_present(pr.get("body")):
         findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
+    files = ev.get("files")
+    if not isinstance(files, list) or not files:
+        findings.append("QA_FILES_EMPTY")
+    else:
+        if governance_files is None:
+            governance_files = frozenset(governance_trust_roots(REPO_ROOT))
+        if (
+            any(is_trust_root(str(filename), governance_files) for filename in files)
+            and pr.get("author") != ev.get("owner_login")
+            and not _owner_approved_at_head(ev, head)
+        ):
+            # Re-read live, authenticated owner authorization. A post-QA
+            # dismissal must not leave an otherwise green Release receipt.
+            findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         policy = {}
@@ -985,13 +999,13 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     # App. Release independently checks *provenance* instead of rerunning every
     # deterministic QA predicate. All other modes retain the old fail-closed
     # re-derivation until their own receipt contracts have proven parity.
+    policy = ev.get("qa_review_policy")
     mode = policy.get("mode") if isinstance(policy, dict) else None
     qa_evidence_findings = (
-        release_sirt_provenance_findings(ev) if mode == "sirt"
+        release_sirt_provenance_findings(ev, governance_files=governance_files) if mode == "sirt"
         else qa_findings(ev, governance_files=governance_files)
     )
     findings += [f"RELEASE_{f}" for f in qa_evidence_findings]
-    policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
     elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
