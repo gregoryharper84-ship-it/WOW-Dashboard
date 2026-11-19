@@ -413,6 +413,7 @@ def test_current_review_resolution_verifies_zip_run_and_unique_fresh_artifact():
     }
     routes = {
         "/actions/artifacts?per_page=100&page=1": {"artifacts": [record]},
+        f"/actions/artifacts?name={name}&per_page=100&page=1": {"artifacts": [record]},
         "/actions/artifacts/77": metadata,
         "/actions/runs/12345": CONSUMER_RUN,
     }
@@ -474,6 +475,7 @@ def test_review_resolution_ignores_prior_distinct_run_artifacts():
     run = {**CONSUMER_RUN, "id": 12346}
     routes = {
         "/actions/artifacts?per_page=100&page=1": {"artifacts": records},
+        f"/actions/artifacts?name={records[1]['name']}&per_page=100&page=1": {"artifacts": records[1:]},
         "/actions/artifacts/78": {
             "id": 78, "name": records[1]["name"], "expired": False,
             "workflow_run": {"id": 12346},
@@ -1006,12 +1008,10 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
                               if step.get("name") == "Mint dedicated semantic reviewer App token")
 
     assert "github.ref == 'refs/heads/main'" in workflow
-    # Preserve the four bounded native regression admission triggers;
-    # trusted governance gate was deliberately removed to prevent QA loops.
-    assert parsed["on"]["workflow_run"]["workflows"] == [
-        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate",
-    ]
+    # One canonical QA completion source; exact-head native CI is preflighted
+    # before the reviewer so the separate workflows cannot multiply reviews.
+    assert parsed["on"]["workflow_run"]["workflows"] == ["wow-verify"]
+    assert "Wait for exact-head native CI before reviewer" in workflow
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
@@ -1020,7 +1020,8 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "WOW_QA_MODE" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_PR" in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA" in workflow
     assert "Select exact-head review policy" in workflow
@@ -1353,3 +1354,46 @@ def test_release_draft_pr_with_moved_head_from_foreign_repo_is_never_neutral():
         review.resolve_qa_review_policy(
             **_release_kwargs(routes, archive), allow_superseded_target=True,
         )
+
+
+def test_pinned_review_does_not_scan_repository_inventory():
+    receipt = artifact()
+    name = f"wow-v17-independent-source-review-1822-{HEAD}-12345-1"
+    record = {"id": 77, "name": name, "expired": False,
+              "created_at": NOW.isoformat(), "workflow_run": {"id": 12345}}
+    routes = {
+        "/actions/runs/12345": CONSUMER_RUN,
+        "/actions/artifacts/77": record,
+        f"/actions/artifacts?name={name}&per_page=100&page=1": {"artifacts": [record]},
+    }
+    def fetch(path):
+        if path.startswith("/actions/artifacts?per_page="):
+            return {"artifacts": [{"name": "unrelated"}] * 100}
+        return routes[path]
+
+    def resolve():
+        return review.resolve_source_review_run(
+            receipt, artifact_id=77, repository=review.CANONICAL_REPOSITORY,
+            token="read-only", now=NOW, get_json=fetch,
+        )
+
+    assert resolve() == CONSUMER_RUN
+    routes[f"/actions/artifacts?name={name}&per_page=100&page=1"]["artifacts"].append(
+        {**record, "id": 78})
+    with pytest.raises(review.SourceReviewError, match="DUPLICATE"):
+        resolve()
+
+
+def test_owner_canary_stops_at_capture_before_reviewer(monkeypatch, tmp_path, capsys):
+    target = pr()
+    target["user"]["login"] = review.CANONICAL_REPOSITORY.split("/")[0]
+    monkeypatch.setattr(review, "capture_pr_evidence", lambda **kwargs: {
+        "pr": target, "diff_sha256": "a" * 64})
+    output = tmp_path / "input.json"
+    args = ["--capture", "--repository", review.CANONICAL_REPOSITORY,
+            "--pr-number", "1822", "--head-sha", HEAD, "--output", str(output),
+            "--policy-mode"]
+    assert review.main(args + ["canary"]) != 0
+    assert "QA_REVIEW_CANARY_OWNER_AUTHORED" in capsys.readouterr().out
+    assert not output.exists()
+    assert review.main(args + ["independent"]) == 0

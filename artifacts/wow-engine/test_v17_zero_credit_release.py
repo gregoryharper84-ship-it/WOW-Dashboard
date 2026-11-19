@@ -157,8 +157,10 @@ def test_release_rejects_qa_from_wrong_app():
 def test_workflows_keep_independent_gemini_review_and_explicit_free_flag():
     qa_yaml = (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
     release_yaml = (ROOT / ".github/workflows/wow-v17-release-authority-check.yml").read_text()
-    assert "WOW_QA_ZERO_CREDIT_MODE" in qa_yaml
-    assert "WOW_QA_ZERO_CREDIT_MODE" in release_yaml
+    assert "WOW_QA_MODE" in qa_yaml
+    assert "WOW_QA_MODE" in release_yaml
+    assert "WOW_QA_ZERO_CREDIT_MODE" not in qa_yaml
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" not in release_yaml
     assert "--zero-credit-policy-enabled" in qa_yaml
     assert "--zero-credit-policy-enabled" in release_yaml
     assert "wow_v28_gemini_qa_bridge.py review" in qa_yaml

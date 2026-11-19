@@ -14,7 +14,7 @@ on:
   workflow_run:
     # Break the QA -> existing PR certifier -> trusted gate -> QA completion loop.
     # Retain all genuine regression triggers and manual exact-head QA.
-    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate]
+    workflows: [wow-verify]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -55,7 +55,7 @@ jobs:
   qa:
     # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
     # not red. Once bound, a missing key fails closed in the identity step below.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]) && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || (vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0])
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -129,6 +129,48 @@ jobs:
           echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
 
+      - name: Wait for exact-head native CI before reviewer
+        if: steps.target.outputs.pr_number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # One QA wake from wow-verify; bounded read-only wait for other native CI.
+          # The optional bound only shortens diagnostic/test runs, never relaxes acceptance.
+          limit="${QA_CI_MAX_POLLS:-60}"
+          [[ "$limit" =~ ^[1-9][0-9]*$ ]] && [ "$limit" -le 60 ] || {
+            echo "::error::QA_NATIVE_CI_POLL_BOUND_INVALID"; exit 1;
+          }
+          required=("WOW additional required regression" "WOW governed probability backend" "WOW required-three regression")
+          for attempt in $(seq 1 "$limit"); do
+            checks=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100") || {
+              echo "::error::QA_NATIVE_CI_READ_FAILED"; exit 1;
+            }
+            ready=true
+            for check_name in "${required[@]}"; do
+              result=$(jq -er --arg name "$check_name" --arg sha "$HEAD_SHA" \
+                '[.check_runs[] | select(.name == $name and .head_sha == $sha and .app.id == 15368)]
+                 | sort_by(.id) | last | if . == null then "missing" else
+                   (.status + "|" + (.conclusion // "")) end' <<<"$checks") || {
+                echo "::error::QA_NATIVE_CI_PAYLOAD_INVALID"; exit 1;
+              }
+              case "$result" in
+                completed\|success) ;;
+                completed\|failure|completed\|cancelled|completed\|timed_out|completed\|action_required|completed\|skipped|completed\|neutral)
+                  echo "::error::QA_NATIVE_CI_FAILED:$check_name"; exit 1 ;;
+                *) ready=false ;;
+              esac
+            done
+            if [ "$ready" = "true" ]; then
+              echo "::notice::QA_NATIVE_CI_READY: exact head $HEAD_SHA"
+              break
+            fi
+            [ "$attempt" -eq "$limit" ] || sleep 10
+          done
+          [ "$ready" = "true" ] || { echo "::error::QA_NATIVE_CI_INCOMPLETE"; exit 1; }
+
       - name: Mint checks-only App token
         id: app_token
         if: steps.target.outputs.pr_number != ''
@@ -144,8 +186,7 @@ jobs:
         if: steps.target.outputs.pr_number != ''
         shell: bash
         env:
-          REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
-          ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          QA_MODE: ${{ vars.WOW_QA_MODE }}
           CANARY_REQUESTED: ${{ inputs.independent_review_canary }}
           CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
           CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
@@ -154,25 +195,16 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
-          case "${REVIEW_ACTIVATION:-}" in
-            true) global_active=true ;;
-            ""|false) global_active=false ;;
-            *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
+          # One repository-wide policy switch. Missing/invalid values fail closed.
+          case "${QA_MODE:-}" in
+            independent) mode=independent; global_active=true; zero_credit_active=false ;;
+            zero_credit) mode=zero_credit; global_active=false; zero_credit_active=true ;;
+            legacy) mode=legacy; global_active=false; zero_credit_active=false ;;
+            "") echo "::error::QA_REVIEW_MODE_UNCONFIGURED"; exit 1 ;;
+            *) echo "::error::QA_REVIEW_MODE_INVALID"; exit 1 ;;
           esac
-          case "${ZERO_CREDIT_ACTIVATION:-}" in
-            true) zero_credit_active=true ;;
-            ""|false) zero_credit_active=false ;;
-            *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
-          esac
-          if [ "$zero_credit_active" = "true" ] && [ "$global_active" = "true" ]; then
-            echo "::error::QA_REVIEW_MODES_CONFLICT"; exit 1
-          fi
-          if [ "$zero_credit_active" = "true" ]; then
-            [ "${CANARY_REQUESTED:-false}" != "true" ] || { echo "::error::QA_ZERO_CREDIT_CANARY_CONFLICT"; exit 1; }
-            mode=zero_credit
-          elif [ "$global_active" = "true" ]; then
-            mode=independent
-          elif [ "${CANARY_REQUESTED:-false}" = "true" ]; then
+          if [ "${CANARY_REQUESTED:-false}" = "true" ]; then
+            [ "$mode" = "legacy" ] || { echo "::error::QA_REVIEW_CANARY_MODE_CONFLICT"; exit 1; }
             [ "$EVENT" = "workflow_dispatch" ] || {
               echo "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH"; exit 1;
             }
@@ -183,8 +215,6 @@ jobs:
               echo "::error::QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD"; exit 1;
             }
             mode=canary
-          else
-            mode=legacy
           fi
           active=false
           [ "$mode" != "independent" ] && [ "$mode" != "canary" ] || active=true
@@ -267,13 +297,14 @@ jobs:
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
+          REVIEW_MODE: ${{ steps.policy.outputs.mode }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
           python .github/scripts/independent_source_review_receipt.py \
-            --capture --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
+            --capture --policy-mode "$REVIEW_MODE" --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
             --head-sha "$HEAD_SHA" --output "$RUNNER_TEMP/source-review-input.json"
           jq -e --arg sha "$HEAD_SHA" '.pr.head.sha == $sha' \
             "$RUNNER_TEMP/source-review-input.json" >/dev/null

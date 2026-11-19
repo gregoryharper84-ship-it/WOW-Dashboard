@@ -31,13 +31,21 @@ lane or treat a Codex finding/absence of findings as an independent QA App PASS.
 
 ```bash
 REPO=gregoryharper84-ship-it/WOW-Dashboard
-gh variable set WOW_QA_INDEPENDENT_REVIEW_ACTIVE -R "$REPO" --body false
-gh variable set WOW_QA_ZERO_CREDIT_MODE -R "$REPO" --body true
+# Repository Settings > Secrets and variables > Actions > Variables (not an environment override).
+gh variable set WOW_QA_MODE -R "$REPO" --body zero_credit
 ```
 
-Both flags true fail closed; no silent fallback from API quota failures. This
-is a **repository-wide governance policy change**, not PR-specific. Review
-scope and reduced assurance must be accepted before activation.
+The one canonical repository-level variable has only three explicit values:
+`independent` (ordinary protected review), `zero_credit` (reduced-assurance
+deterministic evidence, never independent approval), and `legacy` (no normal
+independent review). Missing/invalid values fail closed. Do not install an
+environment-level `WOW_QA_MODE` override in `wow-qa`, `wow-release` or
+`wow-dispatch`; the roles must read the same repository policy. Delete retired
+`WOW_QA_INDEPENDENT_REVIEW_ACTIVE` and `WOW_QA_ZERO_CREDIT_MODE` variables
+from every configured scope after independently reviewed migration; they are
+no longer consulted by these roles. Free-tier provider verification is a
+separate mandatory independent-mode preflight and never authorizes paid usage.
+No silent fallback from provider or quota failures.
 
 The QA and Release jobs check out protected main and do not execute PR code.
 The QA check is authored only through QA App (5245832); Release uses a

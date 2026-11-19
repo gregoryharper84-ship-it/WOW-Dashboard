@@ -984,7 +984,7 @@ def resolve_source_review_run(
 
     records = []
     for page in range(1, 21):
-        response = json_fetch(f"/actions/artifacts?per_page=100&page={page}")
+        response = json_fetch(f"/actions/artifacts?name={expected_name}&per_page=100&page={page}")
         _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
                  "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID")
         page_records = response["artifacts"]
@@ -1367,6 +1367,11 @@ def main(argv: list[str] | None = None) -> int:
                 expected_head_sha=args.head_sha,
                 token=os.environ.get("GITHUB_TOKEN", ""),
             )
+            if args.policy_mode == "canary":
+                login = captured["pr"]["user"]["login"]
+                _require(isinstance(login, str) and login.strip(), "SOURCE_REVIEW_AUTHOR_LOGIN_INVALID")
+                _require(login.casefold() != args.repository.split("/")[0].casefold(),
+                         "QA_REVIEW_CANARY_OWNER_AUTHORED")
             args.output.write_text(json.dumps(captured, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             print(json.dumps({"status": "SOURCE_REVIEW_INPUT_CAPTURED",
                               "head_sha": args.head_sha, "diff_sha256": captured["diff_sha256"]}, sort_keys=True))
