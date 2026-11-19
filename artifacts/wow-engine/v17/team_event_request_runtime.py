@@ -514,7 +514,13 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
     # Run the same mandatory matchup review for focused/interactive requests.
     # Missing research evidence remains visible; only the controlling fitted
     # model determines whether its own certified inputs permit scoring.
-    matchup = discover_matchup({
+    return {"status": "SUCCEEDED", "stages": stages,
+            "matchup_discovery": _matchup_discovery_for_request(req)}
+
+
+def _matchup_discovery_for_request(req: TeamEventRequest) -> dict[str, Any]:
+    """Shared read-only audit for serial and parallel research barriers."""
+    return discover_matchup({
         "sport_key": req.sport.strip().upper(),
         "official_event_id": req.official_event_id,
         "event_start_utc": req.event_start_time_utc,
@@ -522,8 +528,6 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
         "away_team": req.away_team,
         "sport_specific_evidence": req.sport_specific_evidence,
     })
-    return {"status": "SUCCEEDED", "stages": stages,
-            "matchup_discovery": matchup}
 
 
 def _build_team_event_envelope(
