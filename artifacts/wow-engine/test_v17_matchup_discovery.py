@@ -178,7 +178,8 @@ def test_interactive_team_event_barrier_also_attaches_matchup_audit(monkeypatch)
 
 def test_nhl_goalie_confirmation_requires_two_distinct_official_providers():
     c = candidate()
-    one = row(source_class="TEAM_OFFICIAL")
+    one = row(source_class="TEAM_OFFICIAL",
+              value={"home": "HomeStarter", "away": "AwayStarter"})
     one["evidence_type"] = "STARTING_GOALIE_STATUS"
     c["matchup_metric_evidence"] = {"confirmed_starting_goalies": [one]}
     first = discover_matchup(c, now=NOW)
@@ -230,3 +231,67 @@ def test_shared_registered_sport_bridge_adds_audit_without_changing_scorer(monke
     assert result["matchup_discovery"]["profile"] == "HOCKEY"
     assert result["matchup_discovery"]["review_requested"] is True
     assert result["can_execute"] is False
+
+
+def test_empty_payloads_do_not_count_as_reviewed_metrics():
+    for empty in ("", "   ", [], {}, None):
+        c = candidate("basketball_nba")
+        c["matchup_metric_evidence"] = {"opponent_adjusted_strength": row(value=empty)}
+        report = discover_matchup(c, now=NOW)
+        assert report["screened_count"] == 0
+        assert report["invalid_or_stale_features"]["opponent_adjusted_strength"] == "MEASUREMENT_MISSING"
+
+
+def test_high_impact_metric_confirmation_cannot_be_bypassed_by_missing_evidence_type():
+    c = candidate("icehockey_nhl")
+    c["matchup_metric_evidence"] = {
+        "availability_and_lineups": row(source_class="TEAM_OFFICIAL", confirmed=False),
+        "confirmed_starting_goalies": [
+            row(source_class="TEAM_OFFICIAL", confirmed=False,
+                value={"home": "H", "away": "A"}),
+            {**row(source_class="LEAGUE_OFFICIAL", confirmed=True,
+                   value={"home": "H", "away": "A"}), "source_id": "second"},
+        ],
+    }
+    report = discover_matchup(c, now=NOW)
+    assert "availability_and_lineups" in report["missing_critical_features"]
+    assert report["invalid_or_stale_features"]["availability_and_lineups"] == "STALE_OR_UNCONFIRMED_SOURCE"
+    assert "confirmed_starting_goalies" in report["missing_critical_features"]
+
+
+def test_same_tier_conflicting_official_starters_are_quarantined():
+    c = candidate()
+    one = row(source_class="TEAM_OFFICIAL",
+              value={"home": "HomeStarterA", "away": "AwayStarter"})
+    two = {**one, "source_id": "second-team-source",
+           "value": {"home": "HomeStarterB", "away": "AwayStarter"}}
+    c["matchup_metric_evidence"] = {"confirmed_starting_goalies": [one, two]}
+    report = discover_matchup(c, now=NOW)
+    assert report["review_status"] == "CONFLICT_QUARANTINED"
+    assert "confirmed_starting_goalies" in report["missing_critical_features"]
+    assert report["invalid_or_stale_features"]["confirmed_starting_goalies"] == "CONFLICT_QUARANTINED"
+
+
+def test_two_distinct_team_scopes_are_not_contradictory():
+    c = candidate("basketball_nba")
+    c["matchup_metric_evidence"] = {
+        "recent_form_vs_baseline": [
+            {**row(value={"net_rating": 5}), "side": "home"},
+            {**row(value={"net_rating": -2}), "side": "away",
+             "source_id": "stats-source-2"},
+        ]
+    }
+    report = discover_matchup(c, now=NOW)
+    assert "recent_form_vs_baseline" in report["screened_features"]
+
+
+def test_multiple_opposing_book_quotes_do_not_trigger_personnel_conflict():
+    c = candidate("basketball_nba")
+    c["market_evidence"] = [
+        {"market_key": "h2h", "outcome_name": side, "price": odds,
+         "bookmaker": "book-1", "market_last_update": "2026-11-19T17:00:00Z"}
+        for side, odds in (("Home", -120), ("Away", 100))
+    ]
+    report = discover_matchup(c, now=NOW)
+    assert "exact_current_quote" in report["screened_features"]
+    assert report["review_status"] != "CONFLICT_QUARANTINED"
