@@ -153,6 +153,22 @@ def test_explicitly_hidden_public_tables_and_legacy_rows_remain_unseen():
         assert receipt["can_execute"] is False
 
 
+
+def test_hidden_nested_cell_content_cannot_replace_visible_line_or_name():
+    html = b"""<table><tr><td>1</td>
+      <td><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">
+        A. Sample<span aria-hidden="true">INVISIBLE</span></a>
+        <span>BOS vs NYK</span></td>
+      <td><span hidden>99.5</span><div>2.5</div></td>
+      <td>graph</td><td>1/4</td><td>2.2</td></tr></table>"""
+    receipt = parse(html, market="threes")
+    assert receipt["row_count"] == 1
+    row = receipt["rows"][0]
+    assert row["display_name_unverified"] == "A. Sample"
+    assert row["line"] == 2.5
+    assert row["model_probability"] is None
+
+
 def test_table_reader_keeps_integer_valued_lines_with_other_valid_lines():
     def row(player, line):
         return (f'<tr><td>1</td><td><a href="/nba?market=player-made-threes&amp;match=77&amp;player={player}">'
