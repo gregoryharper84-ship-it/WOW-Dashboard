@@ -48,8 +48,9 @@ def test_qa_unknown_or_foreign_identity_fails_closed(workflow_id, path):
 def test_qa_producers_and_verifiers_share_immutable_identity_contract():
     text = QA_WORKFLOW.read_text(encoding="utf-8")
     verifier = QA_SOURCE.read_text(encoding="utf-8")
-    assert text.count("--argjson workflow_id 380562324") == 2
-    assert text.count("workflow_id:$workflow_id") == 2
+    # The captured-source producer was retired; the policy receipt remains.
+    assert text.count("--argjson workflow_id 380562324") == 1
+    assert text.count("workflow_id:$workflow_id") == 1
     assert verifier.count("_is_qa_workflow_run(run)") >= 4
     assert 'run.get("name") == WORKFLOW_NAME' not in verifier
 
