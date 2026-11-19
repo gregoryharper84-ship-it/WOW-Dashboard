@@ -11,7 +11,7 @@ import os
 import re
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 SHA_RE = re.compile(r"^[a-f0-9]{40}$")
@@ -106,14 +106,19 @@ def evaluate(*, repository, expected_sha, pr, reviews, check_runs,
                     checks=REQUIRED)
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def github_json(path, token):
-    url = "https://api.github.com/repos/" + REPO + "/" + path
+    url = "https://api.github.com/repos/" + REPO + ("/" + path if path else "")
     req = Request(url, headers={
         "Authorization": "Bearer " + token,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     })
-    with urlopen(req, timeout=15) as response:
+    with build_opener(NoRedirect()).open(req, timeout=15) as response:
         payload = response.read(2_000_001)
     if len(payload) > 2_000_000:
         raise ValueError("SIRT_GITHUB_RESPONSE_LIMIT")
