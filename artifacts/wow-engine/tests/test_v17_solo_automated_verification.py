@@ -709,3 +709,47 @@ def test_cli_loads_receipt_files_and_rejects_malformed_json(tmp_path, capsys):
     out_bad = json.loads(capsys.readouterr().out)
     assert rc_bad == 1
     assert out_bad["code"] == "SOLO_EVIDENCE_INVALID"
+
+
+def test_owner_controlled_external_admin_json_cannot_prove_independent_administration():
+    # A syntactically plausible but unsigned fixture has no authenticated
+    # provenance. A different claimed GitHub user ID is not independent proof.
+    res = sav.evaluate(
+        repository=sav.REPO,
+        expected_sha=HEAD,
+        pr=_pr(),
+        files=[PROTECTED_FILE],
+        check_runs=_check_runs(include_codeql=True),
+        owner_id=OWNER_ID,
+        qa_app_id=QA_APP_ID,
+        release_app_id=RELEASE_APP_ID,
+        head_commit_author_id=OWNER_ID,
+        adversarial_receipt=_adversarial_receipt(),
+        external_admin_attestation=_external_admin(admin_user_id=777777),
+        require_independent_admin=True,
+    )
+    assert res["verification_status"] == "HOLD"
+    assert res["independent_administration_proven"] is False
+    assert "SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID" in res["findings"]
+
+
+def test_owner_controlled_opt_in_cannot_replace_independent_protected_signoff():
+    # Multiple Apps can isolate execution, not the sole administrator.
+    # The protected env flag may not convert absent independence into ready.
+    res = sav.evaluate(
+        repository=sav.REPO,
+        expected_sha=HEAD,
+        pr=_pr(),
+        files=[PROTECTED_FILE],
+        check_runs=_check_runs(include_codeql=True),
+        owner_id=OWNER_ID,
+        qa_app_id=QA_APP_ID,
+        release_app_id=RELEASE_APP_ID,
+        head_commit_author_id=OWNER_ID,
+        adversarial_receipt=_adversarial_receipt(),
+        require_independent_admin=False,
+        allow_solo_owner_admin_for_protected=True,
+    )
+    assert res["verification_status"] == "HOLD"
+    assert res["independent_administration_proven"] is False
+    assert "SOLO_INDEPENDENT_ADMIN_NOT_PROVEN" in res["findings"]
