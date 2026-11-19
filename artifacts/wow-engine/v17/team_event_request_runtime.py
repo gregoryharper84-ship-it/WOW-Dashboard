@@ -846,6 +846,7 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical
         "backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_ADAPTER_NOT_REGISTERED",
         "market_probability_substitution_allowed": False, "generic_reasoning_substitution_allowed": False,
         "probability_publishable": False, "blockers": [f"{sport}_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE"],
+        "matchup_discovery": scout_research_barrier["matchup_discovery"],
     }, req))
 
 
