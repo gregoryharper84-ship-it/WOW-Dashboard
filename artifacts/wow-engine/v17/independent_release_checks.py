@@ -764,6 +764,13 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     if not files:
         findings.append("QA_FILES_EMPTY")
     policy = ev.get("qa_review_policy")
+    # Activation must dominate historical policy artifacts, including a
+    # previously successful legacy/zero-credit/Gemini review or no receipt.
+    # Reuse the existing typed conflict; never upgrade a stale PASS.
+    if ev.get("sirt_enabled") is True and (
+        not isinstance(policy, dict) or policy.get("mode") != "sirt"
+    ):
+        findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
     if policy is not None:
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
