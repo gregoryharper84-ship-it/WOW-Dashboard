@@ -72,7 +72,9 @@ jobs:
           python-version: "3.11"
 
       - name: Check Gemini review bridge contract
-        run: python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
+        run: |
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v28_gemini_qa_bridge.py -q
+          python -m unittest discover -s .github/scripts/tests -p test_wow_v17_qa_main_check_decoupling.py -q
 
       - name: Require this role's App identity
         shell: bash
