@@ -94,9 +94,22 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
               "lineup_scenario_source_id", "rest_travel_source_id",
               "tail_scenario_source_id")
     missing = [k for k in fields if not _text(details.get(k))]
-    for key in ("projected_possessions", "home_adjusted_ppp", "away_adjusted_ppp"):
-        if _number(details.get(key), minimum=0.000001) is None:
-            missing.append(key)
+    sport = _text(leg.get("sport")).upper()
+    basketball = sport in {
+        "NBA", "NCAAB", "WNBA", "BASKETBALL_NBA", "BASKETBALL_NCAAB",
+        "BASKETBALL_WNBA",
+    }
+    if basketball:
+        for key in ("projected_possessions", "home_adjusted_ppp", "away_adjusted_ppp"):
+            if _number(details.get(key), minimum=0.000001) is None:
+                missing.append(key)
+    else:
+        # NHL goals, NFL points, soccer goals, baseball runs, etc. must use
+        # their *own* scoring process. No basketball possessions x PPP bridge.
+        if not _text(details.get("sport_score_process_source_id")):
+            missing.append("sport_score_process_source_id")
+        if _number(details.get("projected_total_score"), minimum=0) is None:
+            missing.append("projected_total_score")
     seen = _time(details.get("context_observed_at_utc"))
     if (seen is None or seen > as_of or seen >= start
             or _text(details.get("sport")).upper() != _text(leg.get("sport")).upper()
@@ -104,13 +117,18 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
         missing.append("context_timestamp_or_identity")
     # Directional sanity only: independently fitted totals probabilities are
     # still required. Mean versus line is NOT a calibrated tail probability.
-    possessions = _number(details.get("projected_possessions"), minimum=0.000001)
-    home_ppp = _number(details.get("home_adjusted_ppp"), minimum=0.000001)
-    away_ppp = _number(details.get("away_adjusted_ppp"), minimum=0.000001)
     line = _number(leg.get("exact_line"), minimum=0)
     side = _text(leg.get("side")).upper()
-    if all(x is not None for x in (possessions, home_ppp, away_ppp, line)):
-        estimate = possessions * (home_ppp + away_ppp)
+    estimate = None
+    if basketball:
+        possessions = _number(details.get("projected_possessions"), minimum=0.000001)
+        home_ppp = _number(details.get("home_adjusted_ppp"), minimum=0.000001)
+        away_ppp = _number(details.get("away_adjusted_ppp"), minimum=0.000001)
+        if all(x is not None for x in (possessions, home_ppp, away_ppp)):
+            estimate = possessions * (home_ppp + away_ppp)
+    else:
+        estimate = _number(details.get("projected_total_score"), minimum=0)
+    if estimate is not None and line is not None:
         if ((side == "OVER" and estimate <= line)
                 or (side == "UNDER" and estimate >= line)):
             missing.append("point_estimate_opposes_selected_side")
