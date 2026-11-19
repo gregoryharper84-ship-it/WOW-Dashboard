@@ -102,6 +102,18 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
             or _text(details.get("sport")).upper() != _text(leg.get("sport")).upper()
             or _text(details.get("official_event_id")) != _text(leg.get("official_event_id"))):
         missing.append("context_timestamp_or_identity")
+    # Directional sanity only: independently fitted totals probabilities are
+    # still required. Mean versus line is NOT a calibrated tail probability.
+    possessions = _number(details.get("projected_possessions"), minimum=0.000001)
+    home_ppp = _number(details.get("home_adjusted_ppp"), minimum=0.000001)
+    away_ppp = _number(details.get("away_adjusted_ppp"), minimum=0.000001)
+    line = _number(leg.get("exact_line"), minimum=0)
+    side = _text(leg.get("side")).upper()
+    if all(x is not None for x in (possessions, home_ppp, away_ppp, line)):
+        estimate = possessions * (home_ppp + away_ppp)
+        if ((side == "OVER" and estimate <= line)
+                or (side == "UNDER" and estimate >= line)):
+            missing.append("point_estimate_opposes_selected_side")
     # No marginal-distribution numbers or "certified" flags are fabricated here.
     distribution = details.get("fitted_total_distribution_receipt")
     dist_ok = (
@@ -117,8 +129,10 @@ def _total_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) ->
         and _line_key(distribution.get("exact_line")) == _line_key(leg.get("exact_line"))
         and _text(distribution.get("side")).upper() == _text(leg.get("side")).upper()
     )
-    return (["TOTAL_CONTEXT_MISSING"] if missing else []) + (
-        ["TOTAL_DISTRIBUTION_UNVERIFIED"] if not dist_ok else []
+    return (
+        (["TOTAL_CONTEXT_MISSING"] if any(x != "point_estimate_opposes_selected_side" for x in missing) else [])
+        + (["TOTAL_POINT_ESTIMATE_CONTRADICTS_SIDE"] if "point_estimate_opposes_selected_side" in missing else [])
+        + (["TOTAL_DISTRIBUTION_UNVERIFIED"] if not dist_ok else [])
     )
 
 
