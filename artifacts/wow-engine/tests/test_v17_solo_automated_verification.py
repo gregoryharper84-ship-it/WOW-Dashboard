@@ -253,9 +253,9 @@ def test_protected_p_class_ready_with_explicit_solo_owner_admin_opt_in():
         require_independent_admin=False,
         allow_solo_owner_admin_for_protected=True,
     )
-    assert res["verification_status"] == "EVIDENCE_READY"
-    assert res["code"] == "SOLO_PROTECTED_EVIDENCE_READY"
-    assert res["assurance_level"] == "SOLO_AUTOMATED_PROTECTED_VERIFICATION_OWNER_ADMIN"
+    assert res["verification_status"] == "HOLD"
+    assert res["code"] == "SOLO_PROTECTED_INDEPENDENT_ADMIN_UNPROVEN"
+    assert "SOLO_INDEPENDENT_ADMIN_NOT_PROVEN" in res["findings"]
     assert res["independent_administration_proven"] is False
     assert res["independent_human_review_performed"] is False
     assert res["merge_or_release_authorized"] is False
@@ -277,9 +277,10 @@ def test_protected_p_class_ready_with_verified_external_non_owner_admin():
         external_admin_attestation=_external_admin(admin_user_id=777777),
         require_independent_admin=True,
     )
-    assert res["verification_status"] == "EVIDENCE_READY"
-    assert res["code"] == "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY"
-    assert res["independent_administration_proven"] is True
+    assert res["verification_status"] == "HOLD"
+    assert res["code"] == "SOLO_VERIFICATION_HOLD"
+    assert "SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID" in res["findings"]
+    assert res["independent_administration_proven"] is False
     assert res["independent_human_review_performed"] is False
 
 
@@ -361,7 +362,7 @@ def test_class_c_requires_valid_immutable_calibration_replay_receipt():
     assert "SOLO_CALIBRATION_REPLAY_HEURISTIC_FALLBACK_FORBIDDEN" in forged["findings"]
     assert "SOLO_CALIBRATION_REPLAY_AUTHORITY_INVARIANT_VIOLATED" in forged["findings"]
 
-    # Valid calibration replay receipt -> EVIDENCE_READY (still never certifies model)
+    # Valid calibration replay alone cannot independently approve Class C.
     valid = sav.evaluate(
         repository=sav.REPO,
         expected_sha=HEAD,
@@ -376,7 +377,8 @@ def test_class_c_requires_valid_immutable_calibration_replay_receipt():
         require_independent_admin=False,
         allow_solo_owner_admin_for_protected=True,
     )
-    assert valid["verification_status"] == "EVIDENCE_READY"
+    assert valid["verification_status"] == "HOLD"
+    assert "SOLO_INDEPENDENT_ADMIN_NOT_PROVEN" in valid["findings"]
     assert valid["change_class"] == "C"
     assert valid["model_certified"] is False
     assert valid["probability_publishable"] is False
@@ -699,8 +701,9 @@ def test_cli_loads_receipt_files_and_rejects_malformed_json(tmp_path, capsys):
             "--external-admin-attestation", str(ext_path),
         ])
     out = json.loads(capsys.readouterr().out)
-    assert rc == 0
-    assert out["code"] == "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY"
+    assert rc == 1
+    assert out["code"] == "SOLO_VERIFICATION_HOLD"
+    assert "SOLO_EXTERNAL_ADMIN_ATTESTATION_INVALID" in out["findings"]
 
     # Non-object JSON receipt fails closed with exit code 1
     bad_path = tmp_path / "bad.json"
