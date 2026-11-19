@@ -67,6 +67,9 @@ def total(row, event, side="OVER", line=218.5):
 def prop(row, event, *, player="NUGGETS-15", team="HOME", line=24.5):
     data = leg(row, event, market="PLAYER_PROP", side="UNDER", line=line)
     data["official_player_id"] = player
+    data["stat_type"] = "POINTS"
+    data["market_quote"]["official_player_id"] = player
+    data["market_quote"]["stat_type"] = "POINTS"
     data["player_roster_evidence"] = dict(
         sport="NBA", official_event_id=event,
         official_player_id=player, player_team_id=team,
@@ -201,6 +204,51 @@ def test_exact_quote_and_pregame_time_cannot_be_replaced_by_narrative():
     assert "MARKET_QUOTE_PRICE_UNVERIFIED" in result["cards"][0]["blockers"]
 
 
+def test_prop_quote_is_bound_to_player_and_stat_not_merely_event_and_line():
+    p = prop("prop-one", "nba-one", player="NBA-34")
+    p["market_quote"]["official_player_id"] = "NBA-99"
+    result = audit_research_slips(cards([p, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "PROP_QUOTE_PLAYER_STAT_MISMATCH" in result["cards"][0]["blockers"]
+    p = prop("prop-one", "nba-one", player="NBA-34")
+    p["market_quote"]["stat_type"] = "REBOUNDS"
+    result = audit_research_slips(cards([p, leg("other", "nba-other")]), as_of_utc=AS_OF)
+    assert "PROP_QUOTE_PLAYER_STAT_MISMATCH" in result["cards"][0]["blockers"]
+
+
+def test_alias_reuse_is_blocked_across_ml_and_spread_label_variants():
+    a = leg("a", "same-event", market="MONEYLINE")
+    b = leg("b", "same-event", market="ML")
+    x = leg("c", "spread-game", market="POINT_SPREAD", line=-4.5)
+    y = leg("d", "spread-game", market="SPREAD", line=-4.5)
+    assert exact_key(a) == exact_key(b)
+    assert exact_key(x) == exact_key(y)
+    outcome = audit_research_slips(
+        cards([a, x], [b, y]), as_of_utc=AS_OF)
+    assert outcome["cards"][0]["blockers"] == []
+    assert "CROSS_SLIP_DUPLICATE_THESIS_EXPOSURE" in outcome["cards"][1]["blockers"]
+
+
+def test_team_total_estimates_selected_team_not_both_combined():
+    t = total("team-total", "nba-team", side="UNDER", line=115.5)
+    t["market_family"] = "TEAM_TOTAL"
+    t["selected_team_id"] = "HOME"
+    t["market_quote"]["market_family"] = "TEAM_TOTAL"
+    t["market_quote"]["selected_team_id"] = "HOME"
+    t["total_evidence"]["fitted_total_distribution_receipt"]["selected_team_id"] = "HOME"
+    # Synthetic home expected score is 100 possessions x 1.10 PPP = 110,
+    # not 220 both teams combined.
+    result = audit_research_slips(cards([t, leg("b", "nba-other")]), as_of_utc=AS_OF)
+    assert result["cards"][0]["blockers"] == []
+    t["exact_line"] = 105.5
+    t["market_quote"]["exact_line"] = 105.5
+    t["total_evidence"]["fitted_total_distribution_receipt"]["exact_line"] = 105.5
+    result = audit_research_slips(cards([t, leg("b", "nba-other")]), as_of_utc=AS_OF)
+    assert "TOTAL_POINT_ESTIMATE_CONTRADICTS_SIDE" in result["cards"][0]["blockers"]
+    t["market_quote"]["selected_team_id"] = "AWAY"
+    result = audit_research_slips(cards([t, leg("b", "nba-other")]), as_of_utc=AS_OF)
+    assert "TEAM_TOTAL_QUOTE_TEAM_MISMATCH" in result["cards"][0]["blockers"]
+
+
 def test_player_team_transfer_injury_news_and_material_rescore_hold():
     player = prop("giannis", "mia-mil", player="NBA-34", team="OTHER")
     out = audit_research_slips(cards([player, leg("other", "other")]), as_of_utc=AS_OF)
@@ -240,6 +288,30 @@ def test_optimizer_research_mode_holds_publication_but_leaves_existing_probabili
     assert governance["portfolio_status"] == "HELD_RESEARCH_ONLY"
     assert governance["research_joint_probability"] is None
     assert out.can_execute is False
+
+
+def test_replacement_missing_quote_is_reaudited_on_returned_card():
+    weak = leg("weak", "nba-one")
+    weak["calibrated_lower_bound"] = 0.60
+    second = leg("second", "nba-two")
+    second["calibrated_lower_bound"] = 0.76
+    alternative = leg("alt", "nba-three")
+    alternative["calibrated_lower_bound"] = 0.86
+    del alternative["market_quote"]
+    original = [{"card_id": "power", "structure": "POWER",
+                 "power_admission_lower_bound_floor": 0.70,
+                 "legs": [weak, second]}]
+    out = optimize_portfolio(original, alternatives=[alternative],
+                             research_preflight_enabled=True, research_as_of_utc=AS_OF,
+                             max_power_critical_failure_share=1.0)
+    assert any(r.get("replacement_row_id") == "alt" for r in out.replacements)
+    assert "EXACT_MARKET_QUOTE_MISSING" in out.research_preflight["cards"][0]["blockers"]
+    assert out.research_proposal_preflight["cards"][0]["blockers"] == []
+    gov = out.cards[0]["portfolio_governance"]
+    assert "EXACT_MARKET_QUOTE_MISSING" in gov["research_blockers"]
+    assert gov["original_research_blockers"] == []
+    assert gov["portfolio_qualified"] is False
+    assert out.probability_fields_mutated is False
 
 
 def test_old_portfolio_path_remains_unchanged_when_new_mode_not_requested():
