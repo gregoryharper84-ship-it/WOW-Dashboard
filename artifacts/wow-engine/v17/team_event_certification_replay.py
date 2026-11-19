@@ -334,7 +334,14 @@ def build_certification_report(
     replay_evidence_by_sport: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     latest = _latest_by_lane(rows)
-    exact_passes = _candidate_bound_passes(certification_evidence_receipts or [])
+    receipts = certification_evidence_receipts or []
+    exact_passes = _candidate_bound_passes(receipts)
+    # A legacy lane-level replay hint cannot hide an explicit contradictory
+    # receipt bound to the same immutable fitted candidate.
+    receipt_subjects = {
+        _evidence_identity(receipt) for receipt in receipts
+        if isinstance(receipt, Mapping)
+    }
     lane_evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_lane or {}).items()}
     sport_evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_sport or {}).items()}
     all_lane_results: list[dict[str, Any]] = []
@@ -362,7 +369,10 @@ def build_certification_report(
             # independent source-review state.
             governed_source_pass = str(candidate.get("source_review_status") or "").strip().upper() == "PASS"
             governed_exact_pass = exact_pass and governed_source_pass
-            helper_replay_pass = lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
+            helper_replay_pass = (
+                lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
+                and _evidence_identity(candidate) not in receipt_subjects
+            )
             assessed = assess_candidate(
                 sport,
                 candidate,
