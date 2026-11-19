@@ -299,6 +299,7 @@ class PortfolioOptimizationResult:
     cards_held: int
     critical_leg_actions: tuple[dict[str, Any], ...] = ()
     probability_fields_mutated: bool = False
+    research_preflight: dict[str, Any] | None = None
     can_execute: bool = CAN_EXECUTE
 
 
@@ -356,6 +357,8 @@ def optimize_portfolio(
     duplicate_penalty: float = DUPLICATE_THESIS_PENALTY,
     min_card_legs: int = MIN_CARD_LEGS,
     max_power_critical_failure_share: float = DEFAULT_MAX_POWER_CRITICAL_FAILURE_SHARE,
+    research_preflight_enabled: bool = False,
+    research_as_of_utc: str | None = None,
 ) -> PortfolioOptimizationResult:
     """Enforce session exposure, weakest-leg replacement, Power fragility and shrink.
 
@@ -369,6 +372,15 @@ def optimize_portfolio(
     shrinks. None of these structure decisions may mutate sporting probability.
     """
     out = deepcopy(cards)
+    preflight = None
+    if research_preflight_enabled:
+        # Runs against the *unshrunk* proposal so discarded weak/duplicate
+        # legs are not silently erased from the review evidence.
+        try:
+            from .slip_research_preflight import audit_research_slips
+        except ImportError:  # pragma: no cover - direct source imports in legacy tests
+            from slip_research_preflight import audit_research_slips
+        preflight = audit_research_slips(cards, as_of_utc=research_as_of_utc or "")
     alternatives = deepcopy(alternatives or [])
     prior = deepcopy(prior_session_legs or [])
     incoming = _all_legs(out)
@@ -400,7 +412,7 @@ def optimize_portfolio(
     removals: list[dict[str, Any]] = []
     critical_actions: list[dict[str, Any]] = []
 
-    for card in out:
+    for card_index, card in enumerate(out):
         card_id = str(card.get("card_id") or "")
         legs = list(card.get("legs") or [])
         kept: list[dict[str, Any]] = []
@@ -687,6 +699,18 @@ def optimize_portfolio(
             }
         )
 
+        if preflight is not None:
+            review = preflight["cards"][card_index]
+            # A local evidence-shape pass never grants market/model authority.
+            # Separate structural quality from publication admission.
+            card_governance["research_preflight"] = review
+            card_governance["research_only"] = True
+            card_governance["research_blockers"] = list(review["blockers"])
+            card_governance["portfolio_qualified"] = False
+            card_governance["portfolio_status"] = "HELD_RESEARCH_ONLY"
+            card_governance["research_joint_probability"] = None
+            card_governance["can_execute"] = False
+
         # Only final surviving legs become session exposure for later cards.
         for leg in kept:
             seen_exact[canonical_thesis_identity(leg)] += 1
@@ -721,6 +745,7 @@ def optimize_portfolio(
         cards_held=len(out) - cards_qualified,
         critical_leg_actions=tuple(critical_actions),
         probability_fields_mutated=probability_mutated,
+        research_preflight=preflight,
         can_execute=False,
     )
 
