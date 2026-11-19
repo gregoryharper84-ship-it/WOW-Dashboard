@@ -95,3 +95,8 @@ def test_sirt_missing_reviewer_id_holds():
     ev["sirt_review_evidence"] = ready_receipt()
     ev["sirt_review_evidence"]["reviewer"]["user_id"] = None
     assert "QA_SIRT_INDEPENDENT_EVIDENCE_INVALID" in qa.qa_findings(ev)
+
+
+def test_sirt_required_checks_match_canonical_policy_order():
+    from v17.sirt_review_evidence import REQUIRED
+    assert REQUIRED == qa.REQUIRED_REGRESSION_CHECKS
