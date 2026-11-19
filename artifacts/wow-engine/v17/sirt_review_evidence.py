@@ -16,9 +16,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 REQUIRED = (
-    "WOW required-three regression",
-    "WOW governed probability backend",
     "WOW additional required regression",
+    "WOW governed probability backend",
+    "WOW required-three regression",
 )
 ACTIONS_APP = 15368
 
