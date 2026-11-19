@@ -101,12 +101,34 @@ def test_summary_fallback_survives_unexpected_client_crash():
 
 def test_nhl_refresh_changes_trigger_pr_checks_as_well_as_main_push():
     wf_text = WF.read_text()
-    assert "  pull_request:\\n" in wf_text
-    pr_section = wf_text.split("  pull_request:\\n", 1)[1].split("\\npermissions:", 1)[0]
-    push_section = wf_text.split("  push:\\n", 1)[1].split("  pull_request:\\n", 1)[0]
+    assert "  pull_request:\n" in wf_text
+    pr_section = wf_text.split("  pull_request:\n", 1)[1].split("\npermissions:", 1)[0]
+    push_section = wf_text.split("  push:\n", 1)[1].split("  pull_request:\n", 1)[0]
     for name in (
         "artifacts/wow-engine/v17/nhl_timeline_refresh_client.py",
         "artifacts/wow-engine/tests/test_v17_nhl_timeline_refresh_client.py",
     ):
         assert name in push_section
         assert name in pr_section
+
+def test_source_refresh_total_retry_deadline_never_exceeds_ten_minutes(monkeypatch):
+    """Synthetic timeouts must never consume the 20-minute main job limit."""
+    m = _client()
+    clock = {"seconds": 0.0}
+    request_timeouts = []
+
+    def urlopen(_request, *, timeout):
+        request_timeouts.append(timeout)
+        clock["seconds"] += float(timeout)
+        raise TimeoutError("synthetic hung NHL endpoint")
+
+    monkeypatch.setattr(m, "_token", lambda: "synthetic-token")
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock["seconds"])
+    monkeypatch.setattr(m.time, "sleep", lambda duration: clock.__setitem__("seconds", clock["seconds"] + duration))
+    monkeypatch.setattr(m.urllib.request, "urlopen", urlopen)
+    outcome = m.call_protected_reingest()
+
+    assert outcome["status"] == "BLOCKED"
+    assert all(0 < timeout <= 600 for timeout in request_timeouts)
+    assert clock["seconds"] <= 900
+    assert request_timeouts
