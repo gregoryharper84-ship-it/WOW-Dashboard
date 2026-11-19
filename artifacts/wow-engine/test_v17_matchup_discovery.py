@@ -110,3 +110,67 @@ def test_nightly_enrichment_requests_matchup_review_for_prop_and_event():
         assert "ol_vs_dl_pressure" in enriched["matchup_discovery"]["missing_critical_features"]
         assert enriched["matchup_discovery"]["prediction_authority"] is False
         assert enriched["can_execute"] is False
+
+
+def test_existing_market_evidence_is_screened_only_when_timestamped_exact_quote():
+    c = candidate("basketball_nba")
+    c["market_evidence"] = [{
+        "market_key": "totals", "outcome_name": "Over", "point": 225.5,
+        "price": -110, "bookmaker": "book-1",
+        "market_last_update": "2026-11-19T17:00:00Z",
+    }]
+    result = discover_matchup(c, now=NOW)
+    assert "exact_current_quote" in result["screened_features"]
+    assert "opening_to_current_movement" in result["missing_features"]
+    assert "cross_book_comparison" in result["missing_features"]
+    c["market_evidence"][0]["market_last_update"] = "2026-11-19T16:00:00Z"
+    stale = discover_matchup(c, now=NOW)
+    assert "exact_current_quote" not in stale["screened_features"]
+
+
+def test_existing_typed_domain_metrics_are_reused_with_exact_identity():
+    c = candidate("americanfootball_nfl")
+    c["research_domain_evidence"] = {
+        "matchup": {
+            "official_event_id": "evt-10",
+            "source_id": "stats-feed-1",
+            "source_class": "ESTABLISHED_STATS_PROVIDER",
+            "captured_at": "2026-11-19T17:00:00Z",
+            "confirmed": True,
+            "matchup_metrics": {"ol_vs_dl_pressure": {"home": 0.3, "away": 0.4}},
+        }
+    }
+    result = discover_matchup(c, now=NOW)
+    assert "ol_vs_dl_pressure" in result["screened_features"]
+    assert result["prediction_authority"] is False
+
+
+def test_interactive_team_event_barrier_also_attaches_matchup_audit(monkeypatch):
+    from types import SimpleNamespace
+    from v17 import team_event_request_runtime as runtime
+
+    monkeypatch.setattr(
+        runtime, "execute_envelope",
+        lambda _: SimpleNamespace(status="SUCCEEDED", blockers=[], output={}),
+    )
+    req = runtime.TeamEventRequest(
+        requester_host_identity="LLP_TEAM_BETTING_ENGINE",
+        research_run_id="matchup-regression",
+        requested_slate_date="2026-11-19",
+        requested_timezone="America/Chicago",
+        event_key="nhl-evt-10",
+        official_event_id="evt-10",
+        event_start_time_utc=START,
+        sport="NHL",
+        league="NHL",
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        home_team="Home",
+        away_team="Away",
+        source_snapshot_id="snapshot-10",
+    )
+    result = runtime._run_mandatory_scout_research(req)
+    assert result["status"] == "SUCCEEDED"
+    assert result["matchup_discovery"]["review_requested"] is True
+    assert result["matchup_discovery"]["profile"] == "HOCKEY"
+    assert "confirmed_starting_goalies" in result["matchup_discovery"]["missing_critical_features"]
+    assert result["matchup_discovery"]["can_execute"] is False
