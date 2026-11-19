@@ -233,6 +233,7 @@ def gather(
     current_review_active: bool = False,
     independent_review_active: bool = True,
     zero_credit_enabled: bool = False,
+    sirt_enabled: bool = False,
     source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -302,6 +303,7 @@ def gather(
     ev["qa_review_policy"] = qa_review_policy
     ev["current_review_active"] = current_review_active
     ev["zero_credit_enabled"] = zero_credit_enabled
+    ev["sirt_enabled"] = sirt_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
         if mode not in {"legacy", "independent", "canary", "zero_credit", "sirt"}:
@@ -791,7 +793,13 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         elif mode == "sirt":
             # Protected-main gather independently fetches SIRT from GitHub;
             # caller-authored JSON or a PR-body flag cannot create this receipt.
-            if ev.get("independent_review_active") is not False or ev.get("source_review") is not None:
+            if (
+                ev.get("sirt_enabled") is not True
+                or ev.get("current_review_active") is True
+                or ev.get("zero_credit_enabled") is True
+                or ev.get("independent_review_active") is not False
+                or ev.get("source_review") is not None
+            ):
                 findings.append("QA_SIRT_REVIEW_POLICY_CONFLICT")
             if not isinstance(target, dict) or (
                 target.get("pr_number") != ev.get("pr_number")
@@ -944,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--expected-head", required=True)
     g.add_argument("--legacy-review-policy", action="store_true")
     g.add_argument("--zero-credit-policy-enabled", action="store_true")
+    g.add_argument("--sirt-review-policy-enabled", action="store_true")
     g.add_argument("--source-review-json", type=Path)
     g.add_argument("--source-review-run-json", type=Path)
     g.add_argument("--source-review-artifact-id", type=int)
@@ -1036,6 +1045,7 @@ def main(argv: list[str] | None = None) -> int:
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
             zero_credit_enabled=args.zero_credit_policy_enabled,
+            sirt_enabled=args.sirt_review_policy_enabled,
             source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,
