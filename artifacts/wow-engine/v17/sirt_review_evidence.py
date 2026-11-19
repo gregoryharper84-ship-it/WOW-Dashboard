@@ -136,8 +136,35 @@ def collect_and_evaluate(pr_number, expected_sha, reviewer_id, token):
         commit = github_json(f"commits/{expected_sha}", token)
         reviews = github_json(f"pulls/{pr_number}/reviews?per_page=100", token)
         checks = github_json(f"commits/{expected_sha}/check-runs?per_page=100", token)
+        # Re-read after all review/check collection to detect a concurrent
+        # force-push, draft transition or altered PR identity. No stale PASS.
+        final_pr = github_json(f"pulls/{pr_number}", token)
     except (HTTPError, URLError, ValueError, TypeError, TimeoutError, json.JSONDecodeError):
         return decision("SIRT_GITHUB_EVIDENCE_UNAVAILABLE", sha=expected_sha)
+    def pr_identity(record):
+        if not isinstance(record, dict):
+            return None
+        head = record.get("head")
+        base = record.get("base")
+        user = record.get("user")
+        if (not isinstance(head, dict) or not isinstance(base, dict)
+            or not isinstance(user, dict) or not isinstance(head.get("repo"), dict)):
+            return None
+        return (
+            head.get("sha"), head.get("ref"), head["repo"].get("full_name"),
+            base.get("ref"), user.get("id"), record.get("state"),
+            record.get("draft"), record.get("merged_at"),
+        )
+
+    before = pr_identity(pr)
+    after = pr_identity(final_pr)
+    if before is None or after is None:
+        return decision("SIRT_EVIDENCE_INVALID", sha=expected_sha)
+    if before != after:
+        return decision(
+            "SIRT_PR_CHANGED_DURING_REVIEW", sha=expected_sha,
+            findings=["SIRT_PR_CHANGED_DURING_REVIEW"],
+        )
     if (not isinstance(repo, dict) or not isinstance(commit, dict)
         or not isinstance(checks, dict) or not isinstance(reviews, list)
         or not isinstance(checks.get("check_runs"), list)
@@ -151,7 +178,7 @@ def collect_and_evaluate(pr_number, expected_sha, reviewer_id, token):
         return decision("SIRT_EVIDENCE_PAGINATION_INCOMPLETE", sha=expected_sha)
     head_author = commit.get("author")
     return evaluate(
-        repository=REPO, expected_sha=expected_sha, pr=pr, reviews=reviews,
+        repository=REPO, expected_sha=expected_sha, pr=final_pr, reviews=reviews,
         check_runs=checks["check_runs"], authorized_reviewer_ids={reviewer_id},
         owner_id=repo["owner"].get("id"),
         head_commit_author_id=head_author.get("id") if head_author else None,
