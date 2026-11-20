@@ -40,6 +40,17 @@ def _norm(value: Any) -> str:
     return str(value or "").strip().casefold()
 
 
+def _is_prizepicks_card(card: dict[str, Any]) -> bool:
+    return (
+        _norm(card.get("platform")) == "prizepicks"
+        or any(
+            _norm(leg.get("platform")) == "prizepicks"
+            for leg in list(card.get("legs") or [])
+            if isinstance(leg, dict)
+        )
+    )
+
+
 def _event(leg: dict[str, Any]) -> str:
     return _norm(leg.get("event_id") or leg.get("event_key") or leg.get("game_id") or leg.get("game"))
 
@@ -375,12 +386,8 @@ def optimize_portfolio(
     # A PrizePicks card must not bypass the existing evidence-shape audit
     # merely because the caller omitted the optional research flag.
     # This is still a research-only HOLD, never model/cash authorization.
-    prizepicks_requested = any(
-        _norm(card.get("platform")) == "prizepicks"
-        or any(_norm(leg.get("platform")) == "prizepicks" for leg in list(card.get("legs") or [])
-               if isinstance(leg, dict))
-        for card in cards
-    )
+    prizepicks_requested = any(_is_prizepicks_card(card) for card in cards)
+    auto_prizepicks_research = prizepicks_requested and not research_preflight_enabled
     if prizepicks_requested:
         research_preflight_enabled = True
         if research_as_of_utc is None:
@@ -714,7 +721,9 @@ def optimize_portfolio(
             }
         )
 
-        if preflight is not None:
+        if preflight is not None and (
+            not auto_prizepicks_research or _is_prizepicks_card(card)
+        ):
             review = preflight["cards"][card_index]
             # A local evidence-shape pass never grants market/model authority.
             # Separate structural quality from publication admission.
@@ -739,6 +748,8 @@ def optimize_portfolio(
     if preflight is not None:
         final_preflight = audit_research_slips(out, as_of_utc=research_as_of_utc or "")
         for card_index, card in enumerate(out):
+            if auto_prizepicks_research and not _is_prizepicks_card(card):
+                continue
             gov = card.setdefault("portfolio_governance", {})
             proposal_review = proposal_preflight["cards"][card_index]
             final_review = final_preflight["cards"][card_index]
