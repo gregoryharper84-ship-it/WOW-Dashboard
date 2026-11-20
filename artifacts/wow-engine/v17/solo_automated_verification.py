@@ -64,6 +64,8 @@ CUSTOM_GPT_IDENTITY = "WOW_BETTING_ENGINE"
 SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 HEX64_RE = re.compile(r"^[a-f0-9]{64}$")
 ACTIONS_APP = 15368
+AUTHENTIC_QA_APP_ID = 5245832
+AUTHENTIC_RELEASE_APP_ID = 5245853
 
 REQUIRED_NATIVE_CHECKS = tuple(REQUIRED_REGRESSION_CHECKS)
 CHANGE_IMPACT_CHECK = "WOW V17 change impact gate"
@@ -94,7 +96,9 @@ def _int_id(value: Any) -> int | None:
 
 
 def _norm_path(path: str) -> str:
-    return path.strip().replace("\\", "/")
+    # GitHub paths are identity-bearing: do not rewrite separators or spaces.
+    # An alias must never acquire Class R allowlist permission.
+    return path
 
 
 def _is_class_c_path(path: str) -> bool:
@@ -404,9 +408,8 @@ def evaluate(
     distinct_apps = (
         qa_id is not None
         and rel_id is not None
-        and qa_id != rel_id
-        and qa_id != ACTIONS_APP
-        and rel_id != ACTIONS_APP
+        and qa_id == AUTHENTIC_QA_APP_ID
+        and rel_id == AUTHENTIC_RELEASE_APP_ID
     )
     if not distinct_apps:
         bad.append("SOLO_QA_RELEASE_APP_IDENTITY_INVALID")
@@ -528,6 +531,7 @@ def _pr_identity(record: Any) -> tuple[Any, ...] | None:
         head.get("ref"),
         head["repo"].get("full_name"),
         base.get("ref"),
+        base.get("sha"),
         user.get("id"),
         record.get("state"),
         record.get("draft"),
