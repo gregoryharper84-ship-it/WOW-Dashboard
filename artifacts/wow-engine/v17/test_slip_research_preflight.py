@@ -416,6 +416,7 @@ def test_nov19_line_change_requires_exact_rescore_even_when_underlying_quote_mat
     castle["side"] = castle["direction"] = "LESS"
     castle["platform_offer"]["direction"] = "LESS"
     castle["market_quote"]["side"] = "LESS"
+    castle["sporting_receipt_binding"]["direction"] = "LESS"
     result = audit_research_slips(
         [prizepicks_card(castle, prizepicks_prop("other", "por-mil"))],
         as_of_utc=AS_OF,
