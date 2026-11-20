@@ -493,3 +493,21 @@ def test_material_injury_news_requires_new_opportunity_scenario_not_only_model_i
     assert "PROP_OPPORTUNITY_RESCENARIO_REQUIRED" in review["cards"][0]["blockers"]
     assert review["cards"][0]["can_publish_as_certified"] is False
     assert review["joint_probability"] is None
+
+
+def test_automatic_prizepicks_hold_does_not_demote_other_platform_cards():
+    pp = prizepicks_card(
+        prizepicks_prop("dunn", "lac-sas"),
+        prizepicks_prop("towns", "nyk-min"),
+    )
+    non_pp = cards([leg("independent-a", "other-1"), leg("independent-b", "other-2")])[0]
+    non_pp["card_id"] = "non-prizepicks"
+    original = deepcopy([pp, non_pp])
+    result = optimize_portfolio(original, research_as_of_utc=AS_OF)
+    assert result.cards[0]["portfolio_governance"]["portfolio_status"] == "HELD_RESEARCH_ONLY"
+    assert result.cards[1]["portfolio_governance"]["portfolio_qualified"] is True
+    assert "research_only" not in result.cards[1]["portfolio_governance"]
+    assert result.cards_qualified == 1
+    assert result.cards_held == 1
+    assert original == [pp, non_pp]
+    assert result.probability_fields_mutated is False
