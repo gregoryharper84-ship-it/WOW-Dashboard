@@ -13,6 +13,7 @@ manufactured lower bound.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 from math import isfinite
 from typing import Any, Callable, Mapping
 
@@ -333,19 +334,39 @@ def _apply_governed_calibration(req: Any, package: Mapping[str, Any]) -> dict[st
     return out
 
 
+def _accepts_db_kwarg(fn: Any) -> bool:
+    try:
+        sig = inspect.signature(fn)
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == "db":
+                return True
+        return False
+    except (ValueError, TypeError):
+        return False
+
+
 def _score_one(
     sport: str,
     req: Any,
     *,
-    event_api: Any,
+    event_api: Any = None,
     canonical_hydration_required: bool = False,
 ) -> dict[str, Any]:
-    del event_api, canonical_hydration_required
+    del canonical_hydration_required
     route = _route_contract(req)
     scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
     scorer = MODEL_SCORERS[sport]
+
+    get_client = getattr(event_api, "get_client", None)
+    client = get_client() if callable(get_client) else getattr(event_api, "client", None)
+    if client is None and (hasattr(event_api, "table") or hasattr(event_api, "rpc")):
+        client = event_api
+
     try:
-        raw_package = scorer(req)
+        if sport == "NHL" and client is not None and _accepts_db_kwarg(scorer):
+            raw_package = scorer(req, db=client)
+        else:
+            raw_package = scorer(req)
     except NHLFittedSpecialistError as exc:
         # One shared mapping with score_nhl_fitted_team_event / _fitted_http_failure.
         from v17.nhl_fitted_specialist import _fitted_http_failure
@@ -518,7 +539,7 @@ def install_multisport_team_event_bridges() -> dict[str, Any]:
                 controlling_specialist=spec["specialist"],
                 scorer=scorer,
                 required_inputs=required,
-                standard_package_validation=True,
+                standard_package_validation=sport != "NHL",
             )
             registered.append(sport)
     except Exception:
