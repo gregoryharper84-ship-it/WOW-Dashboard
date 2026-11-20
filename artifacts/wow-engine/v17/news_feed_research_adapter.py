@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -27,6 +28,7 @@ GDELT_HOST = "api.gdeltproject.org"
 GDELT_PATH = "/api/v2/doc/doc"
 MAX_NEWS_BODY_BYTES = 256_000
 MAX_NEWS_ITEMS = 30
+MAX_RETRY_AFTER_SECONDS = 3600
 ALLOWED_QUERY_KEYS = {"query", "mode", "format", "timespan", "maxrecords", "sort"}
 
 
@@ -39,6 +41,26 @@ def _seen_at(value: object) -> datetime | None:
         return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc) if isinstance(value, str) else None
     except ValueError:
         return None
+
+
+def _retry_after_seconds(value: object) -> int | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date), bounded."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    try:
+        seconds = int(text)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = int((when - datetime.now(timezone.utc)).total_seconds())
+    return max(0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
 
 def normalize_articles(payload: object, *, observed_at: datetime) -> list[dict]:
@@ -79,13 +101,18 @@ def normalize_articles(payload: object, *, observed_at: datetime) -> list[dict]:
 
 def fetch_gdelt_news(sport_key: str, url: str, *, client: httpx.Client | None = None) -> ResearchFetchResult:
     """One bounded read of official GDELT Project DOC 2.0 ArtList JSON."""
-    def blocked(code: str, status: int | None = None) -> ResearchFetchResult:
+    def blocked(code: str, status: int | None = None,
+                retry_after_seconds: int | None = None) -> ResearchFetchResult:
         seen = _now().isoformat().replace("+00:00", "Z")
+        data = {"source_observed_at": seen, "source_code": code, "evidence_only": True,
+                "attribution": "The GDELT Project (https://www.gdeltproject.org/)"}
+        if retry_after_seconds is not None:
+            data["retry_after_seconds"] = retry_after_seconds
         return ResearchFetchResult(
             False, PROVIDER, sport_key, "news", SOURCE_CLASS,
-            data={"source_observed_at": seen, "source_code": code, "evidence_only": True,
-                  "attribution": "The GDELT Project (https://www.gdeltproject.org/)"},
+            data=data,
             observed_at=seen, code=code, status=status,
+            retry_after_seconds=retry_after_seconds,
             prediction_authority=False, can_execute=False,
         )
 
@@ -126,7 +153,10 @@ def fetch_gdelt_news(sport_key: str, url: str, *, client: httpx.Client | None = 
                 reason = ("SOURCE_RATE_LIMITED" if status == 429 else
                           "SOURCE_UPSTREAM_UNAVAILABLE" if status >= 500 else
                           "SOURCE_UPSTREAM_REJECTED")
-                return blocked(reason, status)
+                # GDELT does not send Retry-After in practice; the collector
+                # must therefore pace itself from measured evidence instead.
+                return blocked(reason, status,
+                               _retry_after_seconds(response.headers.get("Retry-After")))
             if response.headers.get("Content-Encoding", "identity").strip().lower() not in ("", "identity"):
                 return blocked("SOURCE_CONTENT_ENCODING_UNSUPPORTED", status)
             try:
@@ -170,4 +200,5 @@ def fetch_gdelt_news(sport_key: str, url: str, *, client: httpx.Client | None = 
             http.close()
 
 
-__all__ = ["fetch_gdelt_news", "normalize_articles", "MAX_NEWS_BODY_BYTES", "MAX_NEWS_ITEMS"]
+__all__ = ["fetch_gdelt_news", "normalize_articles", "MAX_NEWS_BODY_BYTES",
+           "MAX_NEWS_ITEMS", "MAX_RETRY_AFTER_SECONDS"]
