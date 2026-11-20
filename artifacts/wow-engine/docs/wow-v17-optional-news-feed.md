@@ -133,3 +133,34 @@ event identity linkage, and a genuine controlling fitted-specialist rescore
 receipt. Workflow-level green alone never proves source health.
 `model_feature_eligible=false`, `model_rescore_verified=false` and
 `can_execute=false` stay unchanged.
+
+
+### November 20, 2026 — compact same-run active-slate selection
+
+Observed proof: scheduled [Multi-Scout run #44789095413](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44789095413), descendant of all merged news repairs, emitted a real `SOURCE_FETCH_OK`
+GDELT receipt at 2026-11-20 18:17:02 UTC: NHL, 11 article
+URLs, one request, HTTP 200. However it declared
+`selection_policy=SLATE_UNAVAILABLE_FIXED_ROTATION`,
+`slate_active_event_counts={}`, even though that exact run's early
+discovery artifact contained 298 team-event candidates. This is because
+its original `model-handoff.json` is roughly **596 MB** due to large
+market evidence: the legacy GDELT loader refuses a manifest over 64 MB,
+then silently uses an unrelated fixed sport rotation.
+
+The existing Scout script now emits a *second, bounded event-only* file
+`news-active-slate.json` alongside the full model handoff. It contains
+sport, event start, provider event key for **sampling/deduplication only**,
+and the distinct verified official-ID field only when independently
+established; it excludes all bookmaker quotes, prices and irrelevant
+candidate payloads. The GDELT runner detects oversized full manifests and
+reads this tiny same-run sibling, while still making exactly **one** public
+GDELT request. It emits explicit `slate_manifest_source` and
+`slate_manifest_status` fields so a missing, invalid, or oversized
+compact sibling is a typed selection failure, never a fake active-slate
+success. The fallback sport rotation is labeled honestly.
+
+This does not verify provider event IDs as official fixtures, increase
+sports coverage to all 13 sports per run, independently authenticate a
+publisher, produce a fitted feature or establish news-triggered specialist
+rescoring. Only end-to-end evidence and independent QA can accept those
+distinct objectives. It remains research only; `can_execute=false`.

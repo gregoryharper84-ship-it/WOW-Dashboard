@@ -216,3 +216,38 @@ def test_scout_governance_never_promotes_sportsbook_probability():
     assert '"route": "WOW_PROP_LANE"' in source
     assert '"sportsbook_implied_probability_is_model_probability": False' in source
     assert '"can_execute": False' in source
+
+def test_compact_news_slate_preserves_every_candidate_without_market_payload():
+    from v17.news_active_slate import select_active_slate
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    at = (now + timedelta(hours=4)).isoformat()
+    event = {
+        "sport_key": "americanfootball_nfl",
+        "official_event_id": "odds-event-1",  # a legacy provider alias
+        "provider_event_id": "odds-event-1",
+        "official_event_identity_verified": False,
+        "commence_time": at,
+        "market_evidence": [{"secret": "unneeded-full-market-payload"}],
+    }
+    payload = {
+        "run_id": "one-research-run",
+        "model_handoff": {
+            "team_event_candidates": [event, {**event, "provider_event_id": "odds-event-2"}],
+            "prop_candidates": [event],
+        },
+    }
+    compact = scout.compact_news_slate_manifest(payload)
+    assert compact["schema_version"] == "wow.v17.news_slate_selection.v1"
+    assert compact["source_run_id"] == "one-research-run"
+    assert compact["candidate_rows_total"] == 3
+    assert len(compact["model_handoff"]["team_event_candidates"]) == 2
+    assert len(compact["model_handoff"]["prop_candidates"]) == 1
+    assert "unneeded-full-market-payload" not in json.dumps(compact)
+    assert compact["model_feature_eligible"] is False
+    assert compact["can_execute"] is False
+    selected, counts = select_active_slate(
+        compact, now, ("americanfootball_nfl", "basketball_nba"),
+    )
+    assert selected == "americanfootball_nfl"
+    assert counts == {"americanfootball_nfl": 2}
