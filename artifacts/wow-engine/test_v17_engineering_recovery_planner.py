@@ -17,7 +17,7 @@ def test_no_findings_is_a_noop():
 
 def test_repairable_finding_dispatches_repair_and_increments_attempts():
     result = rp.plan_recovery(
-        pr_number=1, findings=["QA_REGRESSION_FAILED"], attempts=0, is_wow_engineering_pr=True
+        pr_number=1, findings=["QA_EVIDENCE_FAILED:WOW required-three regression"], attempts=0, is_wow_engineering_pr=True
     )
     assert result["action"] == "DISPATCH_REPAIR"
     assert result["attempts"] == 1
@@ -26,7 +26,7 @@ def test_repairable_finding_dispatches_repair_and_increments_attempts():
 
 def test_repair_dispatch_at_second_attempt():
     result = rp.plan_recovery(
-        pr_number=1, findings=["QA_REGRESSION_FAILED"], attempts=2, is_wow_engineering_pr=True
+        pr_number=1, findings=["QA_EVIDENCE_FAILED:WOW required-three regression"], attempts=2, is_wow_engineering_pr=True
     )
     assert result["action"] == "DISPATCH_REPAIR"
     assert result["attempts"] == 3
@@ -34,7 +34,7 @@ def test_repair_dispatch_at_second_attempt():
 
 def test_retry_cap_stops_further_repair_dispatch():
     result = rp.plan_recovery(
-        pr_number=1, findings=["QA_REGRESSION_FAILED"], attempts=3, is_wow_engineering_pr=True
+        pr_number=1, findings=["QA_EVIDENCE_FAILED:WOW required-three regression"], attempts=3, is_wow_engineering_pr=True
     )
     assert result["action"] == "NEEDS_OWNER_RETRY_CAP"
     assert result["label"] == "needs-owner"
@@ -42,7 +42,7 @@ def test_retry_cap_stops_further_repair_dispatch():
 
 def test_retry_cap_does_not_decrement_or_reset_attempts():
     result = rp.plan_recovery(
-        pr_number=1, findings=["QA_REGRESSION_FAILED"], attempts=5, is_wow_engineering_pr=True
+        pr_number=1, findings=["QA_EVIDENCE_FAILED:WOW required-three regression"], attempts=5, is_wow_engineering_pr=True
     )
     assert result["action"] == "NEEDS_OWNER_RETRY_CAP"
     assert result["attempts"] == 5
@@ -72,7 +72,7 @@ def test_owner_approval_missing_suffix_is_never_dispatched():
 def test_mixed_repairable_and_non_repairable_is_waiting_on_owner_not_dispatched():
     result = rp.plan_recovery(
         pr_number=1,
-        findings=["QA_REGRESSION_FAILED", "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+        findings=["QA_EVIDENCE_FAILED:WOW required-three regression", "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
         attempts=0,
         is_wow_engineering_pr=True,
     )
@@ -92,18 +92,18 @@ def test_waiting_on_owner_never_increments_attempts_or_touches_retry_cap():
 
 
 def test_is_repairable_finding_helper():
-    assert rp.is_repairable_finding("QA_REGRESSION_FAILED") is True
+    assert rp.is_repairable_finding("QA_EVIDENCE_FAILED:WOW required-three regression") is True
     assert rp.is_repairable_finding("QA_TRUST_ROOT_OWNER_AUTHORED") is False
     assert rp.is_repairable_finding("RELEASE_TRUST_ROOT_OWNER_APPROVAL_MISSING") is False
 
 
 def test_parse_findings_from_summary_extracts_backtick_codes():
     summary = (
-        "Typed findings:\n- `QA_REGRESSION_FAILED`\n- `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING`"
+        "Typed findings:\n- `QA_EVIDENCE_FAILED:WOW required-three regression`\n- `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING`"
         "\n\nFail-closed. can_execute=false."
     )
     assert rp.parse_findings_from_summary(summary) == [
-        "QA_REGRESSION_FAILED",
+        "QA_EVIDENCE_FAILED:WOW required-three regression",
         "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING",
     ]
 
@@ -119,7 +119,7 @@ def test_cli_plan_from_summary_matches_findings_json(capsys):
             "--pr-number",
             "9",
             "--summary",
-            "Typed findings:\n- `QA_REGRESSION_FAILED`",
+            "Typed findings:\n- `QA_EVIDENCE_FAILED:WOW required-three regression`",
             "--attempts",
             "0",
             "--is-wow-engineering-pr",
@@ -130,7 +130,7 @@ def test_cli_plan_from_summary_matches_findings_json(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert payload["action"] == "DISPATCH_REPAIR"
-    assert payload["findings"] == ["QA_REGRESSION_FAILED"]
+    assert payload["findings"] == ["QA_EVIDENCE_FAILED:WOW required-three regression"]
 
 
 def test_cli_plan_outputs_json(capsys):
@@ -139,7 +139,7 @@ def test_cli_plan_outputs_json(capsys):
             "--pr-number",
             "9",
             "--findings-json",
-            '["QA_REGRESSION_FAILED"]',
+            '["QA_EVIDENCE_FAILED:WOW required-three regression"]',
             "--attempts",
             "0",
             "--is-wow-engineering-pr",
@@ -186,7 +186,7 @@ def test_owner_authored_non_bot_trust_root_is_retained_for_independent_reentry()
 
 def test_non_bot_unrelated_qa_finding_remains_ignored():
     result = rp.plan_recovery(
-        pr_number=2125, findings=["QA_REGRESSION_FAILED"],
+        pr_number=2125, findings=["QA_EVIDENCE_FAILED:WOW required-three regression"],
         attempts=0, is_wow_engineering_pr=False,
     )
     assert result["action"] == "IGNORE"
@@ -267,7 +267,7 @@ def test_execution_failure_code_parses_from_a_published_summary():
 
 def test_reviewer_execution_failure_never_hides_a_repairable_code_finding():
     result = rp.plan_recovery(
-        pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED:review", "QA_REGRESSION_FAILED"],
+        pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED:review", "QA_EVIDENCE_FAILED:WOW required-three regression"],
         attempts=0, is_wow_engineering_pr=True)
     assert result["action"] == "DISPATCH_REPAIR"
 
@@ -282,4 +282,101 @@ def test_execution_failure_with_other_pending_evidence_still_waits():
 def test_execution_prefix_is_exact():
     result = rp.plan_recovery(pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED_SOMETHING_ELSE"],
                               attempts=0, is_wow_engineering_pr=True)
+    # Not evidence-pending (exact prefix), and an unknown code is never repaired.
+    assert result["action"] == "NOT_REPAIRABLE_BY_CODE"
+
+
+# --- Allowlist (redesign R5): only findings a PR change can fix consume repair budget ---
+
+@pytest.mark.parametrize("code", [
+    "QA_EVIDENCE_FAILED:WOW governed probability backend",
+    "QA_INDEPENDENT_SOURCE_REVIEW_REJECTED",
+    "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS",
+    "RELEASE_QA_EVIDENCE_FAILED:WOW additional required regression",
+    "RELEASE_QA_INDEPENDENT_SOURCE_REVIEW_REJECTED",
+])
+def test_allowlisted_code_defects_dispatch_repair(code):
+    result = rp.plan_recovery(pr_number=1, findings=[code], attempts=0, is_wow_engineering_pr=True)
+    assert result["action"] == "DISPATCH_REPAIR" and result["attempts"] == 1
+
+
+@pytest.mark.parametrize("code", [
+    # PR state: no code change makes a draft/closed/moved PR reviewable.
+    "QA_PR_DRAFT", "QA_PR_NOT_OPEN", "QA_PR_BASE_NOT_MAIN", "QA_PR_HEAD_REPOSITORY_MISMATCH",
+    "QA_HEAD_STALE", "QA_HEAD_INVALID", "QA_FILES_EMPTY",
+    # Reviewer / policy / canary configuration.
+    "QA_INDEPENDENT_SOURCE_REVIEW_MISSING", "QA_INDEPENDENT_SOURCE_REVIEW_INVALID:RECEIPT_HEAD_MISMATCH",
+    "QA_REVIEW_POLICY_INVALID", "QA_REVIEW_POLICY_MODE_CONFLICT", "QA_REVIEW_POLICY_LEGACY_AFTER_ACTIVATION",
+    "QA_REVIEW_CANARY_SCOPE_MISMATCH", "QA_ZERO_CREDIT_POLICY_NOT_ENABLED",
+    "QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED",
+    # Release identity / provenance.
+    "RELEASE_APP_IDENTITY_UNBOUND", "RELEASE_IDENTITY_NOT_DISTINCT", "RELEASE_QA_FOREIGN_SOURCE",
+    "RELEASE_QA_REVIEW_POLICY_MISSING", "RELEASE_QA_PR_DRAFT",
+    # Unknown / future codes fail closed.
+    "SOME_FUTURE_FINDING", "QA_EVIDENCE_FAILEDX",
+])
+def test_state_config_identity_and_unknown_findings_never_spend_repairs(code):
+    result = rp.plan_recovery(pr_number=1, findings=[code], attempts=1, is_wow_engineering_pr=True)
+    assert result["action"] == "NOT_REPAIRABLE_BY_CODE"
+    assert result["attempts"] == 1 and result["can_execute"] is False
+    assert result["not_code_repairable_findings"] == [code]
+
+
+def test_mixed_hold_still_repairs_the_fixable_part():
+    result = rp.plan_recovery(
+        pr_number=1, findings=["QA_PR_DRAFT", "QA_EVIDENCE_FAILED:WOW required-three regression"],
+        attempts=0, is_wow_engineering_pr=True)
     assert result["action"] == "DISPATCH_REPAIR"
+
+
+def test_owner_gates_and_pending_evidence_keep_precedence_over_the_allowlist():
+    owner = rp.plan_recovery(pr_number=1, findings=["QA_TRUST_ROOT_OWNER_APPROVAL_MISSING", "QA_PR_DRAFT"],
+                             attempts=0, is_wow_engineering_pr=True)
+    assert owner["action"] == "WAITING_ON_OWNER"
+    pending = rp.plan_recovery(pr_number=1, findings=["QA_EVIDENCE_MISSING:WOW x", "QA_PR_DRAFT"],
+                               attempts=0, is_wow_engineering_pr=True)
+    assert pending["action"] == "WAITING_ON_EVIDENCE"
+
+
+def test_retry_cap_still_applies_to_allowlisted_defects():
+    result = rp.plan_recovery(pr_number=1, findings=["QA_EVIDENCE_FAILED:WOW required-three regression"],
+                              attempts=rp.MAX_REPAIR_ATTEMPTS, is_wow_engineering_pr=True)
+    assert result["action"] == "NEEDS_OWNER_RETRY_CAP"
+
+
+def test_every_emitted_qa_and_release_code_is_classified_explicitly():
+    """Guard: a new QA finding must be consciously placed on (or off) the allowlist."""
+    import ast
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent / "v17/independent_release_checks.py").read_text()
+    codes = set()
+    for fn in ast.parse(src).body:
+        if isinstance(fn, ast.FunctionDef) and fn.name == "qa_findings":
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                        and re.fullmatch(r"QA_[A-Z0-9_]+:?", node.value):
+                    codes.add(node.value.rstrip(":"))
+    repairable = {c for c in codes if rp.is_code_repairable(c) or rp.is_code_repairable(c + ":x")}
+    assert repairable == {"QA_EVIDENCE_FAILED", "QA_INDEPENDENT_SOURCE_REVIEW_REJECTED",
+                          "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS"}, sorted(repairable)
+
+
+def test_auto_repair_workflow_dispatches_only_on_dispatch_repair_and_records_allowlist_route():
+    from pathlib import Path
+    import yaml as _yaml
+    flow = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+    jobs = _yaml.load(flow.read_text(encoding="utf-8"), Loader=_yaml.BaseLoader)["jobs"]
+    plan_steps = [s for job in jobs.values() for s in job.get("steps", [])
+                  if "steps.plan.outputs.action" in s.get("if", "")]
+    routed = {}
+    for step in plan_steps:
+        for action in ("DISPATCH_REPAIR", "NEEDS_OWNER_RETRY_CAP", "WAITING_ON_EVIDENCE",
+                       "WAITING_ON_OWNER", "NOT_REPAIRABLE_BY_CODE"):
+            if f"steps.plan.outputs.action == '{action}'" in step["if"]:
+                routed.setdefault(action, []).append(step)
+    # Every plan-gated step names exactly one known action.
+    assert sum(len(v) for v in routed.values()) == len(plan_steps)
+    record = routed["NOT_REPAIRABLE_BY_CODE"]
+    assert len(record) == 1 and "uses" not in record[0]
+    assert "NOT_REPAIRABLE_BY_CODE" in record[0]["run"] and "gh workflow run" not in record[0]["run"]
