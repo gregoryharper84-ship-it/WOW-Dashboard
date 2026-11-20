@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 import os
-from dataclasses import asdict, replace
+from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI
 
 from .bounded_cohort import run_bounded_capture_only_cohort_once
 from .http_client import ReadOnlyJsonClient
@@ -102,6 +102,7 @@ def _scheduled_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
 
 
 def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
+    """Run one bounded shadow capture pass and optional owned settlement."""
     # Capture and grading remain separate operations. Settlement can run only
     # on the explicitly owned singleton and is capped to avoid replay storms.
     result = run_bounded_capture_only_cohort_once(
@@ -136,109 +137,251 @@ def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
     )
 
 
+
+_DISPATCH_QUEUE_TABLE = "wow_kalshi_weather_collection_dispatch_queue"
+_DISPATCH_CLAIM_RPC = "claim_wow_kalshi_weather_collection_dispatch"
+
+
+def _claim_next_dispatch(db_client_fn: Callable[[], object]) -> dict[str, object] | None:
+    """Atomically claim one durable scheduled collection dispatch."""
+    response = db_client_fn().rpc(_DISPATCH_CLAIM_RPC).execute()
+    rows = getattr(response, "data", None)
+    if not isinstance(rows, list):
+        raise RuntimeError("KALSHI_WEATHER_DISPATCH_CLAIM_INVALID")
+    if not rows:
+        return None
+    if len(rows) != 1 or not isinstance(rows[0], Mapping):
+        raise RuntimeError("KALSHI_WEATHER_DISPATCH_CLAIM_INVALID")
+    row = dict(rows[0])
+    if type(row.get("dispatch_id")) is not int or row["dispatch_id"] <= 0:
+        raise RuntimeError("KALSHI_WEATHER_DISPATCH_ID_INVALID")
+    return row
+
+
+def _dispatch_result_summary(result: object) -> dict[str, object]:
+    """Persist bounded counts and typed status, never raw provider payloads."""
+    return {
+        "status": str(getattr(result, "status", "UNKNOWN")),
+        "targets_checked": int(getattr(result, "targets_checked", 0)),
+        "contracts_discovered": int(getattr(result, "contracts_discovered", 0)),
+        "samples_captured": int(getattr(result, "samples_captured", 0)),
+        "samples_skipped_existing": int(getattr(result, "samples_skipped_existing", 0)),
+        "supplemental_snapshots_captured": int(
+            getattr(result, "supplemental_snapshots_captured", 0)
+        ),
+        "market_microstructure_snapshots_captured": int(
+            getattr(result, "market_microstructure_snapshots_captured", 0)
+        ),
+        "predictions_settled": int(getattr(result, "predictions_settled", 0)),
+        "capture_failure_count": len(getattr(result, "capture_failures", ()) or ()),
+        "supplemental_failure_count": len(
+            getattr(result, "supplemental_failures", ()) or ()
+        ),
+        "market_microstructure_failure_count": len(
+            getattr(result, "market_microstructure_failures", ()) or ()
+        ),
+        "settlement_failure_count": len(getattr(result, "settlement_failures", ()) or ()),
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def _finish_dispatch(
+    db_client_fn: Callable[[], object],
+    dispatch_id: int,
+    status: str,
+    *,
+    result: Mapping[str, object] | None = None,
+    error_code: str | None = None,
+    attempts: int | None = None,
+) -> None:
+    """Complete or safely requeue a claimed dispatch using compare-and-set."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    payload: dict[str, object] = {
+        "status": status,
+        "result": dict(result) if result is not None else None,
+        "last_error_code": error_code,
+    }
+    if status == "PENDING":
+        payload["claimed_at"] = None
+        payload["completed_at"] = None
+        if attempts is not None:
+            payload["attempts"] = max(0, int(attempts))
+    else:
+        payload["completed_at"] = now
+
+    response = (
+        db_client_fn()
+        .table(_DISPATCH_QUEUE_TABLE)
+        .update(payload)
+        .eq("id", dispatch_id)
+        .eq("status", "CLAIMED")
+        .select("id")
+        .execute()
+    )
+    rows = getattr(response, "data", None)
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise RuntimeError("KALSHI_WEATHER_DISPATCH_FINISH_NOT_CONFIRMED")
+
+
+async def _process_dispatch_once(db_client_fn: Callable[[], object]) -> bool:
+    """Claim and process at most one queued capture pass."""
+    dispatch = await asyncio.to_thread(_claim_next_dispatch, db_client_fn)
+    if dispatch is None:
+        return False
+    dispatch_id = int(dispatch["dispatch_id"])
+    attempts = int(dispatch.get("attempts") or 1)
+
+    under_pressure, memory_ratio = _weather_memory_pressure()
+    if under_pressure:
+        await asyncio.to_thread(
+            _finish_dispatch,
+            db_client_fn,
+            dispatch_id,
+            "PENDING",
+            result={
+                "deferred_reason": "MEMORY_PRESSURE",
+                "memory_ratio": memory_ratio,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+            error_code="MEMORY_PRESSURE",
+            attempts=max(0, attempts - 1),
+        )
+        _logger.warning(
+            "WOW_KALSHI_WEATHER_DISPATCH status=DEFERRED_MEMORY_PRESSURE "
+            "dispatch_id=%s memory_ratio=%s probability_publishable=false can_execute=false",
+            dispatch_id,
+            memory_ratio,
+        )
+        return True
+
+    try:
+        result = await asyncio.to_thread(
+            _run_bounded_shadow_cycle,
+            db_client_fn=db_client_fn,
+        )
+        summary = _dispatch_result_summary(result)
+        await asyncio.to_thread(
+            _finish_dispatch, db_client_fn, dispatch_id, "COMPLETED", result=summary
+        )
+        _logger.warning(
+            "WOW_KALSHI_WEATHER_DISPATCH status=COMPLETED dispatch_id=%s "
+            "capture_status=%s captured=%s failures=%s probability_publishable=false can_execute=false",
+            dispatch_id,
+            summary["status"],
+            summary["samples_captured"],
+            summary["capture_failure_count"],
+        )
+    except Exception as exc:
+        await asyncio.to_thread(
+            _finish_dispatch,
+            db_client_fn,
+            dispatch_id,
+            "FAILED",
+            error_code=f"COLLECTION_{type(exc).__name__}"[:80],
+            result={"status": "FAILED", "probability_publishable": False, "can_execute": False},
+        )
+        raise
+    return True
+
+
+async def _run_dispatch_queue_loop(
+    *,
+    db_client_fn: Callable[[], object],
+    poll_interval_seconds: int,
+) -> None:
+    """Consume durable database dispatches; no HTTP credential leaves Postgres."""
+    _logger.warning(
+        "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=STARTED "
+        "poll_interval_seconds=%s max_claims_per_poll=1 "
+        "probability_publishable=false can_execute=false",
+        poll_interval_seconds,
+    )
+    while True:
+        try:
+            await _process_dispatch_once(db_client_fn)
+        except Exception as exc:
+            _logger.exception(
+                "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=FAILED error_type=%s "
+                "probability_publishable=false can_execute=false",
+                type(exc).__name__,
+            )
+        await asyncio.sleep(poll_interval_seconds)
+
+
 def install_empirical_cohort_scheduler(
     app: FastAPI,
     *,
     db_client_fn: Callable[[], object],
 ) -> None:
-    """Install bounded automated Weather calibration collection plus trigger.
+    """Install one isolated queue consumer or the mutually exclusive legacy loop.
 
-    The shared web process captures one representative threshold sibling and a
-    small rotating target slice per pass. Historical settlement backlog is kept
-    out of this process boundary so old rows cannot recycle the production API.
-    Exact sibling contracts remain available through authenticated on-demand
-    Weather routes.
-
-    Nothing here can promote model capability, publish an uncertified
-    probability, or execute a trade.
+    The preferred scheduler inserts a non-secret durable queue row. The
+    isolated Render process claims it atomically with a service-role RPC; no
+    cohort key is sent through a redirect-following HTTP transport.
     """
     if getattr(app.state, "kalshi_weather_empirical_scheduler_installed", False):
         return
     app.state.kalshi_weather_empirical_scheduler_installed = True
 
-    @app.post(
-        "/internal/kalshi-weather/v17/empirical-cohort/cron-run",
-        operation_id="runKalshiWeatherV17EmpiricalCohortCron",
-        include_in_schema=False,
-    )
-    def _cron_run(
-        x_wow_weather_cohort_key: str | None = Header(
-            default=None,
-            alias="X-WOW-Weather-Cohort-Key",
-        ),
-    ):
-        expected = os.getenv("WOW_KALSHI_WEATHER_COHORT_KEY", "")
-        supplied = str(x_wow_weather_cohort_key or "")
-        if not expected:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNCONFIGURED",
-                    "probability_publishable": False,
-                    "can_execute": False,
-                },
-            )
-        if not supplied or not hmac.compare_digest(supplied, expected):
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNAUTHORIZED",
-                    "probability_publishable": False,
-                    "can_execute": False,
-                },
-            )
-        under_pressure, memory_ratio = _weather_memory_pressure()
-        if under_pressure:
-            _logger.warning(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=SKIPPED_MEMORY_PRESSURE trigger=EXTERNAL_LEAST_PRIVILEGE_SCHEDULER memory_ratio=%.4f probability_publishable=false can_execute=false",
-                memory_ratio or 0.0,
-            )
-            return {
-                "status": "SKIPPED_MEMORY_PRESSURE",
-                "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
-                "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
-                "memory_ratio": memory_ratio,
-                "probability_publishable": False,
-                "can_execute": False,
-            }
-
-        result = _run_bounded_shadow_cycle(db_client_fn=db_client_fn)
-        return {
-            **asdict(result),
-            "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
-            "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
-            "probability_publishable": False,
-            "can_execute": False,
-        }
-
     @app.on_event("startup")
     async def _schedule_empirical_cohort() -> None:
-        if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED", "0") != "1":
-            _logger.warning(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=DISABLED probability_publishable=false can_execute=false"
+        queue_enabled = (
+            os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_QUEUE_ENABLED", "0") == "1"
+        )
+        loop_enabled = (
+            os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED", "0") == "1"
+        )
+        if queue_enabled and loop_enabled:
+            _logger.error(
+                "WOW_KALSHI_WEATHER_DISPATCH_QUEUE status=BLOCKED_MULTIPLE_WRITERS "
+                "probability_publishable=false can_execute=false"
             )
             return
-        try:
-            interval_seconds = int(
-                os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_INTERVAL_SECONDS", "900")
+        if not queue_enabled and not loop_enabled:
+            _logger.warning(
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=DISABLED "
+                "probability_publishable=false can_execute=false"
             )
-        except ValueError:
-            interval_seconds = 900
-        interval_seconds = max(300, interval_seconds)
-        try:
-            initial_delay_seconds = int(
-                os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_INITIAL_DELAY_SECONDS", "45")
+            return
+
+        if queue_enabled:
+            try:
+                interval_seconds = int(
+                    os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_DISPATCH_POLL_SECONDS", "60")
+                )
+            except ValueError:
+                interval_seconds = 60
+            interval_seconds = max(15, min(interval_seconds, 300))
+            task = asyncio.create_task(
+                _run_dispatch_queue_loop(
+                    db_client_fn=db_client_fn,
+                    poll_interval_seconds=interval_seconds,
+                )
             )
-        except ValueError:
-            initial_delay_seconds = 45
-        initial_delay_seconds = max(0, min(initial_delay_seconds, 300))
-        task = asyncio.create_task(
-            _run_bounded_shadow_loop(
-                db_client_fn=db_client_fn,
-                interval_seconds=interval_seconds,
-                initial_delay_seconds=initial_delay_seconds,
+        else:
+            try:
+                interval_seconds = int(
+                    os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_INTERVAL_SECONDS", "900")
+                )
+            except ValueError:
+                interval_seconds = 900
+            interval_seconds = max(300, interval_seconds)
+            try:
+                initial_delay_seconds = int(
+                    os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_INITIAL_DELAY_SECONDS", "45")
+                )
+            except ValueError:
+                initial_delay_seconds = 45
+            initial_delay_seconds = max(0, min(initial_delay_seconds, 300))
+            task = asyncio.create_task(
+                _run_bounded_shadow_loop(
+                    db_client_fn=db_client_fn,
+                    interval_seconds=interval_seconds,
+                    initial_delay_seconds=initial_delay_seconds,
+                )
             )
-        )
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
 
