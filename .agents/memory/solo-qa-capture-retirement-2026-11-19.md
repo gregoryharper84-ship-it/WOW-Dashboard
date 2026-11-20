@@ -11,3 +11,15 @@
 - **Link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2738
 - **Status:** P-class draft; exact-head GREEN and independent authorization still required before protected release. No production change, no probability promotion.
 - **Scoreboard delta:** Coverage, qualified, and production fidelity = 0 until separately verified release.
+
+
+## 2026-11-20 — QA/Release latent protected-receipt acceptance
+
+- **Typed reason:** `QA_SOLO_VERIFIED_EVIDENCE_INVALID` (existing canonical code; no new code).
+- **Mechanism:** The QA validator accepted dormant `SOLO_PROTECTED_EVIDENCE_READY` / `SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY` codes, and did not independently check the receipt's `change_class`, changed file allowlist, or rename/unsafe operation evidence. This could misclassify a future forged or misrouted P/C receipt as valid deterministic R evidence, despite the protected solo verifier intentionally never producing a protected-ready code. Release independently calls `qa_findings`, so the gap was shared.
+- **Prediction:** A test-only receipt claiming a protected-ready code or using R for a protected file yields `QA_SOLO_VERIFIED_EVIDENCE_INVALID` and `RELEASE_QA_SOLO_VERIFIED_EVIDENCE_INVALID`. Genuine allowlisted R evidence remains PASS.
+- **RED:** Test-only head `6f83f35dd83af30e185f7e6cc7c614b607a62e9b`, hosted rapid job `135987758751`, `1 failed, 362 passed`; exact failure `AssertionError: dormant protected code` and `assert 'QA_SOLO_VERIFIED_EVIDENCE_INVALID' in []`.
+- **Fix:** QA accepts only `SOLO_R_EVIDENCE_READY` with `change_class=R`, exact safe allowlisted files, no disallowed operations, and honest nonindependent administration audit; Release inherits the typed negative.
+- **Prevention artifact:** `test_solo_qa_never_accepts_protected_success_codes_or_nonroutine_changes` in `artifacts/wow-engine/tests/test_v17_solo_qa_release_integration.py`.
+- **Link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2738
+- **Verification:** RED observed; final exact-head GREEN pending at time of writing. Production fidelity/coverage/qualified delta = 0; no merge or protected approval.
