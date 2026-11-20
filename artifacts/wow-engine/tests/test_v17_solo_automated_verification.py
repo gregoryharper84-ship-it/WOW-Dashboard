@@ -674,7 +674,11 @@ def test_collect_and_evaluate_edge_cases_and_rename_escalation():
         )
     assert res["verification_status"] == "HOLD"
     assert res["change_class"] == "P+C"
-    assert model_origin in res["model_calibration_paths"]
+    classification = sav.classify_change_scope(
+        [ROUTINE_FILE, model_origin],
+        file_statuses={ROUTINE_FILE: "renamed", model_origin: "renamed"},
+    )
+    assert model_origin in classification["model_calibration_paths"]
 
 
 def test_cli_loads_receipt_files_and_rejects_malformed_json(tmp_path, capsys):
