@@ -110,7 +110,7 @@ When enough pregame role/opportunity/distribution evidence exists, annotate prop
 
 Before calling a six-leg card, a prop, or an individual anchor **strong confidence**:
 
-- Use the existing \`v17.slip_research_preflight.audit_research_slips\` path to detect missing or stale market/role/opportunity evidence. It is a **research HOLD**, not model certification; its caller-supplied inputs cannot self-certify provenance.
+- Use the existing `v17.slip_research_preflight.audit_research_slips` path to detect missing or stale market/role/opportunity evidence. It is a **research HOLD**, not model certification; its caller-supplied inputs cannot self-certify provenance.
 - Verify the exact **entered** threshold, direction, player, stat and event against both the latest platform offer and the immutable scored receipt. If a research target was LESS 7.5 and the app offers LESS 7, it is a **different line requiring fresh specialist scoring**; never treat it as the same pick or imply it kept its recent hit-rate performance.
 - Record the PrizePicks projection type (STANDARD/GOBLIN/DEMON) for each leg and the fresh whole-lineup Flex/Power payout context. Never treat Goblin payout economics as standard or quote gross payout from a generic six-leg table.
 - Require official-player identity, *confirmed* participation, position/role, and a pregame opportunity distribution with workload source and lineup-scenario provenance. For NBA, use conditional minutes, attempts, potential assists or rebound chances as appropriate; for NFL, routes/snaps/targets. A last-10 make/hit ratio is context, **not** the projected opportunity distribution or calibrated probability.
@@ -119,7 +119,7 @@ Before calling a six-leg card, a prop, or an individual anchor **strong confiden
 - A six-leg Flex may be researched at the user's request, but **never filled to quota** when six governed, exact-line, independently reviewed legs do not qualify. Without a certified joint model and exact payout context, do not claim six-leg win probability, positive EV or a strong-confidence slip.
 - Grade immutable original recommendation and submitted platform entry **separately**. Preserve threshold changes, ties/pushes, DNP/repriced lineup rules, and independently official-final outcomes; in-progress screenshot totals are not final grades.
 
-These gates supplement—not replace—canonical \`/score-pick-request\`, the specialist's opportunity and availability ledger, calibration/publication gates, the existing portfolio optimizer or the V17 terminal reducer. \`can_execute=false\` remains binding.
+These gates supplement—not replace—canonical `/score-pick-request`, the specialist's opportunity and availability ledger, calibration/publication gates, the existing portfolio optimizer or the V17 terminal reducer. `can_execute=false` remains binding.
 
 ## 7. Probability qualification
 A row is eligible for the official pool only when the backend returns the route-required governed numeric package and publication/rank gates pass.
