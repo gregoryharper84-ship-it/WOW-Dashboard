@@ -95,3 +95,15 @@ can_execute: false
 ```
 
 No review pass may waive a failed acceptance criterion or missing required evidence.
+
+## Independent test-evidence challenge
+
+Verify the original failing regression and the exact-head
+passing evidence independently.
+
+Challenge stale SHAs, weak tests, concurrency races,
+security violations, missing negative cases, and model
+probability or typed-status substitutions.
+
+Reject changes that only suppress symptoms.
+Preserve independent reviewer identity and no self-approval.
