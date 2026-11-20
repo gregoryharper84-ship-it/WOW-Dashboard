@@ -442,6 +442,16 @@ jobs:
           for n in $prs; do
             pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${n}" 2>/dev/null) || { echo "ORDINARY_SWEEP_READ_FAILED:#${n}" >> "$GITHUB_STEP_SUMMARY"; continue; }
             state=$(jq -r '.mergeable_state // "unknown"' <<<"$pr")
+            # GitHub computes mergeability lazily: the first read of a cold PR
+            # returns "unknown" (observed 2026-11-20 on #2712, #1932, #2715,
+            # #2709; real state ~4s later). Re-read before deciding.
+            tries=1
+            while [ "$state" = "unknown" ] && [ "$tries" -lt 4 ]; do
+              sleep 3
+              pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${n}" 2>/dev/null) || break
+              state=$(jq -r '.mergeable_state // "unknown"' <<<"$pr")
+              tries=$((tries + 1))
+            done
             head=$(jq -r '.head.sha' <<<"$pr")
             ref=$(jq -r '.head.ref' <<<"$pr")
             case "$state" in

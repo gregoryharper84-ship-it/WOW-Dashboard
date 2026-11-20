@@ -214,7 +214,12 @@ def _run_sweep(tmp_path, prs, *, fail_reads=False):
         "if args[0] == 'api' and '-X' not in args:\n"
         "    path = [a for a in args if a.startswith('/repos/')][0]\n"
         "    key = 'list' if '/pulls?' in path else path.rsplit('/', 1)[1]\n"
-        "    print(json.dumps(routes[key]))\n"
+        "    value = routes[key]\n"
+        "    if key != 'list' and value.get('_states'):\n"
+        "        state = value['_states'].pop(0)\n"
+        "        json.dump(routes, open(os.environ['ROUTES'], 'w'))\n"
+        "        value = {**value, 'mergeable_state': state}\n"
+        "    print(json.dumps(value))\n"
     )
     gh.chmod(0o755)
     (tmp_path / "sleep").write_text("#!/bin/sh\nexit 0\n")
@@ -284,3 +289,22 @@ def test_sweep_never_fails_main_on_api_errors(tmp_path):
     proc, calls, summary = _run_sweep(tmp_path, [_pr(30)], fail_reads=True)
     assert proc.returncode == 0, proc.stderr
     assert "ORDINARY_SWEEP_NO_CANDIDATES" in summary
+
+
+def test_sweep_rereads_cold_unknown_mergeable_state(tmp_path):
+    # First read of a cold PR returns "unknown"; the real state follows.
+    pr = {**_pr(40, state="unknown"), "_states": ["unknown", "unknown", "behind"]}
+    proc, calls, summary = _run_sweep(tmp_path, [pr])
+    assert proc.returncode == 0, proc.stderr
+    assert sum(1 for c in calls if c.endswith("/pulls/40")) == 3
+    assert any("update-branch" in c for c in calls)
+    assert "ORDINARY_SWEEP_UPDATED_AND_CI_DISPATCHED:#40" in summary
+
+
+def test_sweep_gives_up_after_four_unknown_reads(tmp_path):
+    pr = {**_pr(41, state="unknown"), "_states": ["unknown"] * 6}
+    proc, calls, summary = _run_sweep(tmp_path, [pr])
+    assert proc.returncode == 0, proc.stderr
+    assert sum(1 for c in calls if c.endswith("/pulls/41")) == 4
+    assert "ORDINARY_SWEEP_WAIT:#41:unknown" in summary
+    assert not any("update-branch" in c or c.startswith("workflow run") for c in calls)
