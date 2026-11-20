@@ -30,7 +30,8 @@ jobs:
     name: Resume Morning-Green repair after CI
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15: the ordinary lane may wait up to 8 min for QA/Release below.
+    timeout-minutes: 15
     steps:
       - name: Resolve eligible Morning-Green PR
         id: resolve
@@ -216,6 +217,31 @@ jobs:
           fi
           echo "approved=true" >> "$GITHUB_OUTPUT"
           echo "guard_exit_code=0" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for exact-head QA and Release to finish (ordinary lane only)
+        if: steps.resolve.outputs.eligible == 'true' && steps.resolve.outputs.lane == 'ordinary' && steps.gates.outputs.ready == 'true' && steps.scope.outputs.approved == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          # QA and Release always finish after the verify workflows that wake
+          # this job (#2757, 2026-11-20 14:45 UTC). Wait until both exist at the
+          # exact head and none is still running; the next step decides. Never
+          # fails: a timeout just lets the governance step hold.
+          set -uo pipefail
+          for attempt in $(seq 1 24); do
+            settled=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '
+              [.check_runs[] | select((.name == "WOW Independent QA exact-head" and .app.id == 5245832) or (.name == "WOW Release Authority exact-head" and .app.id == 5245853))]
+              | ((map(.name) | unique | length) == 2) and ((map(select(.status != "completed")) | length) == 0)' 2>/dev/null || echo false)
+            if [ "$settled" = "true" ]; then
+              echo "ORDINARY_QA_RELEASE_SETTLED:attempt=${attempt}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "ORDINARY_QA_RELEASE_WAIT_TIMEOUT" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
       - name: Verify V4 exact-head QA and Release checks for restorative auto-merge
         id: governance
@@ -453,18 +479,17 @@ jobs:
               tries=$((tries + 1))
             done
             head=$(jq -r '.head.sha' <<<"$pr")
-            ref=$(jq -r '.head.ref' <<<"$pr")
             case "$state" in
               behind)
-                # A GITHUB_TOKEN push starts no CI, so dispatch the required
-                # workflows on the updated branch explicitly.
-                if gh api -X PUT "/repos/${GITHUB_REPOSITORY}/pulls/${n}/update-branch" -f expected_head_sha="$head" >/dev/null 2>&1; then
-                  sleep 10
-                  gh workflow run wow-verify.yml --repo "$GITHUB_REPOSITORY" --ref "$ref" || true
-                  gh workflow run wow-engine-verify.yml --repo "$GITHUB_REPOSITORY" --ref "$ref" || true
-                  echo "ORDINARY_SWEEP_UPDATED_AND_CI_DISPATCHED:#${n}" >> "$GITHUB_STEP_SUMMARY"
+                # A GITHUB_TOKEN update (or a GITHUB_TOKEN-dispatched CI run)
+                # starts no QA/Release: GitHub fires no follow-on workflow_run
+                # events for it (observed on #2757, 2026-11-20 23:26 UTC). The
+                # keep-current lane updates with the wow-engineering App token,
+                # which runs normal PR CI (#2232, #2433 on 2026-11-05).
+                if gh workflow run wow-v17-engineering-pr-keep-current.yml --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$n"; then
+                  echo "ORDINARY_SWEEP_UPDATE_DELEGATED:#${n}:${head}" >> "$GITHUB_STEP_SUMMARY"
                 else
-                  echo "ORDINARY_SWEEP_UPDATE_FAILED:#${n}" >> "$GITHUB_STEP_SUMMARY"
+                  echo "ORDINARY_SWEEP_UPDATE_DISPATCH_FAILED:#${n}" >> "$GITHUB_STEP_SUMMARY"
                 fi
                 ;;
               clean)

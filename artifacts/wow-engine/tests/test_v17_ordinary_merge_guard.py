@@ -128,6 +128,9 @@ def test_manifest_protects_the_guard_itself():
     patterns = guard.load_protected_patterns(MANIFEST)
     assert "artifacts/wow-engine/v17/ordinary_merge_guard.py" in patterns
     assert "artifacts/wow-engine/tests/test_v17_ordinary_merge_guard.py" in patterns
+    # keep-current can update an opted-in PR with the App token: never ordinary-editable.
+    assert "artifacts/wow-engine/v17/engineering_pr_keep_current.py" in patterns
+    assert "artifacts/wow-engine/test_v17_engineering_pr_keep_current.py" in patterns
 
 
 # --- workflow wiring -------------------------------------------------------
@@ -251,14 +254,16 @@ def test_sweep_dispatches_continuation_for_clean_pr(tmp_path):
     assert "ORDINARY_SWEEP_CONTINUATION_DISPATCHED:#11" in summary
 
 
-def test_sweep_updates_behind_pr_and_dispatches_required_ci_on_its_branch(tmp_path):
+def test_sweep_delegates_behind_pr_update_to_app_token_lane(tmp_path):
     proc, calls, summary = _run_sweep(tmp_path, [_pr(12, state="behind")])
     assert proc.returncode == 0, proc.stderr
-    update = [c for c in calls if "update-branch" in c]
-    assert update and f"expected_head_sha={12:040d}" in update[0]
-    assert any("workflow run wow-verify.yml" in c and "--ref branch-12" in c for c in calls)
-    assert any("workflow run wow-engine-verify.yml" in c and "--ref branch-12" in c for c in calls)
+    assert any(c.startswith("workflow run wow-v17-engineering-pr-keep-current.yml") and "--ref main" in c
+               and "pr_number=12" in c for c in calls)
+    # GITHUB_TOKEN updates/dispatches start no QA/Release, so the sweep makes neither.
+    assert not any("update-branch" in c for c in calls)
+    assert not any("wow-verify.yml" in c or "wow-engine-verify.yml" in c for c in calls)
     assert not any("morning-green-continuation" in c for c in calls)
+    assert f"ORDINARY_SWEEP_UPDATE_DELEGATED:#12:{12:040d}" in summary
 
 
 def test_sweep_waits_on_other_states_and_skips_non_candidates(tmp_path):
@@ -297,8 +302,8 @@ def test_sweep_rereads_cold_unknown_mergeable_state(tmp_path):
     proc, calls, summary = _run_sweep(tmp_path, [pr])
     assert proc.returncode == 0, proc.stderr
     assert sum(1 for c in calls if c.endswith("/pulls/40")) == 3
-    assert any("update-branch" in c for c in calls)
-    assert "ORDINARY_SWEEP_UPDATED_AND_CI_DISPATCHED:#40" in summary
+    assert any("keep-current" in c and "pr_number=40" in c for c in calls)
+    assert "ORDINARY_SWEEP_UPDATE_DELEGATED:#40" in summary
 
 
 def test_sweep_gives_up_after_four_unknown_reads(tmp_path):
@@ -308,3 +313,142 @@ def test_sweep_gives_up_after_four_unknown_reads(tmp_path):
     assert sum(1 for c in calls if c.endswith("/pulls/41")) == 4
     assert "ORDINARY_SWEEP_WAIT:#41:unknown" in summary
     assert not any("update-branch" in c or c.startswith("workflow run") for c in calls)
+
+
+# --- continue-repair waits for QA/Release (ordinary lane) -----------------
+
+
+def _step(workflow: str, job: str, name_prefix: str) -> dict:
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    for step in yaml.safe_load(text)["jobs"][job]["steps"]:
+        if step.get("name", "").startswith(name_prefix):
+            return step
+    raise AssertionError(name_prefix)
+
+
+def _fake_gh_with_jq(tmp_path, sequence):
+    (tmp_path / "seq.json").write_text(json.dumps(sequence))
+    gh = tmp_path / "gh"
+    gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, subprocess, sys\n"
+        "args = sys.argv[1:]\n"
+        "open(os.environ['CALL_LOG'], 'a').write(' '.join(args) + '\\n')\n"
+        "seq = json.load(open(os.environ['SEQ']))\n"
+        "body = seq.pop(0) if len(seq) > 1 else seq[0]\n"
+        "json.dump(seq, open(os.environ['SEQ'], 'w'))\n"
+        "if '--jq' in args:\n"
+        "    expr = args[args.index('--jq') + 1]\n"
+        "    sys.stdout.write(subprocess.run(['jq', '-r', expr], input=json.dumps(body), capture_output=True, text=True).stdout)\n"
+        "else:\n"
+        "    print(json.dumps(body))\n"
+    )
+    gh.chmod(0o755)
+    (tmp_path / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "sleep").chmod(0o755)
+
+
+def _runs(*items):
+    return {"check_runs": [{"name": n, "app": {"id": a}, "status": st} for n, a, st in items]}
+
+
+QA, REL = ("WOW Independent QA exact-head", 5245832), ("WOW Release Authority exact-head", 5245853)
+
+
+def _run_wait(tmp_path, sequence):
+    _fake_gh_with_jq(tmp_path, sequence)
+    script = _step("wow-v17-morning-green-continuation.yml", "continue-repair", "Wait for exact-head QA and Release")["run"]
+    summary, log = tmp_path / "summary", tmp_path / "calls.log"
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", SEQ=str(tmp_path / "seq.json"), CALL_LOG=str(log),
+               GITHUB_REPOSITORY=REPO, GITHUB_STEP_SUMMARY=str(summary), GH_TOKEN="t", HEAD_SHA="a" * 40)
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    return proc, log.read_text().splitlines(), summary.read_text() if summary.exists() else ""
+
+
+def test_wait_step_is_ordinary_only_and_precedes_governance():
+    jobs = yaml.safe_load(_wf())["jobs"]
+    names = [s.get("name", "") for s in jobs["continue-repair"]["steps"]]
+    wait = next(i for i, n in enumerate(names) if n.startswith("Wait for exact-head QA and Release"))
+    gov = next(i for i, n in enumerate(names) if n.startswith("Verify V4 exact-head QA and Release"))
+    assert wait < gov
+    assert "steps.resolve.outputs.lane == 'ordinary'" in jobs["continue-repair"]["steps"][wait]["if"]
+    assert jobs["continue-repair"]["timeout-minutes"] >= 15
+
+
+def test_wait_settles_only_when_both_checks_exist_and_none_is_running(tmp_path):
+    seq = [
+        _runs((*QA, "completed")),                                   # Release missing
+        _runs((*QA, "completed"), (*REL, "in_progress")),            # Release running
+        _runs((*QA, "completed"), (*QA, "in_progress"), (*REL, "completed")),  # newer QA running
+        _runs(("WOW Independent QA exact-head", 999, "completed"), (*REL, "completed")),  # wrong app
+        _runs((*QA, "completed"), (*REL, "completed")),
+    ]
+    proc, calls, summary = _run_wait(tmp_path, seq)
+    assert proc.returncode == 0, proc.stderr
+    assert "ORDINARY_QA_RELEASE_SETTLED:attempt=5" in summary
+
+
+def test_wait_times_out_without_failing(tmp_path):
+    proc, calls, summary = _run_wait(tmp_path, [_runs((*QA, "in_progress"))])
+    assert proc.returncode == 0, proc.stderr
+    assert "ORDINARY_QA_RELEASE_WAIT_TIMEOUT" in summary
+    assert len([c for c in calls if "check-runs" in c]) == 24
+
+
+# --- keep-current ordinary path (App token) --------------------------------
+
+KC = "wow-v17-engineering-pr-keep-current.yml"
+
+
+def _kc_pr(state="behind", **over):
+    pr = {"number": 2757, "state": "open", "draft": False, "mergeable_state": state,
+          "body": "docs\nWOW-Ordinary-Auto-Merge: true\nWOW-Change-Class: A",
+          "head": {"sha": "c" * 40, "repo": {"full_name": REPO}}}
+    pr.update(over)
+    return pr
+
+
+def _run_kc(tmp_path, sequence, pr_number="2757"):
+    _fake_gh_with_jq(tmp_path, sequence)
+    script = _step(KC, "keep-current", "Update every behind-main")["run"]
+    summary, log = tmp_path / "summary", tmp_path / "calls.log"
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", SEQ=str(tmp_path / "seq.json"), CALL_LOG=str(log),
+               GITHUB_REPOSITORY=REPO, GITHUB_STEP_SUMMARY=str(summary), GH_TOKEN="app-token", ORDINARY_PR=pr_number)
+    proc = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT, capture_output=True, text=True, timeout=60)
+    return proc, log.read_text().splitlines() if log.exists() else [], summary.read_text() if summary.exists() else ""
+
+
+def test_keep_current_stays_dispatch_only_with_pr_number_input():
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / KC).read_text(encoding="utf-8"))
+    assert set(wf[True]) == {"workflow_dispatch"}
+    assert "pr_number" in wf[True]["workflow_dispatch"]["inputs"]
+    step = _step(KC, "keep-current", "Update every behind-main")
+    assert step["env"]["GH_TOKEN"] == "${{ steps.eng_token.outputs.token }}"
+    assert step["env"]["ORDINARY_PR"] == "${{ inputs.pr_number }}"
+
+
+def test_keep_current_updates_cold_behind_ordinary_pr_with_app_token(tmp_path):
+    proc, calls, summary = _run_kc(tmp_path, [_kc_pr("unknown"), _kc_pr("behind"), {}])
+    assert proc.returncode == 0, proc.stderr
+    update = [c for c in calls if "update-branch" in c]
+    assert len(update) == 1 and "/pulls/2757/update-branch" in update[0] and f"expected_head_sha={'c' * 40}" in update[0]
+    assert f"ORDINARY_PR_UPDATED:#2757:{'c' * 40}" in summary
+
+
+@pytest.mark.parametrize(
+    "pr",
+    [_kc_pr("clean"), _kc_pr(body="WOW-Change-Class: A"), _kc_pr(draft=True),
+     _kc_pr(body="WOW-Ordinary-Auto-Merge: true\nMorning-Green-Autonomous: true"),
+     _kc_pr(head={"sha": "c" * 40, "repo": {"full_name": "fork/x"}})],
+)
+def test_keep_current_refuses_ineligible_ordinary_pr(tmp_path, pr):
+    proc, calls, summary = _run_kc(tmp_path, [pr])
+    assert proc.returncode == 0, proc.stderr
+    assert not any("update-branch" in c for c in calls)
+    assert "ORDINARY_PR_NOT_ELIGIBLE_OR_NOT_BEHIND:#2757" in summary
+
+
+def test_keep_current_rejects_non_numeric_pr_number(tmp_path):
+    proc, calls, summary = _run_kc(tmp_path, [_kc_pr()], pr_number="1; rm -rf /")
+    assert proc.returncode == 0
+    assert calls == [] and "ORDINARY_PR_NUMBER_INVALID" in summary
