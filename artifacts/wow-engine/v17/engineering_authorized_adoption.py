@@ -45,7 +45,54 @@ def call(*args: str, env: dict | None = None) -> str:
 
 
 def api(endpoint: str) -> dict | list:
-    return json.loads(call("gh", "api", f"/repos/{REPO}/{endpoint}"))
+    """Read GitHub evidence; fail over only a typed installation quota denial.
+
+    The normal token and Engineering App token remain distinct. The App token
+    may be used as a bounded GET-only transport fallback after a GitHub Actions
+    installation quota denial; this does not create an approval, alter evidence,
+    or authorize a write. Every source/PR/SHA/receipt check still applies.
+    """
+    if (not isinstance(endpoint, str) or not endpoint
+            or endpoint.startswith(("/", ".")) or "//" in endpoint
+            or any(part == ".." for part in endpoint.split("/"))):
+        raise AdoptionHold("GITHUB_EVIDENCE_ENDPOINT_INVALID_HOLD")
+    primary = os.environ.get("GH_TOKEN") or ""
+    if not primary:
+        raise AdoptionHold("GITHUB_EVIDENCE_READ_IDENTITY_MISSING_HOLD")
+
+    def read_with(token: str) -> tuple[subprocess.CompletedProcess[str], str]:
+        env = dict(os.environ, GH_TOKEN=token)
+        result = subprocess.run(
+            ["gh", "api", f"/repos/{REPO}/{endpoint}"],
+            text=True, capture_output=True, check=False, env=env,
+            timeout=45,
+        )
+        return result, result.stderr or ""
+
+    try:
+        result, reason = read_with(primary)
+        if result.returncode != 0:
+            quota = ("API rate limit exceeded for installation" in reason
+                     and "(HTTP 403)" in reason)
+            if not quota:
+                raise AdoptionHold("GITHUB_EVIDENCE_READ_DENIED_OR_UNAVAILABLE_HOLD")
+            secondary = os.environ.get("APP_TOKEN") or ""
+            if not secondary or secondary == primary:
+                raise AdoptionHold("GITHUB_INSTALLATION_QUOTA_DEFERRED_HOLD")
+            # The alternate credential is invoked with gh api's default GET
+            # only. Never pass it to POST/PATCH, GitHub PR approval or merge.
+            result, reason = read_with(secondary)
+            if result.returncode != 0:
+                raise AdoptionHold("GITHUB_ALTERNATE_READ_UNAVAILABLE_HOLD")
+        try:
+            payload = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            raise AdoptionHold("GITHUB_EVIDENCE_RESPONSE_MALFORMED_HOLD") from None
+        if type(payload) not in (dict, list):
+            raise AdoptionHold("GITHUB_EVIDENCE_RESPONSE_TYPE_INVALID_HOLD")
+        return payload
+    except subprocess.TimeoutExpired:
+        raise AdoptionHold("GITHUB_EVIDENCE_READ_TIMEOUT_HOLD") from None
 
 
 def source_paths(files: list[dict]) -> list[str]:
