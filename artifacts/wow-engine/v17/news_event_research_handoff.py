@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -42,6 +44,20 @@ def _valid_https(url: Any) -> bool:
         return p.scheme == "https" and bool(p.hostname) and not p.username and not p.password and not p.fragment
     except ValueError:
         return False
+
+
+def _headline_key(value: Any) -> str | None:
+    """Exact normalized headline fingerprint; conservative syndication signal.
+
+    Never treats domain diversity as independence when articles carry the
+    same headline. This is not semantic plagiarism detection: distinct
+    headlines can still share a wire service and require external review.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    tokens = re.findall(r"\\w+", normalized, flags=re.UNICODE)
+    return " ".join(tokens) if tokens else None
 
 
 def _hash(value: Mapping[str, Any]) -> str:
@@ -118,6 +134,15 @@ def reconcile_news_handoff(
         article.get("source_url")
         for article in articles
         if isinstance(article, dict) and _valid_https(article.get("source_url"))
+    }
+    # Map each discovery URL to a stable same-headline fingerprint.
+    # Retain every original URL and review row for provenance/conservation.
+    # The presence of different publishers alone is not independent evidence
+    # when the article headline is a copy of the same syndicated release.
+    headlines_by_url = {
+        article["source_url"]: _headline_key(article.get("title"))
+        for article in articles
+        if isinstance(article, dict) and article.get("source_url") in article_urls
     }
     if not article_urls:
         return finish("NEWS_NO_ATTRIBUTED_ARTICLES")
@@ -209,6 +234,14 @@ def reconcile_news_handoff(
             if (len({r["source_url"] for r in confirmations}) < 2
                     or len({r["source_group"] for r in confirmations}) < 2):
                 return finish("NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED", rows)
+            headline_keys = {
+                headlines_by_url.get(r["source_url"]) for r in confirmations
+            }
+            if None in headline_keys or len(headline_keys) < 2:
+                return finish(
+                    "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED", rows,
+                    conflicts=["SYNDICATED_OR_UNATTRIBUTED_HEADLINES"],
+                )
     return finish("NEWS_RESEARCH_RESCORE_REQUESTED", rows, request=True)
 
 
