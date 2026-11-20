@@ -21,12 +21,15 @@ from v17.nfl_forward_settlement_refresh import refresh_recent_settled_outcomes
 
 CAN_EXECUTE = False
 MIN_FORWARD_GRADED = 100
-HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V1"
+# V2 is required after the private verified-grade view migration; stale V1
+# health snapshots cannot authorize the forward certification admission gate.
+HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V2"
 GRADE_SCHEMA_VERSION = "NFL_FORWARD_SHADOW_GRADE_V1"
 
 PREDICTION_TABLE = "wow_nfl_event_predictions"
 OUTCOME_TABLE = "wow_nfl_training_games"
 GRADE_TABLE = "wow_nfl_forward_shadow_grades"
+VERIFIED_GRADE_TABLE = "wow_nfl_forward_verified_grades"
 HEALTH_TABLE = "wow_nfl_forward_calibration_health"
 
 
@@ -188,15 +191,26 @@ def grade_forward_predictions(
         outcome = outcomes.get(prediction.official_event_id)
         if outcome is None:
             continue
-        if outcome.get("tie") is True:
-            # Standard NFL moneyline tie settlement is not a binary win/loss.
-            # It is excluded from binary calibration rather than mislabeled loss.
-            continue
+        # Never infer a binary result from a conflicting or incomplete
+        # settlement. In particular, equal scores are a tie even when a
+        # persisted tie flag is missing or corrupt. The source producer emits
+        # integer scores and a real boolean home_win; require both to agree.
+        # This prevents a malformed settlement from inflating the forward
+        # cohort or changing Brier/log-loss and calibration certification.
+        home_score = outcome.get("home_score")
+        away_score = outcome.get("away_score")
         home_win = outcome.get("home_win")
-        if home_win is None:
+        if (
+            type(home_score) is not int or type(away_score) is not int
+            or home_score < 0 or away_score < 0
+            or home_score == away_score
+            or outcome.get("tie") is not False
+            or type(home_win) is not bool
+            or home_win != (home_score > away_score)
+        ):
             continue
         selected_home = prediction.selected_participant == prediction.home_team
-        won = bool(home_win) if selected_home else not bool(home_win)
+        won = home_win if selected_home else not home_win
         y = int(won)
         p = prediction.calibrated_probability
         grades.append(
@@ -324,6 +338,7 @@ _FORWARD_PAGE_KEYS = {
     PREDICTION_TABLE: "event_prediction_id",
     OUTCOME_TABLE: "game_id",
     GRADE_TABLE: "grade_id",
+    VERIFIED_GRADE_TABLE: "official_event_id",
 }
 
 
@@ -460,6 +475,22 @@ def persist_health(db: Any, health: Mapping[str, Any]) -> None:
     }).execute()
 
 
+def load_verified_grades(db: Any) -> list[ForwardGrade]:
+    """Read the private reconciled ledger; never replace it with fresh grades."""
+    fields = tuple(ForwardGrade.__dataclass_fields__)
+    rows = _paginate(db, VERIFIED_GRADE_TABLE, ','.join(fields))
+    grades = []
+    for row in rows:
+        try:
+            grade = ForwardGrade(**{field: row[field] for field in fields})
+        except (KeyError, TypeError) as exc:
+            raise NFLForwardShadowError('NFL_FORWARD_VERIFIED_GRADE_INVALID') from exc
+        if grade.can_execute is not False or grade.schema_version != GRADE_SCHEMA_VERSION:
+            raise NFLForwardShadowError('NFL_FORWARD_VERIFIED_GRADE_INVALID')
+        grades.append(grade)
+    return grades
+
+
 def run_forward_shadow(
     db: Any,
     *,
@@ -476,7 +507,10 @@ def run_forward_shadow(
     canonical = select_canonical_forward_predictions(prediction_rows)
     grades = grade_forward_predictions(canonical, load_outcome_rows(db))
     inserted = persist_new_grades(db, grades)
-    health = calibration_health(grades, min_forward=min_forward)
+    # A newly recomputed grade may disagree with an immutable historical row.
+    # Only the reconciled persisted view may contribute to a V2 health receipt.
+    verified_grades = load_verified_grades(db)
+    health = calibration_health(verified_grades, min_forward=min_forward)
     persist_health(db, health)
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
@@ -486,6 +520,8 @@ def run_forward_shadow(
         "prediction_rows_seen": len(prediction_rows),
         "canonical_events": len(canonical),
         "graded_events": len(grades),
+        "verified_graded_events": len(verified_grades),
+        "calibration_cohort_source": VERIFIED_GRADE_TABLE,
         "new_grades_persisted": inserted,
         "calibration_health": health,
         "automatic_certification": False,
