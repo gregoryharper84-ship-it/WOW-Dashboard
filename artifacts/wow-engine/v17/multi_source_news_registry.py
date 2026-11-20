@@ -8,7 +8,6 @@ scheduled receipt-based acceptance. No probability, order, or execution path.
 from __future__ import annotations
 
 import hashlib
-import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
