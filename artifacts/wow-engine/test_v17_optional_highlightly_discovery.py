@@ -44,13 +44,13 @@ def test_valid_response_is_research_only(monkeypatch):
 
     def handler(request):
         observed.append(request)
-        return httpx.Response(200, json={
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps({
             "data": [{"id": 123, "score": {"home": 99}},
                      {"id": 123}, {"id": "../../bad"}, {"foo": "missing"},
                      {"id": "M-124"}],
             "plan": {"tier": "BASIC", "message": "restricted"},
             "pagination": {"totalCount": 1200, "limit": 20, "offset": 0}
-        }, headers={"x-ratelimit-requests-remaining": "97"})
+        }).encode()), headers={"x-ratelimit-requests-remaining": "97"})
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         result = discover_matches(prefix="nba", event_date=DATE, client=client,
@@ -88,9 +88,9 @@ def test_errors_report_native_source_failure(monkeypatch, status, expected):
 def test_invalid_json_and_empty_provider_data(monkeypatch):
     monkeypatch.setenv("WOW_HIGHLIGHTLY_SOURCE_ALLOWED", "true")
     for response, code in [
-        (httpx.Response(200, content=b"{not json"), "SOURCE_INVALID_JSON"),
-        (httpx.Response(200, json={"records": []}), "SOURCE_OUTPUT_INVALID"),
-        (httpx.Response(200, json={"data": []}), "SOURCE_NO_VALID_MATCHES"),
+        (httpx.Response(200, stream=httpx.ByteStream(b"{not json")), "SOURCE_INVALID_JSON"),
+        (httpx.Response(200, stream=httpx.ByteStream(json.dumps({"records": []}).encode())), "SOURCE_OUTPUT_INVALID"),
+        (httpx.Response(200, stream=httpx.ByteStream(json.dumps({"data": []}).encode())), "SOURCE_NO_VALID_MATCHES"),
     ]:
         with httpx.Client(transport=httpx.MockTransport(lambda request: response)) as client:
             result = discover_matches(prefix="cricket", event_date=DATE,
