@@ -474,9 +474,9 @@ def test_collect_and_evaluate_happy_path_r_class_via_cli(capsys):
 # ---------------------------------------------------------------------------
 
 def test_model_artifact_suffix_under_v17_classifies_as_class_c():
-    c = sav.classify_change_scope(["artifacts/wow-engine/v17/weights/nba_fitted.joblib"])
+    c = sav.classify_change_scope(["artifacts/wow-engine/v17/weights/nba_weights.joblib"])
     assert c["change_class"] == "C"
-    assert "artifacts/wow-engine/v17/weights/nba_fitted.joblib" in c["model_calibration_paths"]
+    assert "artifacts/wow-engine/v17/weights/nba_weights.joblib" in c["model_calibration_paths"]
 
 
 def test_evaluate_rejects_invalid_targets_evidence_pr_owner_and_non_green_check():
@@ -655,7 +655,8 @@ def test_collect_and_evaluate_edge_cases_and_rename_escalation():
         )["code"] == "SOLO_EVIDENCE_INVALID"
 
     # Renamed file with previous_filename escalates R-allowlist path to P (fails closed without adversarial receipt)
-    renamed_files = [{"filename": ROUTINE_FILE, "status": "renamed", "previous_filename": "old/path.md"}]
+    model_origin = "artifacts/wow-engine/v17/weights/nba_weights.joblib"
+    renamed_files = [{"filename": ROUTINE_FILE, "status": "renamed", "previous_filename": model_origin}]
     with patch.object(
         sav,
         "github_json",
@@ -672,7 +673,8 @@ def test_collect_and_evaluate_edge_cases_and_rename_escalation():
             2740, HEAD, token="tok", qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
         )
     assert res["verification_status"] == "HOLD"
-    assert res["change_class"] == "P"
+    assert res["change_class"] == "P+C"
+    assert model_origin in res["model_calibration_paths"]
 
 
 def test_cli_loads_receipt_files_and_rejects_malformed_json(tmp_path, capsys):
