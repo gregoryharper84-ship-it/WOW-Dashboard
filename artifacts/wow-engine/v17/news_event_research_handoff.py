@@ -142,7 +142,8 @@ def reconcile_news_handoff(
     headlines_by_url = {
         article["source_url"]: _headline_key(article.get("title"))
         for article in articles
-        if isinstance(article, dict) and article.get("source_url") in article_urls
+        if (isinstance(article, dict) and _valid_https(article.get("source_url"))
+            and article["source_url"] in article_urls)
     }
     if not article_urls:
         return finish("NEWS_NO_ATTRIBUTED_ARTICLES")
@@ -230,6 +231,10 @@ def reconcile_news_handoff(
                 and r["subject_id"] == row["subject_id"]
                 and r["fact_value"] == row["fact_value"]
             ]
+            # An official team/league confirmation stands on its own;
+            # a coincident secondary headline must not downgrade it.
+            if any(r["source_class"] in OFFICIAL_CLASSES for r in confirmations):
+                continue
             # Both distinct publisher URLs and distinct independent groups.
             if (len({r["source_url"] for r in confirmations}) < 2
                     or len({r["source_group"] for r in confirmations}) < 2):
