@@ -33,7 +33,7 @@ def _pr(sha: str = HEAD, **overrides):
         "draft": False,
         "merged_at": None,
         "user": {"id": OWNER_ID, "login": "gregoryharper84-ship-it"},
-        "base": {"ref": "main"},
+        "base": {"ref": "main", "sha": "c" * 40},
         "head": {"sha": sha, "ref": "feature/solo-test", "repo": {"full_name": sav.REPO}},
     }
     base.update(overrides)
@@ -756,3 +756,51 @@ def test_owner_controlled_opt_in_cannot_replace_independent_protected_signoff():
     assert res["verification_status"] == "HOLD"
     assert res["independent_administration_proven"] is False
     assert "SOLO_INDEPENDENT_ADMIN_NOT_PROVEN" in res["findings"]
+
+
+def test_r_allowlist_compares_exact_github_paths_without_normalization_aliases():
+    valid = sav.classify_change_scope(
+        [ROUTINE_FILE], file_statuses={ROUTINE_FILE: "modified"}
+    )
+    assert valid["change_class"] == "R"
+    for distinct_path in (ROUTINE_FILE + " ", ROUTINE_FILE.replace("/", "\\\\")):
+        result = sav.classify_change_scope([distinct_path])
+        assert result["change_class"] == "P", distinct_path
+        assert distinct_path in result["non_allowlisted_paths"], distinct_path
+
+
+def test_reversed_distinct_qa_release_app_roles_fail_closed():
+    result = sav.evaluate(
+        repository=sav.REPO,
+        expected_sha=HEAD,
+        pr=_pr(),
+        files=[ROUTINE_FILE],
+        file_statuses={ROUTINE_FILE: "modified"},
+        check_runs=_check_runs(include_codeql=False),
+        owner_id=OWNER_ID,
+        qa_app_id=RELEASE_APP_ID,
+        release_app_id=QA_APP_ID,
+        head_commit_author_id=OWNER_ID,
+    )
+    assert result["verification_status"] == "HOLD"
+    assert "SOLO_QA_RELEASE_APP_IDENTITY_INVALID" in result["findings"]
+
+
+def test_collect_rejects_base_sha_race_even_when_head_is_stable():
+    before = _pr(base={"ref": "main", "sha": "c" * 40})
+    after = _pr(base={"ref": "main", "sha": "d" * 40})
+    responses = [
+        before,
+        {"owner": {"id": OWNER_ID}},
+        {"author": {"id": OWNER_ID}},
+        [{"filename": ROUTINE_FILE, "status": "modified"}],
+        {"total_count": 4, "check_runs": _check_runs(include_codeql=False)},
+        after,
+    ]
+    with patch.object(sav, "github_json", side_effect=responses):
+        result = sav.collect_and_evaluate(
+            2740, HEAD, token="tok",
+            qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID,
+        )
+    assert result["verification_status"] == "HOLD"
+    assert result["code"] == "SOLO_PR_CHANGED_DURING_VERIFICATION"
