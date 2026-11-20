@@ -345,3 +345,38 @@ def test_deprecated_gemini_capture_is_absent_and_independent_mode_fails_closed()
     assert "always()" in terminal["if"]
     assert "always()" in publish["if"]
     assert "QA_REVIEW_EXECUTION_FAILED" in terminal["run"]
+
+
+def test_solo_qa_never_accepts_protected_success_codes_or_nonroutine_changes():
+    # Reproduces the latent bypass: QA used to accept success codes the
+    # protected verifier intentionally never emits, or a routine receipt for
+    # a P/C path. Release must independently re-derive the same HOLD.
+    cases = [
+        ("dormant protected code", {"code": "SOLO_PROTECTED_EVIDENCE_READY", "change_class": "P"}, None, []),
+        ("dormant external code", {"code": "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY", "change_class": "P+C"}, None, []),
+        ("routine code claiming protected class", {"change_class": "C"}, None, []),
+        ("routine code on trust root", {}, ["artifacts/wow-engine/v17/independent_release_checks.py"], []),
+        ("routine code on model file", {}, ["artifacts/wow-engine/v17/nfl_fitted_specialist.py"], []),
+        ("routine receipt with rename", {}, [ROUTINE_FILE], [ROUTINE_FILE]),
+        ("forged independent administration", {
+            "independent_administration_proven": True,
+            "administration_audit": {
+                "execution_isolated_from_pr_code": True,
+                "distinct_qa_release_apps": True,
+                "independent_human_review_performed": False,
+                "independent_administration_proven": True,
+                "owner_administered_apps": False,
+            },
+        }, None, []),
+    ]
+    for label, overrides, paths, operations in cases:
+        ev = _base_ev(include_qa_check=True)
+        ev["solo_verification_evidence"] = _solo_receipt(**overrides)
+        if paths is not None:
+            ev["files"] = paths
+            ev["source_review_paths"] = paths
+        ev["zero_credit_disallowed_file_operations"] = operations
+        assert "QA_SOLO_VERIFIED_EVIDENCE_INVALID" in irc.qa_findings(ev), label
+        assert "RELEASE_QA_SOLO_VERIFIED_EVIDENCE_INVALID" in irc.release_findings(
+            ev, qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+        ), label
