@@ -1,0 +1,253 @@
+{
+  "assertions": {
+    "1_verified_historical_source_identity": {
+      "detail": "Commit resolvable on GitHub and its trainer bytes equal the repository script; the commit is not reachable from any branch in a clone, so ORIGINAL_TRAINING_CODE_UNRECOVERABLE does not apply, but its availability depends on GitHub retention.",
+      "status": "VERIFIED_EXTERNALLY_NOT_IN_REPO_REFS"
+    },
+    "2_internal_checksum_consistency": {
+      "per_lane": {
+        "ANYTIME_TD": {
+          "artifact_checksum_matches_payload": true,
+          "can_execute_false": true,
+          "probability_publishable_false": true,
+          "training_dataset_hash_matches_formula": true
+        },
+        "PASSING_YARDS": {
+          "artifact_checksum_matches_payload": true,
+          "can_execute_false": true,
+          "probability_publishable_false": true,
+          "training_dataset_hash_matches_formula": true
+        },
+        "RECEIVING_YARDS": {
+          "artifact_checksum_matches_payload": true,
+          "can_execute_false": true,
+          "probability_publishable_false": true,
+          "training_dataset_hash_matches_formula": true
+        },
+        "RUSHING_YARDS": {
+          "artifact_checksum_matches_payload": true,
+          "can_execute_false": true,
+          "probability_publishable_false": true,
+          "training_dataset_hash_matches_formula": true
+        }
+      },
+      "status": "VERIFIED"
+    },
+    "3_independently_reproduced_statistical_results": {
+      "detail": "Re-execution of the same trainer; metrics, coefficients and payloads equal. Not an independent reimplementation.",
+      "status": "REPRODUCED_EXACT"
+    },
+    "4_independently_reproduced_artifact_bytes": {
+      "artifacts_file_sha256": "ed3cc55fa3a46edc63b929e89ab32eb60bbbba590aca8598a4ef1e3eececf9d5",
+      "environment_pins_identical_to_original": true,
+      "report_file_sha256": "d45b9bb62b05a7a04c9e03c4168176dd8638f9e3c932913592ae40a1117d9ae5",
+      "status": "REPRODUCED_EXACT"
+    },
+    "5_verified_production_registration": {
+      "limitation": "Checked checksum/hash/code/rows fields on the validation project; registry payload bytes and the production project identity were not verified.",
+      "per_lane": {
+        "ANYTIME_TD": {
+          "checksum_equal": true,
+          "code_sha_equal": true,
+          "dataset_hash_equal": true,
+          "registry_probability_publishable": false,
+          "registry_row_present": true,
+          "training_rows_equal": true
+        },
+        "PASSING_YARDS": {
+          "checksum_equal": true,
+          "code_sha_equal": true,
+          "dataset_hash_equal": true,
+          "registry_probability_publishable": false,
+          "registry_row_present": true,
+          "training_rows_equal": true
+        },
+        "RECEIVING_YARDS": {
+          "checksum_equal": true,
+          "code_sha_equal": true,
+          "dataset_hash_equal": true,
+          "registry_probability_publishable": false,
+          "registry_row_present": true,
+          "training_rows_equal": true
+        },
+        "RUSHING_YARDS": {
+          "checksum_equal": true,
+          "code_sha_equal": true,
+          "dataset_hash_equal": true,
+          "registry_probability_publishable": false,
+          "registry_row_present": true,
+          "training_rows_equal": true
+        }
+      },
+      "status": "REGISTRY_ROWS_MATCH_VALIDATION_PROJECT_ONLY"
+    }
+  },
+  "can_execute": false,
+  "chain": {
+    "activation_record": "artifacts/wow-engine/migrations/20260920_nfl_direct_prop_governed_activation.sql",
+    "artifacts": {
+      "ANYTIME_TD": {
+        "artifact_checksum": "b193c279c8f3ccd4b365bafa95a19dcd21c0035e8ef5391f2af61463dbc8516d",
+        "training_dataset_hash": "74b9ef6e8fa84ebbce3d7216c8181ee01d2ecf87a2ca53171670a6d7528f06be",
+        "training_rows": 9109
+      },
+      "PASSING_YARDS": {
+        "artifact_checksum": "b0178abe250d52bbdd6923056a524121d10b91ab744d7e60a351a7223eebdc2c",
+        "training_dataset_hash": "852fda61d88b6b37646e58d8714ed1b7239d023511b57c55ac93f053eaf97c47",
+        "training_rows": 1082
+      },
+      "RECEIVING_YARDS": {
+        "artifact_checksum": "e27831a0d89cf61df882ea27f5efad1983883d2868a3fc914197b070cc2e0178",
+        "training_dataset_hash": "45ba792d18344395203aec8f5415ddb20ac08651700b5ea82e77f3f4a535e752",
+        "training_rows": 7398
+      },
+      "RUSHING_YARDS": {
+        "artifact_checksum": "e6e93c84f6de079c01922ba3e0fddbadac355d959975f712855965aa7e6331fb",
+        "training_dataset_hash": "8185574be5467f43b1cd5683029e00b1ec8c44a785a116774c6eb64e2e201db4",
+        "training_rows": 3331
+      }
+    },
+    "certification_decision": {
+      "calibrator_version": "NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1",
+      "limitation": "Calibration is a bootstrap pre-calibration, not a fitted Phase-B calibrator; no publication authority.",
+      "registry_lifecycle": {
+        "ANYTIME_TD": "PROSPECTIVE_CERTIFIED",
+        "PASSING_YARDS": "PROSPECTIVE_CERTIFIED",
+        "RECEIVING_YARDS": "PROSPECTIVE_CERTIFIED",
+        "RUSHING_YARDS": "PROSPECTIVE_CERTIFIED"
+      },
+      "registry_probability_publishable": {
+        "ANYTIME_TD": false,
+        "PASSING_YARDS": false,
+        "RECEIVING_YARDS": false,
+        "RUSHING_YARDS": false
+      },
+      "registry_snapshot_project": "iczfhsmjrrafhvcpmqhr (validation project; production identity not asserted)",
+      "registry_snapshot_queried_at_utc": "2026-11-11T07:00:00Z"
+    },
+    "environment": {
+      "original": {
+        "conclusion": "success",
+        "created_at_utc": "2026-09-20T13:45:52Z",
+        "event": "push",
+        "head_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+        "packages": {
+          "joblib": "1.6.0",
+          "numpy": "2.4.6",
+          "pandas": "3.0.6",
+          "requests": "2.34.2",
+          "scikit-learn": "1.9.1",
+          "scipy": "1.17.1",
+          "threadpoolctl": "3.7.0"
+        },
+        "python": "3.11 (actions/setup-python@v5)",
+        "runner_image": "ubuntu-24.04 20260907.300",
+        "workflow": "tmp-nfl-prop-train-20260920",
+        "workflow_run_id": 35514457169
+      },
+      "refit": {
+        "datasets_redownloaded_sha256_matched_report": true,
+        "env_GITHUB_SHA": "baa23d502be843c5ba3ee44525be277b237bc37c",
+        "output_artifacts_sha256": "ed3cc55fa3a46edc63b929e89ab32eb60bbbba590aca8598a4ef1e3eececf9d5",
+        "output_report_sha256": "d45b9bb62b05a7a04c9e03c4168176dd8638f9e3c932913592ae40a1117d9ae5",
+        "packages": {
+          "joblib": "1.6.0",
+          "numpy": "2.4.6",
+          "pandas": "3.0.6",
+          "requests": "2.34.2",
+          "scikit-learn": "1.9.1",
+          "scipy": "1.17.1",
+          "threadpoolctl": "3.7.0"
+        },
+        "performed_at_utc": "2026-11-11T07:05:00Z",
+        "python": "3.11.18",
+        "variant_unpinned_pandas_3_1_1_numpy_2_4_6_threadpoolctl_3_8_0_also_identical": true
+      }
+    },
+    "evaluation_metrics": {
+      "ANYTIME_TD": {
+        "brier_ratio_vs_naive": 0.930856140441,
+        "calibration_rows": 4321,
+        "calibration_season": 2024,
+        "holdout_ood_rate_z_gt_6": 0.0,
+        "holdout_rows": 4318,
+        "holdout_season": 2025,
+        "selected_blend_weight": 0.9
+      },
+      "PASSING_YARDS": {
+        "calibration_rows": 535,
+        "calibration_season": 2024,
+        "holdout_ood_rate_z_gt_6": 0.0,
+        "holdout_rows": 522,
+        "holdout_season": 2025,
+        "mae_ratio_vs_naive": 0.985149396107,
+        "selected_blend_weight": 1.0
+      },
+      "RECEIVING_YARDS": {
+        "calibration_rows": 3505,
+        "calibration_season": 2024,
+        "holdout_ood_rate_z_gt_6": 0.0,
+        "holdout_rows": 3479,
+        "holdout_season": 2025,
+        "mae_ratio_vs_naive": 0.977030979587,
+        "selected_blend_weight": 1.0
+      },
+      "RUSHING_YARDS": {
+        "calibration_rows": 1686,
+        "calibration_season": 2024,
+        "holdout_ood_rate_z_gt_6": 0.0006006006006006006,
+        "holdout_rows": 1665,
+        "holdout_season": 2025,
+        "mae_ratio_vs_naive": 0.97100255859,
+        "selected_blend_weight": 0.8
+      }
+    },
+    "fit_run": {
+      "conclusion": "success",
+      "created_at_utc": "2026-09-20T13:45:52Z",
+      "workflow_run_id": 35514457169
+    },
+    "source_bytes": {
+      "assets": {
+        "2021": {
+          "rows": 18969,
+          "sha256": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48",
+          "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2021.csv"
+        },
+        "2022": {
+          "rows": 18831,
+          "sha256": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be",
+          "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2022.csv"
+        },
+        "2023": {
+          "rows": 18643,
+          "sha256": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17",
+          "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv"
+        },
+        "2024": {
+          "rows": 18983,
+          "sha256": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759",
+          "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv"
+        },
+        "2025": {
+          "rows": 19422,
+          "sha256": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2",
+          "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv"
+        }
+      },
+      "bundle_hash": "9913273fdaa1abdbc7277ac23d2139e134d5d9e550a0e4873e6858c553605522",
+      "bundle_id": "nflverse-player-weekly-2021-2025-20260920",
+      "redownloaded_2026_11_11_hashes_match": true
+    },
+    "training_code_revision": {
+      "commit_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+      "parent_sha": "03c71779745b9c2fc43124aa91f4640c54106383",
+      "trainer_matches_commit": true,
+      "trainer_sha256": "b0b4db8a59077e72199a17fc3c8b271f534a10b7d8fcdf0b3e2dd4d3e41da4d9"
+    }
+  },
+  "grants_model_capability": false,
+  "note": "Lineage evidence only. Not certification, promotion, calibration approval or publication authority.",
+  "probability_publishable": false,
+  "schema": "WOW_NFL_PROP_LINEAGE_RECEIPT_V1"
+}
