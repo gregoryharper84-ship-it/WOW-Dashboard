@@ -424,3 +424,19 @@ def test_nightly_provider_identity_is_blocked_through_scout_enrichment():
     assert handoff["news_context"] == []
     assert out["controlling_specialist_route"] == "LLP_TEAM_BETTING_ENGINE"
     assert out["can_execute"] is False
+
+
+def test_explicit_separate_official_identity_keeps_research_only_positive_path():
+    event = {
+        **EVENT,
+        "provider_event_id": "odds-123",
+        "provider_event_source": "ODDS_API",
+        "official_event_identity_verified": True,
+        "canonical_identity_status": "VERIFIED_OFFICIAL_EVENT",
+    }
+    result = _result(event=event, reviewed=[FACT])
+    assert result["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert result["research_rescore_requested"] is True
+    assert result["model_feature_eligible"] is False
+    assert result["model_rescore_verified"] is False
+    assert result["can_execute"] is False
