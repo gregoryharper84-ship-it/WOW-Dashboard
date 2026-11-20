@@ -46,6 +46,7 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Run authenticated research cycle and inspect safe receipt
+        id: work
         continue-on-error: true
         shell: bash
         run: |
@@ -118,13 +119,20 @@ jobs:
           path: ${{ runner.temp }}/wow-v17-learning-receipt.json
           if-no-files-found: ignore
           retention-days: 14
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
         continue-on-error: true
         shell: bash
+        env:
+          WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "CONTINUOUS_INTELLIGENCE_LEARN_INCOMPLETE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WORK_OUTCOME" = "success" ]; then
+            echo "CONTINUOUS_INTELLIGENCE_LEARN_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "CONTINUOUS_INTELLIGENCE_LEARN_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::CONTINUOUS_INTELLIGENCE_LEARN_INCOMPLETE"
+          fi

@@ -50,6 +50,7 @@ OPTIONAL_MAIN_SCOPED_JOBS: dict[str, tuple[str, ...]] = {
         "nfl-canary",
         "wnba-canary",
         "mlb-canary",
+        "canary-authentic",
     ),
     "wow-v17-post-deploy-verification-orchestrator.yml": ("acceptance-receipts",),
     "wow-v17-first-six-transport-rescue.yml": ("rescue",),

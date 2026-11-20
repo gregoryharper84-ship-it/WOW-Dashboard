@@ -81,6 +81,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Acquire, fit, and persist governed source-heavy scope
+        id: work
         continue-on-error: true
         shell: bash
         env:
@@ -206,17 +207,23 @@ jobs:
         continue-on-error: true
         shell: bash
         run: sleep 20
-
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
         continue-on-error: true
         shell: bash
+        env:
+          WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "FIRST_SIX_TRANSPORT_RESCUE_INCOMPLETE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WORK_OUTCOME" = "success" ]; then
+            echo "FIRST_SIX_TRANSPORT_RESCUE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "FIRST_SIX_TRANSPORT_RESCUE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_TRANSPORT_RESCUE_INCOMPLETE"
+          fi
   pr-contract:
     name: Verify rescue workflow governance contract
     if: github.event_name == 'pull_request'

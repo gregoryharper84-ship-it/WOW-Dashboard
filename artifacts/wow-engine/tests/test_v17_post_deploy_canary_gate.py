@@ -92,6 +92,7 @@ def test_post_deploy_orchestrator_verifies_spread_before_heavy_smoke():
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
+    assert "outputs.authentic_pass == 'true'" in text
     assert "uses: ./.github/workflows/wow-v17-spread-certification-replay.yml" in text
 
 

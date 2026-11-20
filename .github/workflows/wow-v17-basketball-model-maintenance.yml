@@ -103,6 +103,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Hydrate first, then regenerate NBA/WNBA challengers
+        id: work
         continue-on-error: true
         shell: bash
         run: |
@@ -224,13 +225,20 @@ jobs:
               "can_execute": False,
           }, sort_keys=True))
           PY
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
         continue-on-error: true
         shell: bash
+        env:
+          WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WORK_OUTCOME" = "success" ]; then
+            echo "BASKETBALL_MODEL_MAINTENANCE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE"
+          fi

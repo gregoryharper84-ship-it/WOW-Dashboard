@@ -2,6 +2,10 @@ name: wow-v17-spread-forward-production-canary
 
 on:
   workflow_call:
+    outputs:
+      authentic_pass:
+        description: All spread-forward canaries authentically passed
+        value: ${{ jobs.canary-authentic.outputs.authentic_pass }}
   workflow_dispatch:
 
 permissions:
@@ -19,6 +23,8 @@ env:
 
 jobs:
   ncaaf-canary:
+    outputs:
+      authentic_pass: ${{ steps.record.outputs.authentic_pass }}
     name: Verify production NCAAF spread forward shadow
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -27,6 +33,7 @@ jobs:
       id-token: write
     steps:
       - name: Assert research-only governance and OIDC context
+        id: gov
         continue-on-error: true
         shell: bash
         run: |
@@ -37,6 +44,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Execute bounded production spread-forward canary
+        id: canary
         continue-on-error: true
         shell: bash
         run: |
@@ -109,18 +117,30 @@ jobs:
           receipt = {"status":"PASS","code":"SPREAD_FORWARD_PRODUCTION_CANARY_PASS","sport":"NCAAF","elapsed_seconds":round(elapsed,3),"can_execute":False}
           print(json.dumps(receipt, sort_keys=True))
           PY
-
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
+        id: record
         continue-on-error: true
         shell: bash
+        env:
+          GOV_OUTCOME: ${{ steps.gov.outcome || 'success' }}
+          CANARY_OUTCOME: ${{ steps.canary.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "SPREAD_FORWARD_NCAAF_CANARY_UNAVAILABLE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "gov_outcome=$GOV_OUTCOME canary_outcome=$CANARY_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOV_OUTCOME" = "success" ] && [ "$CANARY_OUTCOME" = "success" ]; then
+            echo "authentic_pass=true" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_NCAAF_CANARY_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "authentic_pass=false" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_NCAAF_CANARY_UNAVAILABLE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::SPREAD_FORWARD_NCAAF_CANARY_UNAVAILABLE"
+          fi
   nfl-canary:
+    outputs:
+      authentic_pass: ${{ steps.record.outputs.authentic_pass }}
     name: Verify production NFL spread forward shadow
     needs: ncaaf-canary
     runs-on: ubuntu-latest
@@ -130,6 +150,7 @@ jobs:
       id-token: write
     steps:
       - name: Execute backend-owned real-event NFL spread canary
+        id: canary
         continue-on-error: true
         shell: bash
         run: |
@@ -167,18 +188,30 @@ jobs:
           assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
           print(json.dumps({"status":"PASS","code":"NFL_SPREAD_FORWARD_PRODUCTION_CANARY_PASS","event_id":result.get("event_id"),"event_start_time":result.get("event_start_time"),"identity_acquisition_location":"BACKEND_RUNTIME","can_execute":False},sort_keys=True))
           PY
-
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
+        id: record
         continue-on-error: true
         shell: bash
+        env:
+          GOV_OUTCOME: ${{ steps.gov.outcome || 'success' }}
+          CANARY_OUTCOME: ${{ steps.canary.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "SPREAD_FORWARD_NFL_CANARY_UNAVAILABLE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "gov_outcome=$GOV_OUTCOME canary_outcome=$CANARY_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOV_OUTCOME" = "success" ] && [ "$CANARY_OUTCOME" = "success" ]; then
+            echo "authentic_pass=true" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_NFL_CANARY_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "authentic_pass=false" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_NFL_CANARY_UNAVAILABLE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::SPREAD_FORWARD_NFL_CANARY_UNAVAILABLE"
+          fi
   wnba-canary:
+    outputs:
+      authentic_pass: ${{ steps.record.outputs.authentic_pass }}
     name: Verify production WNBA spread forward shadow
     needs: nfl-canary
     runs-on: ubuntu-latest
@@ -188,6 +221,7 @@ jobs:
       id-token: write
     steps:
       - name: Execute backend-owned real-event WNBA spread canary
+        id: canary
         continue-on-error: true
         shell: bash
         run: |
@@ -233,18 +267,30 @@ jobs:
           assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
           print(json.dumps({"status":"PASS","code":"WNBA_SPREAD_FORWARD_PRODUCTION_CANARY_PASS","event_id":result.get("event_id"),"event_start_time":result.get("event_start_time"),"identity_acquisition_location":"BACKEND_RUNTIME","elapsed_seconds":round(elapsed,3),"can_execute":False},sort_keys=True))
           PY
-
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
+        id: record
         continue-on-error: true
         shell: bash
+        env:
+          GOV_OUTCOME: ${{ steps.gov.outcome || 'success' }}
+          CANARY_OUTCOME: ${{ steps.canary.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "SPREAD_FORWARD_WNBA_CANARY_UNAVAILABLE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "gov_outcome=$GOV_OUTCOME canary_outcome=$CANARY_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOV_OUTCOME" = "success" ] && [ "$CANARY_OUTCOME" = "success" ]; then
+            echo "authentic_pass=true" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_WNBA_CANARY_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "authentic_pass=false" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_WNBA_CANARY_UNAVAILABLE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::SPREAD_FORWARD_WNBA_CANARY_UNAVAILABLE"
+          fi
   mlb-canary:
+    outputs:
+      authentic_pass: ${{ steps.record.outputs.authentic_pass }}
     name: Verify production MLB run-line forward shadow
     needs: wnba-canary
     runs-on: ubuntu-latest
@@ -254,6 +300,7 @@ jobs:
       id-token: write
     steps:
       - name: Execute immutable-pregame MLB run-line canary
+        id: canary
         continue-on-error: true
         shell: bash
         env:
@@ -281,13 +328,57 @@ jobs:
           assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
           print(json.dumps({"status":"PASS","code":"MLB_RUN_LINE_FORWARD_PRODUCTION_CANARY_PASS","score_snapshot_id":result.get("score_snapshot_id"),"artifact_hash":result.get("extra_inning_margin_artifact_hash"),"can_execute":False},sort_keys=True))
           PY
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
+        id: record
         continue-on-error: true
         shell: bash
+        env:
+          GOV_OUTCOME: ${{ steps.gov.outcome || 'success' }}
+          CANARY_OUTCOME: ${{ steps.canary.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "SPREAD_FORWARD_MLB_CANARY_UNAVAILABLE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "gov_outcome=$GOV_OUTCOME canary_outcome=$CANARY_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOV_OUTCOME" = "success" ] && [ "$CANARY_OUTCOME" = "success" ]; then
+            echo "authentic_pass=true" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_MLB_CANARY_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "authentic_pass=false" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_MLB_CANARY_UNAVAILABLE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::SPREAD_FORWARD_MLB_CANARY_UNAVAILABLE"
+          fi
+
+  canary-authentic:
+    name: Aggregate authentic spread-forward canary outcomes
+    needs: [ncaaf-canary, nfl-canary, wnba-canary, mlb-canary]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      authentic_pass: ${{ steps.agg.outputs.authentic_pass }}
+    steps:
+      - name: Aggregate authentic canary outcomes
+        id: agg
+        continue-on-error: true
+        shell: bash
+        env:
+          NCAAF: ${{ needs.ncaaf-canary.outputs.authentic_pass }}
+          NFL: ${{ needs.nfl-canary.outputs.authentic_pass }}
+          WNBA: ${{ needs.wnba-canary.outputs.authentic_pass }}
+          MLB: ${{ needs.mlb-canary.outputs.authentic_pass }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Spread-forward authentic aggregate"
+            echo "ncaaf=$NCAAF nfl=$NFL wnba=$WNBA mlb=$MLB"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NCAAF" = "true" ] && [ "$NFL" = "true" ] && [ "$WNBA" = "true" ] && [ "$MLB" = "true" ]; then
+            echo "authentic_pass=true" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_CANARIES_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "authentic_pass=false" >> "$GITHUB_OUTPUT"
+            echo "SPREAD_FORWARD_CANARIES_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::SPREAD_FORWARD_CANARIES_INCOMPLETE"
+          fi
+

@@ -146,6 +146,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Advance governed model-development lanes and team-state challengers
+        id: work
         continue-on-error: true
         shell: bash
         run: |
@@ -336,13 +337,20 @@ jobs:
               print("::error title=FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED::" + json.dumps(blocked_ancillary, sort_keys=True)[:3500])
               raise RuntimeError("FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED:" + json.dumps(blocked_ancillary, sort_keys=True))
           PY
-      - name: Record optional-observer outcome (non-gating on main)
+      - name: Record authentic optional-observer outcome
         continue-on-error: true
         shell: bash
+        env:
+          WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "FIRST_SIX_MODEL_MAINTENANCE_INCOMPLETE can_execute=false"
-            echo "This job is observational; step isolation keeps protected-main checksPass green."
+            echo "work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WORK_OUTCOME" = "success" ]; then
+            echo "FIRST_SIX_MODEL_MAINTENANCE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "FIRST_SIX_MODEL_MAINTENANCE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_MODEL_MAINTENANCE_INCOMPLETE"
+          fi
