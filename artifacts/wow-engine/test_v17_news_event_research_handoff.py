@@ -265,3 +265,36 @@ def test_official_injury_report_not_blocked_by_headline_absence():
     assert output["research_rescore_requested"] is True
     assert output["model_rescore_verified"] is False
     assert output["can_execute"] is False
+
+
+def test_mixed_official_and_syndicated_secondary_still_accepts_official_fact():
+    secondary_url = "https://second.example/wire-copy"
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": URL, "title": "League roster bulletin"},
+            {"source_url": secondary_url, "title": "League roster bulletin"},
+        ],
+    }
+    secondary = {**FACT, "source_url": secondary_url,
+                 "source_group": "wire-distributor",
+                 "source_class": "SECONDARY_MEDIA",
+                 "independent_review_ref": "review-secondary"}
+    out = _result(discovery=discovery, reviewed=[FACT, secondary])
+    assert out["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert out["research_rescore_requested"] is True
+    assert out["model_rescore_verified"] is False
+    assert len(out["news_context"]) == 2
+
+
+def test_malformed_discovery_urls_cannot_crash_headline_provenance_check():
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": ["not-hashable"], "title": "Bad payload"},
+            {"source_url": URL, "title": "Official league injury bulletin"},
+        ],
+    }
+    out = _result(discovery=discovery, reviewed=[FACT])
+    assert out["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert out["can_execute"] is False
