@@ -13,6 +13,7 @@ class _Query:
     def execute(self):
         class Result:
             data = []
+            count = 0
         return Result()
 
 
