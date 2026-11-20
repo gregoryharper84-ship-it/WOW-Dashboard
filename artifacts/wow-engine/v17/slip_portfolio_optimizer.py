@@ -372,6 +372,20 @@ def optimize_portfolio(
     A replacement must be strictly stronger and independent. Otherwise the card
     shrinks. None of these structure decisions may mutate sporting probability.
     """
+    # A PrizePicks card must not bypass the existing evidence-shape audit
+    # merely because the caller omitted the optional research flag.
+    # This is still a research-only HOLD, never model/cash authorization.
+    prizepicks_requested = any(
+        _norm(card.get("platform")) == "prizepicks"
+        or any(_norm(leg.get("platform")) == "prizepicks" for leg in list(card.get("legs") or [])
+               if isinstance(leg, dict))
+        for card in cards
+    )
+    if prizepicks_requested:
+        research_preflight_enabled = True
+        if research_as_of_utc is None:
+            from datetime import datetime, timezone
+            research_as_of_utc = datetime.now(timezone.utc).isoformat()
     out = deepcopy(cards)
     preflight = None
     if research_preflight_enabled:
