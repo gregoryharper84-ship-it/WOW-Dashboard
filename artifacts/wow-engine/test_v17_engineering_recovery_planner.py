@@ -1,3 +1,4 @@
+import pytest
 from v17 import engineering_recovery_planner as rp
 
 
@@ -239,3 +240,46 @@ def test_protected_recovery_workflow_routes_author_vs_codeowner_without_fake_app
     assert "unrelated Engineering work continues" in workflow
     assert "gh pr review --approve" not in workflow
     assert "gh pr merge" not in workflow
+
+
+@pytest.mark.parametrize("finding", [
+    "QA_REVIEW_EXECUTION_FAILED:capture",
+    "QA_REVIEW_EXECUTION_FAILED:review",
+    "QA_REVIEW_EXECUTION_FAILED:qa_decision_unavailable",
+])
+def test_reviewer_execution_failure_waits_for_evidence_without_burning_repairs(finding):
+    result = rp.plan_recovery(pr_number=1, findings=[finding], attempts=0, is_wow_engineering_pr=True)
+    assert result["action"] == "WAITING_ON_EVIDENCE"
+    assert result["attempts"] == 0 and result["can_execute"] is False
+
+
+def test_reviewer_execution_failure_does_not_hide_a_real_code_finding_from_owner_gates():
+    result = rp.plan_recovery(
+        pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED:review", "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+        attempts=0, is_wow_engineering_pr=True)
+    assert result["action"] == "WAITING_ON_OWNER"
+
+
+def test_execution_failure_code_parses_from_a_published_summary():
+    summary = "Typed findings:\n- `QA_REVIEW_EXECUTION_FAILED:capture`"
+    assert rp.parse_findings_from_summary(summary) == ["QA_REVIEW_EXECUTION_FAILED:capture"]
+
+
+def test_reviewer_execution_failure_never_hides_a_repairable_code_finding():
+    result = rp.plan_recovery(
+        pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED:review", "QA_REGRESSION_FAILED"],
+        attempts=0, is_wow_engineering_pr=True)
+    assert result["action"] == "DISPATCH_REPAIR"
+
+
+def test_execution_failure_with_other_pending_evidence_still_waits():
+    result = rp.plan_recovery(
+        pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED:capture", "QA_EVIDENCE_MISSING:WOW x"],
+        attempts=0, is_wow_engineering_pr=True)
+    assert result["action"] == "WAITING_ON_EVIDENCE"
+
+
+def test_execution_prefix_is_exact():
+    result = rp.plan_recovery(pr_number=1, findings=["QA_REVIEW_EXECUTION_FAILED_SOMETHING_ELSE"],
+                              attempts=0, is_wow_engineering_pr=True)
+    assert result["action"] == "DISPATCH_REPAIR"
