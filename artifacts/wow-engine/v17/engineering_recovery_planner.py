@@ -35,6 +35,9 @@ NON_REPAIRABLE_SUFFIXES = ("_OWNER_APPROVAL_MISSING",)
 EVIDENCE_PENDING_PREFIXES = (
     "QA_EVIDENCE_MISSING:", "QA_EVIDENCE_INCOMPLETE:",
     "RELEASE_QA_EVIDENCE_MISSING:", "RELEASE_QA_EVIDENCE_INCOMPLETE:",
+    # The reviewer itself failed to run (capture/Gemini/attestation). No PR code
+    # change fixes that; the next exact-head QA run produces the verdict.
+    "QA_REVIEW_EXECUTION_FAILED",
 )
 EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
 

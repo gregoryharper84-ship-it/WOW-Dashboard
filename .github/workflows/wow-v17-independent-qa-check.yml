@@ -88,6 +88,10 @@ jobs:
 
       - name: Resolve one exact-head QA target
         id: target
+        # Automatic callbacks are checks on protected main, not the PR head.
+        # An unreadable/invalid source publishes no QA check and must not
+        # fail main (Render checksPass). Manual dispatch still fails hard.
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,7 +118,8 @@ jobs:
             exit 1
           fi
           if [ "$EVENT" = "workflow_run" ] && [ "$(jq -r '.disposition // empty' <<<"$resolved")" = "neutral" ]; then
-            echo "::notice::QA_SOURCE_PR_HEAD_SUPERSEDED: no QA check published for obsolete source."
+            reason=$(jq -r '.reason // "QA_SOURCE_PR_HEAD_SUPERSEDED"' <<<"$resolved")
+            echo "::notice::${reason}: no QA check published (QA_SOURCE_PR_HEAD_SUPERSEDED or QA_SOURCE_PR_DRAFT)."
             exit 0
           fi
           if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
@@ -129,9 +134,16 @@ jobs:
           echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
 
+      - name: Preserve automatic QA target resolution HOLD
+        if: always() && github.event_name == 'workflow_run' && steps.target.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::QA_AUTOMATIC_TARGET_HOLD: PR source unreadable or invalid; no independent QA App check published."
+          echo "QA_AUTOMATIC_TARGET_HOLD production_verified=false can_execute=false (no exact-head QA PASS)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Mint checks-only App token
         id: app_token
-        if: steps.target.outputs.pr_number != ''
+        if: steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.WOW_QA_APP_ID }}
@@ -141,7 +153,8 @@ jobs:
 
       - name: Select exact-head review policy
         id: policy
-        if: steps.target.outputs.pr_number != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
@@ -195,7 +208,8 @@ jobs:
 
       - name: Build immutable QA review-policy receipt
         id: policy_receipt
-        if: steps.target.outputs.pr_number != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           MODE: ${{ steps.policy.outputs.mode }}
@@ -222,7 +236,8 @@ jobs:
 
       - name: Upload immutable QA review-policy receipt
         id: policy_artifact
-        if: steps.target.outputs.pr_number != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}
@@ -234,7 +249,8 @@ jobs:
 
       - name: Require isolated adversarial-review credential
         id: review_credential
-        if: steps.policy.outputs.review_active == 'true'
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           KEY_PRESENT: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' }}
@@ -245,7 +261,9 @@ jobs:
           }
 
       - name: Preflight independent semantic reviewer before inference
-        if: steps.policy.outputs.review_active == 'true'
+        id: preflight
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           WOW_REVIEWER_APP_ID: ${{ vars.WOW_REVIEWER_APP_ID }}
@@ -264,7 +282,8 @@ jobs:
 
       - name: Capture complete exact-head source evidence
         id: capture
-        if: steps.policy.outputs.review_active == 'true'
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -292,7 +311,8 @@ jobs:
 
       - name: Run isolated read-only Gemini semantic review
         id: review
-        if: steps.policy.outputs.review_active == 'true'
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
@@ -307,7 +327,8 @@ jobs:
 
       - name: Recheck PR head and diff after review
         id: recheck
-        if: steps.policy.outputs.review_active == 'true'
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -330,7 +351,8 @@ jobs:
 
       - name: Build versioned exact-head review artifact
         id: source_review
-        if: steps.policy.outputs.review_active == 'true'
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
@@ -354,7 +376,8 @@ jobs:
 
       - name: Upload short-lived exact-head review receipt
         id: source_review_artifact
-        if: steps.policy.outputs.review_active == 'true'
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.policy.outputs.review_active == 'true' && !contains(steps.*.outcome, 'failure')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-independent-source-review-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -366,7 +389,8 @@ jobs:
 
       - name: Mint dedicated semantic reviewer App token
         id: reviewer_app
-        if: steps.source_review_artifact.outputs.artifact-id != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.source_review_artifact.outputs.artifact-id != '' && !contains(steps.*.outcome, 'failure')
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.WOW_REVIEWER_APP_ID }}
@@ -376,7 +400,8 @@ jobs:
 
       - name: Submit Gemini App review at exact PR head
         id: reviewer_attest
-        if: steps.source_review_artifact.outputs.artifact-id != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.source_review_artifact.outputs.artifact-id != '' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -390,7 +415,8 @@ jobs:
 
       - name: Verify Gemini App attestation before QA decision
         id: reviewer_verify
-        if: steps.source_review_artifact.outputs.artifact-id != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.source_review_artifact.outputs.artifact-id != '' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -403,7 +429,8 @@ jobs:
 
       - name: Decide at exact head (read-only)
         id: decide
-        if: steps.target.outputs.pr_number != ''
+        continue-on-error: ${{ github.event_name == 'workflow_run' }}
+        if: steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
