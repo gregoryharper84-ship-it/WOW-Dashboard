@@ -1,5 +1,8 @@
 # WOW V17 — Autonomous Model Recovery Team (AMRT)
 
+
+**Operating mission:** [DEBUG. DISSOLVE. DEPLOY.](WOW_ENGINEERING_MISSION_DOCTRINE.md) AMRT restores reproducible broken model capabilities through owned repair and authorized release handoff; it cannot self-approve or claim restoration from source-only evidence. Recurring deadlocks require an actionable, bounded redesign or governed fallback.
+
 **State:** SOURCE CANDIDATE / NOT DEPLOYED
 **Priority:** Model-first P0 production recovery
 **Parent control plane:** WOW_ECOSYSTEM_CONDUCTOR
