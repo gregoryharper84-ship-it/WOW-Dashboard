@@ -56,7 +56,7 @@ def _headline_key(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = unicodedata.normalize("NFKC", value).casefold()
-    tokens = re.findall(r"\\w+", normalized, flags=re.UNICODE)
+    tokens = re.findall(r"\w+", normalized, flags=re.UNICODE)
     return " ".join(tokens) if tokens else None
 
 
