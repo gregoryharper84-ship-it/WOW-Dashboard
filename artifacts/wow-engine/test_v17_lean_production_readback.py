@@ -389,3 +389,39 @@ def test_main_recent_commit_never_masks_non_deploy_holds(monkeypatch, tmp_path, 
     code, receipt, _ = _run_main(
         monkeypatch, tmp_path, exc=m.ReadbackHold(reason), commit_time=fresh)
     assert code == 1 and receipt["status"] == "READBACK_HOLD" and receipt["reason"] == reason
+
+
+
+@pytest.mark.parametrize("stage", ["observed", "pending", "hold"])
+def test_failed_github_output_never_leaves_reusable_readback_receipt(
+    monkeypatch, tmp_path, stage
+):
+    """A failed output emission cannot leave a valid prior-run artifact."""
+    receipt = tmp_path / "final-readback.json"
+    monkeypatch.setenv("READBACK_RECEIPT", str(receipt))
+    monkeypatch.setenv("EXPECTED_SHA", SHA)
+    if stage == "observed":
+        monkeypatch.setattr(m, "_readback", lambda: score())
+    else:
+        reason = ("RENDER_LIVE_SHA_MISMATCH:web"
+                  if stage == "pending" else "HEALTH_LIVE_NOT_SUCCESS")
+
+        def raise_hold():
+            raise m.ReadbackHold(reason)
+
+        monkeypatch.setattr(m, "_readback", raise_hold)
+        if stage == "pending":
+            monkeypatch.setattr(
+                m, "_commit_time", lambda _sha: datetime.now(timezone.utc).isoformat()
+            )
+
+    def fail_output(_key, _value):
+        raise OSError("simulated GitHub output filesystem error")
+
+    monkeypatch.setattr(m, "_emit_output", fail_output)
+    with pytest.raises(OSError, match="simulated GitHub output"):
+        m.main()
+    assert not receipt.exists(), (
+        "A failed final-readback output must not leave an artifact that "
+        "post_deploy_dedupe could treat as successful deployment evidence"
+    )

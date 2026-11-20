@@ -44,25 +44,64 @@ def _gh(args: list[str]) -> bytes:
     return subprocess.run(["gh", "api", *args], check=True, capture_output=True, timeout=60).stdout
 
 
+def _artifact_readback(repo: str, artifact: dict[str, Any], *, expected_filename: str) -> Any:
+    """Read one exact artifact; failure of provenance/readability fails dedupe closed."""
+    if not isinstance(artifact, dict) or artifact.get("expired"):
+        raise ValueError("POST_DEPLOY_DEDUPE_ARTIFACT_EXPIRED")
+    artifact_id = artifact.get("id")
+    if type(artifact_id) is not int or artifact_id <= 0:
+        raise ValueError("POST_DEPLOY_DEDUPE_ARTIFACT_ID_INVALID")
+    blob = _gh([f"repos/{repo}/actions/artifacts/{artifact_id}/zip"])
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        matching = [name for name in zf.namelist() if name == expected_filename]
+        if len(matching) != 1:
+            raise ValueError("POST_DEPLOY_DEDUPE_RECEIPT_MISSING")
+        return json.loads(zf.read(matching[0]))
+
+
 def _prior_receipts(repo: str, sha: str, current_run_id: str) -> list[Any]:
     runs = json.loads(_gh([
         f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
         f"?head_sha={sha}&status=completed&per_page=50",
     ]))
-    ids = [str(r["id"]) for r in runs.get("workflow_runs", [])
-           if r.get("conclusion") == "success" and str(r.get("id")) != current_run_id][:MAX_PRIOR_RUNS]
+    runs_to_check = [r for r in runs.get("workflow_runs", [])
+                     if r.get("conclusion") == "success"
+                     and str(r.get("id")) != current_run_id][:MAX_PRIOR_RUNS]
     receipts: list[Any] = []
-    for run_id in ids:
+    for run in runs_to_check:
+        run_id = str(run.get("id") or "")
+        attempt = str(run.get("run_attempt") or "")
+        if not run_id.isdigit() or not attempt.isdigit() or int(attempt) < 1:
+            continue
         listing = json.loads(_gh([f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100"]))
-        for art in listing.get("artifacts", []):
-            if art.get("expired") or not str(art.get("name", "")).startswith(
-                    f"wow-v17-post-deploy-readback-{run_id}-"):
-                continue
-            blob = _gh([f"repos/{repo}/actions/artifacts/{art['id']}/zip"])
-            with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-                for name in zf.namelist():
-                    if name.endswith("wow-v17-post-deploy-readback.json"):
-                        receipts.append(json.loads(zf.read(name)))
+        artifacts = listing.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        expected_initial = f"wow-v17-post-deploy-readback-{run_id}-{attempt}"
+        expected_final = f"wow-v17-post-deploy-final-readback-{run_id}-{attempt}"
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for artifact in artifacts:
+            if isinstance(artifact, dict):
+                by_name.setdefault(str(artifact.get("name") or ""), []).append(artifact)
+        # A green optional observer is NOT evidence all canaries ran.
+        # The final readback is written only after the lane matrix passes.
+        if len(by_name.get(expected_initial, [])) != 1 or len(by_name.get(expected_final, [])) != 1:
+            continue
+        try:
+            initial = _artifact_readback(
+                repo, by_name[expected_initial][0],
+                expected_filename="wow-v17-post-deploy-readback.json",
+            )
+            final = _artifact_readback(
+                repo, by_name[expected_final][0],
+                expected_filename="wow-v17-post-deploy-final-readback.json",
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile, subprocess.SubprocessError):
+            # Unverifiable prior acceptance is not proof to skip new lanes.
+            continue
+        key = deployment_key(initial)
+        if key is not None and deployment_key(final) == key:
+            receipts.append(initial)
     return receipts
 
 
