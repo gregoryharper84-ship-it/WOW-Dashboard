@@ -46,9 +46,21 @@ const receiptLookupRowSchema = {
     { required: ["prediction_id"] },
     { required: ["event_id", "player", "stat_type", "line", "direction"] },
   ],
+  if: {
+    required: ["market_family"],
+    properties: { market_family: { const: "OUTRIGHT_WINNER" } },
+  },
+  then: {
+    required: ["prediction_id", "sport"],
+    properties: {
+      prediction_id: { type: "string", format: "uuid" },
+      sport: { const: "NFL" },
+    },
+  },
   properties: {
     row_key: { type: ["string", "null"] },
     prediction_id: { type: ["string", "null"] },
+    market_family: { type: ["string", "null"], enum: ["OUTRIGHT_WINNER", null] },
     event_id: { type: ["string", "null"] },
     sport: { type: ["string", "null"] },
     player: { type: ["string", "null"] },
