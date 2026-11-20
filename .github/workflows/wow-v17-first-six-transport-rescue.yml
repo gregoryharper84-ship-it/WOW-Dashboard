@@ -53,10 +53,12 @@ jobs:
           - SOCCER_SERIE_A
           - SOCCER_LIGUE_1
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         continue-on-error: true
 
       - name: Set up Python 3.11
+        id: python
         continue-on-error: true
         uses: actions/setup-python@v5
         with:
@@ -65,6 +67,7 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
 
       - name: Install governed model dependencies
+        id: deps
         continue-on-error: true
         shell: bash
         run: |
@@ -72,6 +75,7 @@ jobs:
           python -m pip install -r artifacts/wow-engine/requirements.txt
 
       - name: Assert non-execution governance and OIDC context
+        id: gov
         continue-on-error: true
         shell: bash
         run: |
@@ -82,6 +86,9 @@ jobs:
 
       - name: Acquire, fit, and persist governed source-heavy scope
         id: work
+        # Fail closed: never persist unless checkout, install and the
+        # can_execute/OIDC governance assertion all succeeded.
+        if: steps.checkout.outcome == 'success' && steps.python.outcome == 'success' && steps.deps.outcome == 'success' && steps.gov.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -211,14 +218,18 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
+          GOV_OUTCOME: ${{ steps.gov.outcome }}
           WORK_OUTCOME: ${{ steps.work.outcome }}
         run: |
           set -euo pipefail
           {
             echo "### Optional main-scoped observer"
-            echo "work_outcome=$WORK_OUTCOME"
+            echo "governance_outcome=$GOV_OUTCOME work_outcome=$WORK_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$WORK_OUTCOME" = "success" ]; then
+          if [ "$GOV_OUTCOME" != "success" ]; then
+            echo "FIRST_SIX_TRANSPORT_RESCUE_GOVERNANCE_ASSERTION_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_TRANSPORT_RESCUE_GOVERNANCE_ASSERTION_FAILED"
+          elif [ "$WORK_OUTCOME" = "success" ]; then
             echo "FIRST_SIX_TRANSPORT_RESCUE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "FIRST_SIX_TRANSPORT_RESCUE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
