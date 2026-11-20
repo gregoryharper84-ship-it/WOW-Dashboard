@@ -228,9 +228,13 @@ def _run_sweep(tmp_path, prs, *, fail_reads=False):
     return proc, calls, summary.read_text() if summary.exists() else ""
 
 
-def test_sweep_runs_only_on_schedule_and_continuation_never_does():
+def test_sweep_runs_on_schedule_and_engine_verify_completion_only():
     jobs = yaml.safe_load(_wf())["jobs"]
-    assert jobs["ordinary-sweep"]["if"] == "github.event_name == 'schedule'"
+    assert jobs["ordinary-sweep"]["if"] == (
+        "github.event_name == 'schedule' || (github.event_name == 'workflow_run' "
+        "&& github.event.workflow_run.name == 'wow-engine-verify')"
+    )
+    assert "wow-engine-verify" in yaml.safe_load(_wf())[True]["workflow_run"]["workflows"]
     assert "github.event_name == 'workflow_run'" in jobs["continue-repair"]["if"]
     assert "schedule" in yaml.safe_load(_wf())[True]
 
