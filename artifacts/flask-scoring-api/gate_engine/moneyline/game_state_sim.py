@@ -12,7 +12,7 @@ Supported sports:
   NFL  : QB-efficiency × trench × weather × game-script
   NHL  : goalie × special-teams × OT
   SOCCER/EPL/MLS: tactical draw-preserving three-outcome Poisson
-  DEFAULT : Gaussian noise only (wider uncertainty)
+  DEFAULT : no fitted regime; no probability change
 
 can_execute=False unconditional.
 """
@@ -38,9 +38,10 @@ class SimulationResult:
     sport:                str
     simulation_notes:     list[str]           = field(default_factory=list)
     simulation_ran:       bool                = True
+    three_way_probabilities: dict[str, float] | None = None  # soccer regulation 1X2 research only
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "adjusted_prob":       round(self.adjusted_prob, 4),
             "base_prob":           round(self.base_prob, 4),
             "regime_distribution": {k: round(v, 4) for k, v in self.regime_distribution.items()},
@@ -48,7 +49,19 @@ class SimulationResult:
             "sport":               self.sport,
             "simulation_notes":    self.simulation_notes,
             "simulation_ran":      self.simulation_ran,
+            # The legacy heuristic sampler has not earned fitted V17 certification.
+            "script_probability_certified": False,
+            "script_probability_publishable": False,
         }
+        if self.three_way_probabilities is not None:
+            home = round(self.three_way_probabilities["home"], 4)
+            draw = round(self.three_way_probabilities["draw"], 4)
+            payload["three_way_probabilities"] = {
+                "home": home, "draw": draw,
+                "away": round(1.0 - home - draw, 4),
+            }
+            payload["settlement_basis"] = "SOCCER_REGULATION_1X2"
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +79,9 @@ def _safe_float(v: Any, default: float) -> float:
     if v is None:
         return default
     try:
-        return float(v)
-    except (TypeError, ValueError):
+        value = float(v)
+        return value if math.isfinite(value) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -327,67 +341,69 @@ def _nhl_sim(base_prob: float, enr: dict, n: int, rng: random.Random) -> Simulat
 
 def _soccer_sim(base_prob: float, enr: dict, n: int, rng: random.Random,
                 sport: str = "SOCCER") -> SimulationResult:
-    """
-    Tactical-state draw (attacking / balanced / defensive / draw-preservation).
-    Final two-way P(home win) derived from three-outcome Poisson.
-    """
-    home_xg = _safe_float(enr.get("home_xg_per_game"), 1.40)
-    away_xg = _safe_float(enr.get("away_xg_per_game"), 1.15)
-    h2h_draw_rate = _safe_float(enr.get("h2h_draw_rate"), 0.28)
+    """Research-only 1X2 script sampler preserving the regulation-time draw."""
+    if "home_xg_per_game" not in enr or "away_xg_per_game" not in enr:
+        return SimulationResult(base_prob, base_prob, {}, 0, sport,
+                                ["SOCCER_SCRIPT_XG_MISSING:simulation_skipped"],
+                                simulation_ran=False)
+    try:
+        home_xg = float(enr["home_xg_per_game"])
+        away_xg = float(enr["away_xg_per_game"])
+        draw_style = float(enr.get("h2h_draw_rate", 0.28))
+    except (TypeError, ValueError, OverflowError):
+        return SimulationResult(base_prob, base_prob, {}, 0, sport,
+                                ["SOCCER_SCRIPT_INPUT_INVALID:simulation_skipped"],
+                                simulation_ran=False)
+    if not (math.isfinite(home_xg) and math.isfinite(away_xg)
+            and 0.0 < home_xg <= 5.0 and 0.0 < away_xg <= 5.0
+            and math.isfinite(draw_style) and 0.0 <= draw_style <= 1.0):
+        return SimulationResult(base_prob, base_prob, {}, 0, sport,
+                                ["SOCCER_SCRIPT_INPUT_OUT_OF_RANGE:simulation_skipped"],
+                                simulation_ran=False)
 
-    # Tactical regime probabilities
-    p_attack   = max(0.0, (home_xg - 1.2) / 1.5)  # high home xG → attacking
-    p_def      = max(0.0, (1.2 - home_xg) / 1.5)
-    p_attack   = min(0.4, p_attack)
-    p_def      = min(0.4, p_def)
-    p_balanced = max(0.0, 1.0 - p_attack - p_def - h2h_draw_rate)
+    # These tactical regime weights are illustrative, not learned probabilities.
+    p_attack = min(0.4, max(0.0, (home_xg - 1.2) / 1.5))
+    p_def = min(0.4, max(0.0, (1.2 - home_xg) / 1.5))
+    occupied = p_attack + p_def + draw_style
+    if occupied > 1.0:
+        p_attack /= occupied
+        p_def /= occupied
+        draw_style /= occupied
 
-    regime_counts = {
-        "attacking": 0, "balanced": 0, "defensive": 0, "draw_preservation": 0,
-    }
-    sim_probs: list[float] = []
-
+    regimes = {"attacking": 0, "balanced": 0, "defensive": 0,
+               "draw_preservation": 0}
+    outcomes = {"home": 0, "draw": 0, "away": 0}
     for _ in range(n):
         r = rng.random()
         if r < p_attack:
             lam_home, lam_away = home_xg * 1.15, away_xg * 0.90
-            regime_counts["attacking"] += 1
+            regimes["attacking"] += 1
         elif r < p_attack + p_def:
             lam_home, lam_away = home_xg * 0.85, away_xg * 0.85
-            regime_counts["defensive"] += 1
-        elif r < p_attack + p_def + h2h_draw_rate:
+            regimes["defensive"] += 1
+        elif r < p_attack + p_def + draw_style:
             lam_home = lam_away = (home_xg + away_xg) / 2.0 * 0.75
-            regime_counts["draw_preservation"] += 1
+            regimes["draw_preservation"] += 1
         else:
             lam_home, lam_away = home_xg, away_xg
-            regime_counts["balanced"] += 1
+            regimes["balanced"] += 1
+        home_goals = _poisson_draw(max(0.2, lam_home), rng)
+        away_goals = _poisson_draw(max(0.2, lam_away), rng)
+        key = ("home" if home_goals > away_goals else
+               "away" if away_goals > home_goals else "draw")
+        outcomes[key] += 1
 
-        # Poisson score draw: simulate goals
-        home_g = _poisson_draw(max(0.2, lam_home), rng)
-        away_g = _poisson_draw(max(0.2, lam_away), rng)
-
-        if home_g > away_g:
-            sim_probs.append(1.0)
-        elif home_g < away_g:
-            sim_probs.append(0.0)
-        else:
-            # Draw — allocate 50/50 for binary P(home wins)
-            sim_probs.append(0.5)
-
-    # Exclude draws from the win probability (three-outcome structure)
-    non_draw = [p for p in sim_probs if p != 0.5]
-    draw_freq = 1.0 - len(non_draw) / len(sim_probs)
-    if non_draw:
-        adjusted = sum(non_draw) / len(non_draw)
-    else:
-        adjusted = 0.5
-
-    adjusted = max(0.01, min(0.99, adjusted))
-    freq = {k: v / n for k, v in regime_counts.items()}
-    freq["draw_frequency"] = round(draw_freq, 4)
-
-    return SimulationResult(adjusted, base_prob, freq, n, sport,
-                            [f"home_xg={home_xg:.2f} away_xg={away_xg:.2f} draw_freq={draw_freq:.2f}"])
+    probabilities = {key: count / n for key, count in outcomes.items()}
+    frequencies = {key: count / n for key, count in regimes.items()}
+    frequencies["draw_frequency"] = probabilities["draw"]
+    notes = [
+        f"home_xg={home_xg:.2f} away_xg={away_xg:.2f}",
+        "RESEARCH_ONLY_UNFITTED_TACTICAL_WEIGHTS:no_probability_promotion",
+    ]
+    if "h2h_draw_rate" not in enr:
+        notes.append("HEURISTIC_DRAW_STYLE_PRIOR_NOT_SOURCE_VERIFIED")
+    return SimulationResult(probabilities["home"], base_prob, frequencies, n, sport,
+                            notes, three_way_probabilities=probabilities)
 
 
 def _poisson_draw(lam: float, rng: random.Random) -> int:
@@ -407,16 +423,13 @@ def _poisson_draw(lam: float, rng: random.Random) -> int:
 
 def _default_sim(base_prob: float, n: int, rng: random.Random,
                  sport: str) -> SimulationResult:
-    """Gaussian noise only — returns base_prob with wider uncertainty."""
-    sims = [_logistic(math.log(base_prob/(1-base_prob+1e-9)) + rng.gauss(0, 0.06))
-            for _ in range(n)]
-    adjusted = max(0.01, min(0.99, sum(sims) / len(sims)))
+    """No fitted sport-specific script: do not perturb input probability."""
     return SimulationResult(
-        adjusted, base_prob, {"gaussian_noise": 1.0}, n, sport,
-        [f"DEFAULT_SIM:no_sport_specific_regime_for_{sport}"],
-        simulation_ran=False,   # flag: no real sport model
+        base_prob, base_prob, {}, 0, sport,
+        [f"DEFAULT_SIM:no_sport_specific_regime_for_{sport}",
+         "NO_FITTED_SCRIPTS:no_probability_override"],
+        simulation_ran=False,
     )
-
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -437,9 +450,18 @@ def run_game_state_simulation(
     base_prob must be the output of the independent sport model (zero market
     contamination).  This function never reads sportsbook odds.
     """
-    if not (0.0 < base_prob < 1.0):
-        return SimulationResult(base_prob, base_prob, {}, 0, "UNKNOWN",
+    try:
+        base_prob = float(base_prob)
+    except (TypeError, ValueError, OverflowError):
+        base_prob = float("nan")
+    if not math.isfinite(base_prob) or not (0.0 < base_prob < 1.0):
+        # Do not serialize NaN/Infinity into JSON readback.
+        safe = base_prob if math.isfinite(base_prob) and 0.0 <= base_prob <= 1.0 else 0.0
+        return SimulationResult(safe, safe, {}, 0, "UNKNOWN",
                                 ["INVALID_BASE_PROB:simulation_skipped"], False)
+    if isinstance(n_sims, bool) or not isinstance(n_sims, int) or not 1 <= n_sims <= 50000:
+        return SimulationResult(base_prob, base_prob, {}, 0, "UNKNOWN",
+                                ["INVALID_SIMULATION_COUNT:simulation_skipped"], False)
 
     sport = (row.get("sport") or "").upper().strip()
     rng   = random.Random(seed)

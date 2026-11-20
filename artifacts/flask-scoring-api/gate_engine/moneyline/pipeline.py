@@ -568,7 +568,13 @@ def run_moneyline_pipeline(
     sim_result = run_game_state_simulation(row, clean_enr, independent_prob_raw,
                                            n_sims=n_sims, seed=seed)
     result.simulation = sim_result.to_dict()
-    independent_prob_post_sim = sim_result.adjusted_prob   # P(home wins)
+    # A heuristic soccer 1X2 scenario is not the governing fitted model.
+    # Keep it in simulation observability; never inject its regulation HOME
+    # mass into a binary failure-path/probability calculation.
+    independent_prob_post_sim = (
+        independent_prob_raw if is_soccer or not sim_result.simulation_ran
+        else sim_result.adjusted_prob
+    )
 
     # -----------------------------------------------------------------------
     # Stage 5: Failure-path distributional integration — home-team perspective
@@ -577,7 +583,12 @@ def run_moneyline_pipeline(
     fp_result = integrate_failure_paths(
         base_win_prob=independent_prob_post_sim,
         failure_path_matrix=fp_matrix,
-        simulation_regimes=sim_result.regime_distribution,
+        # Heuristic soccer 1X2 scripts (and unsupported generic fallbacks)
+        # are observability only; do not feed binary failure-path classification.
+        simulation_regimes=(
+            sim_result.regime_distribution
+            if not is_soccer and sim_result.simulation_ran else {}
+        ),
     )
     result.failure_path = fp_result.to_dict()
 
@@ -725,7 +736,12 @@ def run_moneyline_pipeline(
     # Stage 7: Model-disagreement audit
     # -----------------------------------------------------------------------
     submodel_probs = dict(sport_model_out.get("submodel_probs") or {})
-    submodel_probs["simulation_output"] = round(independent_prob_post_sim, 4)
+    if is_soccer:
+        result.sport_model.setdefault("notes", []).append(
+            "SOCCER_1X2_SCRIPT_RESEARCH_ONLY:not_a_binary_fitted_submodel"
+        )
+    elif sim_result.simulation_ran:
+        submodel_probs["simulation_output"] = round(independent_prob_post_sim, 4)
     dis_audit = audit_model_disagreement(submodel_probs)
     dis_audit_dict = dis_audit.to_dict()
 
