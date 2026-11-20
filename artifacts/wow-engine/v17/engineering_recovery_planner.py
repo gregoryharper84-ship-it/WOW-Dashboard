@@ -35,10 +35,12 @@ NON_REPAIRABLE_SUFFIXES = ("_OWNER_APPROVAL_MISSING",)
 EVIDENCE_PENDING_PREFIXES = (
     "QA_EVIDENCE_MISSING:", "QA_EVIDENCE_INCOMPLETE:",
     "RELEASE_QA_EVIDENCE_MISSING:", "RELEASE_QA_EVIDENCE_INCOMPLETE:",
-    # The reviewer itself failed to run (capture/Gemini/attestation). No PR code
-    # change fixes that; the next exact-head QA run produces the verdict.
-    "QA_REVIEW_EXECUTION_FAILED",
 )
+# The reviewer itself failed to run (capture/Gemini/attestation). No PR code
+# change fixes that; the next exact-head QA run produces the verdict. It only
+# defers repair when it is the sole non-pending finding, so it can never hide a
+# genuine repairable code finding published alongside it.
+REVIEW_EXECUTION_FAILED_PREFIX = "QA_REVIEW_EXECUTION_FAILED:"
 EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
 
 
@@ -141,6 +143,9 @@ def plan_recovery(
     # or because Release observed a not-yet-passing QA check.
     pending = [f for f in findings if f in EVIDENCE_PENDING_CODES or
                any(f.startswith(prefix) for prefix in EVIDENCE_PENDING_PREFIXES)]
+    execution = [f for f in findings if f.startswith(REVIEW_EXECUTION_FAILED_PREFIX)]
+    if execution and all(f in pending or f in execution for f in findings):
+        pending = pending + execution
     if pending:
         return {
             "pr_number": pr_number,

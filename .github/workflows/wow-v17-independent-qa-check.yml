@@ -489,11 +489,15 @@ jobs:
           POLICY_RECEIPT_OUTCOME: ${{ steps.policy_receipt.outcome }}
           POLICY_ARTIFACT_OUTCOME: ${{ steps.policy_artifact.outcome }}
           REVIEW_CREDENTIAL_OUTCOME: ${{ steps.review_credential.outcome }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           RECHECK_OUTCOME: ${{ steps.recheck.outcome }}
           SOURCE_REVIEW_OUTCOME: ${{ steps.source_review.outcome }}
           SOURCE_REVIEW_ARTIFACT_OUTCOME: ${{ steps.source_review_artifact.outcome }}
+          REVIEWER_APP_OUTCOME: ${{ steps.reviewer_app.outcome }}
+          REVIEWER_ATTEST_OUTCOME: ${{ steps.reviewer_attest.outcome }}
+          REVIEWER_VERIFY_OUTCOME: ${{ steps.reviewer_verify.outcome }}
           DECIDE_OUTCOME: ${{ steps.decide.outcome }}
           DECIDE_COUNT: ${{ steps.decide.outputs.count }}
         run: |
@@ -504,10 +508,14 @@ jobs:
           decision="$RUNNER_TEMP/decisions/decision-$PR_NUMBER.json"
           if [ ! -s "$decision" ]; then
             failed_step=qa_decision_unavailable
-            for step in review_credential policy capture review recheck source_review decide; do
+            for step in review_credential policy preflight capture review recheck source_review reviewer_app reviewer_attest reviewer_verify decide; do
               case "$step" in
                 review_credential) outcome="${REVIEW_CREDENTIAL_OUTCOME:-skipped}" ;;
                 policy) outcome="${POLICY_OUTCOME:-skipped}" ;;
+                preflight) outcome="${PREFLIGHT_OUTCOME:-skipped}" ;;
+                reviewer_app) outcome="${REVIEWER_APP_OUTCOME:-skipped}" ;;
+                reviewer_attest) outcome="${REVIEWER_ATTEST_OUTCOME:-skipped}" ;;
+                reviewer_verify) outcome="${REVIEWER_VERIFY_OUTCOME:-skipped}" ;;
                 capture) outcome="${CAPTURE_OUTCOME:-skipped}" ;;
                 review) outcome="${REVIEW_OUTCOME:-skipped}" ;;
                 recheck) outcome="${RECHECK_OUTCOME:-skipped}" ;;

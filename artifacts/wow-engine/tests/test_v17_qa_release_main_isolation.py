@@ -64,10 +64,15 @@ def test_terminal_decision_reads_pre_isolation_outcomes_and_still_holds():
     terminal = next(s for s in _steps(QA, "qa") if s.get("id") == "terminal_decision")
     assert terminal["if"].startswith("always()")
     env = terminal["env"]
-    for key in ("POLICY_OUTCOME", "REVIEW_CREDENTIAL_OUTCOME", "CAPTURE_OUTCOME", "REVIEW_OUTCOME",
-                "RECHECK_OUTCOME", "SOURCE_REVIEW_OUTCOME", "DECIDE_OUTCOME"):
+    for key in ("POLICY_OUTCOME", "REVIEW_CREDENTIAL_OUTCOME", "PREFLIGHT_OUTCOME", "CAPTURE_OUTCOME",
+                "REVIEW_OUTCOME", "RECHECK_OUTCOME", "SOURCE_REVIEW_OUTCOME", "REVIEWER_APP_OUTCOME",
+                "REVIEWER_ATTEST_OUTCOME", "REVIEWER_VERIFY_OUTCOME", "DECIDE_OUTCOME"):
         assert env[key].endswith(".outcome }}"), key  # .conclusion would read the isolated success
     assert "QA_REVIEW_EXECUTION_FAILED" in terminal["run"]
+    loop = next(line for line in terminal["run"].splitlines() if line.strip().startswith("for step in"))
+    named = set(loop.split(" in ", 1)[1].split(";", 1)[0].split())
+    # policy_receipt / policy_artifact / source_review_artifact are named just below the loop.
+    assert named == set(EVALUATION) - {"policy_receipt", "policy_artifact", "source_review_artifact"}
 
 
 def test_qa_draft_and_unresolved_target_are_explicit_not_silent():
@@ -89,6 +94,8 @@ def test_release_admission_isolated_only_for_automatic_runs_and_never_admits():
     # applicable=false is written before any refusal can exit.
     first = [line for line in target["run"].splitlines() if line.strip()][1]
     assert first.strip() == 'echo "applicable=false" >> "$GITHUB_OUTPUT"'
+    lines = [line.strip() for line in target["run"].splitlines() if line.strip()]
+    assert lines[-1] == 'echo "applicable=true" >> "$GITHUB_OUTPUT"'
     gate = workflow["jobs"]["release"]["if"]
     assert "needs.admit-release.result == 'success'" in gate
     assert "needs.admit-release.outputs.applicable == 'true'" in gate
