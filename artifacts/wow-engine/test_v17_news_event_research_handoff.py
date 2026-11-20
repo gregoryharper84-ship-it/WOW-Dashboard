@@ -298,3 +298,66 @@ def test_malformed_discovery_urls_cannot_crash_headline_provenance_check():
     out = _result(discovery=discovery, reviewed=[FACT])
     assert out["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
     assert out["can_execute"] is False
+
+
+def test_event_news_handoff_receipt_binds_exact_source_and_pregame_chronology():
+    from v17.news_event_research_handoff import reconcile_news_handoff
+    source_digest = "a" * 64
+    original = reconcile_news_handoff(
+        DISCOVERY, EVENT, [FACT], observed_at=NOW,
+        source_receipt_sha256=source_digest,
+    )
+    assert original["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert original["source_receipt_sha256"] == source_digest
+    assert len(original["discovery_canonical_sha256"]) == 64
+    assert original["discovery_observed_at_utc"] == "2026-11-17T17:00:00+00:00"
+    assert original["event_start_utc"] == "2026-11-17T23:30:00+00:00"
+    assert original["research_observed_at_utc"] == NOW.isoformat()
+    assert original["news_context"][0]["independently_reviewed_at_utc"] == "2026-11-17T17:30:00+00:00"
+    assert original["model_rescore_verified"] is False
+    assert original["calibrated_probability"] is None
+    assert original["can_execute"] is False
+    # Research receipt hashes must change if any parent fact/clock changes,
+    # even when final fact wording and exact indexed source URL do not.
+    alternatives = [
+        (DISCOVERY, {**EVENT, "event_start_utc": "2026-11-18T01:00:00Z"}, FACT, NOW, source_digest),
+        ({**DISCOVERY, "source_observed_at": "2026-11-17T17:01:00Z"}, EVENT, FACT, NOW, source_digest),
+        (DISCOVERY, EVENT, {**FACT, "independently_reviewed_at_utc": "2026-11-17T17:31:00Z"}, NOW, source_digest),
+        (DISCOVERY, EVENT, FACT, datetime(2026, 11, 17, 18, 1, tzinfo=timezone.utc), source_digest),
+        (DISCOVERY, EVENT, FACT, NOW, "b" * 64),
+    ]
+    for discovery, event, fact, observed, sha in alternatives:
+        changed = reconcile_news_handoff(
+            discovery, event, [fact], observed_at=observed,
+            source_receipt_sha256=sha,
+        )
+        assert changed["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+        assert changed["receipt_sha256"] != original["receipt_sha256"]
+        assert changed["prediction_authority"] is False
+
+
+def test_missing_raw_source_sha_is_disclosed_and_invalid_sha_fails_closed():
+    from v17.news_event_research_handoff import reconcile_news_handoff
+    without = _result(reviewed=[FACT])
+    assert without["source_receipt_sha256"] is None
+    assert len(without["discovery_canonical_sha256"]) == 64
+    assert without["model_rescore_verified"] is False
+
+    invalid = reconcile_news_handoff(
+        DISCOVERY, EVENT, [FACT], observed_at=NOW, source_receipt_sha256="bad",
+    )
+    assert invalid["research_status"] == "NEWS_DISCOVERY_DIGEST_INVALID"
+    assert invalid["research_rescore_requested"] is False
+    assert invalid["source_receipt_sha256"] is None
+    assert invalid["calibrated_probability"] is None
+
+
+def test_unserializable_discovery_payload_has_native_blocker_not_exception():
+    class Unsupported:
+        pass
+    result = _result(discovery={
+        **DISCOVERY, "unexpected_data": Unsupported(),
+    }, reviewed=[FACT])
+    assert result["research_status"] == "NEWS_DISCOVERY_SHAPE_INVALID"
+    assert result["research_rescore_requested"] is False
+    assert result["model_rescore_verified"] is False
