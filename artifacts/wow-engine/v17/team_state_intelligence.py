@@ -13,6 +13,9 @@ from typing import Any, Iterable, Mapping, Sequence
 
 CAN_EXECUTE = False
 FEATURE_FAMILY_VERSION = "TEAM_STATE_INTELLIGENCE_V1"
+# Shared NCAAF team-state convention. Keep persisted candidate rows and
+# independent spread reference replay on one season-regime denominator.
+NCAAF_EXPECTED_SEASON_GAMES = 13
 TREND_DRIVER_STATUSES = {
     "CONFIRMED_STRUCTURAL_DRIVER", "SUPPORTED_TACTICAL_DRIVER",
     "SUPPORTED_PERSONNEL_DRIVER", "SUPPORTED_SCHEDULE_DRIVER",
