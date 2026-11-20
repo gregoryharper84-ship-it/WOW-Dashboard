@@ -1,0 +1,75 @@
+{
+  "case_id": "GH_KALSHI_NBA_FIVE_MARKET_2026_11_11",
+  "event_date": "2026-11-11",
+  "screenshot_closed_at_display": "2026-11-11 10:34 PM (timezone not independently verified)",
+  "evidence_type": "USER_SUPPLIED_CLOSED_POSITION_SCREENSHOT",
+  "economics": {
+    "cost_usd": "99.96",
+    "payout_usd": "519.48",
+    "profit_usd": "419.52"
+  },
+  "legs": [
+    {
+      "matchup_id": "BOS_TOR_2026-11-11",
+      "teams": [
+        "BOS",
+        "TOR"
+      ],
+      "market_type": "MONEYLINE",
+      "side": "YES",
+      "selection": "BOS",
+      "reported_result": "WIN"
+    },
+    {
+      "matchup_id": "LAL_MIL_2026-11-11",
+      "teams": [
+        "LAL",
+        "MIL"
+      ],
+      "market_type": "MONEYLINE",
+      "side": "YES",
+      "selection": "LAL",
+      "reported_result": "WIN"
+    },
+    {
+      "matchup_id": "ORL_UTA_2026-11-11",
+      "teams": [
+        "ORL",
+        "UTA"
+      ],
+      "market_type": "MONEYLINE",
+      "side": "YES",
+      "selection": "ORL",
+      "reported_result": "WIN"
+    },
+    {
+      "matchup_id": "SAS_CHI_2026-11-11",
+      "teams": [
+        "SAS",
+        "CHI"
+      ],
+      "market_type": "MONEYLINE",
+      "side": "YES",
+      "selection": "SAS",
+      "reported_result": "WIN"
+    },
+    {
+      "matchup_id": "DEN_MEM_2026-11-11",
+      "teams": [
+        "DEN",
+        "MEM"
+      ],
+      "market_type": "WIN_MARGIN_GREATER_THAN_NO",
+      "side": "NO",
+      "proposition_team": "MEM",
+      "margin_threshold": "7.5",
+      "reported_result": "WIN"
+    }
+  ],
+  "limitations": [
+    "No exact Kalshi tickers, official market rules or settlement receipts in screenshot",
+    "No entry-time leg prices, combo orderbook, fill/fees or timestamped quote",
+    "No immutable pregame model receipts or calibrated joint probabilities",
+    "Outcome is user-reported winning case, not a prospective model success"
+  ]
+}
