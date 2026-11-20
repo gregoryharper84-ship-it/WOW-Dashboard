@@ -10,7 +10,10 @@ name: wow-v17-required-checks-deploy
 # service, then require both LIVE on that SHA plus health.
 # Sanctioned Render writer (v17.github_release_journal.SANCTIONED_RENDER_WRITERS):
 # method "POST" to https://api.render.com/v1/services/<id>/deploys only.
-# Non-advancing outcomes end green so this job never blocks checksPass.
+# Non-advancing outcomes (incl. a transient read failure before any write)
+# end green so this job never blocks checksPass. Redirects are refused.
+# wow-release: same environment the scheduled lean readback uses with
+# RENDER_API_KEY (run 44665491538, 2026-11-20, no approval wait).
 # Never touches env vars, plans or services. can_execute=false.
 on:
   workflow_run:
@@ -44,8 +47,6 @@ jobs:
     timeout-minutes: 45
     environment: wow-release
     env:
-      GH_TOKEN: ${{ github.token }}
-      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       DEPLOY_RECEIPT: wow-v17-required-checks-deploy.json
       WOW_CAN_EXECUTE: "false"
@@ -64,6 +65,10 @@ jobs:
 
       - name: Deploy exact current main SHA once required checks are green
         working-directory: artifacts/wow-engine
+        env:
+          # Credentials reach this step only (not checkout/setup/upload).
+          GH_TOKEN: ${{ github.token }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: python -m v17.required_checks_deploy
 
       - name: Preserve typed deploy receipt

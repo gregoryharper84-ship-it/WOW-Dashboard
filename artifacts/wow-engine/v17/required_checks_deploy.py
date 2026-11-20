@@ -18,10 +18,11 @@ current main SHA to recover a failed auto-deploy"):
 * exactly one deploy per missing service is POSTed, and both services must
   then be LIVE on the SHA with public health OK.
 
-Non-advancing outcomes (superseded SHA, required checks pending or failed,
-deploy already present) end with exit 0 and a typed receipt, so this job never
-becomes another failing check on ``main``. A genuine deploy failure, timeout,
-service-identity drift or health failure exits 1.
+Non-advancing outcomes (superseded SHA, required checks pending or failed, a
+transient read failure before any write) end with exit 0 and a typed receipt,
+so this job never becomes another failing check on ``main``. A genuine deploy
+failure, timeout, service-identity drift, credential gap or health failure
+exits 1. The only write is POST /v1/services/<id>/deploys; redirects are refused.
 
 Never touches Render env vars, plans or services. Never merges, approves, or
 certifies production or model readiness. ``can_execute=false``.
@@ -61,6 +62,8 @@ NON_ADVANCING = frozenset({
     "REQUIRED_CHECKS_PENDING_NO_DEPLOY",
     "REQUIRED_CHECKS_FAILED_NO_DEPLOY",
 })
+
+HEALTH_ATTEMPTS = 5
 
 Fetch = Callable[[str, str, Any], Any]
 
@@ -128,23 +131,32 @@ def plan(*, target_sha: str, main_sha: str, checks_state: str,
 
 
 def progress(deploys: list[dict[str, Any]], sha: str) -> str:
-    """``live``, ``pending`` or ``failed`` for the newest deploy of ``sha``."""
-    for deploy in deploys:
-        if (deploy.get("commit") or {}).get("id") == sha:
-            status = deploy.get("status")
-            if status == "live":
-                return "live"
-            if status in FAILED:
-                return "failed"
-            return "pending"
-    return "pending"
+    """``live`` if any deploy of ``sha`` is live, ``pending`` while one is still
+    active (a cancelled duplicate of the same SHA is not a failure), otherwise
+    ``failed`` when the newest deploy of ``sha`` ended in a failed state."""
+    states = [d.get("status") for d in deploys if (d.get("commit") or {}).get("id") == sha]
+    if "live" in states:
+        return "live"
+    if not states or any(state in ACTIVE_OR_LIVE for state in states):
+        return "pending"
+    return "failed" if states[0] in FAILED else "pending"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so a bearer token can never follow one off-host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _http(method: str, url: str, headers: dict[str, str], body: Any = None) -> Any:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(url, data=data, method=method, headers={
         **headers, **({"Content-Type": "application/json"} if data else {})})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with _OPENER.open(request, timeout=30) as response:
         raw = response.read().decode("utf-8")
         return json.loads(raw) if raw else {}
 
@@ -217,9 +229,15 @@ def run(*, target_sha: str, fetch: Fetch, sleep: Callable[[float], None] = time.
                 r for r, s in sorted(states.items()) if s != "live"))
         sleep(poll_seconds)
         waited += poll_seconds
+    healthy = False
+    for _ in range(HEALTH_ATTEMPTS):  # a cold start may briefly 5xx after LIVE
+        if health():
+            healthy = True
+            break
+        sleep(poll_seconds)
     try:
         observed = classify_readback(target_sha=target_sha, main_sha=main_sha(),
-                                     services=services, deploys=latest, health_ok=health())
+                                     services=services, deploys=latest, health_ok=healthy)
     except ReadbackHold as exc:
         raise DeployHold(str(exc)) from exc
     return {**decision, "status": "DEPLOY_LIVE_AND_HEALTHY", "posted": posted,
@@ -229,6 +247,7 @@ def run(*, target_sha: str, fetch: Fetch, sleep: Callable[[float], None] = time.
 def main() -> int:
     receipt = Path(os.environ.get("DEPLOY_RECEIPT", "wow-v17-required-checks-deploy.json"))
     target = os.environ.get("TARGET_SHA", "")
+    wrote = {"post": False}
     try:
         if os.environ.get("WOW_CAN_EXECUTE") != "false" or os.environ.get("WOW_DRY_RUN_ONLY") != "true":
             raise DeployHold("EXECUTION_INVARIANT_MISMATCH")
@@ -242,14 +261,17 @@ def main() -> int:
         render_headers = {"Accept": "application/json", "Authorization": "Bearer " + render_token}
 
         def fetch(method: str, url: str, body: Any) -> Any:
-            if method == "POST" and not url.startswith("https://api.render.com/v1/services/"):
+            if method != "GET" and not (method == "POST" and url.startswith(
+                    "https://api.render.com/v1/services/") and url.endswith("/deploys")):
                 raise DeployHold("WRITE_TARGET_NOT_ALLOWED")
+            if method == "POST":
+                wrote["post"] = True
             headers = render_headers if url.startswith("https://api.render.com/") else gh_headers
             return _http(method, url, headers, body)
 
         def health() -> bool:
             try:
-                with urllib.request.urlopen(urllib.request.Request(PUBLIC_HEALTH), timeout=30) as r:
+                with _OPENER.open(urllib.request.Request(PUBLIC_HEALTH), timeout=30) as r:
                     return r.status == 200
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
                 return False
@@ -257,10 +279,17 @@ def main() -> int:
         outcome = run(target_sha=target, fetch=fetch, health=health)
         code = 0
     except Exception as exc:  # every failure leaves a typed, credential-free receipt
-        reason = str(exc) if isinstance(exc, DeployHold) else "DEPLOY_SOURCE_UNAVAILABLE_OR_INVALID"
-        outcome = {"status": "DEPLOY_HOLD", "reason": reason, "target_sha": target,
-                   "production_verified": False, "can_execute": False}
-        code = 1
+        if not wrote["post"] and not isinstance(exc, DeployHold):
+            # A transient read failure before any write must not become one more
+            # failing check on the main commit that checksPass is evaluating.
+            outcome = {"status": "PRE_WRITE_SOURCE_UNAVAILABLE_NO_DEPLOY", "target_sha": target,
+                       "production_verified": False, "can_execute": False}
+            code = 0
+        else:
+            reason = str(exc) if isinstance(exc, DeployHold) else "DEPLOY_SOURCE_UNAVAILABLE_OR_INVALID"
+            outcome = {"status": "DEPLOY_HOLD", "reason": reason, "target_sha": target,
+                       "production_verified": False, "can_execute": False}
+            code = 1
     receipt.write_text(json.dumps(outcome, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(outcome, sort_keys=True))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")

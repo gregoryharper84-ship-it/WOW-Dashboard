@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -190,6 +192,39 @@ def test_unhealthy_service_after_live_is_a_hold():
         _run(Fake(), health=False)
 
 
+def test_cold_start_health_is_retried_before_holding():
+    answers = iter([False, False, True])
+    fake = Fake()
+    out = deployer.run(target_sha=SHA, fetch=fake.fetch, sleep=fake.sleep,
+                       health=lambda: next(answers), poll_seconds=20)
+    assert out["status"] == "DEPLOY_LIVE_AND_HEALTHY"
+
+
+def test_cancelled_duplicate_of_a_live_sha_is_not_a_failure():
+    deploys = [{"id": "dup", "status": "canceled", "commit": {"id": SHA}},
+               {"id": "ok", "status": "live", "commit": {"id": SHA}}]
+    assert deployer.progress(deploys, SHA) == "live"
+    assert deployer.progress([{"id": "dup", "status": "canceled", "commit": {"id": SHA}},
+                              {"id": "b", "status": "build_in_progress", "commit": {"id": SHA}}],
+                             SHA) == "pending"
+    assert deployer.progress([{"id": "x", "status": "build_failed", "commit": {"id": SHA}}], SHA) == "failed"
+
+
+def test_second_trigger_for_the_same_sha_watches_the_first_runs_deploy():
+    deploys = {role: [{"id": f"dep-first-{role}", "status": "build_in_progress", "commit": {"id": SHA}},
+                      {"id": f"dep-old-{role}", "status": "live", "commit": {"id": OLD}}]
+               for role in SERVICES}
+    fake = Fake(deploys=deploys)
+    assert _run(fake)["status"] == "DEPLOY_LIVE_AND_HEALTHY" and fake.posts == []
+
+
+def test_worker_only_service_drift_holds_before_any_write():
+    fake = Fake(services={"web": _service("web"), "worker": _service("worker", trigger="commit")})
+    with pytest.raises(deployer.DeployHold, match="MISMATCH:worker"):
+        _run(fake)
+    assert fake.posts == []
+
+
 def test_service_identity_drift_holds_before_any_write():
     fake = Fake(services={"web": _service("web", trigger="off"), "worker": _service("worker")})
     with pytest.raises(deployer.DeployHold, match="RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web"):
@@ -199,7 +234,8 @@ def test_service_identity_drift_holds_before_any_write():
 
 def _env(monkeypatch, tmp_path, **overrides):
     env = {"WOW_CAN_EXECUTE": "false", "WOW_DRY_RUN_ONLY": "true", "GITHUB_REPOSITORY": REPO,
-           "GH_TOKEN": "t", "RENDER_API_KEY": "r", "TARGET_SHA": SHA,
+           "GH_TOKEN": "ghs_SECRET_GH_VALUE", "RENDER_API_KEY": "rnd_SECRET_RENDER_VALUE",
+           "TARGET_SHA": SHA,
            "DEPLOY_RECEIPT": str(tmp_path / "receipt.json")}
     env.update(overrides)
     for key, value in env.items():
@@ -226,7 +262,82 @@ def test_invariant_or_credential_gaps_fail_closed_with_typed_receipt(monkeypatch
     assert deployer.main() == 1
     body = json.loads(receipt.read_text())
     assert body["reason"] == reason and body["can_execute"] is False
-    assert "r" not in body.values() and "t" not in body.values()
+    assert "SECRET" not in receipt.read_text()
+
+
+def test_transient_read_failure_before_any_write_exits_green(monkeypatch, tmp_path):
+    receipt = _env(monkeypatch, tmp_path)
+
+    def run(**_):
+        raise urllib.error.URLError("502 from api.github.com")
+    monkeypatch.setattr(deployer, "run", run)
+    assert deployer.main() == 0
+    assert json.loads(receipt.read_text())["status"] == "PRE_WRITE_SOURCE_UNAVAILABLE_NO_DEPLOY"
+
+
+def test_failure_after_a_write_stays_red(monkeypatch, tmp_path):
+    receipt = _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(deployer, "_http", lambda *a, **k: {"id": "dep-new"})
+
+    def run(*, fetch, **_):
+        fetch("POST", "https://api.render.com/v1/services/" + SERVICES["web"] + "/deploys",
+              {"commitId": SHA, "clearCache": "do_not_clear"})
+        raise urllib.error.URLError("render read reset after POST")
+    monkeypatch.setattr(deployer, "run", run)
+    assert deployer.main() == 1
+    body = json.loads(receipt.read_text())
+    assert body["status"] == "DEPLOY_HOLD" and "SECRET" not in receipt.read_text()
+
+
+@pytest.mark.parametrize("method, url", [
+    ("POST", "https://api.github.com/repos/x/y/merges"),
+    ("POST", "https://api.render.com/v1/services/srv-x/env-vars"),
+    ("PATCH", "https://api.render.com/v1/services/srv-x"),
+    ("DELETE", "https://api.render.com/v1/services/srv-x/deploys"),
+])
+def test_only_render_deploy_posts_are_writable(monkeypatch, tmp_path, method, url):
+    receipt = _env(monkeypatch, tmp_path)
+    called = []
+    monkeypatch.setattr(deployer, "_http", lambda *a, **k: called.append(a))
+
+    def run(*, fetch, **_):
+        fetch(method, url, {})
+    monkeypatch.setattr(deployer, "run", run)
+    assert deployer.main() == 1
+    assert json.loads(receipt.read_text())["reason"] == "WRITE_TARGET_NOT_ALLOWED"
+    assert called == []
+
+
+def test_credentials_go_only_to_their_own_host(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(deployer, "_http", lambda method, url, headers, body=None: seen.append(
+        (url, headers["Authorization"])) or {})
+
+    def run(*, fetch, **_):
+        fetch("GET", "https://api.github.com/repos/" + REPO + "/branches/main", None)
+        fetch("GET", "https://api.render.com/v1/services/" + SERVICES["web"], None)
+        return {"status": "SUPERSEDED_NO_DEPLOY", "can_execute": False}
+    monkeypatch.setattr(deployer, "run", run)
+    assert deployer.main() == 0
+    assert seen == [("https://api.github.com/repos/" + REPO + "/branches/main", "Bearer ghs_SECRET_GH_VALUE"),
+                    ("https://api.render.com/v1/services/" + SERVICES["web"], "Bearer rnd_SECRET_RENDER_VALUE")]
+
+
+def test_redirects_are_refused_so_tokens_never_follow_one():
+    handler = next(h for h in deployer._OPENER.handlers
+                   if isinstance(h, urllib.request.HTTPRedirectHandler))
+    assert isinstance(handler, deployer._NoRedirect)
+    request = urllib.request.Request("https://api.render.com/v1/services/x",
+                                     headers={"Authorization": "Bearer y"})
+    assert handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/") is None
+
+
+def test_module_write_surface_is_pinned_to_one_deploy_post():
+    source = (ROOT / "artifacts/wow-engine/v17/required_checks_deploy.py").read_text()
+    for forbidden in ('"PATCH"', '"PUT"', '"DELETE"', "env-vars", "/suspend", "/scale", "/rollback"):
+        assert forbidden not in source, forbidden
+    assert source.count('fetch("POST"') == 1
 
 
 def test_workflow_binds_trigger_environment_and_least_privilege():
@@ -245,9 +356,18 @@ def test_workflow_binds_trigger_environment_and_least_privilege():
     assert "head_sha" in workflow["concurrency"]["group"]
     assert workflow["concurrency"]["cancel-in-progress"] is False
     assert job["env"]["WOW_CAN_EXECUTE"] == "false"
+    assert "RENDER_API_KEY" not in job["env"] and "GH_TOKEN" not in job["env"]
     run_step = next(s for s in job["steps"] if "v17.required_checks_deploy" in str(s.get("run")))
     assert "continue-on-error" not in run_step  # a genuine deploy failure must stay visible
     assert run_step["working-directory"] == "artifacts/wow-engine"
+    assert run_step["run"] == "python -m v17.required_checks_deploy"
+    assert set(run_step["env"]) == {"GH_TOKEN", "RENDER_API_KEY"}
+    secret_steps = [s for s in job["steps"] if "secrets." in json.dumps(s)]
+    assert secret_steps == [run_step]
+    checkout = job["steps"][0]
+    assert checkout["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
+    upload = next(s for s in job["steps"] if "upload-artifact" in str(s.get("uses")))
+    assert upload["with"]["path"] == "artifacts/wow-engine/" + job["env"]["DEPLOY_RECEIPT"]
 
 
 def test_recovery_workflow_is_a_detected_and_sanctioned_render_writer():
