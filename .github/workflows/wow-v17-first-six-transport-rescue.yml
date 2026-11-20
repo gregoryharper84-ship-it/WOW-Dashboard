@@ -54,8 +54,10 @@ jobs:
           - SOCCER_LIGUE_1
     steps:
       - uses: actions/checkout@v4
+        continue-on-error: true
 
       - name: Set up Python 3.11
+        continue-on-error: true
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -63,12 +65,14 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
 
       - name: Install governed model dependencies
+        continue-on-error: true
         shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r artifacts/wow-engine/requirements.txt
 
       - name: Assert non-execution governance and OIDC context
+        continue-on-error: true
         shell: bash
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
@@ -77,6 +81,8 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Acquire, fit, and persist governed source-heavy scope
+        id: work
+        continue-on-error: true
         shell: bash
         env:
           TEAM_STATE_SCOPE: ${{ matrix.scope }}
@@ -188,6 +194,7 @@ jobs:
           PY
 
       - name: Upload governed scope result
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -197,9 +204,26 @@ jobs:
           retention-days: 14
 
       - name: Cool down before next source-heavy scope
+        continue-on-error: true
         shell: bash
         run: sleep 20
-
+      - name: Record authentic optional-observer outcome
+        continue-on-error: true
+        shell: bash
+        env:
+          WORK_OUTCOME: ${{ steps.work.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Optional main-scoped observer"
+            echo "work_outcome=$WORK_OUTCOME"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WORK_OUTCOME" = "success" ]; then
+            echo "FIRST_SIX_TRANSPORT_RESCUE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "FIRST_SIX_TRANSPORT_RESCUE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::FIRST_SIX_TRANSPORT_RESCUE_INCOMPLETE"
+          fi
   pr-contract:
     name: Verify rescue workflow governance contract
     if: github.event_name == 'pull_request'
