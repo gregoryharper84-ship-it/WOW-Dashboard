@@ -298,3 +298,145 @@ def test_malformed_discovery_urls_cannot_crash_headline_provenance_check():
     out = _result(discovery=discovery, reviewed=[FACT])
     assert out["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
     assert out["can_execute"] is False
+
+
+def test_event_news_handoff_receipt_binds_exact_source_and_pregame_chronology():
+    from v17.news_event_research_handoff import reconcile_news_handoff
+    source_digest = "a" * 64
+    original = reconcile_news_handoff(
+        DISCOVERY, EVENT, [FACT], observed_at=NOW,
+        source_receipt_sha256=source_digest,
+    )
+    assert original["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert original["source_receipt_sha256"] == source_digest
+    assert len(original["discovery_canonical_sha256"]) == 64
+    assert original["discovery_observed_at_utc"] == "2026-11-17T17:00:00+00:00"
+    assert original["event_start_utc"] == "2026-11-17T23:30:00+00:00"
+    assert original["research_observed_at_utc"] == NOW.isoformat()
+    assert original["news_context"][0]["independently_reviewed_at_utc"] == "2026-11-17T17:30:00+00:00"
+    assert original["model_rescore_verified"] is False
+    assert original["calibrated_probability"] is None
+    assert original["can_execute"] is False
+    # Research receipt hashes must change if any parent fact/clock changes,
+    # even when final fact wording and exact indexed source URL do not.
+    alternatives = [
+        (DISCOVERY, {**EVENT, "event_start_utc": "2026-11-18T01:00:00Z"}, FACT, NOW, source_digest),
+        ({**DISCOVERY, "source_observed_at": "2026-11-17T17:01:00Z"}, EVENT, FACT, NOW, source_digest),
+        (DISCOVERY, EVENT, {**FACT, "independently_reviewed_at_utc": "2026-11-17T17:31:00Z"}, NOW, source_digest),
+        (DISCOVERY, EVENT, FACT, datetime(2026, 11, 17, 18, 1, tzinfo=timezone.utc), source_digest),
+        (DISCOVERY, EVENT, FACT, NOW, "b" * 64),
+    ]
+    for discovery, event, fact, observed, sha in alternatives:
+        changed = reconcile_news_handoff(
+            discovery, event, [fact], observed_at=observed,
+            source_receipt_sha256=sha,
+        )
+        assert changed["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+        assert changed["receipt_sha256"] != original["receipt_sha256"]
+        assert changed["prediction_authority"] is False
+
+
+def test_missing_raw_source_sha_is_disclosed_and_invalid_sha_fails_closed():
+    from v17.news_event_research_handoff import reconcile_news_handoff
+    without = _result(reviewed=[FACT])
+    assert without["source_receipt_sha256"] is None
+    assert len(without["discovery_canonical_sha256"]) == 64
+    assert without["model_rescore_verified"] is False
+
+    invalid = reconcile_news_handoff(
+        DISCOVERY, EVENT, [FACT], observed_at=NOW, source_receipt_sha256="bad",
+    )
+    assert invalid["research_status"] == "NEWS_DISCOVERY_DIGEST_INVALID"
+    assert invalid["research_rescore_requested"] is False
+    assert invalid["source_receipt_sha256"] is None
+    assert invalid["calibrated_probability"] is None
+
+
+def test_unserializable_discovery_payload_has_native_blocker_not_exception():
+    class Unsupported:
+        pass
+    result = _result(discovery={
+        **DISCOVERY, "unexpected_data": Unsupported(),
+    }, reviewed=[FACT])
+    assert result["research_status"] == "NEWS_DISCOVERY_SHAPE_INVALID"
+    assert result["research_rescore_requested"] is False
+    assert result["model_rescore_verified"] is False
+
+
+def test_unverified_odds_provider_id_never_qualifies_as_official_news_event():
+    # The legacy official_event_id alias may contain an odds-provider event ID.
+    provider_event = {
+        **EVENT, "official_event_id": "provider-abc",
+        "provider_event_id": "provider-abc",
+        "provider_event_source": "ODDS_API",
+        "canonical_event_id": None,
+        "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
+        "official_event_identity_verified": False,
+    }
+    fact = {**FACT, "official_event_id": "provider-abc"}
+    blocked = _result(event=provider_event, reviewed=[fact])
+    assert blocked["research_status"] == "NEWS_CANONICAL_EVENT_UNVERIFIED"
+    assert blocked["provider_event_id"] == "provider-abc"
+    assert blocked["official_event_identity_verified"] is False
+    assert blocked["canonical_identity_status"] == "PROVIDER_EVENT_ID_UNVERIFIED"
+    assert blocked["research_rescore_requested"] is False
+    assert blocked["model_rescore_verified"] is False
+    assert blocked["prediction_authority"] is False
+    assert blocked["calibrated_probability"] is None
+    assert blocked["can_execute"] is False
+    # A caller cannot merely flip one boolean on the same provider-alias row.
+    assert _result(
+        event={**provider_event, "official_event_identity_verified": True},
+        reviewed=[fact],
+    )["research_status"] == "NEWS_CANONICAL_EVENT_UNVERIFIED"
+
+
+def test_nightly_provider_identity_is_blocked_through_scout_enrichment():
+    from v17.sport_scout_enrichment import enrich_candidate
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    event_id = "odds-provider-game-123"
+    event = {
+        **EVENT,
+        "official_event_id": event_id,
+        "provider_event_id": event_id,
+        "provider_event_source": "ODDS_API",
+        "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
+        "official_event_identity_verified": False,
+        "event_start_utc": (now + timedelta(hours=8)).isoformat(),
+    }
+    discovery = {
+        **DISCOVERY,
+        "source_observed_at": (now - timedelta(minutes=5)).isoformat(),
+    }
+    reviewed = [{
+        **FACT, "official_event_id": event_id,
+        "publisher_published_at_utc": (now - timedelta(minutes=8)).isoformat(),
+        "independently_reviewed_at_utc": (now - timedelta(minutes=3)).isoformat(),
+    }]
+    out = enrich_candidate(
+        {**event, "news_discovery_receipt": discovery,
+         "news_reviewed_facts": reviewed}, "TEAM_EVENT"
+    )
+    handoff = out["news_research_handoff"]
+    assert handoff["research_status"] == "NEWS_CANONICAL_EVENT_UNVERIFIED"
+    assert handoff["research_rescore_requested"] is False
+    assert handoff["news_context"] == []
+    assert out["controlling_specialist_route"] == "LLP_TEAM_BETTING_ENGINE"
+    assert out["can_execute"] is False
+
+
+def test_explicit_separate_official_identity_keeps_research_only_positive_path():
+    event = {
+        **EVENT,
+        "provider_event_id": "odds-123",
+        "provider_event_source": "ODDS_API",
+        "official_event_identity_verified": True,
+        "canonical_identity_status": "VERIFIED_OFFICIAL_EVENT",
+    }
+    result = _result(event=event, reviewed=[FACT])
+    assert result["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert result["research_rescore_requested"] is True
+    assert result["model_feature_eligible"] is False
+    assert result["model_rescore_verified"] is False
+    assert result["can_execute"] is False

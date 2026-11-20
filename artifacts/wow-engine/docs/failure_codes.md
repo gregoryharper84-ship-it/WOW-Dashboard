@@ -19,6 +19,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `NFLVERSE_PLAYER_GAME_STAT_DUPLICATE` | NFL independent nflverse player-stat historical outcome normalization (`nflverse_historical_adapter.py`) | Two source rows produce the same `(official game ID claimed, GSIS player ID, statistic)` settled outcome, whether identical, conflicting in value, or contradictory in team. Reject the entire normalization batch rather than silently overweight fitted labels. **Recovery class:** SOURCE_SNAPSHOT_RECONCILIATION; reconcile original player_stats snapshot and canonical schedule/identity, then replay the unchanged input. This is historical source quality, not permission to synthesize a fitted probability. | No |
 | `NFL_EXACT_VERSION_EVIDENCE_CONSISTENT` | NFL independent read-only exact-version forward evidence observer | Validated 100+ exact-version model/artifact/grade rows have arithmetic and chronology consistent with the supplied health receipt. Informational evidence only: independent certification, publication, and production Action remain unproven. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
 | `NFL_EXACT_VERSION_COHORT_MISMATCH` | NFL independent read-only exact-version forward evidence observer | A verified-grade row has a different expected model version, model artifact ID, or artifact checksum. Recovery: obtain immutable exact-artifact verified rows; do not borrow another champion's health. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
 | `NFL_FORWARD_EVIDENCE_INSUFFICIENT` | NFL independent read-only exact-version forward evidence observer | Fewer than the existing 100 required verified grades, or fewer than the declared minimum. Recovery: acquire genuine additional settled prospective grades. **Recovery class:** EVIDENCE_REPLAY_REPAIR; observer never certifies, ranks or publishes. | No |
@@ -659,6 +660,7 @@ Discovery-only failure codes; they do not authorize fitted probabilities or publ
 | `NCAAB_CANONICAL_EVENT_NOT_FOUND` | NCAAB identity | SOURCE_MISMATCH | No |
 | `NCAAB_CANONICAL_EVENT_AMBIGUOUS` | NCAAB identity | SOURCE_AMBIGUOUS | No |
 | `NCAAB_CANONICAL_EVENT_ID_MISSING` | NCAAB handoff | SOURCE_MALFORMED | No |
+| `NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE` | NCAAB team-event bridge | SOURCE_UNAVAILABLE (no authoritative event/history producer) | No |
 | `NCAAB_SCHEDULE_SOURCE_NOT_READY` | NCAAB source | SOURCE_NOT_READY | No |
 | `NCAAB_SCHEDULE_SOURCE_UNAVAILABLE` | NCAAB source | SOURCE_UNAVAILABLE | No |
 | `NCAAB_SCHEDULE_SOURCE_RATE_LIMITED` | NCAAB source | TRANSIENT | No |

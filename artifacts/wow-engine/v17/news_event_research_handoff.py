@@ -72,6 +72,7 @@ def reconcile_news_handoff(
     reviewed_facts: Sequence[Mapping[str, Any]] = (),
     *,
     observed_at: datetime | None = None,
+    source_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Produce one auditable, non-authorizing event-specific news research receipt.
 
@@ -86,10 +87,24 @@ def reconcile_news_handoff(
     sport = event.get("sport_key")
     event_id = event.get("official_event_id")
     kickoff = _utc(event.get("event_start_utc"))
+    # The exact raw artifact checksum originates in the sibling artifact reader.
+    # Direct fixtures may omit it: never assert a raw-byte digest from parsed JSON.
+    raw_sha = (
+        source_receipt_sha256 if isinstance(source_receipt_sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", source_receipt_sha256) else None
+    )
     base = {
         "schema_version": "wow.v17.news_event_research_handoff.v1",
         "sport_key": sport,
         "official_event_id": event_id,
+        "provider_event_id": event.get("provider_event_id"),
+        "canonical_identity_status": event.get("canonical_identity_status"),
+        "official_event_identity_verified": event.get("official_event_identity_verified") is True,
+        "event_start_utc": kickoff.isoformat() if kickoff else None,
+        "research_observed_at_utc": now.isoformat(),
+        "discovery_observed_at_utc": None,
+        "source_receipt_sha256": raw_sha,
+        "discovery_canonical_sha256": None,
         "source_code": discovery.get("source_code"),
         "research_status": "NEWS_INPUT_INVALID",
         "news_context": [],
@@ -113,6 +128,23 @@ def reconcile_news_handoff(
         out["receipt_sha256"] = _hash(out)
         return out
 
+    if source_receipt_sha256 is not None and raw_sha is None:
+        return finish("NEWS_DISCOVERY_DIGEST_INVALID")
+    # Provider event UUIDs are discovery identifiers, not official fixtures.
+    # Existing downstream market routing may still carry a legacy
+    # official_event_id alias; do not let it authenticate news.
+    provider_id = event.get("provider_event_id")
+    if (
+        event.get("official_event_identity_verified") is False
+        or event.get("canonical_identity_status") == "PROVIDER_EVENT_ID_UNVERIFIED"
+        or (
+            isinstance(provider_id, str)
+            and provider_id.strip()
+            and provider_id == event_id
+            and event.get("official_event_identity_verified") is not True
+        )
+    ):
+        return finish("NEWS_CANONICAL_EVENT_UNVERIFIED")
     if not isinstance(sport, str) or not sport or not isinstance(event_id, str) or not event_id or kickoff is None:
         return finish("NEWS_CANONICAL_EVENT_UNVERIFIED")
     if now >= kickoff:
@@ -126,9 +158,16 @@ def reconcile_news_handoff(
     source_seen = _utc(discovery.get("source_observed_at"))
     if source_seen is None or source_seen > now or source_seen >= kickoff:
         return finish("NEWS_DISCOVERY_TIME_INVALID")
+    base["discovery_observed_at_utc"] = source_seen.isoformat()
 
     articles = discovery.get("articles")
     if not isinstance(articles, list):
+        return finish("NEWS_DISCOVERY_SHAPE_INVALID")
+    try:
+        # Canonical parsed-payload fingerprint is distinct from the exact
+        # source_receipt_sha256 of original on-disk bytes; retain BOTH.
+        base["discovery_canonical_sha256"] = _hash(discovery)
+    except (TypeError, ValueError, OverflowError):
         return finish("NEWS_DISCOVERY_SHAPE_INVALID")
     article_urls = {
         article.get("source_url")
@@ -183,6 +222,7 @@ def reconcile_news_handoff(
             "source_class": fact["source_class"],
             "independent_review_ref": str(fact["independent_review_ref"]),
             "publisher_published_at_utc": published.isoformat(),
+            "independently_reviewed_at_utc": reviewed.isoformat(),
             "evidence_kind": fact["evidence_kind"],
             "subject_id": str(fact.get("subject_id") or ""),
             "fact_value": fact["fact_value"],

@@ -123,23 +123,53 @@ def main() -> int:
     sport = args.sport
     policy = "EXPLICIT_SPORT" if sport else "FIXED_ROTATION"
     counts = {}
+    manifest_source = "NOT_REQUESTED"
+    manifest_status = "NOT_REQUESTED"
     if args.candidate_manifest and not sport:
         policy = "SLATE_UNAVAILABLE_FIXED_ROTATION"
+        manifest_source = "UNAVAILABLE"
+        manifest_status = "NEWS_MANIFEST_INVALID"
         try:
             manifest = Path(args.candidate_manifest)
             if manifest.stat().st_size > 64_000_000:
-                raise ValueError("NEWS_MANIFEST_OVERSIZED")
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
+                # Nightly Multi-Scout emits the compact event-only sibling in
+                # its existing acquisition step, before the 500+ MB quote
+                # artifact. We never parse the oversized quote manifest.
+                manifest = manifest.with_name("news-active-slate.json")
+                manifest_source = "COMPACT_SIBLING"
+                if not manifest.exists():
+                    raise ValueError("NEWS_COMPACT_MANIFEST_MISSING")
+                if manifest.stat().st_size > 2_000_000:
+                    raise ValueError("NEWS_COMPACT_MANIFEST_OVERSIZED")
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                if (not isinstance(payload, dict)
+                        or payload.get("schema_version") != "wow.v17.news_slate_selection.v1"
+                        or payload.get("can_execute") is not False):
+                    raise ValueError("NEWS_COMPACT_MANIFEST_INVALID")
+            else:
+                manifest_source = "FULL_SMALL"
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
             selected, counts = select_active_slate(
                 payload, at, tuple(key for key, _ in SPORT_QUERIES))
             if selected:
                 sport = selected
                 policy = "ACTIVE_SLATE_ROTATION"
-        except (OSError, ValueError, UnicodeDecodeError):
-            pass
+                manifest_status = "ACTIVE_SPORT_SELECTED"
+            else:
+                manifest_status = "NEWS_ACTIVE_SLATE_EMPTY"
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            # Expose a *typed* reason, not filesystem paths or raw JSON.
+            code = str(exc)
+            manifest_status = (code if code in {
+                "NEWS_COMPACT_MANIFEST_MISSING",
+                "NEWS_COMPACT_MANIFEST_OVERSIZED",
+                "NEWS_COMPACT_MANIFEST_INVALID",
+            } else "NEWS_MANIFEST_INVALID")
     receipt = discover(at, sport=sport)
     receipt["selection_policy"] = policy
     receipt["slate_active_event_counts"] = counts
+    receipt["slate_manifest_source"] = manifest_source
+    receipt["slate_manifest_status"] = manifest_status
     dest = Path(args.output)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
