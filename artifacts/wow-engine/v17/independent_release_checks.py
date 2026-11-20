@@ -837,20 +837,24 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
             if not isinstance(receipt, dict):
                 findings.append("QA_SOLO_VERIFIED_EVIDENCE_MISSING")
             else:
-                valid_codes = {
-                    "SOLO_R_EVIDENCE_READY",
-                    "SOLO_PROTECTED_EVIDENCE_READY",
-                    "SOLO_EXTERNALLY_ATTESTED_EVIDENCE_READY",
-                }
                 audit = receipt.get("administration_audit")
+                # The solo verifier deliberately NEVER certifies protected P/C
+                # changes. Only a real R-class receipt for exact allowlisted
+                # paths and safe operations may satisfy deterministic QA.
+                # Do not accept hypothetical future protected-ready codes.
                 if (
                     receipt.get("schema_version") != 1
                     or receipt.get("verification_status") != "EVIDENCE_READY"
-                    or receipt.get("code") not in valid_codes
+                    or receipt.get("code") != "SOLO_R_EVIDENCE_READY"
+                    or receipt.get("change_class") != "R"
+                    or not files
+                    or ev.get("zero_credit_disallowed_file_operations")
+                    or any(not isinstance(path, str) or path not in CLASS_A_EXACT_PATHS for path in files)
                     or receipt.get("head_sha") != head
                     or receipt.get("required_check_names") != list(REQUIRED_REGRESSION_CHECKS)
                     or receipt.get("findings") != []
                     or receipt.get("independent_human_review_performed") is not False
+                    or receipt.get("independent_administration_proven") is not False
                     or receipt.get("independent_scientific_acceptance_required") is not True
                     or receipt.get("protected_release_authority_required") is not True
                     or receipt.get("merge_or_release_authorized") is not False
@@ -862,6 +866,8 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                     or audit.get("execution_isolated_from_pr_code") is not True
                     or audit.get("distinct_qa_release_apps") is not True
                     or audit.get("independent_human_review_performed") is not False
+                    or audit.get("independent_administration_proven") is not False
+                    or audit.get("owner_administered_apps") is not True
                 ):
                     findings.append("QA_SOLO_VERIFIED_EVIDENCE_INVALID")
         elif mode == "legacy":
