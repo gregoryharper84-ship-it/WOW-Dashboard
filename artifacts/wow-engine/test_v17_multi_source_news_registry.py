@@ -13,7 +13,7 @@ AT = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
 
 def test_all_requested_providers_visible_with_no_false_activation():
     names = {row["provider"] for row in source_inventory()}
-    assert names == {"GDELT", "ESPN_RSS", "NEWSAPI", "HIGHLIGHTLY",
+    assert names == {"GDELT", "ESPN_RSS", "NEWSAPI",
                      "SPORTSDATAIO_GLOBAL", "ALLSPORTSAPI", "RSS_APP"}
     assert len(SOURCES) == len(names)
     for item in source_inventory():
@@ -89,6 +89,6 @@ def test_espn_invalid_or_unsafe_xml_returns_no_articles(raw):
 
 def test_structured_sources_not_mislabeled_as_headline_publishers():
     with pytest.raises(ValueError, match="NEWS_SOURCE_NOT_EDITORIAL"):
-        source_receipt("HIGHLIGHTLY", [], AT)
+        source_receipt("SPORTSDATAIO_GLOBAL", [], AT)
     with pytest.raises(ValueError, match="NEWS_SOURCE_TIMESTAMP_INVALID"):
         source_receipt("NEWSAPI", [], AT.replace(tzinfo=None))
