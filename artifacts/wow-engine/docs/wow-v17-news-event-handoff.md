@@ -116,3 +116,34 @@ certification or execution authorization is granted. Actual acceptance
 requires a certified specialist's new pregame immutable receipt to bind
 the permitted verified material feature and corresponding source lineage
 at the exact event and model version, with independent readback.
+
+
+## November 20, 2026 — odds-provider IDs are not official event IDs
+
+The nightly odds discovery adapter currently has a legacy `official_event_id`
+field populated from its provider's `/events[].id`. That value is an
+**odds-provider event key**, not an independently verified league event ID.
+It is retained temporarily for backward-compatible research/market
+routing, but every new nightly candidate explicitly also records
+`provider_event_id`, `provider_event_source=ODDS_API`,
+`canonical_identity_status=PROVIDER_EVENT_ID_UNVERIFIED`,
+`canonical_event_id=null`, and
+`official_event_identity_verified=false`.
+
+The news research bridge now blocks `NEWS_CANONICAL_EVENT_UNVERIFIED`
+when an event carries the explicit unverified status/flag or when an
+unverified provider event key equals the claimed official event key.
+A copied `official_event_id` and even an altered Boolean cannot establish
+independent league identity. All source URLs and candidate rows remain
+present; this guard only prevents unverified news-triggered research rescore
+requests. Fitted model routes and release authority are untouched.
+
+This is **not** event-identity restoration. To unlock one event, Engineering
+must produce independent official fixture validation, an exact league event
+ID, immutable source identity and time receipt, plus a distinct provider to
+official mapping; SIRT must verify the independent mapping. Do not
+automatically equate an odds-provider identifier, a fuzzy team match, or a
+market quote with a canonical league ID. The approved verified-ID mapping
+must then reach the Scout event candidate before a research rescore request;
+an authorized independent reviewed-fact record and actual specialist
+rescore are still separate gates.

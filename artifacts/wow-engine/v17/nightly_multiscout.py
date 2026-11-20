@@ -398,7 +398,15 @@ def run() -> dict[str, Any]:
                 break
             event_id = str(event["id"])
             event_identity = {
+                # Legacy handoff key is retained for downstream compatibility.
+                # This is an odds-provider event ID, NOT an authenticated league ID.
+                # No news or specialist can treat it as verified canonical identity.
                 "official_event_id": event_id,
+                "provider_event_id": event_id,
+                "provider_event_source": "ODDS_API",
+                "official_event_identity_verified": False,
+                "canonical_event_id": None,
+                "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
                 "sport_key": key,
                 "sport_title": sport.get("title"),
                 "commence_time": event.get("commence_time"),
@@ -549,7 +557,6 @@ def run() -> dict[str, Any]:
         "can_execute": False,
         "model_handoff_ready": model_handoff_ready,
     }
-
 
 
 def compact_news_slate_manifest(payload: dict[str, Any]) -> dict[str, Any]:

@@ -138,7 +138,12 @@ def test_market_inventory_failure_preserves_team_event_candidate(monkeypatch):
     assert len(payload["model_handoff"]["team_event_candidates"]) == 1
     assert payload["model_handoff"]["prop_candidates"] == []
     candidate = payload["model_handoff"]["team_event_candidates"][0]
-    assert candidate["official_event_id"] == "event-1"
+    assert candidate["official_event_id"] == "event-1"  # legacy alias only
+    assert candidate["provider_event_id"] == "event-1"
+    assert candidate["provider_event_source"] == "ODDS_API"
+    assert candidate["canonical_event_id"] is None
+    assert candidate["canonical_identity_status"] == "PROVIDER_EVENT_ID_UNVERIFIED"
+    assert candidate["official_event_identity_verified"] is False
     assert candidate["route"] == "LLP_TEAM_BETTING_ENGINE"
     assert candidate["market_evidence"] == []
     assert candidate["market_evidence_status"] == "SOURCE_BLOCKED"
@@ -211,7 +216,6 @@ def test_scout_governance_never_promotes_sportsbook_probability():
     assert '"route": "WOW_PROP_LANE"' in source
     assert '"sportsbook_implied_probability_is_model_probability": False' in source
     assert '"can_execute": False' in source
-
 
 def test_compact_news_slate_preserves_every_candidate_without_market_payload():
     from v17.news_active_slate import select_active_slate
