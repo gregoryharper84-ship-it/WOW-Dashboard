@@ -58,6 +58,10 @@ def enrich_candidate(row: dict[str, Any], lane: str, *, public_news: dict[str, A
             {
                 "sport_key": row.get("sport_key"),
                 "official_event_id": row.get("official_event_id"),
+                "provider_event_id": row.get("provider_event_id"),
+                "provider_event_source": row.get("provider_event_source"),
+                "official_event_identity_verified": row.get("official_event_identity_verified"),
+                "canonical_identity_status": row.get("canonical_identity_status"),
                 "event_start_utc": (
                     row.get("event_start_utc")
                     or row.get("commence_time")
