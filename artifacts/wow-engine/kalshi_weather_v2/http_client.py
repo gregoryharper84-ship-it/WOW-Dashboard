@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -64,7 +65,12 @@ class ReadOnlyJsonClient:
         last_detail = "request not attempted"
         for attempt in range(1, self.policy.max_attempts + 1):
             try:
-                response = self.client.get(url, headers=dict(headers or {}), timeout=self.policy.timeout_seconds)
+                kwargs = {}
+                if urlsplit(url).hostname == "api.weather.gov":
+                    # Official forecast URLs must not redirect outside the
+                    # validated destination, including with injected clients.
+                    kwargs["follow_redirects"] = False
+                response = self.client.get(url, headers=dict(headers or {}), timeout=self.policy.timeout_seconds, **kwargs)
             except httpx.TimeoutException as exc:
                 last_detail = f"timeout: {exc.__class__.__name__}"
                 retryable = True

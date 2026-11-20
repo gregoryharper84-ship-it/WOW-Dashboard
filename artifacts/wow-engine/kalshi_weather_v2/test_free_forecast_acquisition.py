@@ -1,0 +1,149 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from urllib.parse import urlsplit
+import pytest
+from kalshi_weather_v2.free_forecast_acquisition import acquire_hourly_forecasts
+from kalshi_weather_v2.http_client import HttpAcquisitionError
+from kalshi_weather_v2.test_hourly_forecast_fusion import contract
+from kalshi_weather_v2.hourly_forecast_fusion import build_hourly_weather_evidence
+
+def getter(calls, fail_secondary=False):
+    def get(url, headers=None):
+        calls.append(url)
+        if '/points/' in url:
+            return {'properties': {'forecastHourly': 'https://api.weather.gov/gridpoints/OKX/33,37/forecast/hourly'}}
+        if urlsplit(url).hostname == 'api.weather.gov':
+            return {'properties': {'generatedAt': '2026-09-10T15:55:00Z', 'periods': [{'startTime': '2026-09-10T17:00:00Z', 'temperature': 82, 'temperatureUnit': 'F'}]}}
+        if fail_secondary:
+            raise HttpAcquisitionError('HTTP_RETRY_EXHAUSTED', url, 'http_status=429')
+        return {'timezone':'GMT', 'utc_offset_seconds':0, 'hourly_units':{'temperature_2m_gfs_seamless':'°F'}, 'hourly':{'time':['2026-09-10T17:00'], 'temperature_2m_gfs_seamless':[81]}}
+    return get
+
+def acquire(get, secondary_enabled=False):
+    return acquire_hourly_forecasts(get, latitude=40.7, longitude=-74, target_date='2026-09-10', models=('gfs_seamless',), retrieved_at='2026-09-10T16:10:00Z', secondary_enabled=secondary_enabled, target_time_utc=datetime(2026, 9, 10, 17, tzinfo=timezone.utc))
+
+def test_default_uses_only_free_official_forecast():
+    calls=[]
+    result=acquire(getter(calls))
+    assert len(calls)==2
+    assert all(url.startswith('https://api.weather.gov/') for url in calls)
+    assert result.secondary is None
+    evidence=build_hourly_weather_evidence(contract=contract(), analysis_time='2026-09-10T16:10:00Z', nws_snapshot=result.nws, open_meteo_snapshot=result.secondary, settlement_source_verified=True, settlement_location_verified=True)
+    assert evidence.central_estimate==82
+    assert not evidence.evidence_complete
+    assert evidence.providers==('NWS',)
+    assert result.warnings==('SECONDARY_FORECAST_DISABLED',)
+
+def test_rate_limit_preserves_nws_evidence():
+    result=acquire(getter([], True), True)
+    assert result.nws.provider=='NWS'
+    assert result.secondary is None
+    assert result.warnings==('SECONDARY_FORECAST_UNAVAILABLE:HTTP_RETRY_EXHAUSTED',)
+
+def test_enabled_secondary_retains_existing_fusion():
+    result=acquire(getter([]), True)
+    assert result.secondary.provider=='OPEN_METEO'
+    assert result.warnings==()
+
+@pytest.mark.parametrize('secondary_time,expected', [
+    ([], 'OPEN_METEO_EXACT_TARGET_MISSING'),
+    (['2026-09-10T18:00'], 'OPEN_METEO_EXACT_TARGET_MISSING'),
+    (None, 'OPEN_METEO_HOURLY_TIMES_INVALID'),
+    ('2026-09-10T17:00', 'OPEN_METEO_HOURLY_TIMES_INVALID'),
+])
+def test_optional_secondary_wrong_hour_or_bad_shape_keeps_nws(secondary_time, expected):
+    calls = []
+    base_get = getter(calls)
+    def malformed_secondary(url, headers=None):
+        payload = base_get(url, headers)
+        if urlsplit(url).hostname == 'api.open-meteo.com':
+            payload['hourly']['time'] = secondary_time
+        return payload
+
+    result = acquire(malformed_secondary, True)
+    assert result.nws.provider == 'NWS'
+    assert result.secondary is None
+    assert result.warnings == ('SECONDARY_FORECAST_UNAVAILABLE:' + expected,)
+    assert len(calls) == 3
+
+
+def test_secondary_enabled_without_attested_target_hour_stays_primary_only():
+    result = acquire_hourly_forecasts(
+        getter([]), latitude=40.7, longitude=-74,
+        target_date='2026-09-10', models=('gfs_seamless',),
+        retrieved_at='2026-09-10T16:10:00Z', secondary_enabled=True,
+    )
+    assert result.nws.provider == 'NWS'
+    assert result.secondary is None
+    assert result.warnings == (
+        'SECONDARY_FORECAST_UNAVAILABLE:OPEN_METEO_TARGET_UNVERIFIED',
+    )
+
+
+def test_primary_failure_is_not_filled_with_secondary():
+    def fail(url, headers=None):
+        raise HttpAcquisitionError('HTTP_RETRY_EXHAUSTED',url,'http_status=503')
+    with pytest.raises(HttpAcquisitionError):
+        acquire(fail, True)
+
+def test_untrusted_forecast_url_is_rejected_before_fetch():
+    calls=[]
+    def get(url, headers=None):
+        calls.append(url)
+        return {'properties':{'forecastHourly':'https://api.weather.gov.evil.test/forecast'}}
+    with pytest.raises(ValueError, match='NWS_FORECAST_URL_INVALID') as caught:
+        acquire(get)
+    assert len(calls)==1
+    assert caught.value.code == 'NWS_POINT_METADATA_INVALID'
+    assert caught.value.blockers == ('NWS_FORECAST_URL_INVALID',)
+
+def test_official_forecast_cannot_redirect_to_another_host():
+    import httpx
+    from kalshi_weather_v2.http_client import ReadOnlyJsonClient
+    seen=[]
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={'Location':'https://untrusted.invalid/private'})
+    client=ReadOnlyJsonClient(client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True))
+    with pytest.raises(HttpAcquisitionError):
+        client.get_json('https://api.weather.gov/points/40.7,-74')
+    assert seen==['https://api.weather.gov/points/40.7,-74']
+
+@pytest.mark.parametrize('secondary_enabled', [False, True])
+@pytest.mark.parametrize('secondary_shape', ['429', 'empty', 'wrong_hour', 'wrong_units', 'null_time', 'not_list_time'])
+def test_runtime_persists_primary_only_capture_without_publication(monkeypatch, secondary_enabled, secondary_shape):
+    import kalshi_weather_v2.runtime as runtime
+    saved = {'sources': [], 'predictions': []}
+    class Persistence:
+        def __init__(self, client): pass
+        def persist_rule_package(self, rules): pass
+        def persist_source_snapshot(self, **kwargs): saved['sources'].append(kwargs['snapshot'].provider)
+        def persist_settlement_twin(self, twin): pass
+        def load_latest_certified_calibration(self, **kwargs):
+            raise AssertionError('incomplete evidence must not reuse calibration')
+        def load_runtime_capability(self): return {'capability_status': 'AVAILABLE'}
+        def persist_prediction(self, **kwargs): saved['predictions'].append(kwargs)
+    monkeypatch.setattr(runtime, 'KalshiWeatherPersistence', Persistence)
+    monkeypatch.setattr(runtime, 'build_atomic_temperature_twin', lambda **kwargs: object())
+    monkeypatch.setenv('WOW_KALSHI_WEATHER_OPEN_METEO_ENABLED', '1' if secondary_enabled else '0')
+    rules=SimpleNamespace(market_rules=SimpleNamespace(ticker='KXTEMPNYCHS-TEST', rule_snapshot_id='rule-1'), settlement_source=SimpleNamespace(url='https://example.invalid/settlement'))
+    parsed=SimpleNamespace(ticker='KXTEMPNYCHS-TEST', index_city='nyc', rule_snapshot_id='rule-1', observation_time_utc='2026-09-10T17:00:00Z', to_contract_snapshot=lambda _: contract())
+    calls=[]
+    base_get=getter(calls, secondary_shape=='429')
+    def get(url, headers=None):
+        payload=base_get(url, headers)
+        if urlsplit(url).hostname=='api.open-meteo.com':
+            if secondary_shape=='empty': payload['hourly']['time']=[]
+            if secondary_shape=='null_time': payload['hourly']['time']=None
+            if secondary_shape=='not_list_time': payload['hourly']['time']='2026-09-10T17:00'
+            if secondary_shape=='wrong_hour': payload['hourly']['time']=['2026-09-10T18:00']
+            if secondary_shape=='wrong_units': payload['hourly_units']['temperature_2m_gfs_seamless']='°C'
+        return payload
+    result=runtime.capture_hourly_shadow(client=object(), ticker='KXTEMPNYCHS-TEST', index_city='nyc', expected_location='New York City', forecast_latitude=40.7, forecast_longitude=-74, decision_time='2026-09-10T16:10:00Z', preacquired_rules=rules, preparsed_rule=parsed, http=SimpleNamespace(get_json=get))
+    assert result['status']=='SHADOW_CAPTURED'
+    assert result['p_yes'] is None and result['p_no'] is None
+    assert not result['probability_publishable'] and not result['can_execute']
+    assert saved['sources'][:2]==['NWS', 'NWS']
+    assert len(saved['predictions'])==1
+    assert saved['predictions'][0]['calibration_profile_id'] is None
+    assert not saved['predictions'][0]['evidence'].evidence_complete
