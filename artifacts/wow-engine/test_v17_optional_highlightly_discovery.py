@@ -104,3 +104,15 @@ def test_rotation_is_deterministic_and_aware():
     assert select_prefix(now) == select_prefix(now)
     with pytest.raises(ValueError):
         select_prefix(now.replace(tzinfo=None))
+
+
+def test_existing_scout_workflow_is_opt_in_with_a_receipt():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-scout-source-refresh.yml").read_text()
+    assert "WOW_HIGHLIGHTLY_ENABLED: ${{ vars.WOW_HIGHLIGHTLY_ENABLED || 'false' }}" in workflow
+    assert "WOW_HIGHLIGHTLY_SOURCE_ALLOWED: ${{ vars.WOW_HIGHLIGHTLY_SOURCE_ALLOWED || 'false' }}" in workflow
+    assert "secrets.WOW_HIGHLIGHTLY_API_KEY" in workflow
+    assert "python v17/optional_highlightly_discovery.py" in workflow
+    assert "Upload optional Highlightly discovery receipt" in workflow
+    assert "continue-on-error: true" in workflow
