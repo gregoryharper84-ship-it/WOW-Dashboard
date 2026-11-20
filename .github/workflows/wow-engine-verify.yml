@@ -222,8 +222,8 @@ jobs:
           assert isinstance(render, dict)
           services = render.get("services", [])
           by_name = {item["name"]: item for item in services}
-          assert len(services) == 4
-          assert set(by_name) == {"wow-jobs", "wow-governed-probability-engine", "wow-agent-worker", "wow-sirt-external-sentinel"}
+          assert len(services) == 5
+          assert set(by_name) == {"wow-jobs", "wow-governed-probability-engine", "wow-agent-worker", "wow-sirt-external-sentinel", "wow-v17-dispatcher-slot-recovery"}
 
           queue = by_name["wow-jobs"]
           assert queue["type"] == "keyvalue"
@@ -284,6 +284,29 @@ jobs:
           assert sentinel_env["WOW_CAN_EXECUTE"]["value"] == "false"
           assert sentinel_env["WOW_DRY_RUN_ONLY"]["value"] == "true"
           assert sentinel_env["WOW_ENVIRONMENT"]["value"] == "production"
+
+          # Off-GitHub dispatcher slot recovery (#1021) is wake-only and manually promoted:
+          # one repo-scoped GitHub token, no Supabase or provider credentials.
+          recovery = by_name["wow-v17-dispatcher-slot-recovery"]
+          assert recovery["type"] == "cron"
+          assert recovery["runtime"] == "python"
+          assert recovery["plan"] == "starter"
+          assert recovery["rootDir"] == "artifacts/wow-engine"
+          assert recovery["schedule"] == "*/15 * * * *"
+          assert recovery["buildCommand"] == "pip install -r requirements.txt"
+          assert recovery["startCommand"] == "python -m v17.engineering_dispatch_slot_recovery"
+          assert recovery["autoDeployTrigger"] == "off"
+          recovery_env = {item["key"]: item for item in recovery["envVars"]}
+          assert set(recovery_env) == {
+              "PYTHON_VERSION", "WOW_DISPATCH_GITHUB_TOKEN",
+              "WOW_CAN_EXECUTE", "WOW_DRY_RUN_ONLY", "WOW_ENVIRONMENT",
+          }
+          assert recovery_env["PYTHON_VERSION"]["value"] == "3.11.11"
+          assert recovery_env["WOW_DISPATCH_GITHUB_TOKEN"]["sync"] is False
+          assert "value" not in recovery_env["WOW_DISPATCH_GITHUB_TOKEN"]
+          assert recovery_env["WOW_CAN_EXECUTE"]["value"] == "false"
+          assert recovery_env["WOW_DRY_RUN_ONLY"]["value"] == "true"
+          assert recovery_env["WOW_ENVIRONMENT"]["value"] == "production"
 
           event_schema = Path("event_schema.sql").read_text()
           assert "create table if not exists wow_event_predictions" in event_schema.lower()

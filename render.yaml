@@ -245,3 +245,33 @@ services:
         value: "true"
       - key: WOW_ENVIRONMENT
         value: "production"
+
+  # Off-GitHub dispatcher slot recovery (#1021), wake-only. GitHub's scheduler
+  # fires the provider dispatcher's hourly cron only 4-5 times a day, which
+  # stalls the only automatic engineering entrypoint. Every 15 minutes this
+  # replays a missed hourly slot by calling workflow_dispatch on main with the
+  # routing a scheduled run resolves to (force_provider=auto, lease=GLOBAL).
+  # It never enables, disables, cancels, or re-runs a workflow and never picks
+  # a provider, incident, or lease. Token: fine-grained, this repository only,
+  # Actions read/write. Not auto-deployed: creation stays owner-authorized.
+  - type: cron
+    name: wow-v17-dispatcher-slot-recovery
+    runtime: python
+    plan: starter
+    region: oregon
+    rootDir: artifacts/wow-engine
+    schedule: "*/15 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m v17.engineering_dispatch_slot_recovery
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: WOW_DISPATCH_GITHUB_TOKEN
+        sync: false
+      - key: WOW_CAN_EXECUTE
+        value: "false"
+      - key: WOW_DRY_RUN_ONLY
+        value: "true"
+      - key: WOW_ENVIRONMENT
+        value: "production"
