@@ -152,6 +152,409 @@ class HttpAttributionTests(unittest.TestCase):
             stderr.getvalue())
         self.assertNotIn("not found", stderr.getvalue())
 
+    def test_ambiguous_provider_rejection_names_category_and_parameter(self):
+        """A Claude 400 must be attributable without changing its decision."""
+        import contextlib
+        body = {"error": {"type": "invalid_request_error",
+                          "param": "tools.0.input_schema",
+                          "message": "SECRET provider detail"}}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.Hold) as error:
+                fail(ANTHROPIC, 400, body, data={"model": "claude-sonnet-4-6"},
+                     headers={"x-api-key": "k"})
+        self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+        self.assertEqual(str(error.exception), "HTTP_400")
+        self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_400:"
+                      "ANTHROPIC_API:POST:MESSAGES:"
+                      "ERROR_TYPE_INVALID_REQUEST_ERROR:PARAM_TOOLS",
+                      stderr.getvalue())
+        self.assertNotIn("SECRET", stderr.getvalue())
+        self.assertNotIn("input_schema", stderr.getvalue())
+
+    def test_gemini_structured_rejection_status_is_diagnostic_only(self):
+        import contextlib
+        body = {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                          "message": "SECRET provider detail"}}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.Hold) as error:
+                fail(GEMINI, 400, body, data={"contents": []})
+        self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+        self.assertEqual(str(error.exception), "HTTP_400")
+        self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_400:"
+                      "GEMINI_API:POST:GENERATE_CONTENT:STATUS_INVALID_ARGUMENT",
+                      stderr.getvalue())
+        self.assertNotIn("SECRET", stderr.getvalue())
+
+    def test_unknown_provider_rejection_text_is_never_emitted(self):
+        import contextlib
+        body = {"error": {"type": "SECRET_TYPE", "param": "SECRET_PARAM",
+                          "status": "SECRET_STATUS", "message": "SECRET"}}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.Hold):
+                fail(ANTHROPIC, 400, body, data={})
+        output = stderr.getvalue()
+        self.assertIn("ERROR_TYPE_UNCLASSIFIED:PARAM_UNCLASSIFIED:"
+                      "STATUS_UNCLASSIFIED", output)
+        self.assertNotIn("SECRET", output)
+
+    def test_non_object_provider_rejection_body_stays_unclassified(self):
+        self.assertEqual(m.provider_rejection_label([]), "ERROR_UNCLASSIFIED")
+        self.assertEqual(m.provider_rejection_label({"error": "malformed"}),
+                         "ERROR_UNCLASSIFIED")
+        self.assertEqual(m.provider_rejection_label({"error": {"type": "x"}}),
+                         "ERROR_TYPE_UNCLASSIFIED")
+
+    def test_truncated_provider_error_body_keeps_status_based_decision(self):
+        """A broken chunk must not interrupt 429/503 reviewer-provider fallback."""
+        import contextlib
+        from http.client import IncompleteRead
+
+        class BrokenBody:
+            def read(self, _limit):
+                raise IncompleteRead(b"SECRET PARTIAL BODY", 100)
+
+        for url, code, expected in (
+            (ANTHROPIC, 429, "PROVIDER_HTTP_429"),
+            (GEMINI, 503, "PROVIDER_HTTP_503"),
+        ):
+            with self.subTest(url=url, status=code):
+                error = HTTPError(url, code, "broken", {}, BrokenBody())
+                stderr = io.StringIO()
+                with patch.object(m.HTTP_CLIENT, "open", side_effect=error):
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(m.ProviderUnavailable) as outcome:
+                            m.request_json(url, data={"model": "approved"}, headers={})
+                self.assertEqual(str(outcome.exception), expected)
+                self.assertIn("ERROR_UNCLASSIFIED", stderr.getvalue())
+                self.assertNotIn("SECRET", stderr.getvalue())
+                self.assertNotIn("PARTIAL BODY", stderr.getvalue())
+
+    def test_broken_diagnostic_body_keeps_typed_status_and_fails_closed(self):
+        """HTTPException and deep JSON must not change provider fallback typing."""
+        import contextlib
+        from http.client import LineTooLong
+
+        class BrokenBody:
+            def __init__(self, error):
+                self.error = error
+
+            def read(self, _limit):
+                raise self.error
+
+        for error in (LineTooLong("SECRET malformed chunk"),
+                      RecursionError("SECRET deeply nested JSON")):
+            for url, code, expected in (
+                (ANTHROPIC, 429, "PROVIDER_HTTP_429"),
+                (GEMINI, 503, "PROVIDER_HTTP_503"),
+            ):
+                with self.subTest(code=code, error=type(error).__name__):
+                    denied = HTTPError(url, code, "SECRET", {}, BrokenBody(error))
+                    output = io.StringIO()
+                    with patch.object(m.HTTP_CLIENT, "open", side_effect=denied):
+                        with contextlib.redirect_stderr(output):
+                            with self.assertRaises(m.ProviderUnavailable) as result:
+                                m.request_json(url, data={"model": "approved"})
+                    self.assertEqual(str(result.exception), expected)
+                    self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:", output.getvalue())
+                    self.assertNotIn("SECRET", output.getvalue())
+
+    def test_github_403_body_http_exception_remains_hold_without_retry(self):
+        import contextlib
+        from http.client import LineTooLong
+
+        class BrokenBody:
+            def read(self, _limit):
+                raise LineTooLong("SECRET malformed chunk")
+
+        url = GITHUB + "/pulls/2382"
+        denied = HTTPError(url, 403, "SECRET", {}, BrokenBody())
+        output = io.StringIO()
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=denied) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(output):
+                    with self.assertRaises(m.Hold) as result:
+                        m.request_json(url, token="SECRET_TOKEN")
+        self.assertEqual(str(result.exception), "HTTP_403")
+        self.assertEqual(opened.call_count, 1)
+        sleep.assert_not_called()
+        self.assertIn("GITHUB_API:GET:PR_METADATA:UNCLASSIFIED", output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_rate_limit_rejection_is_attributed_and_still_fallback_eligible(self):
+        import contextlib
+        body = {"type": "error",
+                "error": {"type": "rate_limit_error", "message": "SECRET"}}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.ProviderUnavailable) as error:
+                fail(ANTHROPIC, 429, body, data={"model": "claude-sonnet-4-6"},
+                     headers={"x-api-key": "k"})
+        self.assertEqual(str(error.exception), "PROVIDER_HTTP_429")
+        self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_429:"
+                      "ANTHROPIC_API:POST:MESSAGES:"
+                      "ERROR_TYPE_RATE_LIMIT_ERROR", stderr.getvalue())
+        self.assertNotIn("SECRET", stderr.getvalue())
+
+    def test_upstream_5xx_is_attributed_without_changing_fallback(self):
+        import contextlib
+        for status, url, body, data, expected in (
+            (529, ANTHROPIC, {"error": {"type": "overloaded_error"}},
+             {"model": "claude-sonnet-4-6"}, "ERROR_TYPE_OVERLOADED_ERROR"),
+            (503, GEMINI, {"error": {"code": 503, "status": "UNAVAILABLE"}},
+             {"contents": []}, "STATUS_UNAVAILABLE"),
+        ):
+            with self.subTest(status=status):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(m.ProviderUnavailable) as error:
+                        fail(url, status, body, data=data, headers={})
+                self.assertEqual(str(error.exception),
+                                 "PROVIDER_HTTP_" + str(status))
+                self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_"
+                              + str(status) + ":", stderr.getvalue())
+                self.assertIn(expected, stderr.getvalue())
+
+    def test_non_retryable_5xx_stays_hold_even_when_attributed(self):
+        import contextlib
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.Hold) as error:
+                fail(ANTHROPIC, 501, {"error": {"type": "api_error"}}, data={})
+        self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+        self.assertEqual(str(error.exception), "HTTP_501")
+        self.assertIn("HTTP_501:ANTHROPIC_API:POST:MESSAGES:"
+                      "ERROR_TYPE_API_ERROR", stderr.getvalue())
+
+    def test_github_5xx_is_never_labelled_with_provider_vocabulary(self):
+        import contextlib
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.Hold) as error:
+                fail(GITHUB + "/pulls/2291", 502, {"message": "Bad Gateway"})
+        self.assertEqual(str(error.exception), "HTTP_502")
+        self.assertNotIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC", stderr.getvalue())
+        self.assertIn("REVIEW_HTTP_DIAGNOSTIC:HTTP_502:"
+                      "GITHUB_API:GET:PR_METADATA", stderr.getvalue())
+
+    def test_provider_metadata_get_rate_limit_is_attributed_but_not_fallback(self):
+        import contextlib
+        for url, label, body, expected in (
+            ("https://api.anthropic.com/v1/models?limit=1000",
+             "ANTHROPIC_API:GET:MODEL_CATALOG",
+             {"error": {"type": "rate_limit_error"}},
+             "ERROR_TYPE_RATE_LIMIT_ERROR"),
+            ("https://generativelanguage.googleapis.com/v1beta/models"
+             "/gemini-3.8-flash", "GEMINI_API:GET:MODEL_METADATA",
+             {"error": {"code": 503, "status": "UNAVAILABLE"}},
+             "STATUS_UNAVAILABLE"),
+        ):
+            with self.subTest(url=url):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(m.Hold) as error:
+                        fail(url, 429 if "anthropic" in url else 503, body)
+                self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+                self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:",
+                              stderr.getvalue())
+                self.assertIn(label + ":" + expected, stderr.getvalue())
+
+    def test_attribution_composes_with_gemini_429_model_rollover(self):
+        """#2382 rotates on 429; the diagnostic must label each attempt, not block it."""
+        import contextlib
+        verdict = {"source_review": "PASS", "security_review": "PASS",
+                   "probability_integrity_review": "PASS", "findings": []}
+        good = json.dumps({"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}).encode()
+        rate_limited = json.dumps({"error": {"code": 429,
+                                             "status": "RESOURCE_EXHAUSTED",
+                                             "message": "SECRET"}}).encode()
+        calls = []
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            if "gemini-3.8-flash" in request.full_url:
+                raise HTTPError(request.full_url, 429, "rate limited", {},
+                                io.BytesIO(rate_limited))
+            return contextlib.nullcontext(
+                type("R", (), {"read": lambda self, n: good})())
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), \
+             patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "review_models",
+                          return_value=["gemini-3.8-flash", "gemini-3.6-flash"]), \
+             patch.object(m, "HTTP_CLIENT") as client:
+            client.open.side_effect = fake_open
+            decision, payload = m.call_provider("gemini-generative-api", "key", "diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("gemini-3.8-flash", calls[0])
+        self.assertIn("gemini-3.6-flash", calls[1])
+        output = stderr.getvalue()
+        self.assertIn("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_429:"
+                      "GEMINI_API:POST:GENERATE_CONTENT:STATUS_RESOURCE_EXHAUSTED",
+                      output)
+        self.assertIn("REVIEW_GEMINI_MODEL_RATE_LIMITED:gemini-3.8-flash", output)
+        self.assertNotIn("SECRET", output)
+
+    def test_429_without_structured_body_is_still_typed_unavailable(self):
+        import contextlib
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(m.ProviderUnavailable) as error:
+                fail(ANTHROPIC, 429, [], data={})
+        self.assertEqual(str(error.exception), "PROVIDER_HTTP_429")
+        self.assertIn("HTTP_429:ANTHROPIC_API:POST:MESSAGES:ERROR_UNCLASSIFIED",
+                      stderr.getvalue())
+
+    def test_github_403_distinguishes_rate_limit_permission_and_unknown(self):
+        """Diagnostic-only evidence, never a retry, approval, or raw-header log."""
+        import contextlib
+        cases = (
+            ({"X-RateLimit-Remaining": "0"}, {"message": "SECRET"},
+             "PRIMARY_RATE_LIMIT"),
+            ({}, {"message": "You have exceeded a secondary rate limit. SECRET"},
+             "SECONDARY_RATE_LIMIT"),
+            ({}, {"message": "Resource not accessible by integration"},
+             "CREDENTIAL_PERMISSION_DENIED"),
+            ({"Retry-After": "120"}, {"message": "SECRET"},
+             "RETRY_AFTER_PRESENT"),
+            ({}, {"message": "SECRET unknown GitHub denial"}, "UNCLASSIFIED"),
+        )
+        url = GITHUB + "/pulls/2375"
+        for headers, body, label in cases:
+            with self.subTest(label=label):
+                error = HTTPError(url, 403, "SECRET HTTP reason", headers,
+                                  io.BytesIO(json.dumps(body).encode()))
+                output = io.StringIO()
+                with patch.object(m.HTTP_CLIENT, "open", side_effect=error) as opened:
+                    with patch.object(m.time, "sleep") as sleep:
+                        with contextlib.redirect_stderr(output):
+                            with self.assertRaises(m.Hold) as raised:
+                                m.request_json(url, token="SECRET_TOKEN")
+                if label in ("PRIMARY_RATE_LIMIT", "SECONDARY_RATE_LIMIT"):
+                    sleep.assert_called_once_with(60)
+                    self.assertEqual(opened.call_count, 2)
+                else:
+                    sleep.assert_not_called()
+                    self.assertEqual(opened.call_count, 1)
+                self.assertNotIsInstance(raised.exception, m.ProviderUnavailable)
+                self.assertEqual(str(raised.exception), "HTTP_403")
+                self.assertIn("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_403:"
+                              "GITHUB_API:GET:PR_METADATA:" + label, output.getvalue())
+                self.assertNotIn("SECRET", output.getvalue())
+                self.assertNotIn("120", output.getvalue())
+                self.assertNotIn(url, output.getvalue())
+
+    def test_github_read_only_rate_limit_retries_once_with_exact_auth(self):
+        """A proved GitHub rate limit gets one paced GET, never a silent PASS."""
+        import contextlib
+        url = GITHUB + "/pulls/2382"
+        for reason_headers, message in (
+            ({"X-RateLimit-Remaining": "0"}, "SECRET exhaustion"),
+            ({}, "You have exceeded a secondary rate limit. SECRET"),
+        ):
+            with self.subTest(headers=reason_headers):
+                denied = HTTPError(url, 403, "SECRET", reason_headers,
+                                   io.BytesIO(json.dumps({"message": message}).encode()))
+                success = io.BytesIO(b'{"head":{"sha":"abc"}}')
+                output = io.StringIO()
+                with patch.object(m.HTTP_CLIENT, "open",
+                                  side_effect=[denied, success]) as opened:
+                    with patch.object(m.time, "sleep") as sleep:
+                        with contextlib.redirect_stderr(output):
+                            result = m.request_json(url, token="SECRET_TOKEN")
+                self.assertEqual(result, {"head": {"sha": "abc"}})
+                self.assertEqual(opened.call_count, 2)
+                sleep.assert_called_once_with(60)
+                self.assertEqual(opened.call_args_list[0].args[0].get_header(
+                    "Authorization"), "Bearer SECRET_TOKEN")
+                self.assertEqual(opened.call_args_list[1].args[0].get_header(
+                    "Authorization"), "Bearer SECRET_TOKEN")
+                self.assertIn("REVIEW_GITHUB_READ_RETRY_ONCE:", output.getvalue())
+                self.assertNotIn("SECRET", output.getvalue())
+                self.assertNotIn(url, output.getvalue())
+
+    def test_github_get_second_rate_limit_fails_closed_without_third_attempt(self):
+        import contextlib
+        url = GITHUB + "/pulls/2382"
+        def limit():
+            return HTTPError(url, 403, "SECRET",
+                             {"X-RateLimit-Remaining": "0"},
+                             io.BytesIO(b'{"message":"rate limit"}'))
+        output = io.StringIO()
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=[limit(), limit()]) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(output):
+                    with self.assertRaises(m.Hold) as err:
+                        m.request_json(url, token="SECRET_TOKEN")
+        self.assertEqual(str(err.exception), "HTTP_403")
+        self.assertEqual(opened.call_count, 2)
+        sleep.assert_called_once_with(60)
+        self.assertEqual(output.getvalue().count("REVIEW_GITHUB_READ_RETRY_ONCE:"), 1)
+
+    def test_github_permission_or_ambiguous_403_never_retries(self):
+        import contextlib
+        url = GITHUB + "/pulls/2382"
+        for body in (
+            {"message": "Resource not accessible by integration"},
+            {"message": "SECRET unknown 403"},
+        ):
+            with self.subTest(body=body):
+                denied = HTTPError(url, 403, "SECRET", {},
+                                   io.BytesIO(json.dumps(body).encode()))
+                with patch.object(m.HTTP_CLIENT, "open",
+                                  side_effect=denied) as opened:
+                    with patch.object(m.time, "sleep") as sleep:
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            with self.assertRaises(m.Hold) as err:
+                                m.request_json(url, token="SECRET_TOKEN")
+                self.assertEqual(str(err.exception), "HTTP_403")
+                self.assertEqual(opened.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_github_check_publication_never_retries_rate_limit(self):
+        import contextlib
+        url = GITHUB + "/check-runs"
+        denied = HTTPError(url, 429, "SECRET", {},
+                           io.BytesIO(b'{"message":"secondary rate limit"}'))
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=denied) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(m.Hold) as err:
+                        m.request_json(url, token="SECRET_TOKEN", data={"name": "check"})
+        self.assertEqual(str(err.exception), "HTTP_429")
+        self.assertEqual(opened.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_github_429_keeps_hold_and_reports_secondary_limit(self):
+        import contextlib
+        url = GITHUB + "/pulls/2375"
+        error = HTTPError(
+            url, 429, "SECRET", {},
+            io.BytesIO(json.dumps({
+                "message": "You have exceeded a secondary rate limit. SECRET"
+            }).encode()))
+        output = io.StringIO()
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=error) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(output):
+                    with self.assertRaises(m.Hold) as raised:
+                        m.request_json(url, token="SECRET_TOKEN")
+        sleep.assert_called_once_with(60)
+        self.assertEqual(opened.call_count, 2)
+        self.assertNotIsInstance(raised.exception, m.ProviderUnavailable)
+        self.assertEqual(str(raised.exception), "HTTP_429")
+        self.assertIn("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_429:"
+                      "GITHUB_API:GET:PR_METADATA:SECONDARY_RATE_LIMIT",
+                      output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
     def test_transport_and_json_failures_keep_their_original_cause(self):
         from urllib.error import URLError
         with patch.object(m.HTTP_CLIENT, "open", side_effect=URLError("boom")):
