@@ -697,3 +697,34 @@ def test_daily_snapshot_reports_stage_progression_and_held_scoring_run_status(mo
     lane_rec = result["lane_reconciliation"]["MONEYLINE"]
     assert lane_rec["scoring_run_status"] == "ALL_HELD_ZERO_EVALUATED"
 
+
+def test_stage_monitor_rejects_forged_certification_assertions():
+    from v17.daily_snapshot_runtime import _is_row_certified
+    alleged = [
+        {"certified": True}, {"model_certified": True},
+        {"certification_status": "PASS"}, {"certification_id": "fake-id"},
+        {"certification_receipt": {"status": "CERTIFIED"}},
+    ]
+    for values in alleged:
+        row = {"lane": "MONEYLINE", "row_status": "HELD", "result": {
+            "model_invoked": True, "code": "UNKNOWN", **values,
+        }}
+        assert _is_row_certified(row, evaluated=True) is False
+
+
+def test_stage_monitor_unknown_result_is_not_verified_hydration():
+    from v17.daily_snapshot_runtime import _is_row_hydrated
+    row = {"result": {"code": "UNKNOWN", "model_invoked": True}}
+    assert _is_row_hydrated(row)[0] is False
+
+
+def test_stage_monitor_distinguishes_verified_hydration_from_missing_model():
+    from v17.daily_snapshot_runtime import _is_row_hydrated, _is_row_model_evaluated
+    row = {"result": {
+        "code": "MODEL_UNAVAILABLE",
+        "feature_consumption_receipt": {
+            "consumption_verification_status": "VERIFIED", "receipt_complete": True,
+        },
+    }}
+    assert _is_row_hydrated(row)[0] is True
+    assert _is_row_model_evaluated(row, hydrated=True) is False
