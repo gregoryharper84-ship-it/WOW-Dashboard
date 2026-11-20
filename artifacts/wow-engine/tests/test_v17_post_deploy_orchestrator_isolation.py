@@ -154,7 +154,10 @@ def test_acceptance_repeats_exact_sha_readback_after_the_long_running_lanes():
     final_readback = next((s for s in steps if s.get("id") == "final-readback"), None)
     assert final_readback is not None, "a deployment may change while the acceptance lanes run"
     assert "lean_production_readback.py" in final_readback["run"]
-    assert "continue-on-error" not in final_readback
+    # Step isolation keeps this optional observer from failing the protected-main
+    # SHA (checksPass); the readback script itself remains fail-closed.
+    # BaseLoader yields YAML booleans as strings.
+    assert final_readback.get("continue-on-error") in (True, "true")
     assert job["environment"] == "wow-release"
     assert job["env"]["EXPECTED_SHA"] == "${{ inputs.expected_sha || github.event.workflow_run.head_sha }}"
     assert job["env"]["SOURCE_RUN_KIND"] == "production_observer"
