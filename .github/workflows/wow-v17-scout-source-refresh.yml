@@ -27,10 +27,6 @@ jobs:
       WOW_FIRECRAWL_TARGETS_JSON: ${{ vars.WOW_FIRECRAWL_TARGETS_JSON || '[]' }}
       # Public GDELT Project research needs no API key, license flag or DB.
       WOW_CAN_EXECUTE: "false"
-      # Optional source: no calls without explicit opt-in, rights review and API key.
-      WOW_HIGHLIGHTLY_ENABLED: ${{ vars.WOW_HIGHLIGHTLY_ENABLED || 'false' }}
-      WOW_HIGHLIGHTLY_SOURCE_ALLOWED: ${{ vars.WOW_HIGHLIGHTLY_SOURCE_ALLOWED || 'false' }}
-      WOW_HIGHLIGHTLY_API_KEY: ${{ secrets.WOW_HIGHLIGHTLY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -71,28 +67,6 @@ jobs:
         with:
           name: wow-v17-gdelt-public-news-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/gdelt-public-news/receipt.json
-          if-no-files-found: warn
-          retention-days: 90
-      - name: Optional Highlightly structured discovery (read-only, disabled by default)
-        continue-on-error: true
-        run: |
-          mkdir -p "$RUNNER_TEMP/highlightly-source"
-          python v17/optional_highlightly_discovery.py --output "$RUNNER_TEMP/highlightly-source/receipt.json"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          receipt = json.loads((Path(os.environ["RUNNER_TEMP"]) / "highlightly-source" / "receipt.json").read_text())
-          code = receipt["source_code"]
-          print(f'WOW_HIGHLIGHTLY_STATUS={receipt["source_status"]} code={code} matches={receipt["match_count"]} calls={receipt["request_count"]}')
-          if code not in ("SOURCE_FETCH_OK", "SOURCE_DISABLED"):
-              print(f"::warning title=Optional Highlightly Not Ready::{code}")
-          PY
-      - name: Upload optional Highlightly discovery receipt
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: wow-v17-highlightly-research-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/highlightly-source/receipt.json
           if-no-files-found: warn
           retention-days: 90
       - name: Check source credentials
