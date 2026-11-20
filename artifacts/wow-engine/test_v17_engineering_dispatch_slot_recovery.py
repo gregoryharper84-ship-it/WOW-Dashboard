@@ -9,19 +9,22 @@ import yaml
 from v17 import engineering_dispatch_slot_recovery as recovery
 
 ROOT = Path(__file__).resolve().parents[2]
-NOW = datetime(2026, 11, 20, 4, 30, tzinfo=timezone.utc)
+# Native slot is 04:17 (dispatcher cron "17 * * * *"); NOW is 28 minutes past it.
+SLOT = datetime(2026, 11, 20, 4, 17, tzinfo=timezone.utc)
+NOW = SLOT + timedelta(minutes=28)
 REPO = recovery.REPOSITORY
 WF = recovery.DISPATCHER_WORKFLOW
 WORKFLOW_PATH = f"/repos/{REPO}/actions/workflows/{WF}"
-RUNS_PATH = f"{WORKFLOW_PATH}/runs?per_page=100"
+RUNS_PATH = f"{WORKFLOW_PATH}/runs?branch=main&per_page=100"
 DISPATCH_PATH = f"{WORKFLOW_PATH}/dispatches"
 
 
-def _run(minutes_ago, lease="GLOBAL", status="completed", event="schedule"):
-    created = (NOW - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _run(minutes_ago, lease="GLOBAL", status="completed", event="schedule", branch="main", now=NOW):
+    created = (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "event": event,
         "status": status,
+        "head_branch": branch,
         "created_at": created,
         "display_title": (
             f"WOW V17 provider source=manual lease={lease} incident=AUTO resident=NONE"
@@ -69,11 +72,43 @@ def test_missed_slot_dispatches_default_lane_on_main_with_auto_inputs():
     assert result["can_execute"] is False
 
 
-def test_recent_default_lane_run_means_slot_not_due():
+def test_default_lane_run_since_the_slot_means_it_was_served():
     gh = FakeGitHub(runs=[_run(20, event="workflow_dispatch"), _run(90)])
     result = recovery.run_once("tok", now=NOW, http=gh)
     assert result["status"] == "SLOT_NOT_DUE"
     assert gh.dispatches == []
+
+
+def test_run_just_before_the_slot_does_not_serve_it():
+    # Completed 03:17-slot run, native 04:17 slot not seen by 04:45 -> recover 04:17.
+    gh = FakeGitHub(runs=[_run(88), _run(35, event="workflow_run")])
+    assert recovery.run_once("tok", now=NOW, http=gh)["status"] == "DISPATCHED"
+
+
+@pytest.mark.parametrize("minutes_past_slot,expected", [
+    (0, "SLOT_NOT_DUE"), (13, "SLOT_NOT_DUE"), (24, "SLOT_NOT_DUE"),   # native grace
+    (25, "DISPATCHED"), (45, "DISPATCHED"),                            # recovery window
+    (46, "SLOT_NOT_DUE"), (58, "SLOT_NOT_DUE"),                        # too close to next native slot
+])
+def test_recovery_only_inside_the_overdue_window_of_the_native_slot(minutes_past_slot, expected):
+    now = SLOT + timedelta(minutes=minutes_past_slot)
+    gh = FakeGitHub(runs=[_run(30, now=SLOT)])  # last run 03:47, before this slot
+    result = recovery.run_once("tok", now=now, http=gh)
+    assert result["status"] == expected
+    assert len(gh.dispatches) == (1 if expected == "DISPATCHED" else 0)
+    assert result["slot"] == SLOT.isoformat()
+
+
+def test_runs_off_main_are_neither_slot_nor_busy_evidence():
+    # provider-control only runs on refs/heads/main, so feature-branch runs never served a slot.
+    gh = FakeGitHub(runs=[
+        _run(5, branch="diagnostic/feature", status="in_progress"),
+        _run(10, branch="diagnostic/feature"),
+        _run(90),
+    ])
+    result = recovery.run_once("tok", now=NOW, http=gh)
+    assert result["status"] == "DISPATCHED"
+    assert ("GET", RUNS_PATH, None) in gh.calls
 
 
 def test_other_lane_runs_do_not_count_as_the_hourly_slot():
@@ -127,11 +162,20 @@ def test_non_200_or_malformed_reads_fail_closed():
         if path == WORKFLOW_PATH:
             return 200, {"state": "active"}
         return 200, {"workflow_runs": [{"status": "completed", "display_title": "lease=GLOBAL",
-                                        "created_at": "not-a-time"}]}
+                                        "head_branch": "main", "created_at": "not-a-time"}]}
     calls = []
     result = recovery.run_once("tok", now=NOW, http=lambda *a: calls.append(a) or http(*a))
     assert result["status"] == "GITHUB_EVIDENCE_INVALID"
     assert not [c for c in calls if c[0] == "POST"]
+
+    def http_no_branch(method, path, body=None):
+        if path == WORKFLOW_PATH:
+            return 200, {"state": "active"}
+        if method == "POST":
+            raise AssertionError("must not dispatch on unattributable evidence")
+        return 200, {"workflow_runs": [{"status": "completed", "display_title": "lease=GLOBAL",
+                                        "created_at": "2026-11-20T03:00:00Z"}]}
+    assert recovery.run_once("tok", now=NOW, http=http_no_branch)["status"] == "GITHUB_EVIDENCE_INVALID"
 
     def http_403(method, path, body=None):
         return 403, {"message": "forbidden"}
@@ -191,8 +235,9 @@ def test_recovery_inputs_still_match_the_dispatcher_contract():
     assert set(recovery.DISPATCH_INPUTS) <= set(inputs)
     assert "auto" in inputs["force_provider"]["options"]
     # Recovery replays the dispatcher's own hourly slot; it must not run faster than it.
-    assert [c["cron"] for c in triggers["schedule"]] == ["17 * * * *"]
-    assert recovery.SLOT_WINDOW < timedelta(hours=1)
+    assert [c["cron"] for c in triggers["schedule"]] == [f"{recovery.SLOT_MINUTE} * * * *"]
+    assert timedelta(0) < recovery.SLOT_GRACE < recovery.SLOT_RECOVERY_DEADLINE < timedelta(hours=1)
+    assert dispatcher["jobs"]["provider-control"]["if"].count("refs/heads/main") >= 1
     assert "lease=${{ inputs.lease_group || 'GLOBAL' }}" in " ".join(dispatcher["run-name"].split())
 
 
@@ -202,6 +247,11 @@ def test_render_cron_is_wake_only_and_not_autodeployed():
                if s.get("name") == "wow-v17-dispatcher-slot-recovery")
     env = {e["key"]: e for e in svc["envVars"]}
     assert svc["type"] == "cron" and svc["schedule"] == "*/15 * * * *"
+    # At least two Render ticks per hour land inside the recovery window (one retry).
+    ticks = [SLOT.replace(minute=0) + timedelta(minutes=m) for m in range(0, 120, 15)]
+    in_window = {t for t in ticks
+                 if recovery.SLOT_GRACE <= t - recovery.current_slot(t) <= recovery.SLOT_RECOVERY_DEADLINE}
+    assert len(in_window) >= 4  # 2 per hour over two hours
     assert svc["startCommand"] == "python -m v17.engineering_dispatch_slot_recovery"
     assert svc["autoDeployTrigger"] == "off"
     assert env[recovery.TOKEN_ENV]["sync"] is False and "value" not in env[recovery.TOKEN_ENV]

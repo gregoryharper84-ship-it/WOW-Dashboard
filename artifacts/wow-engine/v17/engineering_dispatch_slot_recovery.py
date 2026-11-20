@@ -7,12 +7,21 @@ a day. The dispatcher is the only automatic engineering entrypoint, so dropped
 slots silently stall autonomous repair (#1021).
 
 This job runs outside GitHub's scheduler and replays a missed slot of the
-dispatcher's own hourly cadence: when no default-lane (``lease=GLOBAL``) run
-has started within ``SLOT_WINDOW`` and none is queued or running, it calls
-``workflow_dispatch`` on ``main`` with ``force_provider=auto`` and
-``lease_group=GLOBAL`` -- the routing a scheduled run resolves to, in the same
-concurrency group. The existing dispatcher remains the sole routing and
-admission control plane; this job never chooses a provider, incident, or lease.
+dispatcher's own hourly cadence. For the current native slot (minute
+``SLOT_MINUTE`` of the hour) it waits ``SLOT_GRACE`` for GitHub's own, often
+late, scheduled run; between ``SLOT_GRACE`` and ``SLOT_RECOVERY_DEADLINE`` past
+the slot, if no default-lane (``lease=GLOBAL``) run on ``main`` started since
+the slot and none is queued or running, it calls ``workflow_dispatch`` on
+``main`` with ``force_provider=auto`` and ``lease_group=GLOBAL`` -- the routing
+a scheduled run resolves to, in the same concurrency group. After the deadline
+it stands down so recovery never crowds the next native slot. Runs on other
+branches are ignored: the provider-control job only runs on ``main``. The
+existing dispatcher remains the sole routing and admission control plane; this
+job never chooses a provider, incident, or lease.
+
+Residual overlap: a native run for the same slot that GitHub delivers more
+than ``SLOT_GRACE`` late can still follow a recovery run; the dispatcher's own
+concurrency, lease, and spend gates remain the backstop.
 
 It never enables, disables, cancels, or re-runs a workflow, so a dispatcher
 that is not active (for example an owner stop) stays stopped. Unreadable or
@@ -37,15 +46,19 @@ DISPATCH_INPUTS = {
     "lease_group": "GLOBAL",
     "reason": RECOVERY_REASON,
 }
-# Shorter than the dispatcher's hourly cadence so one slot is replayed at most once.
-SLOT_WINDOW = timedelta(minutes=55)
+# Dispatcher cron is "17 * * * *"; a drift-guard test pins this to the workflow.
+SLOT_MINUTE = 17
+# Wait this long for GitHub's own (often late) scheduled run before recovering.
+SLOT_GRACE = timedelta(minutes=25)
+# Stand down after this so a recovery never lands just before the next native slot.
+SLOT_RECOVERY_DEADLINE = timedelta(minutes=45)
 DEFAULT_LANE = "GLOBAL"
 ACTIVE_STATUSES = frozenset({"queued", "in_progress", "waiting", "pending", "requested"})
 TOKEN_ENV = "WOW_DISPATCH_GITHUB_TOKEN"
 API_ROOT = "https://api.github.com"
 
 _WORKFLOW_PATH = f"/repos/{REPOSITORY}/actions/workflows/{DISPATCHER_WORKFLOW}"
-_RUNS_PATH = f"{_WORKFLOW_PATH}/runs?per_page=100"
+_RUNS_PATH = f"{_WORKFLOW_PATH}/runs?branch={DISPATCH_REF}&per_page=100"
 _DISPATCH_PATH = f"{_WORKFLOW_PATH}/dispatches"
 _LEASE = re.compile(r"(?:^|\s)lease=(\S+)")
 
@@ -105,52 +118,71 @@ def _result(status: str, now: datetime, **extra: Any) -> dict[str, Any]:
     }
 
 
+def current_slot(now: datetime) -> datetime:
+    """Start of the dispatcher's most recent native hourly slot at or before ``now``."""
+    slot = now.astimezone(timezone.utc).replace(minute=SLOT_MINUTE, second=0, microsecond=0)
+    return slot if slot <= now else slot - timedelta(hours=1)
+
+
 def run_once(token: str, *, now: Optional[datetime] = None, http: Optional[Http] = None) -> dict[str, Any]:
-    """Assess the dispatcher's default lane once and replay a missed hourly slot if due."""
+    """Assess the dispatcher's current native slot once and replay it if it was missed."""
     now = now or _utcnow()
     call = http or github_http(token)
+    slot = current_slot(now)
+
+    def result(status: str, **extra: Any) -> dict[str, Any]:
+        return _result(status, now, slot=slot.isoformat(), **extra)
 
     try:
         status, workflow = call("GET", _WORKFLOW_PATH)
         if status != 200 or not isinstance(workflow, dict):
-            return _result("GITHUB_UNAVAILABLE", now, http_status=status)
+            return result("GITHUB_UNAVAILABLE", http_status=status)
         if workflow.get("state") != "active":
-            return _result("DISPATCHER_NOT_ACTIVE", now, workflow_state=workflow.get("state"))
+            return result("DISPATCHER_NOT_ACTIVE", workflow_state=workflow.get("state"))
+        if now - slot < SLOT_GRACE:
+            return result("SLOT_NOT_DUE", reason="WAITING_FOR_NATIVE_SCHEDULE")
+        if now - slot > SLOT_RECOVERY_DEADLINE:
+            return result("SLOT_NOT_DUE", reason="NEXT_NATIVE_SLOT_TOO_CLOSE")
 
         status, listing = call("GET", _RUNS_PATH)
         if status != 200 or not isinstance(listing, dict):
-            return _result("GITHUB_UNAVAILABLE", now, http_status=status)
+            return result("GITHUB_UNAVAILABLE", http_status=status)
     except OSError as error:
-        return _result("GITHUB_UNAVAILABLE", now, error=type(error).__name__)
+        return result("GITHUB_UNAVAILABLE", error=type(error).__name__)
 
     runs = listing.get("workflow_runs")
     if not isinstance(runs, list):
-        return _result("GITHUB_EVIDENCE_INVALID", now)
+        return result("GITHUB_EVIDENCE_INVALID")
 
     last_default_lane_at: Optional[datetime] = None
     try:
         for run in runs:
             if not isinstance(run, dict) or _own_lease(run) != DEFAULT_LANE:
                 continue
+            branch = run.get("head_branch")
+            if not isinstance(branch, str):
+                raise ValueError("head_branch missing")
+            if branch != DISPATCH_REF:
+                continue  # provider-control never runs off main; not slot or busy evidence
             if run.get("status") in ACTIVE_STATUSES:
-                return _result("DISPATCHER_BUSY", now, run_status=run.get("status"))
+                return result("DISPATCHER_BUSY", run_status=run.get("status"))
             created = _parse_time(run.get("created_at"))
             if last_default_lane_at is None or created > last_default_lane_at:
                 last_default_lane_at = created
     except ValueError:
-        return _result("GITHUB_EVIDENCE_INVALID", now)
+        return result("GITHUB_EVIDENCE_INVALID")
 
     last_seen = last_default_lane_at.isoformat() if last_default_lane_at else None
-    if last_default_lane_at is not None and now - last_default_lane_at < SLOT_WINDOW:
-        return _result("SLOT_NOT_DUE", now, last_default_lane_run_at=last_seen)
+    if last_default_lane_at is not None and last_default_lane_at >= slot:
+        return result("SLOT_NOT_DUE", reason="SLOT_ALREADY_SERVED", last_default_lane_run_at=last_seen)
 
     try:
         status, _ = call("POST", _DISPATCH_PATH, {"ref": DISPATCH_REF, "inputs": dict(DISPATCH_INPUTS)})
     except OSError as error:
-        return _result("GITHUB_UNAVAILABLE", now, error=type(error).__name__)
+        return result("GITHUB_UNAVAILABLE", error=type(error).__name__)
     if status != 204:
-        return _result("DISPATCH_REJECTED", now, http_status=status, last_default_lane_run_at=last_seen)
-    return _result("DISPATCHED", now, last_default_lane_run_at=last_seen, inputs=dict(DISPATCH_INPUTS))
+        return result("DISPATCH_REJECTED", http_status=status, last_default_lane_run_at=last_seen)
+    return result("DISPATCHED", last_default_lane_run_at=last_seen, inputs=dict(DISPATCH_INPUTS))
 
 
 _OK = frozenset({"DISPATCHED", "SLOT_NOT_DUE", "DISPATCHER_BUSY", "DISPATCHER_NOT_ACTIVE"})
