@@ -53,9 +53,18 @@ services:
         # behavior; FREE_CORE is enabled only after governed production acceptance.
         value: HYBRID
       - key: WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED
-        # Preserve current fallback behavior until FREE_CORE acceptance proves
-        # canonical free-source discovery/model routing across the active slate.
+        # Cost emergency: no paid discovery fallback on the web server.
+        # HYBRID may still support legacy non-paid features, but autonomous
+        # Scout handoff stays held until runtime is independently FREE_CORE.
+        value: "false"
+      - key: WOW_MARKET_EVIDENCE_ENABLED
+        value: "false"
+      - key: WOW_MARKET_EVIDENCE_KILL_SWITCH
         value: "true"
+      - key: WOW_V17_PAID_CALL_BUDGET_PER_SCAN
+        value: "0"
+      - key: WOW_V17_PAID_FINAL_REFRESH_RESERVE
+        value: "0"
       - key: WOW_V17_DURABLE_PROVIDER_CACHE_ENABLED
         # Best-effort short-TTL cache for normalized research market evidence.
         # It is never probability or execution authority.

@@ -12,7 +12,7 @@ import os
 import uuid
 from typing import Any, Callable
 
-from fastapi import Query
+from fastapi import HTTPException, Query
 
 from v17 import scout_handoff_queue as queue
 
@@ -80,6 +80,14 @@ def install_scout_handoff_routes(
         operation_id="submitWowV17ScoutHandoffRun",
     )
     def submit_scout_handoff_run(handoff: dict[str, Any]) -> dict[str, Any]:
+        # The authenticated running backend, not the caller or GitHub runner,
+        # must attest free-only source policy before any durable enqueue.
+        if not queue.free_core_runtime_verified():
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "SCOUT_HANDOFF_LIVE_FREE_CORE_NOT_VERIFIED",
+                        "can_execute": False},
+            )
         # Callers submit raw Scout evidence. Rebuild the deterministic plan on
         # the governed server so RED_TEAM_PASSED cannot be self-asserted by a
         # transport caller.
