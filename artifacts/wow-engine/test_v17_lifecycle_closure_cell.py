@@ -256,3 +256,17 @@ def test_merge_candidate_receipt_fails_closed_on_governance_or_execution_drift()
     assert "merge candidate receipt must preserve V17_TERMINAL_REDUCER" in errors
     assert "merge candidate receipt must set can_execute=false" in errors
 
+
+
+def test_codex_lifecycle_skill_has_parseable_frontmatter():
+    """Regression for Engineering Lead Codex skill startup failure (#1021)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    skill = (root / ".agents/skills/wow-engineering-lifecycle-closure-cell/SKILL.md").read_text()
+    assert skill.startswith("---\n")
+    closing = skill.find("\n---\n", 4)
+    assert closing > 4
+    header = skill[4:closing]
+    assert "\nname: wow-engineering-lifecycle-closure-cell\n" in "\n" + header + "\n"
+    assert "\ndescription: " in "\n" + header
+    assert "can_execute=false" in skill[closing + 5:]
