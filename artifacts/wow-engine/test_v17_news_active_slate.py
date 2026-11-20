@@ -156,3 +156,90 @@ def test_scout_workflows_keep_nonblocking_acquisition_and_audit():
     assert "Report public news acquisition health (nonblocking)" in source
     assert "continue-on-error: true" in nightly
     assert "continue-on-error: true" in source
+
+
+def test_huge_market_handoff_uses_compact_event_sibling_without_loading_quotes(
+    monkeypatch, tmp_path
+):
+    import json
+    import sys
+    from v17.nightly_multiscout import compact_news_slate_manifest
+
+    # A sparse >64 MB file stands in for the actual 596 MB handoff.
+    # If parsed, the one-byte invalid JSON footer would fail.
+    full = tmp_path / "model-handoff.json"
+    with full.open("wb") as stream:
+        stream.seek(64_000_001)
+        stream.write(b"!")
+    now = datetime.now(timezone.utc)
+    candidate = {
+        "sport_key": "basketball_ncaab",
+        "official_event_id": "provider-1",
+        "provider_event_id": "provider-1",
+        "official_event_identity_verified": False,
+        "commence_time": (now + timedelta(hours=6)).isoformat(),
+        "market_evidence": [{"bloat": "unused"}],
+    }
+    payload = {"model_handoff": {
+        "team_event_candidates": [candidate],
+        "prop_candidates": [dict(candidate)],
+    }}
+    compact = compact_news_slate_manifest(payload)
+    assert compact["candidate_rows_total"] == 2
+    assert compact["model_handoff"]["team_event_candidates"][0]["official_event_id"] is None
+    assert compact["model_handoff"]["team_event_candidates"][0]["provider_event_id"] == "provider-1"
+    assert "market_evidence" not in str(compact)
+    (tmp_path / "news-active-slate.json").write_text(json.dumps(compact))
+    calls = []
+    def discover_stub(at, *, sport=None):
+        calls.append(sport)
+        return {
+            "source_status": "OK", "source_code": "SOURCE_FETCH_OK",
+            "sport_key": sport, "articles": [], "attempt_count": 1,
+            "retry_deferred": False, "prediction_authority": False,
+            "can_execute": False, "model_feature_eligible": False,
+        }
+    monkeypatch.setattr(runner, "discover", discover_stub)
+    dest = tmp_path / "receipt.json"
+    monkeypatch.setattr(sys, "argv", [
+        "gdelt", "--candidate-manifest", str(full), "--output", str(dest),
+    ])
+    assert runner.main() == 0
+    receipt = json.loads(dest.read_text())
+    assert calls == ["basketball_ncaab"]
+    assert receipt["selection_policy"] == "ACTIVE_SLATE_ROTATION"
+    assert receipt["slate_manifest_status"] == "ACTIVE_SPORT_SELECTED"
+    assert receipt["slate_manifest_source"] == "COMPACT_SIBLING"
+    assert receipt["slate_active_event_counts"] == {"basketball_ncaab": 1}
+    assert receipt["can_execute"] is False
+
+
+def test_missing_compact_sibling_reports_native_selection_blocker(
+    monkeypatch, tmp_path
+):
+    import json
+    import sys
+    full = tmp_path / "model-handoff.json"
+    with full.open("wb") as stream:
+        stream.seek(64_000_001)
+        stream.write(b"!")
+    calls = []
+    def discover_stub(at, *, sport=None):
+        calls.append(sport)
+        return {"source_status": "BLOCKED", "source_code": "SOURCE_RATE_LIMITED",
+                "sport_key": sport, "articles": [], "attempt_count": 1,
+                "retry_deferred": True, "prediction_authority": False,
+                "can_execute": False}
+    monkeypatch.setattr(runner, "discover", discover_stub)
+    dest = tmp_path / "receipt.json"
+    monkeypatch.setattr(sys, "argv", [
+        "gdelt", "--candidate-manifest", str(full), "--output", str(dest),
+    ])
+    assert runner.main() == 0
+    receipt = json.loads(dest.read_text())
+    assert calls == [None]  # Preserve the one-request fixed rotation fallback.
+    assert receipt["selection_policy"] == "SLATE_UNAVAILABLE_FIXED_ROTATION"
+    assert receipt["slate_manifest_status"] == "NEWS_COMPACT_MANIFEST_MISSING"
+    assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
+    assert receipt["attempt_count"] == 1
+    assert receipt["can_execute"] is False
