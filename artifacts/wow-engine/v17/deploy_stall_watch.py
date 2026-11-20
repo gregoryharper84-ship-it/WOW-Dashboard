@@ -287,6 +287,21 @@ def main() -> int:
         code = 0
     receipt.write_text(json.dumps(outcome, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(outcome, sort_keys=True))
+    annotations: list[str] = []
+    if outcome.get("status") in {"DEPLOY_STALL_ALERT", "DEPLOY_STALL_ESCALATION"}:
+        annotations.append(
+            f"::error::DEPLOY_STALL_{outcome['status']}: authorized main SHA has no "
+            "covering deploy within the configured window."
+        )
+    if outcome.get("dual_writer_residue"):
+        annotations.append(
+            "::error::DUAL_WRITER_NATIVE_STILL_ENABLED: retire native checksPass via "
+            "the controlled single-writer cutover."
+        )
+    # GitHub only parses workflow commands from stdout; keep the summary as
+    # durable Markdown and mirror annotations to stdout for the UI.
+    for line in annotations:
+        print(line)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as handle:
@@ -295,16 +310,8 @@ def main() -> int:
                 f"{outcome.get('reason', '')} dual_writer={outcome.get('dual_writer_residue')} "
                 f"can_execute=false\n"
             )
-            if outcome.get("status") in {"DEPLOY_STALL_ALERT", "DEPLOY_STALL_ESCALATION"}:
-                handle.write(
-                    f"::error::DEPLOY_STALL_{outcome['status']}: authorized main SHA has no "
-                    "covering deploy within the configured window.\n"
-                )
-            if outcome.get("dual_writer_residue"):
-                handle.write(
-                    "::error::DUAL_WRITER_NATIVE_STILL_ENABLED: retire native checksPass via "
-                    "the controlled single-writer cutover.\n"
-                )
+            for line in annotations:
+                handle.write(line + "\n")
     return code
 
 

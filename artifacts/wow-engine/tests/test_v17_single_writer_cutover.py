@@ -27,7 +27,8 @@ def test_plan_cutover_needs_both_services_when_checks_pass_enabled():
     decision = cutover.plan_cutover({role: _service(role) for role in SERVICES})
     assert decision["status"] == "CUTOVER_NEEDED"
     assert decision["pending"] == ["web", "worker"]
-    assert decision["target"] == {"autoDeploy": "no", "autoDeployTrigger": "off"}
+    assert decision["target"] == {"autoDeployTrigger": "off"}
+    assert "autoDeploy" not in decision["target"]
 
 
 def test_plan_cutover_already_complete_when_native_off():

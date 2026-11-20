@@ -183,3 +183,30 @@ def test_workflow_is_optional_main_scoped_and_read_only():
     assert "GITHUB_STEP_SUMMARY" in scripts
     assert "DEPLOY_STALL_WATCH_INCOMPLETE" in scripts or "can_execute=false" in scripts
     assert "v17.deploy_stall_watch" in scripts
+
+
+def test_main_emits_error_annotations_to_stdout(monkeypatch, tmp_path, capsys):
+    receipt = tmp_path / "receipt.json"
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    monkeypatch.setenv("GH_TOKEN", "ghs_x")
+    monkeypatch.setenv("RENDER_API_KEY", "rnd_x")
+    monkeypatch.setenv("STALL_RECEIPT", str(receipt))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(
+        stall,
+        "run",
+        lambda **_: {
+            "status": "DEPLOY_STALL_ESCALATION",
+            "reason": "NO_COVERING_DEPLOY_AFTER_ESCALATION_WINDOW",
+            "dual_writer_residue": True,
+            "can_execute": False,
+        },
+    )
+    assert stall.main() == 0
+    stdout = capsys.readouterr().out
+    assert "::error::DEPLOY_STALL_DEPLOY_STALL_ESCALATION:" in stdout
+    assert "::error::DUAL_WRITER_NATIVE_STILL_ENABLED:" in stdout
+    assert "::error::DEPLOY_STALL_DEPLOY_STALL_ESCALATION:" in summary.read_text()

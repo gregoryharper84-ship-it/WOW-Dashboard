@@ -5,7 +5,10 @@ writer is ``wow-v17-required-checks-deploy.yml``. Blueprint ``render.yaml``
 already declares ``autoDeployTrigger: off``; live services must match.
 
 Writes are limited to PATCH ``/v1/services/<id>`` with only:
-``{"autoDeploy": "no", "autoDeployTrigger": "off"}``.
+``{"autoDeployTrigger": "off"}``.
+
+Render rejects setting both ``autoDeploy`` and ``autoDeployTrigger`` in one
+request, so the cutover never sends the deprecated ``autoDeploy`` field.
 
 Never POSTs a deploy, never mutates env vars/plans, never certifies models.
 ``can_execute=false``.
@@ -30,7 +33,8 @@ from v17.lean_production_readback import (
     service_identity_ok,
 )
 
-CUTOVER_PAYLOAD = {"autoDeploy": "no", "autoDeployTrigger": CANONICAL_AUTO_DEPLOY_TRIGGER}
+# Render Update Service: do not send autoDeploy together with autoDeployTrigger.
+CUTOVER_PAYLOAD = {"autoDeployTrigger": CANONICAL_AUTO_DEPLOY_TRIGGER}
 
 Fetch = Callable[[str, str, Any], Any]
 
@@ -56,11 +60,8 @@ def plan_cutover(services: dict[str, Any]) -> dict[str, Any]:
         service = services.get(role)
         if not service_identity_ok(role, service):
             raise CutoverHold("RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:" + role)
-        trigger_ok = service.get("autoDeployTrigger") == CANONICAL_AUTO_DEPLOY_TRIGGER
-        # Render may omit autoDeploy; only an explicit enabled value keeps a role pending.
-        auto = service.get("autoDeploy")
-        auto_ok = auto in {None, "no", False}
-        if not trigger_ok or not auto_ok:
+        # autoDeployTrigger is the authoritative native-writer switch.
+        if service.get("autoDeployTrigger") != CANONICAL_AUTO_DEPLOY_TRIGGER:
             pending.append(role)
     return {
         "status": "CUTOVER_NEEDED" if pending else "CUTOVER_ALREADY_COMPLETE",
