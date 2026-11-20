@@ -763,7 +763,7 @@ def test_r_allowlist_compares_exact_github_paths_without_normalization_aliases()
         [ROUTINE_FILE], file_statuses={ROUTINE_FILE: "modified"}
     )
     assert valid["change_class"] == "R"
-    for distinct_path in (ROUTINE_FILE + " ", ROUTINE_FILE.replace("/", "\\\\")):
+    for distinct_path in (ROUTINE_FILE + " ", ROUTINE_FILE.replace("/", "\\")):
         result = sav.classify_change_scope([distinct_path])
         assert result["change_class"] == "P", distinct_path
         assert distinct_path in result["non_allowlisted_paths"], distinct_path
