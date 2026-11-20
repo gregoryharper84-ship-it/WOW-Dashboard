@@ -17,7 +17,12 @@ def test_render_checkspass_verifiers_run_on_main_and_never_cancel_main_runs():
             f"group: {workflow_name}-${{{{ github.event_name }}}}-${{{{ github.ref }}}}"
             in text
         ), workflow_name
-        assert (
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in text
-        ), workflow_name
+        # This verifier must queue same-ref PR updates rather than cancel
+        # in-flight protected checks. Keep the other verifier's policy unchanged.
+        expected = (
+            "cancel-in-progress: false"
+            if workflow_name == "wow-engine-verify"
+            else "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+        )
+        assert expected in text, workflow_name
         assert "cancel-in-progress: true" not in text, workflow_name
