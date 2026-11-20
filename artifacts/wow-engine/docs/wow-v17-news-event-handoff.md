@@ -60,3 +60,59 @@ Targeted test command:
 cd artifacts/wow-engine
 python -m pytest -q test_v17_news_event_research_handoff.py tests/test_v17_sport_scout_teams.py
 ```
+
+## November 20, 2026 — duplicated headlines are not independent corroboration
+
+Evidence: GDELT source-refresh [run #44717653057](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44717653057)
+returned 15 NFL discovery URLs but only **12 distinct normalized headline texts**.
+One identical headline appeared at three publisher URLs and another at two.
+These copies are preserved as distinct discovery records, but they must not
+be counted as two independent corroborating sources for high-impact news.
+
+The event research handoff therefore requires, **for high-impact facts
+supported by secondary/beat sources**, all three: two distinct URLs, two
+distinct claimed source groups and at least two distinct **nonempty
+normalized discovery headline texts**. Identical headlines despite
+punctuation/case changes, or missing headlines, produce
+`NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED` with the auditable conflict
+`SYNDICATED_OR_UNATTRIBUTED_HEADLINES`. The original fact rows and URLs remain
+in `news_context` for audit; official team/league sources are not newly held
+for a missing title.
+
+Distinct headline wording is **not proof of independent reporting**; a wire
+story can be rewritten and still depend on one original claim. The external
+authorized verifier must establish actual source independence and claim
+truth. Neither passing this gate nor `research_rescore_requested=true`
+authorizes a fitted model change, calibration update, release or wager.
+
+
+## November 20, 2026 — receipt provenance chain
+
+The same-run Scout sibling reader already computed a SHA-256 of the **exact
+GDELT receipt.json bytes** and recorded it in
+`public_news_discovery_bridge.source_sha256`. Event research handoffs now
+carry this exact original-byte hash separately as
+`source_receipt_sha256`. Direct, non-artifact research calls may lack a raw
+hash and explicitly use `null`; they cannot claim an original-byte audit.
+
+The handoff separately records
+`discovery_canonical_sha256` over the parsed source receipt,
+`discovery_observed_at_utc`, the exact
+`event_start_utc` cutoff, `research_observed_at_utc` and
+`independently_reviewed_at_utc` on each accepted reviewed fact. These
+fields are included in the handoff `receipt_sha256` so changes to the
+source bytes, source timestamp, event cutoff, research clock or review
+timestamp cannot silently reuse the same digest. Malformed raw source
+hashes and unserializable discovery payloads fail closed with their own
+research-level status.
+
+**Security and model boundary:** This strengthens provenance of a research
+request but does not authenticate reviewer identity, publisher facts,
+independent source groups, official event lookup or a fitted scorer. A
+different `source_receipt_sha256` string may still be forged by an
+untrusted caller; the independent verifier must read the archived raw
+artifact and compute its checksum themselves. No new score, model input,
+certification or execution authorization is granted. Actual acceptance
+requires a certified specialist's new pregame immutable receipt to bind
+the permitted verified material feature and corresponding source lineage
+at the exact event and model version, with independent readback.

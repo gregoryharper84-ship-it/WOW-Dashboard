@@ -1,5 +1,38 @@
 # WOW V17 unified free-source catalog — source-only integration
 
+
+## 2026-11-20 owner scope: only Paths 1 and 2
+
+**Path 1, PropsMadness:** Use it as a personal, noncommercial, selected-page
+research reference only. The existing public one-page CLI opt-in and manually
+supplied account-view reader are discovery-only. Do not schedule vendor
+requests, retain/copy vendor datasets, hydrate model training, or interpret
+on-screen L10 hit rates as certified probabilities. Access and any use must
+comply with applicable terms. No new vendor rights-acquisition/automated
+ingestion lane is authorized under the current owner scope.
+
+**Path 2, independent sports data:** Reuse the existing allowed-source adapters
+and verify each dataset's independent license, attribution and upstream rights.
+NFL-first sources are `nflverse_historical_adapter.py` and
+`nflverse_dataset_policy_v1.json`. Dataset names from FTN/participation remain
+excluded, and candidate training permissions do not certify a fitted model.
+The new duplicate-outcome guard fails closed if player_stats rows reuse the
+same game / GSIS player / statistic identity, even with contradictory
+values or teams. Reconcile the original source bytes instead of double counting
+training labels; this is an integrity repair, not an increase in data coverage.
+
+**Engineering proof chain:** (1) synthetic negative+valid normalization tests,
+(2) exact-head CI and independent review, (3) authentic source snapshot/rights
+and completeness checks, (4) independent identity + pregame chronology checks,
+(5) shadow replay, then separately governed fitted promotion when warranted.
+No step converts a source observation into a probability or disables the
+V17 terminal reducer; `can_execute=false` remains invariant.
+
+**Status as authored:** Path 1 interface previously merged in PR #2739.
+The NFL duplicate guard is proposed on a feature branch; production source
+rows, model readiness, deployment SHA and qualified picks are not claimed.
+
+
 **Current implementation:** `v17/free_source_catalog.py` and `tests/test_free_source_catalog.py`. Read-only, pure metadata; does not request external data, install a scraper, access a login, write production history, or invoke a betting Action. `can_execute=false`. This is a Class A/B research-inventory improvement, not model certification or an external-source license grant.
 
 ## What already exists (preserve, do not recreate)
