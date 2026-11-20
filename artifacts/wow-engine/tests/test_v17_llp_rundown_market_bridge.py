@@ -93,6 +93,8 @@ def _exact_context(*, home=0.62, away=0.38, favorite="Chicago Cubs"):
 def _env(monkeypatch):
     monkeypatch.setattr(sources, "ENABLED", True)
     monkeypatch.setenv("WOW_LLP_RUNDOWN_MARKET_ENABLED", "true")
+    monkeypatch.setenv("WOW_RUNDOWN_WINNER_MARKET_IDS", "1")
+    monkeypatch.setenv("WOW_RUNDOWN_WINNER_AFFILIATE_IDS", "2,3")
 
 
 def test_resolve_builds_cross_book_no_vig_context(monkeypatch):
