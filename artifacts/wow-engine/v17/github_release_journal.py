@@ -11,9 +11,12 @@ QA_CHECK_NAME = "WOW Independent QA exact-head"
 RELEASE_CHECK_NAME = "WOW Release Authority exact-head"
 REQUIRED_ENVIRONMENT = "wow-release"
 CONTROLLER_FILENAME = "wow-v17-render-production-deploy.yml"
-# Required-checks deploy recovery (redesign chunk 1, 2026-11-20): the only other
-# workflow allowed to POST Render deploys. Every other writer stays foreign.
+# Sole active production writer (WOW-V17-DEPLOY-RELIABILITY-P0 / #2422).
+# The historical controller remains inventoried so its dormant POST surface is
+# not reported as a foreign writer; credential attestation and disabled
+# workflow state keep it from advancing deploys.
 RECOVERY_DEPLOY_FILENAME = "wow-v17-required-checks-deploy.yml"
+SOLE_ACTIVE_RENDER_WRITER = RECOVERY_DEPLOY_FILENAME
 SANCTIONED_RENDER_WRITERS = frozenset({CONTROLLER_FILENAME, RECOVERY_DEPLOY_FILENAME})
 JOURNAL_REF_PREFIX = "refs/heads/wow-release"
 RENDER_CREDENTIAL_SCOPE_ATTESTED = False

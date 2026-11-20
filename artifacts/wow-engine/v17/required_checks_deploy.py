@@ -1,19 +1,15 @@
-"""Deploy recovery keyed only to the three ruleset-required checks.
+"""Sole authorized production deploy writer (exact main + three required checks).
 
-Render's native ``checksPass`` trigger remains the primary deploy path and is
-unchanged. Render skips any commit that carries a single failing check run,
-and optional main-scoped workflows (independent QA, Release Authority,
-canaries, maintenance) attach failing check runs to almost every protected
-``main`` commit. Example: 27 ``qa`` + 3 ``admit-release`` failures on
-``e9d7b057``, 2026-11-20. Those commits are never auto-deployed.
-
-This module automates the V27-authorized recovery action ("redeploy the
-current main SHA to recover a failed auto-deploy"):
+WOW-V17-DEPLOY-RELIABILITY-P0 / #2422: native Render ``checksPass`` is retired
+as a competing writer. Optional main-scoped workflows previously attached
+failing check runs to nearly every protected ``main`` commit, so
+``checksPass`` skipped authorized revisions. This module is the single
+authenticated writer:
 
 * the target is the exact current ``main`` SHA, never an older or foreign one;
 * all three required checks (GitHub Actions app 15368) concluded ``success``
   at that SHA;
-* both services are still the canonical CI-gated web/worker pair;
+* both services are still the canonical single-writer web/worker pair;
 * Render has not already started, or completed, a deploy of that SHA;
 * exactly one deploy per missing service is POSTed, and both services must
   then be LIVE on the SHA with public health OK.
@@ -201,10 +197,8 @@ def run(*, target_sha: str, fetch: Fetch, sleep: Callable[[float], None] = time.
                     deploys={role: deploys(role) for role in SERVICES})
     if decision["status"] in NON_ADVANCING:
         return decision
-    # No grace wait for Render's native deploy: Render waits for every check
-    # on the commit, including this in-progress job, so it cannot start first.
-    # If every optional check later passes, Render may rebuild the same SHA;
-    # that duplicate is harmless and never deploys different code.
+    # Sole writer: do not wait for a retired native auto-deploy. An in-progress
+    # or live covering deploy of this SHA is watched, never duplicated.
     posted = {}
     for role in decision["trigger"]:
         if main_sha() != target_sha:  # recheck immediately before every write
@@ -281,7 +275,7 @@ def main() -> int:
     except Exception as exc:  # every failure leaves a typed, credential-free receipt
         if not wrote["post"] and not isinstance(exc, DeployHold):
             # A transient read failure before any write must not become one more
-            # failing check on the main commit that checksPass is evaluating.
+            # failing check on the protected main tip.
             outcome = {"status": "PRE_WRITE_SOURCE_UNAVAILABLE_NO_DEPLOY", "target_sha": target,
                        "production_verified": False, "can_execute": False}
             code = 0
