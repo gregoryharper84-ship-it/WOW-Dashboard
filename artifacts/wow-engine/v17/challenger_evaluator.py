@@ -58,7 +58,7 @@ class PairedRow:
     market_family: str
     cohort: str
     incumbent_p: float
-    challenger_p: float
+    challenger_p: float | None
     outcome: int
     forecast_at: str
     settled_at: str
@@ -86,7 +86,7 @@ def _prob(value: Any, field: str, row_id: str, *, optional: bool = False) -> flo
     return float(value)
 
 
-def validate_rows(raw_rows: Sequence[Mapping[str, Any]]) -> list[PairedRow]:
+def validate_rows(raw_rows: Sequence[Mapping[str, Any]], *, require_challenger: bool = True) -> list[PairedRow]:
     if not raw_rows:
         raise EvaluatorInputError("no rows")
     rows: list[PairedRow] = []
@@ -118,7 +118,7 @@ def validate_rows(raw_rows: Sequence[Mapping[str, Any]]) -> list[PairedRow]:
                 market_family=family,
                 cohort=cohort,
                 incumbent_p=_prob(raw.get("incumbent_p"), "incumbent_p", row_id),
-                challenger_p=_prob(raw.get("challenger_p"), "challenger_p", row_id),
+                challenger_p=_prob(raw.get("challenger_p"), "challenger_p", row_id, optional=not require_challenger),
                 outcome=int(outcome),
                 forecast_at=str(raw["forecast_at"]),
                 settled_at=str(raw["settled_at"]),
@@ -325,14 +325,108 @@ def propose_policy(packet: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _model_metrics(p: np.ndarray, y: np.ndarray, lowers: list[float | None]) -> dict[str, Any]:
+    brier, logloss = _losses(p, y)
+    return {
+        "brier": float(brier.mean()),
+        "brier_row_sd": float(brier.std(ddof=1)) if brier.size > 1 else 0.0,
+        "log_loss": float(logloss.mean()),
+        "bias": float(p.mean() - y.mean()),
+        "ece": _ece(p, y),
+        "lower_bound": _lower_bound(lowers, y),
+    }
+
+
+def incumbent_baseline(raw_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Incumbent-only evidence when no settled challenger rows exist yet.
+
+    Same validation as ``evaluate`` except the challenger probability may be
+    absent. Used to propose (never approve) a promotion policy.
+    """
+    rows = sorted(validate_rows(raw_rows, require_challenger=False), key=lambda r: r.row_id)
+    cohorts: dict[str, Any] = {}
+    for cohort in COHORTS:
+        subset = [r for r in rows if r.cohort == cohort]
+        if not subset:
+            cohorts[cohort] = {"n": 0, "status": "EMPTY"}
+            continue
+        y = np.array([r.outcome for r in subset], dtype=float)
+        p = np.array([r.incumbent_p for r in subset])
+        cohorts[cohort] = {
+            "n": int(y.size),
+            "base_rate": float(y.mean()),
+            "incumbent": _model_metrics(p, y, [r.incumbent_lower for r in subset]),
+        }
+    return {
+        "evaluator_version": EVALUATOR_VERSION,
+        "kind": "INCUMBENT_BASELINE",
+        "market_family": rows[0].market_family,
+        "input_hash": _input_hash(rows),
+        "method": {"bins": ECE_BINS},
+        "cohorts": cohorts,
+        **_INERT,
+    }
+
+
+def propose_policy_from_baseline(baseline: Mapping[str, Any], *, reference_cohort: str = PROSPECTIVE) -> dict[str, Any]:
+    """Proposed criteria for a future paired evaluation, from the incumbent's own record.
+
+    Without paired evidence the minimum prospective sample cannot be derived
+    from data; it is left for governance with the formula and inputs shown.
+    """
+    ref = baseline["cohorts"].get(reference_cohort, {})
+    if ref.get("n", 0) < 2:
+        return {"status": "INSUFFICIENT_INCUMBENT_EVIDENCE", "market_family": baseline["market_family"], **_INERT}
+    inc = ref["incumbent"]
+    observations = []
+    if inc["lower_bound"].get("shortfall_bins"):
+        observations.append("INCUMBENT_LOWER_BOUND_SHORTFALL_BINS_PRESENT")
+    if inc["lower_bound"].get("n", 0) and inc["lower_bound"]["margin"] < 0:
+        observations.append("INCUMBENT_LOWER_BOUND_MARGIN_NEGATIVE")
+    return {
+        "status": "PROPOSED_UNAPPROVED",
+        "requires": "governance approval (WOW/Greg) before any use",
+        "market_family": baseline["market_family"],
+        "source": "INCUMBENT_BASELINE",
+        "source_input_hash": baseline["input_hash"],
+        "reference_cohort": reference_cohort,
+        "reference": {
+            "n": ref["n"], "base_rate": ref["base_rate"], "incumbent_brier": inc["brier"],
+            "incumbent_brier_row_sd": inc["brier_row_sd"], "incumbent_log_loss": inc["log_loss"],
+            "incumbent_bias": inc["bias"], "incumbent_ece": inc["ece"], "incumbent_lower_bound": inc["lower_bound"],
+        },
+        "observations": observations,
+        "min_prospective_n": None,
+        "min_prospective_n_derived_from": "UNDERIVABLE_WITHOUT_PAIRED_EVIDENCE_REQUIRES_GOVERNANCE_VALUE",
+        "min_prospective_n_formula": "ceil(((1.95996 + 0.84162) * paired_brier_diff_sd / minimum_meaningful_improvement) ** 2)",
+        "criteria": [
+            {"cohort": PROSPECTIVE, "metric": "brier.paired_diff.ci_high", "op": "<", "value": 0.0,
+             "derived_from": "challenger must beat incumbent on paired Brier at the stated CI level"},
+            {"cohort": PROSPECTIVE, "metric": "log_loss.paired_diff.mean", "op": "<=", "value": 0.0,
+             "derived_from": "no paired log-loss regression"},
+            {"cohort": PROSPECTIVE, "metric": "calibration.challenger.ece", "op": "<=", "value": inc["ece"],
+             "derived_from": f"incumbent {reference_cohort} ECE"},
+            {"cohort": PROSPECTIVE, "metric": "lower_bound.challenger.margin", "op": ">=", "value": 0.0,
+             "derived_from": "calibrated lower-bound validity: hit rate >= mean lower bound"},
+        ],
+        **_INERT,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Champion-vs-challenger evidence packet (evidence only).")
     parser.add_argument("--rows-jsonl", required=True)
     parser.add_argument("--policy-json")
     parser.add_argument("--propose", action="store_true")
+    parser.add_argument("--baseline", action="store_true", help="incumbent-only baseline and proposal")
     args = parser.parse_args(argv)
     try:
         rows = [json.loads(line) for line in Path(args.rows_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]
+        if args.baseline:
+            baseline = incumbent_baseline(rows)
+            baseline["proposed_policy"] = propose_policy_from_baseline(baseline)
+            print(json.dumps(baseline, sort_keys=True))
+            return 0
         policy = json.loads(Path(args.policy_json).read_text(encoding="utf-8")) if args.policy_json else None
         packet = evaluate(rows, policy=policy)
     except (OSError, json.JSONDecodeError, EvaluatorInputError) as exc:
