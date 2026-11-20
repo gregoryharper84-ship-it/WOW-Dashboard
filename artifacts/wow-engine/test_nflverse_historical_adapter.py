@@ -218,5 +218,50 @@ def test_null_stat_field_is_not_fabricated() -> None:
     assert [row.stat_type for row in outcomes] == ["RECEPTIONS"]
 
 
+
+@pytest.mark.parametrize("second_yards", [271, 299])
+def test_corpus_rejects_duplicate_player_event_stat_outcomes(second_yards: int) -> None:
+    # Same source player/game/stat must not count as two independent labels,
+    # even when the repeated row silently disagrees about the final value.
+    with pytest.raises(NFLVerseHistoricalAdapterError) as exc:
+        normalize_player_stats_corpus(
+            [_player(), _player(passing_yards=second_yards)],
+            schedule_rows=[_schedule()],
+            source_retrieved_at=datetime(2025, 9, 8, 12, 0, tzinfo=UTC),
+            player_stats_payload_hash="a" * 64,
+            stat_types=["PASSING_YARDS"],
+        )
+    assert exc.value.code == "NFLVERSE_PLAYER_GAME_STAT_DUPLICATE"
+
+
+def test_corpus_preserves_two_distinct_players_in_same_game() -> None:
+    outcomes = normalize_player_stats_corpus(
+        [_player(), _player(player_id="00-0030002", passing_yards=192)],
+        schedule_rows=[_schedule()],
+        source_retrieved_at=datetime(2025, 9, 8, 12, 0, tzinfo=UTC),
+        player_stats_payload_hash="b" * 64,
+        stat_types=["PASSING_YARDS"],
+    )
+    assert len(outcomes) == 2
+    assert {(o.identity.participant_id, o.actual_value) for o in outcomes} == {
+        ("00-0030001", 271.0),
+        ("00-0030002", 192.0),
+    }
+
+
+def test_corpus_rejects_same_player_game_stat_across_conflicting_teams() -> None:
+    # The uniqueness key must not include team: two incompatible teams for
+    # the same player/game/stat are conflicting source evidence, not two labels.
+    with pytest.raises(NFLVerseHistoricalAdapterError) as exc:
+        normalize_player_stats_corpus(
+            [_player(), _player(team="PHI", opponent_team="DAL")],
+            schedule_rows=[_schedule()],
+            source_retrieved_at=datetime(2025, 9, 8, 12, 0, tzinfo=UTC),
+            player_stats_payload_hash="c" * 64,
+            stat_types=["RECEPTIONS"],
+        )
+    assert exc.value.code == "NFLVERSE_PLAYER_GAME_STAT_DUPLICATE"
+
+
 def test_policy_objects_are_non_executable() -> None:
     assert all(entry.can_execute is False for entry in load_nflverse_dataset_policy().values())
