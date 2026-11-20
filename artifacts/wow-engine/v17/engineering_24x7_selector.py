@@ -26,6 +26,36 @@ STOP_LABELS = {
     "needs-owner", "blocked", "security-hold", "do-not-automate",
     "no-autobuild", "no-auto-build", "duplicate", "wontfix",
 }
+SIRT_REVIEW_TITLE = re.compile(
+    r"^(?=.*\b(?:review|intake|assurance|acceptance|certification|class|independent\w*|verif\w*|audit)\b)"
+    r"(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)",
+    re.IGNORECASE,
+)
+# Explicit repair verbs are implementation work, not independent SIRT review.
+# Preserve "SIRT Intake/Review/Assurance" routing without silently dropping
+# e.g. "SIRT: fix verification script timeout" or "[SIRT] audit log repair".
+SIRT_REPAIR_TITLE = re.compile(
+    r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)"
+    r"[\s:—-]*(?:fix|repair|restore|recover|debug|resolve|rebuild|implement|audit\s+log\s+repair)\b",
+    re.IGNORECASE,
+)
+# Assurance language excludes coding tasks; an "audit log" is an
+# operational subsystem, not a request for independent audit review.
+# Keep explicit "independent", "review", and other assurance words binding.
+SIRT_ASSURANCE_TERMS = re.compile(
+    r"\b(?:independent\w*|review|intake|assurance|acceptance|certification|"
+    r"audit(?![\s_-]+log(?:s|ging)?\b))\b",
+    re.IGNORECASE,
+)
+# A production malfunction is implementation work even when its noun is
+# "verification"; independently assigned assurance remains review-only.
+SIRT_PRODUCTION_FAILURE_TITLE = re.compile(
+    r"^(?:\[[^\]]*\bSIRT\b[^\]]*\]|(?:P[0-3]\s+)?SIRT\b|P[0-3]\s*:\s*SIRT\b)"
+    r"[\s:—-]*(?=.*\b(?:fails?|failed|failure|broken|outage|down|regression)\b)"
+    r"(?=.*\b(?:production|prod|runtime|alerting|deployment|worker|pipeline|workflow)\b)",
+    re.IGNORECASE,
+)
+LEASE_GROUP = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 PRIORITY = {
     "production-down": 0,
     "incident-p0": 0,
@@ -57,6 +87,17 @@ def eligible(issue: dict) -> tuple[int, int] | None:
         return None
     if issue.get("state") != "open":
         return None
+    # SIRT-owned review/assurance tickets are not implementation assignments.
+    title = issue.get("title")
+    if isinstance(title, str):
+        title = title.strip()
+        if SIRT_REVIEW_TITLE.match(title) and not SIRT_REPAIR_TITLE.match(title):
+            operational_failure = (
+                SIRT_PRODUCTION_FAILURE_TITLE.match(title)
+                and not SIRT_ASSURANCE_TERMS.search(title)
+            )
+            if not operational_failure:
+                return None
     number = issue.get("number")
     if type(number) is not int or number <= 0:
         return None
@@ -182,14 +223,55 @@ def _explicit_retry_authorized(incident: int, runs: list, retry_after_run_id: in
     )
 
 
+
+def _manifest_lease_groups(manifest: dict | None) -> dict | None:
+    """Validate the P0 lease allowlist; malformed manifests deny dispatch."""
+    if manifest is None:
+        return None
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("restoration"), list):
+        raise ValueError("dispatch manifest invalid")
+    records = {}
+    for row in manifest["restoration"]:
+        if not isinstance(row, dict):
+            raise ValueError("dispatch manifest row invalid")
+        number = row.get("issue_number")
+        if type(number) is not int or number <= 0:
+            raise ValueError("dispatch manifest issue number invalid")
+        if number in records:
+            raise ValueError("dispatch manifest duplicate issue number")
+        severity = row.get("severity")
+        severity = severity.upper() if isinstance(severity, str) else ""
+        group = row.get("lease_group")
+        if not isinstance(group, str) or LEASE_GROUP.fullmatch(group) is None:
+            group = None
+        records[number] = {"severity": severity, "lease_group": group}
+    return records
+
+
+def _lease_group_for(number: int, tier: int, records: dict | None) -> str | None:
+    """P0 requires a manifest-backed domain lease; standard work uses GLOBAL."""
+    if records is None:
+        return "GLOBAL"  # Compatibility for isolated legacy unit callers only.
+    record = records.get(number)
+    if tier == 0:
+        if not record or record["severity"] != "P0":
+            return None
+        group = record["lease_group"]
+        return group if group and group.startswith("P0_") and group != "P0_" else None
+    if record and record["severity"] and record["severity"] != f"P{tier}":
+        return None
+    return "GLOBAL"
+
 def plan(issues: list, prs: list, *, target: int | None = None,
-         runs: list | None = None, retry_after_run_id: int | None = None) -> dict:
+         runs: list | None = None, retry_after_run_id: int | None = None,
+         manifest: dict | None = None) -> dict:
     """Prefer P0/P1 restoration; resume existing PR, never duplicate its writer."""
     if not isinstance(issues, list) or not isinstance(prs, list):
         raise ValueError("inventory is not a pair of arrays")
     runs = [] if runs is None else runs
     if not isinstance(runs, list) or len(runs) > MAX_RUNS:
         raise ValueError("invalid or incomplete worker run inventory")
+    manifest_records = _manifest_lease_groups(manifest)
     if len(issues) > MAX_ISSUES or len(prs) > MAX_PRS:
         raise ValueError("inventory exceeded bounded scan; refuse truncated data")
     if target is not None and (type(target) is not int or target <= 0):
@@ -203,7 +285,7 @@ def plan(issues: list, prs: list, *, target: int | None = None,
     if _active_legacy_auto_run(runs):
         return {
             "action": "IDLE", "incident": None, "pr": None,
-            "head_sha": None, "priority": None,
+            "head_sha": None, "priority": None, "lease_group": None,
             "reason": "LEGACY_AUTO_WRITER_ACTIVE", "can_execute": False,
         }
 
@@ -214,7 +296,7 @@ def plan(issues: list, prs: list, *, target: int | None = None,
     ):
         return {
             "action": "IDLE", "incident": None, "pr": None,
-            "head_sha": None, "priority": None,
+            "head_sha": None, "priority": None, "lease_group": None,
             "reason": "MANUAL_RETRY_RECEIPT_INVALID", "can_execute": False,
         }
 
@@ -230,6 +312,7 @@ def plan(issues: list, prs: list, *, target: int | None = None,
     # highest-priority read-only follow-up as a fallback if no BUILD is safe.
     resumable = None
     for tier, _negative_updated, number, _issue in ranked:
+        lease_group = _lease_group_for(number, tier, manifest_records)
         related_all = [
             pr for pr in prs
             if isinstance(pr, dict) and pr.get("state") == "open"
@@ -250,9 +333,14 @@ def plan(issues: list, prs: list, *, target: int | None = None,
                 resumable = {
                     "action": "RESUME_PR", "incident": number,
                     "pr": pr["number"], "head_sha": pr["head"]["sha"],
-                    "priority": tier, "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
+                    "priority": tier, "lease_group": lease_group,
+                    "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
                     "can_execute": False,
                 }
+            continue
+        # An existing PR is safe to inspect even when its former P0 lease has
+        # disappeared. Only a new BUILD needs a current manifest-authorized lease.
+        if lease_group is None:
             continue
         # Paid attempt history governs new BUILD only. It must never prevent
         # resuming an existing, identity-valid source PR through CI/review.
@@ -262,14 +350,14 @@ def plan(issues: list, prs: list, *, target: int | None = None,
                 continue
         return {
             "action": "BUILD", "incident": number, "pr": None,
-            "head_sha": None, "priority": tier,
+            "head_sha": None, "priority": tier, "lease_group": lease_group,
             "reason": "NEXT_ELIGIBLE_PRIORITY_ISSUE", "can_execute": False,
         }
     if resumable is not None:
         return resumable
     return {
         "action": "IDLE", "incident": None, "pr": None,
-        "head_sha": None, "priority": None,
+        "head_sha": None, "priority": None, "lease_group": None,
         "reason": "NO_ELIGIBLE_ISSUE_OR_EXPLICIT_TARGET", "can_execute": False,
     }
 
@@ -279,16 +367,21 @@ def main() -> None:
     parser.add_argument("--issues", type=Path, required=True)
     parser.add_argument("--prs", type=Path, required=True)
     parser.add_argument("--runs", type=Path)
+    parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--target", type=int)
     parser.add_argument("--retry-after-run-id", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    manifest_input = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if manifest_input is None:
+        raise ValueError("dispatch manifest invalid: null CLI manifest")
     result = plan(
         json.loads(args.issues.read_text(encoding="utf-8")),
         json.loads(args.prs.read_text(encoding="utf-8")),
         target=args.target,
         runs=json.loads(args.runs.read_text(encoding="utf-8")) if args.runs else [],
         retry_after_run_id=args.retry_after_run_id,
+        manifest=manifest_input,
     )
     args.output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
