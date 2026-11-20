@@ -357,6 +357,19 @@ def gather(
                     sha=expected_head,
                     findings=["SOLO_GITHUB_EVIDENCE_UNAVAILABLE"],
                 )
+        # Do not let an earlier QA PASS survive a newer exact-head FAIL
+        # while the independent collector was reading GitHub. Both QA and
+        # Release consume this refreshed, canonical paged inventory.
+        refreshed = _paged(fetch, f"repos/{repo}/commits/{head}/check-runs",
+                           "check_runs", errors, "CHECK_RUNS_REFRESH")
+        ev["check_runs"] = [
+            {"id": r.get("id"), "name": r.get("name"), "head_sha": r.get("head_sha"),
+             "status": r.get("status"), "conclusion": r.get("conclusion"),
+             "app_id": (r.get("app") or {}).get("id"),
+             "completed_at": r.get("completed_at"),
+             "created_at": r.get("created_at"), "started_at": r.get("started_at")}
+            for r in refreshed
+        ]
     if independent_review_active:
         if source_review_data is not None:
             ev["source_review"] = {
