@@ -38,11 +38,12 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     detail = _data(row.get("detail"))
     original = _data(detail.get("identity"))
     result = _data(detail.get("result"))
+    candidate_envelope = _data(result.get("candidate_envelope"))
     # Stored Daily records are heterogeneous: canonical MLB rows use
     # event_start_time, while broad discovery uses commence_time_utc.
     def get(*names: str) -> Any:
         for name in names:
-            for source in (identity, original, result):
+            for source in (identity, original, result, candidate_envelope):
                 value = source.get(name)
                 if value not in (None, ""):
                     return value
@@ -83,7 +84,7 @@ def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
                         if token not in codes:
                             codes.append(token)
     for source in (result, nested):
-        for key in ("code", "failure_code", "failure_class"):
+        for key in ("code", "failure_code", "failure_class", "reason", "bucket"):
             value = source.get(key)
             if isinstance(value, str):
                 token = value.strip().upper()
@@ -103,35 +104,45 @@ def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
 def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, Any]:
     detail = _data(row.get("detail"))
     result = _data(detail.get("result"))
+    nested = _data(result.get("detail"))
+    # Persisted discovery rows wrap the real scorer output in result.detail.
+    # Prefer that receipt only if it contains a scorer-owned winner field;
+    # an unrelated nested failure packet must not erase a flat legacy receipt.
+    scorer = nested if any(key in nested for key in (
+        "selected_side", "winner_side", "calibrated_home_probability",
+        "calibrated_away_probability", "calibrated_probability",
+    )) else result
     home = _token(event.get("home_team")).upper()
     away = _token(event.get("away_team")).upper()
-    side = _token(result.get("selected_side") or result.get("winner_side")).upper()
+    side = _token(scorer.get("selected_side") or scorer.get("winner_side")).upper()
     # Score-event uses calibrated_home/away_* and global_terminal_authority,
     # rather than a generic selected-side receipt. Translate only an explicitly
     # identified selection, never infer a side from a price or larger p.
     if side == home:
-        point = result.get("calibrated_home_probability")
-        lower = result.get("calibrated_home_lower_bound")
-        upper = result.get("calibrated_home_upper_bound")
+        point = scorer.get("calibrated_home_probability")
+        lower = scorer.get("calibrated_home_lower_bound")
+        upper = scorer.get("calibrated_home_upper_bound")
     elif side == away:
-        point = result.get("calibrated_away_probability")
-        lower = result.get("calibrated_away_lower_bound")
-        upper = result.get("calibrated_away_upper_bound")
+        point = scorer.get("calibrated_away_probability")
+        lower = scorer.get("calibrated_away_lower_bound")
+        upper = scorer.get("calibrated_away_upper_bound")
     else:
         point = lower = upper = None
     # The generic validated receipt form remains accepted if it is already
     # persisted; do not substitute a guessed selected side for missing fields.
     if point is None:
-        point = result.get("calibrated_probability")
-        lower = result.get("calibrated_probability_lower_bound")
-        upper = result.get("calibrated_probability_upper_bound")
+        point = scorer.get("calibrated_probability")
+        lower = scorer.get("calibrated_probability_lower_bound")
+        upper = scorer.get("calibrated_probability_upper_bound")
     return {
         **event,
         "market_family": "OUTRIGHT_WINNER",
         "side": side,
         # No canonical producer-side receipt_id is present on legacy Daily
         # discovery rows. Never synthesize it from event/snapshot/run IDs.
-        "source_receipt_id": result.get("source_receipt_id"),
+        "source_receipt_id": (
+            scorer.get("source_receipt_id") or result.get("source_receipt_id")
+        ),
         "probability_publishable": (
             row.get("row_status") == "COMPLETED"
             and detail.get("probability_publishable") is True
@@ -139,18 +150,27 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         ),
         "rank_eligible": result.get("rank_eligible") is True,
         "terminal_authority": (
-            result.get("terminal_authority") or result.get("global_terminal_authority")
+            scorer.get("terminal_authority")
+            or scorer.get("global_terminal_authority")
+            or result.get("terminal_authority")
+            or result.get("global_terminal_authority")
         ),
-        "controlling_engine_identity": result.get("controlling_engine_identity"),
-        "model_class": result.get("model_class"),
-        "model_version": result.get("model_version"),
-        "calibration_version": result.get("calibration_version"),
-        "model_timestamp": result.get("model_timestamp"),
-        "source_snapshot_timestamp": result.get("source_snapshot_timestamp"),
+        "controlling_engine_identity": (
+            scorer.get("controlling_engine_identity")
+            or result.get("controlling_engine_identity")
+        ),
+        "model_class": scorer.get("model_class") or result.get("model_class"),
+        "model_version": scorer.get("model_version") or result.get("model_version"),
+        "calibration_version": scorer.get("calibration_version") or result.get("calibration_version"),
+        "model_timestamp": scorer.get("model_timestamp") or result.get("model_timestamp"),
+        "source_snapshot_timestamp": (
+            scorer.get("source_snapshot_timestamp")
+            or result.get("source_snapshot_timestamp")
+        ),
         "calibrated_probability": point,
         "calibrated_probability_lower_bound": lower,
         "calibrated_probability_upper_bound": upper,
-        "can_execute": result.get("can_execute"),
+        "can_execute": False,
     }
 
 def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
@@ -178,9 +198,11 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         identity = _data(row.get("identity"))
         original = _data(_data(row.get("detail")).get("identity"))
         result = _data(_data(row.get("detail")).get("result"))
+        candidate_envelope = _data(result.get("candidate_envelope"))
         source_sport = _token(
             identity.get("sport") or original.get("sport") or result.get("sport")
-            or result.get("league")
+            or result.get("league") or candidate_envelope.get("sport")
+            or candidate_envelope.get("league")
         ).upper()
         if source_sport and source_sport not in _SUPPORTED:
             unsupported_sport_rows += 1
