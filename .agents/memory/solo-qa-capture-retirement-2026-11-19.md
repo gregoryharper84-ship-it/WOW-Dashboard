@@ -23,3 +23,15 @@
 - **Prevention artifact:** `test_solo_qa_never_accepts_protected_success_codes_or_nonroutine_changes` in `artifacts/wow-engine/tests/test_v17_solo_qa_release_integration.py`.
 - **Link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2738
 - **Verification:** RED observed; final exact-head GREEN pending at time of writing. Production fidelity/coverage/qualified delta = 0; no merge or protected approval.
+
+
+## 2026-11-20 — Four independently reproduced provenance and race defects
+
+- **Typed reasons:** `SOLO_QA_RELEASE_APP_IDENTITY_INVALID`, `SOLO_PR_CHANGED_DURING_VERIFICATION`, `RELEASE_QA_FAILED`; exact Class R path aliasing is prevented by the existing fail-closed P classification.
+- **Mechanisms and predictions:** (1) Stripping spaces/replacing backslashes aliased distinct GitHub paths into the R allowlist; preserving the exact API filename predicts HOLD. (2) Only checking that QA and Release App IDs differ let reversed App roles look valid; pinning authentic QA `5245832` and Release `5245853` predicts HOLD. (3) The solo collector compared PR head/ref but omitted base SHA, allowing a changing merge base during evidence capture; binding base SHA predicts HOLD. (4) QA/Release gathered check runs before solo collection, so a later signed QA failure could be hidden by an earlier PASS; refreshing the canonical paged check inventory after collection predicts `RELEASE_QA_FAILED`.
+- **Detection point:** CodeRabbit review of PR #2738 and exact-head hosted `wow-v17-rapid-repair` red test.
+- **RED:** Test-only head `e088a9ff0cdfeb4590f3258a62383a10389ffcba`; hosted job `135993068807` recorded `4 failed, 363 passed`. Failures were `test_r_allowlist_compares_exact_github_paths_without_normalization_aliases`, `test_reversed_distinct_qa_release_app_roles_fail_closed`, `test_collect_rejects_base_sha_race_even_when_head_is_stable`, and `test_gather_refreshes_qa_check_after_solo_collection_before_release`.
+- **Fix:** Minimal changes to `solo_automated_verification.py` and `independent_release_checks.py`; exact filenames, authentic App role IDs, base SHA in PR identity, and refreshed check inventory. No new workflow, vendor, probability or release bypass.
+- **Prevention artifact:** The four named regression tests in `tests/test_v17_solo_automated_verification.py` and `tests/test_v17_solo_qa_release_integration.py`.
+- **Link:** https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2738
+- **Verification:** RED confirmed; GREEN on new exact head pending. No production deployment or protected authorization.
