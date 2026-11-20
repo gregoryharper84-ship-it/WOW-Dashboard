@@ -46,7 +46,7 @@ RETRY_POLICY = {
     "defer_to": "NEXT_SCHEDULED_SOURCE_REFRESH",
     "nominal_refresh_interval_seconds": 21600,
     "last_probed_utc": "2026-11-18T21:12:54Z",
-    "source_rate_limit_is_transient": False,
+    "rate_limit_recovery_not_established": True,
     "recovery_verified": False,
 }
 
@@ -148,6 +148,7 @@ def main() -> int:
                       "sport_key": receipt["sport_key"],
                       "article_count": len(receipt["articles"]),
                       "attempt_count": receipt["attempt_count"],
+                      "retry_deferred": receipt["retry_deferred"],
                       "selection_policy": policy,
                       "prediction_authority": False, "can_execute": False}))
     # A single public news outage cannot block the structured Scout or models;
