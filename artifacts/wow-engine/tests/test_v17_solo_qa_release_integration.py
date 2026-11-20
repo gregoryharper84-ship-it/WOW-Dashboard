@@ -380,3 +380,55 @@ def test_solo_qa_never_accepts_protected_success_codes_or_nonroutine_changes():
         assert "RELEASE_QA_SOLO_VERIFIED_EVIDENCE_INVALID" in irc.release_findings(
             ev, qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
         ), label
+
+
+def test_gather_refreshes_qa_check_after_solo_collection_before_release(monkeypatch):
+    # First inventory has a PASS, but an independent QA failure lands while
+    # the solo collector reads GitHub. Release must see the latest failure.
+    native = [
+        {"id": idx + 1, "name": name, "head_sha": HEAD, "status": "completed",
+         "conclusion": "success", "app": {"id": 15368}}
+        for idx, name in enumerate(irc.QA_EVIDENCE_CHECKS)
+    ]
+    first_qa = {"id": 100, "name": irc.QA_CHECK, "head_sha": HEAD,
+                "status": "completed", "conclusion": "success",
+                "app": {"id": int(QA_APP_ID)}}
+    later_qa = {**first_qa, "id": 101, "conclusion": "failure"}
+    check_reads = []
+
+    def fetch(path):
+        if path == f"repos/{sav.REPO}":
+            return 200, {"owner": {"login": "gregoryharper84-ship-it", "id": 285088163}}
+        if path == f"repos/{sav.REPO}/pulls/2740":
+            return 200, {
+                "number": 2740, "body": "Incident: #2020", "state": "open",
+                "draft": False, "merged": False,
+                "head": {"sha": HEAD, "ref": "feature/solo-test", "repo": {"full_name": sav.REPO}},
+                "base": {"ref": "main", "sha": "c" * 40},
+                "user": {"login": "gregoryharper84-ship-it", "id": 285088163},
+                "changed_files": 1,
+            }
+        if path.startswith(f"repos/{sav.REPO}/pulls/2740/files"):
+            return 200, [{"filename": ROUTINE_FILE, "status": "modified"}]
+        if path.startswith(f"repos/{sav.REPO}/commits/{HEAD}/check-runs"):
+            check_reads.append(path)
+            rows = native + [first_qa] + ([later_qa] if len(check_reads) > 1 else [])
+            return 200, {"total_count": len(rows), "check_runs": rows}
+        if path.startswith(f"repos/{sav.REPO}/actions/"):
+            return 200, {"total_count": 0, "workflow_runs": []}
+        if path.startswith(f"repos/{sav.REPO}/pulls/2740/reviews"):
+            return 200, []
+        return 404, {}
+
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    monkeypatch.setenv("WOW_QA_APP_ID", QA_APP_ID)
+    monkeypatch.setenv("WOW_RELEASE_APP_ID", RELEASE_APP_ID)
+    monkeypatch.setattr(irc, "solo_collect", lambda *a, **kw: _solo_receipt(head=HEAD))
+    ev = irc.gather(
+        sav.REPO, 2740, HEAD, fetch=fetch,
+        qa_review_policy=_policy(), solo_verified_enabled=True,
+    )
+    assert len(check_reads) >= 2, "QA inventory was not refreshed after solo collection"
+    assert "RELEASE_QA_FAILED" in irc.release_findings(
+        ev, qa_app_id=QA_APP_ID, release_app_id=RELEASE_APP_ID
+    )
