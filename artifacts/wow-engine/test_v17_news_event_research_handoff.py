@@ -361,3 +361,66 @@ def test_unserializable_discovery_payload_has_native_blocker_not_exception():
     assert result["research_status"] == "NEWS_DISCOVERY_SHAPE_INVALID"
     assert result["research_rescore_requested"] is False
     assert result["model_rescore_verified"] is False
+
+
+def test_unverified_odds_provider_id_never_qualifies_as_official_news_event():
+    # The legacy official_event_id alias may contain an odds-provider event ID.
+    provider_event = {
+        **EVENT, "official_event_id": "provider-abc",
+        "provider_event_id": "provider-abc",
+        "provider_event_source": "ODDS_API",
+        "canonical_event_id": None,
+        "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
+        "official_event_identity_verified": False,
+    }
+    fact = {**FACT, "official_event_id": "provider-abc"}
+    blocked = _result(event=provider_event, reviewed=[fact])
+    assert blocked["research_status"] == "NEWS_CANONICAL_EVENT_UNVERIFIED"
+    assert blocked["provider_event_id"] == "provider-abc"
+    assert blocked["official_event_identity_verified"] is False
+    assert blocked["canonical_identity_status"] == "PROVIDER_EVENT_ID_UNVERIFIED"
+    assert blocked["research_rescore_requested"] is False
+    assert blocked["model_rescore_verified"] is False
+    assert blocked["prediction_authority"] is False
+    assert blocked["calibrated_probability"] is None
+    assert blocked["can_execute"] is False
+    # A caller cannot merely flip one boolean on the same provider-alias row.
+    assert _result(
+        event={**provider_event, "official_event_identity_verified": True},
+        reviewed=[fact],
+    )["research_status"] == "NEWS_CANONICAL_EVENT_UNVERIFIED"
+
+
+def test_nightly_provider_identity_is_blocked_through_scout_enrichment():
+    from v17.sport_scout_enrichment import enrich_candidate
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    event_id = "odds-provider-game-123"
+    event = {
+        **EVENT,
+        "official_event_id": event_id,
+        "provider_event_id": event_id,
+        "provider_event_source": "ODDS_API",
+        "canonical_identity_status": "PROVIDER_EVENT_ID_UNVERIFIED",
+        "official_event_identity_verified": False,
+        "event_start_utc": (now + timedelta(hours=8)).isoformat(),
+    }
+    discovery = {
+        **DISCOVERY,
+        "source_observed_at": (now - timedelta(minutes=5)).isoformat(),
+    }
+    reviewed = [{
+        **FACT, "official_event_id": event_id,
+        "publisher_published_at_utc": (now - timedelta(minutes=8)).isoformat(),
+        "independently_reviewed_at_utc": (now - timedelta(minutes=3)).isoformat(),
+    }]
+    out = enrich_candidate(
+        {**event, "news_discovery_receipt": discovery,
+         "news_reviewed_facts": reviewed}, "TEAM_EVENT"
+    )
+    handoff = out["news_research_handoff"]
+    assert handoff["research_status"] == "NEWS_CANONICAL_EVENT_UNVERIFIED"
+    assert handoff["research_rescore_requested"] is False
+    assert handoff["news_context"] == []
+    assert out["controlling_specialist_route"] == "LLP_TEAM_BETTING_ENGINE"
+    assert out["can_execute"] is False
