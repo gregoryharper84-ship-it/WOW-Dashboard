@@ -60,3 +60,27 @@ Targeted test command:
 cd artifacts/wow-engine
 python -m pytest -q test_v17_news_event_research_handoff.py tests/test_v17_sport_scout_teams.py
 ```
+
+## November 20, 2026 — duplicated headlines are not independent corroboration
+
+Evidence: GDELT source-refresh [run #44717653057](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/44717653057)
+returned 15 NFL discovery URLs but only **12 distinct normalized headline texts**.
+One identical headline appeared at three publisher URLs and another at two.
+These copies are preserved as distinct discovery records, but they must not
+be counted as two independent corroborating sources for high-impact news.
+
+The event research handoff therefore requires, **for high-impact facts
+supported by secondary/beat sources**, all three: two distinct URLs, two
+distinct claimed source groups and at least two distinct **nonempty
+normalized discovery headline texts**. Identical headlines despite
+punctuation/case changes, or missing headlines, produce
+`NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED` with the auditable conflict
+`SYNDICATED_OR_UNATTRIBUTED_HEADLINES`. The original fact rows and URLs remain
+in `news_context` for audit; official team/league sources are not newly held
+for a missing title.
+
+Distinct headline wording is **not proof of independent reporting**; a wire
+story can be rewritten and still depend on one original claim. The external
+authorized verifier must establish actual source independence and claim
+truth. Neither passing this gate nor `research_rescore_requested=true`
+authorizes a fitted model change, calibration update, release or wager.

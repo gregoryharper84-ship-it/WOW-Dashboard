@@ -102,7 +102,7 @@ def test_beat_reporter_high_impact_requires_independent_confirmations():
     second = {**one, "source_group": "reporter-2", "independent_review_ref": "source-review-2"}
     assert _result(reviewed=[one, second])["research_status"] == "NEWS_SOURCE_CONFLICT"
     distinct = "https://another-league.example/second-report"
-    with_distinct_article = {**DISCOVERY, "articles": DISCOVERY["articles"] + [{"source_url": distinct}]}
+    with_distinct_article = {**DISCOVERY, "articles": DISCOVERY["articles"] + [{"source_url": distinct, "title": "Separate independent official report"}]}
     second = {**second, "source_url": distinct}
     assert _result(discovery=with_distinct_article, reviewed=[one, second])["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
 
@@ -189,3 +189,112 @@ def test_roof_status_secondary_requires_independent_corrob():
     secondary = {**FACT, "evidence_kind": "ROOF_STATUS",
                  "source_class": "SECONDARY_MEDIA", "source_group": "reporter-x"}
     assert _result(reviewed=[secondary])["research_status"] == "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED"
+
+
+def test_syndicated_headline_copies_cannot_masquerade_as_independent_confirmation():
+    """Two domains and groups cannot turn a duplicated headline into 2 sources."""
+    second_url = "https://second.example/republished"
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": URL,
+             "title": "Lions moving on after player joins injury reserve"},
+            {"source_url": second_url,
+             "title": "LIONS moving on — after player joins injury reserve!"},
+        ],
+    }
+    first = {**FACT, "source_class": "PRIMARY_BEAT_REPORTER",
+             "source_group": "reporter-domain-a"}
+    second = {**first, "source_url": second_url,
+              "source_group": "reporter-domain-b",
+              "independent_review_ref": "review-b"}
+    output = _result(discovery=discovery, reviewed=[first, second])
+    assert output["research_status"] == "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED"
+    assert output["research_rescore_requested"] is False
+    assert output["model_rescore_verified"] is False
+    assert output["source_conflicts"] == ["SYNDICATED_OR_UNATTRIBUTED_HEADLINES"]
+    assert len(output["news_context"]) == 2  # no lost provenance rows
+    assert output["can_execute"] is False
+
+
+def test_distinct_headlines_preserve_separate_corrob_when_reviewed():
+    second_url = "https://second.example/independent"
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": URL, "title": "Report from beat reporter on availability"},
+            {"source_url": second_url, "title": "Second independently authored player update"},
+        ],
+    }
+    first = {**FACT, "source_class": "PRIMARY_BEAT_REPORTER",
+             "source_group": "reporter-domain-a"}
+    second = {**first, "source_url": second_url,
+              "source_group": "reporter-domain-b",
+              "independent_review_ref": "review-b"}
+    output = _result(discovery=discovery, reviewed=[first, second])
+    assert output["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert output["research_rescore_requested"] is True
+    assert output["model_rescore_verified"] is False
+    assert output["model_feature_eligible"] is False
+    assert len(output["news_context"]) == 2
+
+
+def test_unknown_secondary_headline_independence_holds():
+    second_url = "https://second.example/no-title"
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": URL, "title": "First source reported player injury"},
+            {"source_url": second_url},
+        ],
+    }
+    first = {**FACT, "source_class": "SECONDARY_MEDIA",
+             "source_group": "source-a"}
+    second = {**first, "source_url": second_url,
+              "source_group": "source-b",
+              "independent_review_ref": "review-b"}
+    output = _result(discovery=discovery, reviewed=[first, second])
+    assert output["research_status"] == "NEWS_HIGH_IMPACT_CONFIRMATION_REQUIRED"
+    assert output["source_conflicts"] == ["SYNDICATED_OR_UNATTRIBUTED_HEADLINES"]
+    assert len(output["news_context"]) == 2
+
+
+def test_official_injury_report_not_blocked_by_headline_absence():
+    output = _result(reviewed=[FACT])
+    assert output["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert output["research_rescore_requested"] is True
+    assert output["model_rescore_verified"] is False
+    assert output["can_execute"] is False
+
+
+def test_mixed_official_and_syndicated_secondary_still_accepts_official_fact():
+    secondary_url = "https://second.example/wire-copy"
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": URL, "title": "League roster bulletin"},
+            {"source_url": secondary_url, "title": "League roster bulletin"},
+        ],
+    }
+    secondary = {**FACT, "source_url": secondary_url,
+                 "source_group": "wire-distributor",
+                 "source_class": "SECONDARY_MEDIA",
+                 "independent_review_ref": "review-secondary"}
+    out = _result(discovery=discovery, reviewed=[FACT, secondary])
+    assert out["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert out["research_rescore_requested"] is True
+    assert out["model_rescore_verified"] is False
+    assert len(out["news_context"]) == 2
+
+
+def test_malformed_discovery_urls_cannot_crash_headline_provenance_check():
+    discovery = {
+        **DISCOVERY,
+        "articles": [
+            {"source_url": ["not-hashable"], "title": "Bad payload"},
+            {"source_url": URL, "title": "Official league injury bulletin"},
+        ],
+    }
+    out = _result(discovery=discovery, reviewed=[FACT])
+    assert out["research_status"] == "NEWS_RESEARCH_RESCORE_REQUESTED"
+    assert out["can_execute"] is False
