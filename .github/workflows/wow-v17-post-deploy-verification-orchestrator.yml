@@ -248,6 +248,7 @@ jobs:
           exit "$failed"
 
       - name: Checkout the previously authenticated SHA for final identity readback
+        id: final-checkout
         continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -255,6 +256,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify checkout still matches accepted SHA
+        id: final-sha
         continue-on-error: true
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
@@ -262,6 +264,35 @@ jobs:
         continue-on-error: true
         id: final-readback
         run: python artifacts/wow-engine/v17/lean_production_readback.py
+
+      - name: Withdraw acceptance unless the final identity readback is proven
+        # The final checkout, SHA and readback steps are isolated so they never
+        # fail main, so they must not leave a drift-failed run recorded as
+        # ACCEPTANCE_LANES_PASSED for post_deploy_dedupe. The old outcome file is
+        # removed before rewriting: a crash here leaves no PASSED outcome, and a
+        # missing outcome already fails dedupe closed (lanes repeat).
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          FINAL_CHECKOUT_OUTCOME: ${{ steps.final-checkout.outcome }}
+          FINAL_SHA_OUTCOME: ${{ steps.final-sha.outcome }}
+          FINAL_READBACK_OUTCOME: ${{ steps.final-readback.outcome }}
+        run: |
+          set -uo pipefail
+          f=wow-v17-post-deploy-acceptance-outcome.json
+          [ -e "$f" ] || exit 0
+          status=$(jq -r '.status // ""' "$f" 2>/dev/null || echo "")
+          [ "$status" = "ACCEPTANCE_LANES_PASSED" ] || exit 0
+          if [ "$FINAL_CHECKOUT_OUTCOME" = "success" ] && [ "$FINAL_SHA_OUTCOME" = "success" ] \
+             && [ "$FINAL_READBACK_OUTCOME" = "success" ]; then
+            exit 0
+          fi
+          jq '.status = "ACCEPTANCE_LANES_FAILED" | .final_identity_readback = "NOT_PROVEN"' "$f" > "$f.withdrawn" 2>/dev/null
+          rm -f "$f"
+          [ -s "$f.withdrawn" ] && mv "$f.withdrawn" "$f"
+          echo "ACCEPTANCE_WITHDRAWN_FINAL_IDENTITY_NOT_PROVEN checkout=$FINAL_CHECKOUT_OUTCOME sha=$FINAL_SHA_OUTCOME readback=$FINAL_READBACK_OUTCOME can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::ACCEPTANCE_WITHDRAWN_FINAL_IDENTITY_NOT_PROVEN"
 
       - name: Preserve final observation receipt (independent acceptance still required)
         continue-on-error: true
