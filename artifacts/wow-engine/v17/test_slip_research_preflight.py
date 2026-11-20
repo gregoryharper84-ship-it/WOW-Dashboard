@@ -479,3 +479,17 @@ def test_prizepicks_optimizer_cannot_skip_research_hold_by_default():
     assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in out.research_preflight["cards"][0]["blockers"]
     assert out.cards[0]["portfolio_governance"]["portfolio_status"] == "HELD_RESEARCH_ONLY"
     assert out.can_execute is False
+
+
+def test_material_injury_news_requires_new_opportunity_scenario_not_only_model_id():
+    castle = prizepicks_prop("castle", "sas-lac")
+    castle["news_evidence"]["material_change"] = True
+    castle["news_evidence"]["last_reviewed_at_utc"] = "2026-11-19T23:59:00Z"
+    castle["news_evidence"]["new_model_receipt_id"] = "synthetic-rescore-id"
+    review = audit_research_slips(
+        [prizepicks_card(castle, prizepicks_prop("towns", "nyk-min"))],
+        as_of_utc=AS_OF,
+    )
+    assert "PROP_OPPORTUNITY_RESCENARIO_REQUIRED" in review["cards"][0]["blockers"]
+    assert review["cards"][0]["can_publish_as_certified"] is False
+    assert review["joint_probability"] is None
