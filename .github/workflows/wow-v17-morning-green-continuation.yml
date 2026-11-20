@@ -9,6 +9,11 @@ on:
       pr_number:
         description: Optional Morning-Green PR number to evaluate immediately
         required: false
+  schedule:
+    # Ordinary-lane sweep. QA and Release always finish after the verify
+    # workflows that wake this coordinator, so an ordinary PR needs a later
+    # re-check; a GITHUB_TOKEN branch update also needs CI dispatched.
+    - cron: "7,27,47 * * * *"
 
 permissions:
   actions: write
@@ -23,7 +28,7 @@ concurrency:
 jobs:
   continue-repair:
     name: Resume Morning-Green repair after CI
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -404,3 +409,57 @@ jobs:
             echo "- Scope approved: ${SCOPE_APPROVED:-false}"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  ordinary-sweep:
+    name: Re-check opted-in ordinary PRs
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Advance up to five ordinary PRs (never fails main)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Scheduled runs attach their check to main: report typed outcomes,
+          # never fail. Merging still happens only in continue-repair, which
+          # re-verifies the guard, all five exact-head checks and currency.
+          set -uo pipefail
+          prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" 2>/dev/null |
+            jq -rs --arg repo "$GITHUB_REPOSITORY" '
+              [.[][] | select(.draft == false and .head.repo.full_name == $repo)
+                     | select((.body // "") | gsub("\r"; "") | split("\n") | index("WOW-Ordinary-Auto-Merge: true"))
+                     | select(((.body // "") | contains("Morning-Green-Autonomous: true")) | not)]
+              | sort_by(.created_at) | .[:5] | .[].number' 2>/dev/null) || prs=""
+          if [ -z "$prs" ]; then
+            echo "ORDINARY_SWEEP_NO_CANDIDATES" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for n in $prs; do
+            pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${n}" 2>/dev/null) || { echo "ORDINARY_SWEEP_READ_FAILED:#${n}" >> "$GITHUB_STEP_SUMMARY"; continue; }
+            state=$(jq -r '.mergeable_state // "unknown"' <<<"$pr")
+            head=$(jq -r '.head.sha' <<<"$pr")
+            ref=$(jq -r '.head.ref' <<<"$pr")
+            case "$state" in
+              behind)
+                # A GITHUB_TOKEN push starts no CI, so dispatch the required
+                # workflows on the updated branch explicitly.
+                if gh api -X PUT "/repos/${GITHUB_REPOSITORY}/pulls/${n}/update-branch" -f expected_head_sha="$head" >/dev/null 2>&1; then
+                  sleep 10
+                  gh workflow run wow-verify.yml --repo "$GITHUB_REPOSITORY" --ref "$ref" || true
+                  gh workflow run wow-engine-verify.yml --repo "$GITHUB_REPOSITORY" --ref "$ref" || true
+                  echo "ORDINARY_SWEEP_UPDATED_AND_CI_DISPATCHED:#${n}" >> "$GITHUB_STEP_SUMMARY"
+                else
+                  echo "ORDINARY_SWEEP_UPDATE_FAILED:#${n}" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                ;;
+              clean)
+                gh workflow run wow-v17-morning-green-continuation.yml --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$n" || true
+                echo "ORDINARY_SWEEP_CONTINUATION_DISPATCHED:#${n}" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              *)
+                echo "ORDINARY_SWEEP_WAIT:#${n}:${state}" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+          done
+          exit 0
