@@ -97,6 +97,9 @@ def reconcile_news_handoff(
         "schema_version": "wow.v17.news_event_research_handoff.v1",
         "sport_key": sport,
         "official_event_id": event_id,
+        "provider_event_id": event.get("provider_event_id"),
+        "canonical_identity_status": event.get("canonical_identity_status"),
+        "official_event_identity_verified": event.get("official_event_identity_verified") is True,
         "event_start_utc": kickoff.isoformat() if kickoff else None,
         "research_observed_at_utc": now.isoformat(),
         "discovery_observed_at_utc": None,
@@ -127,6 +130,21 @@ def reconcile_news_handoff(
 
     if source_receipt_sha256 is not None and raw_sha is None:
         return finish("NEWS_DISCOVERY_DIGEST_INVALID")
+    # Provider event UUIDs are discovery identifiers, not official fixtures.
+    # Existing downstream market routing may still carry a legacy
+    # official_event_id alias; do not let it authenticate news.
+    provider_id = event.get("provider_event_id")
+    if (
+        event.get("official_event_identity_verified") is False
+        or event.get("canonical_identity_status") == "PROVIDER_EVENT_ID_UNVERIFIED"
+        or (
+            isinstance(provider_id, str)
+            and provider_id.strip()
+            and provider_id == event_id
+            and event.get("official_event_identity_verified") is not True
+        )
+    ):
+        return finish("NEWS_CANONICAL_EVENT_UNVERIFIED")
     if not isinstance(sport, str) or not sport or not isinstance(event_id, str) or not event_id or kickoff is None:
         return finish("NEWS_CANONICAL_EVENT_UNVERIFIED")
     if now >= kickoff:
