@@ -163,6 +163,220 @@ def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _row_sport(row: dict[str, Any]) -> str:
+    identity = row.get("identity") or {}
+    sport = identity.get("sport") or row.get("sport")
+    if not sport:
+        result = row.get("result") or {}
+        sport = result.get("sport") or result.get("league")
+    if not sport and row.get("lane") == "MONEYLINE":
+        sport = "MLB"
+    return str(sport or "UNKNOWN").upper().strip()
+
+
+def _is_row_hydrated(row: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Count only verified consumed features, not absence of an input error.
+
+    MODEL_UNAVAILABLE is a model-stage HOLD, not evidence that feature
+    hydration failed. Missing proof remains uncounted rather than guessed.
+    """
+    result = row.get("result") or {}
+    code = str(result.get("code") or result.get("model_status") or result.get("terminal_status") or "")
+    blockers = [str(b) for b in (result.get("blockers") or [])]
+    if not blockers and code:
+        blockers = [code]
+    input_failures = (
+        "MODEL_INPUTS_INSUFFICIENT",
+        "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT",
+        "RUN_INVALID_ACQUISITION_INCOMPLETE",
+        "RUN_INVALID_DATA_CONTRACT",
+        "TEAM_EVENT_REQUEST_CONTRACT_INVALID",
+        "TEAM_EVENT_CONTRACT_INVALID",
+        "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND",
+        "NO_CANONICAL_PREGAME_SNAPSHOTS",
+        "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE",
+        "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
+        "NBA_UNTRUSTED_CALLER_FEATURES_REJECTED",
+        "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE",
+        "NBA_CURRENT_FEATURES_INVALID",
+        "NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE",
+    )
+    if any(code == m or any(m in b for b in blockers) for m in input_failures):
+        return False, blockers
+    if result.get("hydration_status") not in (None, "", "PASS"):
+        return False, blockers
+
+    receipt = result.get("feature_consumption_receipt")
+    verified_consumption = (
+        isinstance(receipt, dict)
+        and receipt.get("consumption_verification_status") == "VERIFIED"
+        and receipt.get("receipt_complete") is True
+    )
+    # An approved terminal result is independently protected by the existing
+    # official-publication guard; a bare model_invoked/PASS flag is not.
+    guard = result.get("official_publication_guard")
+    verified_terminal = (
+        row.get("row_status") == "COMPLETED"
+        and isinstance(guard, dict)
+        and guard.get("official_publication_allowed") is True
+        and result.get("terminal_label") == "FINAL_APPROVED"
+        and result.get("global_terminal_authority") == "V17_TERMINAL_REDUCER"
+        and result.get("can_execute") is False
+    )
+    return bool(verified_consumption or verified_terminal), blockers
+
+
+def _is_row_model_evaluated(row: dict[str, Any], hydrated: bool) -> bool:
+    if not hydrated:
+        return False
+    result = row.get("result") or {}
+    if result.get("model_invoked") is True:
+        return True
+    if result.get("model_invoked") is False:
+        return False
+    has_probs = any(
+        result.get(k) is not None
+        for k in (
+            "raw_model_probability",
+            "calibrated_probability",
+            "model_probability",
+            "calibrated_home_probability",
+            "raw_probability",
+        )
+    )
+    if has_probs:
+        return True
+    outcomes = result.get("outcomes")
+    if isinstance(outcomes, list) and outcomes:
+        return any(
+            isinstance(o, dict)
+            and (
+                o.get("payload", {}).get("model_invoked") is True
+                or o.get("payload", {}).get("specialist_invoked") is True
+                or o.get("payload", {}).get("probability") is not None
+            )
+            for o in outcomes
+        )
+    return False
+
+
+def _is_row_certified(row: dict[str, Any], evaluated: bool) -> bool:
+    """Count a governing terminal approval, never a self-described cert flag.
+
+    The monitor is not a certificate authority. A bare PASS, certified=True,
+    certification_id, or unauthenticated receipt cannot assert certification.
+    """
+    if not evaluated or row.get("row_status") != "COMPLETED":
+        return False
+    result = row.get("result") or {}
+    if (
+        result.get("model_invoked") is not True
+        or result.get("terminal_label") != "FINAL_APPROVED"
+        or result.get("global_terminal_authority") != "V17_TERMINAL_REDUCER"
+        or result.get("can_execute") is not False
+        or result.get("probability_publishable") is not True
+        or result.get("rank_eligible") is not True
+        or row.get("probability_publishable") is not True
+        or row.get("rank_eligible") is not True
+    ):
+        return False
+    guard = result.get("official_publication_guard")
+    if not (
+        isinstance(guard, dict)
+        and guard.get("official_publication_allowed") is True
+        and guard.get("status") == "PASS"
+        and guard.get("terminal_authority") == "V17_TERMINAL_REDUCER"
+    ):
+        return False
+    # Re-evaluate the complete deterministic publication contract, rather
+    # than trusting a copied or caller-provided guard label.
+    try:
+        return evaluate_team_event_official_publication(result).get("official_publication_allowed") is True
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
+def _is_row_publishable(row: dict[str, Any], certified: bool) -> bool:
+    if not certified:
+        return False
+    result = row.get("result") or {}
+    row_status = row.get("row_status")
+    return bool(
+        row_status == "COMPLETED"
+        and row.get("probability_publishable") is True
+        and row.get("rank_eligible") is True
+        and result.get("probability_publishable") is True
+    )
+
+
+def _compute_stage_progression_by_sport(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_sport: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        sport = _row_sport(row)
+        if sport not in by_sport:
+            by_sport[sport] = {
+                "discovered": 0,
+                "hydrated": 0,
+                "model_evaluated": 0,
+                "certified": 0,
+                "publishable": 0,
+                "failure_codes": [],
+            }
+        entry = by_sport[sport]
+        entry["discovered"] += 1
+        hydrated, blockers = _is_row_hydrated(row)
+        if hydrated:
+            entry["hydrated"] += 1
+        evaluated = _is_row_model_evaluated(row, hydrated)
+        if evaluated:
+            entry["model_evaluated"] += 1
+        certified = _is_row_certified(row, evaluated)
+        if certified:
+            entry["certified"] += 1
+        publishable = _is_row_publishable(row, certified)
+        if publishable:
+            entry["publishable"] += 1
+        for b in blockers:
+            if b and b not in entry["failure_codes"]:
+                entry["failure_codes"].append(b)
+
+    for entry in by_sport.values():
+        entry["failure_codes"].sort()
+
+    total_discovered = sum(e["discovered"] for e in by_sport.values())
+    total_hydrated = sum(e["hydrated"] for e in by_sport.values())
+    total_evaluated = sum(e["model_evaluated"] for e in by_sport.values())
+    total_certified = sum(e["certified"] for e in by_sport.values())
+    total_publishable = sum(e["publishable"] for e in by_sport.values())
+
+    return {
+        "discovered": total_discovered,
+        "hydrated": total_hydrated,
+        "model_evaluated": total_evaluated,
+        "certified": total_certified,
+        "publishable": total_publishable,
+        "by_sport": by_sport,
+    }
+
+
+def _compute_scoring_run_status(
+    rows: list[dict[str, Any]],
+    progression: dict[str, Any],
+) -> str:
+    total = len(rows)
+    if total == 0:
+        return "ZERO_ROWS_DISCOVERED"
+    evaluated = progression.get("model_evaluated", 0)
+    publishable = progression.get("publishable", 0)
+    if evaluated == 0:
+        return "ALL_HELD_ZERO_EVALUATED"
+    if publishable == 0:
+        return "ALL_HELD_ZERO_PUBLISHABLE"
+    if publishable < total:
+        return "PARTIAL_PUBLISHABLE"
+    return "ALL_PUBLISHABLE"
+
+
 def _future(value: Any) -> bool:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -519,6 +733,9 @@ def _lane_reconciliation(
         "zero_row_reason": zero_row_reason,
         "acquisition": acquisition if lane == "PROPS" else None,
     }
+    lane_progression = _compute_stage_progression_by_sport(lane_rows)
+    result["scoring_run_status"] = _compute_scoring_run_status(lane_rows, lane_progression)
+    result["stage_progression"] = lane_progression
     if lane == "PROPS":
         result["handoff_reconciliation"] = _prop_handoff_reconciliation(
             acquisition=acquisition,
@@ -840,6 +1057,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             blockers.append(f"TEAM_EVENT_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
         for event in event_rows:
             identity = {key: event.get(key) for key in ("official_event_id", "event_start_time", "home_team", "away_team", "snapshot_id")}
+            identity["sport"] = str(event.get("sport") or "MLB")
             request = TeamEventRequest(requester_host_identity="WOW_BETTING_ENGINE", research_run_id=run_id, requested_slate_date=req.requested_slate_date, requested_timezone=req.requested_timezone, candidate_family="OUTRIGHT_WINNER", decision_intent="BEST_SIDE", event_key=f"MLB:{event['official_event_id']}", official_event_id=str(event["official_event_id"]), event_start_time_utc=event["event_start_time"], sport="MLB", league="MLB", settlement_basis="FULL_GAME_INCLUDING_EXTRA_INNINGS", home_team=event["home_team"], away_team=event["away_team"], source_snapshot_id=str(event["snapshot_id"]), latest_material_update_timestamp=event.get("snapshot_timestamp"), sport_specific_evidence={"venue": event.get("venue_name"), "home_starting_pitcher": event.get("home_probable_pitcher"), "away_starting_pitcher": event.get("away_probable_pitcher"), "home_starter_status": "PROBABLE", "away_starter_status": "PROBABLE", "home_lineup_status": "PROJECTED", "away_lineup_status": "PROJECTED"})
             try:
                 result = score_team_event_request(request, event_api=event_api, canonical_hydration_required=True)
@@ -955,10 +1173,18 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         run_status = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
     elif blockers:
         run_status = "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+
+    stage_progression = _compute_stage_progression_by_sport(rows)
+    stage_progression_by_sport = stage_progression["by_sport"]
+    scoring_run_status = _compute_scoring_run_status(rows, stage_progression)
+
     response = {
         "run_id": run_id,
         "terminal": True,
         "run_status": run_status,
+        "scoring_run_status": scoring_run_status,
+        "stage_progression": stage_progression,
+        "stage_progression_by_sport": stage_progression_by_sport,
         "requested_slate_date": req.requested_slate_date,
         "requested_timezone": req.requested_timezone,
         "request_trace_id": request_context["request_trace_id"],
