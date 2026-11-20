@@ -1,4 +1,4 @@
-"""Offline tests for live-slate public news selection and bounded 429 recovery."""
+"""Offline tests for live-slate public news selection and fail-closed 429 deferral."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,82 +64,89 @@ def test_slate_single_sport_and_daily_rotation():
     assert first != second
 
 
-def test_bounded_429_ladder_never_converts_persistent_failure_to_ok(monkeypatch):
-    calls, sleeps = [], []
+def test_rate_limit_is_one_attempt_and_never_claims_recovery(monkeypatch):
+    calls = []
     def blocked(*args, **kwargs):
         calls.append(1)
         return SimpleNamespace(
-            ok=False, code="SOURCE_RATE_LIMITED",
-            observed_at=AT.isoformat(), data={"articles": []})
+            ok=False, code="SOURCE_RATE_LIMITED", status=429,
+            observed_at=AT.isoformat(), retry_after_seconds=None, data={})
     monkeypatch.setattr(runner, "fetch_gdelt_news", blocked)
-    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
     receipt = runner.discover(AT, sport="basketball_nba")
-    assert len(calls) == 2 and sleeps == [900]
+    assert calls == [1]
     assert receipt["source_status"] == "BLOCKED"
     assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
-    assert receipt["attempt_count"] == 2
-    assert receipt["total_wait_seconds"] == 900
+    assert receipt["attempt_count"] == 1
+    assert receipt["attempts"] == [{
+        "attempt": 1, "delay_before_seconds": 0,
+        "http_status": 429, "source_code": "SOURCE_RATE_LIMITED",
+        "observed_at": AT.isoformat(), "retry_after_seconds": None,
+    }]
+    assert receipt["total_wait_seconds"] == 0
+    assert receipt["retry_deferred"] is True
     assert receipt["article_count"] == 0
     assert receipt["model_rescore_verified"] is False
     assert receipt["can_execute"] is False
 
 
-def test_429_recovers_after_one_paced_retry_without_predictive_authority(monkeypatch):
-    calls, sleeps = [], []
-    def fetch(*args, **kwargs):
-        calls.append(1)
-        ok = len(calls) == 2
-        return SimpleNamespace(
-            ok=ok, code="SOURCE_FETCH_OK" if ok else "SOURCE_RATE_LIMITED",
-            observed_at=AT.isoformat(),
-            data={"articles": [{"title": "discovery metadata"}]} if ok else {})
-    monkeypatch.setattr(runner, "fetch_gdelt_news", fetch)
-    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
-    receipt = runner.discover(AT, sport="icehockey_nhl")
-    assert len(calls) == 2 and sleeps == [900]
-    assert receipt["source_status"] == "OK"
-    assert receipt["article_count"] == 1
-    assert receipt["attempt_count"] == 2
-    assert receipt["prediction_authority"] is False
-    assert receipt["historical_pregame_eligible"] is False
-
-
-def test_429_honours_retry_after_and_stays_bounded(monkeypatch):
-    calls, sleeps = [], []
-    def fetch(*args, **kwargs):
+def test_retry_after_is_reported_but_never_slept_on(monkeypatch):
+    calls = []
+    def blocked(*args, **kwargs):
         calls.append(1)
         return SimpleNamespace(ok=False, code="SOURCE_RATE_LIMITED", status=429,
-                               retry_after_seconds=1000, observed_at=AT.isoformat(),
-                               data={})
-    monkeypatch.setattr(runner, "fetch_gdelt_news", fetch)
-    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
+                               retry_after_seconds=1000,
+                               observed_at=AT.isoformat(), data={})
+    monkeypatch.setattr(runner, "fetch_gdelt_news", blocked)
     receipt = runner.discover(AT, sport="icehockey_nhl")
-    assert len(calls) == 2
-    assert sleeps == [1000]
-    assert receipt["source_status"] == "BLOCKED"
+    assert calls == [1]
     assert receipt["source_code"] == "SOURCE_RATE_LIMITED"
-    assert receipt["attempt_count"] == 2
-    assert receipt["total_wait_seconds"] == 1000
-    assert [a["delay_before_seconds"] for a in receipt["attempts"]] == [0, 1000]
-    assert receipt["retry_policy"]["measured_block_floor_seconds"] >= 735
+    assert receipt["attempt_count"] == 1
+    assert receipt["retry_after_seconds"] == 1000
+    assert receipt["attempts"][0]["retry_after_seconds"] == 1000
+    assert receipt["total_wait_seconds"] == 0
+    assert receipt["retry_policy"]["same_run_retry"] is False
+    assert receipt["retry_policy"]["recovery_verified"] is False
     assert receipt["can_execute"] is False
 
 
-def test_retry_ladder_is_paced_in_minutes_and_bounded(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(runner, "fetch_gdelt_news",
-                        lambda *a, **k: SimpleNamespace(
-                            ok=False, code="SOURCE_RATE_LIMITED", status=429,
-                            retry_after_seconds=None, observed_at=AT.isoformat(), data={}))
-    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
+def test_successful_one_request_never_grants_model_authority(monkeypatch):
+    calls = []
+    def accepted(*args, **kwargs):
+        calls.append(1)
+        return SimpleNamespace(
+            ok=True, code="SOURCE_FETCH_OK", status=200, retry_after_seconds=None,
+            observed_at=AT.isoformat(), data={"articles": [
+                {"title": "Discovery metadata", "evidence_only": True}]})
+    monkeypatch.setattr(runner, "fetch_gdelt_news", accepted)
     receipt = runner.discover(AT, sport="icehockey_nhl")
-    assert sleeps == list(runner.RETRY_DELAYS_SECONDS)
-    assert sum(sleeps) <= runner.MAX_TOTAL_WAIT_SECONDS
-    assert min(sleeps) >= runner.RETRY_POLICY["measured_block_floor_seconds"]
-    assert receipt["attempt_count"] == 1 + len(runner.RETRY_DELAYS_SECONDS)
-    assert receipt["retry_policy"]["ladder_seconds"] == list(runner.RETRY_DELAYS_SECONDS)
+    assert calls == [1]
+    assert receipt["source_status"] == "OK"
+    assert receipt["article_count"] == 1
+    assert receipt["attempt_count"] == 1
+    assert receipt["retry_deferred"] is False
+    assert receipt["prediction_authority"] is False
+    assert receipt["historical_pregame_eligible"] is False
+    assert receipt["model_feature_eligible"] is False
 
 
+def test_timeout_preserves_source_failure_and_does_not_retry(monkeypatch):
+    calls = []
+    def timed_out(*args, **kwargs):
+        calls.append(1)
+        return SimpleNamespace(
+            ok=False, code="SOURCE_TIMEOUT", status=None,
+            observed_at=AT.isoformat(), data={})
+    monkeypatch.setattr(runner, "fetch_gdelt_news", timed_out)
+    receipt = runner.discover(AT, sport="soccer")
+    assert calls == [1]
+    assert receipt["source_code"] == "SOURCE_TIMEOUT"
+    assert receipt["source_status"] == "BLOCKED"
+    assert receipt["retry_deferred"] is False
+    assert receipt["article_count"] == 0
+    assert receipt["can_execute"] is False
+
+
+def test_scout_workflows_keep_nonblocking_acquisition_and_audit():
     root = Path(__file__).resolve().parents[2] / ".github" / "workflows"
     nightly = (root / "wow-v17-nightly-multiscout.yml").read_text()
     source = (root / "wow-v17-scout-source-refresh.yml").read_text()
