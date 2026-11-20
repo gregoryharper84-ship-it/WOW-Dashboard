@@ -6,7 +6,11 @@ Pure decision logic: no network I/O. The caller supplies the typed findings from
 repair attempts have already been dispatched for that PR, and this module decides
 whether to dispatch another repair, declare the PR waiting on the owner, or do nothing.
 
-Non-repairable trust-root findings are never retried. Owner-authored trusted
+Repairs are dispatched only for findings on an explicit allowlist: things a
+change to the PR itself can fix (a failed required check, a rejected independent
+source review, a missing/ambiguous canonical incident marker). PR state, reviewer
+or policy configuration, identity and unknown codes never consume repair budget
+(NOT_REPAIRABLE_BY_CODE). Non-repairable trust-root findings are never retried. Owner-authored trusted
 source needs an independent source author, not owner self-approval; owner approval
 gaps need the real CODEOWNER, not an invented reviewer.
 can_execute=false throughout; this module never merges, dispatches a deploy, or grants
@@ -42,6 +46,16 @@ EVIDENCE_PENDING_PREFIXES = (
 # genuine repairable code finding published alongside it.
 REVIEW_EXECUTION_FAILED_PREFIX = "QA_REVIEW_EXECUTION_FAILED:"
 EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
+# Allowlist (redesign R5, 2026-11-20): the only findings a PR change can fix.
+# Release re-publishes QA findings as RELEASE_<QA code>; those are classified by
+# their QA code. Anything else -- draft/closed/moved PR state, reviewer or policy
+# configuration, App identity, or a code this module does not know -- is not a
+# code defect, so dispatching a repair would only burn provider budget.
+CODE_REPAIRABLE_PREFIXES = ("QA_EVIDENCE_FAILED:",)
+CODE_REPAIRABLE_CODES = frozenset({
+    "QA_INDEPENDENT_SOURCE_REVIEW_REJECTED",
+    "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS",
+})
 
 
 def parse_findings_from_summary(summary: str) -> list[str]:
@@ -52,6 +66,12 @@ def parse_findings_from_summary(summary: str) -> list[str]:
     SHOUTING_CASE token in the summary is a finding code.
     """
     return _FINDING_CODE_RE.findall(summary)
+
+
+def is_code_repairable(code: str) -> bool:
+    """True only for allowlisted findings that a change to the PR can fix."""
+    base = code[len("RELEASE_"):] if code.startswith("RELEASE_QA_") else code
+    return base in CODE_REPAIRABLE_CODES or any(base.startswith(p) for p in CODE_REPAIRABLE_PREFIXES)
 
 
 def is_repairable_finding(code: str) -> bool:
@@ -152,6 +172,19 @@ def plan_recovery(
             "action": "WAITING_ON_EVIDENCE",
             "findings": list(findings),
             "pending_findings": pending,
+            "attempts": attempts,
+            "can_execute": False,
+        }
+
+    # Only dispatch when at least one finding is a code defect the repair worker
+    # can fix. A mixed HOLD still repairs the fixable part; a HOLD made only of
+    # state/configuration/unknown findings never consumes a repair attempt.
+    if not any(is_code_repairable(f) for f in findings):
+        return {
+            "pr_number": pr_number,
+            "action": "NOT_REPAIRABLE_BY_CODE",
+            "findings": list(findings),
+            "not_code_repairable_findings": list(findings),
             "attempts": attempts,
             "can_execute": False,
         }
