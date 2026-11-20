@@ -195,3 +195,51 @@ def test_source_replay_receipt_is_mandatory(monkeypatch):
     with pytest.raises(challenger.NCAAFPublicationBoundExperimentError) as exc:
         challenger._verified_receipt(DB(), candidate)
     assert exc.value.code == "NCAAF_BOUND_SOURCE_REPLAY_NOT_VERIFIED"
+
+
+def test_latest_exact_ncaaf_receipt_fail_overrules_historical_pass():
+    candidate = _candidate()
+    previous = {
+        "source_review_status": "PASS", "replay_status": "PASS",
+        "created_at": "2026-09-26T18:55:24+00:00",
+        "probability_publishable": False, "can_execute": False,
+    }
+    failed = {
+        **previous, "source_review_status": "FAIL", "replay_status": "FAIL",
+        "created_at": "2026-10-10T04:14:34+00:00",
+    }
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+            self.filters = []
+        def select(self, *args, **kwargs): return self
+        def eq(self, field, value):
+            self.filters.append((field, value))
+            return self
+        def order(self, *args, **kwargs): return self
+        def limit(self, *args, **kwargs): return self
+        def execute(self):
+            from types import SimpleNamespace
+            return SimpleNamespace(data=self.rows)
+
+    class DB:
+        def __init__(self, rows):
+            self.query = Query(rows)
+        def table(self, _name):
+            return self.query
+
+    db = DB([failed, previous])
+    with pytest.raises(challenger.NCAAFPublicationBoundExperimentError) as err:
+        challenger._verified_receipt(db, candidate)
+    assert err.value.code == "NCAAF_BOUND_SOURCE_REPLAY_NOT_VERIFIED"
+    assert ("source_review_status", "PASS") not in db.query.filters
+    assert ("replay_status", "PASS") not in db.query.filters
+
+    db = DB([previous, dict(previous)])
+    with pytest.raises(challenger.NCAAFPublicationBoundExperimentError) as err:
+        challenger._verified_receipt(db, candidate)
+    assert err.value.code == "NCAAF_BOUND_SOURCE_REPLAY_NOT_VERIFIED"
+
+    db = DB([previous])
+    assert challenger._verified_receipt(db, candidate)["replay_status"] == "PASS"
