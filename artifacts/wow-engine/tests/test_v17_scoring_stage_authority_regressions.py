@@ -14,11 +14,35 @@ from fastapi import HTTPException
 from v17 import daily_snapshot_runtime as daily
 from v17 import nba_current_pregame_scorer as nba
 from v17 import team_event_bridge_runtime as bridges
+from v17 import team_event_request_runtime as request_runtime
 from v17.team_event_request_runtime import TeamEventRequest
 
 
 _START = "2026-11-20T17:00:00Z"
 _PRIOR = "2026-11-18T16:00:00Z"
+# The fixtures pin a real calendar tipoff (_START). The pregame gates compare it
+# with the wall clock, so freeze the clock they read one hour before tipoff;
+# otherwise these regressions expire at _START and fail closed for the wrong reason.
+_FROZEN_NOW = datetime(2026, 11, 20, 16, 0, tzinfo=timezone.utc)
+
+
+class _FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return _FROZEN_NOW.replace(tzinfo=None) if tz is None else _FROZEN_NOW.astimezone(tz)
+
+
+@pytest.fixture(autouse=True)
+def _pregame_clock(monkeypatch):
+    for module in (request_runtime, nba, daily, bridges):
+        if getattr(module, "datetime", None) is datetime:
+            monkeypatch.setattr(module, "datetime", _FrozenDateTime)
+
+
+def test_clock_is_frozen_before_fixture_tipoff():
+    start = datetime.fromisoformat(_START.replace("Z", "+00:00"))
+    assert request_runtime.datetime.now(timezone.utc) == _FROZEN_NOW < start
+    assert datetime.fromisoformat(_PRIOR.replace("Z", "+00:00")) < _FROZEN_NOW
 
 
 def _server_payload(as_of: str = _PRIOR, *, with_lineup: bool = True):
