@@ -462,3 +462,19 @@ def test_six_leg_requested_quota_is_held_without_certified_joint_probability():
     assert "LONG_SLIP_JOINT_PROBABILITY_UNVERIFIED" in result["cards"][0]["blockers"]
     assert result["cards"][0]["joint_probability"] is None
     assert result["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_prizepicks_optimizer_cannot_skip_research_hold_by_default():
+    pp = prizepicks_card(
+        prizepicks_prop("dunn", "lac-sas", tier="GOBLIN"),
+        prizepicks_prop("towns", "nyk-min"),
+    )
+    pp["platform_lineup_payout"]["projection_types"] = ["STANDARD", "STANDARD"]
+    source = deepcopy(pp)
+    out = optimize_portfolio([pp], research_as_of_utc=AS_OF)
+    assert pp == source
+    assert out.research_preflight is not None
+    assert out.cards_qualified == 0
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in out.research_preflight["cards"][0]["blockers"]
+    assert out.cards[0]["portfolio_governance"]["portfolio_status"] == "HELD_RESEARCH_ONLY"
+    assert out.can_execute is False
