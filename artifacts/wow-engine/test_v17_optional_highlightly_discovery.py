@@ -64,7 +64,7 @@ def test_valid_response_is_research_only(monkeypatch):
     assert result["plan_tier"] == "BASIC"
     assert result["official_event_identity_verified"] is False
     assert result["model_rescore_verified"] is False
-    assert "score" not in json.dumps(result)
+    assert all("score" not in match for match in result["matches"])
     assert "test-key" not in json.dumps(result)
 
 
