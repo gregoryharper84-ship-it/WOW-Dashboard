@@ -361,7 +361,14 @@ def adapt_ncaaf_persisted_rows(
 
 
 def _is_read_timeout(exc: Exception) -> bool:
-    return type(exc).__name__ == "ReadTimeout"
+    if type(exc).__name__ == "ReadTimeout":
+        return True
+    # PostgREST wraps PostgreSQL statement_timeout (SQLSTATE 57014) in an
+    # APIError and HTTP 500, rather than httpx.ReadTimeout. This is the
+    # observed 2026-10-27 NCAAF forward-fingerprint failure (#1059).
+    # Restrict recovery to exactly this SQLSTATE on a read-only query;
+    # unrelated API/data/permission failures must still propagate unchanged.
+    return type(exc).__name__ == "APIError" and str(getattr(exc, "code", "")) == "57014"
 
 
 def _execute_read_with_retry(build_query: Any, *, retries: int = 0) -> Any:
@@ -421,13 +428,16 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
     return _paged_select(
         client,
         "wow_d1_training_rows",
-        "official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
+        "training_row_id,official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
         filters=(
             ("eq", "sport", "NCAAF"),
             ("eq", "model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY),
             ("eq", "feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION),
         ),
-        order="official_event_id",
+        # Multiple immutable source instances share one official event ID.
+        # Unique training_row_id removes ambiguity at OFFSET page boundaries;
+        # one composite order avoids client versions that overwrite .order().
+        order="official_event_id.asc,training_row_id",
         read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
         page_size=NCAAF_PERSISTED_PAGE_SIZE,
     )

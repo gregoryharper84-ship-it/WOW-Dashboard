@@ -128,3 +128,60 @@ def test_route_is_mounted_once_and_auth_protected():
         assert len(matches) == 1
         assert matches[0].operation_id == operation_id
         assert matches[0].dependant.dependencies
+
+
+def test_ncaaf_wku_runtime_failure_exposes_safe_stage_without_secret_leak(monkeypatch, caplog):
+    # Oct 27 incident #1059: a 200 transport may carry a blocked scorer
+    # response; diagnose the stage without logging database exception text.
+    def _load_ncaaf_persisted_feature_rows():
+        raise RuntimeError("postgres://svc:PRIVATE_SECRET@database.invalid")
+
+    def broken(*_args, **kwargs):
+        assert kwargs["event_id"] == "401871071"
+        assert kwargs["home_team"] == "Western Kentucky Hilltoppers"
+        assert kwargs["away_team"] == "Delaware Blue Hens"
+        assert kwargs["home_spread"] == 1.5
+        _load_ncaaf_persisted_feature_rows()
+
+    monkeypatch.setattr(route, "run_ncaaf_forward_shadow", broken)
+    request = _request().model_copy(update={
+        "event_id": "401871071",
+        "home_team": "Western Kentucky Hilltoppers",
+        "away_team": "Delaware Blue Hens",
+        "event_start_time": "2026-10-27T23:00:00+00:00",
+        "home_spread": 1.5,
+    })
+    with caplog.at_level("ERROR"):
+        payload = route.execute_spread_forward_shadow(object(), request)
+    assert payload["status"] == "BLOCKED"
+    assert payload["code"] == "NCAAF_SPREAD_FORWARD_SHADOW_RUNTIME_FAILED"
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["error_stage"] == "PERSISTED_READ"
+    assert isinstance(payload["elapsed_ms"], int)
+    assert payload["elapsed_ms"] >= 0
+    assert payload["event_id"] == "401871071"
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False
+    assert payload["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
+    assert "PRIVATE_SECRET" not in str(payload)
+    assert "PRIVATE_SECRET" not in caplog.text
+    assert "postgres://" not in caplog.text
+    assert "WOW_NCAAF_SPREAD_FORWARD_RUNTIME_FAILED" in caplog.text
+    assert "error_stage=PERSISTED_READ" in caplog.text
+    assert "event_hash=" in caplog.text
+
+
+def test_ncaaf_unknown_runtime_failure_remains_blocked_not_model_unavailable(monkeypatch, caplog):
+    def broken(*_args, **_kwargs):
+        raise ValueError("private payload 123")
+
+    monkeypatch.setattr(route, "run_ncaaf_forward_shadow", broken)
+    with caplog.at_level("ERROR"):
+        payload = route.execute_spread_forward_shadow(object(), _request())
+    assert payload["code"] == "NCAAF_SPREAD_FORWARD_SHADOW_RUNTIME_FAILED"
+    assert payload["error_type"] == "ValueError"
+    assert payload["error_stage"] == "UNCLASSIFIED"
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False
+    assert "private payload 123" not in str(payload)
+    assert "private payload 123" not in caplog.text

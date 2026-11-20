@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import v17.spread_margin_replay as replay
@@ -32,7 +33,13 @@ class _FakeQuery:
 
     def execute(self):
         assert self._order_column is not None
-        ordered = sorted(self._rows, key=lambda row: str(row.get(self._order_column) or ""))
+        # Model the PostgREST composite order (each field ascending), not
+        # merely the first source-event ID; many source rows have that same ID.
+        sort_fields = [field.split(".")[0] for field in self._order_column.split(",")]
+        ordered = sorted(
+            self._rows,
+            key=lambda row: tuple(str(row.get(field) or "") for field in sort_fields),
+        )
         return SimpleNamespace(data=ordered[self._start : self._end + 1])
 
 
@@ -70,7 +77,32 @@ def test_persisted_ncaaf_loaders_page_by_unique_official_event_id(monkeypatch):
     assert len(loaded_features) == len(features)
     assert set(client.order_log) == {
         ("wow_ncaaf_training_games", "official_event_id"),
-        ("wow_d1_training_rows", "official_event_id"),
+        ("wow_d1_training_rows", "official_event_id.asc,training_row_id"),
+    }
+
+
+def test_duplicate_event_sources_on_page_boundary_reconcile_all_unique_row_ids(monkeypatch):
+    # More than one source instance per event is normal (34,050 rows / 3,615
+    # events). A nonunique ORDER BY official_event_id can silently skip/duplicate
+    # rows across independent OFFSET queries; retain every immutable instance.
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_PAGE_SIZE", 2)
+    event_id = "NCAAF:401523995"
+    sources = [
+        {"training_row_id": f"00000000-0000-4000-8000-{number:012d}",
+         "official_event_id": event_id}
+        for number in [6, 4, 1, 5, 3, 2]
+    ]
+    client = _FakeClient({"wow_d1_training_rows": sources})
+    fetched = replay._load_ncaaf_persisted_feature_rows(client)
+    assert len(fetched) == len(sources)
+    assert sorted(row["training_row_id"] for row in fetched) == sorted(
+        row["training_row_id"] for row in sources
+    )
+    assert [row["training_row_id"] for row in fetched] == sorted(
+        row["training_row_id"] for row in sources
+    )
+    assert set(client.order_log) == {
+        ("wow_d1_training_rows", "official_event_id.asc,training_row_id"),
     }
 
 
@@ -154,3 +186,94 @@ def test_read_retry_preserves_non_timeout_failures(monkeypatch):
 def test_persisted_ncaaf_loaders_use_smaller_page_budget_than_shared_replay_default():
     assert replay.NCAAF_PERSISTED_PAGE_SIZE < replay.PAGE_SIZE
     assert replay.NCAAF_PERSISTED_PAGE_SIZE <= 200
+
+
+def test_postgrest_statement_timeout_retried_on_read_only_query(monkeypatch):
+    # SQLSTATE 57014 is delivered as PostgREST APIError/HTTP 500, not
+    # httpx.ReadTimeout; this exact mismatch caused Oct 27 #1059.
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class APIError(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__("database service URL and credential must remain private")
+
+    calls = {"count": 0}
+
+    class Query:
+        def execute(self):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise APIError("57014")
+            return SimpleNamespace(data=[{"official_event_id": "401871071"}])
+
+    result = replay._execute_read_with_retry(lambda: Query(), retries=2)
+    assert result.data == [{"official_event_id": "401871071"}]
+    assert calls["count"] == 2
+
+
+def test_postgrest_statement_timeout_retry_is_bounded_and_preserves_failure(monkeypatch):
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class APIError(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__("do not expose transport payload")
+
+    calls = {"count": 0}
+    persistent = APIError("57014")
+
+    class Query:
+        def execute(self):
+            calls["count"] += 1
+            raise persistent
+
+    try:
+        replay._execute_read_with_retry(lambda: Query(), retries=2)
+    except APIError as exc:
+        assert exc is persistent
+    else:
+        raise AssertionError("persistent 57014 must propagate after bounded retries")
+    assert calls["count"] == 3
+
+
+def test_postgrest_non_timeout_api_error_never_retried(monkeypatch):
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class APIError(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__("permissions failure")
+
+    calls = {"count": 0}
+
+    class Query:
+        def execute(self):
+            calls["count"] += 1
+            raise APIError("42501")
+
+    try:
+        replay._execute_read_with_retry(lambda: Query(), retries=2)
+    except APIError as exc:
+        assert exc.code == "42501"
+    else:
+        raise AssertionError("non-timeout API errors must fail closed")
+    assert calls["count"] == 1
+
+
+def test_ncaaf_forward_fingerprint_index_matches_exact_latest_row_sort():
+    # 2026-10-27 production validation: 16,533 qualifying rows were scanned
+    # to return 1 newest event because official_event_id-only index could not
+    # satisfy event_start_time DESC + official_event_id DESC ordering.
+    engine_dir = Path(__file__).resolve().parents[1]
+    ddl = (engine_dir / "migrations" / "20261027_ncaaf_spread_forward_freshness_order_index.sql").read_text()
+    normalized = " ".join(ddl.lower().split())
+    assert "create index if not exists wow_d1_training_rows_ncaaf_spread_freshness_order_idx" in normalized
+    assert "on public.wow_d1_training_rows using btree" in normalized
+    assert "sport, model_family, feature_schema_version, event_start_time desc, official_event_id desc" in normalized
+    assert "drop index" not in normalized
+    assert "drop table" not in normalized
+    assert "update public.wow_d1_training_rows" not in normalized
+    # Preserve previous official_event_id-ordered pagination index.
+    previous = (engine_dir / "migrations" / "20260927_ncaaf_spread_forward_lookup_index.sql").read_text()
+    assert "wow_d1_training_rows_ncaaf_spread_lookup_idx" in previous
