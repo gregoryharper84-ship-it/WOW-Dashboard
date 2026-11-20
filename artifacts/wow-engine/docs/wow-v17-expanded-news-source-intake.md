@@ -71,3 +71,64 @@ python -m pytest -q test_v17_multi_source_news_registry.py
 This PR meets only the registry/normalizer preparation portion of B.
 It does **not** satisfy acquisition, live coverage, news-based model updates
 or any production-complete acceptance.
+
+## Highlightly optional sidecar implemented in this branch
+
+The existing `.github/workflows/wow-v17-scout-source-refresh.yml` now runs
+`v17/optional_highlightly_discovery.py` as a **separate, nonblocking** source
+receipt on its existing four-daily cadence. It remains **off by default**;
+when disabled, the receipt says `SOURCE_DISABLED` and makes zero API calls.
+The existing GDELT acquisition and structured Scout refresh are unaffected.
+
+Activation requires all of the following, supplied through GitHub Actions
+repository variables/secrets only after the provider's applicable terms have
+been accepted and an authorized free-tier account exists:
+
+- Repository variable `WOW_HIGHLIGHTLY_ENABLED=true`
+- Repository variable `WOW_HIGHLIGHTLY_SOURCE_ALLOWED=true` (documented rights review)
+- Repository secret `WOW_HIGHLIGHTLY_API_KEY` (never printed to logs)
+  
+No user action, account creation, payment, or credential authorization has been
+performed by this PR. The sidecar uses only a fixed allowlisted Highlightly host,
+the documented `/{sport}/matches` endpoint, one request per workflow run,
+a 20-record response cap and a 256 KB maximum body. It rotates through six
+documented sport prefixes in approximately 36 hours rather than pretending to
+cover all 13 sport families every day. NFL/NCAAF, NBA/NCAAB and NHL/NCAAH can
+share provider prefixes; exact league and official event identities remain
+**unverified** until independently resolved.
+
+The source receipt retains only source-specific match IDs, never bookmaker odds,
+player forecasts, model probabilities, or full structured API response bodies.
+It records HTTP status, remaining quota when supplied, plan tier and explicit
+source error codes. It cannot satisfy a certified feature or trigger a model run.
+No requests occur on this branch while the key/opt-ins are missing.
+
+Provider documentation:
+https://highlightly.net/sport-api/documentation/getting-started/
+https://highlightly.net/sport-api/documentation/sports-and-prefixes/
+https://highlightly.net/sport-api/documentation/coverage/
+https://highlightly.net/sport-api/documentation/conventions/
+
+## Typed source codes (Highlightly research source owner)
+
+These are **source-acquisition statuses only**, not scorer, Action or terminal
+model codes. The repository documentation is the registry for new codes in
+this PR, pending any later project-wide consolidation.
+
+| Code | Defined cause |
+|---|---|
+| SOURCE_DISABLED | Opt-in variable is absent/false; request not attempted |
+| SOURCE_KEY_POLICY_NOT_ACCEPTED | Rights-review opt-in missing; no request |
+| SOURCE_DATE_INVALID | Invalid ISO calendar date |
+| SOURCE_AUTH_REJECTED | Server returned 401/403 |
+| SOURCE_NO_VALID_MATCHES | Response provided no valid bounded match IDs |
+
+The adapter also preserves existing `SOURCE_TARGET_INVALID`,
+`SOURCE_CREDENTIAL_UNCONFIGURED`, `SOURCE_RATE_LIMITED`,
+`SOURCE_UPSTREAM_UNAVAILABLE`, `SOURCE_UPSTREAM_REJECTED`,
+`SOURCE_REDIRECT_NOT_ALLOWED`, `SOURCE_CONTENT_ENCODING_UNSUPPORTED`,
+`SOURCE_BODY_TOO_LARGE`, `SOURCE_INVALID_JSON`, `SOURCE_OUTPUT_INVALID`,
+`SOURCE_TIMEOUT` and `SOURCE_HTTP_ERROR` semantics.
+
+Add-on offline tests:
+`python -m pytest -q test_v17_optional_highlightly_discovery.py`.
