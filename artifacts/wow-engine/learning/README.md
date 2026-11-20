@@ -2,6 +2,54 @@
 
 **Classification:** offline training/evaluation experiment. **Not** production engineering authority, an autonomous worker, an ML model improvement, or a release gate.
 
+
+## Simple operational V1: verified fix lookup
+
+This read-only lookup uses the **existing canonical incident ledger** (no new
+database, provider credits, workflow, agent, or secrets). Run it from repo root
+before attempting an engineering repair:
+
+```bash
+python artifacts/wow-engine/learning/lessons.py list
+python artifacts/wow-engine/learning/lessons.py match --category OBSERVABILITY_CORRELATION
+python -m unittest discover -s artifacts/wow-engine/learning/tests -v
+```
+
+The lookup returns a root cause, original test gap, preventive control, regression
+test and reference PR **only** when the source incident has confirmed root cause,
+passed independent review/QA, a recorded verified production deployment and
+Reporter closure. For unknown categories it returns `NO_VERIFIED_MATCH`
+with an empty list, never an invented repair. Results are advice for a **new**
+incident, not proof that the current incident is repaired. Newly closed incidents
+become available when their canonical ledger row contains the required evidence;
+no retraining job or duplicate learning store is created.
+
+### Automatic canonical incident intake
+
+The existing Reporter `create-postmortem` command now consults the same verified
+lessons **without requiring a separate manual lookup**. It searches for an
+exact, uppercase verified failure-category token in the incident title/evidence.
+Reporter can also supply an explicit category once it is known:
+
+```bash
+python artifacts/wow-engine/v17/nightly_incident_records.py create-postmortem   --title "Self acceptance correlation" --severity P2   --domain observability --evidence "OBSERVABILITY_CORRELATION seen in logs"
+# Or: --failure-category OBSERVABILITY_CORRELATION
+```
+
+The resulting canonical postmortem includes an **advisory** historical context
+section with prior evidence and a reference PR. No source-provided suggestion
+becomes a new incident root cause, verified status, or approval. Missing,
+ambiguous, or unsupported matches never claim a verified fix. Missing lookup
+module is recorded as `UNAVAILABLE` but does not prevent normal intake.
+Do not run this write-producing example against real canonical ledger merely
+for demonstration; the test suite uses an isolated temporary ledger.
+
+V1 does **not** retrain LLM weights or sporting probability models, modify
+production, authorize merging, or start a background job. Real-world benefit
+must be measured separately through independent incident recurrence and
+production recovery statistics. The standalone training exercise below remains
+distinct from this operational lookup.
+
 ## Purpose
 Turn verified past WOW incidents into repeatable debugging exercises without repeating the same failed approaches. Reuse the canonical `v17/nightly_incident_records.py` learning ledger, real GitHub issues, existing CI, and the already-declared optional `mlflow>=3,<4` research dependency. Never create a second incident queue, writer authority, approval service, or production install requirement.
 
