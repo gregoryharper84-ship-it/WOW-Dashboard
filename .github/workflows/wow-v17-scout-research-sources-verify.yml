@@ -11,6 +11,10 @@ on:
       - "artifacts/wow-engine/v17/research_identity_reconciliation.py"
       - "artifacts/wow-engine/v17/scout_source_refresh.py"
       - "artifacts/wow-engine/v17/news_feed_research_adapter.py"
+      - "artifacts/wow-engine/v17/multi_source_news_registry.py"
+      - "artifacts/wow-engine/v17/optional_highlightly_discovery.py"
+      - "artifacts/wow-engine/test_v17_multi_source_news_registry.py"
+      - "artifacts/wow-engine/test_v17_optional_highlightly_discovery.py"
       - "artifacts/wow-engine/test_v17_news_feed_research_adapter.py"
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
@@ -31,6 +35,10 @@ on:
       - "artifacts/wow-engine/v17/research_identity_reconciliation.py"
       - "artifacts/wow-engine/v17/scout_source_refresh.py"
       - "artifacts/wow-engine/v17/news_feed_research_adapter.py"
+      - "artifacts/wow-engine/v17/multi_source_news_registry.py"
+      - "artifacts/wow-engine/v17/optional_highlightly_discovery.py"
+      - "artifacts/wow-engine/test_v17_multi_source_news_registry.py"
+      - "artifacts/wow-engine/test_v17_optional_highlightly_discovery.py"
       - "artifacts/wow-engine/test_v17_news_feed_research_adapter.py"
       - "artifacts/wow-engine/v17/news_event_research_handoff.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
@@ -68,6 +76,8 @@ jobs:
           python -m pytest -q
           test_v17_research_source_adapters.py
           test_v17_news_feed_research_adapter.py
+          test_v17_multi_source_news_registry.py
+          test_v17_optional_highlightly_discovery.py
           test_v17_news_event_research_handoff.py
           test_v17_news_scout_receipt_bridge.py
           tests/test_v17_sport_scout_teams.py
