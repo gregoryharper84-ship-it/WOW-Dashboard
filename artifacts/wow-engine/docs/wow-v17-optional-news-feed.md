@@ -79,8 +79,9 @@ candidates touched. The source-refresh job's structured acquisition was skipped
 because \`WOW_SCOUT_DATABASE_URL\` was empty. Neither workflow-wide SUCCESS
 nor a successful upload establishes an operational public news feed.
 
-This repair supplies an explicit, bounded six-second 429 retry, typed health
-failure steps, article counts and 90-day receipt retention. Nightly Multi-Scout
+This repair retains typed health failure steps, article counts and 90-day
+receipt retention. The earlier six-second retry was superseded by the
+single-attempt fail-fast policy below; there is no in-run 429 retry. Nightly Multi-Scout
 uses its own future canonical candidate manifest for one active-sport choice;
 it never invents news, executes more than two GDELT requests per run, or turns
 the discovery receipt into a verified publisher claim. The independent
@@ -96,49 +97,39 @@ canonical event mapping; post-update fitted-specialist rerun with immutable
 before/after hash and pregame receipt; protected release checks; and independent
 production readback. \`can_execute=false\` remains enforced.
 
-### November 18, 2026 — measured 429 penalty and paced retry policy
+### November 20, 2026 — discard unproven long retry
 
-The fixed six-second retry was replaced after direct measurement of the
-DOC 2.0 endpoint from this runtime. Every probe below was a single
-\`NBA injury\` ArtList request; each returned HTTP 429 with the body
-"Please limit requests to one every 5 seconds" and **no \`Retry-After\`
-header**.
+The earlier prolonged block observations remain valuable as diagnostics,
+not an identified recovery mechanism. During November 18 probing, requests
+received HTTP 429 after 0, 45, 90, 135 and 735 seconds of silence.
+A **single 200 with five article records** followed 688 seconds *and*
+a possible egress change after a runtime restart. This does not establish
+that a 900-second sleep resolves an IP block. The initial probe also
+issued paired requests, confounding the apparent request intervals.
+The proposed 900-second retry in the original PR was never shown to
+work from the modified collector; later tests had timeouts.
 
-| Silence before the request | Result |
-| --- | --- |
-| 0 s | 429 |
-| 45 s | 429 |
-| 90 s | 429 |
-| 135 s | 429 |
-| 735 s (12.3 min) | 429 |
-| 688 s (11.5 min), different egress after a runtime restart | **200, 5 articles** |
+The source refresh already runs every six hours. Instead of occupying a
+worker for 15 minutes and making a second request in a blocked period,
+`v17/public_gdelt_discovery.py` now makes **one bounded DOC request per run**.
+When GDELT returns 429, the receipt records `SOURCE_RATE_LIMITED`,
+`http_status=429`, `attempt_count=1`, `total_wait_seconds=0`,
+`retry_deferred=true`, any `Retry-After` value and the normal
+source-observed timestamp. The next scheduled run remains a new independent
+attempt; this does not assert verified recovery. A timeout remains
+`SOURCE_TIMEOUT`, never a successful news receipt.
 
-The penalty is therefore not the advertised five-second interval: it outlived
-12 minutes of silence from the same address. The first success arrived 11.5
-minutes after the last refused request, but the container restart also changed
-the egress address, so this run cannot separate elapsed time from a fresh
-per-IP allowance. Treat the block as a sustained per-IP penalty whose floor is
-minutes, not seconds. Three scheduled source-refresh runs earlier the same day
-(10:27Z, 18:58Z, and the 02:5xZ slot) each received 429 on their **first**
-request from separate GitHub-hosted runner addresses, so a fresh runner IP is
-not by itself a remedy.
+The `Retry-After` header is parsed for observability but no scheduling
+promise is made across workflow invocations: there is no persistent
+cross-run rate-limit state. Since the parser caps `Retry-After` at one hour
+and the nominal source refresh is six hours apart, ordinary schedule
+spacing exceeds that bounded hint. An unusual manually dispatched run
+could violate the interval; operators should not repeatedly dispatch
+blocked sources.
 
-Consequent policy in \`v17/public_gdelt_discovery.py\`:
-
-- \`RETRY_DELAYS_SECONDS = (900,)\` with \`MAX_TOTAL_WAIT_SECONDS = 1200\`:
-  one paced retry just past the measured floor, so at most two requests per
-  run. A shorter first step (120s) was rejected because it sits below the
-  735s refusal floor and would be the same wasted call as the old 6s sleep.
-- Any \`Retry-After\` the source does send is parsed (delta-seconds or
-  HTTP-date) and lengthens the step rather than being ignored; the value is
-  capped at one hour.
-- The receipt now records \`attempts\` (delay before, HTTP status, source code,
-  observed timestamp), \`total_wait_seconds\` and \`retry_policy\`, so an operator
-  can see what was actually waited and tried.
-- Injected clients and offline tests still make exactly one call, so no test or
-  local caller pays the paced wait.
-- A final 429 still produces \`source_status=BLOCKED\`; pacing raises the chance
-  of a nonempty receipt and never implies a successful acquisition.
-
-This remains discovery metadata with \`model_feature_eligible=false\`,
-\`model_rescore_verified=false\` and \`can_execute=false\`.
+**Still blocked until proven otherwise:** actual nonempty GDELT acquisition
+on the current merged code, independent news fact verification, fresh exact
+event identity linkage, and a genuine controlling fitted-specialist rescore
+receipt. Workflow-level green alone never proves source health.
+`model_feature_eligible=false`, `model_rescore_verified=false` and
+`can_execute=false` stay unchanged.
