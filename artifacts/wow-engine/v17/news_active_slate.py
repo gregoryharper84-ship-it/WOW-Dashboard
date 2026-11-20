@@ -26,7 +26,10 @@ def select_active_slate(payload: object, at: datetime, supported: tuple[str, ...
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            sport, event_id = row.get("sport_key"), row.get("official_event_id")
+            sport = row.get("sport_key")
+            # Provider IDs can deduplicate *news research sport selection*.
+            # They do not establish an independently verified official ID.
+            event_id = row.get("provider_event_id") or row.get("official_event_id")
             if not isinstance(sport, str) or sport not in supported:
                 continue
             if not isinstance(event_id, str) or not event_id.strip():
