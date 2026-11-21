@@ -683,6 +683,46 @@ def test_qa_source_superseded_is_neutral_only_for_verified_workflow_run(state, c
     }
 
 
+def test_qa_draft_at_exact_event_head_is_neutral_only_for_verified_workflow_run():
+    """Mirrors Release --neutral-if-draft-target (2026-11-20: draft #2738 caused
+    21 of 27 failing qa jobs on main e9d7b057, blocking Render checksPass)."""
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "ref": "draft/x", "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    routes = Fake({f"repos/{REPO}/pulls/7": (200, live)})
+    assert m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True, fetch=routes) == {
+        "targets": [], "errors": [], "disposition": "neutral", "reason": "QA_SOURCE_PR_DRAFT",
+    }
+    # Without the automatic-callback flag the draft is still evaluated (QA_PR_DRAFT HOLD).
+    strict = m.targets(REPO, workflow_run_prs=event_pr, fetch=routes)
+    assert strict["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
+    # Manual dispatch never neutralizes a draft.
+    assert m.targets(REPO, pr="7", fetch=routes)["targets"] == [
+        {"pr": 7, "head": HEAD, "head_ref": "draft/x"}]
+    # Multi-PR events stay strict.
+    two = event_pr + [{"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}}]
+    multi = m.targets(REPO, workflow_run_prs=two, neutral_superseded=True,
+                      fetch=Fake({f"repos/{REPO}/pulls/7": (200, live),
+                                  f"repos/{REPO}/pulls/8": (404, {})}))
+    assert multi.get("disposition") != "neutral"
+
+
+@pytest.mark.parametrize("change", [
+    {"head": {"sha": HEAD, "repo": {"full_name": "foreign/WOW-Dashboard"}}},
+    {"base": {"ref": "development", "repo": {"full_name": REPO}}},
+    {"merged_at": "2026-11-20T00:00:00Z"},
+])
+def test_qa_draft_rule_never_masks_foreign_or_invalid_identity(change):
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    live = {"number": 7, "state": "open", "draft": True, "merged_at": None,
+            "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}, **change}
+    out = m.targets(REPO, workflow_run_prs=event_pr, neutral_superseded=True,
+                    fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
+    assert out.get("reason") != "QA_SOURCE_PR_DRAFT"
+
+
 @pytest.mark.parametrize(("field", "value"), [
     ("head.repo", {"full_name": "foreign/WOW-Dashboard"}),
     ("base.ref", "development"),
@@ -718,7 +758,10 @@ def test_qa_workflow_superseded_admission_skips_every_unconditional_downstream_s
         "Upload immutable QA review-policy receipt",
         "Decide at exact head (read-only)",
     ):
-        assert steps[name]["if"] == "steps.target.outputs.pr_number != ''"
+        # The empty-pr_number skip is unchanged; the added conjunct only makes
+        # the step run less often (fail-fast under step-level isolation).
+        assert steps[name]["if"] == (
+            "steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')")
     # The original Release classifier already neutralizes a successful QA
     # job whose terminal outcome upload is deliberately skipped.
     assert steps["Upload terminal QA outcome"]["if"].startswith(
@@ -1455,7 +1498,8 @@ def _qa_target_output_enables_publish(pr_number):
     """
     workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
     steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
-    assert steps["Mint checks-only App token"]["if"] == "steps.target.outputs.pr_number != ''"
+    assert steps["Mint checks-only App token"]["if"] == (
+        "steps.target.outputs.pr_number != '' && !contains(steps.*.outcome, 'failure')")
     assert steps["Publish exact-head check"]["if"] == "always() && steps.target.outputs.pr_number != ''"
     return pr_number != ""
 

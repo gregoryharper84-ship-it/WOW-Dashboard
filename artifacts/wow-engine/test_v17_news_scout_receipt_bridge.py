@@ -76,6 +76,13 @@ def test_public_gdelt_news_is_attached_but_cannot_promote_model(tmp_path):
     nba = result["model_handoff"]["team_event_candidates"][0]
     nfl = result["model_handoff"]["prop_candidates"][0]
     assert nba["news_research_handoff"]["research_status"] == "NEWS_DISCOVERY_UNVERIFIED"
+    # Exact original artifact bytes are hashed by the sibling reader;
+    # parsed/canonical JSON is separately hashed and never misnamed as raw.
+    research = nba["news_research_handoff"]
+    assert research["source_receipt_sha256"] == bridge["source_sha256"]
+    assert len(research["discovery_canonical_sha256"]) == 64
+    assert research["source_receipt_sha256"] != research["discovery_canonical_sha256"]
+    assert research["event_start_utc"] == payload["model_handoff"]["team_event_candidates"][0]["event_start_utc"]
     assert nba["news_research_handoff"]["research_rescore_requested"] is False
     assert nba["news_research_handoff"]["model_rescore_verified"] is False
     assert nba["news_research_handoff"]["calibrated_probability"] is None
@@ -92,6 +99,12 @@ def test_blocked_news_source_poses_no_eligibility(tmp_path):
     result = enrich_handoff(_attach_sibling_news(payload, _write(tmp_path, receipt)))
     news = result["model_handoff"]["team_event_candidates"][0]["news_research_handoff"]
     assert news["research_status"] == "NEWS_DISCOVERY_BLOCKED"
+    assert result["public_news_discovery_bridge"]["status"] == "NEWS_SOURCE_BLOCKED"
+    assert result["public_news_discovery_bridge"]["source_code"] == "SOURCE_RATE_LIMITED"
+    assert result["public_news_discovery_bridge"]["article_count"] == 0
+    assert result["model_handoff"]["team_event_candidates"][0]["news_intelligence_status"] == "NEWS_DISCOVERY_BLOCKED"
+    assert result["model_handoff"]["team_event_candidates"][0]["news_latest_verified_at_utc"] is None
+    assert result["model_handoff"]["team_event_candidates"][0]["news_model_rescore_verified"] is False
     assert news["research_rescore_requested"] is False
     assert result["can_execute"] is False
 

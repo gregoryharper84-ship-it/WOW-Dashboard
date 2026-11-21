@@ -20,7 +20,7 @@ probability, and never enables execution.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -430,6 +430,26 @@ def _nba_current_season_data_gap(
     }
 
 
+def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Research-only pre-tipoff capture of the registered NBA candidate.
+
+    Runs only on a just-refreshed NBA history. Isolated and typed: it can never
+    change a maintenance row, a certification, a publication flag or execution.
+    """
+    nba_row = next((row for row in results if row.get("sport") == "NBA"), None)
+    if nba_row is None:
+        return None
+    if nba_row.get("status") != "SHADOW_EVIDENCE_UPDATED":
+        return {"status": "SKIPPED", "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
+                "probability_publishable": False, "can_execute": False}
+    try:
+        from v17 import nba_candidate_forward_shadow as lane
+        return lane.run_nba_candidate_forward_shadow(db)
+    except Exception as exc:  # noqa: BLE001 - never fail maintenance on research capture
+        return {"status": "FAILED", "reason_code": f"NBA_CANDIDATE_FORWARD_SHADOW_{type(exc).__name__.upper()}",
+                "probability_publishable": False, "can_execute": False}
+
+
 def run_basketball_model_maintenance(
     db: Any,
     *,
@@ -594,6 +614,8 @@ def run_basketball_model_maintenance(
                 )
             )
 
+    nba_forward_shadow = nba_candidate_forward_shadow_after_refresh(db, results)
+
     updated = sum(row["status"] == "SHADOW_EVIDENCE_UPDATED" for row in results)
     degraded = sum(
         row.get("hydration_status") in {
@@ -621,6 +643,7 @@ def run_basketball_model_maintenance(
         "rows_fresh_acquisition_degraded": degraded,
         "rows_no_new_settlements": no_new,
         "rows_fresh_acquisition_unverified": unverified,
+        "nba_candidate_forward_shadow": nba_forward_shadow,
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": False,
