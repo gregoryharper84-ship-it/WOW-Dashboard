@@ -122,7 +122,17 @@ def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata
     assert "WOW Live Self Acceptance" not in caplog.text
     assert "WOW:PROP:LIVE:SELF_ACCEPTANCE:NO_EVIDENCE" not in caplog.text
     assert "directions=MORE,LESS" in caplog.text
+    assert "fixture=EXPECTED_NO_SNAPSHOT" in caplog.text
     assert "zero_probability_leak=true" in caplog.text
     assert "settlement_math=PROVEN" in caplog.text
     assert "model_path=NOT_PROVEN_IN_THIS_PROBE" in caplog.text
     assert "can_execute=false" in caplog.text
+
+
+def test_probe_payload_uses_nonexistent_snapshot_by_design():
+    """Startup probe must not fabricate real pregame evidence snapshots."""
+    payload = acceptance._probe_payload("MORE")
+    assert payload["event_id"] == "WOW:PROP:LIVE:SELF_ACCEPTANCE:NO_EVIDENCE"
+    assert payload["source_snapshot_id"]
+    # Random UUID each call — proves the probe never binds a known production snapshot.
+    assert acceptance._probe_payload("MORE")["source_snapshot_id"] != payload["source_snapshot_id"]
