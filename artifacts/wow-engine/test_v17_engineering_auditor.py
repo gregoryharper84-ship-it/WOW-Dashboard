@@ -8,6 +8,8 @@ import yaml
 
 from v17.engineering_auditor import (
     AuditEvent,
+    EngineeringAuditStore,
+    code_health_blocker_packet,
     finding_fingerprint,
     is_code_health_failure,
     is_terminal_source_state,
@@ -437,3 +439,190 @@ def test_lifecycle_audit_reads_live_exact_head_metadata_not_stale_event():
     assert 'git diff --name-only HEAD^1 HEAD^2' in text
     assert 'pull_request:' in text
     assert 'permission-checks: write' not in text
+
+
+def test_blocker_packet_binds_verified_run_sha_without_new_execution_authority():
+    event = AuditEvent(
+        event_name="workflow_run",
+        action="completed",
+        repository="owner/repo",
+        source_kind="CODE_HEALTH_RUN",
+        source_ref="41247454667",
+        title="Failed CI",
+        state="OPEN",
+        head_sha="a" * 40,
+        conclusion="failure",
+        details={"env": "SECRET=value", "stderr": "token=hidden", "check_name": "test"},
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["failure_class"] == "CI_SEMANTIC_OR_INFRA_FAILURE"
+    assert packet["workflow_run_id"] == "41247454667"
+    assert packet["head_sha"] == "a" * 40
+    assert packet["next_action"] == "READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+    assert packet["dispatch_authorized"] is False
+    assert packet["merge_authorized"] is False
+    assert packet["deploy_authorized"] is False
+    assert packet["can_execute"] is False
+    assert "SECRET" not in str(packet)
+    assert "token" not in str(packet)
+
+
+def test_blocker_packet_refuses_untrusted_identity_and_distinguishes_timeout():
+    event = AuditEvent(
+        event_name="workflow_run",
+        action="completed",
+        repository="owner/repo",
+        source_kind="CODE_HEALTH_RUN",
+        source_ref="https://not-our-host.invalid/run?secret=x",
+        title="Timeout",
+        state="OPEN",
+        head_sha="unsafe",
+        conclusion="timed_out",
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["workflow_run_id"] is None
+    assert packet["head_sha"] is None
+    assert packet["failure_class"] == "CI_TIMEOUT"
+    assert packet["next_action"] == "RECONCILE_AUTHORITATIVE_RUN_AND_HEAD_IDENTITY"
+
+
+def test_blocker_packet_rejects_non_ci_sources():
+    with pytest.raises(ValueError, match="BLOCKER_PACKET_SOURCE_INVALID"):
+        code_health_blocker_packet(AuditEvent(
+            event_name="issues", action="opened", repository="owner/repo",
+            source_kind="GITHUB_ISSUE", source_ref="12", title="issue", state="OPEN",
+        ))
+
+
+def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
+    import json
+    from types import SimpleNamespace
+
+    class FakeDB:
+        def __init__(self):
+            self.rows = {}
+            self.writes = []
+            self.fail_on_table = None
+
+        def table(self, name):
+            return FakeTable(self, name)
+
+    class FakeTable:
+        def __init__(self, db, name):
+            self.db, self.name = db, name
+            self.payload = None
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def upsert(self, payload, **_kwargs):
+            self.payload = payload
+            return self
+
+        def insert(self, payload):
+            self.payload = payload
+            return self
+
+        def execute(self):
+            if self.payload is None:
+                return SimpleNamespace(data=[])
+            if self.name == self.db.fail_on_table:
+                raise RuntimeError("DB_WRITE_REJECTED")
+            self.db.writes.append((self.name, dict(self.payload)))
+            return SimpleNamespace(data=[dict(self.payload)])
+
+    db = FakeDB()
+    event = AuditEvent(
+        event_name="github_actions_reconcile",
+        action="completed",
+        repository="gregoryharper84-ship-it/WOW-Dashboard",
+        source_kind="CODE_HEALTH_RUN",
+        source_ref="41247454667",
+        title="Failed CI",
+        state="COMPLETED",
+        head_sha="b" * 40,
+        conclusion="failure",
+        details={"check_name": "wow-verify"},
+    )
+    finding = EngineeringAuditStore(db).ingest_event(event, now=datetime(
+        2026, 10, 31, 22, 0, tzinfo=timezone.utc
+    ))
+    packet = finding["evidence"]["blocker_context"]
+    assert packet["workflow_run_id"] == "41247454667"
+    assert packet["next_action"] == "READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+    backlog = [payload for name, payload in db.writes if name == "wow_engineering_backlog"]
+    assert len(backlog) == 1
+    retained = json.loads(backlog[0]["evidence_notes"])
+    assert retained["blocker_context"] == packet
+    assert retained["blocker_context"]["dispatch_authorized"] is False
+    assert backlog[0]["source"] == "ENGINEERING_AUDITOR"  # excluded from worker dispatch intake
+    assert retained["blocker_context"]["evidence_sink"] == "ENGINEERING_AUDITOR_BACKLOG"
+    assert "advisory_only" not in retained["blocker_context"]
+    assert retained["blocker_context"]["can_execute"] is False
+    assert any(name == "wow_engineering_auditor_runtime" for name, _ in db.writes)
+
+    # Existing backlog write must fail closed rather than claim persistence.
+    failing_db = FakeDB()
+    failing_db.fail_on_table = "wow_engineering_backlog"
+    with pytest.raises(RuntimeError, match="DB_WRITE_REJECTED"):
+        EngineeringAuditStore(failing_db).ingest_event(event, now=datetime(
+            2026, 10, 31, 22, 0, tzinfo=timezone.utc
+        ))
+    assert not any(name == "wow_engineering_backlog" for name, _ in failing_db.writes)
+
+    # Untrusted payload never reaches either persisted evidence surface.
+    hostile_db = FakeDB()
+    hostile_event = AuditEvent(
+        event_name="github_actions_reconcile", action="completed",
+        repository="gregoryharper84-ship-it/WOW-Dashboard",
+        source_kind="CODE_HEALTH_RUN", source_ref="41247454668",
+        title="untrusted", state="COMPLETED", head_sha="A" * 40,
+        conclusion="failure",
+        details={"check_name": "secret://LEAK", "stderr": "PRIVATE_TOKEN=hidden",
+                 "env": {"DB_PASSWORD": "never-copy"}, "html_url": "https://example.com/?key=hidden"},
+    )
+    hostile_finding = EngineeringAuditStore(hostile_db).ingest_event(hostile_event)
+    evidence_text = json.dumps(hostile_finding["evidence"])
+    backlog_text = next(payload["evidence_notes"] for name, payload in hostile_db.writes
+                        if name == "wow_engineering_backlog")
+    # GitHub identity comparison uses canonical lowercase; input was uppercase A*40.
+    assert hostile_finding["evidence"]["head_sha"] == "a" * 40
+    for secret in ("PRIVATE_TOKEN", "DB_PASSWORD", "never-copy", "secret://LEAK", "example.com"):
+        assert secret not in evidence_text
+        assert secret not in backlog_text
+
+
+def test_blocker_packet_has_no_advisory_execution_grant():
+    event = AuditEvent(
+        event_name="github_actions_reconcile", action="completed",
+        repository="owner/repo", source_kind="CODE_HEALTH_RUN",
+        source_ref="123", title="CI", state="COMPLETED",
+        head_sha="a" * 40, conclusion="failure",
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["evidence_sink"] == "ENGINEERING_AUDITOR_BACKLOG"
+    assert packet["dispatch_authorized"] is False
+    assert packet["merge_authorized"] is False
+    assert packet["deploy_authorized"] is False
+    assert packet["can_execute"] is False
+    assert "advisory_only" not in packet
+
+    assert "terminal_authority" not in packet  # store owns authority, not evidence
+
+
+def test_unknown_ci_conclusion_has_distinct_reconciliation_action():
+    event = AuditEvent(
+        event_name="github_actions_reconcile", action="completed",
+        repository="owner/repo", source_kind="CODE_HEALTH_RUN",
+        source_ref="123", title="CI", state="COMPLETED",
+        head_sha="a" * 40, conclusion="action_required",
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["failure_class"] == "CI_RESULT_UNVERIFIED"
+    assert packet["next_action"] == "RECONCILE_UNRECOGNIZED_CI_CONCLUSION"
