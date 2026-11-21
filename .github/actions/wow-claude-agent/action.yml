@@ -40,10 +40,10 @@ runs:
         set -euo pipefail
         if [ "$PROFILE" = ":workspace" ]; then
           turns=40
-          tools='Edit,Read,Write,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py:*),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
+          tools='Edit,Read,Write,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py:*),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(python artifacts/wow-engine/v17/engineering_lesson_retrieval.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
         else
           turns=24
-          tools='Read,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
+          tools='Read,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(python artifacts/wow-engine/v17/engineering_lesson_retrieval.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
         fi
         # Run 39919042320 job 120299530817 used one CLI (2.1.285), one
         # claude_args string, and one read-only tool lease. API-key auth
