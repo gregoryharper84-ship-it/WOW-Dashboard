@@ -223,6 +223,18 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     blocked = hook("db", [{"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"}])
     assert blocked == {"status": "X", "maintenance_row_status": "BLOCKED",
                        "maintenance_row_code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"} and calls == ["db", "db"]
+    # Reproduction: partial hydration is not a safe historical corpus. A
+    # maintenance failure is allowed ONLY when replay/refit failed, not when
+    # acquisition is partial or the current-season proof is missing.
+    for unsafe_code in (
+        "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN",
+        "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING",
+        "BASKETBALL_HISTORICAL_REPLAY_CUTOFF_UNSUPPORTED",
+    ):
+        held = hook("db", [{"sport": "NBA", "status": "BLOCKED", "code": unsafe_code}])
+        assert held["status"] == "SKIPPED" and held["can_execute"] is False
+        assert held["maintenance_row_code"] == unsafe_code
+    assert calls == ["db", "db"]
     assert hook("db", [{"sport": "WNBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) is None
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: (_ for _ in ()).throw(ValueError("x")))
     failed = hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}])
@@ -230,7 +242,7 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     # The maintenance report always carries the key.
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: {"status": "Y"})
     out = maintenance.run_basketball_model_maintenance(object(), sports=["NBA"], now=NOW)
-    assert out["nba_candidate_forward_shadow"]["status"] == "Y" and out["can_execute"] is False
+    assert out["nba_candidate_forward_shadow"]["status"] == "SKIPPED" and out["can_execute"] is False
 
 
 MIGRATION = (Path(__file__).parent / "migrations" / "20261121_nba_candidate_forward_shadow.sql").read_text()
