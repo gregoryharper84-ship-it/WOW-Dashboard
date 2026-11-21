@@ -24,6 +24,22 @@ def test_definitive_provider_failure_classification_is_conservative():
     assert quota.classify_provider_failure("HTTP_503") == quota.TEMPORARILY_UNAVAILABLE
 
 
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("DEACTIVATED_KEY", quota.DISABLED_BY_POLICY),
+        ("HTTP_401_DEACTIVATED_KEY", quota.AUTH_FAILURE),
+        ("HTTP_401", quota.AUTH_FAILURE),
+        ("HTTP_429", quota.RATE_LIMITED),
+    ],
+)
+def test_deactivated_key_classification_precedence_is_pinned(code, expected):
+    """Pins current precedence (issue #823); typed, never a model-failure code."""
+    result = quota.classify_provider_failure(code)
+    assert result == expected
+    assert not result.startswith("MODEL_")
+
+
 def test_public_schedule_success_consumes_zero_paid_odds_calls(monkeypatch):
     paid_factory_calls = []
     paid_http_calls = []
