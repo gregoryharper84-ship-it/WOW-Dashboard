@@ -7,6 +7,7 @@ calibrators, terminal decisions, or wagering capability.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import re
 from typing import Any
 
 from v17.core_intelligence import AUTHORITY
@@ -37,18 +38,30 @@ def _stage(name: str, action: Callable[[], Mapping[str, Any]], *, require_pass: 
             raise ValueError("STAGE_SAFETY_INVARIANT_FAILED")
         if raw.get("authority") != AUTHORITY:
             raise ValueError("STAGE_AUTHORITY_INVARIANT_FAILED")
-        if require_pass and raw.get("status") != "PASS":
+        if (require_pass and raw.get("status") != "PASS") or (
+            not require_pass and raw.get("status") not in (None, "PASS")
+        ):
+            # Cohort summaries are legacy status-less payloads. Preserve that
+            # documented case, but never convert an explicit FAILED or HOLD
+            # response into a successful four-stage receipt.
             raise ValueError("STAGE_STATUS_NOT_PASS")
     except Exception as exc:
         # Intentionally avoid surfacing exception messages, which may contain
         # connection strings, sensitive source fields or credentials.
-        return {
+        failure = {
             "stage": name,
             "status": "FAILED",
             "error_type": type(exc).__name__,
             "authority": AUTHORITY,
             "can_execute": False,
         }
+        # Preserve a vetted static database boundary, not exception text or
+        # arbitrary path/URL. Operators can isolate the failed table without
+        # leaking credentials from nested provider exceptions.
+        boundary = getattr(exc, "boundary", None)
+        if isinstance(boundary, str) and re.fullmatch(r"wow_[a-z0-9_]+\.[a-z0-9_]+", boundary):
+            failure["error_boundary"] = boundary
+        return failure
     return {"stage": name, "status": "PASS", "data": dict(raw), "authority": AUTHORITY, "can_execute": False}
 
 
