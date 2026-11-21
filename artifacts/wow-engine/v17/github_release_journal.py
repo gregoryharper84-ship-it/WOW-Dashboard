@@ -11,6 +11,10 @@ QA_CHECK_NAME = "WOW Independent QA exact-head"
 RELEASE_CHECK_NAME = "WOW Release Authority exact-head"
 REQUIRED_ENVIRONMENT = "wow-release"
 CONTROLLER_FILENAME = "wow-v17-render-production-deploy.yml"
+# Required-checks deploy recovery (redesign chunk 1, 2026-11-20): the only other
+# workflow allowed to POST Render deploys. Every other writer stays foreign.
+RECOVERY_DEPLOY_FILENAME = "wow-v17-required-checks-deploy.yml"
+SANCTIONED_RENDER_WRITERS = frozenset({CONTROLLER_FILENAME, RECOVERY_DEPLOY_FILENAME})
 JOURNAL_REF_PREFIX = "refs/heads/wow-release"
 RENDER_CREDENTIAL_SCOPE_ATTESTED = False
 ZERO_OID = "0" * 40
@@ -235,7 +239,7 @@ def inventory_render_writers(workflow_texts: Any) -> dict[str, Any]:
                 "blocker": "RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED"}
     foreign = sorted(
         name for name, text in workflow_texts.items()
-        if name != CONTROLLER_FILENAME and isinstance(text, str) and workflow_posts_render_deploy(text)
+        if name not in SANCTIONED_RENDER_WRITERS and isinstance(text, str) and workflow_posts_render_deploy(text)
     )
     holders = sorted(
         name for name, text in workflow_texts.items()
