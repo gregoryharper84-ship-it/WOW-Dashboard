@@ -211,19 +211,19 @@ def test_run_isolates_failures_and_never_publishes():
     assert out["certification_admission_source"] is False and out["automatic_promotion"] is False
 
 
-def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
+def test_maintenance_runs_capture_even_when_nba_refit_blocked(monkeypatch):
     from v17 import basketball_model_maintenance as maintenance
     calls = []
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: calls.append(db) or {"status": "X"})
     hook = maintenance.nba_candidate_forward_shadow_after_refresh
     assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {"status": "X"} and calls == ["db"]
-    skipped = hook("db", [{"sport": "NBA", "status": "BLOCKED"}])
-    assert skipped["reason_code"] == "NBA_MAINTENANCE_NOT_UPDATED" and calls == ["db"]
+    recovered = hook("db", [{"sport": "NBA", "status": "BLOCKED"}])
+    assert recovered == {"status": "X"} and calls == ["db", "db"]
     assert hook("db", [{"sport": "WNBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) is None
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: (_ for _ in ()).throw(ValueError("x")))
     failed = hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}])
     assert failed["reason_code"] == "NBA_CANDIDATE_FORWARD_SHADOW_VALUEERROR" and failed["can_execute"] is False
-    # The maintenance report always carries the key, and a blocked NBA row skips capture.
+    # Maintenance reports the research lane independently of the refit result.
     out = maintenance.run_basketball_model_maintenance(object(), sports=["NBA"], now=NOW)
     assert "nba_candidate_forward_shadow" in out and out["can_execute"] is False
 
