@@ -251,23 +251,24 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 |---|---|---|---:|
 | `QA_INPUT_HEAD_SHA_INVALID` | QA manual dispatch | Optional requested head SHA is malformed; no QA decision is published. | N/A |
 | `QA_INPUT_HEAD_SHA_STALE` | QA manual dispatch | Requested head SHA does not equal the current PR head; dispatch aborts. | N/A |
-| `QA_REVIEW_MODES_CONFLICT` | QA mode selection | Zero-credit and API-backed adversarial review flags are both true; neither mode is silently substituted. | N/A |
-| `QA_ZERO_CREDIT_CANARY_CONFLICT` | QA mode selection | Zero-credit mode and independent-review canary were requested simultaneously. | N/A |
-| `QA_ZERO_CREDIT_POLICY_INVALID` | QA and Release mode selection | The zero-credit activation variable has a value other than empty, false, or true. | N/A |
 | `QA_ZERO_CREDIT_POLICY_NOT_ENABLED` | QA evidence | Zero-credit receipt is presented without the explicitly activated reduced-assurance policy. | N/A |
 | `QA_ZERO_CREDIT_POLICY_CONFLICT` | QA evidence | Zero-credit receipt conflicts with active adversarial-review requirement or review-active evidence. | N/A |
 | `QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED` | QA evidence | Zero-credit procedure carries a purported independent source-review artifact; zero-credit cannot claim one. | N/A |
 | `QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH` | QA evidence | Zero-credit policy does not bind the canonical PR, exact head SHA and head ref. | N/A |
+| `QA_REVIEW_PATH_INVALID` | QA mode selection | The exact-head review-path selector returned no valid mode; no check is published and no path is guessed. | N/A |
+| `QA_REVIEW_CANARY_RETIRED` | QA mode selection | The independent-review canary input was requested; the review path is now derived per PR and the canary is superseded. | N/A |
+| `RELEASE_QA_REVIEW_MODE_INVALID` | release mode selection | The authenticated QA policy receipt names a mode that is not `zero_credit` or `independent` (including retired `legacy`); no decision is published. | N/A |
+| `QA_ZERO_CREDIT_REVIEW_PATH_INELIGIBLE` | QA evidence | Zero-credit QA was claimed but the exact-head selector did not select the deterministic Class A path (missing, or any per-file reason). | N/A |
+| `QA_ZERO_CREDIT_CONTENT_INELIGIBLE` | QA evidence | Typed per-file reason the PR cannot take the deterministic path: not allowlisted, trust-root, rename/delete, non-regular file, test weakening, shrinking data, added process/network code, or missing patch. Suffix is the reason. | N/A |
+| `QA_ZERO_CREDIT_REVIEW_PATH_STALE` | QA evidence | The recorded selection does not bind the evaluated head SHA or the protected-main policy hash. | N/A |
 | `RELEASE_INPUT_HEAD_SHA_INVALID` | Release manual dispatch | Optional Release target head SHA is malformed. | N/A |
 | `RELEASE_INPUT_HEAD_SHA_STALE` | Release manual dispatch | Release requested head SHA does not match authenticated producing QA receipt head. | N/A |
 | `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS` | required independent QA and Release | Live PR description lacks exactly one standalone canonical `Incident: #positive-integer` field, or contains duplicate/conflicting fields. Required QA fails before merge; Release independently re-derives the prefixed finding. | N/A |
 | `QA_APP_CREDENTIAL_MISSING` | independent QA | `WOW_QA_APP_ID` is not numeric or `WOW_QA_APP_PRIVATE_KEY` is absent; no QA check is published (the required check stays missing, so merges block). | N/A |
 | `QA_REVIEW_PROVIDER_CREDENTIAL_MISSING` | independent QA | Independent-review activation is enabled but the separate `WOW_QA_REVIEW_OPENAI_API_KEY` is absent; no QA decision/check is published. | N/A |
-| `QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD` | independent QA canary | Dispatch requested a canary but its PR number and head SHA do not exactly match the owner-configured single-PR/SHA admission. | N/A |
-| `QA_REVIEW_CANARY_REQUIRES_DISPATCH` | independent QA canary | Canary policy was requested from an event other than an explicit protected workflow dispatch. | N/A |
 | `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
 | `QA_TARGET_COUNT_INVALID` | independent QA | A protected QA invocation resolved anything other than one exact (PR, head) target; no source review or check is published. | N/A |
-| `QA_REVIEW_POLICY_INVALID` | independent QA / release | Independent-review activation is not one of the accepted empty, `false`, or `true` states; no decision/check is published. | N/A |
+| `QA_REVIEW_POLICY_INVALID` | QA evidence | The evidence's independent-review-active field is not a boolean; the decision fails closed. | N/A |
 | `QA_REVIEW_POLICY_MODE_INVALID` | independent QA | The authenticated producing QA run has no supported immutable review mode. | N/A |
 | `QA_REVIEW_POLICY_MODE_CONFLICT` | independent QA | The evidence mode and review requirement disagree. | N/A |
 | `QA_REVIEW_POLICY_RUN_ID_INVALID` | independent QA | The authenticated QA policy receipt has no valid producing run identity. | N/A |

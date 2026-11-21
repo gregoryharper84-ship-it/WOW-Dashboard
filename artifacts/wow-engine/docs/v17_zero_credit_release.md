@@ -63,3 +63,35 @@ Before declaring NFL restoration, require five protected checks at the
 same head, an authorized protected merge, Render LIVE on the merged SHA,
 and real persisted and reconciled NFL final-refresh scoring receipts.
 can_execute=false always.
+
+## Derived review path (scoped-review redesign, PR 1)
+
+The review path is no longer selected by repository variables. For each PR the protected-main
+QA job runs `independent_release_checks.py select-review-path`, and `gather()` re-derives the
+same selection so Release reaches it independently. There are exactly two outcomes:
+
+| Path | Mode | When |
+| --- | --- | --- |
+| `deterministic_class_a` | `zero_credit` | Every changed file is on the protected-main Class A allowlist and passes the content checks. No provider call. |
+| `scoped_independent` | `independent` | Anything else, and every error or unreadable input. Requires the independent source-review receipt. |
+
+Content checks beyond the path allowlist: added/modified/changed operations only (no delete,
+rename or copy); regular files only (no symlink, submodule or directory); a readable patch;
+test files may not lose assertions or test functions or gain skip/xfail/trivial asserts; JSON
+data may only grow; added `.py` lines may not reach process, network, environment or dynamic
+code. A failed check only routes the PR to independent review; it never blocks it.
+
+The selection records `head_sha`, `base_sha`, `diff_sha256` and `policy_sha256` (selector version
+plus the main-branch allowlist). QA and Release both fail closed if the selection is missing,
+stale, or not deterministic while `zero_credit` is claimed.
+
+`WOW_QA_INDEPENDENT_REVIEW_ACTIVE` and `WOW_QA_ZERO_CREDIT_MODE` no longer select a path or admit a job
+anywhere: not in the QA job `if:`, the QA and Release policy steps, `wow-v17-existing-pr-governance-review.yml`
+(route step and Class A receipt), or the governance dispatcher (which derives zero-credit mode per PR from the
+same selector). Any value, valid or not, only produces `QA_LEGACY_REVIEW_FLAGS_IGNORED` (a recorded warning;
+the dispatcher also reports `legacy_review_flags_ignored`). A regression matrix proves every unset/false/true/
+both/invalid combination yields identical selection and admission, and a repository scan fails if any new
+consumer of the variables appears. The independent-review canary input is retired (`QA_REVIEW_CANARY_RETIRED`).
+
+`policy_sha256` hashes the selector module's own source digest, the selector version and the main-branch Class A
+allowlist, so editing any classification rule changes the fingerprint without a manual version bump.

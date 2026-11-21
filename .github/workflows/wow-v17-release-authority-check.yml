@@ -248,8 +248,6 @@ jobs:
           INPUT_HEAD_SHA: ${{ inputs.head_sha }}
           QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
-          REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
-          ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
           SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || inputs.qa_run_id }}
           SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.qa_run_attempt }}
         run: |
@@ -291,22 +289,17 @@ jobs:
             [ "$INPUT_HEAD_SHA" = "$head" ] || { echo "::error::RELEASE_INPUT_HEAD_SHA_STALE"; exit 1; }
           fi
           review_mode=$(jq -r '.mode' <<<"$policy")
-          case "${REVIEW_ACTIVATION:-}" in
-            true) current_review_active=true ;;
-            ""|false) current_review_active=false ;;
-            *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
-          esac
+          # The QA policy receipt (authenticated above) is the single source of the
+          # review path. Release re-derives eligibility itself inside gather; no
+          # repository variable participates.
           ev="$out/evidence-$pr.json"
           gather_args=(gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head"
             --qa-policy-json "$out/qa-policy.json")
-          case "${ZERO_CREDIT_ACTIVATION:-}" in
-            true) zero_credit_active=true ;;
-            ""|false) zero_credit_active=false ;;
-            *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
+          case "$review_mode" in
+            zero_credit) gather_args+=(--zero-credit-policy-enabled) ;;
+            independent|canary) ;;
+            *) echo "::error::RELEASE_QA_REVIEW_MODE_INVALID:$review_mode"; exit 1 ;;
           esac
-          [ "$zero_credit_active" != "true" ] || gather_args+=(--zero-credit-policy-enabled)
-          [ "$current_review_active" != "true" ] || gather_args+=(--current-review-active)
-          [ "$review_mode" != "legacy" ] || gather_args+=(--legacy-review-policy)
           python "$tool" "${gather_args[@]}" > "$ev"
           readiness=$(python "$tool" classify-release-readiness --evidence "$ev")
           disposition=$(jq -er '.disposition' <<<"$readiness")

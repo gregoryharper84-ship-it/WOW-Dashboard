@@ -1021,8 +1021,10 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
-    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_PR" in workflow
-    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA" in workflow
+    # The path is derived per PR; the single-PR/SHA canary admission variables are retired.
+    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_PR" not in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA" not in workflow
+    assert "select-review-path" in workflow
     assert "Select exact-head review policy" in workflow
     assert "wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "independent_review_canary" in workflow

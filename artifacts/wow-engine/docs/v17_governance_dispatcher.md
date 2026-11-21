@@ -123,16 +123,17 @@ of activation or production verification.
 
 `can_execute=false` · `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
 
-## Opt-in zero-credit routing
+## Derived zero-credit routing
 
-The protected-main controller can route directly to deterministic QA when
-`WOW_QA_ZERO_CREDIT_MODE=true` and
-`WOW_QA_INDEPENDENT_REVIEW_ACTIVE=false`. It skips the absent source-review
-workflow and the non-required legacy certifier, but never claims semantic
-source review. It still verifies exact-head regression checks and trust-root
-owner approval, then uses separate QA and Release App checks. Release
-workflow dispatch requires the authenticated successful QA run ID and attempt.
-The dispatcher does not approve any pull request or make deployments.
+The protected-main controller derives the review path per PR and head from the same selector QA uses
+(`qa_review_path_selector`). When the selection is `deterministic_class_a` it routes directly to
+deterministic QA; any other or unreadable selection takes the scoped independent path and requires the
+source-review workflow. It never claims semantic source review on the deterministic path. It still verifies
+exact-head regression checks and trust-root owner approval, then uses separate QA and Release App checks.
+Release workflow dispatch requires the authenticated successful QA run ID and attempt. No repository
+variable selects the path: `WOW_QA_ZERO_CREDIT_MODE` and `WOW_QA_INDEPENDENT_REVIEW_ACTIVE` are ignored with a
+recorded warning (`legacy_review_flags_ignored`). The dispatcher does not approve any pull request or make
+deployments.
 
 Do not activate this controller unless the `wow-dispatch` environment is
 configured for protected `main` with `WOW_DISPATCH_JOURNAL_HMAC_KEY` (a

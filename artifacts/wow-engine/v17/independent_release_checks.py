@@ -24,6 +24,7 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engineering_incident_identity import exact_incident_id  # noqa: E402
+import qa_review_path_selector as _selector  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -256,6 +257,7 @@ def gather(
         "head_ref": (pr.get("head") or {}).get("ref"),
         "head_repo": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
         "base_ref": (pr.get("base") or {}).get("ref"),
+        "base_sha": (pr.get("base") or {}).get("sha"),
         "author": (pr.get("user") or {}).get("login"),
         "author_id": (pr.get("user") or {}).get("id"),
         "changed_files": pr.get("changed_files"),
@@ -284,6 +286,31 @@ def gather(
                 errors.append("FILES_RENAME_ORIGIN_MISSING")
     if isinstance(ev["pr"]["changed_files"], int) and len(files) < ev["pr"]["changed_files"]:
         errors.append("FILES_TRUNCATED")
+    # Review-path selection is re-derived from exact-head evidence here, so QA and Release
+    # (which both call gather) each reach the same path with no operator flag. The allowlist
+    # and trust-root set come from the protected-main checkout, never from the PR head.
+    _governance = frozenset(governance_trust_roots(REPO_ROOT))
+    _selection_files = [e for e in files if isinstance(e, dict)]
+    _all_allowlisted = bool(_selection_files) and len(_selection_files) <= _selector.MAX_FILES and all(
+        isinstance(e.get("filename"), str) and e["filename"] in CLASS_A_EXACT_PATHS for e in _selection_files
+    )
+    _content_types = (
+        _selector.fetch_content_types(repo, str(ev["pr"]["head_sha"] or expected_head),
+                                      [e["filename"] for e in _selection_files], fetch)
+        if _all_allowlisted else {}
+    )
+    ev["review_path"] = _selector.select_review_path(
+        _selection_files,
+        allowlist=CLASS_A_EXACT_PATHS,
+        content_types=_content_types,
+        trust_root_fn=lambda path: is_trust_root(path, _governance),
+        declared_changed_files=ev["pr"]["changed_files"] if isinstance(ev["pr"]["changed_files"], int) else None,
+        inventory_errors=[e for e in errors if e.startswith(("FILES_", "PULL_REQUEST_UNREADABLE"))],
+    )
+    ev["review_path"].update(
+        pr_number=pr_number, head_sha=ev["pr"]["head_sha"], base_sha=ev["pr"]["base_sha"],
+        expected_head_sha=expected_head,
+    )
     head = ev["pr"]["head_sha"] or expected_head
     runs = _paged(fetch, f"repos/{repo}/commits/{head}/check-runs", "check_runs", errors, "CHECK_RUNS")
     ev["check_runs"] = [{"id": r.get("id"), "name": r.get("name"), "head_sha": r.get("head_sha"),
@@ -779,6 +806,13 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                 findings.append("QA_ZERO_CREDIT_POLICY_CONFLICT")
             if ev.get("source_review") is not None:
                 findings.append("QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED")
+            selection = ev.get("review_path")
+            if not isinstance(selection, dict) or selection.get("path") != _selector.PATH_DETERMINISTIC:
+                findings.append("QA_ZERO_CREDIT_REVIEW_PATH_INELIGIBLE")
+                for reason in (selection or {}).get("reasons") or ["REVIEW_PATH_MISSING"]:
+                    findings.append(f"QA_ZERO_CREDIT_CONTENT_INELIGIBLE:{reason}")
+            elif selection.get("head_sha") != head or selection.get("policy_sha256") != _selector.policy_sha256(CLASS_A_EXACT_PATHS):
+                findings.append("QA_ZERO_CREDIT_REVIEW_PATH_STALE")
             if not isinstance(target, dict) or (target.get("pr_number") != ev.get("pr_number")
                     or target.get("head_sha") != head
                     or target.get("head_ref") != (pr.get("head_ref") or "")):
@@ -882,6 +916,10 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--pr")
     t.add_argument("--workflow-run-prs", help="JSON array from github.event.workflow_run.pull_requests")
     t.add_argument("--neutral-superseded", action="store_true")
+    sel = sub.add_parser("select-review-path")
+    sel.add_argument("--repo", required=True)
+    sel.add_argument("--pr", required=True, type=int)
+    sel.add_argument("--expected-head", required=True)
     g = sub.add_parser("gather")
     g.add_argument("--repo", required=True)
     g.add_argument("--pr", required=True, type=int)
@@ -952,6 +990,14 @@ def main(argv: list[str] | None = None) -> int:
             "disposition": "pending" if pending else "ready",
             "pending_checks": pending,
         }, sort_keys=True))
+        return 0
+    if args.cmd == "select-review-path":
+        governance = frozenset(governance_trust_roots(REPO_ROOT))
+        print(json.dumps(_selector.select_for_pr(
+            args.repo, args.pr, args.expected_head, fetch=gh_fetch,
+            allowlist=CLASS_A_EXACT_PATHS,
+            trust_root_fn=lambda path: is_trust_root(path, governance),
+        ), sort_keys=True))
         return 0
     if args.cmd == "gather":
         review_args = (
