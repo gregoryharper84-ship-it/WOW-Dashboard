@@ -217,6 +217,9 @@ def test_main_refuses_any_execution_authority(monkeypatch, capsys):
 
 
 def test_main_exit_codes_and_token_never_printed(monkeypatch, capsys):
+    # Dispatcher contract only; lane replay has its own tests (test_v17_schedule_lane_recovery.py).
+    from v17 import schedule_lane_recovery
+    monkeypatch.setattr(schedule_lane_recovery, "recover", lambda token, now, http: [])
     monkeypatch.setenv(recovery.TOKEN_ENV, "secret-token-value")
     monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
     assert recovery.main(http=FakeGitHub(runs=[_run(70)]), now=NOW) == 0

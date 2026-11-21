@@ -197,9 +197,17 @@ def main(*, http: Optional[Http] = None, now: Optional[datetime] = None) -> int:
     if not token:
         print(json.dumps(_result("CONFIGURATION_MISSING", now, missing=TOKEN_ENV)))
         return 2
-    result = run_once(token, now=now, http=http)
+    call = http or github_http(token)
+    result = run_once(token, now=now, http=call)
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] in _OK else 1
+    # Same cron, same token: replay the hourly product lanes GitHub also sheds.
+    from v17 import schedule_lane_recovery
+
+    lanes = schedule_lane_recovery.recover(token, now=now, http=call)
+    for lane in lanes:
+        print(json.dumps(lane, sort_keys=True))
+    ok = result["status"] in _OK and all(lane["status"] in schedule_lane_recovery.OK_STATUSES for lane in lanes)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
