@@ -337,3 +337,44 @@ def test_llp_gateway_normalizes_supabase_runtime_and_external_prefixes_fail_clos
     assert 'x-wow-gateway-version": "2.2"' in source
     assert 'WOW-LLP-Supabase-Gateway/2.2' in source
     assert 'if (!upstreamPath) upstreamPath = "/health";' not in source
+
+
+def test_wow_pick_request_action_and_llp_gateway_remain_separate_contracts():
+    wow = yaml.safe_load(WOW_SCHEMA.read_text())
+    llp = yaml.safe_load(LLP_SCHEMA.read_text())
+    render_origin = "https://wow-governed-probability-engine.onrender.com"
+    supabase_origin = "https://iczfhsmjrrafhvcpmqhr.supabase.co"
+    gateway_prefix = "/functions/v1/wow-llp-action-gateway"
+
+    wow_operations = {
+        operation["operationId"]
+        for path_item in wow["paths"].values()
+        for method, operation in path_item.items()
+        if method.lower() in {"get", "post", "put", "patch", "delete"}
+        and "operationId" in operation
+    }
+    assert wow["servers"] == [{"url": render_origin}]
+    assert len(wow_operations) == 29
+    assert "scoreWowPickRequest" in wow_operations
+    assert wow["paths"]["/score-pick-request"]["post"]["operationId"] == "scoreWowPickRequest"
+    assert wow["paths"]["/score-prop"]["post"]["operationId"] == "scoreWowProp"
+
+    llp_operations = {
+        operation["operationId"]
+        for path_item in llp["paths"].values()
+        for method, operation in path_item.items()
+        if method.lower() in {"get", "post", "put", "patch", "delete"}
+        and "operationId" in operation
+    }
+    assert llp["servers"] == [{"url": supabase_origin}]
+    assert len(llp_operations) == 17
+    assert all(path.startswith(gateway_prefix + "/") for path in llp["paths"])
+    assert not any(path.endswith("/score-pick-request") or path.endswith("/score-prop") for path in llp["paths"])
+
+    gateway_source = LLP_GATEWAY.read_text()
+    route_block = gateway_source.split("const ROUTES: Route[] = [", 1)[1].split("];", 1)[0]
+    assert 'const TARGET = "https://wow-governed-probability-engine.onrender.com";' in gateway_source
+    assert route_block.count("{ method:") == 17
+    assert "score-pick-request" not in route_block
+    assert "score-prop" not in route_block
+    assert "LLP_GATEWAY_PATH_NOT_ALLOWED" in gateway_source
