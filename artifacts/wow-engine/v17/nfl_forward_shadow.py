@@ -10,7 +10,7 @@ price as the model forecast, and never authorizes execution.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 import math
@@ -31,6 +31,20 @@ OUTCOME_TABLE = "wow_nfl_training_games"
 GRADE_TABLE = "wow_nfl_forward_shadow_grades"
 VERIFIED_GRADE_TABLE = "wow_nfl_forward_verified_grades"
 HEALTH_TABLE = "wow_nfl_forward_calibration_health"
+
+# Owner decision 2026-11-21 (#1896 / #1939): grading eligibility is separate
+# from publication eligibility. V1 (latest *publishable* pre-kickoff row) is
+# preserved unchanged as the original historical record and remains the only
+# source of the persisted health receipt / certification admission. V2 grades
+# the latest *valid* pre-kickoff forecast whether or not it is publishable, in
+# its own immutable ledger, one row per event. V2 never publishes, never feeds
+# certification admission, and never changes a probability or bound.
+SELECTION_POLICY_V1 = "LATEST_PUBLISHABLE_PREKICKOFF_V1"
+SELECTION_POLICY_V2 = "LATEST_VALID_PREKICKOFF_V2"
+GRADE_SCHEMA_VERSION_V2 = "NFL_FORWARD_SHADOW_GRADE_V2"
+GRADE_TABLE_V2 = "wow_nfl_forward_shadow_grades_v2"
+VERIFIED_GRADE_TABLE_V2 = "wow_nfl_forward_verified_grades_v2"
+_MAX_REPORTED_EVENTS = 50
 
 
 class NFLForwardShadowError(ValueError):
@@ -165,6 +179,72 @@ def select_canonical_forward_predictions(rows: Sequence[Mapping[str, Any]]) -> l
             raise NFLForwardShadowError("PREDICTION_EVENT_RECONCILIATION_FAILED")
         selected.append(winner)
     return sorted(selected, key=lambda row: (row.event_start_time_utc, row.official_event_id))
+
+
+def select_latest_valid_prekickoff_predictions(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[ForwardPrediction], dict[str, Any]]:
+    """V2: one decision-time forecast per event, independent of publication.
+
+    Eligible rows have a valid model package, complete provenance and a
+    creation time strictly before *every* kickoff recorded for that event (a
+    rescheduled-earlier kickoff can never admit a late row). The publication
+    flag is deliberately not consulted. Ties on creation time break by
+    prediction id, so the choice is deterministic and outcome-independent.
+    Ineligible rows and events are reported with typed reasons, never dropped
+    silently.
+    """
+    parsed: list[ForwardPrediction] = []
+    seen_ids: set[str] = set()
+    earliest_kickoff: dict[str, datetime] = {}
+    for raw in rows:
+        prediction = _to_prediction(raw)
+        if not prediction.event_prediction_id or not prediction.official_event_id:
+            raise NFLForwardShadowError("PREDICTION_IDENTITY_MISSING")
+        if prediction.event_prediction_id in seen_ids:
+            raise NFLForwardShadowError("PREDICTION_ID_DUPLICATED")
+        if prediction.can_execute:
+            raise NFLForwardShadowError("CAN_EXECUTE_MUST_BE_FALSE")
+        seen_ids.add(prediction.event_prediction_id)
+        parsed.append(prediction)
+        kickoff = earliest_kickoff.get(prediction.official_event_id)
+        if kickoff is None or prediction.event_start_time_utc < kickoff:
+            earliest_kickoff[prediction.official_event_id] = prediction.event_start_time_utc
+
+    ineligible_rows: dict[str, int] = {}
+    event_reasons: dict[str, set[str]] = {}
+    by_event: dict[str, list[ForwardPrediction]] = {}
+    for prediction in parsed:
+        event_id = prediction.official_event_id
+        reasons = []
+        if not prediction.model_package_valid:
+            reasons.append("MODEL_PACKAGE_INVALID")
+        if not prediction.provenance_complete:
+            reasons.append("PROVENANCE_INCOMPLETE")
+        if prediction.prediction_created_at >= earliest_kickoff[event_id]:
+            reasons.append("NOT_STRICTLY_PRE_KICKOFF")
+        if reasons:
+            for reason in reasons:
+                ineligible_rows[reason] = ineligible_rows.get(reason, 0) + 1
+            event_reasons.setdefault(event_id, set()).update(reasons)
+            continue
+        by_event.setdefault(event_id, []).append(prediction)
+
+    selected = [
+        max(candidates, key=lambda row: (row.prediction_created_at, row.event_prediction_id))
+        for candidates in by_event.values()
+    ]
+    without = sorted(set(event_reasons) - set(by_event))
+    report = {
+        "selection_policy": SELECTION_POLICY_V2,
+        "prediction_rows_seen": len(parsed),
+        "ineligible_rows": dict(sorted(ineligible_rows.items())),
+        "events_without_eligible_prediction_n": len(without),
+        "events_without_eligible_prediction": {
+            event_id: sorted(event_reasons[event_id]) for event_id in without[:_MAX_REPORTED_EVENTS]
+        },
+    }
+    return sorted(selected, key=lambda row: (row.event_start_time_utc, row.official_event_id)), report
 
 
 def _outcome_index(rows: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
@@ -339,6 +419,8 @@ _FORWARD_PAGE_KEYS = {
     OUTCOME_TABLE: "game_id",
     GRADE_TABLE: "grade_id",
     VERIFIED_GRADE_TABLE: "official_event_id",
+    GRADE_TABLE_V2: "grade_id",
+    VERIFIED_GRADE_TABLE_V2: "official_event_id",
 }
 
 
@@ -443,14 +525,21 @@ def load_outcome_rows(db: Any) -> list[dict[str, Any]]:
     )
 
 
-def persist_new_grades(db: Any, grades: Sequence[ForwardGrade]) -> int:
+def persist_new_grades(
+    db: Any,
+    grades: Sequence[ForwardGrade],
+    *,
+    table: str = GRADE_TABLE,
+    extra: Mapping[str, Any] | None = None,
+) -> int:
+    """Insert grades for events not yet graded in ``table``; never update."""
     if not grades:
         return 0
-    existing = _paginate(db, GRADE_TABLE, "official_event_id")
+    existing = _paginate(db, table, "official_event_id")
     seen = {str(row.get("official_event_id") or "") for row in existing}
-    payloads = [asdict(row) for row in grades if row.official_event_id not in seen]
+    payloads = [{**asdict(row), **dict(extra or {})} for row in grades if row.official_event_id not in seen]
     for offset in range(0, len(payloads), 250):
-        db.table(GRADE_TABLE).insert(payloads[offset:offset + 250]).execute()
+        db.table(table).insert(payloads[offset:offset + 250]).execute()
     return len(payloads)
 
 
@@ -475,20 +564,79 @@ def persist_health(db: Any, health: Mapping[str, Any]) -> None:
     }).execute()
 
 
-def load_verified_grades(db: Any) -> list[ForwardGrade]:
+def load_verified_grades(
+    db: Any,
+    *,
+    table: str = VERIFIED_GRADE_TABLE,
+    schema_version: str = GRADE_SCHEMA_VERSION,
+) -> list[ForwardGrade]:
     """Read the private reconciled ledger; never replace it with fresh grades."""
     fields = tuple(ForwardGrade.__dataclass_fields__)
-    rows = _paginate(db, VERIFIED_GRADE_TABLE, ','.join(fields))
+    rows = _paginate(db, table, ','.join(fields))
     grades = []
     for row in rows:
         try:
             grade = ForwardGrade(**{field: row[field] for field in fields})
         except (KeyError, TypeError) as exc:
             raise NFLForwardShadowError('NFL_FORWARD_VERIFIED_GRADE_INVALID') from exc
-        if grade.can_execute is not False or grade.schema_version != GRADE_SCHEMA_VERSION:
+        if grade.can_execute is not False or grade.schema_version != schema_version:
             raise NFLForwardShadowError('NFL_FORWARD_VERIFIED_GRADE_INVALID')
         grades.append(grade)
     return grades
+
+
+def run_forward_grading_v2(
+    db: Any,
+    prediction_rows: Sequence[Mapping[str, Any]],
+    outcome_rows: Sequence[Mapping[str, Any]],
+    *,
+    min_forward: int = MIN_FORWARD_GRADED,
+) -> dict[str, Any]:
+    """Grade under LATEST_VALID_PREKICKOFF_V2 into its own immutable ledger.
+
+    The scorecard is diagnostic evidence only: it is returned, never written
+    to the health table, so certification admission is unchanged.
+    """
+    canonical, report = select_latest_valid_prekickoff_predictions(prediction_rows)
+    grades = [
+        replace(grade, schema_version=GRADE_SCHEMA_VERSION_V2)
+        for grade in grade_forward_predictions(canonical, outcome_rows)
+    ]
+    graded_ids = {grade.official_event_id for grade in grades}
+    outcomes = _outcome_index(outcome_rows)
+    ungraded = {
+        prediction.official_event_id: (
+            "OUTCOME_NOT_SETTLED" if prediction.official_event_id not in outcomes
+            else "OUTCOME_NOT_BINARY_FINAL"
+        )
+        for prediction in canonical
+        if prediction.official_event_id not in graded_ids
+    }
+    ungraded_counts: dict[str, int] = {}
+    for reason in ungraded.values():
+        ungraded_counts[reason] = ungraded_counts.get(reason, 0) + 1
+    inserted = persist_new_grades(
+        db, grades, table=GRADE_TABLE_V2, extra={"selection_policy": SELECTION_POLICY_V2}
+    )
+    verified = load_verified_grades(
+        db, table=VERIFIED_GRADE_TABLE_V2, schema_version=GRADE_SCHEMA_VERSION_V2
+    )
+    scorecard = calibration_health(verified, min_forward=min_forward)
+    return {
+        "status": "COMPLETED",
+        **report,
+        "canonical_events": len(canonical),
+        "graded_events": len(grades),
+        "ungraded_canonical_events": dict(sorted(ungraded_counts.items())),
+        "ungraded_canonical_event_ids": dict(sorted(ungraded.items())[:_MAX_REPORTED_EVENTS]),
+        "new_grades_persisted": inserted,
+        "verified_graded_events": len(verified),
+        "calibration_cohort_source": VERIFIED_GRADE_TABLE_V2,
+        "calibration_scorecard": scorecard,
+        "certification_admission_source": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
 
 
 def run_forward_shadow(
@@ -505,13 +653,23 @@ def run_forward_shadow(
     settlement_refresh = settlement_refresh_fn(db)
     prediction_rows = load_prediction_rows(db)
     canonical = select_canonical_forward_predictions(prediction_rows)
-    grades = grade_forward_predictions(canonical, load_outcome_rows(db))
+    outcome_rows = load_outcome_rows(db)
+    grades = grade_forward_predictions(canonical, outcome_rows)
     inserted = persist_new_grades(db, grades)
     # A newly recomputed grade may disagree with an immutable historical row.
     # Only the reconciled persisted view may contribute to a V2 health receipt.
     verified_grades = load_verified_grades(db)
     health = calibration_health(verified_grades, min_forward=min_forward)
     persist_health(db, health)
+    # Publication-independent grading runs after the unchanged V1 receipt so a
+    # V2 failure (e.g. migration not yet applied) can never alter V1 evidence
+    # or certification admission. Its failure is typed, never silent.
+    try:
+        grading_v2 = run_forward_grading_v2(db, prediction_rows, outcome_rows, min_forward=min_forward)
+    except NFLForwardShadowError as exc:
+        grading_v2 = {"status": "FAILED", "reason_code": f"NFL_FORWARD_V2_{exc}", "can_execute": False}
+    except Exception as exc:  # noqa: BLE001 - typed and isolated from V1 grading
+        grading_v2 = {"status": "FAILED", "reason_code": f"NFL_FORWARD_V2_{type(exc).__name__.upper()}", "can_execute": False}
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
         "status": "COMPLETED",
@@ -524,6 +682,8 @@ def run_forward_shadow(
         "calibration_cohort_source": VERIFIED_GRADE_TABLE,
         "new_grades_persisted": inserted,
         "calibration_health": health,
+        "selection_policy": SELECTION_POLICY_V1,
+        "forward_grading_v2": grading_v2,
         "automatic_certification": False,
         "automatic_promotion": False,
         "can_execute": False,
