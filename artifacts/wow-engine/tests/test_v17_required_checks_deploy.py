@@ -22,7 +22,7 @@ NEWER = "b" * 40
 OLD = "c" * 40
 
 
-def _service(role: str, trigger: str = "checksPass") -> dict:
+def _service(role: str, trigger: str = "off") -> dict:
     return {"id": SERVICES[role], "branch": "main", "repo": "https://github.com/" + REPO,
             "autoDeployTrigger": trigger}
 
@@ -220,16 +220,22 @@ def test_second_trigger_for_the_same_sha_watches_the_first_runs_deploy():
 
 def test_worker_only_service_drift_holds_before_any_write():
     fake = Fake(services={"web": _service("web"), "worker": _service("worker", trigger="commit")})
-    with pytest.raises(deployer.DeployHold, match="MISMATCH:worker"):
+    with pytest.raises(deployer.DeployHold, match="RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:worker"):
         _run(fake)
     assert fake.posts == []
 
 
 def test_service_identity_drift_holds_before_any_write():
-    fake = Fake(services={"web": _service("web", trigger="off"), "worker": _service("worker")})
-    with pytest.raises(deployer.DeployHold, match="RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web"):
+    fake = Fake(services={"web": _service("web", trigger="commit"), "worker": _service("worker")})
+    with pytest.raises(deployer.DeployHold, match="RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:web"):
         _run(fake)
     assert fake.posts == []
+
+
+def test_cutover_checks_pass_trigger_is_still_accepted_until_native_retired():
+    fake = Fake(services={role: _service(role, trigger="checksPass") for role in SERVICES})
+    assert _run(fake)["status"] == "DEPLOY_LIVE_AND_HEALTHY"
+    assert sorted(role for role, _ in fake.posts) == ["web", "worker"]
 
 
 def _env(monkeypatch, tmp_path, **overrides):

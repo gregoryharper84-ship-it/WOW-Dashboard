@@ -11,7 +11,7 @@ SHA = "a" * 40
 OLD = "b" * 40
 
 
-def service(role, trigger="checksPass"):
+def service(role, trigger="off"):
     return {
         "id": m.SERVICES[role], "branch": "main",
         "repo": "https://github.com/" + m.REPO,
@@ -46,15 +46,23 @@ def score(*, target=SHA, main=SHA, services=None, deploys=None, health=True):
     )
 
 
-def test_two_services_current_ci_gated_and_live_sha_never_certifies_production():
+def test_two_services_current_single_writer_and_live_sha_never_certifies_production():
     result = score()
     assert result["web_deploy_id"] == "dep-web"
     assert result["worker_deploy_id"] == "dep-worker"
     assert result["status"] == "WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED"
+    assert result["sole_deploy_writer"] == m.SOLE_DEPLOY_WRITER
+    assert result["native_auto_deploy_retired"] is True
     assert result["terminal"] == "PENDING_SIRT_INDEPENDENT_ACCEPTANCE"
     assert result["production_verified"] is False
     assert result["model_ready"] == "UNVERIFIED"
     assert result["can_execute"] is False
+
+
+def test_cutover_checks_pass_readback_still_observes_without_certifying():
+    result = score(services={role: service(role, trigger="checksPass") for role in m.SERVICES})
+    assert result["native_auto_deploy_retired"] is False
+    assert result["production_verified"] is False
 
 
 @pytest.mark.parametrize("mutate", [
@@ -77,10 +85,10 @@ def test_source_provenance_rejected(mutate):
     ({"target": OLD}, "TARGET_NOT_CURRENT_MAIN"),
     ({"target": "not-sha"}, "SHA_INVALID"),
     ({"health": False}, "HEALTH_LIVE_NOT_SUCCESS"),
-    ({"services": {"web": service("web"), "worker": service("worker", trigger="off")}},
-     "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:worker"),
+    ({"services": {"web": service("web"), "worker": service("worker", trigger="commit")}},
+     "RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:worker"),
     ({"services": {"web": service("web", trigger="commit"), "worker": service("worker")}},
-     "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web"),
+     "RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:web"),
     ({"deploys": {"web": [deploy(OLD)], "worker": [deploy()]}},
      "RENDER_LIVE_SHA_MISMATCH:web"),
     ({"deploys": {"web": [deploy()], "worker": [deploy(OLD)]}},
@@ -303,7 +311,7 @@ def test_recent_live_sha_mismatch_is_typed_pending_never_verified(role):
 
 @pytest.mark.parametrize("reason", [
     "HEALTH_LIVE_NOT_SUCCESS",
-    "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web",
+    "RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:web",
     "RENDER_LIVE_DEPLOY_NOT_UNIQUE:worker",
     "TARGET_NOT_CURRENT_MAIN",
     "READBACK_SOURCE_UNAVAILABLE_OR_INVALID",
@@ -382,7 +390,7 @@ def test_main_fails_closed_when_commit_age_cannot_be_established(monkeypatch, tm
 
 
 @pytest.mark.parametrize("reason", [
-    "HEALTH_LIVE_NOT_SUCCESS", "RENDER_CI_GATED_SERVICE_CONFIGURATION_MISMATCH:web", "TARGET_NOT_CURRENT_MAIN",
+    "HEALTH_LIVE_NOT_SUCCESS", "RENDER_SINGLE_WRITER_SERVICE_CONFIGURATION_MISMATCH:web", "TARGET_NOT_CURRENT_MAIN",
 ])
 def test_main_recent_commit_never_masks_non_deploy_holds(monkeypatch, tmp_path, reason):
     fresh = datetime.now(timezone.utc).isoformat()

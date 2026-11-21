@@ -35,6 +35,8 @@ OPTIONAL_MAIN_SCOPED_JOBS: dict[str, tuple[str, ...]] = {
     "wow-v17-golden-product-acceptance.yml": ("product-acceptance",),
     "wow-v17-nightly-engineering-scan.yml": ("nightly-engineering-scan",),
     "wow-v17-lean-production-readback.yml": ("production-readback",),
+    "wow-v17-deploy-stall-watch.yml": ("stall-watch",),
+    "wow-v17-single-writer-cutover.yml": ("cutover",),
     "wow-v17-main-verification-reconciler.yml": ("reconcile",),
     "wow-v17-engineering-auto-repair.yml": (
         "discover",

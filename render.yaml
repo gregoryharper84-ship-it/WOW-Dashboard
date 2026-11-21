@@ -20,7 +20,11 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health/live
-    autoDeployTrigger: "checksPass"
+    # Sole production writer is wow-v17-required-checks-deploy.yml (exact main +
+    # three required checks). Native checksPass is retired to end dual writers
+    # (WOW-V17-DEPLOY-RELIABILITY-P0 / #2422). Live services still need the
+    # controlled cutover PATCH before Blueprint sync alone is authoritative.
+    autoDeployTrigger: "off"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
@@ -159,7 +163,8 @@ services:
     buildCommand: pip install -r requirements.txt
     # Keep the engine root importable for dependencies loaded inside tasks.
     startCommand: python -m celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
-    autoDeployTrigger: "checksPass"
+    # Same single-writer policy as the web engine: API deploy only.
+    autoDeployTrigger: "off"
     maxShutdownDelaySeconds: 120
     envVars:
       - key: PYTHON_VERSION
