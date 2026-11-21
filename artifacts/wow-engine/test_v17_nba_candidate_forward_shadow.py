@@ -217,7 +217,7 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: calls.append(db) or {"status": "X"})
     hook = maintenance.nba_candidate_forward_shadow_after_refresh
     assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {
-        "status": "X", "maintenance_row_status": "SHADOW_EVIDENCE_UPDATED", "maintenance_row_code": None}
+        "status": "X", "maintenance_row_status": "SHADOW_EVIDENCE_UPDATED", "maintenance_row_code": None, "capture_corpus_verified": True}
     # Refits can fail after corpus checks. Prove those checks independently
     # before capturing from the persisted model's training history.
     monkeypatch.setattr(maintenance, "verify_training_provenance",
@@ -227,7 +227,8 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     blocked_row = {"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"}
     blocked = hook("db", [blocked_row])
     assert blocked == {"status": "X", "maintenance_row_status": "BLOCKED",
-                       "maintenance_row_code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"} and calls == ["db", "db"]
+                       "maintenance_row_code": "BASKETBALL_MODEL_MAINTENANCE_FAILED",
+                       "capture_corpus_verified": True} and calls == ["db", "db"]
     # A generic refit failure may actually originate from provenance/freshness
     # readback, so neither a failed check nor a failed query authorizes capture.
     monkeypatch.setattr(maintenance, "verify_training_freshness",
