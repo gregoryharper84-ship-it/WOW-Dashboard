@@ -58,6 +58,8 @@ SECONDARY_VENDOR_FAILURE_CODES = {
     "ODDS_PROVIDER_NON_JSON",
     # Typed 429 formerly reported as ODDS_PROVIDER_NON_JSON (#823); same eligibility.
     "ODDS_PROVIDER_HTTP_429",
+    # Provider-side deactivated Odds API key (#823); credential class, not caller auth.
+    "ODDS_API_KEY_DEACTIVATED",
 }
 
 
