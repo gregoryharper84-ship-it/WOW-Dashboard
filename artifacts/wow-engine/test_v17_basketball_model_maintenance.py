@@ -1,6 +1,9 @@
 # Exact-head CI requeue after merging #2512 provenance tip.
 from datetime import datetime, timezone
 from pathlib import Path
+import os
+import subprocess
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -253,6 +256,51 @@ def test_live_basketball_maintenance_never_runs_on_push():
     assert "(github.event_name == 'push' && github.ref == 'refs/heads/main')" not in workflow
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
     assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
+
+
+
+@pytest.mark.parametrize(
+    ("governance_outcome", "maintenance_outcome", "expected_ok"),
+    [
+        ("success", "success", True),
+        ("failure", "success", False),
+        ("success", "failure", False),
+        ("success", "skipped", False),
+    ],
+)
+def test_basketball_maintenance_observer_job_reports_real_failure(
+    tmp_path, governance_outcome, maintenance_outcome, expected_ok,
+):
+    """The observer must fail the scheduled job when optional steps fail.
+
+    Reproduces the 2026-11-21 green-run/failed-refit false-positive: a
+    continue-on-error maintenance step cannot imply a successful job.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (
+        repo_root / ".github" / "workflows" / "wow-v17-basketball-model-maintenance.yml"
+    ).read_text(encoding="utf-8")
+    observer = workflow.split("      - name: Record authentic optional-observer outcome\n", 1)[1]
+    step_header, shell_body = observer.split("        run: |\n", 1)
+    assert "continue-on-error:" not in step_header
+    shell_script = textwrap.dedent(shell_body)
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "GOV_OUTCOME": governance_outcome,
+        "WORK_OUTCOME": maintenance_outcome,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    result = subprocess.run(
+        ["bash", "-c", shell_script],
+        env=env, text=True, capture_output=True, check=False, timeout=10,
+    )
+    assert (result.returncode == 0) is expected_ok
+    body = summary.read_text(encoding="utf-8")
+    if expected_ok:
+        assert "BASKETBALL_MODEL_MAINTENANCE_PASS" in body
+    else:
+        assert "FAILED" in body or "INCOMPLETE" in body
 
 
 def test_replay_success_cannot_disguise_stale_basketball_source(monkeypatch):
