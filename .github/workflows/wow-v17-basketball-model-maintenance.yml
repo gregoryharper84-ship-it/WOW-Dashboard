@@ -230,7 +230,8 @@ jobs:
           }, sort_keys=True))
           PY
       - name: Record authentic optional-observer outcome
-        continue-on-error: true
+        # Always turn the captured outcome into a truthful job conclusion.
+        # Earlier step-level continue-on-error exists only to record evidence.
         shell: bash
         env:
           GOV_OUTCOME: ${{ steps.gov.outcome }}
@@ -244,9 +245,11 @@ jobs:
           if [ "$GOV_OUTCOME" != "success" ]; then
             echo "BASKETBALL_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED can_execute=false (work not run)" >> "$GITHUB_STEP_SUMMARY"
             echo "::error::BASKETBALL_MODEL_MAINTENANCE_GOVERNANCE_ASSERTION_FAILED"
+            exit 1
           elif [ "$WORK_OUTCOME" = "success" ]; then
             echo "BASKETBALL_MODEL_MAINTENANCE_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
             echo "::error::BASKETBALL_MODEL_MAINTENANCE_INCOMPLETE"
+            exit 1
           fi
