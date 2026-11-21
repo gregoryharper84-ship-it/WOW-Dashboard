@@ -442,21 +442,26 @@ def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mappin
     recorded with the receipt. Research-only: never changes certification,
     publication, or execution.
     """
-    nba_row = next((row for row in results if row.get("sport") == "NBA"), None)
-    if nba_row is None:
+    nba_rows = tuple(row for row in results if row.get("sport") == "NBA")
+    if not nba_rows:
         return None
-    # A failed refit need not erase prospectively scored evidence, but any
-    # unverified/partially-written corpus must still fail closed. Restrict the
-    # exception to the exact refit failure observed in production.
-    capture_safe = (
-        nba_row.get("status") == "SHADOW_EVIDENCE_UPDATED"
-        or (nba_row.get("status") == "BLOCKED"
-            and nba_row.get("code") == "BASKETBALL_MODEL_MAINTENANCE_FAILED")
-    )
-    # The generic maintenance exception also covers failed provenance/freshness
-    # queries. Before taking the failed-refit exception, independently verify
-    # both corpus preflights. Successful maintenance has already run them.
-    corpus_verified = nba_row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+    # Every NBA maintenance row must be eligible. A later partial-write or
+    # replay hold must veto capture even if an earlier duplicate row succeeded.
+    def eligible(row: Mapping[str, Any]) -> bool:
+        return (
+            row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+            or (row.get("status") == "BLOCKED"
+                and row.get("code") == "BASKETBALL_MODEL_MAINTENANCE_FAILED")
+        )
+
+    veto_row = next((row for row in nba_rows if not eligible(row)), None)
+    nba_row = veto_row if veto_row is not None else nba_rows[0]
+    capture_safe = veto_row is None
+    # A failed refit need not erase prospective evidence, but any unverified
+    # corpus must still fail closed. If any eligible row was blocked, recheck
+    # both preflights rather than trusting a different successful row.
+    corpus_verified = all(row.get("status") == "SHADOW_EVIDENCE_UPDATED" for row in nba_rows)
+    verification_failure_code = None
     if capture_safe and not corpus_verified:
         try:
             provenance = verify_training_provenance(db, "NBA")
@@ -465,10 +470,13 @@ def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mappin
                 provenance.get("provenance_complete") is True
                 and freshness.get("freshness_status") == "PASS"
             )
-        except Exception:  # noqa: BLE001 - fail closed on any unverified corpus
+        except Exception as exc:  # noqa: BLE001 - fail closed on unverified corpus
             corpus_verified = False
+            verification_failure_code = _public_failure_code(
+                exc, "NBA_CANDIDATE_CORPUS_VERIFICATION_FAILED"
+            )
     if not capture_safe or not corpus_verified:
-        return {
+        receipt = {
             "status": "SKIPPED",
             "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
             "maintenance_row_status": nba_row.get("status"),
@@ -477,6 +485,9 @@ def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mappin
             "probability_publishable": False,
             "can_execute": False,
         }
+        if verification_failure_code is not None:
+            receipt["capture_corpus_verification_code"] = verification_failure_code
+        return receipt
     try:
         from v17 import nba_candidate_forward_shadow as lane
         receipt = dict(lane.run_nba_candidate_forward_shadow(db))
