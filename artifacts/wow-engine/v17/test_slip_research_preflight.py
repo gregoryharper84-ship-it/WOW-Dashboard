@@ -76,6 +76,20 @@ def prop(row, event, *, player="NUGGETS-15", team="HOME", line=24.5):
         official_source_id="synthetic-official-roster",
         observed_at_utc="2026-11-19T23:45:00Z",
     )
+    data["opportunity_evidence"] = dict(
+        sport="NBA", official_event_id=event,
+        official_player_id=player, stat_type="POINTS",
+        source_receipt_id="synthetic-workload-" + row,
+        lineup_scenario_source_id="synthetic-lineup-scenarios",
+        role_source_id="synthetic-role-ledger",
+        observed_at_utc="2026-11-19T23:55:00Z",
+        availability="ACTIVE_CONFIRMED",
+        forecast_method="ROLE_CONDITIONAL_MINUTES_ATTEMPTS",
+        opportunity_unit="FGA",
+        expected_opportunities=16.0,
+        opportunity_p10=9.0,
+        opportunity_p90=24.0,
+    )
     return data
 
 
@@ -342,3 +356,158 @@ def test_invalid_asof_and_missing_card_handled_explicitly():
     out = audit_research_slips([{"card_id": "bad", "legs": [None]}], as_of_utc=AS_OF)
     assert "RESEARCH_LEG_INVALID" in out["cards"][0]["blockers"]
     assert out["can_execute"] is False
+
+
+def prizepicks_prop(row, event, *, player="NBA-34", line=10.5, tier="STANDARD"):
+    p = prop(row, event, player=player, line=line)
+    p.update(platform="PRIZEPICKS", side="MORE", direction="MORE")
+    p["market_quote"]["side"] = "MORE"
+    p["platform_offer"] = dict(
+        platform="PRIZEPICKS", source_receipt_id="synthetic-board-" + row,
+        official_event_id=event, official_player_id=player,
+        stat_type="POINTS", direction="MORE", exact_line=line,
+        projection_type=tier, status="ACTIVE",
+        captured_at_utc="2026-11-19T23:57:00Z",
+    )
+    p["sporting_receipt_binding"] = dict(
+        immutable_prediction_id="synthetic-prediction-" + row,
+        official_event_id=event, official_player_id=player,
+        stat_type="POINTS", direction="MORE", exact_line=line,
+        frozen_at_utc="2026-11-19T23:56:00Z",
+    )
+    return p
+
+
+def prizepicks_card(*props):
+    return dict(
+        card_id="prizepicks-flex", platform="PRIZEPICKS", structure="FLEX",
+        legs=list(props),
+        platform_lineup_payout=dict(
+            platform="PRIZEPICKS",
+            source_receipt_id="synthetic-payout-board",
+            structure="FLEX", leg_count=len(props),
+            projection_types=[p["platform_offer"]["projection_type"] for p in props],
+            gross_payout_multiple=2.5,
+            captured_at_utc="2026-11-19T23:58:00Z",
+        ),
+    )
+
+
+def test_prizepicks_verified_shape_is_still_uncertified_and_not_executable():
+    card = prizepicks_card(
+        prizepicks_prop("turner", "mil-por", tier="GOBLIN"),
+        prizepicks_prop("towns", "nyk-min", tier="STANDARD"),
+    )
+    frozen = deepcopy(card)
+    result = audit_research_slips([card], as_of_utc=AS_OF)
+    assert card == frozen
+    assert result["cards"][0]["blockers"] == []
+    assert result["cards"][0]["status"] == "RESEARCH_CONTEXT_REVIEWABLE_UNCERTIFIED"
+    assert result["cards"][0]["can_publish_as_certified"] is False
+    assert result["cards"][0]["executable_quote_verified"] is False
+    assert result["can_execute"] is False
+
+
+def test_nov19_line_change_requires_exact_rescore_even_when_underlying_quote_matches():
+    castle = prizepicks_prop("castle", "sas-lac", line=7.0)
+    # Original research used LESS 7.5. The actual entry was LESS 7.
+    castle["sporting_receipt_binding"]["exact_line"] = 7.5
+    castle["platform_offer"]["exact_line"] = 7.0
+    castle["side"] = castle["direction"] = "LESS"
+    castle["platform_offer"]["direction"] = "LESS"
+    castle["market_quote"]["side"] = "LESS"
+    castle["sporting_receipt_binding"]["direction"] = "LESS"
+    result = audit_research_slips(
+        [prizepicks_card(castle, prizepicks_prop("other", "por-mil"))],
+        as_of_utc=AS_OF,
+    )
+    assert "PRIZEPICKS_EXACT_MODEL_RECEIPT_MISMATCH_RESCORING_REQUIRED" in result["cards"][0]["blockers"]
+    assert result["joint_probability"] is None
+
+
+def test_prizepicks_goblin_tier_and_lineup_payout_need_fresh_matching_receipts():
+    a = prizepicks_prop("dunn", "lac-sas", tier="GOBLIN")
+    b = prizepicks_prop("towns", "nyk-min")
+    card = prizepicks_card(a, b)
+    card["platform_lineup_payout"]["projection_types"] = ["STANDARD", "STANDARD"]
+    result = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in result["cards"][0]["blockers"]
+    card["platform_lineup_payout"]["projection_types"] = ["GOBLIN", "STANDARD"]
+    a["platform_offer"]["captured_at_utc"] = "2026-11-19T23:00:00Z"
+    result = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_OFFER_STALE_OR_NOT_PREGAME" in result["cards"][0]["blockers"]
+    a.pop("platform_offer")
+    result = audit_research_slips([card], as_of_utc=AS_OF)
+    assert "PRIZEPICKS_EXACT_OFFER_MISSING" in result["cards"][0]["blockers"]
+
+
+def test_nov19_turner_out_and_unverified_workload_cannot_anchor_slip():
+    turner = prizepicks_prop("turner", "mil-por", tier="GOBLIN")
+    other = prizepicks_prop("towns", "nyk-min")
+    turner["opportunity_evidence"]["availability"] = "OUT"
+    result = audit_research_slips([prizepicks_card(turner, other)], as_of_utc=AS_OF)
+    assert "PROP_PLAYER_RULED_OUT" in result["cards"][0]["blockers"]
+    turner["opportunity_evidence"]["availability"] = "QUESTIONABLE"
+    turner["opportunity_evidence"]["forecast_method"] = "LAST_10_HIT_RATE"
+    result = audit_research_slips([prizepicks_card(turner, other)], as_of_utc=AS_OF)
+    assert "PROP_AVAILABILITY_NOT_CONFIRMED" in result["cards"][0]["blockers"]
+    assert "PROP_WORKLOAD_DISTRIBUTION_UNVERIFIED" in result["cards"][0]["blockers"]
+    turner.pop("opportunity_evidence")
+    result = audit_research_slips([prizepicks_card(turner, other)], as_of_utc=AS_OF)
+    assert "PROP_OPPORTUNITY_EVIDENCE_MISSING" in result["cards"][0]["blockers"]
+
+
+def test_six_leg_requested_quota_is_held_without_certified_joint_probability():
+    six = [prizepicks_prop(str(i), "game-" + str(i)) for i in range(6)]
+    result = audit_research_slips([prizepicks_card(*six)], as_of_utc=AS_OF)
+    assert "LONG_SLIP_JOINT_PROBABILITY_UNVERIFIED" in result["cards"][0]["blockers"]
+    assert result["cards"][0]["joint_probability"] is None
+    assert result["cards"][0]["can_publish_as_certified"] is False
+
+
+def test_prizepicks_optimizer_cannot_skip_research_hold_by_default():
+    pp = prizepicks_card(
+        prizepicks_prop("dunn", "lac-sas", tier="GOBLIN"),
+        prizepicks_prop("towns", "nyk-min"),
+    )
+    pp["platform_lineup_payout"]["projection_types"] = ["STANDARD", "STANDARD"]
+    source = deepcopy(pp)
+    out = optimize_portfolio([pp], research_as_of_utc=AS_OF)
+    assert pp == source
+    assert out.research_preflight is not None
+    assert out.cards_qualified == 0
+    assert "PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH" in out.research_preflight["cards"][0]["blockers"]
+    assert out.cards[0]["portfolio_governance"]["portfolio_status"] == "HELD_RESEARCH_ONLY"
+    assert out.can_execute is False
+
+
+def test_material_injury_news_requires_new_opportunity_scenario_not_only_model_id():
+    castle = prizepicks_prop("castle", "sas-lac")
+    castle["news_evidence"]["material_change"] = True
+    castle["news_evidence"]["last_reviewed_at_utc"] = "2026-11-19T23:59:00Z"
+    castle["news_evidence"]["new_model_receipt_id"] = "synthetic-rescore-id"
+    review = audit_research_slips(
+        [prizepicks_card(castle, prizepicks_prop("towns", "nyk-min"))],
+        as_of_utc=AS_OF,
+    )
+    assert "PROP_OPPORTUNITY_RESCENARIO_REQUIRED" in review["cards"][0]["blockers"]
+    assert review["cards"][0]["can_publish_as_certified"] is False
+    assert review["joint_probability"] is None
+
+
+def test_automatic_prizepicks_hold_does_not_demote_other_platform_cards():
+    pp = prizepicks_card(
+        prizepicks_prop("dunn", "lac-sas"),
+        prizepicks_prop("towns", "nyk-min"),
+    )
+    non_pp = cards([leg("independent-a", "other-1"), leg("independent-b", "other-2")])[0]
+    non_pp["card_id"] = "non-prizepicks"
+    original = deepcopy([pp, non_pp])
+    result = optimize_portfolio(original, research_as_of_utc=AS_OF)
+    assert result.cards[0]["portfolio_governance"]["portfolio_status"] == "HELD_RESEARCH_ONLY"
+    assert result.cards[1]["portfolio_governance"]["portfolio_qualified"] is True
+    assert "research_only" not in result.cards[1]["portfolio_governance"]
+    assert result.cards_qualified == 1
+    assert result.cards_held == 1
+    assert original == [pp, non_pp]
+    assert result.probability_fields_mutated is False

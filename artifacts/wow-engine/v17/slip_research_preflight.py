@@ -221,6 +221,120 @@ def _player_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -
     return []
 
 
+def _opportunity_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
+    """Research-shape gate for workload and current availability, not a fitted forecast.
+
+    A raw last-ten hit rate is not a workload distribution. All values here
+    remain caller-supplied and unauthenticated; they can only block research.
+    """
+    evidence = leg.get("opportunity_evidence")
+    if not isinstance(evidence, Mapping):
+        return ["PROP_OPPORTUNITY_EVIDENCE_MISSING", "PROP_AVAILABILITY_NOT_CONFIRMED"]
+    reasons: list[str] = []
+    observed = _time(evidence.get("observed_at_utc"))
+    if (observed is None or observed > as_of or observed >= start
+            or _text(evidence.get("sport")).upper() != _text(leg.get("sport")).upper()
+            or _text(evidence.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _text(evidence.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(evidence.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
+            or not _text(evidence.get("source_receipt_id"))
+            or not _text(evidence.get("lineup_scenario_source_id"))
+            or not _text(evidence.get("role_source_id"))):
+        reasons.append("PROP_OPPORTUNITY_IDENTITY_OR_FRESHNESS_UNVERIFIED")
+    availability = _text(evidence.get("availability")).upper()
+    if availability in {"OUT", "DNP", "RULED_OUT", "INACTIVE"}:
+        reasons.append("PROP_PLAYER_RULED_OUT")
+    elif availability != "ACTIVE_CONFIRMED":
+        reasons.append("PROP_AVAILABILITY_NOT_CONFIRMED")
+    expected = _number(evidence.get("expected_opportunities"), minimum=0)
+    low = _number(evidence.get("opportunity_p10"), minimum=0)
+    high = _number(evidence.get("opportunity_p90"), minimum=0)
+    method = _text(evidence.get("forecast_method")).upper()
+    if (not _text(evidence.get("opportunity_unit"))
+            or not method or method in {"LAST_10", "LAST_10_HIT_RATE", "HIT_RATE_ONLY"}
+            or expected is None or low is None or high is None
+            or not low <= expected <= high):
+        reasons.append("PROP_WORKLOAD_DISTRIBUTION_UNVERIFIED")
+    # If availability changed after the workload snapshot, the previous
+    # opportunities cannot be treated as a current pregame scenario.
+    news = leg.get("news_evidence")
+    if isinstance(news, Mapping) and news.get("material_change") is True:
+        reviewed = _time(news.get("last_reviewed_at_utc"))
+        if reviewed is None or observed is None or observed < reviewed:
+            reasons.append("PROP_OPPORTUNITY_RESCENARIO_REQUIRED")
+    return reasons
+
+
+def _prizepicks_offer_blockers(
+    leg: Mapping[str, Any], as_of: datetime, start: datetime,
+) -> list[str]:
+    """Check exact player/stat/side/line/tier bindings for a PrizePicks offer.
+
+    The asserted offer and model receipt are not independently authenticated
+    here. An apparent PASS never makes a bet/payout or certified model claim.
+    """
+    offer = leg.get("platform_offer")
+    if not isinstance(offer, Mapping):
+        return ["PRIZEPICKS_EXACT_OFFER_MISSING"]
+    reasons: list[str] = []
+    if (not _text(offer.get("source_receipt_id"))
+            or _text(offer.get("platform")).upper() != "PRIZEPICKS"
+            or _text(offer.get("official_event_id")) != _text(leg.get("official_event_id"))
+            or _text(offer.get("official_player_id")) != _text(leg.get("official_player_id"))
+            or _text(offer.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
+            or _text(offer.get("direction")).upper() != _text(leg.get("side")).upper()
+            or _line_key(offer.get("exact_line")) != _line_key(leg.get("exact_line"))):
+        reasons.append("PRIZEPICKS_EXACT_OFFER_IDENTITY_MISMATCH")
+    tier = _text(offer.get("projection_type")).upper()
+    if tier not in {"STANDARD", "GOBLIN", "DEMON"}:
+        reasons.append("PRIZEPICKS_PROJECTION_TYPE_UNVERIFIED")
+    if _text(offer.get("status")).upper() != "ACTIVE":
+        reasons.append("PRIZEPICKS_OFFER_NOT_ACTIVE")
+    seen = _time(offer.get("captured_at_utc"))
+    if (seen is None or seen > as_of or seen >= start
+            or (as_of - seen).total_seconds() > 15 * 60):
+        reasons.append("PRIZEPICKS_OFFER_STALE_OR_NOT_PREGAME")
+    receipt = leg.get("sporting_receipt_binding")
+    if not isinstance(receipt, Mapping):
+        reasons.append("PRIZEPICKS_EXACT_MODEL_RECEIPT_MISSING")
+    elif (not _text(receipt.get("immutable_prediction_id"))
+          or _text(receipt.get("official_event_id")) != _text(leg.get("official_event_id"))
+          or _text(receipt.get("official_player_id")) != _text(leg.get("official_player_id"))
+          or _text(receipt.get("stat_type")).upper() != _text(leg.get("stat_type")).upper()
+          or _text(receipt.get("direction")).upper() != _text(leg.get("side")).upper()
+          or _line_key(receipt.get("exact_line")) != _line_key(leg.get("exact_line"))
+          or _time(receipt.get("frozen_at_utc")) is None
+          or _time(receipt.get("frozen_at_utc")) > as_of
+          or _time(receipt.get("frozen_at_utc")) >= start):
+        reasons.append("PRIZEPICKS_EXACT_MODEL_RECEIPT_MISMATCH_RESCORING_REQUIRED")
+    return reasons
+
+
+def _prizepicks_lineup_blockers(
+    slip: Mapping[str, Any], as_of: datetime, legs: list[Mapping[str, Any]],
+) -> list[str]:
+    """Check provider-declared lineup payout context; never infer a multiplier."""
+    receipt = slip.get("platform_lineup_payout")
+    if not isinstance(receipt, Mapping):
+        return ["PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISSING"]
+    observed = _time(receipt.get("captured_at_utc"))
+    actual_types = [
+        _text((leg.get("platform_offer") or {}).get("projection_type")).upper()
+        if isinstance(leg.get("platform_offer"), Mapping) else ""
+        for leg in legs
+    ]
+    if (not _text(receipt.get("source_receipt_id"))
+            or _text(receipt.get("platform")).upper() != "PRIZEPICKS"
+            or _text(receipt.get("structure")).upper() != _text(slip.get("structure")).upper()
+            or type(receipt.get("leg_count")) is not int or receipt.get("leg_count") != len(legs)
+            or receipt.get("projection_types") != actual_types
+            or _number(receipt.get("gross_payout_multiple"), minimum=1.000001) is None
+            or observed is None or observed > as_of
+            or (as_of - observed).total_seconds() > 15 * 60):
+        return ["PRIZEPICKS_LINEUP_PAYOUT_CONTEXT_MISMATCH"]
+    return []
+
+
 def _news_blockers(leg: Mapping[str, Any], as_of: datetime, start: datetime) -> list[str]:
     news = leg.get("news_evidence")
     if not isinstance(news, Mapping):
@@ -294,6 +408,10 @@ def audit_research_slips(
             if start is not None:
                 reasons.extend(_quote_blockers(leg, at, start))
                 reasons.extend(_news_blockers(leg, at, start))
+                if market in _PROPS:
+                    reasons.extend(_opportunity_blockers(leg, at, start))
+                    if (_text(leg.get("platform")) or _text(slip.get("platform"))).upper() == "PRIZEPICKS":
+                        reasons.extend(_prizepicks_offer_blockers(leg, at, start))
                 if market in _TOTALS:
                     reasons.extend(_total_blockers(leg, at, start))
                 if market in _PROPS:
@@ -312,6 +430,10 @@ def audit_research_slips(
                                 "news_independently_authenticated": False,
                                 "model_probability_verified": False})
             blockers.extend(reasons)
+        if (_text(slip.get("platform")).upper() == "PRIZEPICKS"
+                or any(isinstance(l, Mapping) and _text(l.get("platform")).upper() == "PRIZEPICKS"
+                       for l in legs)):
+            blockers.extend(_prizepicks_lineup_blockers(slip, at, legs))
         if any(x > 1 for x in event_counts.values()):
             blockers.append("SAME_EVENT_JOINT_DEPENDENCE_UNVERIFIED")
         if len({exact_key(l) for l in legs if isinstance(l, Mapping)}) < len(legs):
