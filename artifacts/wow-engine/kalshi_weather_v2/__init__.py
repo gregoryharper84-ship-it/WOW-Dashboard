@@ -2,6 +2,13 @@
 
 from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherProbabilityAgent
 from .calibration_fit import CalibrationFitResult, ForecastResidual, fit_candidate_calibration_profile
+from .calibration_registry import (
+    MINIMUM_CANDIDATE_SAMPLES,
+    collect_unique_residual_samples,
+    fit_candidate_profile_sets,
+    persist_candidate_calibration_profiles,
+    probability_scoring_summary,
+)
 from .contract_resolver import ContractResolutionError, resolve_weather_contract
 from .contract_rule_acquisition import (
     ContractRuleAcquisitionError,
@@ -25,6 +32,10 @@ from .fee_policy import (
     quote_new_order_single_fill_cash_fee,
     quote_trade_fee,
     resolve_fee_policy,
+)
+from .forward_validation import (
+    build_forward_validation_report,
+    build_forward_validation_scorecard,
 )
 from .hourly_forecast_fusion import (
     HourlyForecastEstimate,
@@ -100,6 +111,13 @@ __all__ = [
     "ForecastResidual",
     "CalibrationFitResult",
     "fit_candidate_calibration_profile",
+    "MINIMUM_CANDIDATE_SAMPLES",
+    "collect_unique_residual_samples",
+    "fit_candidate_profile_sets",
+    "persist_candidate_calibration_profiles",
+    "probability_scoring_summary",
+    "build_forward_validation_report",
+    "build_forward_validation_scorecard",
     "ObservationPoint",
     "ReconstructedExtreme",
     "reconstruct_temperature_series",

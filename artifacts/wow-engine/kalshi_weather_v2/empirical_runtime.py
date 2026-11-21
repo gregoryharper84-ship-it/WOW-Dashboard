@@ -12,8 +12,10 @@ from typing import Callable
 from fastapi import FastAPI, Header, HTTPException
 
 from .bounded_cohort import run_bounded_capture_only_cohort_once
+from .calibration_registry import persist_candidate_calibration_profiles
 from .http_client import ReadOnlyJsonClient
 from .operational_cycle import VERIFIED_HOURLY_TARGETS
+from .runtime import MODEL_VERSION
 from .shadow_cohort import HourlyCohortTarget, _settle_ready_predictions
 
 
@@ -108,6 +110,29 @@ def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
         db_client_fn=db_client_fn,
         targets=_scheduled_shadow_targets(),
     )
+
+    # Re-fit research candidates from whatever immutable residuals exist. This
+    # runs after capture so a fresh settlement can unlock the next capture's
+    # numeric research probability. Candidate fitting never certifies a profile.
+    try:
+        fit = persist_candidate_calibration_profiles(
+            db_client_fn(),
+            model_version=MODEL_VERSION,
+            fitted_as_of=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        _logger.warning(
+            "WOW_KALSHI_WEATHER_CALIBRATION_CANDIDATES status=%s persisted=%s held=%s probability_publishable=false can_execute=false",
+            fit.get("status"),
+            len(fit.get("profiles_persisted") or []),
+            len(fit.get("profiles_held") or []),
+        )
+    except Exception as exc:
+        _logger.warning(
+            "WOW_KALSHI_WEATHER_CALIBRATION_CANDIDATES status=FAILED error_type=%s error_code=%s probability_publishable=false can_execute=false",
+            type(exc).__name__,
+            getattr(exc, "code", ""),
+        )
+
     if (
         os.getenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "0") != "1"
         or os.getenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "0") != "1"
