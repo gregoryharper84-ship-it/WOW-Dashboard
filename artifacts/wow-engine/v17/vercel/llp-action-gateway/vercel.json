@@ -14,6 +14,10 @@
       "destination": "/api/gateway?__route=%2Fv17%2Fhost-contract"
     },
     {
+      "source": "/functions/v1/wow-llp-action-gateway/v17/intelligence/kalshi-slip-exchange",
+      "destination": "/api/gateway?__route=%2Fv17%2Fintelligence%2Fkalshi-slip-exchange"
+    },
+    {
       "source": "/functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run",
       "destination": "/api/gateway?__route=%2Fv17%2Fdaily-snapshot-run"
     },
