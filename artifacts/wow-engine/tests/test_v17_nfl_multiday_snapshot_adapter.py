@@ -83,7 +83,7 @@ def test_serialized_complete_week_nonpublishing():
     assert len(calls) >= 3
     assert len({x["requested_slate_date"] for x in calls}) == len(calls)
     assert all(x["lanes"] == ["MONEYLINE"] and x["max_props"] == 0 for x in calls)
-    assert all(x["max_team_events"] == 32 and x["response_mode"] == "FULL" for x in calls)
+    assert all(x["max_team_events"] == 12 and x["response_mode"] == "FULL" for x in calls)
     assert all(x["requested_timezone"] == "America/Chicago" for x in calls)
     assert result["can_execute"] is False and result["probability_publishable"] is False
 
@@ -195,3 +195,22 @@ def test_model_budget_terminal_hold():
 
     result = _run(post)
     assert result["status"] == "PREFLIGHT_HELD"
+
+
+def test_single_day_over_api_ceiling_fails_before_any_scoring_post():
+    selection, inventory = _inputs()
+    # This inventory has 13 distinct fixtures, all in the same local day.
+    # Weekly 13+ coverage MUST NOT override DailySnapshotRequest <=12.
+    same_day = BASE + timedelta(hours=2)
+    fixtures = tuple(
+        replace(f, start_utc=same_day + timedelta(minutes=i))
+        for i, f in enumerate(inventory.fixtures)
+    )
+    inventory = replace(inventory, fixtures=fixtures)
+    calls = []
+    result = _run(lambda p: calls.append(p), selection, inventory)
+    assert result["status"] == "PREFLIGHT_HELD"
+    assert result["blockers"] == ["NFL_WEEK_BATCH_LIMIT"]
+    assert calls == []
+    assert result["can_execute"] is False
+    assert result["probability_publishable"] is False
