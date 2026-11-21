@@ -26,13 +26,14 @@ class _Query:
 
 
 class _DB:
-    def __init__(self, rows):
+    def __init__(self, rows, source_table="wow_wnba_training_games"):
         self.rows = rows
+        self.source_table = source_table
         self.queries = []
 
     def table(self, name):
         self.queries.append(name)
-        assert name == "wow_wnba_training_games"
+        assert name == self.source_table
         return _Query(self.rows)
 
 
@@ -84,11 +85,43 @@ def test_invalid_wnba_digest_remains_unverified(monkeypatch):
     assert row["source_manifest"]["source"] == "wow_wnba_training_games"
 
 
-def test_nba_training_path_remains_unchanged_without_extra_database_query(monkeypatch):
+def test_nba_missing_provenance_retains_unapproved_staging_identity(monkeypatch):
     _setup(monkeypatch)
-    db = _DB([])
+    db = _DB([], source_table="wow_nba_training_games")
     row = subject._basketball_events(db, "NBA")[0]
     assert row["source_manifest"] == {
         "source": "wow_nba_training_games", "game_id": "espn-401918307",
     }
-    assert db.queries == []
+    assert db.queries == ["wow_nba_training_games"]
+
+
+def test_nba_challenger_carries_recorded_provider_and_payload_hash(monkeypatch):
+    _setup(monkeypatch)
+    digest = "c" * 64
+    db = _DB([{
+        "game_id": "espn-401918307",
+        "source_provider": "SPORTSDATAVERSE_ESPN",
+        "source_endpoint": "https://source.example/nba",
+        "source_retrieved_at": "2026-11-12T12:00:00Z",
+        "source_payload_sha256": digest,
+    }], source_table="wow_nba_training_games")
+    result = subject._basketball_events(db, "NBA")
+    assert db.queries == ["wow_nba_training_games"]
+    assert len(result) == 1
+    assert result[0]["source_manifest"]["source"] == "SPORTSDATAVERSE_ESPN"
+    assert result[0]["source_manifest"]["source_payload_sha256"] == digest
+    assert result[0]["source_manifest"]["game_id"] == "espn-401918307"
+
+
+def test_nba_invalid_provider_digest_fails_closed_to_staging_table(monkeypatch):
+    _setup(monkeypatch)
+    db = _DB([{
+        "game_id": "espn-401918307",
+        "source_provider": "SPORTSDATAVERSE_ESPN",
+        "source_payload_sha256": "not-a-sha",
+    }], source_table="wow_nba_training_games")
+    result = subject._basketball_events(db, "NBA")
+    assert result[0]["source_manifest"] == {
+        "source": "wow_nba_training_games",
+        "game_id": "espn-401918307",
+    }

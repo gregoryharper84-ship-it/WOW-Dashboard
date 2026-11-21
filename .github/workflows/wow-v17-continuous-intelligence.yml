@@ -46,6 +46,8 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Run authenticated research cycle and inspect safe receipt
+        id: work
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -109,6 +111,7 @@ jobs:
               raise SystemExit("LEARNING_STAGE_RECEIPT_FAILED")
           print("LEARNING_CYCLE_VERIFIED")
       - name: Upload aggregate research receipt
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -116,3 +119,20 @@ jobs:
           path: ${{ runner.temp }}/wow-v17-learning-receipt.json
           if-no-files-found: ignore
           retention-days: 14
+      - name: Record authentic optional-observer outcome
+        continue-on-error: true
+        shell: bash
+        env:
+          WORK_OUTCOME: ${{ steps.work.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Optional main-scoped observer"
+            echo "work_outcome=$WORK_OUTCOME"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WORK_OUTCOME" = "success" ]; then
+            echo "CONTINUOUS_INTELLIGENCE_LEARN_PASS can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "CONTINUOUS_INTELLIGENCE_LEARN_INCOMPLETE can_execute=false" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::CONTINUOUS_INTELLIGENCE_LEARN_INCOMPLETE"
+          fi

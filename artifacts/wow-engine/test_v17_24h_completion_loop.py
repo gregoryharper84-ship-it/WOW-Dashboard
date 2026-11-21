@@ -34,7 +34,8 @@ def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
     assert "branches: [main]" in text
     assert "wow-v17-morning-green-continuation.yml" in text
     assert "wow-v17-release-resume-agent.yml" in text
-    assert "wow-v17-chatgpt-engineering-worker.yml" in text
+    assert "P0 planner runs independently every 15 minutes" in text
+    assert "wow-v17-engineering-provider-dispatcher.yml" in text
     assert "wow-v17-golden-product-acceptance.yml" in text
     assert "wow-v17-model-improvement-experiment.yml" in text
     assert "wow-v17-nightly-engineering-scan.yml" in text
@@ -46,7 +47,7 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
     text = _text(LOOP)
     repair_pr = text.index('action="RESUME_REPAIR_PR"')
     release = text.index('action="VERIFY_RELEASE"')
-    repair = text.index('action="REPAIR"')
+    repair = text.index('action="REQUEST_ADMITTED_REPAIR"')
     product = text.index('action="VERIFY_PRODUCT"')
     experiment = text.index('action="RESUME_EXPERIMENT_PR"')
     improve = text.index('action="IMPROVE_MODEL"')
@@ -55,7 +56,8 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
     assert "no discretionary model research while golden user journey is not PASS" in text
     assert 'elif [ "$product_health" != "PASS" ]; then' in text
     assert 'Golden user journey is not PASS; run independent product acceptance before discretionary model research.' in text
-    assert "single implementation lease" in text
+    assert "manifest-backed P0 planner runs independently every 15 minutes" in text
+    assert "no duplicate provider request" in text
 
 
 def test_continuation_selector_never_hands_off_draft_prs() -> None:
@@ -96,8 +98,8 @@ def test_real_merge_conflict_preserves_same_pr_and_fails_closed() -> None:
 def test_open_experiment_pr_is_actively_advanced_only_after_product_health_pass() -> None:
     text = _text(LOOP)
     assert "Resume governed model-experiment PR" in text
-    assert 'elif [ -n "$experiment_pr" ]; then' in text
-    assert text.index('product_health" != "PASS"') < text.index('elif [ -n "$experiment_pr" ]; then')
+    assert 'elif [ -n "$experiment_pr" ] && [ "$frontier_allowed" = "true" ]; then' in text
+    assert text.index('product_health" != "PASS"') < text.index('elif [ -n "$experiment_pr" ] && [ "$frontier_allowed" = "true" ]; then')
     _assert_experiment_auto_merge_contract(text)
     assert 'repair_pr="$PR_NUMBER"' in text
     assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in text
@@ -233,3 +235,62 @@ def test_capability_matrix_is_explicit_and_fail_closed() -> None:
     ):
         assert dimension in team
     assert "production_enabled requires every upstream capability" in team
+
+
+def test_release_verifier_is_independently_scheduled_and_controller_does_not_reselect_it() -> None:
+    loop = _text(LOOP)
+    verifier = _text(ROOT / ".github/workflows/wow-v17-release-resume-agent.yml")
+    assert 'cron: "37 * * * *"' in verifier
+    assert "engineering_agent_team.py priority)" in verifier
+    assert "engineering_agent_team.py priority --exclude-release)" in loop
+    assert loop.index("action=\"RESUME_REPAIR_PR\"") < loop.index("action=\"REQUEST_ADMITTED_REPAIR\"")
+    assert "can_execute: false" in loop
+    assert "permission_profile: \":read-only\"" in verifier
+
+
+def test_controller_never_dispatches_unbound_worker_from_pm_ledger() -> None:
+    loop = _text(LOOP)
+    route = loop.split("- name: Request vetted engineering repair intake", 1)[1].split(
+        "- name: Verify golden product acceptance", 1
+    )[0]
+    assert "action=\"REQUEST_ADMITTED_REPAIR\"" in loop
+    assert 'action="REPAIR"' not in loop
+    assert "workflow=wow-v17-engineering-provider-dispatcher.yml" in route
+    assert "workflow=wow-v17-p0-rapid-dispatch.yml" not in route
+    assert "wow-v17-chatgpt-engineering-worker.yml" not in route
+    assert 'gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main' in route
+    assert 'target_incident="$incident"' not in route
+    assert "if [ \"$active\" -gt 0 ]; then" in route
+
+    rapid = _text(ROOT / ".github/workflows/wow-v17-p0-rapid-dispatch.yml")
+    assert "engineering_dispatch_queue.py build" in rapid
+    assert "p0_parallel_dispatch.py" in rapid
+    assert "-f target_incident=\"$incident\"" in rapid
+    assert "-f lease_group=\"$lease_group\"" in rapid
+
+
+def test_experiment_pr_resumption_requires_frontier_permission() -> None:
+    loop = _text(LOOP)
+    assert 'elif [ -n "$experiment_pr" ] && [ "$frontier_allowed" = "true" ]; then' in loop
+    assert 'elif [ -n "$experiment_pr" ]; then' not in loop
+    assert 'elif [ "$frontier_allowed" = "true" ] && [ $((utc_hour % 6)) -eq 0 ]; then' in loop
+    assert "frontier_allowed=not reliability_blocks_frontier(records)" in _text(
+        ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py"
+    )
+
+
+def test_rapid_p0_intake_remains_independent_of_pm_severity() -> None:
+    loop = _text(LOOP)
+    route = loop.split("- name: Request vetted engineering repair intake", 1)[1].split(
+        "- name: Verify golden product acceptance", 1
+    )[0]
+    assert 'if [ "$SEVERITY" = "P0" ]; then' not in route
+    assert 'workflow=wow-v17-engineering-provider-dispatcher.yml' in route
+    assert "Neither path accepts a PM ledger ID as a worker target." in route
+    rapid = _text(ROOT / ".github/workflows/wow-v17-p0-rapid-dispatch.yml")
+    assert 'cron: "*/15 * * * *"' in rapid
+    assert "engineering_dispatch_queue.py build" in rapid
+    assert "p0_parallel_dispatch.py" in rapid
+    assert 'gh workflow run wow-v17-engineering-provider-dispatcher.yml' in rapid
+    assert '-f target_incident="$incident"' in rapid
+    assert '-f lease_group="$lease_group"' in rapid

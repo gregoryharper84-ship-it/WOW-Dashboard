@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 can_execute    = False
@@ -66,6 +67,9 @@ class GameEnvironment:
     sport:            str
     spread_magnitude: float
     total_delta:      float
+    # Evidence basis is explicit: neither path is a fitted or certified probability model.
+    basis:            str = "MARKET_ONLY_UNFITTED_SHADOW"
+    source_record_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,86 @@ def _sigmoid(x: float) -> float:
     return e / (1.0 + e)
 
 
+
+def _utc_timestamp(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("timestamp missing")
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.utcoffset() is None:
+        raise ValueError("timestamp must include timezone")
+    return timestamp.astimezone(timezone.utc)
+
+
+def _finite_rating(value: Any, *, low: float, high: float) -> float:
+    # Do not accept booleans, strings, NaN, inf, or extreme values as model evidence.
+    if type(value) not in (int, float):
+        raise ValueError("efficiency input must be numeric")
+    number = float(value)
+    if not math.isfinite(number) or not low <= number <= high:
+        raise ValueError("efficiency input outside research bounds")
+    return number
+
+
+def _opponent_adjusted_environment(payload: Any, sport: str, baseline: float) -> GameEnvironment:
+    """Construct an opponent-aware basketball research scenario from pregame ratings.
+
+    Required offense/defense ratings are opponent/schedule-adjusted points per
+    100 possessions, with defensive rating representing points ALLOWED. This
+    symmetric interaction is an unfitted research baseline, NOT a calibrated
+    scoring model. It deliberately does not read betting spreads or totals.
+    """
+    if sport not in ("NBA", "WNBA") or not isinstance(payload, dict):
+        raise ValueError("opponent-aware research is basketball-only")
+
+    home, away = payload["home"], payload["away"]
+    if not isinstance(home, dict) or not isinstance(away, dict):
+        raise ValueError("team ratings missing")
+    home_id, away_id = home["team_id"], away["team_id"]
+    if not (isinstance(home_id, str) and home_id.strip()
+            and isinstance(away_id, str) and away_id.strip()
+            and home_id != away_id):
+        raise ValueError("team identities missing or duplicated")
+
+    # Source IDs are unverified provenance pointers, not data-rights attestation.
+    sources = payload["source_record_ids"]
+    if not isinstance(sources, dict) or any(
+        not isinstance(sources.get(k), str) or not sources[k].strip()
+        for k in ("home", "away", "league")
+    ):
+        raise ValueError("source record IDs missing")
+    method = payload.get("opponent_adjustment_method")
+    if not isinstance(method, str) or method.strip().lower() in ("", "raw", "none"):
+        raise ValueError("opponent-adjustment method not declared")
+    if _utc_timestamp(payload["as_of_utc"]) >= _utc_timestamp(payload["event_start_utc"]):
+        raise ValueError("features not pregame")
+
+    avg_offense = _finite_rating(payload["league_avg_off_rating"], low=30, high=200)
+    ho = _finite_rating(home["adjusted_off_rating"], low=30, high=200)
+    hd = _finite_rating(home["adjusted_def_rating"], low=30, high=200)
+    ao = _finite_rating(away["adjusted_off_rating"], low=30, high=200)
+    ad = _finite_rating(away["adjusted_def_rating"], low=30, high=200)
+    pace_home = _finite_rating(home["pace"], low=40, high=160)
+    pace_away = _finite_rating(away["pace"], low=40, high=160)
+
+    # Equal baseline pace and schedule adjustment are placeholders for a
+    # future independently fitted game-state / fatigue / possession specialist.
+    possessions = (pace_home + pace_away) / 2.0
+    home_points = possessions * (ho * ad / avg_offense) / 100.0
+    away_points = possessions * (ao * hd / avg_offense) / 100.0
+    research_spread = home_points - away_points   # positive: home favored
+    research_total = home_points + away_points
+    return GameEnvironment(
+        spread=research_spread,
+        total_line=research_total,
+        baseline=baseline,
+        sport=sport,
+        spread_magnitude=abs(research_spread),
+        total_delta=research_total - baseline,
+        basis="OPPONENT_ADJUSTED_UNFITTED_SHADOW",
+        source_record_ids=tuple(sources[k] for k in ("home", "away", "league")),
+    )
+
+
 def parse_game_environment(combined: dict) -> GameEnvironment | None:
     """
     Extract GameEnvironment from the combined evidence dict.
@@ -110,7 +194,17 @@ def parse_game_environment(combined: dict) -> GameEnvironment | None:
     """
     try:
         matchup = combined.get("matchup") or {}
+        sport = (combined.get("sport") or "WNBA").strip().upper()
+        baseline = _NBA_BASELINE if sport == "NBA" else _WNBA_BASELINE
 
+        # Explicit opponent-aware payload wins over all market inputs. Invalid
+        # payloads fail closed; never silently fall back to a betting line.
+        if "opponent_adjusted" in matchup:
+            return _opponent_adjusted_environment(
+                matchup["opponent_adjusted"], sport, baseline,
+            )
+
+        # Legacy market-only shadow is preserved for existing consumers.
         # Spread: positive = home favoured
         spread_raw = (
             matchup.get("spread")
@@ -132,9 +226,6 @@ def parse_game_environment(combined: dict) -> GameEnvironment | None:
             return None
         total_line = float(total_raw)
 
-        sport = (combined.get("sport") or "WNBA").strip().upper()
-        baseline = _NBA_BASELINE if sport == "NBA" else _WNBA_BASELINE
-
         return GameEnvironment(
             spread=spread,
             total_line=total_line,
@@ -143,7 +234,7 @@ def parse_game_environment(combined: dict) -> GameEnvironment | None:
             spread_magnitude=abs(spread),
             total_delta=total_line - baseline,
         )
-    except (TypeError, ValueError, AttributeError):
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
         return None
 
 

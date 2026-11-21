@@ -50,6 +50,33 @@ def select_prs_to_update(
     return plan
 
 
+ORDINARY_OPT_IN = "WOW-Ordinary-Auto-Merge: true"
+MORNING_GREEN_MARKER = "Morning-Green-Autonomous: true"
+
+
+def select_ordinary_pr(pr: dict[str, Any], *, repository: str) -> list[dict[str, Any]]:
+    """Plan an App-token update for one opted-in ordinary PR (#2753 lane).
+
+    The ordinary-lane sweep names a single PR. It is updated only when it is
+    open, non-draft, from this repository, carries the exact opt-in line, is
+    not a Morning-Green PR, and is ``behind``. A GITHUB_TOKEN update would start
+    no QA/Release, so the sweep delegates the update here.
+    """
+    if pr.get("state") != "open" or pr.get("draft"):
+        return []
+    head = pr.get("head") or {}
+    if ((head.get("repo") or {}).get("full_name")) != repository:
+        return []
+    lines = [line.rstrip("\r") for line in str(pr.get("body") or "").split("\n")]
+    if ORDINARY_OPT_IN not in lines or any(MORNING_GREEN_MARKER in line for line in lines):
+        return []
+    if pr.get("mergeable_state") != "behind":
+        return []
+    if not head.get("sha") or pr.get("number") is None:
+        return []
+    return [{"number": pr["number"], "expected_head_sha": head["sha"]}]
+
+
 def conflict_comment(pr_number: int) -> dict[str, Any]:
     body = (
         f"{PR_UPDATE_CONFLICT}: automatic branch-update skipped for PR #{pr_number} "
@@ -90,6 +117,12 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_plan_ordinary(args: argparse.Namespace) -> int:
+    pr = json.loads(_read_file(args.pr_json))
+    print(json.dumps(select_ordinary_pr(pr, repository=args.repository)))
+    return 0
+
+
 def _cmd_conflict_comment(args: argparse.Namespace) -> int:
     print(json.dumps(conflict_comment(args.pr_number)))
     return 0
@@ -103,6 +136,11 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--prs-json", required=True)
     plan_parser.add_argument("--bot-login", default=ENGINEERING_BOT_LOGIN)
     plan_parser.set_defaults(func=_cmd_plan)
+
+    ordinary_parser = sub.add_parser("plan-ordinary", help="Plan one opted-in ordinary PR update as JSON.")
+    ordinary_parser.add_argument("--pr-json", required=True)
+    ordinary_parser.add_argument("--repository", required=True)
+    ordinary_parser.set_defaults(func=_cmd_plan_ordinary)
 
     comment_parser = sub.add_parser(
         "conflict-comment", help="Emit the typed PR_UPDATE_CONFLICT comment as JSON."

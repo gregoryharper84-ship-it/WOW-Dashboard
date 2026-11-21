@@ -41,15 +41,15 @@ def _paginate(query: Any, page_size: int = 1000) -> list[dict[str,Any]]:
 def _basketball_events(client: Any, sport: str) -> list[dict[str,Any]]:
     from basketball_specialist_pipeline import load_games
 
-    # WNBA's persisted game table already contains the original licensed
+    # NBA/WNBA persisted game tables already contain the original declared
     # source provider and immutable payload digest. Do not discard those
     # identifiers when assembling the D1 model's source manifest: the
     # candidate-bound replay verifier must validate the real source, not
     # infer entitlement from an internal Supabase table name.
     provenance: dict[str, dict[str, Any]] = {}
-    if sport == "WNBA":
+    if sport in ("NBA", "WNBA"):
         source_rows = _paginate(
-            client.table("wow_wnba_training_games")
+            client.table(f"wow_{sport.lower()}_training_games")
             .select("game_id,source_provider,source_endpoint,source_retrieved_at,source_payload_sha256")
             .order("game_id")
         )

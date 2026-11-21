@@ -463,6 +463,13 @@ jobs:
         run: |
           echo "PR #${{ matrix.pr_number }}: incomplete CI/QA evidence; no repair dispatched or retry consumed. Await fresh independent verdict." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Record HOLD that no PR change can fix (allowlist)
+        continue-on-error: true
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NOT_REPAIRABLE_BY_CODE'
+        shell: bash
+        run: |
+          echo "PR #${{ matrix.pr_number }}: NOT_REPAIRABLE_BY_CODE: HOLD findings are PR state, reviewer/policy configuration, identity or unknown codes; no repair dispatched or retry consumed. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Route non-repairable finding without global Engineering stall
         continue-on-error: true
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_OWNER'

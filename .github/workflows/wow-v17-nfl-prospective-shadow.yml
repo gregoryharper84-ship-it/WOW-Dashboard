@@ -1,0 +1,139 @@
+name: wow-v17-nfl-prospective-shadow
+
+on:
+  schedule:
+    # Two pregame sweeps daily during the NFL season; capture window is 48h, including Wednesday AM for Thursday kickoff.
+    - cron: "17 12,18 * 9-12,1-2 *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-nfl-prospective-shadow.yml"
+      - "artifacts/wow-engine/v17/experiments/nfl_prospective/**"
+      - "artifacts/wow-engine/migrations/20261117_nfl_prospective_immutable_freeze.sql"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-nfl-prospective-shadow.yml"
+      - "artifacts/wow-engine/v17/experiments/nfl_prospective/**"
+      - "artifacts/wow-engine/migrations/20261117_nfl_prospective_immutable_freeze.sql"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-nfl-prospective-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'live' }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify prospective research contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: prospective_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 8
+    env:
+      WOW_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/prospective_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install focused verification tools
+        run: pip install 'pytest>=8,<9' 'psycopg[binary]>=3.2,<4'
+      - name: Compile and validate research-only contracts
+        working-directory: artifacts/wow-engine
+        run: python -m pytest -q --confcutdir=v17/experiments/nfl_prospective v17/experiments/nfl_prospective/test_prospective.py v17/experiments/nfl_prospective/test_runner.py v17/experiments/nfl_prospective/test_release_contract.py v17/experiments/nfl_prospective/test_integrity_pg.py v17/experiments/nfl_prospective/test_capture_reliability.py v17/experiments/nfl_prospective/test_audit_receipts.py
+
+  capture-and-grade:
+    name: Freeze NFL prospective shadow and independently reconcile finals
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      PYTHONPATH: "."
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - name: Checkout protected main without writer credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install existing Supabase SDK
+        run: pip install 'supabase>=2.4,<3'
+      - name: Verify main-only guard and configured database credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$WOW_CAN_EXECUTE" = 'false'
+          test "$WOW_DRY_RUN_ONLY" = 'true'
+          test -n "${SUPABASE_URL:-}"
+          test -n "${SUPABASE_SERVICE_ROLE_KEY:-${SUPABASE_SERVICE_KEY:-}}"
+      - name: Capture genuine prekickoff challenger receipts
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/wow-nfl-prospective"
+          python v17/experiments/nfl_prospective/runner.py capture \
+            --out "$RUNNER_TEMP/wow-nfl-prospective/capture.json"
+      - name: Grade only independently reconciled completed NFL games
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python v17/experiments/nfl_prospective/runner.py grade \
+            --out "$RUNNER_TEMP/wow-nfl-prospective/grade.json"
+      - name: Verify capture receipt is not all-held
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "wow-nfl-prospective" / "capture.json"
+          if not path.is_file():
+              raise SystemExit("NFL_PROSPECTIVE_CAPTURE_RECEIPT_MISSING")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          print(json.dumps({"status": data.get("status"),
+                            "eligible_events": data.get("eligible_events"),
+                            "new_forecasts": data.get("new_forecasts"),
+                            "already_frozen": data.get("already_frozen"),
+                            "evidence_held": data.get("evidence_held"),
+                            "can_execute": False}, sort_keys=True))
+          if data.get("run_ok") is not True:
+              raise SystemExit("NFL_PROSPECTIVE_ALL_ELIGIBLE_HELD_OR_INVALID_RECEIPT")
+          PYCODE
+
+      - name: Retain nonsecret GitHub run receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-nfl-prospective-${{ github.run_id }}
+          path: ${{ runner.temp }}/wow-nfl-prospective/
+          retention-days: 90
+          if-no-files-found: warn
