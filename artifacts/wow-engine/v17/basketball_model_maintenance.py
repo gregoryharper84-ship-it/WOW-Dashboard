@@ -30,7 +30,9 @@ from basketball_event_hydration_runtime import (
     BasketballHydrationPartialWriteError,
     hydrate,
 )
-from basketball_training_replay import run_training_replay
+from basketball_training_replay import (
+    run_training_replay, verify_training_provenance, verify_training_freshness,
+)
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
 
@@ -451,12 +453,27 @@ def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mappin
         or (nba_row.get("status") == "BLOCKED"
             and nba_row.get("code") == "BASKETBALL_MODEL_MAINTENANCE_FAILED")
     )
-    if not capture_safe:
+    # The generic maintenance exception also covers failed provenance/freshness
+    # queries. Before taking the failed-refit exception, independently verify
+    # both corpus preflights. Successful maintenance has already run them.
+    corpus_verified = nba_row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+    if capture_safe and not corpus_verified:
+        try:
+            provenance = verify_training_provenance(db, "NBA")
+            freshness = verify_training_freshness(db, "NBA")
+            corpus_verified = (
+                provenance.get("provenance_complete") is True
+                and freshness.get("freshness_status") == "PASS"
+            )
+        except Exception:  # noqa: BLE001 - fail closed on any unverified corpus
+            corpus_verified = False
+    if not capture_safe or not corpus_verified:
         return {
             "status": "SKIPPED",
             "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
             "maintenance_row_status": nba_row.get("status"),
             "maintenance_row_code": nba_row.get("code"),
+            "capture_corpus_verified": False,
             "probability_publishable": False,
             "can_execute": False,
         }
@@ -468,6 +485,7 @@ def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mappin
                    "probability_publishable": False, "can_execute": False}
     receipt["maintenance_row_status"] = nba_row.get("status")
     receipt["maintenance_row_code"] = nba_row.get("code")
+    receipt["capture_corpus_verified"] = corpus_verified
     return receipt
 
 
