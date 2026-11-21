@@ -216,16 +216,21 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     calls = []
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: calls.append(db) or {"status": "X"})
     hook = maintenance.nba_candidate_forward_shadow_after_refresh
-    assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {"status": "X"} and calls == ["db"]
-    skipped = hook("db", [{"sport": "NBA", "status": "BLOCKED"}])
-    assert skipped["reason_code"] == "NBA_MAINTENANCE_NOT_UPDATED" and calls == ["db"]
+    assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {
+        "status": "X", "maintenance_row_status": "SHADOW_EVIDENCE_UPDATED", "maintenance_row_code": None}
+    # A blocked refit (e.g. calibrator persistence failing) must not stop the
+    # capture of the already-registered candidate; the row status is recorded.
+    blocked = hook("db", [{"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"}])
+    assert blocked == {"status": "X", "maintenance_row_status": "BLOCKED",
+                       "maintenance_row_code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"} and calls == ["db", "db"]
     assert hook("db", [{"sport": "WNBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) is None
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: (_ for _ in ()).throw(ValueError("x")))
     failed = hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}])
     assert failed["reason_code"] == "NBA_CANDIDATE_FORWARD_SHADOW_VALUEERROR" and failed["can_execute"] is False
-    # The maintenance report always carries the key, and a blocked NBA row skips capture.
+    # The maintenance report always carries the key.
+    monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: {"status": "Y"})
     out = maintenance.run_basketball_model_maintenance(object(), sports=["NBA"], now=NOW)
-    assert "nba_candidate_forward_shadow" in out and out["can_execute"] is False
+    assert out["nba_candidate_forward_shadow"]["status"] == "Y" and out["can_execute"] is False
 
 
 MIGRATION = (Path(__file__).parent / "migrations" / "20261121_nba_candidate_forward_shadow.sql").read_text()

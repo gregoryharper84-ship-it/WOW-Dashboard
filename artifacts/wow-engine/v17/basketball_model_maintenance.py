@@ -433,21 +433,25 @@ def _nba_current_season_data_gap(
 def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Research-only pre-tipoff capture of the registered NBA candidate.
 
-    Runs only on a just-refreshed NBA history. Isolated and typed: it can never
-    change a maintenance row, a certification, a publication flag or execution.
+    Runs whenever NBA was processed. It scores the candidate already named on
+    the certification registry from finals already persisted, so it does not
+    depend on today's refit succeeding (a blocked refit must not also stop
+    prospective evidence). The maintenance row status is recorded with the
+    receipt. Isolated and typed: it can never change a maintenance row, a
+    certification, a publication flag or execution.
     """
     nba_row = next((row for row in results if row.get("sport") == "NBA"), None)
     if nba_row is None:
         return None
-    if nba_row.get("status") != "SHADOW_EVIDENCE_UPDATED":
-        return {"status": "SKIPPED", "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
-                "probability_publishable": False, "can_execute": False}
     try:
         from v17 import nba_candidate_forward_shadow as lane
-        return lane.run_nba_candidate_forward_shadow(db)
+        receipt = dict(lane.run_nba_candidate_forward_shadow(db))
     except Exception as exc:  # noqa: BLE001 - never fail maintenance on research capture
-        return {"status": "FAILED", "reason_code": f"NBA_CANDIDATE_FORWARD_SHADOW_{type(exc).__name__.upper()}",
-                "probability_publishable": False, "can_execute": False}
+        receipt = {"status": "FAILED", "reason_code": f"NBA_CANDIDATE_FORWARD_SHADOW_{type(exc).__name__.upper()}",
+                   "probability_publishable": False, "can_execute": False}
+    receipt["maintenance_row_status"] = nba_row.get("status")
+    receipt["maintenance_row_code"] = nba_row.get("code")
+    return receipt
 
 
 def run_basketball_model_maintenance(
