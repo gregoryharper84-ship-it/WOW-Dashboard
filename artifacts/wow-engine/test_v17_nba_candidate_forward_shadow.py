@@ -241,6 +241,8 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
                         lambda db, sport: (_ for _ in ()).throw(ConnectionError("transient")))
     missing = hook("db", [blocked_row])
     assert missing["status"] == "SKIPPED" and missing["can_execute"] is False
+    assert missing["capture_corpus_verification_code"] == "NBA_CANDIDATE_CORPUS_VERIFICATION_FAILED"
+    assert "transient" not in str(missing)
     assert calls == ["db", "db"]
     monkeypatch.setattr(maintenance, "verify_training_provenance",
                         lambda db, sport: {"provenance_complete": True})
@@ -257,6 +259,23 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
         assert held["status"] == "SKIPPED" and held["can_execute"] is False
         assert held["maintenance_row_code"] == unsafe_code
     assert calls == ["db", "db"]
+    # Multiple NBA rows are possible when a caller repeats a sport. A later
+    # unsafe row must veto capture rather than trusting the first row.
+    safe_row = {"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}
+    for rows in (
+        [safe_row, {"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"}],
+        [blocked_row, {"sport": "NBA", "status": "BLOCKED", "code": "NBA_CURRENT_SEASON_SETTLED_DATA_MISSING"}],
+    ):
+        vetoed = hook("db", rows)
+        assert vetoed["status"] == "SKIPPED" and vetoed["capture_corpus_verified"] is False
+        assert vetoed["maintenance_row_code"] == rows[-1]["code"]
+        assert vetoed["can_execute"] is False
+    assert calls == ["db", "db"]
+    # Even when one row succeeds, a second eligible failed refit must
+    # reverify the persisted corpus rather than inherit the success flag.
+    mixed_allowed = hook("db", [safe_row, blocked_row])
+    assert mixed_allowed["status"] == "X" and mixed_allowed["capture_corpus_verified"] is True
+    assert calls == ["db", "db", "db"]
     assert hook("db", [{"sport": "WNBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) is None
     monkeypatch.setattr(lane, "run_nba_candidate_forward_shadow", lambda db: (_ for _ in ()).throw(ValueError("x")))
     failed = hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}])
