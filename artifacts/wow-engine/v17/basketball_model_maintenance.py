@@ -433,16 +433,33 @@ def _nba_current_season_data_gap(
 def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Research-only pre-tipoff capture of the registered NBA candidate.
 
-    Runs whenever NBA was processed. It scores the candidate already named on
-    the certification registry from finals already persisted, so it does not
-    depend on today's refit succeeding (a blocked refit must not also stop
-    prospective evidence). The maintenance row status is recorded with the
-    receipt. Isolated and typed: it can never change a maintenance row, a
-    certification, a publication flag or execution.
+    Runs after a completed NBA replay or a refit-only maintenance failure.
+    It scores the already-registered candidate from persisted finals, but
+    must not capture when hydration is partially written, current-season
+    evidence is absent, or replay was held. The maintenance row status is
+    recorded with the receipt. Research-only: never changes certification,
+    publication, or execution.
     """
     nba_row = next((row for row in results if row.get("sport") == "NBA"), None)
     if nba_row is None:
         return None
+    # A failed refit need not erase prospectively scored evidence, but any
+    # unverified/partially-written corpus must still fail closed. Restrict the
+    # exception to the exact refit failure observed in production.
+    capture_safe = (
+        nba_row.get("status") == "SHADOW_EVIDENCE_UPDATED"
+        or (nba_row.get("status") == "BLOCKED"
+            and nba_row.get("code") == "BASKETBALL_MODEL_MAINTENANCE_FAILED")
+    )
+    if not capture_safe:
+        return {
+            "status": "SKIPPED",
+            "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
+            "maintenance_row_status": nba_row.get("status"),
+            "maintenance_row_code": nba_row.get("code"),
+            "probability_publishable": False,
+            "can_execute": False,
+        }
     try:
         from v17 import nba_candidate_forward_shadow as lane
         receipt = dict(lane.run_nba_candidate_forward_shadow(db))
