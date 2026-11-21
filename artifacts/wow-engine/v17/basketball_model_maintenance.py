@@ -433,15 +433,15 @@ def _nba_current_season_data_gap(
 def nba_candidate_forward_shadow_after_refresh(db: Any, results: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Research-only pre-tipoff capture of the registered NBA candidate.
 
-    Runs only on a just-refreshed NBA history. Isolated and typed: it can never
-    change a maintenance row, a certification, a publication flag or execution.
+    Runs independently of the NBA refit result: a failed refit must not
+    suppress pre-tipoff capture of an already registered candidate. The
+    candidate scorer independently validates the artifact and historical
+    provenance. Isolated and typed: this never changes a maintenance row,
+    certification, publication flag or execution.
     """
     nba_row = next((row for row in results if row.get("sport") == "NBA"), None)
     if nba_row is None:
         return None
-    if nba_row.get("status") != "SHADOW_EVIDENCE_UPDATED":
-        return {"status": "SKIPPED", "reason_code": "NBA_MAINTENANCE_NOT_UPDATED",
-                "probability_publishable": False, "can_execute": False}
     try:
         from v17 import nba_candidate_forward_shadow as lane
         return lane.run_nba_candidate_forward_shadow(db)
