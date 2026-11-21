@@ -1156,6 +1156,63 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("ref: main", workflow)
 
 
+    def test_routine_documentation_diff_skips_model_review(self):
+        target = {
+            "file_blobs": {"README.md": "a" * 40},
+            "diff": "@@ -1 +1 @@\n-Old setup text\n+New setup text\n",
+        }
+        self.assertEqual(
+            m.requires_semantic_review(target),
+            (False, "ROUTINE_CHANGE_NO_SEMANTIC_REVIEW_REQUIRED"),
+        )
+
+    def test_permission_migration_and_probability_diffs_require_semantic_review(self):
+        cases = (
+            {
+                "file_blobs": {".github/workflows/release.yml": "a" * 40},
+                "diff": "+permissions:\n+  contents: write\n",
+            },
+            {
+                "file_blobs": {"supabase/migrations/20261115_access.sql": "b" * 40},
+                "diff": "+GRANT EXECUTE ON FUNCTION api.write_result() TO service_role;\n",
+            },
+            {
+                "file_blobs": {"artifacts/wow-engine/v17/model.py": "c" * 40},
+                "diff": "+probability = calibrated_score(features)\n",
+            },
+            {
+                "file_blobs": {"src/auth.py": "d" * 40},
+                "diff": "+auth_dependency = require_verified_identity\n",
+            },
+        )
+        for target in cases:
+            with self.subTest(paths=list(target["file_blobs"])):
+                required, reason = m.requires_semantic_review(target)
+                self.assertTrue(required)
+                self.assertEqual(reason, "PROTECTED_CHANGE_REQUIRES_SEMANTIC_REVIEW")
+
+
+    def test_protected_diff_content_triggers_review_even_in_generic_file(self):
+        target = {
+            "file_blobs": {"src/feature.py": "e" * 40},
+            "diff": "+probability = calibrated_score(features)\n",
+        }
+        required, reason = m.requires_semantic_review(target)
+        self.assertTrue(required)
+        self.assertEqual(reason, "PROTECTED_CHANGE_REQUIRES_SEMANTIC_REVIEW")
+
+    def test_incomplete_or_ambiguous_diff_never_classifies_as_routine(self):
+        for target in (
+            {},
+            {"file_blobs": {}, "diff": ""},
+            {"file_blobs": {"unknown.py": "not-a-sha"}, "diff": "+x = 1\n"},
+        ):
+            with self.subTest(target=target):
+                required, reason = m.requires_semantic_review(target)
+                self.assertTrue(required)
+                self.assertEqual(reason, "REVIEW_REQUIRED_AMBIGUOUS")
+
+
 def load_tests(loader, tests, pattern):
     """Include HTTP-attribution regressions in the existing trusted test entry point.
 

@@ -293,6 +293,51 @@ def capture(pr_number, expected_sha, token):
             "file_blobs": {f["filename"]: f["sha"] for f in entries}}
 
 
+def requires_semantic_review(target):
+    """Classify the captured diff itself; labels and author assertions are ignored.
+
+    Missing or malformed capture evidence is never a routine pass. Protected
+    paths and security/probability-sensitive diff content require Claude review.
+    """
+    if not isinstance(target, dict):
+        return True, "REVIEW_REQUIRED_AMBIGUOUS"
+    file_blobs = target.get("file_blobs")
+    diff = target.get("diff")
+    if (not isinstance(file_blobs, dict) or not file_blobs
+            or not isinstance(diff, str) or not diff.strip()):
+        return True, "REVIEW_REQUIRED_AMBIGUOUS"
+    for path, blob_sha in file_blobs.items():
+        if (not isinstance(path, str) or not path.strip()
+                or not isinstance(blob_sha, str)
+                or not re.fullmatch(r"[a-f0-9]{40}", blob_sha)):
+            return True, "REVIEW_REQUIRED_AMBIGUOUS"
+
+    protected_path_fragments = (
+        ".github/", ".agents/", "codeowners", "migration", "supabase/functions/",
+        "permission", "credential", "secret", "auth", "security", "release",
+        "gateway", "trust", "terminal", "probability", "calibration", "model",
+        "scorer", "threshold", "execution", "openapi", "action",
+    )
+    for path in file_blobs:
+        normalized = path.lower().replace("\\\\", "/")
+        if normalized.startswith((".github/", ".agents/")) or any(
+            fragment in normalized for fragment in protected_path_fragments
+        ):
+            return True, "PROTECTED_CHANGE_REQUIRES_SEMANTIC_REVIEW"
+
+    protected_diff = re.compile(
+        r"\\b(can_execute|V17_TERMINAL_REDUCER|probabilit\\w*|calibrat\\w*|"
+        r"thresholds?|service_role|grant|revoke|security\\s+definer|"
+        r"permissions?\\s*:|secrets?\\s*:|auth(?:entication|orization)?|"
+        r"credentials?|tokens?|RLS|create-github-app-token|"
+        r"pull-requests\\s*:|checks\\s*:|bypass|trust\\s+root)\\b",
+        re.IGNORECASE,
+    )
+    if protected_diff.search(diff):
+        return True, "PROTECTED_CHANGE_REQUIRES_SEMANTIC_REVIEW"
+    return False, "ROUTINE_CHANGE_NO_SEMANTIC_REVIEW_REQUIRED"
+
+
 def parse_verdict(value):
     if type(value) is not dict or set(value) != {"source_review", "security_review", "probability_integrity_review", "findings"}:
         raise Hold("SEMANTIC_SCHEMA_INVALID")
