@@ -218,11 +218,32 @@ def test_maintenance_runs_capture_only_after_nba_refresh(monkeypatch):
     hook = maintenance.nba_candidate_forward_shadow_after_refresh
     assert hook("db", [{"sport": "NBA", "status": "SHADOW_EVIDENCE_UPDATED"}]) == {
         "status": "X", "maintenance_row_status": "SHADOW_EVIDENCE_UPDATED", "maintenance_row_code": None}
-    # A blocked refit (e.g. calibrator persistence failing) must not stop the
-    # capture of the already-registered candidate; the row status is recorded.
-    blocked = hook("db", [{"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"}])
+    # Refits can fail after corpus checks. Prove those checks independently
+    # before capturing from the persisted model's training history.
+    monkeypatch.setattr(maintenance, "verify_training_provenance",
+                        lambda db, sport: {"provenance_complete": True})
+    monkeypatch.setattr(maintenance, "verify_training_freshness",
+                        lambda db, sport: {"freshness_status": "PASS"})
+    blocked_row = {"sport": "NBA", "status": "BLOCKED", "code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"}
+    blocked = hook("db", [blocked_row])
     assert blocked == {"status": "X", "maintenance_row_status": "BLOCKED",
                        "maintenance_row_code": "BASKETBALL_MODEL_MAINTENANCE_FAILED"} and calls == ["db", "db"]
+    # A generic refit failure may actually originate from provenance/freshness
+    # readback, so neither a failed check nor a failed query authorizes capture.
+    monkeypatch.setattr(maintenance, "verify_training_freshness",
+                        lambda db, sport: {"freshness_status": "STALE"})
+    stale = hook("db", [blocked_row])
+    assert stale["status"] == "SKIPPED" and stale["can_execute"] is False
+    monkeypatch.setattr(maintenance, "verify_training_freshness",
+                        lambda db, sport: {"freshness_status": "PASS"})
+    monkeypatch.setattr(maintenance, "verify_training_provenance",
+                        lambda db, sport: (_ for _ in ()).throw(ConnectionError("transient")))
+    missing = hook("db", [blocked_row])
+    assert missing["status"] == "SKIPPED" and missing["can_execute"] is False
+    assert calls == ["db", "db"]
+    monkeypatch.setattr(maintenance, "verify_training_provenance",
+                        lambda db, sport: {"provenance_complete": True})
+
     # Reproduction: partial hydration is not a safe historical corpus. A
     # maintenance failure is allowed ONLY when replay/refit failed, not when
     # acquisition is partial or the current-season proof is missing.
