@@ -1,4 +1,24 @@
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ea87ff46ccc87fd3bbccacae4272c8ee2ed9b2dd3acb6a37ee17fd8d5b8843bc -->
+
 # WOW V17 Canonical Failure-Code Registry
+
+## LLP authenticated event-prediction readback
+
+| Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---:|
+| `LLP_EVENT_PREDICTION_ID_UNVERIFIED` | LLP authenticated readback | Daily winner has no canonical immutable event-prediction UUID. | No |
+| `LLP_EVENT_PREDICTION_LOOKUP_NOT_PERFORMED` | LLP authenticated readback | No authenticated ledger client was supplied; Daily claims cannot verify themselves. | No |
+| `LLP_EVENT_PREDICTION_LOOKUP_UNAVAILABLE` | LLP authenticated readback | Authenticated ledger lookup failed or returned malformed data; provider text is not exposed. | No |
+| `LLP_EVENT_PREDICTION_NOT_EXACTLY_ONE` | LLP authenticated readback | Immutable event-prediction lookup did not return exactly one matching row. | No |
+| `LLP_EVENT_PREDICTION_RECEIPT_MISMATCH` | LLP authenticated readback | Identity, specialist, snapshot, settlement, authority flags or chronological proof disagree. Model and row creation must precede or equal terminal reduction, all before event start. | No |
+| `LLP_EVENT_PREDICTION_PROBABILITY_MISMATCH` | LLP authenticated readback | Selected-side numbers disagree with the ledger, are nonfinite, or violate the existing strictly interior ordered calibrated-bound contract. | No |
+| `LLP_RESEARCH_SAVED_EVENT_IDENTITY_CONFLICT` | LLP authenticated readback | Persisted Daily identity aliases conflict; optional research cannot make the winner eligible. | No |
+
+## Governing registry and other stages
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 This file is the repository source of truth for governed typed failure/status codes introduced or relied on by the V17 full-board stabilization work. New typed failure codes must be registered in the same change that introduces them.
 
