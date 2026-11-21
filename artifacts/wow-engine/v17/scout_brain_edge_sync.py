@@ -234,6 +234,9 @@ def _post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def sync(input_path: str, receipt_path: str) -> dict:
+    if os.environ.get("WOW_SCOUT_PERSIST_PROTOCOL") == "2":
+        from v17.scout_brain_edge_sync_v2 import sync_v2
+        return sync_v2(input_path, receipt_path)
     handoff = json.loads(Path(input_path).read_text(encoding="utf-8"))
     if handoff.get("can_execute") is not False:
         raise RuntimeError("SCOUT_HANDOFF_GOVERNANCE_INVALID")

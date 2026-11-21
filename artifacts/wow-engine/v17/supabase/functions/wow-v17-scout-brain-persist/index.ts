@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5.9.6";
 import postgres from "npm:postgres@3.4.5";
+import { checkpointedPersistence } from "./checkpoint.ts";
 
 const ISSUER = "https://token.actions.githubusercontent.com";
 const JWKS = createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks`));
@@ -17,7 +18,7 @@ const ALLOWED_STATUSES = new Set([
   "WATCH", "RESEARCH_INTEREST_LOW", "RESEARCH_INTEREST_MEDIUM",
   "RESEARCH_INTEREST_HIGH", "QUARANTINED", "NO_INTEREST",
 ]);
-const ALLOWED_PHASES = new Set(["BEGIN", "APPEND", "FINALIZE", "MATERIALIZE"]);
+const ALLOWED_PHASES = new Set(["CAPABILITIES", "BEGIN", "APPEND", "FINALIZE", "MATERIALIZE"]);
 const TEAM_EVENT_ROUTE = "LLP_TEAM_BETTING_ENGINE";
 
 type Row = Record<string, unknown>;
@@ -643,8 +644,28 @@ Deno.serve(async (req: Request) => {
   const runId = str(body.research_run_id || body.run_id);
   if (!runId) return response({ ok: false, code: "RESEARCH_RUN_ID_MISSING", can_execute: false }, 422);
 
+  if (body.protocol_version != null && body.protocol_version !== 2)
+    return response({ok:false,code:"SCOUT_PERSIST_VERSION_UNSUPPORTED",can_execute:false},422);
+
   const sql = postgres(dbUrl, { max: 1, prepare: false });
   try {
+    if (phase === "CAPABILITIES") {
+      // Never advertise a durable protocol unless both private receipt tables
+      // and their required v2 columns can be read by the credentialed DB role.
+      await sql.begin(async (tx) => {
+        await tx`select header_sha256,expected_candidates,expected_evidence,
+          next_chunk_index,uploaded_candidates,uploaded_evidence,upload_state
+          from wow_scout.persist_upload_sessions limit 0`;
+        await tx`select content_sha256,chunk_index,finalized_candidates,evidence_rows
+          from wow_scout.persist_chunk_receipts limit 0`;
+      });
+      return response({ok:true,protocol_version:2,schema_version:2,can_execute:false});
+    }
+    if (body.protocol_version === 2 && ["BEGIN","APPEND","FINALIZE"].includes(phase)) {
+      const result = await checkpointedPersistence(sql,phase,runId,body,
+        {openRun,persistCandidates,accumulate,closeRun,candidateRows});
+      return response({research_run_id:runId,...result});
+    }
     if (phase === "MATERIALIZE") {
       const slateDate = str(body.slate_date);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(slateDate)) return response({ ok:false, code:"SLATE_DATE_INVALID", can_execute:false }, 422);
@@ -715,7 +736,10 @@ Deno.serve(async (req: Request) => {
       can_execute: false,
     });
   } catch (err) {
-    return response({ ok: false, code: "SCOUT_BRAIN_PERSIST_FAILED", error_type: err instanceof Error ? err.name : "Error", can_execute: false }, 500);
+    const errText = err instanceof Error ? err.message : "";
+    const code = /^SCOUT_PERSIST_[A-Z_]+$/.test(errText) ? errText : "SCOUT_BRAIN_PERSIST_FAILED";
+    return response({ok:false,code,error_type:err instanceof Error?err.name:"Error",can_execute:false},
+      code==="SCOUT_BRAIN_PERSIST_FAILED"?500:409);
   } finally {
     await sql.end({ timeout: 2 });
   }
