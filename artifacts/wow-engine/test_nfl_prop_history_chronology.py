@@ -581,6 +581,29 @@ def test_provider_season_stats_file_is_downloaded_once_per_hydration():
     assert result["opponent_context"] is not None
 
 
+def test_opponent_context_reads_the_compact_memory_safe_rows():
+    # Production installs the memory-safety overlay, which replaces dict rows
+    # with attribute rows; the derivation must not silently go neutral there.
+    from v17.nfl_prop_memory_safety import _compact_rows
+
+    rows, events = _league_rows(range(1, 19))
+    source = _Sources(_event(2026, 19, "2026-11-15T17:00:00Z", completed=False),
+                      {2026: rows}, {(2026, 2): events})
+
+    context, status = nfl._opponent_defense_context(
+        rows=_compact_rows(source.csv_bytes[2026]),
+        digest="a" * 64,
+        opponent="BUF",
+        canonical_stat="RECEIVING_YARDS",
+        captured=datetime(2026, 9, 15, tzinfo=timezone.utc),
+    )
+
+    assert status == "CONFIRMED_OPPONENT_DEFENSE_RATE"
+    assert context["opponent_team"] == "BUF"
+    assert context["opponent_games"] == 18
+    assert context["can_execute"] is False
+
+
 def test_opponent_context_stays_neutral_when_the_defensive_sample_is_too_small():
     context, status = nfl._opponent_defense_context(
         rows=[_row(2026, week) for week in (1, 2, 3)],

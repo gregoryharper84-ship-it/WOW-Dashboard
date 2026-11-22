@@ -19,7 +19,7 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping, NamedTuple, Optional
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 import httpx
 
@@ -436,9 +436,18 @@ def _opponent_stat_value(row: Mapping[str, Any], canonical_stat: str) -> float:
     return _num(row, STAT_CONFIG[canonical_stat][0])
 
 
+def _row_has_field(row: Mapping[str, Any], key: str) -> bool:
+    """Season rows are either CSV dicts or the compact attribute rows that
+    v17.nfl_prop_memory_safety installs in production, so column presence is
+    structural rather than a dict membership test."""
+    if isinstance(row, Mapping):
+        return key in row
+    return hasattr(row, key)
+
+
 def _opponent_defense_context(
     *,
-    rows: list[dict[str, str]],
+    rows: Sequence[Mapping[str, Any]],
     digest: str,
     opponent: Any,
     canonical_stat: str,
@@ -454,7 +463,8 @@ def _opponent_defense_context(
     opponent feature, so consumption remains explicitly unproven.
     """
     defense = _nflverse_team_code(opponent)
-    if canonical_stat != "ANYTIME_TD" and STAT_CONFIG[canonical_stat][0] not in (rows[0] if rows else {}):
+    stat_column = STAT_CONFIG[canonical_stat][0]
+    if canonical_stat != "ANYTIME_TD" and rows and not _row_has_field(rows[0], stat_column):
         return None, "NEUTRAL_STAT_ABSENT_FROM_DEFENSIVE_SOURCE"
     allowed: dict[tuple[str, str], float] = {}
     for row in rows:
