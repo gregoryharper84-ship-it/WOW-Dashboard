@@ -634,3 +634,17 @@ def test_historical_training_tipoff_coverage_is_observed_not_inferred():
     assert corpus["event_start_independently_attested"] is False
     assert corpus["pregame_corpus_ready"] is False
     assert report["can_execute"] is False
+
+
+def test_historical_tipoff_timestamp_changes_are_bound_to_replay_evidence_sha():
+    tables = _fixture()
+    training = tables["wow_nba_training_games"]
+    training[0]["scheduled_start_utc"] = "2025-03-01T20:00:00+00:00"
+    first = run_nba_team_event_certification_replay(_DB(tables))
+    training[0]["scheduled_start_utc"] = "2025-03-01T21:00:00+00:00"
+    second = run_nba_team_event_certification_replay(_DB(tables))
+    assert first["pregame_corpus"]["event_start_timestamp_rows"] == 1
+    assert second["pregame_corpus"]["event_start_timestamp_rows"] == 1
+    assert first["pregame_corpus"]["observed_corpus_manifest_sha256"] != second["pregame_corpus"]["observed_corpus_manifest_sha256"]
+    assert first["replay_evidence_sha256"] != second["replay_evidence_sha256"]
+    assert first["probability_publishable"] is second["probability_publishable"] is False
