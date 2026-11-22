@@ -98,13 +98,18 @@ def test_execution_diagnostic_never_prints_result_secrets_or_file_path(tmp_path,
                          "api_error_status": 429, "result": SENTINEL})
     monkeypatch.setenv("CLAUDE_EXECUTION_FILE", f)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    monkeypatch.setenv("CLAUDE_ATTEMPT", "API_KEY")
+    monkeypatch.setenv("CLAUDE_ATTEMPT", "OAUTH")
+    output = tmp_path / "github_output.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True,
                             text=True, timeout=10, check=False)
     assert result.returncode == 0
-    assert "API_KEY:PROVIDER_HTTP_429_QUOTA_OR_RATE_LIMIT" in result.stdout
-    assert SENTINEL not in result.stdout + result.stderr
-    assert str(tmp_path) not in result.stdout + result.stderr
+    assert "OAUTH:PROVIDER_HTTP_429_QUOTA_OR_RATE_LIMIT" in result.stdout
+    assert output.read_text(encoding="utf-8") == (
+        "reason=PROVIDER_HTTP_429_QUOTA_OR_RATE_LIMIT\nretryable=true\n"
+    )
+    assert SENTINEL not in result.stdout + result.stderr + output.read_text()
+    assert str(tmp_path) not in result.stdout + result.stderr + output.read_text()
 
 
 def test_untrusted_attempt_label_never_becomes_log_control_text(tmp_path, monkeypatch):
@@ -113,11 +118,16 @@ def test_untrusted_attempt_label_never_becomes_log_control_text(tmp_path, monkey
     monkeypatch.setenv("CLAUDE_EXECUTION_FILE", f)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("CLAUDE_ATTEMPT", "::error::INJECTED")
+    output = tmp_path / "github_output.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True,
                             text=True, timeout=10, check=False)
     assert result.returncode == 0
     assert "UNKNOWN:PROVIDER_HTTP_429_QUOTA_OR_RATE_LIMIT" in result.stdout
     assert "INJECTED" not in result.stdout
+    assert output.read_text(encoding="utf-8") == (
+        "reason=PROVIDER_HTTP_429_QUOTA_OR_RATE_LIMIT\nretryable=true\n"
+    )
 
 
 def test_composite_diagnostic_runs_before_existing_result_gate_for_both_providers():
@@ -148,6 +158,11 @@ def test_composite_diagnostic_runs_before_existing_result_gate_for_both_provider
     assert by_name[api]["run"] == by_name[oauth]["run"] == (
         "python3 .github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py"
     )
+    assert by_name[api]["id"] == "api_diagnostic"
+    assert by_name[oauth]["id"] == "oauth_diagnostic"
+    outputs = yaml.safe_load(ACTION.read_text(encoding="utf-8"))["outputs"]
+    assert "steps.oauth_diagnostic.outputs.reason" in outputs["failure_reason"]["value"]
+    assert "steps.oauth_diagnostic.outputs.retryable" in outputs["retryable"]["value"]
     assert "CLAUDE_STRUCTURED_OUTPUT_MISSING" in by_name[gate]["run"]
     assert "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON" in by_name[gate]["run"]
     assert by_name[gate]["if"] == "always()"
