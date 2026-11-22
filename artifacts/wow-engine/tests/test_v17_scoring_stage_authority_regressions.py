@@ -188,3 +188,59 @@ def test_nba_server_hydration_requires_lineup_and_source_id():
     missing_source = _server_payload()
     missing_source["feature_package"].pop("source_snapshot_id")
     assert nba._validated_server_hydration(missing_source, _START) is None
+
+
+def test_daily_cross_sport_stage_preserves_nested_canonical_hydration_blockers():
+    from v17 import daily_snapshot_runtime as daily
+    rows = [
+        {
+            "lane": "MONEYLINE",
+            "identity": {"sport": "NBA"},
+            "row_status": "HELD",
+            "result": {
+                "model_status": "MODEL_INPUTS_INSUFFICIENT",
+                "detail": {"blockers": ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]},
+                "can_execute": False,
+            },
+        },
+        {
+            "lane": "MONEYLINE",
+            "identity": {"sport": "NHL"},
+            "row_status": "HELD",
+            "result": {
+                "model_status": "MODEL_INPUTS_INSUFFICIENT",
+                "detail": {"blockers": [
+                    "NHL_STARTING_GOALIE_NOT_CONFIRMED",
+                    "NHL_SOURCE_SNAPSHOT_MISSING",
+                ]},
+                "can_execute": False,
+            },
+        },
+    ]
+    result = daily._compute_stage_progression_by_sport(rows)
+    assert result["discovered"] == 2
+    assert result["hydrated"] == result["model_evaluated"] == result["certified"] == 0
+    assert result["publishable"] == 0
+    assert "MODEL_INPUTS_INSUFFICIENT" in result["by_sport"]["NBA"]["failure_codes"]
+    assert "NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in result["by_sport"]["NBA"]["failure_codes"]
+    assert "NHL_STARTING_GOALIE_NOT_CONFIRMED" in result["by_sport"]["NHL"]["failure_codes"]
+    assert "NHL_SOURCE_SNAPSHOT_MISSING" in result["by_sport"]["NHL"]["failure_codes"]
+
+
+def test_daily_cross_sport_nested_diagnostics_never_confer_hydration():
+    from v17 import daily_snapshot_runtime as daily
+    row = {
+        "lane": "MONEYLINE",
+        "row_status": "HELD",
+        "identity": {"sport": "NCAAB"},
+        "result": {
+            "model_status": "MODEL_INPUTS_INSUFFICIENT",
+            "detail": {"blockers": ["NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]},
+            "can_execute": False,
+        },
+    }
+    hydrated, blockers = daily._is_row_hydrated(row)
+    assert hydrated is False
+    assert "NCAAB_CANONICAL_SERVER_HYDRATION_UNAVAILABLE" in blockers
+    assert daily._is_row_model_evaluated(row, hydrated) is False
+    assert daily._is_row_certified(row, evaluated=False) is False
