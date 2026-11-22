@@ -68,6 +68,11 @@ class DailySnapshotRequest(BaseModel):
     response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
 
 
+def _render_deployed_sha() -> str | None:
+    sha = str(os.getenv("RENDER_GIT_COMMIT") or "").strip().lower()
+    return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
+
+
 def _detail(exc: HTTPException) -> dict[str, Any]:
     return dict(exc.detail) if isinstance(exc.detail, dict) else {"code": "HTTP_EXCEPTION", "message": str(exc.detail)}
 
@@ -1278,6 +1283,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
 
     response = {
         "run_id": run_id,
+        "deployed_sha": _render_deployed_sha(),
         "terminal": True,
         "run_status": run_status,
         "scoring_run_status": scoring_run_status,

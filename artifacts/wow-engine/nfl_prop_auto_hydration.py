@@ -23,7 +23,12 @@ from typing import Any, Callable, Mapping, Optional
 
 import httpx
 
-from v17.player_availability_gate import normalize_designation
+from v17.player_availability_gate import (
+    PLAYABLE_DESIGNATIONS,
+    UNAVAILABLE_DESIGNATIONS,
+    normalize_designation,
+    participation_evidence,
+)
 
 PROVIDER_ID = "NFL_ESPN_IDENTITY_NFLVERSE_STATS_V1"
 EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
@@ -31,6 +36,7 @@ ESPN_SEARCH_URL = "https://site.api.espn.com/apis/search/v2"
 ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_TEAM_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/schedule"
+ESPN_TEAM_ROSTER_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/roster"
 # The site/v2 athlete path returns HTTP 404 for NFL athletes (verified
 # 2026-11-09 against athlete 4241457). The common/v3 profile endpoint serves the
 # same official record, including the `injuries` entries this hydrator reads.
@@ -40,6 +46,9 @@ ESPN_ATHLETE_FALLBACK_URLS = (
     "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{athlete_id}",
 )
 AVAILABILITY_SOURCE = "ESPN_NFL_ATHLETE_INJURY_REPORT"
+TEAM_ROSTER_INJURY_SOURCE = "ESPN_NFL_TEAM_ROSTER_INJURY_REPORT"
+MAX_INJURY_REPORT_AGE = timedelta(hours=72)
+ROSTER_CACHE_TTL_SECONDS = 5 * 60
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 HTTP_TIMEOUT_SECONDS = 12.0
 HTTP_ATTEMPTS = 2
@@ -83,6 +92,7 @@ ESPN_TO_NFLVERSE_TEAM = {
 _CACHE_LOCK = threading.RLock()
 _CSV_CACHE: dict[int, tuple[float, list[dict[str, str]], str]] = {}
 _SCHEDULE_CACHE: dict[tuple[int, str, str], tuple[float, list[dict[str, Any]], str]] = {}
+_ROSTER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 class NFLPropHydrationError(RuntimeError):
@@ -816,6 +826,268 @@ def bind_availability_to_event(
     return bound
 
 
+def _parse_injury_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text or "T" not in text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _fetch_team_roster(team: str, *, http_get: Callable[..., Any]) -> tuple[Mapping[str, Any], str]:
+    team_slug = str(team or "").strip().lower()
+    url = ESPN_TEAM_ROSTER_URL.format(team=team_slug)
+    if http_get is httpx.get:
+        now_ts = time.time()
+        with _CACHE_LOCK:
+            cached = _ROSTER_CACHE.get(team_slug)
+            if cached and (now_ts - cached[0]) < ROSTER_CACHE_TTL_SECONDS:
+                return cached[1], url
+    payload = _request(url, http_get=http_get)
+    if not isinstance(payload, Mapping):
+        raise NFLPropHydrationError("TEAM_ROSTER_INVALID", f"ESPN team roster payload invalid for {team}")
+    if http_get is httpx.get:
+        with _CACHE_LOCK:
+            _ROSTER_CACHE[team_slug] = (time.time(), dict(payload))
+    return payload, url
+
+
+def _team_roster_injury_availability(
+    *,
+    athlete_id: str,
+    team: str,
+    event_id: str,
+    official_start: datetime,
+    captured: datetime,
+    http_get: Callable[..., Any],
+) -> dict[str, Any]:
+    """Evaluate availability against ESPN's complete dated team roster + injury report.
+
+    Unlike the undated athlete profile endpoint, ``/teams/{team}/roster`` returns
+    every roster group (offense, defense, specialTeam, injuredReserveOrOut,
+    suspended, practiceSquad) together with independently dated injury statuses.
+    Clearance is emitted ONLY when:
+      1. the payload team matches the resolved event team;
+      2. active and ``injuredReserveOrOut`` groups are present (report completeness);
+      3. the exact ``athlete_id`` is on the active roster (never IR/suspended/PS);
+      4. the team's latest independent injury publication timestamp is pregame,
+         not in the future relative to ``captured``, and within ``MAX_INJURY_REPORT_AGE``.
+    Any failure, mismatch, or stale report fails closed as ``UNVERIFIED``.
+    """
+    base: dict[str, Any] = {
+        "source": TEAM_ROSTER_INJURY_SOURCE,
+        "captured_at": captured.isoformat(),
+        "evidence_status": "RETRIEVED",
+        "fresh": False,
+        "report_complete": False,
+        "athlete_id": athlete_id,
+        "team": str(team or "").strip() or None,
+        "event_id": str(event_id or "").strip() or None,
+    }
+    try:
+        payload, url = _fetch_team_roster(team, http_get=http_get)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "RETRIEVAL_FAILED",
+            "source_endpoint": None,
+            "reason": f"TEAM_ROSTER_RETRIEVAL_FAILED:{type(exc).__name__}",
+        }
+    base["source_endpoint"] = url
+
+    team_obj = payload.get("team") if isinstance(payload.get("team"), Mapping) else {}
+    roster_team = str(team_obj.get("abbreviation") or "").strip().upper()
+    if not roster_team or _nflverse_team_code(roster_team) != _nflverse_team_code(team):
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "TEAM_IDENTITY_UNVERIFIED",
+            "reason": "TEAM_ROSTER_IDENTITY_MISMATCH",
+        }
+
+    groups = payload.get("athletes")
+    if not isinstance(groups, list) or not groups:
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED",
+            "reason": "TEAM_ROSTER_GROUPS_MISSING",
+        }
+
+    group_names: set[str] = set()
+    matched_group: str | None = None
+    matched_athlete: Mapping[str, Any] | None = None
+    latest_report_ts: datetime | None = None
+
+    for grp in groups:
+        if not isinstance(grp, Mapping):
+            continue
+        grp_name = str(grp.get("position") or "").strip().lower()
+        if grp_name:
+            group_names.add(grp_name)
+        items = grp.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if item_id == str(athlete_id):
+                matched_group = grp_name
+                matched_athlete = item
+            raw_injuries = item.get("injuries")
+            if isinstance(raw_injuries, list):
+                for entry in raw_injuries:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    ts = _parse_injury_timestamp(entry.get("date"))
+                    if ts is not None and ts <= captured and ts < official_start:
+                        if latest_report_ts is None or ts > latest_report_ts:
+                            latest_report_ts = ts
+
+    required_groups = {"offense", "defense", "injuredreserveorout"}
+    if not required_groups.issubset(group_names):
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED",
+            "reason": "TEAM_ROSTER_INJURY_GROUPS_INCOMPLETE",
+        }
+
+    if matched_athlete is None:
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": None,
+            "evidence_status": "ATHLETE_IDENTITY_UNVERIFIED",
+            "reason": "ATHLETE_NOT_ON_TEAM_ROSTER",
+        }
+
+    raw_player_injuries = matched_athlete.get("injuries")
+    player_injuries = [
+        entry for entry in raw_player_injuries if isinstance(entry, Mapping)
+    ] if isinstance(raw_player_injuries, list) else []
+
+    if matched_group in {"injuredreserveorout", "suspended", "practicesquad"}:
+        group_fallback = {
+            "injuredreserveorout": "INJURED_RESERVE",
+            "suspended": "SUSPENDED",
+            "practicesquad": "INACTIVE",
+        }[matched_group]
+        designation = ""
+        if player_injuries:
+            latest_entry = max(player_injuries, key=lambda e: str(e.get("date") or ""))
+            candidate = normalize_designation(latest_entry.get("status")) or normalize_designation(latest_entry.get("type"))
+            if candidate in UNAVAILABLE_DESIGNATIONS:
+                designation = candidate
+        designation = designation or group_fallback
+        return participation_evidence(
+            designation=designation,
+            source=TEAM_ROSTER_INJURY_SOURCE,
+            captured_at=(latest_report_ts or captured).isoformat(),
+            evidence_status="RETRIEVED",
+            fresh=False,
+            report_complete=False,
+            athlete_id=athlete_id,
+            event_id=event_id,
+            team=team,
+            source_endpoint=url,
+            reason=f"OFFICIAL_DESIGNATION_{designation}",
+        )
+
+    report_fresh = (
+        latest_report_ts is not None
+        and timedelta(0) <= (captured - latest_report_ts) <= MAX_INJURY_REPORT_AGE
+        and latest_report_ts < official_start
+    )
+
+    if player_injuries:
+        latest_entry = max(player_injuries, key=lambda e: str(e.get("date") or ""))
+        designation = normalize_designation(latest_entry.get("status")) or normalize_designation(latest_entry.get("type"))
+        if designation in UNAVAILABLE_DESIGNATIONS:
+            return participation_evidence(
+                designation=designation,
+                source=TEAM_ROSTER_INJURY_SOURCE,
+                captured_at=(latest_report_ts or captured).isoformat(),
+                evidence_status="RETRIEVED",
+                fresh=False,
+                report_complete=False,
+                athlete_id=athlete_id,
+                event_id=event_id,
+                team=team,
+                source_endpoint=url,
+                reason=f"OFFICIAL_DESIGNATION_{designation}",
+            )
+        if not designation:
+            return {
+                **base,
+                "status": "UNVERIFIED",
+                "designation": None,
+                "evidence_status": "INJURY_DESIGNATION_UNPARSED",
+                "reason": "INJURY_DESIGNATION_UNPARSED",
+            }
+        if designation in PLAYABLE_DESIGNATIONS and report_fresh:
+            assert latest_report_ts is not None
+            return participation_evidence(
+                designation=designation,
+                basis="FRESH_OFFICIAL_REPORT_CLEARED",
+                source=TEAM_ROSTER_INJURY_SOURCE,
+                captured_at=latest_report_ts.isoformat(),
+                evidence_status="RETRIEVED",
+                fresh=True,
+                report_complete=True,
+                athlete_id=athlete_id,
+                event_id=event_id,
+                team=team,
+                source_endpoint=url,
+                reason=f"OFFICIAL_DESIGNATION_{designation}",
+            )
+        return {
+            **base,
+            "status": "UNVERIFIED",
+            "designation": designation,
+            "evidence_status": "RETRIEVED",
+            "reason": "TEAM_INJURY_REPORT_STALE_OR_UNRECOGNIZED",
+        }
+
+    status_obj = matched_athlete.get("status") if isinstance(matched_athlete.get("status"), Mapping) else {}
+    roster_status_type = str(status_obj.get("type") or "").strip().lower()
+    if matched_group in {"offense", "defense", "specialteam"} and roster_status_type == "active" and report_fresh:
+        assert latest_report_ts is not None
+        return participation_evidence(
+            designation=None,
+            basis="FRESH_OFFICIAL_REPORT_UNLISTED",
+            source=TEAM_ROSTER_INJURY_SOURCE,
+            captured_at=latest_report_ts.isoformat(),
+            evidence_status="RETRIEVED",
+            fresh=True,
+            report_complete=True,
+            athlete_id=athlete_id,
+            event_id=event_id,
+            team=team,
+            source_endpoint=url,
+            reason="FRESH_OFFICIAL_REPORT_UNLISTED",
+        )
+
+    return {
+        **base,
+        "status": "UNVERIFIED",
+        "designation": None,
+        "evidence_status": "OFFICIAL_REPORT_COMPLETENESS_UNVERIFIED",
+        "reason": "TEAM_INJURY_REPORT_NOT_FRESH_OR_PLAYER_NOT_ACTIVE",
+    }
+
+
 def hydrate_nfl_prop_evidence(
     *,
     player: str,
@@ -847,6 +1119,24 @@ def hydrate_nfl_prop_evidence(
     official_start = _aware(target["provider_event_start_time"])
     if captured >= official_start:
         raise NFLPropHydrationError("EVENT_ALREADY_STARTED", "NFL prop capture must precede the official kickoff")
+    # Never override an explicit rule-out from the athlete profile. Otherwise,
+    # reconcile against the complete dated team roster + injury report.
+    athlete_designation = normalize_designation(availability.get("designation"))
+    if athlete_designation not in UNAVAILABLE_DESIGNATIONS:
+        roster_availability = _team_roster_injury_availability(
+            athlete_id=athlete_id,
+            team=team,
+            event_id=target["event_id"],
+            official_start=official_start,
+            captured=captured,
+            http_get=http_get,
+        )
+        roster_designation = normalize_designation(roster_availability.get("designation"))
+        if roster_designation in UNAVAILABLE_DESIGNATIONS or (
+            roster_availability.get("fresh") is True
+            and roster_availability.get("report_complete") is True
+        ):
+            availability = roster_availability
     game_log, box_score_log, source_hashes, nflverse_player_id = _history(
         player=official_name,
         canonical_stat=canonical,
@@ -860,6 +1150,14 @@ def hydrate_nfl_prop_evidence(
     # for the target event, so this mismatch is recorded rather than used to
     # rewrite the current team.
     recent_opp_mean = sum(float(r["opportunity"]) for r in box_score_log) / len(box_score_log)
+    source_timestamps = {
+        AVAILABILITY_SOURCE: captured.isoformat(),
+        "ESPN_NFL_IDENTITY_SCOREBOARD": captured.isoformat(),
+        "NFLVERSE_WEEKLY_PLAYER_STATS": captured.isoformat(),
+        "ESPN_NFL_TEAM_SCHEDULE": captured.isoformat(),
+    }
+    if availability.get("source") == TEAM_ROSTER_INJURY_SOURCE and availability.get("captured_at"):
+        source_timestamps[TEAM_ROSTER_INJURY_SOURCE] = str(availability["captured_at"])
     return {
         "captured_at": captured.isoformat(),
         "game_log": game_log,
@@ -890,12 +1188,7 @@ def hydrate_nfl_prop_evidence(
             "l10_opportunity_mean": recent_opp_mean,
             "source": "NFLVERSE_WEEKLY_PLAYER_STATS",
         },
-        "source_timestamps": {
-            AVAILABILITY_SOURCE: captured.isoformat(),
-            "ESPN_NFL_IDENTITY_SCOREBOARD": captured.isoformat(),
-            "NFLVERSE_WEEKLY_PLAYER_STATS": captured.isoformat(),
-            "ESPN_NFL_TEAM_SCHEDULE": captured.isoformat(),
-        },
+        "source_timestamps": source_timestamps,
         "evidence_version": EVIDENCE_VERSION,
         "rate_provenance": (
             f"{PROVIDER_ID};source_label={source_label};nflverse_sha256="
