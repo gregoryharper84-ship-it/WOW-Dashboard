@@ -3,10 +3,16 @@
 Resolves the immutable team-event certification receipt and emits the V17
 certified probability envelope. Candidate research rows stay immutable; request
 or catalog self-assertion cannot mint certification. can_execute stays false.
+
+Starting-goalie readiness is never taken from caller-asserted
+``goalie_status`` / ``goalie_identity_snapshot_id`` strings. The adapter requires
+two server-attested OFFICIAL provider receipts, reconciled through
+``nhl_starter_goalie_confirmation.confirm_starting_goalies`` under a
+server-owned trusted-provider registry and attestation key.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Mapping
 
@@ -16,6 +22,11 @@ from v17.fitted_team_event_certification import (
     TeamEventCertificationError,
     resolve_certification,
     validate_prediction_package,
+)
+from v17.nhl_candidate_preflight import NHLCandidatePreflightError
+from v17.nhl_starter_goalie_confirmation import (
+    TrustedProvider,
+    confirm_starting_goalies,
 )
 
 CAN_EXECUTE = False
@@ -31,8 +42,7 @@ ACCEPTED_SETTLEMENT_BASES = frozenset(
         "FULL_GAME_OUTRIGHT",
     }
 )
-CONFIRMED_GOALIE_STATUSES = frozenset({"CONFIRMED", "CONFIRMED_STARTER", "OFFICIAL_STARTER"})
-MAX_EVIDENCE_AGE = timedelta(minutes=60)
+STARTER_PROVIDER_RECEIPTS_FIELD = "starter_provider_receipts"
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
 
 
@@ -92,18 +102,91 @@ def _require_settlement_basis(evidence: Mapping[str, Any], req: Any | None = Non
     return evidence_basis.strip()
 
 
-def _require_goalie_ready(evidence: Mapping[str, Any], *, now_utc: datetime) -> None:
-    blockers: list[str] = []
-    status = str(evidence.get("goalie_status") or "").strip().upper()
-    if status not in CONFIRMED_GOALIE_STATUSES:
-        blockers.append("NHL_STARTING_GOALIE_NOT_CONFIRMED")
-    observed_at = _aware(evidence.get("goalie_status_observed_at"))
-    if observed_at is None or observed_at > now_utc or (now_utc - observed_at) > MAX_EVIDENCE_AGE:
-        blockers.append("NHL_GOALIE_STATUS_STALE")
-    if not str(evidence.get("goalie_identity_snapshot_id") or "").strip():
-        blockers.append("NHL_GOALIE_IDENTITY_UNVERIFIED")
-    if blockers:
-        raise NHLCertifiedScoringError("MODEL_INPUTS_INSUFFICIENT", blockers)
+def resolve_server_confirmed_goalies(
+    evidence: Mapping[str, Any],
+    *,
+    now_utc: datetime,
+    trusted_providers: Mapping[str, TrustedProvider] | None,
+    attestation_key: bytes | None,
+    official_event_id: str | None = None,
+) -> dict[str, Any]:
+    """Derive CONFIRMED goalies from two attested OFFICIAL receipts only.
+
+    Caller-supplied ``goalie_status``, ``goalie_identity_snapshot_id``, or any
+    ``derived_server_side`` / ``server_owned`` flag is never authority. Missing
+    registry, key, or receipts fail closed through the starter confirmation
+    contract codes.
+    """
+    receipts = evidence.get(STARTER_PROVIDER_RECEIPTS_FIELD)
+    providers = trusted_providers if isinstance(trusted_providers, Mapping) else {}
+    key = attestation_key if isinstance(attestation_key, (bytes, bytearray)) else b""
+    try:
+        confirmed = confirm_starting_goalies(
+            receipts,
+            now=now_utc,
+            trusted_providers=providers,
+            attestation_key=bytes(key),
+        )
+    except NHLCandidatePreflightError as exc:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            [exc.code],
+            detail=str(exc),
+        ) from exc
+
+    derived_event = str(confirmed.get("official_event_id") or "").strip()
+    expected_event = str(
+        official_event_id
+        or evidence.get("official_event_id")
+        or ""
+    ).strip()
+    if expected_event and derived_event and expected_event != derived_event:
+        raise NHLCertifiedScoringError(
+            "MODEL_INPUTS_INSUFFICIENT",
+            ["NHL_STARTER_EVENT_IDENTITY_MISMATCH"],
+            detail={"expected": expected_event, "derived": derived_event},
+        )
+    return confirmed
+
+
+def rehydrate_evidence_with_server_goalies(
+    evidence: Mapping[str, Any],
+    confirmed: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Replace caller goalie scalars with the derived server confirmation boundary."""
+    merged = dict(evidence)
+    # Strip any caller-asserted promotion flags; only confirmation output is trusted.
+    merged.pop("derived_server_side", None)
+    merged.pop("server_owned", None)
+    merged["goalie_status"] = confirmed["goalie_status"]
+    merged["goalie_identity_snapshot_id"] = confirmed["goalie_identity_snapshot_id"]
+    merged["goalie_status_observed_at"] = confirmed["verified_at"]
+    merged["home_goalie_id"] = confirmed["home_goalie_id"]
+    merged["away_goalie_id"] = confirmed["away_goalie_id"]
+    merged["official_event_id"] = confirmed["official_event_id"]
+    merged["starter_confirmation"] = {
+        "derived_server_side": True,
+        "provider_receipts": confirmed.get("provider_receipts"),
+        "verified_at": confirmed["verified_at"],
+    }
+    return merged
+
+
+def _require_goalie_ready(
+    evidence: Mapping[str, Any],
+    *,
+    now_utc: datetime,
+    trusted_providers: Mapping[str, TrustedProvider] | None = None,
+    attestation_key: bytes | None = None,
+    official_event_id: str | None = None,
+) -> dict[str, Any]:
+    return resolve_server_confirmed_goalies(
+        evidence,
+        now_utc=now_utc,
+        trusted_providers=trusted_providers,
+        attestation_key=attestation_key,
+        official_event_id=official_event_id,
+    )
 
 
 def load_candidate_matching_receipt(db: Any, receipt: FittedTeamEventCertification) -> Mapping[str, Any]:
@@ -160,6 +243,8 @@ def build_nhl_certified_envelope(
     now_utc: datetime,
     model_artifact_checksum: str | None = None,
     req: Any | None = None,
+    trusted_providers: Mapping[str, TrustedProvider] | None = None,
+    attestation_key: bytes | None = None,
 ) -> dict[str, Any]:
     """Build the certified V17 envelope from a resolved receipt and scored sides."""
     if receipt.sport != "NHL":
@@ -169,7 +254,13 @@ def build_nhl_certified_envelope(
             "MODEL_OUTPUT_INVALID", ["NHL_IDENTITY_CALIBRATOR_FORBIDDEN"]
         )
     settlement_basis = _require_settlement_basis(evidence, req)
-    _require_goalie_ready(evidence, now_utc=now_utc)
+    _require_goalie_ready(
+        evidence,
+        now_utc=now_utc,
+        trusted_providers=trusted_providers,
+        attestation_key=attestation_key,
+        official_event_id=official_event_id,
+    )
 
     raw = _probability(raw_home)
     calibrated = _probability(calibrated_home)
@@ -315,10 +406,17 @@ def score_nhl_certified_event(
     *,
     db: Any,
     now_utc: datetime | None = None,
+    trusted_providers: Mapping[str, TrustedProvider] | None = None,
+    attestation_key: bytes | None = None,
 ) -> dict[str, Any]:
-    """Score one NHL event under a resolved certification receipt."""
+    """Score one NHL event under a resolved certification receipt.
+
+    ``trusted_providers`` and ``attestation_key`` must be supplied by the
+    authenticated server-owned acquisition path. They are never read from the
+    request body. Without them, starter confirmation fails closed.
+    """
     now = now_utc or datetime.now(timezone.utc)
-    evidence = _evidence(req)
+    raw_evidence = _evidence(req)
     # Request-asserted certification is ignored; only the registry resolve counts.
     try:
         receipt = resolve_certification(db, sport="NHL", league_scope="NHL")
@@ -334,6 +432,27 @@ def score_nhl_certified_event(
         raise NHLCertifiedScoringError(
             "MODEL_OUTPUT_INVALID", ["NHL_IDENTITY_CALIBRATOR_FORBIDDEN"]
         )
+
+    # Canonicalize goalies before scoring so specialist scalar checks cannot be
+    # satisfied by forged caller status/ID strings.
+    confirmed = resolve_server_confirmed_goalies(
+        raw_evidence,
+        now_utc=now,
+        trusted_providers=trusted_providers,
+        attestation_key=attestation_key,
+        official_event_id=str(
+            getattr(req, "official_event_id", None)
+            or raw_evidence.get("official_event_id")
+            or ""
+        ),
+    )
+    evidence = rehydrate_evidence_with_server_goalies(raw_evidence, confirmed)
+    # Mirror rehydrated goalie evidence onto the request for the specialist path.
+    if hasattr(req, "sport_specific_evidence"):
+        try:
+            req.sport_specific_evidence = evidence
+        except Exception:  # noqa: BLE001 - immutable request objects stay fail-closed via evidence arg
+            pass
 
     scored = _score_matching_certified_artifacts(
         db=db,
@@ -356,11 +475,14 @@ def score_nhl_certified_event(
         official_event_id=str(
             scored.get("official_event_id")
             or evidence.get("official_event_id")
+            or confirmed.get("official_event_id")
             or ""
         ),
         now_utc=now,
         model_artifact_checksum=str(scored.get("model_artifact_checksum") or ""),
         req=req,
+        trusted_providers=trusted_providers,
+        attestation_key=attestation_key,
     )
 
 
@@ -368,8 +490,12 @@ __all__ = [
     "CAN_EXECUTE",
     "CONTROLLING_SPECIALIST",
     "ACCEPTED_SETTLEMENT_BASES",
+    "STARTER_PROVIDER_RECEIPTS_FIELD",
     "NHLCertifiedScoringError",
+    "TrustedProvider",
     "load_candidate_matching_receipt",
+    "resolve_server_confirmed_goalies",
+    "rehydrate_evidence_with_server_goalies",
     "build_nhl_certified_envelope",
     "score_nhl_certified_event",
 ]
