@@ -110,8 +110,9 @@ The proposed 900-second retry in the original PR was never shown to
 work from the modified collector; later tests had timeouts.
 
 The source refresh already runs every six hours. Instead of occupying a
-worker for 15 minutes and making a second request in a blocked period,
-`v17/public_gdelt_discovery.py` now makes **one bounded DOC request per run**.
+worker for 15 minutes and making a second request while the source is refusing
+requests, `v17/public_gdelt_discovery.py` now makes **one bounded DOC request
+per run**.
 When GDELT returns 429, the receipt records `SOURCE_RATE_LIMITED`,
 `http_status=429`, `attempt_count=1`, `total_wait_seconds=0`,
 `retry_deferred=true`, any `Retry-After` value and the normal
@@ -173,7 +174,7 @@ distinct objectives. It remains research only; `can_execute=false`.
 
 This section is the standing record of what was actually measured against the
 GDELT DOC 2.0 endpoint from this runtime, kept so the evidence outlives the
-retry proposals it settles. It adds no code, workflow or test change: the
+retry proposals it bears on. It adds no code, workflow or test change: the
 merged single-request fail-fast policy above is unchanged.
 
 **Probe series, November 18, 2026.** Each row was an ArtList request for
