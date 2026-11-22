@@ -441,9 +441,10 @@ def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
     compact["rank_eligible"] = rank_eligible
     compact["model_probability_available"] = model_available
     compact["official_leaderboard_eligible"] = official
-    compact["probability_visibility_status"] = str(
-        result.get("probability_visibility_status")
-        or ("OFFICIAL_QUALIFIED" if official else "MODELED_HELD" if model_available else "BLOCKED_UNSCORED")
+    # Always derive visibility from final eligibility. A stale
+    # OFFICIAL_QUALIFIED label surviving rank-ceiling demotion must not win.
+    compact["probability_visibility_status"] = (
+        "OFFICIAL_QUALIFIED" if official else "MODELED_HELD" if model_available else "BLOCKED_UNSCORED"
     )
     compact["can_execute"] = False
     return compact
@@ -470,6 +471,25 @@ def compact_row(row: dict[str, Any], *, run_id: str, row_index: int, detail_avai
         compact["directions"] = [
             compact_direction(outcome) for outcome in outcomes if isinstance(outcome, dict)
         ] if isinstance(outcomes, list) else []
+        # Compact is the default transport. Preserve the independent quote
+        # qualification ceiling even when the full scorer detail is paged.
+        # Sporting probability publication is a separate model decision.
+        receipt = row.get("market_offer_verification")
+        if isinstance(receipt, dict):
+            compact["market_offer_verification"] = {
+                "status": str(receipt.get("status") or "MARKET_OFFER_NOT_ATTESTED"),
+                "line_provenance": str(receipt.get("line_provenance") or "UNVERIFIED_SOURCE_LINE"),
+                "exact_offer_verified": receipt.get("exact_offer_verified") is True,
+                "can_execute": False,
+            }
+            compact["market_card_eligible"] = bool(
+                row.get("market_card_eligible") is True
+                and receipt.get("exact_offer_verified") is True
+            )
+            compact["market_value_edge_eligible"] = bool(
+                receipt.get("market_value_edge_eligible") is True
+                and receipt.get("exact_offer_verified") is True
+            )
     else:
         summary = compact_moneyline_result(result)
         compact["result_summary"] = summary
