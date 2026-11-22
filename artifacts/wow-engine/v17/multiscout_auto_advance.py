@@ -393,6 +393,8 @@ def execute_auto_advance(
     post_fn: Any = _post_json,
     max_in_flight: int = MAX_AUTO_ADVANCE_IN_FLIGHT,
     progress_fn: Any | None = None,
+    persistence_readback_by_id: Any | None = None,
+    configured_supabase_url: str | None = None,
 ) -> dict[str, Any]:
     try:
         dispatch = build_dispatch(handoff)
@@ -497,7 +499,7 @@ def execute_auto_advance(
         status = "AUTO_ADVANCE_COMPLETE"
         code = "AUTO_ADVANCE_RECONCILED"
 
-    return {
+    result = {
         **base,
         "status": status,
         "code": code,
@@ -515,6 +517,38 @@ def execute_auto_advance(
         },
         "can_execute": False,
     }
+
+    # HTTP/transport success is not durable Action→DB provenance. When a
+    # readback function is supplied, require independent sealed-destination
+    # proof before any AUTO_ADVANCE_COMPLETE* status can stand.
+    if (
+        persistence_readback_by_id is not None
+        and str(result.get("status") or "").startswith("AUTO_ADVANCE_COMPLETE")
+    ):
+        from v17.action_persistence_provenance import (
+            claimed_receipt_ids_from_auto_advance,
+            verify_action_persistence_provenance,
+        )
+
+        url = str(
+            configured_supabase_url
+            or os.environ.get("SUPABASE_URL")
+            or ""
+        ).strip()
+        provenance = verify_action_persistence_provenance(
+            configured_supabase_url=url,
+            claimed_receipt_ids=claimed_receipt_ids_from_auto_advance(result),
+            readback_by_id=persistence_readback_by_id,
+        )
+        result["persistence_provenance"] = provenance
+        if provenance.get("persistence_readback_pass") is not True:
+            result["status"] = "BLOCKED_BACKEND_HANDOFF"
+            result["code"] = str(
+                provenance.get("code") or "PERSISTENCE_READBACK_MISSING"
+            )
+        result["can_execute"] = False
+
+    return result
 
 
 def main() -> int:
