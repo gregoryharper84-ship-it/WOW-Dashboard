@@ -59,6 +59,7 @@ def _acquire_once(
         requested_date=requested_date,
         requested_timezone=timezone_name,
         max_candidates=max_candidates,
+        include_nfl=True,
     )
 
 
