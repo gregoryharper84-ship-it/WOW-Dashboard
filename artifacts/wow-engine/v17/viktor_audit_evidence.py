@@ -40,15 +40,29 @@ def _comment_timestamp(text: object, now: datetime) -> bool:
 
 
 def _safe_url(text: object) -> bool:
-    if not isinstance(text, str) or len(text) > 300 or any(ord(c) < 32 for c in text):
+    # Never carry natural language, whitespace, or encoded path components into
+    # an agent context. The only accepted links are immutable source pointers or
+    # narrowly structured GitHub run/issue/PR URLs in this exact repository.
+    if not isinstance(text, str) or len(text) > 300 or any(not 33 <= ord(c) <= 126 for c in text):
         return False
-    p = urlsplit(text)
-    if p.scheme != "https" or p.hostname != "github.com" or p.port is not None or p.username or p.password:
-        return False
-    if p.query or p.fragment or p.path.count("/") < 4:
+    try:
+        p = urlsplit(text)
+        if (p.scheme != "https" or p.netloc != "github.com" or
+                p.port is not None or p.username or p.password or p.query or p.fragment):
+            return False
+    except ValueError:
+        # Invalid IPv6 brackets and non-numeric ports must not fail an admitted
+        # worker; an optional advisory is simply rejected.
         return False
     prefix = "/" + REPO + "/"
-    return p.path.startswith(prefix) and p.path[len(prefix):].split("/", 1)[0] in {"blob", "commit", "actions", "issues", "pull"}
+    if not p.path.startswith(prefix) or any(part in {".", ".."} for part in p.path.split("/")):
+        return False
+    suffix = p.path[len(prefix):]
+    allowed = (r"(?:issues/[1-9][0-9]*|pull/[1-9][0-9]*|"
+               r"commit/[0-9a-f]{40}|"
+               r"actions/runs/[1-9][0-9]*(?:/job/[1-9][0-9]*)?|"
+               r"blob/[0-9a-f]{40}/[A-Za-z0-9._/-]+)")
+    return re.fullmatch(allowed, suffix) is not None
 
 
 def parse_comment(comment: object, *, incident: str, head_sha: str, now: datetime) -> dict | None:
