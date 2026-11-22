@@ -1,11 +1,13 @@
-"""Build and validate read-only Antigravity Swarm briefs for existing WOW Scouts.
+"""WOW-native, zero-provider-call, research-only specialist swarm.
 
-This adapter emits a plan and a paste-ready /swarm prompt. It does not launch
-agents, query external sources, write production data, or score a market.
+The coordinator runs bounded local Python specialists against an existing,
+canonical event snapshot. It does not use Antigravity, an LLM, the network,
+production storage, a fitted scorer, or a betting/trading interface.
 """
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,12 +16,11 @@ import re
 import sys
 from typing import Any
 
-# Scripts launched from the repository root otherwise cannot import sibling v17.
 _ENGINE_ROOT = str(Path(__file__).resolve().parents[1])
 if _ENGINE_ROOT not in sys.path:
     sys.path.insert(0, _ENGINE_ROOT)
 
-SCHEMA = "wow.v17.specialized_swarm.research.v1"
+SCHEMA = "wow.v17.native_swarm.research.v1"
 POLICY = {
     "custom_gpt_identity": "WOW_BETTING_ENGINE",
     "runtime_generation": "V17_ACTIVE",
@@ -31,8 +32,7 @@ POLICY = {
     "may_certify_or_qualify": False,
     "may_approve_protected_change": False,
 }
-# These already exist in sport_research_brief.WORKER_ROLE; do not create a
-# competing specialist identity or an independent execution queue.
+# Reuse IDs from v17.sport_research_brief, never add a second registry.
 WORKERS = (
     "wow.source-provenance-researcher",
     "wow.participant-status-researcher",
@@ -44,19 +44,12 @@ FORBIDDEN_KEYS = {
     "probability", "win_probability", "model_probability", "fitted_probability",
     "estimated_probability", "calibration", "certification", "qualification",
     "rank_eligible", "stake", "order", "wager", "approval", "approved",
-    "model_score", "model_prediction", "predicted_winner",
+    "model_score", "model_prediction", "predicted_winner", "confidence",
+    "model_confidence", "estimated_edge", "fitted_edge",
 }
-
-def _prohibited_feature_name(value: Any) -> bool:
-    """Reject predicted/model authority hidden in a normal feature/value row."""
-    if not isinstance(value, str):
-        return False  # The required source/feature type check rejects this separately.
-    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
-    return (normalized in FORBIDDEN_KEYS
-            or "probability" in normalized
-            or "confidence" in normalized
-            or normalized.startswith("predicted_")
-            or normalized.startswith("model_prediction"))
+MAX_FILE_BYTES = 256_000
+MAX_METRICS = 128
+MAX_OBSERVATIONS_PER_METRIC = 32
 
 
 def _time(value: Any) -> datetime:
@@ -64,18 +57,35 @@ def _time(value: Any) -> datetime:
         raise ValueError("timestamp is required")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, TypeError) as exc:
+    except ValueError as exc:
         raise ValueError("timestamp must be ISO-8601 with a UTC offset") from exc
     if parsed.utcoffset() is None:
         raise ValueError("timestamp must include a UTC offset")
     return parsed.astimezone(timezone.utc)
 
 
+def _now(value: datetime | None) -> datetime:
+    value = value or datetime.now(timezone.utc)
+    if value.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _prohibited_feature_name(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return (normalized in FORBIDDEN_KEYS or "probability" in normalized
+            or "confidence" in normalized or normalized.startswith("predicted_")
+            or normalized.startswith("model_prediction") or normalized.endswith("_edge"))
+
+
 def _has_forbidden_key(value: Any) -> bool:
     if isinstance(value, dict):
         for key, item in value.items():
             normalized = str(key).lower().replace("-", "_")
-            if normalized in FORBIDDEN_KEYS or normalized.endswith("_probability"):
+            if (normalized in FORBIDDEN_KEYS or "probability" in normalized
+                    or normalized.endswith("_confidence") or normalized.endswith("_edge")):
                 return True
             if _has_forbidden_key(item):
                 return True
@@ -84,109 +94,88 @@ def _has_forbidden_key(value: Any) -> bool:
     return False
 
 
-def build_manifest(event: dict[str, Any], *, now: datetime | None = None,
-                   max_parallel: int = 2) -> dict[str, Any]:
-    """Create a bounded plan, reusing the existing research worker contracts."""
+def _canonical_event(event: dict[str, Any], now: datetime) -> dict[str, Any]:
     if not isinstance(event, dict):
-        raise ValueError("event must be an object")
-    sport = str(event.get("sport_key") or "").strip()
-    official_id = str(event.get("official_event_id") or "").strip()
-    if not sport or not official_id or len(official_id) > 160:
-        raise ValueError("canonical sport_key and official_event_id are required")
-    if not isinstance(max_parallel, int) or isinstance(max_parallel, bool) or max_parallel not in (1, 2, 3):
-        raise ValueError("max_parallel must be 1, 2, or 3")
+        raise ValueError("candidate must be an object")
+    sport = event.get("sport_key")
+    official_id = event.get("official_event_id")
+    if (not isinstance(sport, str) or not sport.strip()
+            or not isinstance(official_id, str) or not official_id.strip()
+            or len(official_id) > 160):
+        raise ValueError("canonical sport_key and official_event_id required")
     if event.get("can_execute") is not False:
         raise ValueError("can_execute=false must be explicit")
-    starts_raw = event.get("commence_time")
-    starts = _time(starts_raw)
-    now = now or datetime.now(timezone.utc)
-    if now.utcoffset() is None:
-        raise ValueError("now must be timezone-aware")
-    now = now.astimezone(timezone.utc)
+    starts = _time(event.get("commence_time"))
     if starts <= now:
-        raise ValueError("pregame Swarm requires a future event; postmortems use existing learning lane")
-
-    # Import in the repository context, not a standalone/second registry.
-    from v17.matchup_discovery import profile_for
-    from v17.sport_scout_registry import scout_team_for
-    from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
-
-    if profile_for(sport) is None:
-        raise ValueError("sport has no registered matchup-discovery profile")
-    if any(worker not in SUPPORTED_RESEARCH_WORKERS for worker in WORKERS):
-        raise ValueError("canonical research worker contract changed; reconcile before use")
-    team = scout_team_for(sport)
-    canonical_event = {
-        "sport_key": sport,
-        "official_event_id": official_id,
+        raise ValueError("pregame Swarm requires future event")
+    return {
+        "sport_key": sport.strip(),
+        "official_event_id": official_id.strip(),
         "commence_time": starts.isoformat().replace("+00:00", "Z"),
         "home_team": str(event.get("home_team") or ""),
         "away_team": str(event.get("away_team") or ""),
         "can_execute": False,
     }
-    # No new identity authority. The hash keys this local plan only, not a
-    # durable execution lease, event resolution, or production receipt.
-    run_id = hashlib.sha256(json.dumps(canonical_event, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def build_manifest(event: dict[str, Any], *, now: datetime | None = None,
+                   max_parallel: int = 2) -> dict[str, Any]:
+    """Plan local bounded workers; do not acquire data or launch a model."""
+    now = _now(now)
+    if (not isinstance(max_parallel, int) or isinstance(max_parallel, bool)
+            or max_parallel not in (1, 2, 3)):
+        raise ValueError("max_parallel must be 1, 2, or 3")
+    canonical = _canonical_event(event, now)
+    from v17.matchup_discovery import profile_for
+    from v17.sport_scout_registry import scout_team_for
+    from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
+
+    if profile_for(canonical["sport_key"]) is None:
+        raise ValueError("sport has no registered matchup-discovery profile")
+    if any(worker not in SUPPORTED_RESEARCH_WORKERS for worker in WORKERS):
+        raise ValueError("canonical research worker contract changed")
+    team = scout_team_for(canonical["sport_key"])
+    run_id = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:20]
     briefs = []
     for worker in WORKERS:
-        brief = build_research_brief(canonical_event, worker, now=now)
-        if brief.get("can_execute") is not False or brief.get("prediction_authority") is not False:
-            raise ValueError("canonical research brief unexpectedly asserts prediction authority")
-        briefs.append({
-            "worker_id": worker,
-            "brief": brief,
-            "allowed_activity": "READ_ONLY_RESEARCH",
-            "output": "event-scoped evidence, missing evidence, conflicts, and source timestamps",
-        })
+        brief = build_research_brief(canonical, worker, now=now)
+        if brief.get("prediction_authority") is not False or brief.get("can_execute") is not False:
+            raise ValueError("canonical research brief asserts prohibited authority")
+        briefs.append({"worker_id": worker, "brief": brief,
+                       "allowed_activity": "LOCAL_READ_ONLY_RESEARCH"})
     waves = [
-        {"wave": i // max_parallel + 1,
-         "worker_ids": list(WORKERS[i:i + max_parallel]),
-         "verify_before_next_wave": True}
+        {"wave": i // max_parallel + 1, "worker_ids": list(WORKERS[i:i + max_parallel])}
         for i in range(0, len(WORKERS), max_parallel)
     ]
     return {
-        "schema_version": SCHEMA,
-        "run_id": run_id,
-        "event": canonical_event,
+        "schema_version": SCHEMA, "run_id": run_id, "event": canonical,
         "scout_team_id": team.team_id,
-        "coverage_type": ("GENERIC_RESEARCH_ONLY" if team.sport_key == "*" else "SPORT_SPECIFIC_RESEARCH"),
-        "max_parallel": max_parallel,
-        "waves": waves,
-        "workers": briefs,
-        "verifier": {
-            "role": "independent read-only evidence verifier (not model-certification authority)",
-            "check": ["exact event ID", "pregame UTC chronology", "source identity and rights",
-                      "missing/conflicting evidence", "no research probability/qualification claim"],
-        },
-        "handoff": {
-            "destination": "existing v17 sport_scout_enrichment / research handoff",
-            "may_request_controlling_fitted_specialist_rescore": True,
-            "may_trigger_specialist_or_terminal_reducer": False,
-            "may_publish_or_qualify": False,
-        },
-        "policy": dict(POLICY),
+        "coverage_type": ("GENERIC_RESEARCH_ONLY" if team.sport_key == "*"
+                          else "SPORT_SPECIFIC_RESEARCH"),
+        "max_parallel": max_parallel, "waves": waves, "workers": briefs,
+        "provider": "WOW_NATIVE_PYTHON", "paid_provider_calls": 0,
+        "network_calls": 0, "policy": dict(POLICY),
     }
 
 
-def validate_submission(manifest: dict[str, Any], submission: dict[str, Any],
+def validate_submission(manifest: dict[str, Any], submission: Any,
                         *, now: datetime | None = None) -> dict[str, Any]:
-    """Structural fail-closed screen; not an independent source/model verifier."""
+    """Fail-closed *structural* validation, not independent fact verification."""
+    now = _now(now)
     errors: list[str] = []
-    now = now or datetime.now(timezone.utc)
-    if now.utcoffset() is None:
-        raise ValueError("now must be timezone-aware")
     if not isinstance(submission, dict):
         return {"valid_report": False, "errors": ["submission must be an object"],
-                "research_only": True, "may_publish": False}
-    expected = manifest["event"]
+                "research_only": True, "may_publish": False, "can_execute": False}
+    event = manifest["event"]
     if submission.get("run_id") != manifest["run_id"]:
         errors.append("wrong local run ID")
-    if submission.get("official_event_id") != expected["official_event_id"]:
+    if submission.get("official_event_id") != event["official_event_id"]:
         errors.append("wrong official event ID")
-    if submission.get("sport_key") != expected["sport_key"]:
+    if submission.get("sport_key") != event["sport_key"]:
         errors.append("wrong sport")
     worker_ids = {w["worker_id"] for w in manifest["workers"]}
-    if not isinstance(submission.get("worker_id"), str) or submission["worker_id"] not in worker_ids:
+    worker_id = submission.get("worker_id")
+    if not isinstance(worker_id, str) or worker_id not in worker_ids:
         errors.append("unassigned worker")
     if submission.get("research_ceiling") != "RESEARCH_INTEREST":
         errors.append("research ceiling missing or altered")
@@ -196,101 +185,272 @@ def validate_submission(manifest: dict[str, Any], submission: dict[str, Any],
                "research_ceiling", "can_execute", "facts", "missing_evidence", "conflicts"}
     if set(submission) - allowed or _has_forbidden_key(submission):
         errors.append("unauthorized fields or predicted/protected authority")
-    facts = submission.get("facts")
-    missing = submission.get("missing_evidence")
-    conflicts = submission.get("conflicts")
-    if not isinstance(facts, list) or not isinstance(missing, list) or not isinstance(conflicts, list):
+    facts, missing, conflicts = (submission.get(k) for k in
+                                 ("facts", "missing_evidence", "conflicts"))
+    if (not isinstance(facts, list) or not isinstance(missing, list)
+            or not isinstance(conflicts, list)):
         errors.append("facts, missing_evidence and conflicts must be arrays")
         facts = []
     if not facts and not missing and not errors:
-        errors.append("empty report cannot assert a completed research screen")
-    cutoff = _time(expected["commence_time"])
+        errors.append("empty report cannot assert completed research")
+    for label, values in (("missing_evidence", missing), ("conflicts", conflicts)):
+        if isinstance(values, list) and not all(isinstance(s, str) and s for s in values):
+            errors.append(f"{label} must contain nonempty text reasons")
+    cutoff = _time(event["commence_time"])
     for index, fact in enumerate(facts):
         if not isinstance(fact, dict):
             errors.append(f"fact {index}: expected object")
             continue
-        permitted_fact = {"feature", "value", "source_id", "source_class", "captured_at",
-                          "official_event_id", "source_uri", "source_rights_status", "conflict"}
-        if set(fact) - permitted_fact or _has_forbidden_key(fact):
+        permitted = {"feature", "value", "source_id", "source_class", "captured_at",
+                     "official_event_id", "source_uri", "source_rights_status", "conflict"}
+        if set(fact) - permitted or _has_forbidden_key(fact):
             errors.append(f"fact {index}: unauthorized fields")
         if _prohibited_feature_name(fact.get("feature")):
-            errors.append(f"fact {index}: unauthorized prediction/authority feature")
-        if fact.get("official_event_id") != expected["official_event_id"]:
+            errors.append(f"fact {index}: prohibited prediction feature")
+        if fact.get("official_event_id") != event["official_event_id"]:
             errors.append(f"fact {index}: cross-event evidence")
         if not all(isinstance(fact.get(k), str) and fact[k].strip()
                    for k in ("feature", "source_id", "source_class")):
             errors.append(f"fact {index}: source or feature missing")
-        if fact.get("value") is None or fact.get("value") == {}:
-            errors.append(f"fact {index}: observed measurement missing")
+        value = fact.get("value")
+        if value is None or value == {} or value == []:
+            errors.append(f"fact {index}: measurement missing")
         if fact.get("conflict") is True:
             errors.append(f"fact {index}: unresolved evidence conflict")
         try:
             captured = _time(fact.get("captured_at"))
-            if captured >= cutoff or captured > now.astimezone(timezone.utc):
+            if captured >= cutoff or captured > now:
                 errors.append(f"fact {index}: non-pregame or future timestamp")
         except ValueError:
-            errors.append(f"fact {index}: missing timezone-aware source timestamp")
-        # A provider may permit browsing but not training/copying. Unreviewed
-        # rights remain explicit holds for downstream consumption.
+            errors.append(f"fact {index}: source timestamp invalid")
         if fact.get("source_rights_status") not in ("CLEARED_FOR_RESEARCH", "REVIEW_REQUIRED"):
             errors.append(f"fact {index}: source rights must be explicit")
     return {
-        "valid_report": not errors,
-        "errors": errors,
+        "valid_report": not errors, "errors": errors,
         "facts_screened_structurally": len(facts) if not errors else 0,
         "missing_evidence_count": len(missing) if isinstance(missing, list) else None,
-        "research_only": True,
-        "independent_source_verification": False,
-        "may_publish": False,
-        "may_fit_probability": False,
-        "can_execute": False,
+        "research_only": True, "independent_source_verification": False,
+        "may_publish": False, "may_fit_probability": False, "can_execute": False,
     }
 
 
-def antigravity_prompt(manifest: dict[str, Any]) -> str:
-    """Render a paste-ready native Antigravity /swarm task, not an API call."""
-    event = manifest["event"]
-    names = ", ".join(
-        f"@{alias}={worker}" for alias, worker in zip(
-            ("source", "personnel", "matchup", "history", "market"),
-            (item["worker_id"] for item in manifest["workers"]),
-        )
-    )
-    return (
-        "/swarm WOW Specialized Swarm — PRE-GAME RESEARCH ONLY. "
-        f"Official event: {event['official_event_id']} ({event['sport_key']}), "
-        f"starts {event['commence_time']} UTC. Local plan ID {manifest['run_id']}. "
-        "Use repository skill wow-specialized-swarm and existing "
-        "v17/sport_research_brief.py and v17/sport_scout_registry.py. "
-        f"Named workers: {names}. Run at most {manifest['max_parallel']} workers at once "
-        "in ordered waves; pause for an independent read-only verifier after each wave. "
-        "Brief each worker with a distinct evidence domain and exact event ID. "
-        "Shared board posts must include source identity, source rights status, "
-        "UTC captured-at, evidence, missing information, and conflicts. "
-        "No hallucinated facts, odds-derived or LLM-fitted probabilities, score, confidence, "
-        "qualification, orders, credentials, protected changes, or provider retries on quota 429. "
-        "Report evidence and blocked domains to the existing sport_scout_enrichment "
-        "handoff only; do not call any model, terminal reducer, production API, or deployment. "
-        "A task being assigned or reported is not verification or production acceptance."
-    )
+def _worker_features(requirements: dict[str, tuple[str, ...]]) -> dict[str, list[str]]:
+    """Each canonical matchup feature is owned by exactly one local specialist."""
+    groups = {key: list(values) for key, values in requirements.items()}
+    assigned = {worker: [] for worker in WORKERS}
+    personnel_tokens = ("goalie", "lineup", "starting", "minutes", "rotation",
+                        "weigh_in", "weight_cut", "injury", "medical", "short_notice",
+                        "camp_changes", "pitcher", "bullpen")
+    for group, fields in groups.items():
+        for feature in fields:
+            if _prohibited_feature_name(feature):
+                continue
+            if group == "MARKET":
+                worker = WORKERS[4]
+            elif group == "PERSONNEL" or (group == "SPORT_SPECIFIC" and
+                                           any(t in feature for t in personnel_tokens)):
+                worker = WORKERS[1]
+            elif group == "BASELINE":
+                worker = WORKERS[3]
+            else:
+                worker = WORKERS[2]
+            if feature not in assigned[worker]:
+                assigned[worker].append(feature)
+    return assigned
+
+
+def _raw_observations(candidate: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    from v17.matchup_discovery import _metric_rows
+    raw = _metric_rows(candidate)
+    if not isinstance(raw, dict) or len(raw) > MAX_METRICS:
+        raise ValueError("candidate evidence exceeds bounded metric contract")
+    observations: dict[str, list[dict[str, Any]]] = {}
+    for feature, value in raw.items():
+        rows = value if isinstance(value, list) else [value]
+        if len(rows) > MAX_OBSERVATIONS_PER_METRIC:
+            raise ValueError("metric exceeds bounded evidence contract")
+        observations[feature] = [row for row in rows if isinstance(row, dict)]
+    return observations
+
+
+def _to_fact(feature: str, row: dict[str, Any], event_id: str) -> dict[str, Any]:
+    measurement = row.get("value")
+    if measurement is None:
+        measurement = row.get("values")
+    fact = {
+        "feature": feature, "value": measurement,
+        "source_id": row.get("source_id"),
+        "source_class": row.get("source_class"),
+        "captured_at": row.get("captured_at"),
+        "official_event_id": row.get("official_event_id"),
+        "source_rights_status": row.get("source_rights_status", "REVIEW_REQUIRED"),
+    }
+    if row.get("source_uri"):
+        fact["source_uri"] = row["source_uri"]
+    if row.get("conflict") is True:
+        fact["conflict"] = True
+    return fact
+
+
+def _local_worker(worker_id: str, manifest: dict[str, Any],
+                  assigned: dict[str, list[str]], observations: dict[str, list[dict[str, Any]]],
+                  audit: dict[str, Any]) -> dict[str, Any]:
+    """No network, prompts, fitted probabilities, mutable DB, or external calls."""
+    screened = set(audit["screened_features"])
+    invalid = audit.get("invalid_or_stale_features") or {}
+    facts: list[dict[str, Any]] = []
+    missing: list[str] = []
+    conflicts: list[str] = []
+    if worker_id == WORKERS[0]:
+        # Cross-cutting provenance worker. Enumerate already-screened sources;
+        # don't pretend to independently attest source rights or data truth.
+        features = [feature for feature in observations if feature in screened]
+    else:
+        features = assigned[worker_id]
+    for feature in features:
+        if feature not in screened:
+            code = invalid.get(feature)
+            missing.append(f"{feature}:{code or 'NOT_SCREENED'}")
+            if code == "CONFLICT_QUARANTINED":
+                conflicts.append(f"{feature}:SOURCE_CONFLICT")
+            continue
+        eligible_found = False
+        for row in observations.get(feature, []):
+            if row.get("source_rights_status") != "CLEARED_FOR_RESEARCH":
+                missing.append(f"{feature}:SOURCE_RIGHTS_REVIEW_REQUIRED")
+                continue
+            fact = _to_fact(feature, row, manifest["event"]["official_event_id"])
+            # Never assume the source-screened feature means every raw row
+            # passed: independently recheck structural identity/chronology.
+            if (_has_forbidden_key(fact) or _prohibited_feature_name(feature)
+                    or fact.get("official_event_id") != manifest["event"]["official_event_id"]):
+                conflicts.append(f"{feature}:INVALID_OR_CROSS_EVENT_FACT")
+                continue
+            facts.append(fact)
+            eligible_found = True
+        if not eligible_found:
+            missing.append(f"{feature}:NO_RIGHTS_CLEARED_EVIDENCE")
+    if worker_id == WORKERS[0] and not features:
+        missing.append("NO_SCREENED_SOURCE_EVIDENCE")
+    return {
+        "run_id": manifest["run_id"], "sport_key": manifest["event"]["sport_key"],
+        "official_event_id": manifest["event"]["official_event_id"],
+        "worker_id": worker_id, "research_ceiling": "RESEARCH_INTEREST",
+        "can_execute": False, "facts": facts,
+        "missing_evidence": sorted(set(missing)), "conflicts": sorted(set(conflicts)),
+    }
+
+
+def run_swarm(candidate: dict[str, Any], *, now: datetime | None = None,
+              max_parallel: int = 2) -> dict[str, Any]:
+    """Execute genuine bounded local workers and a per-wave fail-closed barrier.
+
+    No call to the existing fitted specialist is performed. All findings remain
+    research metadata. The caller owns any explicitly governed downstream path.
+    """
+    now = _now(now)
+    manifest = build_manifest(candidate, now=now, max_parallel=max_parallel)
+    from v17.matchup_discovery import discover_matchup, feature_requirements, _screen_row
+    audit = discover_matchup(candidate, now=now)
+    if (audit.get("official_event_id") != manifest["event"]["official_event_id"]
+            or audit.get("can_execute") is not False
+            or audit.get("prediction_authority") is not False):
+        raise ValueError("canonical matchup audit returned invalid authority or identity")
+    raw_observations = _raw_observations(candidate)
+    # The canonical audit can mark a feature screened when at least one row
+    # passes. An invalid sibling row must never ride along into the handoff.
+    cutoff = _time(manifest["event"]["commence_time"])
+    observations: dict[str, list[dict[str, Any]]] = {}
+    rejected: dict[str, list[str]] = {}
+    for feature, rows in raw_observations.items():
+        observations[feature] = []
+        rejected[feature] = []
+        for row in rows:
+            reason = _screen_row(row, candidate, cutoff, now, feature)
+            if reason == "RESEARCH_SOURCE_SCREENED":
+                observations[feature].append(row)
+            else:
+                rejected[feature].append(reason)
+    assigned = _worker_features(feature_requirements(manifest["event"]["sport_key"]))
+    results: list[dict[str, Any]] = []
+    reviews: list[dict[str, Any]] = []
+    for wave in manifest["waves"]:
+        # Each wave is a barrier; no next wave can begin before review.
+        with ThreadPoolExecutor(max_workers=min(len(wave["worker_ids"]), max_parallel)) as pool:
+            futures = [pool.submit(_local_worker, worker_id, manifest, assigned,
+                                   observations, audit) for worker_id in wave["worker_ids"]]
+            submissions = [future.result() for future in futures]
+        for submission in submissions:
+            relevant = list(observations) if submission["worker_id"] == WORKERS[0] else assigned[submission["worker_id"]]
+            for feature in relevant:
+                for reason in rejected.get(feature, []):
+                    submission["missing_evidence"].append(f"{feature}:{reason}")
+                    if reason in ("EVENT_ID_MISMATCH", "PARTICIPANT_MISMATCH", "CONFLICT_QUARANTINED"):
+                        submission["conflicts"].append(f"{feature}:{reason}")
+            submission["missing_evidence"] = sorted(set(submission["missing_evidence"]))
+            submission["conflicts"] = sorted(set(submission["conflicts"]))
+        verdicts = [validate_submission(manifest, item, now=now) for item in submissions]
+        reviews.append({"wave": wave["wave"],
+                        "all_structurally_valid": all(v["valid_report"] for v in verdicts),
+                        "workers_checked": list(wave["worker_ids"]),
+                        "verdicts": verdicts})
+        if not all(v["valid_report"] for v in verdicts):
+            # Never allow an invalid report into the consolidated handoff.
+            raise ValueError("local Swarm worker produced structurally invalid research")
+        results.extend(submissions)
+    # The source worker cross-checks metadata; only domain-owned facts are
+    # forwarded, without duplicated source-worker observations.
+    forwarded = [fact for result in results if result["worker_id"] != WORKERS[0]
+                 for fact in result["facts"]]
+    missing = sorted({reason for result in results for reason in result["missing_evidence"]})
+    conflicts = sorted({reason for result in results for reason in result["conflicts"]})
+    status = ("RESEARCH_ONLY_HOLD" if missing or conflicts or audit["missing_critical_features"]
+              else "RESEARCH_ONLY_SCREENED")
+    receipt_id = hashlib.sha256(json.dumps({
+        "manifest_id": manifest["run_id"], "as_of": now.isoformat(),
+        "workers": results, "audit": audit}, sort_keys=True, default=str).encode()).hexdigest()
+    return {
+        "schema_version": SCHEMA, "status": status, "receipt_sha256": receipt_id,
+        "run_id": manifest["run_id"], "event": manifest["event"],
+        "scout_team_id": manifest["scout_team_id"],
+        "coverage_type": manifest["coverage_type"],
+        "max_parallel": max_parallel, "waves_completed": len(reviews),
+        "worker_reports": results, "wave_reviews": reviews,
+        "matchup_discovery": audit,
+        "handoff": {
+            "destination": "existing V17 sport_scout_enrichment / research handoff",
+            "source_screened_research_facts": forwarded,
+            "source_rights_review_required": any("SOURCE_RIGHTS" in x for x in missing),
+            "missing_evidence": missing, "conflicts": conflicts,
+            "specialist_rescore_requested": False, "specialist_rescore_verified": False,
+            "probability_authority": False, "may_publish_or_qualify": False,
+            "can_execute": False,
+        },
+        "external_llm_calls": 0, "paid_provider_calls": 0, "network_calls": 0,
+        "persisted_to_supabase": False, "production_verified": False,
+        "policy": dict(POLICY),
+    }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="WOW read-only research Swarm manifest")
-    parser.add_argument("--sport", required=True, help="canonical sport_key, e.g. basketball_nba")
-    parser.add_argument("--event-id", required=True, help="official canonical event ID")
-    parser.add_argument("--starts", required=True, help="pregame event UTC ISO-8601")
-    parser.add_argument("--home", default="")
-    parser.add_argument("--away", default="")
-    parser.add_argument("--max-parallel", type=int, default=2, choices=(1, 2, 3))
-    parser.add_argument("--format", choices=("json", "prompt"), default="prompt")
+    parser = argparse.ArgumentParser(description="WOW native no-credit multi-specialist research")
+    parser.add_argument("--candidate", required=True, help="local existing candidate snapshot JSON")
+    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3), default=2)
+    parser.add_argument("--output", help="optional local JSON receipt file; never writes to production")
     args = parser.parse_args()
-    manifest = build_manifest({"sport_key": args.sport, "official_event_id": args.event_id,
-                               "commence_time": args.starts, "home_team": args.home,
-                               "away_team": args.away, "can_execute": False},
-                              max_parallel=args.max_parallel)
-    print(antigravity_prompt(manifest) if args.format == "prompt"
-          else json.dumps(manifest, sort_keys=True, indent=2))
+    try:
+        candidate_path = Path(args.candidate)
+        if candidate_path.stat().st_size > MAX_FILE_BYTES:
+            raise ValueError("candidate exceeds bounded size limit")
+        candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+        receipt = run_swarm(candidate, max_parallel=args.max_parallel)
+        payload = json.dumps(receipt, sort_keys=True, indent=2, allow_nan=False)
+        if args.output:
+            Path(args.output).write_text(payload + "\n", encoding="utf-8")
+        else:
+            print(payload)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        parser.exit(2, f"WOW native Swarm research hold: {exc}\n")
     return 0
 
 
