@@ -44,6 +44,7 @@ from v17.daily_terminal_reduction import (
     classify_stage_status,
     reduce_row_terminal,
 )
+from v17.team_event_probability_preservation import _annotate_probability_visibility
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
@@ -893,25 +894,28 @@ def _promote_cross_sport_scorer_result(row: dict[str, Any]) -> dict[str, Any]:
     codes/probabilities/blockers without inventing probability or soft-holding
     a hard rejection. Envelope ``rank_eligible`` / ``probability_publishable``
     win over nested values so the publication-chain rank ceiling still demotes.
+    Visibility metadata is recomputed from those final eligibility flags so a
+    demoted row cannot keep a stale ``OFFICIAL_QUALIFIED`` label.
     """
     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
     if not detail:
         promoted = dict(row)
-        promoted["can_execute"] = False
-        return promoted
+    else:
+        promoted = {**row, **detail}
+        promoted["detail"] = detail
+        if "rank_eligible" in row:
+            promoted["rank_eligible"] = row.get("rank_eligible") is True
+        if "probability_publishable" in row:
+            promoted["probability_publishable"] = row.get("probability_publishable") is True
+        if "bucket" in row:
+            promoted["bucket"] = row.get("bucket")
+        if row.get("model_status") is not None:
+            promoted["model_status"] = row.get("model_status")
 
-    promoted = {**row, **detail}
-    promoted["detail"] = detail
-    if "rank_eligible" in row:
-        promoted["rank_eligible"] = row.get("rank_eligible") is True
-    if "probability_publishable" in row:
-        promoted["probability_publishable"] = row.get("probability_publishable") is True
-    if "bucket" in row:
-        promoted["bucket"] = row.get("bucket")
-    if row.get("model_status") is not None:
-        promoted["model_status"] = row.get("model_status")
-    promoted["can_execute"] = False
-    return promoted
+    # Recompute presentation metadata from the final eligibility surface.
+    # Numerical probabilities are preserved; only the visibility label/flags
+    # are refreshed so rank-ceiling demotion cannot advertise OFFICIAL_QUALIFIED.
+    return _annotate_probability_visibility(promoted)
 
 
 def _cross_sport_stage_status(row: dict[str, Any]) -> str:
@@ -932,6 +936,38 @@ def _cross_sport_stage_status(row: dict[str, Any]) -> str:
         return native
     completed = row.get("bucket") == discovery.MODEL_COMPLETED
     return "COMPLETED" if completed and row.get("rank_eligible") is True else "HELD"
+
+
+def _build_cross_sport_terminal_rows(
+    scan_rows: list[dict[str, Any]],
+    covered_event_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Shared Daily MONEYLINE terminal builder for base and installed paths."""
+    rows: list[dict[str, Any]] = []
+    for row in scan_rows:
+        if str(row.get("official_event_id") or "") in covered_event_ids:
+            continue
+        payload = _promote_cross_sport_scorer_result(row)
+        rows.append(
+            _terminal_row(
+                "MONEYLINE",
+                {
+                    key: row.get(key)
+                    for key in (
+                        "official_event_id",
+                        "commence_time_utc",
+                        "home_team",
+                        "away_team",
+                        "sport",
+                    )
+                },
+                payload,
+                assert_no_terminal_upgrade(
+                    reduce_row_terminal([_cross_sport_stage_status(row)])
+                ),
+            )
+        )
+    return rows
 
 
 def _cross_sport_moneyline_rows(
@@ -1029,30 +1065,7 @@ def _cross_sport_moneyline_rows(
         # MLB-only even though the provider registry contained those events.
         include_regime_variants=True,
     )
-    rows = []
-    for row in scan["rows"]:
-        if str(row.get("official_event_id") or "") in covered_event_ids:
-            continue
-        payload = _promote_cross_sport_scorer_result(row)
-        rows.append(
-            _terminal_row(
-                "MONEYLINE",
-                {
-                    key: row.get(key)
-                    for key in (
-                        "official_event_id",
-                        "commence_time_utc",
-                        "home_team",
-                        "away_team",
-                        "sport",
-                    )
-                },
-                payload,
-                assert_no_terminal_upgrade(
-                    reduce_row_terminal([_cross_sport_stage_status(row)])
-                ),
-            )
-        )
+    rows = _build_cross_sport_terminal_rows(list(scan.get("rows") or []), covered_event_ids)
     return rows, scan
 
 

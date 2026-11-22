@@ -276,6 +276,145 @@ def test_cross_sport_scorer_package_is_promoted_for_compact_and_stage_telemetry(
     assert nested_stage["hydrated"] == nested_stage["model_evaluated"] == 0
 
 
+def test_rank_ceiling_demotion_recomputes_visibility_to_modeled_held():
+    from v17.daily_response_contract import compact_moneyline_result
+    from v17.daily_snapshot_runtime import _promote_cross_sport_scorer_result
+
+    demoted = {
+        "bucket": "MODEL_COMPLETED",
+        "model_status": "SPORTING_PROBABILITY_COMPLETED",
+        "rank_eligible": False,
+        "probability_publishable": True,
+        "rank_eligible_pre_audit": True,
+        "detail": {
+            "code": "FINAL_APPROVED",
+            "terminal_label": "FINAL_APPROVED",
+            "calibrated_probability": 0.67,
+            "calibrated_lower_bound": 0.62,
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_visibility_status": "OFFICIAL_QUALIFIED",
+            "official_leaderboard_eligible": True,
+            "model_probability_available": True,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    payload = _promote_cross_sport_scorer_result(demoted)
+    assert payload["rank_eligible"] is False
+    assert payload["probability_publishable"] is True
+    assert payload["calibrated_probability"] == 0.67
+    assert payload["probability_visibility_status"] == "MODELED_HELD"
+    assert payload["official_leaderboard_eligible"] is False
+    compact = compact_moneyline_result(payload)
+    assert compact["probability_visibility_status"] == "MODELED_HELD"
+    assert compact["calibrated_probability"] == 0.67
+    assert compact["official_leaderboard_eligible"] is False
+    assert compact["can_execute"] is False
+
+
+def test_installed_parity_path_preserves_hard_terminals_and_scorer_package(monkeypatch):
+    """Production installers replace Daily's cross-sport builder; repair must survive."""
+    from v17 import daily_snapshot_runtime as daily
+    from v17.daily_response_contract import compact_moneyline_result
+    from v17.team_event_sport_parity import install_cross_sport_discovery_evidence_handoff
+
+    daily._v17_cross_sport_discovery_evidence_handoff_installed = False
+    assert install_cross_sport_discovery_evidence_handoff() is True
+
+    rejected = {
+        "official_event_id": "mlb-reject-1",
+        "commence_time_utc": FUTURE,
+        "home_team": "Home",
+        "away_team": "Away",
+        "sport": "MLB",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "NO_LOW_PROBABILITY",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "NO_LOW_PROBABILITY",
+            "terminal_label": "NO_LOW_PROBABILITY",
+            "pick_rejected": True,
+            "calibrated_probability": 0.41,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    held_modeled = {
+        "official_event_id": "nba-held-1",
+        "commence_time_utc": FUTURE,
+        "home_team": "Home",
+        "away_team": "Away",
+        "sport": "NBA",
+        "bucket": "OTHER_GOVERNED_HOLD",
+        "model_status": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "detail": {
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "blockers": ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"],
+            "calibrated_probability": 0.61,
+            "calibrated_lower_bound": 0.55,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+
+    def fake_scan(**_kwargs):
+        return {
+            "rows": [rejected, held_modeled],
+            "reconciliation": {"row_reconciliation": "PASS"},
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(daily.discovery_feed, "enabled", lambda: True)
+    monkeypatch.setattr(daily.discovery, "run_cross_sport_winner_scan", fake_scan)
+    monkeypatch.setattr(
+        "v17.team_event_sport_parity.cross_sport_model_coverage",
+        lambda *_a, **_k: {"can_execute": False},
+    )
+
+    class Req:
+        requested_slate_date = SLATE_DATE
+        requested_timezone = "America/Chicago"
+        max_team_events = 12
+
+    produced = daily._cross_sport_moneyline_rows(
+        Req(), run_id="parity-continuity", event_api=object(), covered_event_ids=set()
+    )
+    assert produced is not None
+    rows, _scan = produced
+    assert len(rows) == 2
+    by_id = {row["identity"]["official_event_id"]: row for row in rows}
+
+    reject_row = by_id["mlb-reject-1"]
+    assert reject_row["row_status"] == "REJECTED"
+    assert reject_row["terminal"] is True
+    assert reject_row["result"]["calibrated_probability"] == 0.41
+    assert reject_row["result"]["pick_rejected"] is True
+    assert reject_row["can_execute"] is False
+
+    held_row = by_id["nba-held-1"]
+    assert held_row["row_status"] == "HELD"
+    assert held_row["result"]["calibrated_probability"] == 0.61
+    assert held_row["result"]["blockers"] == ["NBA_CANONICAL_SERVER_HYDRATION_UNAVAILABLE"]
+    compact = compact_moneyline_result(held_row["result"])
+    assert compact["calibrated_probability"] == 0.61
+    assert compact["model_probability_available"] is True
+    assert compact["probability_visibility_status"] == "MODELED_HELD"
+
+    recon = daily._reconcile(rows)
+    assert recon["balanced"] is True
+    assert recon["rows_in"] == recon["rows_completed"] + recon["rows_held"] + recon["rows_rejected"]
+    assert recon["rows_rejected"] == 1
+    assert recon["rows_held"] == 1
+
+
 def test_cross_sport_rejected_row_reconciles_under_contract_identity():
     from v17.daily_snapshot_runtime import (
         _cross_sport_stage_status,
