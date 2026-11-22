@@ -39,6 +39,7 @@ class _Query:
     def __init__(self, rows):
         self.rows = list(rows)
         self.filters = []
+        self.orderings = []
         self.ordering = None
         self.start = None
         self.end = None
@@ -52,6 +53,7 @@ class _Query:
         return self
 
     def order(self, field, desc=False):
+        self.orderings.append(field)
         self.ordering = (field, desc)
         return self
 
@@ -81,9 +83,12 @@ class _Query:
 class _DB:
     def __init__(self, tables):
         self.tables = tables
+        self.queries = []
 
     def table(self, name):
-        return _Query(self.tables.get(name, []))
+        query = _Query(self.tables.get(name, []))
+        self.queries.append((name, query))
+        return query
 
 
 def _fixture():
@@ -620,6 +625,32 @@ def test_forward_shadow_audit_rejects_post_start_observation_and_does_not_promot
     assert audit["independent_grading_acceptance"] is False
     assert audit["probability_publishable"] is False
     assert report["probability_publishable"] is False
+
+
+def test_forward_shadow_read_orders_by_event_then_capture_and_holds_duplicate_capture_ids():
+    """A repeated capture id means the paged read repeated a row: hold, never count."""
+    tables = _fixture()
+    # The hold returns before any other column is read, so identity is enough.
+    duplicate = {"capture_id": "capture-dup", "official_event_id": "game-one"}
+    tables["wow_nba_candidate_forward_shadow"] = [dict(duplicate), dict(duplicate)]
+    tables["wow_nba_candidate_forward_verified_grades"] = []
+    db = _DB(tables)
+
+    audit = run_nba_team_event_certification_replay(db)["forward_shadow_audit"]
+
+    assert audit["status"] == "FORWARD_AUDIT_PAGINATION_HOLD"
+    assert audit["error_type"] == "NBA_REPLAY_FORWARD_PAGINATION_DUPLICATE_CAPTURE_IDS"
+    assert audit["official_verified_grades_available"] is False
+    assert audit["certification_authority"] is False
+    assert audit["can_execute"] is False
+
+    # capture_id is the only unique key; official_event_id alone is not a stable
+    # page cursor, so both are ordered, in this sequence, in one read.
+    shadow_orders = [
+        query.orderings for name, query in db.queries
+        if name == nba_replay_module.FORWARD_SHADOW_TABLE
+    ]
+    assert shadow_orders == [["official_event_id", "capture_id"]]
 
 
 def test_historical_training_tipoff_coverage_is_observed_not_inferred():

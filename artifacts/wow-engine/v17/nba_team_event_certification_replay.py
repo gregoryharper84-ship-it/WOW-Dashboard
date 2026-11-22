@@ -127,19 +127,23 @@ def _read_all(
     fields: str,
     *,
     settled_only: bool = False,
-    order_by: str = "game_id",
+    order_by: str | tuple[str, ...] = "game_id",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    # PostgREST range pagination is only stable with a unique ORDER BY key.
+    # A single non-unique key can repeat or drop rows across page boundaries,
+    # so callers pass a tie-break tuple for tables without a unique column.
+    order_fields = (order_by,) if isinstance(order_by, str) else tuple(order_by)
+    if not order_fields:
+        raise ValueError("NBA_REPLAY_PAGINATION_ORDER_REQUIRED:" + table)
     offset = 0
     while True:
         query = db.table(table).select(fields)
         if settled_only:
             query = query.eq("settled", True)
-        result = (
-            query.order(order_by)
-            .range(offset, offset + PAGE_SIZE - 1)
-            .execute()
-        )
+        for field in order_fields:
+            query = query.order(field)
+        result = query.range(offset, offset + PAGE_SIZE - 1).execute()
         batch = getattr(result, "data", None)
         if not isinstance(batch, list):
             raise ValueError("NBA_REPLAY_CORPUS_RESPONSE_INVALID:" + table)
@@ -500,7 +504,7 @@ def _corpus_replay(
         "persisted_feature_rows": len(features_raw),
         "regenerated_feature_rows": len(generated),
         "date_bound_feature_rows": date_bound_rows,
-        "settled_games_without_features": max(0, len(games_raw) - len(features_raw)),
+        "settled_games_without_features": len(set(games_by_id) - persisted_ids),
         "feature_rows_without_settled_games": len(persisted_ids - set(games_by_id)),
         "source_providers": sorted(providers),
         "source_endpoints": sorted(endpoints),
@@ -531,9 +535,11 @@ def _forward_shadow_audit(db: Any) -> dict[str, Any]:
     )
     grade_fields = "capture_id,official_event_id,outcome,created_at,can_execute"
     try:
+        # capture_id is the table's only unique key: one event can hold many
+        # captures, so official_event_id alone is not a stable page cursor.
         shadow = _read_all(
             db, FORWARD_SHADOW_TABLE, shadow_fields,
-            order_by="official_event_id",
+            order_by=("official_event_id", "capture_id"),
         )
         grades = _read_all(
             db, FORWARD_VERIFIED_GRADE_TABLE, grade_fields,
@@ -552,10 +558,22 @@ def _forward_shadow_audit(db: Any) -> dict[str, Any]:
         str(row.get("official_event_id") or "").strip()
         for row in shadow if str(row.get("official_event_id") or "").strip()
     }
-    captured_ids = {
-        str(row.get("capture_id") or "").strip()
-        for row in shadow if str(row.get("capture_id") or "").strip()
-    }
+    capture_ids = [
+        capture_id
+        for capture_id in (str(row.get("capture_id") or "").strip() for row in shadow)
+        if capture_id
+    ]
+    captured_ids = set(capture_ids)
+    # A repeated capture id means the paged read repeated a row; the counts
+    # below would be inflated, so hold instead of reporting them.
+    if len(captured_ids) != len(capture_ids):
+        return {
+            "status": "FORWARD_AUDIT_PAGINATION_HOLD",
+            "error_type": "NBA_REPLAY_FORWARD_PAGINATION_DUPLICATE_CAPTURE_IDS",
+            "official_verified_grades_available": False,
+            "certification_authority": False,
+            "can_execute": False,
+        }
     official_grade_rows = len(grades)
     grade_capture_matches = sum(
         1 for row in grades
