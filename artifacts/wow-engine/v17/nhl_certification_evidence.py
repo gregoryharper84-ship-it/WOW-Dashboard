@@ -20,12 +20,20 @@ RECEIPT_TABLE = "wow_d1_certification_evidence_receipts"
 SOURCE_ID = "NHL_PUBLIC_WEB_API"
 SOURCE_POLICY = "NHL_PUBLIC_WEB_API"
 MODEL_FAMILY = "NHL_REGULAR_SEASON_LOGISTIC_V1"
+MODEL_ARTIFACT_VERSION_PREFIX = "NHL_RS_LOGISTIC_V1"
 FEATURE_SCHEMA = "NHL_REGULAR_SEASON_FEATURES_V1"
 REQUIRED_TRAINING_ROWS = 3676
 REQUIRED_CALIBRATION_ROWS = 1226
 REQUIRED_TEST_ROWS = 1226
 REQUIRED_CORPUS_ROWS = REQUIRED_TRAINING_ROWS + REQUIRED_CALIBRATION_ROWS + REQUIRED_TEST_ROWS
 IDENTITY_CALIBRATION_METHOD = "IDENTITY_RAW_PROBABILITY_V1"
+
+
+def expected_model_artifact_version(training_dataset_hash: str, training_code_sha: str) -> str:
+    """Match nhl_candidate_pipeline.candidate_record version convention exactly."""
+    dataset = str(training_dataset_hash or "").strip().lower()
+    code = str(training_code_sha or "").strip().lower()
+    return f"{MODEL_ARTIFACT_VERSION_PREFIX}-{dataset[:16]}-{code[:12]}"
 
 
 def _validated_row(
@@ -57,9 +65,13 @@ def _validated_row(
         if as_of >= start:
             blockers.append("BINARY_TEMPORAL_LEAKAGE")
         outcome = row.get("outcome_json") or {}
-        positive = outcome["home_win"]
+        # NHL persistence writes {"positive_outcome": bool} via d1_bulk_candidate_registry.
+        # Do not accept the generic home_win key as a silent alias.
+        if "positive_outcome" not in outcome:
+            raise KeyError("positive_outcome")
+        positive = outcome["positive_outcome"]
         if not isinstance(positive, bool):
-            raise TypeError("home_win")
+            raise TypeError("positive_outcome")
         features = {}
         for name in feature_names:
             value = row["features"][name]
@@ -246,9 +258,9 @@ def verify_nhl_candidate_certification_evidence(db: Any, candidate_id: str) -> d
                         replay_blockers.append(f"REPLAY_METRIC_MISMATCH:{key}")
                 except (KeyError, TypeError, ValueError):
                     replay_blockers.append(f"REPLAY_METRIC_MISMATCH:{key}")
-            version = (
-                f"{family}_{str(c.get('training_dataset_hash') or '')[:16]}_"
-                f"{str(c.get('training_code_sha') or '')[:12]}"
+            version = expected_model_artifact_version(
+                str(c.get("training_dataset_hash") or ""),
+                str(c.get("training_code_sha") or ""),
             )
             if version != str(c.get("model_artifact_version") or ""):
                 replay_blockers.append("MODEL_ARTIFACT_VERSION_IDENTITY_MISMATCH")
@@ -321,11 +333,13 @@ __all__ = [
     "SOURCE_ID",
     "SOURCE_POLICY",
     "MODEL_FAMILY",
+    "MODEL_ARTIFACT_VERSION_PREFIX",
     "FEATURE_SCHEMA",
     "REQUIRED_TRAINING_ROWS",
     "REQUIRED_CALIBRATION_ROWS",
     "REQUIRED_TEST_ROWS",
     "IDENTITY_CALIBRATION_METHOD",
+    "expected_model_artifact_version",
     "_validated_row",
     "verify_nhl_candidate_certification_evidence",
 ]

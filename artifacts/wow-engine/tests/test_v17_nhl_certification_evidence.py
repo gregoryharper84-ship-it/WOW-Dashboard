@@ -39,7 +39,7 @@ def _row(*, event_id: str = "NHL:2023020001") -> dict:
         "event_start_time": "2026-01-02T00:00:00+00:00",
         "feature_as_of": "2026-01-01T23:59:00+00:00",
         "features": {name: 0.1 for name in FEATURE_NAMES},
-        "outcome_json": {"home_win": True},
+        "outcome_json": {"positive_outcome": True},
         "source_manifest": manifest,
         "source_manifest_sha256": _hash(manifest),
         "market_features_used": False,
@@ -54,7 +54,7 @@ def _candidate(**overrides) -> dict:
         "sport": "NHL",
         "league": "NHL",
         "model_family": nhl.MODEL_FAMILY,
-        "model_artifact_version": f"{nhl.MODEL_FAMILY}_{'a' * 16}_{'b' * 12}",
+        "model_artifact_version": nhl.expected_model_artifact_version("a" * 64, "b" * 40),
         "feature_schema_version": nhl.FEATURE_SCHEMA,
         "source_policy_id": nhl.SOURCE_POLICY,
         "training_dataset_hash": "c" * 64,
@@ -218,10 +218,64 @@ def test_validated_row_rejects_temporal_leakage_and_bad_outcome():
     assert "BINARY_TEMPORAL_LEAKAGE" in blockers
 
     bad = _row()
-    bad["outcome_json"] = {"home_win": "yes"}
+    bad["outcome_json"] = {"positive_outcome": "yes"}
     value, blockers = nhl._validated_row(bad, FEATURE_NAMES)
     assert value is None
     assert "TRAINING_ROW_SHAPE_INVALID" in blockers
+
+
+def test_validated_row_reads_persisted_positive_outcome_not_home_win():
+    row = _row()
+    row["outcome_json"] = {"positive_outcome": False}
+    value, blockers = nhl._validated_row(row, FEATURE_NAMES)
+    assert blockers == []
+    assert value is not None
+    assert value.positive_outcome is False
+
+    home_only = _row()
+    home_only["outcome_json"] = {"home_win": True}
+    value, blockers = nhl._validated_row(home_only, FEATURE_NAMES)
+    assert value is None
+    assert "TRAINING_ROW_SHAPE_INVALID" in blockers
+
+
+def test_artifact_version_matches_nhl_candidate_record_convention():
+    dataset = "5528ab8891df79fdea3b94982525158e2110ed697715dacef4e67ff76309728b"
+    code = "372bef19a04a1c053ad6ab3f649bdbcaf62c10b3"
+    assert (
+        nhl.expected_model_artifact_version(dataset, code)
+        == "NHL_RS_LOGISTIC_V1-5528ab8891df79fd-372bef19a04a"
+    )
+    from nhl_candidate_pipeline import candidate_record
+    from v17.binary_candidate_lifecycle import BinaryCandidate, BinaryCandidateMetrics
+
+    metrics = BinaryCandidateMetrics(
+        train_n=3676,
+        calibration_n=1226,
+        test_n=1226,
+        raw_brier=0.2,
+        calibrated_brier=0.2,
+        baseline_brier=0.25,
+        raw_log_loss=0.5,
+        calibrated_log_loss=0.5,
+        baseline_log_loss=0.7,
+        ece=0.01,
+    )
+    candidate = BinaryCandidate(
+        model_family=nhl.MODEL_FAMILY,
+        feature_names=FEATURE_NAMES,
+        artifact_payload={"feature_names": list(FEATURE_NAMES)},
+        calibrator_payload={"method": "EMPIRICAL_WILSON_BINS_V1"},
+        metrics=metrics,
+        dataset_hash=dataset,
+        calibration_start_event="a",
+        calibration_end_event="b",
+        test_start_event="c",
+        test_end_event="d",
+        research_screen_pass=True,
+    )
+    record = candidate_record(candidate, training_code_sha=code)
+    assert record["model_artifact_version"] == nhl.expected_model_artifact_version(dataset, code)
 
 
 def test_dispatch_reuses_nhl_verifier(monkeypatch):
