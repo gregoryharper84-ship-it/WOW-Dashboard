@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -45,6 +46,17 @@ FORBIDDEN_KEYS = {
     "rank_eligible", "stake", "order", "wager", "approval", "approved",
     "model_score", "model_prediction", "predicted_winner",
 }
+
+def _prohibited_feature_name(value: Any) -> bool:
+    """Reject predicted/model authority hidden in a normal feature/value row."""
+    if not isinstance(value, str):
+        return False  # The required source/feature type check rejects this separately.
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return (normalized in FORBIDDEN_KEYS
+            or "probability" in normalized
+            or "confidence" in normalized
+            or normalized.startswith("predicted_")
+            or normalized.startswith("model_prediction"))
 
 
 def _time(value: Any) -> datetime:
@@ -174,7 +186,7 @@ def validate_submission(manifest: dict[str, Any], submission: dict[str, Any],
     if submission.get("sport_key") != expected["sport_key"]:
         errors.append("wrong sport")
     worker_ids = {w["worker_id"] for w in manifest["workers"]}
-    if submission.get("worker_id") not in worker_ids:
+    if not isinstance(submission.get("worker_id"), str) or submission["worker_id"] not in worker_ids:
         errors.append("unassigned worker")
     if submission.get("research_ceiling") != "RESEARCH_INTEREST":
         errors.append("research ceiling missing or altered")
@@ -201,6 +213,8 @@ def validate_submission(manifest: dict[str, Any], submission: dict[str, Any],
                           "official_event_id", "source_uri", "source_rights_status", "conflict"}
         if set(fact) - permitted_fact or _has_forbidden_key(fact):
             errors.append(f"fact {index}: unauthorized fields")
+        if _prohibited_feature_name(fact.get("feature")):
+            errors.append(f"fact {index}: unauthorized prediction/authority feature")
         if fact.get("official_event_id") != expected["official_event_id"]:
             errors.append(f"fact {index}: cross-event evidence")
         if not all(isinstance(fact.get(k), str) and fact[k].strip()
