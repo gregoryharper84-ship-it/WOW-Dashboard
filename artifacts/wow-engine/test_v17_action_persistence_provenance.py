@@ -84,6 +84,29 @@ def test_red_unreadable_or_empty_claim_cannot_pass():
     assert unreadable["can_execute"] is empty_claim["can_execute"] is False
 
 
+def test_require_claimed_ids_false_allows_empty_claims_after_destination_check():
+    allowed = verify_action_persistence_provenance(
+        configured_supabase_url=SEALED_URL,
+        claimed_receipt_ids=[],
+        readback_by_id=_store(),
+        require_claimed_ids=False,
+    )
+    assert allowed["passed"] is True
+    assert allowed["code"] == PERSISTENCE_READBACK_VERIFIED
+    assert allowed["verified_receipt_ids"] == []
+    assert allowed["can_execute"] is False
+
+    still_blocked = verify_action_persistence_provenance(
+        configured_supabase_url=OTHER_URL,
+        claimed_receipt_ids=[],
+        readback_by_id=_store(),
+        require_claimed_ids=False,
+    )
+    assert still_blocked["passed"] is False
+    assert still_blocked["code"] == PERSISTENCE_DESTINATION_MISMATCH
+    assert still_blocked["can_execute"] is False
+
+
 def test_green_same_destination_independent_readback_passes_without_execution():
     result = verify_action_persistence_provenance(
         configured_supabase_url=SEALED_URL,

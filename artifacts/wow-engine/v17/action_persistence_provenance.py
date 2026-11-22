@@ -121,7 +121,9 @@ def verify_action_persistence_provenance(
         blockers.append(PERSISTENCE_READBACK_MISSING)
 
     blockers = list(dict.fromkeys(blockers))
-    passed = not blockers and bool(verified)
+    # Empty claims are only allowed when the caller explicitly opted out of
+    # require_claimed_ids; that mode still verifies destination identity.
+    passed = not blockers and (bool(verified) or not require_claimed_ids)
     return {
         "status": PERSISTENCE_READBACK_VERIFIED if passed else "BLOCKED_WITH_EXACT_REASON",
         "code": (
