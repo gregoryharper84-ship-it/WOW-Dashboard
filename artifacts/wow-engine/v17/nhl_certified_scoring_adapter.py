@@ -270,21 +270,15 @@ def _score_matching_certified_artifacts(
     except nhl.NHLFittedSpecialistError as exc:
         raise NHLCertifiedScoringError(exc.code, exc.blockers) from exc
 
-    # Reuse the current-event hydration/HOLD path, but force the receipt-bound
-    # candidate instead of the latest research loader.
-    original_loader = nhl.load_nhl_fitted_candidate
-
-    def _receipt_bound_loader(_db: Any, *, as_of_utc: datetime | None = None):
-        del _db, as_of_utc
-        return candidate
-
-    nhl.load_nhl_fitted_candidate = _receipt_bound_loader  # type: ignore[assignment]
+    # Pass the exact registry-verified candidate only for this request.
+    # Module-global loader replacement is unsafe across concurrent scoring
+    # calls and can mix independently certified artifacts between events.
     try:
-        package = nhl.score_current_nhl_event(req, db=db, now_utc=now_utc)
+        package = nhl.score_current_nhl_event(
+            req, db=db, now_utc=now_utc, certified_candidate=candidate,
+        )
     except nhl.NHLFittedSpecialistError as exc:
         raise NHLCertifiedScoringError(exc.code, exc.blockers, detail=exc.detail) from exc
-    finally:
-        nhl.load_nhl_fitted_candidate = original_loader  # type: ignore[assignment]
 
     lower = package.get("calibrated_home_lower_bound")
     upper = package.get("calibrated_home_upper_bound")
