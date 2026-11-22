@@ -90,3 +90,54 @@ def test_both_recovery_workflows_use_identical_strict_parser():
     assert "REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS" in auto
     assert "CLAUDE_REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS" in claude
     assert '"$incident" = "$TARGET_INCIDENT"' in claude
+
+
+def test_claude_ambient_token_cannot_mutate_source_or_pull_requests():
+    """Only the established Engineering App token can publish source changes.
+
+    Legacy issue-comment bookkeeping is App-authenticated but still awaits
+    canonical transactional fencing. This check prevents accidentally
+    restoring a second ambient GitHub writer.
+    """
+    worker = CLAUDE.read_text()
+    permissions = worker.split("\npermissions:\n", 1)[1].split("\nconcurrency:", 1)[0]
+    assert "  contents: read\n" in permissions
+    assert "  pull-requests: read\n" in permissions
+    assert "  issues: read\n" in permissions
+    assert "  contents: write\n" not in permissions
+    assert "  pull-requests: write\n" not in permissions
+    assert "  issues: write\n" not in permissions
+    assert "GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}" in worker
+    assert "GH_TOKEN: ${{ steps.eng_token.outputs.token }}" in worker
+    assert 'git push --force-with-lease="refs/heads/$branch:$REPAIR_SHA"' in worker
+    assert 'git push --set-upstream origin "$branch"' in worker
+
+    # Existing comment operations must also use the trusted App identity.
+    for name in (
+        "Initialize persistent-worker safety state",
+        "Persist dual-stream heartbeat and receipt",
+        "Append incident delivery receipt",
+    ):
+        block = worker.split("      - name: " + name, 1)[1].split("\n      - name:", 1)[0]
+        assert "GH_TOKEN: ${{ steps.eng_token.outputs.token }}" in block
+        assert "GH_TOKEN: ${{ github.token }}" not in block
+
+
+def test_provider_and_handoff_workflows_have_no_ambient_repository_write_authority():
+    """Prevents a bypass credential from returning on any provider route."""
+    workflows = (
+        CLAUDE,
+        ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+        ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+        ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        ROOT / ".github/workflows/wow-v17-cursor-pr-handoff-bridge.yml",
+    )
+    for path in workflows:
+        source = path.read_text()
+        permissions = source.split("\npermissions:\n", 1)[1].split("\nconcurrency:", 1)[0]
+        assert "  contents: read\n" in permissions, path
+        assert "  pull-requests: read\n" in permissions, path
+        assert "  issues: read\n" in permissions, path
+        assert "  contents: write\n" not in permissions, path
+        assert "  pull-requests: write\n" not in permissions, path
+        assert "  issues: write\n" not in permissions, path
