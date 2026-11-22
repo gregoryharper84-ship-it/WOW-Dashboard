@@ -378,6 +378,12 @@ def acquire_nfl_forward_evidence_batch(
                 canonical_event_id=str(candidate["canonical_event_id"]),
             )
             evidence = RawPropEvidence.model_validate(raw)
+            # Persist research-line provenance in the already-versioned source
+            # timestamp map; a discovered half-point is never an actual offer.
+            evidence.source_timestamps = {
+                **evidence.source_timestamps,
+                "WOW_AUTONOMOUS_DISCOVERY_LINE": now.isoformat(),
+            }
             line = _candidate_line(evidence.game_log, str(candidate["stat_type"]))
             row = PickRequestRow(
                 row_key=(
