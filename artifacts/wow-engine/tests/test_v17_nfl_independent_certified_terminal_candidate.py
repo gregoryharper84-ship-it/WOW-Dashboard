@@ -35,6 +35,7 @@ def test_certification_is_external_exact_identity_and_not_retroactive():
         "v_cert->>'feature_schema_version'=a.feature_schema_version",
         "v_cert->>'calibration_artifact_id'=c.calibrator_id::text",
         "v_cert->>'calibration_sha256'=v_calibration_sha",
+        "v_calibration_sha ~ '^[0-9a-f]{64}$'",
         "v_certified_at<=r.model_timestamp",
         "v_health.schema_version='NFL_FORWARD_CALIBRATION_HEALTH_V2'",
         "v_health.minimum_forward_required>=100",
